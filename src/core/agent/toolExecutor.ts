@@ -348,7 +348,33 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   const hasComputerTool = collectedToolCalls.some(tc => tc.name === TOOL_NAMES.COMPUTER);
 
   const allRunCommand = collectedToolCalls.every(tc => tc.name === TOOL_NAMES.RUN_COMMAND);
-  const strategy = hasComputerTool ? 'computer-sequential' : allRunCommand ? 'command-sequential' : 'parallel';
+
+  // A run_command batch may serialize because commands can have implicit
+  // dependencies (npm install → npm build). But when EVERY call in the batch
+  // is declared concurrency-safe by its tool's own isConcurrencySafe predicate
+  // (per-input for run_command: read-only commands like grep/ls/cat), there is
+  // no ordering dependency and parallel execution cuts the batch wall-clock
+  // from sum-of-latencies to max. Any unsafe or unknown call keeps the whole
+  // batch sequential.
+  const allTools = toolInvoker.getAllTools();
+  const isCallConcurrencySafe = (tc: { name: string; input: Record<string, unknown> }): boolean => {
+    const tool = allTools.find(t => t.name === tc.name);
+    if (!tool) return false;
+    try {
+      return typeof tool.isConcurrencySafe === 'function'
+        ? tool.isConcurrencySafe(tc.input) === true
+        : tool.isConcurrencySafe === true;
+    } catch {
+      return false;
+    }
+  };
+  const allCommandsConcurrencySafe = allRunCommand && collectedToolCalls.every(isCallConcurrencySafe);
+
+  const strategy = hasComputerTool
+    ? 'computer-sequential'
+    : allRunCommand
+      ? (allCommandsConcurrencySafe ? 'command-parallel' : 'command-sequential')
+      : 'parallel';
   logger.info('Tool batch started', { toolCount: collectedToolCalls.length, strategy });
 
   let results: PromiseSettledResult<ToolExecResult>[];
@@ -408,7 +434,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     pauseComputerUseStatus();
 
     // run_command may have implicit dependencies (e.g. npm install → npm build), serialize them
-    if (allRunCommand) {
+    // — unless the whole batch was proven concurrency-safe above (read-only commands).
+    if (allRunCommand && !allCommandsConcurrencySafe) {
       const sequentialResults: PromiseSettledResult<ToolExecResult>[] = [];
       for (const tc of collectedToolCalls) {
         if (abortController.signal.aborted) break;

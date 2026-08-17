@@ -286,3 +286,100 @@ describe('executeToolBatch · hard run restrictions', () => {
     });
   });
 });
+
+describe('executeToolBatch · run_command batch scheduling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.emitHook.mockResolvedValue({ blocked: false });
+  });
+
+  /** ToolInvoker whose registry declares run_command concurrency-safe per input. */
+  function makeCommandInvoker(
+    executeAnyTool: ToolInvoker['executeAnyTool'],
+    isConcurrencySafe: (input: Record<string, unknown>) => boolean,
+  ): ToolInvoker {
+    return {
+      getAllTools: () => [
+        {
+          name: 'run_command',
+          description: 'run a command',
+          inputSchema: { type: 'object', properties: {} },
+          execute: async () => 'unused',
+          isConcurrencySafe,
+        } as never,
+      ],
+      executeAnyTool,
+      toolResultToString: (result) => String(result),
+    };
+  }
+
+  function makeBatchParams(toolCalls: ToolCall[], invoker: ToolInvoker) {
+    return {
+      ...makeParams(toolCalls[0], invoker),
+      collectedToolCalls: toolCalls,
+    };
+  }
+
+  /** Tracks whether the two calls' executions overlapped in time. */
+  function makeOverlapProbe() {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const executeAnyTool = vi.fn().mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight--;
+      return 'ok';
+    });
+    return { executeAnyTool, maxInFlight: () => maxInFlight };
+  }
+
+  it('runs an all-read-only run_command batch in parallel', async () => {
+    const probe = makeOverlapProbe();
+    const invoker = makeCommandInvoker(probe.executeAnyTool, () => true);
+    const calls = [
+      { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-1' },
+      { ...makeToolCall('run_command', { command: 'grep foo bar.txt' }), id: 'tc-2' },
+    ];
+
+    await executeToolBatch(makeBatchParams(calls, invoker));
+
+    expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
+    expect(probe.maxInFlight()).toBe(2);
+  });
+
+  it('keeps a batch sequential when any command is not concurrency-safe', async () => {
+    const probe = makeOverlapProbe();
+    const invoker = makeCommandInvoker(
+      probe.executeAnyTool,
+      (input) => String(input.command).startsWith('ls'),
+    );
+    const calls = [
+      { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-1' },
+      { ...makeToolCall('run_command', { command: 'npm install' }), id: 'tc-2' },
+    ];
+
+    await executeToolBatch(makeBatchParams(calls, invoker));
+
+    expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
+    expect(probe.maxInFlight()).toBe(1);
+  });
+
+  it('keeps a batch sequential when the tool definition is unknown to the registry', async () => {
+    const probe = makeOverlapProbe();
+    const invoker: ToolInvoker = {
+      getAllTools: () => [],
+      executeAnyTool: probe.executeAnyTool,
+      toolResultToString: (result) => String(result),
+    };
+    const calls = [
+      { ...makeToolCall('run_command', { command: 'ls' }), id: 'tc-1' },
+      { ...makeToolCall('run_command', { command: 'ls -la' }), id: 'tc-2' },
+    ];
+
+    await executeToolBatch(makeBatchParams(calls, invoker));
+
+    expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
+    expect(probe.maxInFlight()).toBe(1);
+  });
+});

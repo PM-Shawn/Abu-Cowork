@@ -299,6 +299,7 @@ vi.mock('../core/session/sessionDir', () => ({
 vi.mock('../core/llm/promptSections', () => ({
   sectionsToString: vi.fn().mockReturnValue('system prompt'),
   mergeSections: vi.fn().mockImplementation((a, b) => [...(a || []), ...(b || [])]),
+  orderSectionsForCaching: vi.fn().mockImplementation((sections) => sections),
 }));
 
 vi.mock('../core/skill/preprocessor', () => ({

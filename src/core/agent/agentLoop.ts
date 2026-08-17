@@ -25,7 +25,7 @@ import { createEventRouter } from './eventRouter';
 // so this line carries zero runtime edge into the orchestrator graph.
 import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
-import { sectionsToString, mergeSections } from '../llm/promptSections';
+import { sectionsToString, mergeSections, orderSectionsForCaching } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
 import { substituteVariables } from '../skill/preprocessor';
 import { joinPath } from '../../utils/pathUtils';
@@ -1381,7 +1381,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (relevantMemoriesSection) {
         dynamicSections.push({ name: 'relevant-memories', text: relevantMemoriesSection, cacheable: false });
       }
-      let allSections = mergeSections([...systemPromptSections, ...dynamicSections]);
+      // Re-partition after appending per-turn dynamic sections: every volatile
+      // section must stay behind the last cacheable one or the cached prompt
+      // prefix breaks on every turn (see orderSectionsForCaching).
+      let allSections = mergeSections(orderSectionsForCaching([...systemPromptSections, ...dynamicSections]));
       // String form for token estimation and context management
       let effectiveSystemPrompt = sectionsToString(allSections);
 

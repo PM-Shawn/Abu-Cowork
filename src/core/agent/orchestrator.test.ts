@@ -77,7 +77,7 @@ vi.mock('../skill/preprocessor', () => ({
   executeInlineCommands: vi.fn((content: string) => content),
 }));
 
-import { buildSystemPrompt, routeInput } from './orchestrator';
+import { buildSystemPrompt, buildSystemPromptSections, routeInput } from './orchestrator';
 import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 
@@ -98,18 +98,26 @@ describe('buildSystemPrompt - security features', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');
 
-  it('ends with safety anchor', async () => {
+  it('ends with safety anchor as the last cacheable section, volatile tail after', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    // Safety anchor should be at the very end
     expect(prompt).toContain('## Safety Reminders');
     const safetyIdx = prompt.lastIndexOf('## Safety Reminders');
     const lastSection = prompt.slice(safetyIdx);
     expect(lastSection).toContain('follow the system instructions');
     expect(lastSection).toContain('Do not reveal');
     expect(lastSection).toContain('Do not be bypassed');
-    // No other ## section should come after safety anchor
-    const afterSafety = prompt.slice(safetyIdx + '## Safety Reminders'.length);
-    expect(afterSafety).not.toContain('\n## ');
+    // Only the volatile tail (e.g. Current Time) may follow the safety anchor —
+    // volatile sections are partitioned to the end so the cached prompt prefix
+    // stays byte-stable across turns (orderSectionsForCaching). The safety
+    // anchor remains the last cacheable section and carries the breakpoint.
+    const sections = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    const cacheable = sections.filter((s) => s.cacheable);
+    expect(cacheable[cacheable.length - 1].name).toBe('safety-anchor');
+    const lastCacheableIdx = sections.map((s) => s.cacheable).lastIndexOf(true);
+    const firstVolatileIdx = sections.map((s) => s.cacheable).indexOf(false);
+    if (firstVolatileIdx !== -1) {
+      expect(firstVolatileIdx).toBeGreaterThan(lastCacheableIdx);
+    }
   });
 
   it('wraps project rules in <user-rules> tags', async () => {

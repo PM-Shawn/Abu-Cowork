@@ -123,4 +123,104 @@ describe('ClaudeAdapter', () => {
       expect(tu?.input && '_parse_error' in tu.input).toBe(false);
     });
   });
+
+  describe('prompt cache breakpoints', () => {
+    type CapturedParams = {
+      system?: Array<{ text: string; cache_control?: { type: string } }>;
+      tools?: Array<{ cache_control?: { type: string } }>;
+      messages: Array<{
+        role: string;
+        content: string | Array<Record<string, unknown>>;
+      }>;
+    };
+
+    async function chatAndCapture(
+      messages: Array<{ role: 'user' | 'assistant'; content: string; id: string; timestamp: number }>,
+      extraOptions: Record<string, unknown> = {},
+    ): Promise<CapturedParams> {
+      vi.useRealTimers();
+      mockCreate.mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'message_stop' };
+        },
+      });
+      const adapter = new ClaudeAdapter();
+      await adapter.chat(
+        messages,
+        { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024, ...extraOptions },
+        () => {},
+      );
+      return mockCreate.mock.calls[0][0] as CapturedParams;
+    }
+
+    function countBreakpoints(params: CapturedParams): number {
+      let n = 0;
+      for (const b of params.system ?? []) if (b.cache_control) n++;
+      for (const t of params.tools ?? []) if (t.cache_control) n++;
+      for (const m of params.messages) {
+        if (Array.isArray(m.content)) {
+          for (const block of m.content) if (block.cache_control) n++;
+        }
+      }
+      return n;
+    }
+
+    it('places the system breakpoint on the last cacheable section and none on volatile sections', async () => {
+      const params = await chatAndCapture(
+        [{ role: 'user', content: 'hi', id: '1', timestamp: Date.now() }],
+        {
+          systemPromptSections: [
+            { name: 'persona', text: 'persona text', cacheable: true },
+            { name: 'safety', text: 'safety text', cacheable: true },
+            { name: 'current-time', text: 'time text', cacheable: false },
+          ],
+        },
+      );
+      expect(params.system).toHaveLength(3);
+      expect(params.system![0].cache_control).toBeUndefined();
+      expect(params.system![1].cache_control).toEqual({ type: 'ephemeral' });
+      expect(params.system![2].cache_control).toBeUndefined();
+    });
+
+    it('marks the last block of the last message as an incremental history breakpoint', async () => {
+      const params = await chatAndCapture([
+        { role: 'user', content: 'first question', id: '1', timestamp: Date.now() },
+        { role: 'assistant', content: 'first answer', id: '2', timestamp: Date.now() },
+        { role: 'user', content: 'second question', id: '3', timestamp: Date.now() },
+      ]);
+      const last = params.messages[params.messages.length - 1];
+      expect(Array.isArray(last.content)).toBe(true);
+      const blocks = last.content as Array<Record<string, unknown>>;
+      expect(blocks[blocks.length - 1].cache_control).toEqual({ type: 'ephemeral' });
+      // Only the final message carries the history breakpoint
+      for (const m of params.messages.slice(0, -1)) {
+        if (Array.isArray(m.content)) {
+          for (const block of m.content) expect(block.cache_control).toBeUndefined();
+        }
+      }
+    });
+
+    it('never exceeds the 4-breakpoint API limit (tools + system + history)', async () => {
+      const params = await chatAndCapture(
+        [
+          { role: 'user', content: 'q1', id: '1', timestamp: Date.now() },
+          { role: 'assistant', content: 'a1', id: '2', timestamp: Date.now() },
+          { role: 'user', content: 'q2', id: '3', timestamp: Date.now() },
+        ],
+        {
+          systemPromptSections: [
+            { name: 'persona', text: 'persona', cacheable: true },
+            { name: 'time', text: 'time', cacheable: false },
+          ],
+          tools: [
+            { name: 'tool_a', description: 'a', inputSchema: { type: 'object', properties: {} } },
+            { name: 'tool_b', description: 'b', inputSchema: { type: 'object', properties: {} } },
+          ],
+        },
+      );
+      const count = countBreakpoints(params);
+      expect(count).toBeGreaterThanOrEqual(3); // tools + system + history all marked
+      expect(count).toBeLessThanOrEqual(4);
+    });
+  });
 });

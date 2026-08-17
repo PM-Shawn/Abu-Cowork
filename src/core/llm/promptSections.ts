@@ -54,6 +54,23 @@ export function mergeSections(sections: PromptSection[]): PromptSection[] {
 }
 
 /**
+ * Stable-partition sections for prompt caching: cacheable sections first
+ * (original relative order), volatile sections last (original relative order).
+ *
+ * Prompt caching is a byte-prefix match on every provider (Anthropic caches up
+ * to the last cache_control breakpoint; DeepSeek/OpenAI auto-cache the longest
+ * matching prefix). A volatile section in the middle of the prompt — e.g. a
+ * minute-granularity timestamp — therefore invalidates every cacheable section
+ * after it on every turn. Moving all volatile content behind the last cacheable
+ * section keeps the cached prefix byte-stable across turns.
+ */
+export function orderSectionsForCaching(sections: PromptSection[]): PromptSection[] {
+  const cacheable = sections.filter(s => s.cacheable);
+  const volatile = sections.filter(s => !s.cacheable);
+  return [...cacheable, ...volatile];
+}
+
+/**
  * Fallback: concatenate all sections into a single string.
  * Used for non-Anthropic providers that don't support cache_control.
  */

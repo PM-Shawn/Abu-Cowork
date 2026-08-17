@@ -1187,3 +1187,32 @@ describe('secretWriteFailedKeys (save-failure feedback)', () => {
     expect(persisted[0].apiKey).toBe('sk-new');
   });
 });
+
+// ── Browser site permissions: grant/revoke must reach the persisted payload ──
+// Pins that a revoke is not an in-memory-only change: the persist partialize
+// must reflect both the grant and the removal, so a normally-quit app comes
+// back with exactly what the user last saw in Settings.
+describe('browserSitePermissions persistence', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ browserSitePermissions: {} });
+  });
+
+  function persistedSitePermissions(): Record<string, string> {
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize;
+    return partialize(useSettingsStore.getState()).browserSitePermissions as Record<string, string>;
+  }
+
+  it('a granted site appears in the persisted payload', () => {
+    useSettingsStore.getState().setBrowserSitePermission('https://example.com', 'allowed');
+    expect(persistedSitePermissions()).toEqual({ 'https://example.com': 'allowed' });
+  });
+
+  it('a revoked site disappears from the persisted payload', () => {
+    useSettingsStore.getState().setBrowserSitePermission('https://example.com', 'allowed');
+    useSettingsStore.getState().removeBrowserSitePermission('https://example.com');
+    expect(persistedSitePermissions()).toEqual({});
+  });
+});

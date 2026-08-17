@@ -9,6 +9,7 @@
 import { Component } from 'react';
 import type { ReactNode, ErrorInfo } from 'react';
 import { getI18n } from '@/i18n';
+import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 
 interface Props {
   children: ReactNode;
@@ -69,6 +70,10 @@ export class MessageErrorBoundary extends Component<{ children: ReactNode }, { h
 
   componentDidCatch(error: Error) {
     console.error('[MessageErrorBoundary] Message render failed:', error.message);
+    // This boundary has no generic onError prop — it wraps message rendering
+    // and nothing else — so it records its own catch instead of asking each of
+    // its call sites in MessageGroup to pass the same handler.
+    traceErrorBoundaryCatch('message_render', error);
   }
 
   render() {

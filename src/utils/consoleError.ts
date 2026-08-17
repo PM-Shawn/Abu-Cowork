@@ -21,8 +21,22 @@ function safeErrorMessage(value: string | undefined): string | null {
   }).join('').slice(0, MAX_ERROR_MESSAGE_CHARS)
 }
 
+/**
+ * `api_error` / `agent_crash` come from the agent loop. The three crash types
+ * are process-level deaths: the Electron main process hitting an uncaught
+ * exception or unhandled rejection, a renderer process dying (crashed/oom),
+ * and the agent sidecar tripping its crash-loop breaker. Ordinary sidecar
+ * restarts and caught render errors stay on the local runtime log only.
+ */
+export type ConsoleErrorType =
+  | 'api_error'
+  | 'agent_crash'
+  | 'main_crash'
+  | 'renderer_crash'
+  | 'sidecar_crash'
+
 export function reportError(
-  errorType: 'api_error' | 'agent_crash',
+  errorType: ConsoleErrorType,
   errorCode?: string,
   statusCode?: number,
   model?: string,

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { langs } from '@uiw/codemirror-extensions-langs';
 import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
+import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 
 /**
  * Aliases for file extensions whose CodeMirror language doesn't share the
@@ -27,27 +27,6 @@ function resolveLanguageExtensions(language: string): Extension[] {
     // Defensive: never let an unrecognized/broken language extension crash the editor.
     return [];
   }
-}
-
-/**
- * Tracks the app's effective (resolved) theme by reading the `.dark` class
- * App.tsx toggles on `<html>` (see `src/App.tsx` `root.classList.toggle('dark', dark)`,
- * which already resolves the 'system' setting into that class). Subscribes via
- * a MutationObserver so callers live-update if the user switches theme.
- */
-function useEffectiveThemeIsDark(): boolean {
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setIsDark(root.classList.contains('dark'));
-    });
-    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
-  }, []);
-
-  return isDark;
 }
 
 /**

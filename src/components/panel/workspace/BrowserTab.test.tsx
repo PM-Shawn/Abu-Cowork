@@ -1,5 +1,6 @@
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserTab from './BrowserTab';
 import { initLanguage } from '@/i18n';
@@ -133,6 +134,50 @@ describe('BrowserTab native overlay visibility', () => {
         id: 'browser-approval-regression',
       });
     });
+  });
+
+  it('opens a toolbar tooltip upward (away from the native view) without ever hiding it', async () => {
+    // Regression guard for a prior fix attempt: hiding the native webview on
+    // every tooltip hover (mirroring the click-menu `menuOpen` gate) stopped
+    // the tooltip from being clipped, but caused a visible flash on every
+    // hover since tooltips fire far more often than menu opens. The actual
+    // fix renders the tooltip upward (`side="top"`) so it never overlaps the
+    // native view's rect in the first place — no hide/show needed at all.
+    const user = userEvent.setup();
+    const view = render(
+      <TooltipProvider>
+        <BrowserTab
+          tabId="browser-toolbar-tooltip"
+          url="https://example.com"
+        />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-toolbar-tooltip',
+      }));
+    });
+    invoke.mockClear();
+
+    const backButton = view.getAllByRole('button')[0];
+    await user.hover(backButton);
+
+    const tooltip = await view.findByRole('tooltip', { name: 'Back' });
+    expect(tooltip.closest('[data-side]')).toHaveAttribute('data-side', 'top');
+
+    await user.unhover(backButton);
+    // happy-dom returns zero-sized bounding rects, which can make Radix's
+    // hoverable-content grace area think the pointer never left after a
+    // synthetic unhover. Force it with an explicit far-away pointermove —
+    // see the equivalent note in TabStrip.test.tsx's tooltip test.
+    fireEvent.pointerMove(document.body, { clientX: 9999, clientY: 9999 });
+    await waitFor(() => {
+      expect(view.queryByRole('tooltip', { name: 'Back' })).not.toBeInTheDocument();
+    });
+
+    expect(invoke).not.toHaveBeenCalledWith('browser_hide', expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith('browser_show', expect.anything());
   });
 
   it('hides the native view for task-local capability setup and restores it afterwards', async () => {

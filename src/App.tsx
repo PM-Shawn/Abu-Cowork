@@ -255,7 +255,11 @@ function App() {
   // overlay would just double it up. Show the overlay only while the panel is collapsed
   // (and there's a conversation to show a panel for).
   const showRightPanelToggle = viewMode === 'chat' && ((activeConv?.messages?.length ?? 0) > 0 || hasAnyTab) && rightPanelCollapsed;
-  const [showCloseDialog, setShowCloseDialog] = useState(false);
+  // Lives in previewStore (not local state) so BrowserTab can hide the native
+  // browser webview while the dialog is up — otherwise the webview paints over
+  // it and the user cannot see or click the close confirmation.
+  const showCloseDialog = usePreviewStore((s) => s.appModalOpen);
+  const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
   const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
@@ -266,12 +270,12 @@ function App() {
   const handleQuit = useCallback(() => {
     setShowCloseDialog(false);
     invoke('app_exit');
-  }, []);
+  }, [setShowCloseDialog]);
 
   const handleMinimize = useCallback(() => {
     setShowCloseDialog(false);
     invoke('window_hide');
-  }, []);
+  }, [setShowCloseDialog]);
 
   // Keep notification focus state aligned through both the native Tauri event
   // and the renderer's own focus event. Electron can miss one during startup
@@ -392,7 +396,7 @@ function App() {
       cancelled = true;
       unlistenFn?.();
     };
-  }, []);
+  }, [setShowCloseDialog]);
 
   useEffect(() => {
     registerBuiltinTools();

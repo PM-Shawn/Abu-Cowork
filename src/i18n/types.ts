@@ -771,6 +771,12 @@ export interface TranslationDict {
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
     capabilityMyChromeScope: string;
+    browserSitePermsTitle: string;
+    browserSitePermsDesc: string;
+    browserSitePermsEmpty: string;
+    browserSitePermsAllowed: string;
+    browserSitePermsDenied: string;
+    browserSitePermsRevoke: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
     capabilityExtensionsTitle: string;
@@ -2301,6 +2307,14 @@ export interface TranslationDict {
     selfExtensionDenied: string;
     browserTitle: string;
     browserDescription: string;
+    browserSiteDenied: string;
+    browserScriptReason: string;
+    /** "Just this once" button — shown when a persistent site grant is also offered. */
+    browserAllowOnce: string;
+    /** "Always allow this site" button — fixed text; the origin itself is
+     *  shown in the dialog's command display, keeping the button short no
+     *  matter how long the URL is. */
+    browserAlwaysAllowSite: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };

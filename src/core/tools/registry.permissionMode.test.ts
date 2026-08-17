@@ -129,6 +129,128 @@ describe('browser automation approval gate', () => {
   });
 });
 
+// ── Persistent per-site verdicts ──
+// "Always allow this site" from the confirmation dialog writes an exact-origin
+// verdict into settings; the gate resolves it with denied > allowed > default.
+// navigate carries its destination in the input, so these tests need no tab
+// lookup (and thus no MCP server).
+describe('browser site permission verdicts', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard', browserSitePermissions: {} });
+    __resetBrowserGrantsForTests();
+  });
+
+  it('lets an allowed site through without asking', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(0);
+  });
+
+  it('lets an allowed site through even with no confirmation channel — the scheduled-task path', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' },
+      { conversationId: 'sched-run-1' } as never, undefined,
+    );
+
+    expect(decision.decision).toBe('allow');
+  });
+
+  it('denies a blocked site outright, without offering confirmation', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://evil.com': 'denied' } });
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://evil.com/login' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(asked).toHaveLength(0);
+  });
+
+  it('a denied site stays denied even after a conversation grant — denied wins', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://evil.com': 'denied' } });
+    const confirm = async () => true;
+
+    // Earn a conversation grant on an unrelated action first.
+    await checkToolApproval(
+      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+    );
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://evil.com/' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('an allowed parent domain does not cover a subdomain — exact origins only', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    const asked: string[] = [];
+    const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
+
+    await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://sub.example.com/' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(asked).toHaveLength(1);
+  });
+
+  it('execute_js never rides a site grant — scripts ask every time', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    const infos: Array<{ command: string; allowPersistentGrant?: boolean }> = [];
+    const confirm = async (info: { command: string; allowPersistentGrant?: boolean }) => {
+      infos.push(info);
+      return true;
+    };
+
+    await checkToolApproval(
+      'abu-browser__execute_js', { code: '1+1' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+
+    expect(infos).toHaveLength(1);
+    expect(infos[0].allowPersistentGrant).toBe(false);
+  });
+
+  it('offers the persistent grant only when the origin is known', async () => {
+    const infos: Array<{ browserOrigin?: string; allowPersistentGrant?: boolean }> = [];
+    const confirm = async (info: { browserOrigin?: string; allowPersistentGrant?: boolean }) => {
+      infos.push(info);
+      return true;
+    };
+
+    // navigate with a URL: origin resolvable → grant offered.
+    await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://example.com/x' },
+      { conversationId: 'conv-1' } as never, confirm as never,
+    );
+    __resetBrowserGrantsForTests();
+    // click with no resolvable origin (no reachable MCP server in tests) → no grant offered.
+    await checkToolApproval(
+      'abu-browser__click', {}, { conversationId: 'conv-2' } as never, confirm as never,
+    );
+
+    expect(infos[0].browserOrigin).toBe('https://example.com');
+    expect(infos[0].allowPersistentGrant).toBe(true);
+    expect(infos[1].browserOrigin).toBeUndefined();
+    expect(infos[1].allowPersistentGrant).toBe(false);
+  });
+});
+
 // ── Self-extension gate ──
 // Creating a subagent, installing an MCP server, or rewriting the persona all
 // write durable state that shapes every later turn. Each is confirmed on its

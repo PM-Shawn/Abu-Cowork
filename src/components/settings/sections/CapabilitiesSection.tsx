@@ -143,6 +143,61 @@ function CapabilityCard({
   );
 }
 
+/**
+ * Persistent per-site browser-automation grants ("always allow this site" from
+ * the confirmation dialog). Listed here so every standing grant is visible and
+ * revocable — revoking restores ask-every-time for that site.
+ */
+function BrowserSitePermissionsList() {
+  const { t } = useI18n();
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
+  const origins = Object.keys(sitePermissions).sort();
+
+  return (
+    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
+      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
+        {t.settings.browserSitePermsTitle}
+      </h4>
+      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {t.settings.browserSitePermsDesc}
+      </p>
+      {origins.length === 0 ? (
+        <p className="mt-3 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
+          {t.settings.browserSitePermsEmpty}
+        </p>
+      ) : (
+        <ul className="mt-3 divide-y divide-[var(--abu-border)] border-t border-[var(--abu-border)]">
+          {origins.map((origin) => (
+            <li key={origin} className="flex items-center gap-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
+                {origin}
+              </span>
+              <span className={cn(
+                'shrink-0 rounded px-2 py-0.5 text-caption font-medium',
+                sitePermissions[origin] === 'allowed'
+                  ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
+                  : 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]',
+              )}>
+                {sitePermissions[origin] === 'allowed'
+                  ? t.settings.browserSitePermsAllowed
+                  : t.settings.browserSitePermsDenied}
+              </span>
+              <button
+                type="button"
+                onClick={() => removeBrowserSitePermission(origin)}
+                className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
+              >
+                {t.settings.browserSitePermsRevoke}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function CapabilitiesSection({
   setupTarget,
   requestedByTask = false,
@@ -752,6 +807,8 @@ export default function CapabilitiesSection({
             )}
           </CapabilityCard>
         </div>
+
+        <BrowserSitePermissionsList />
       </section>
 
       <section className="space-y-3">

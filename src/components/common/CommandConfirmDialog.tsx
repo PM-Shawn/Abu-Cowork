@@ -2,6 +2,7 @@ import { useEffect, useCallback } from 'react';
 import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/i18n';
+import { useSettingsStore } from '@/stores/settingsStore';
 import type { DangerLevel } from '@/core/tools/commandSafety';
 
 export interface CommandConfirmRequest {
@@ -10,6 +11,10 @@ export interface CommandConfirmRequest {
   reason: string;
   /** Selects the wording — see ConfirmationInfo.kind. */
   kind?: 'command' | 'browser' | 'self-extension';
+  /** Browser confirmations: exact origin of the action, when resolved. */
+  browserOrigin?: string;
+  /** Browser confirmations: whether "always allow this site" may be offered. */
+  allowPersistentGrant?: boolean;
 }
 
 interface CommandConfirmDialogProps {
@@ -62,6 +67,17 @@ export default function CommandConfirmDialog({
   const config = levelConfig[request.level];
   const Icon = config.icon;
   const isBlocked = request.level === 'block';
+  // "Always allow this site": persist the verdict, then resolve like a normal
+  // confirm. The persistent grant is the dialog's own side effect — the
+  // approval pipeline stays a plain boolean.
+  const offerSiteGrant =
+    request.kind === 'browser' && request.allowPersistentGrant === true && !!request.browserOrigin;
+  const handleAlwaysAllowSite = useCallback(() => {
+    if (request.browserOrigin) {
+      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'allowed');
+    }
+    onConfirm();
+  }, [request.browserOrigin, onConfirm]);
 
   // Close on Escape key
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -150,7 +166,16 @@ export default function CommandConfirmDialog({
                   : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
               } text-white`}
             >
-              {t.commandConfirm.confirm}
+              {offerSiteGrant ? t.commandConfirm.browserAllowOnce : t.commandConfirm.confirm}
+            </Button>
+          )}
+          {!isBlocked && offerSiteGrant && (
+            <Button
+              onClick={handleAlwaysAllowSite}
+              className="flex-1 h-10 text-body bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)] text-white"
+              title={request.browserOrigin}
+            >
+              {t.commandConfirm.browserAlwaysAllowSite}
             </Button>
           )}
         </div>

@@ -3,8 +3,11 @@ import {
   __resetBrowserGrantsForTests,
   BROWSER_GRANT_TTL_MS,
   classifyBrowserTool,
+  getSiteVerdict,
   grantBrowserAutomation,
   hasBrowserGrant,
+  isScriptingBrowserTool,
+  normalizeBrowserOrigin,
   revokeBrowserGrant,
 } from './browserToolPolicy';
 
@@ -78,6 +81,59 @@ describe('browser tool policy', () => {
       grantBrowserAutomation('conv-1', start + BROWSER_GRANT_TTL_MS + 5);
 
       expect(hasBrowserGrant('conv-1', start + BROWSER_GRANT_TTL_MS + 6)).toBe(true);
+    });
+  });
+
+  describe('normalizeBrowserOrigin', () => {
+    it('reduces a URL to its exact origin', () => {
+      expect(normalizeBrowserOrigin('https://example.com/path?q=1#frag')).toBe('https://example.com');
+      expect(normalizeBrowserOrigin('http://localhost:3000/dashboard')).toBe('http://localhost:3000');
+    });
+
+    it('keeps subdomains distinct — no wildcard collapsing', () => {
+      expect(normalizeBrowserOrigin('https://sub.example.com/')).toBe('https://sub.example.com');
+      expect(normalizeBrowserOrigin('https://sub.example.com/'))
+        .not.toBe(normalizeBrowserOrigin('https://example.com/'));
+    });
+
+    it('refuses non-http(s) and unparseable URLs — those pages never earn a grant', () => {
+      expect(normalizeBrowserOrigin('file:///etc/passwd')).toBeNull();
+      expect(normalizeBrowserOrigin('chrome://settings')).toBeNull();
+      expect(normalizeBrowserOrigin('about:blank')).toBeNull();
+      expect(normalizeBrowserOrigin('not a url')).toBeNull();
+      expect(normalizeBrowserOrigin(undefined)).toBeNull();
+      expect(normalizeBrowserOrigin('')).toBeNull();
+    });
+  });
+
+  describe('getSiteVerdict', () => {
+    it('returns the stored verdict for an exact origin match', () => {
+      const perms = { 'https://example.com': 'allowed', 'https://evil.com': 'denied' } as const;
+      expect(getSiteVerdict('https://example.com', perms)).toBe('allowed');
+      expect(getSiteVerdict('https://evil.com', perms)).toBe('denied');
+    });
+
+    it('falls back to default for unknown sites and unresolved origins', () => {
+      expect(getSiteVerdict('https://other.com', { 'https://example.com': 'allowed' })).toBe('default');
+      expect(getSiteVerdict(null, { 'https://example.com': 'allowed' })).toBe('default');
+    });
+
+    it('does not let an allowed parent domain cover a subdomain', () => {
+      expect(getSiteVerdict('https://sub.example.com', { 'https://example.com': 'allowed' })).toBe('default');
+    });
+  });
+
+  describe('isScriptingBrowserTool', () => {
+    it('flags execute_js on both browser servers', () => {
+      expect(isScriptingBrowserTool('abu-browser__execute_js')).toBe(true);
+      expect(isScriptingBrowserTool('abu-browser-bridge__execute_js')).toBe(true);
+    });
+
+    it('leaves ordinary actions and other servers unflagged', () => {
+      expect(isScriptingBrowserTool('abu-browser__click')).toBe(false);
+      expect(isScriptingBrowserTool('abu-browser__navigate')).toBe(false);
+      expect(isScriptingBrowserTool('other-server__execute_js')).toBe(false);
+      expect(isScriptingBrowserTool('execute_js')).toBe(false);
     });
   });
 });

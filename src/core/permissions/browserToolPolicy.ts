@@ -34,6 +34,57 @@ const STATE_CHANGING_TOOLS = new Set([
 export type BrowserToolConsequence = 'read-only' | 'state-changing';
 
 /**
+ * Running page code is a different decision from clicking a button: it can
+ * read cookies, exfiltrate the DOM, and act with the page's full authority.
+ * Tools in this set never get a persistent per-site grant — each use is its
+ * own ask (mirrors how competitors put "full page control" behind a separate,
+ * stricter axis than ordinary browsing).
+ */
+const SCRIPTING_TOOLS = new Set(['execute_js']);
+
+export function isScriptingBrowserTool(namespacedName: string): boolean {
+  const separator = namespacedName.indexOf('__');
+  if (separator === -1) return false;
+  if (!BROWSER_SERVER_NAMES.has(namespacedName.slice(0, separator))) return false;
+  return SCRIPTING_TOOLS.has(namespacedName.slice(separator + 2));
+}
+
+/**
+ * Normalize a URL to its origin (scheme://host[:port]). Exact-match keys, no
+ * wildcards — `sub.example.com` and `example.com` are distinct entries, the
+ * same rule competitors apply. Returns null for unparseable or non-http(s)
+ * URLs (about:, chrome:, file: pages never earn a persistent grant).
+ */
+export function normalizeBrowserOrigin(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+export type SiteVerdict = 'allowed' | 'denied' | 'default';
+
+/**
+ * Resolve a persistent per-site verdict. Precedence is fixed:
+ * denied > allowed > default — a site the user blocked stays blocked no
+ * matter what else would have allowed it.
+ */
+export function getSiteVerdict(
+  origin: string | null,
+  sitePermissions: Record<string, 'allowed' | 'denied'>,
+): SiteVerdict {
+  if (!origin) return 'default';
+  const verdict = sitePermissions[origin];
+  if (verdict === 'denied') return 'denied';
+  if (verdict === 'allowed') return 'allowed';
+  return 'default';
+}
+
+/**
  * Classify a namespaced MCP tool name (`server__tool`).
  * Returns null when the tool is not a browser-automation tool.
  */

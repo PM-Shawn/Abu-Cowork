@@ -237,6 +237,14 @@ export interface SettingsState {
    *  server-side telemetryEnabled flag. */
   telemetryOptOut: boolean;
   computerUseEnabled: boolean;
+  /**
+   * Per-origin browser-automation verdicts, keyed by exact origin
+   * (scheme://host[:port], no wildcards). Mirrors the shape competitors
+   * converge on: `denied` beats `allowed` beats absent-(ask-every-time).
+   * Written from the browser confirmation dialog's "always allow this site"
+   * action; revocable from Settings › Capabilities.
+   */
+  browserSitePermissions: Record<string, 'allowed' | 'denied'>;
   preventSleep: boolean;
   allowSkillCommands: boolean;
   soulInitialized: boolean;
@@ -400,6 +408,8 @@ interface SettingsActions {
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
+  setBrowserSitePermission: (origin: string, verdict: 'allowed' | 'denied') => void;
+  removeBrowserSitePermission: (origin: string) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
@@ -635,6 +645,7 @@ export const useSettingsStore = create<SettingsStore>()(
       behaviorSensorEnabled: false,
       telemetryOptOut: false,
       computerUseEnabled: false,
+      browserSitePermissions: {},
       preventSleep: false,
       allowSkillCommands: true,
       soulInitialized: false,
@@ -981,6 +992,14 @@ export const useSettingsStore = create<SettingsStore>()(
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
+      setBrowserSitePermission: (origin, verdict) => set((state) => ({
+        browserSitePermissions: { ...state.browserSitePermissions, [origin]: verdict },
+      })),
+      removeBrowserSitePermission: (origin) => set((state) => {
+        const next = { ...state.browserSitePermissions };
+        delete next[origin];
+        return { browserSitePermissions: next };
+      }),
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1040,9 +1059,15 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 43,
+      version: 44,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        if (version < 44) {
+          // Browser site permissions start empty: every site keeps asking until
+          // the user explicitly settles it from the confirmation dialog.
+          if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
 
         // ════════════════════════════════════════════════
         // V42: One-time theme reset to 'light'. Before 2026-07-04 (commit
@@ -1867,6 +1892,7 @@ export const useSettingsStore = create<SettingsStore>()(
         guideShown: state.guideShown,
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
+        browserSitePermissions: state.browserSitePermissions,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,
         allowSkillCommands: state.allowSkillCommands,

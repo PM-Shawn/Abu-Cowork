@@ -105,25 +105,21 @@ describe('TerminalTab theming', () => {
     const spawnCallsBefore = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_spawn').length;
     const killCallsBefore = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_kill').length;
 
-    act(() => {
+    // Deterministic, not clock-based: the MutationObserver callback
+    // (useEffectiveThemeIsDark) is delivered on the task queue and the theme
+    // repaint runs in a React effect — one awaited macrotask turn inside act()
+    // covers both, regardless of how slow the runner is. The previous
+    // real-time waitFor (even at 12s) still lost this race once on a
+    // contended Windows runner; event ordering cannot.
+    await act(async () => {
       document.documentElement.classList.add('dark');
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-
-    // The MutationObserver callback (useEffectiveThemeIsDark) fires off a
-    // microtask checkpoint, not synchronously — under CI resource contention
-    // (observed on Windows runners) it can take a couple of seconds, so this
-    // needs real headroom. Vitest's per-test timeout defaults to 5s and is
-    // deliberately not raised project-wide (vitest.config.ts), so a waitFor
-    // timeout anywhere near that just loses the race against the *outer*
-    // test timeout before it ever gets to report its own diff — hence the
-    // explicit, larger `it(...)` timeout below alongside this one.
-    await waitFor(() => {
-      expect(terminalInstances[0].options.theme).toEqual({
-        background: DARK_VARS['--abu-bg-base'],
-        foreground: DARK_VARS['--abu-text-primary'],
-        cursor: DARK_VARS['--abu-clay'],
-      });
-    }, { timeout: 12000 });
+    expect(terminalInstances[0].options.theme).toEqual({
+      background: DARK_VARS['--abu-bg-base'],
+      foreground: DARK_VARS['--abu-text-primary'],
+      cursor: DARK_VARS['--abu-clay'],
+    });
 
     // Still the same single terminal instance — no dispose/recreate cycle.
     expect(terminalInstances).toHaveLength(1);
@@ -131,5 +127,5 @@ describe('TerminalTab theming', () => {
     const killCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_kill').length;
     expect(spawnCallsAfter).toBe(spawnCallsBefore);
     expect(killCallsAfter).toBe(killCallsBefore);
-  }, 15000);
+  });
 });

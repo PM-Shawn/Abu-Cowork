@@ -1554,12 +1554,19 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
             sources[displayIndex] ??
             sources[0];
           if (compositeSource) {
-            // TCC status alone is not proof that desktopCapturer produced an
-            // authoritative screen image. Only make composition mandatory
-            // after Electron returns a concrete source, matching Windows.
-            windowCompositeTrusted = true;
             compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
             const sourceSize = compositeSource.thumbnail.getSize();
+            // TCC status alone is not proof that desktopCapturer produced an
+            // authoritative screen image. Only make composition mandatory
+            // after Electron returns a concrete source WITH a non-empty
+            // thumbnail — contended runners intermittently hand back a
+            // source whose image is 0x0, which is no evidence either way
+            // (observed failing v0.39.0: trusted=true + composite=null while
+            // the view's own draw evidence was all green).
+            if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+              compositeError = 'desktop source returned an empty thumbnail';
+            } else {
+            windowCompositeTrusted = true;
             const scaleX = sourceSize.width / display.bounds.width;
             const scaleY = sourceSize.height / display.bounds.height;
             const x = Math.max(
@@ -1585,6 +1592,7 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
                 windowCompositePng = cropped.toPNG().toString('base64');
               }
             }
+            }
           } else {
             compositeError = 'screen capture was granted but returned no desktop source';
           }
@@ -1600,12 +1608,18 @@ async function inspectPackagedBrowserView(app, tabId, screenshotData) {
           });
           const compositeSource = sources.find((source) => source.id === mediaSourceId);
           if (compositeSource) {
+            compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
+            const sourceSize = compositeSource.thumbnail.getSize();
             // GitHub's non-interactive Windows runner can expose no capturable
             // top-level windows. Treat composition as authoritative only when
-            // Electron actually returned this window as a desktop source.
-            windowCompositeTrusted = true;
-            compositeSourceId = `${compositeSource.id}:${compositeSource.display_id}`;
-            windowComposite = analyze(compositeSource.thumbnail);
+            // Electron actually returned this window as a desktop source with
+            // a non-empty thumbnail (same empty-image guard as macOS).
+            if (sourceSize.width <= 0 || sourceSize.height <= 0) {
+              compositeError = 'desktop source returned an empty thumbnail';
+            } else {
+              windowCompositeTrusted = true;
+              windowComposite = analyze(compositeSource.thumbnail);
+            }
           }
         }
       } catch (error) {

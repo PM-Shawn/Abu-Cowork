@@ -1828,19 +1828,6 @@ const zhCN: TranslationDict = {
     denialSummary: '\n\n任务在「{mode}」档位下被权限拦下：{list}。可在任务设置里调高自主程度，站点授权在 设置 → 能力 → 已授权的网站。',
   },
 
-  permissionTiers: {
-    chatOnly: '只聊天',
-    chatOnlyDesc: '只回消息，不使用任何工具',
-    readTools: '只看不动',
-    readToolsDesc: '只读取信息，不做任何修改',
-    safeTools: '常规',
-    safeToolsDesc: '在工作区内正常干活：改工作区文件、跑安全命令、操作已授权的网站',
-    full: '完全放开',
-    fullDesc: '除系统红线外都允许',
-    custom: '自定义',
-    customDesc: '按白名单逐项指定可用的命令、路径和工具',
-  },
-
   trigger: {
     title: '监听事件',
     newTrigger: '新建监听',

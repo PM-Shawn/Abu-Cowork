@@ -1975,25 +1975,6 @@ export interface TranslationDict {
     denialSummary: string;
   };
 
-  /**
-   * Shared autonomy vocabulary for unattended scenarios (permission plan
-   * §4.2). One set of words across scheduled tasks, triggers and IM channels
-   * so it only has to be learned once. Chat keeps its own
-   * standard/smart/autonomous wording on purpose (plan §8).
-   */
-  permissionTiers: {
-    chatOnly: string;
-    chatOnlyDesc: string;
-    readTools: string;
-    readToolsDesc: string;
-    safeTools: string;
-    safeToolsDesc: string;
-    full: string;
-    fullDesc: string;
-    custom: string;
-    customDesc: string;
-  };
-
   // Triggers
   trigger: {
     title: string;

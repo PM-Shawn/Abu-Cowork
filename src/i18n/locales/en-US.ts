@@ -1827,19 +1827,6 @@ const enUS: TranslationDict = {
     denialSummary: '\n\nThe task was blocked by permissions at the "{mode}" tier: {list}. Raise the task\'s autonomy in its settings, or authorize the site in Settings → Capabilities → Authorized sites.',
   },
 
-  permissionTiers: {
-    chatOnly: 'Chat only',
-    chatOnlyDesc: 'Replies only — no tools at all',
-    readTools: 'Read only',
-    readToolsDesc: 'Reads information, changes nothing',
-    safeTools: 'Standard',
-    safeToolsDesc: 'Normal work inside the workspace: edit workspace files, run safe commands, act on authorized sites',
-    full: 'Fully open',
-    fullDesc: 'Everything except the system red lines',
-    custom: 'Custom',
-    customDesc: 'Explicit whitelists for commands, paths and tools',
-  },
-
   trigger: {
     title: 'Triggers',
     newTrigger: 'New Trigger',

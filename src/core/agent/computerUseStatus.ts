@@ -86,6 +86,28 @@ const IDLE_STATE: CUState = {
 
 /** Per-conversation session table — see module doc for why this exists. */
 const sessions = new Map<string, CUState>();
+/**
+ * Whether the Abu window is currently hidden (and the screen border / Stop
+ * overlay shown) for a Computer Use session.
+ *
+ * Deliberately NOT per-conversation: there is exactly ONE real OS window, and
+ * `toolExecutor.ts` sets this BEFORE any owner exists —
+ *
+ *   if (hasInteractiveAction && !isSessionWindowHidden()) { …hide…; setSessionWindowHidden(true); }
+ *   setComputerUseActive(true, conversationId);
+ *
+ * — so a value stored only inside the per-conversation `CUState` would be
+ * written to a nonexistent owner (silent no-op) and then overwritten by the
+ * fresh state `setComputerUseActive(true, …)` builds. That made `wasHidden`
+ * permanently false at teardown, so `window_show`/`hide_screen_border` never
+ * ran on natural loop completion: the app window stayed hidden and the red
+ * border + Stop button stayed on screen. Keeping the flag module-level
+ * restores the pre-Map behavior (the old singleton's `update({status:'active',…})`
+ * partial simply never touched `sessionWindowHidden`) and matches the
+ * sidecar shim's own global mirror (`sidecar/src/shims/computerUseStatusRun.ts`).
+ * `CUState.sessionWindowHidden` is kept as a UI-visible mirror of this flag.
+ */
+let windowHiddenForCU = false;
 /** The conversation that currently owns the (at most one) active session, or
  *  null when idle. The six parameterless setters below — forwarded 1:1 over
  *  `cu.setState` with no conversationId argument — resolve against this. */
@@ -134,7 +156,9 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
       capabilityMode: null,
       latestScreenshot: null,
       activeConversationId: id,
-      sessionWindowHidden: false,
+      // Mirror the module-level flag — NEVER hardcode false here: the window
+      // may already be hidden by this same batch (see `windowHiddenForCU`).
+      sessionWindowHidden: windowHiddenForCU,
       sessionStartTime: Date.now(),
     });
     notify();
@@ -150,10 +174,16 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     // late deactivate from a conversation that already lost ownership —
     // ignore it instead of tearing down whoever owns the session now.
     if (conversationId !== undefined && conversationId !== activeConversationId) {
+      // Still REAP the stale conversation's row — it lost ownership when a
+      // later conversation activated, so nothing else would ever delete it
+      // and its retained `latestScreenshot` (base64 PNG) would leak for the
+      // lifetime of the process. Ownership state is untouched.
+      sessions.delete(conversationId);
       return;
     }
     const owner = activeConversationId;
-    const wasHidden = owner ? (sessions.get(owner)?.sessionWindowHidden ?? false) : false;
+    const wasHidden = windowHiddenForCU;
+    windowHiddenForCU = false;
     if (owner) sessions.delete(owner);
     activeConversationId = null;
     notify();
@@ -208,14 +238,18 @@ export function updateLatestScreenshot(base64: string) {
   }
 }
 
-/** Mark that the window has been hidden for this CU session. */
+/** Mark that the window has been hidden for this CU session. Writes the
+ *  module-level flag (the window is one global resource, and this is called
+ *  before an owner exists — see `windowHiddenForCU`), then mirrors it into
+ *  the owner's state for the UI when there is one. */
 export function setSessionWindowHidden(hidden: boolean) {
+  windowHiddenForCU = hidden;
   updateActive({ sessionWindowHidden: hidden });
 }
 
 /** Check if window is already hidden for this session (avoid re-hiding across batches). */
 export function isSessionWindowHidden(): boolean {
-  return getActive()?.sessionWindowHidden ?? false;
+  return windowHiddenForCU;
 }
 
 /**

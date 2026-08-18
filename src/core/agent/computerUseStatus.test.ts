@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 
 // Real Tauri API mocks are already installed globally by src/test/setup.ts
 // (@tauri-apps/api/core, /event). '@tauri-apps/plugin-global-shortcut' is
@@ -110,6 +111,57 @@ describe('computerUseStatus — per-conversation session table', () => {
       setCurrentAction('click');
       pauseComputerUseStatus();
       expect(getCUStatusSnapshot().status).toBe('idle');
+    });
+  });
+
+  // ── Regression: the window-hidden flag is a GLOBAL (one real OS window) ──
+  // toolExecutor.ts hides the window and calls setSessionWindowHidden(true)
+  // BEFORE setComputerUseActive(true, id) — i.e. before any owner exists. If
+  // that flag lives only inside the per-conversation CUState, the write is a
+  // silent no-op and the following activation overwrites it, so `wasHidden`
+  // is false at teardown and window_show/hide_screen_border NEVER run: the
+  // app window stays hidden and the Stop overlay stays on screen forever.
+  describe('sessionWindowHidden survives activation (window restore on teardown)', () => {
+    it('setSessionWindowHidden(true) called BEFORE activation survives it — toolExecutor.ts\'s real call order', () => {
+      expect(isSessionWindowHidden()).toBe(false);
+      setSessionWindowHidden(true);
+      setComputerUseActive(true, 'conv-A');
+      expect(isSessionWindowHidden()).toBe(true);
+    });
+
+    it('re-activating for the next CU batch in the same loop does not wipe the flag', () => {
+      setComputerUseActive(true, 'conv-A');
+      setSessionWindowHidden(true);
+      setComputerUseActive(true, 'conv-A');
+      expect(isSessionWindowHidden()).toBe(true);
+    });
+
+    it('ending the session restores the window and hides the overlay, then clears the flag', async () => {
+      // Global mock returns undefined; the production code chains
+      // `.catch()` on invoke's promise, so give it a real resolved promise.
+      vi.mocked(invoke).mockReset();
+      vi.mocked(invoke).mockResolvedValue(undefined);
+      setSessionWindowHidden(true);
+      setComputerUseActive(true, 'conv-A');
+      setComputerUseActive(false, 'conv-A');
+      // The restore invokes live behind a dynamic import() — settle it
+      // deterministically (no timers, no real clock).
+      await vi.dynamicImportSettled();
+      const calls = vi.mocked(invoke).mock.calls.map((c) => c[0]);
+      expect(calls).toContain('window_show');
+      expect(calls).toContain('hide_screen_border');
+      expect(isSessionWindowHidden()).toBe(false);
+    });
+
+    it('a REJECTED stale deactivate leaves the owner\'s hidden window alone', async () => {
+      setSessionWindowHidden(true);
+      setComputerUseActive(true, 'conv-B');
+      vi.mocked(invoke).mockClear();
+      setComputerUseActive(false, 'conv-A'); // stale, not the owner
+      await vi.dynamicImportSettled();
+      expect(vi.mocked(invoke).mock.calls.map((c) => c[0])).not.toContain('window_show');
+      expect(isSessionWindowHidden()).toBe(true);
+      setComputerUseActive(false, 'conv-B');
     });
   });
 

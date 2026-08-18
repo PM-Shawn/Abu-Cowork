@@ -36,9 +36,19 @@ const LABS_GATED_TOOLS: Record<string, string> = {
   [TOOL_NAMES.CREATE_TODO]: LABS_TODOS_INBOX,
 };
 
-function isToolGatedOff(name: string): boolean {
+/** Exported so capabilitySnapshot.ts (see `getAllTools` doc above) can report
+ *  the real gate decision instead of re-deriving it from a second copy of
+ *  `LABS_GATED_TOOLS`. */
+export function isToolGatedOff(name: string): boolean {
   const experimentId = LABS_GATED_TOOLS[name];
   return experimentId !== undefined && !isLabsFlagOn(experimentId);
+}
+
+/** The Labs experiment id gating `name`, or undefined if `name` isn't
+ *  Labs-gated at all. Single source of truth alongside `isToolGatedOff` —
+ *  used by capabilitySnapshot.ts to explain *why* a tool is gated off. */
+export function getToolLabsGateId(name: string): string | undefined {
+  return LABS_GATED_TOOLS[name];
 }
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
 import { checkTool } from '@/core/enterprise/policy/matcher';
@@ -164,8 +174,11 @@ export const toolRegistry = new ToolRegistry();
  * Playwright browser tools that overlap with Abu's in-app browser or Chrome bridge.
  * When either Abu browser runtime is connected, these are filtered out to avoid
  * the LLM accidentally launching a separate Chromium instance.
+ *
+ * Exported so capabilitySnapshot.ts can report the real "filtered as duplicate"
+ * reason instead of re-typing this list.
  */
-const PLAYWRIGHT_BROWSER_TOOLS = new Set([
+export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_tabs',
   'playwright__browser_tab_open',
   'playwright__browser_navigate',

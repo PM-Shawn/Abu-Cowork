@@ -121,6 +121,7 @@ export const READONLY_FALLBACK_TOOLS: ReadonlySet<string> = new Set([
   TOOL_NAMES.READ_SKILL_FILE,
   TOOL_NAMES.SKILL_VIEW,
   TOOL_NAMES.TOOL_SEARCH,
+  TOOL_NAMES.CAPABILITY_SNAPSHOT,
   TOOL_NAMES.GET_SYSTEM_INFO,
   TOOL_NAMES.CLIPBOARD_READ,
   // Inline visualization: read_me only returns static guidelines text;

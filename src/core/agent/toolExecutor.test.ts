@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ToolCall, ToolExecutionContext } from '@/types';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ToolCall, ToolDefinition, ToolExecutionContext } from '@/types';
 import type { EventRouter } from './eventRouter';
 import type { ToolInvoker } from './ports/toolInvoker';
 
@@ -362,5 +362,110 @@ describe('executeToolBatch · run_command batch scheduling', () => {
 
     expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
     expect(probe.maxInFlight()).toBe(1);
+  });
+});
+
+// This second describe block covers the OTHER scheduling layer — the
+// generic (non-run_command-only) batch fallback in toolExecutor.ts's `else`
+// branch, which groups by each call's registry-declared `isConcurrencySafe`
+// (see toolConcurrency.ts). The run_command-only fast path above bypasses
+// this entirely by calling isReadOnlyCommand directly (registry functions
+// don't survive the sidecar RPC boundary — see that describe block's
+// comment), so these two layers are independently tested, not duplicates.
+describe('executeToolBatch · concurrency-aware scheduling (isConcurrencySafe)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.emitHook.mockResolvedValue({ blocked: false });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('runs consecutive concurrency-safe calls in parallel while isolating an unsafe call as a serial boundary', async () => {
+    vi.useFakeTimers();
+
+    const readTool: ToolDefinition = {
+      name: 'read_file',
+      description: 'reads a file',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => '',
+      isConcurrencySafe: true,
+    };
+    const writeTool: ToolDefinition = {
+      name: 'write_file',
+      description: 'writes a file',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => '',
+      isConcurrencySafe: false,
+    };
+
+    const order: string[] = [];
+    const executeAnyTool = vi.fn(async (_name: string, input: Record<string, unknown>) => {
+      const id = String(input.id);
+      order.push(`start:${id}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push(`end:${id}`);
+      return 'ok';
+    });
+
+    const invoker: ToolInvoker = {
+      getAllTools: () => [readTool, writeTool],
+      executeAnyTool,
+      toolResultToString: (result) => String(result),
+    };
+
+    const read1: ToolCall = { id: 'read1', name: 'read_file', input: { id: 'read1' } };
+    const write1: ToolCall = { id: 'write1', name: 'write_file', input: { id: 'write1' } };
+    const read2: ToolCall = { id: 'read2', name: 'read_file', input: { id: 'read2' } };
+    const read3: ToolCall = { id: 'read3', name: 'read_file', input: { id: 'read3' } };
+
+    const params = makeParams(read1, invoker);
+    params.collectedToolCalls = [read1, write1, read2, read3];
+
+    const runPromise = executeToolBatch(params);
+    await vi.advanceTimersByTimeAsync(10); // read1 (isolated safe batch) resolves
+    await vi.advanceTimersByTimeAsync(10); // write1 (serial boundary) resolves
+    await vi.advanceTimersByTimeAsync(10); // read2 + read3 resolve together
+    await runPromise;
+
+    expect(order).toEqual([
+      'start:read1', 'end:read1',
+      'start:write1', 'end:write1',
+      'start:read2', 'start:read3', 'end:read2', 'end:read3',
+    ]);
+
+    // Result matching still lines up by original call order/id despite regrouping.
+    expect(mocks.updateToolCall).toHaveBeenCalledTimes(4);
+    const calledIds = mocks.updateToolCall.mock.calls.map((call) => call[2]);
+    expect(calledIds).toEqual(['read1', 'write1', 'read2', 'read3']);
+  });
+
+  it('treats a tool with no definition (unresolvable isConcurrencySafe) as unsafe and runs it serially', async () => {
+    const knownSafe: ToolDefinition = {
+      name: 'read_file',
+      description: 'reads a file',
+      inputSchema: { type: 'object', properties: {} },
+      execute: async () => '',
+      isConcurrencySafe: true,
+    };
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const invoker: ToolInvoker = {
+      // 'mystery_tool' is intentionally absent from getAllTools()
+      getAllTools: () => [knownSafe],
+      executeAnyTool,
+      toolResultToString: (result) => String(result),
+    };
+
+    const read1: ToolCall = { id: 'read1', name: 'read_file', input: {} };
+    const mystery: ToolCall = { id: 'mystery1', name: 'mystery_tool', input: {} };
+
+    const params = makeParams(read1, invoker);
+    params.collectedToolCalls = [read1, mystery];
+
+    const result = await executeToolBatch(params);
+
+    expect(executeAnyTool).toHaveBeenCalledTimes(2);
+    expect(result.observations.map((o) => o.name)).toEqual(['read_file', 'mystery_tool']);
   });
 });

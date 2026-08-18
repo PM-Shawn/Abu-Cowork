@@ -73,6 +73,7 @@ export const TOOL_NAMES = {
 
   // Tool discovery
   TOOL_SEARCH: 'tool_search',
+  CAPABILITY_SNAPSHOT: 'capability_snapshot',
 
   // Inbox proposals
   CREATE_TODO: 'create_todo',

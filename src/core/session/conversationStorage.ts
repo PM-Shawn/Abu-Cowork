@@ -9,16 +9,24 @@
  *   conversations/
  *   ├── index.json              (lightweight metadata index)
  *   ├── {convId}/
- *   │   ├── messages.jsonl      (message bodies, append-only)
+ *   │   ├── messages.jsonl      (append-only ledger of message events)
+ *   │   ├── stream-snapshot.json (in-flight revisions, overwritten in place)
  *   │   ├── outputs/            (images, generated files)
  *   │   └── results/            (large tool results >8KB)
  *   └── ...
  *
  * Write strategy:
- *   - WriteQueue batches writes per file (100ms debounce)
+ *   - messages.jsonl is an append-only ledger. A revision is a second line
+ *     carrying the same id; `foldMessageLog` (messageLedger.ts) keeps the last
+ *     one, in place. Nothing rewrites an existing line except deletion, which
+ *     is still a rewrite until the tombstone phase lands.
+ *   - WriteQueue batches writes per file (100ms debounce) and collapses queued
+ *     revisions of the same message into one line
  *   - UUID-based dedup prevents duplicate writes on restart
  *   - Streaming tokens stay in memory; only complete messages hit disk
- *   - Periodic flush (5s) during streaming for crash protection
+ *   - The 5s crash-protection flush and per-tool-result writes go to
+ *     stream-snapshot.json, NOT the ledger — see the stream snapshot section
+ *     for why that budget matters
  */
 
 import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
@@ -26,7 +34,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
-import type { Message, MessageContent } from '@/types';
+import { foldMessageLog, type LedgerLine } from './messageLedger';
+import type { Message, MessageContent, SandboxRecoveryAction } from '@/types';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -92,10 +101,14 @@ function indexFilePath(): string {
 // Per-file mutex — serializes read-modify-write against same path
 // ════════════════════════════════════════════════════════════
 //
-// Three call sites do non-atomic read-modify-write on messages.jsonl:
-//   - appendToFile (from drain)
-//   - replaceMessageById (flush each agent turn)
-//   - updateLastMessage (on stream completion)
+// Two call sites still do non-atomic read-modify-write on messages.jsonl:
+//   - appendToFile's fallback (from drain, when the native append is missing)
+//   - deleteMessageById (whole-file rewrite, until tombstones land)
+//
+// replaceMessageById and updateLastMessage used to be here too. They are pure
+// appends now, which is why they no longer take this lock — the class of bug
+// described below is structurally gone for them rather than held back by a
+// mutex.
 //
 // Without serialization two of these concurrent on the same file can
 // interleave — one reads a stale snapshot and later overwrites changes
@@ -142,18 +155,63 @@ async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<
 
 interface PendingWrite {
   line: string;
-  resolve: () => void;
-  reject: (err: unknown) => void;
+  /**
+   * The message id this line writes, when the line is a `msg.put` that a newer
+   * revision of the same message is allowed to overwrite before it ever
+   * reaches disk. Undefined marks an order-sensitive line (an event row, a raw
+   * append) that must keep its position in the queue.
+   */
+  mergeKey?: string;
+  settlers: { resolve: () => void; reject: (err: unknown) => void }[];
 }
 
 const writeQueues = new Map<string, PendingWrite[]>();
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
 const DRAIN_INTERVAL_MS = 100;
 
-function enqueueWrite(filePath: string, line: string): Promise<void> {
+/**
+ * Find a queued put for `mergeKey` that can absorb a newer revision of the
+ * same message.
+ *
+ * Scans backwards and gives up at the first order-sensitive line, because
+ * folding an event (a tombstone, say) depends on where it sits relative to the
+ * puts around it — collapsing a put across one would change the fold's result.
+ * Merging across puts of OTHER ids is safe: a merge keeps the message at the
+ * position it already claimed, and only a first put decides a position.
+ */
+function findMergeTarget(queue: PendingWrite[], mergeKey: string): number {
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (queue[i].mergeKey === mergeKey) return i;
+    if (queue[i].mergeKey === undefined) return -1;
+  }
+  return -1;
+}
+
+/** Whether a put for `messageId` is queued for `filePath` but not yet on disk. */
+function hasPendingPut(filePath: string, messageId: string): boolean {
+  const queue = writeQueues.get(filePath);
+  return queue ? findMergeTarget(queue, messageId) !== -1 : false;
+}
+
+/**
+ * Queue one line for `filePath`.
+ *
+ * With a `mergeKey`, a still-queued put for the same message is overwritten in
+ * place (last write wins) instead of a second line being queued. This is the
+ * first half of the write-amplification budget: once a replacement is an
+ * append, an unmerged queue would turn every in-flight burst of revisions
+ * (tool results landing one after another) into one physical line each.
+ */
+function enqueueWrite(filePath: string, line: string, mergeKey?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const queue = writeQueues.get(filePath) ?? [];
-    queue.push({ line, resolve, reject });
+    const mergeAt = mergeKey === undefined ? -1 : findMergeTarget(queue, mergeKey);
+    if (mergeAt !== -1) {
+      queue[mergeAt].line = line;
+      queue[mergeAt].settlers.push({ resolve, reject });
+    } else {
+      queue.push({ line, mergeKey, settlers: [{ resolve, reject }] });
+    }
     writeQueues.set(filePath, queue);
     scheduleDrain();
   });
@@ -176,12 +234,55 @@ async function drainAll(): Promise<void> {
       const data = pending.map((p) => p.line).join('');
       try {
         await appendToFile(filePath, data);
-        pending.forEach((p) => p.resolve());
+        pending.forEach((p) => p.settlers.forEach((s) => s.resolve()));
       } catch (err) {
-        pending.forEach((p) => p.reject(err));
+        pending.forEach((p) => p.settlers.forEach((s) => s.reject(err)));
       }
     }),
   );
+}
+
+/**
+ * Paths whose on-disk tail this process has already confirmed to be newline
+ * terminated. See `repairTornTail`.
+ */
+const tailCheckedPaths = new Set<string>();
+
+/**
+ * Prefix `data` with the newline a crashed append never got to write.
+ *
+ * Native append is not atomic (see `appendToFile` below), so a crash mid-write
+ * can leave the file ending in a partial line. That was self-healing while
+ * `replaceMessageById` rewrote the whole file — `lines.join('\n') + '\n'`
+ * re-terminated the stump within seconds. In an append-only ledger nothing
+ * ever rewrites, so the stump is permanent and the NEXT appended line gets
+ * glued onto it: one corrupt line, two messages lost instead of one.
+ *
+ * Checking costs one read of the file, once per path per process, on the first
+ * append only — `loadMessages` hands its own read to `noteTailFromRead` so the
+ * common path does not pay even that.
+ */
+async function repairTornTail(filePath: string, data: string): Promise<string> {
+  if (tailCheckedPaths.has(filePath)) return data;
+  try {
+    if (!(await exists(filePath))) {
+      tailCheckedPaths.add(filePath);
+      return data;
+    }
+    const raw = await readTextFile(filePath);
+    tailCheckedPaths.add(filePath);
+    if (raw.length === 0 || raw.endsWith('\n')) return data;
+    return `\n${data}`;
+  } catch {
+    // Unreadable: leave the flag unset so a later append tries again.
+    return data;
+  }
+}
+
+/** Record a tail already observed by a reader, so no append has to re-read it. */
+function noteTailFromRead(filePath: string, raw: string): void {
+  if (raw.length === 0 || raw.endsWith('\n')) tailCheckedPaths.add(filePath);
+  else tailCheckedPaths.delete(filePath);
 }
 
 /**
@@ -206,8 +307,9 @@ async function drainAll(): Promise<void> {
  *
  * Serialized against concurrent mutations on the same path via `withFileLock`.
  */
-async function appendToFile(filePath: string, data: string): Promise<void> {
+async function appendToFile(filePath: string, rawData: string): Promise<void> {
   return withFileLock(filePath, async () => {
+    const data = await repairTornTail(filePath, rawData);
     try {
       // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
       // if the command is unavailable or fails.
@@ -269,10 +371,205 @@ const writingIds = new Map<string, Promise<void>>();
  * Clear the dedup cache. Call when loading messages from disk
  * to populate the set with already-persisted message IDs.
  */
-function populateWrittenIds(messages: Message[]): void {
+function populateWrittenIds(convId: string, messages: Message[]): void {
   for (const msg of messages) {
     writtenIds.add(msg.id);
+    rememberPersistedMessage(msg);
+    const pid = (msg as LedgerLine).pid;
+    if (typeof pid === 'string') parentIdByMessage.set(msg.id, pid);
   }
+  const tail = messages[messages.length - 1];
+  if (tail) lastMessageIdByConv.set(convId, tail.id);
+}
+
+// ════════════════════════════════════════════════════════════
+// Ledger bookkeeping — what a revision needs that the file no longer tells us
+// ════════════════════════════════════════════════════════════
+//
+// A replacement used to read the persisted row back before rewriting it. An
+// append cannot: there is nothing to read without re-reading the whole file,
+// which is exactly the O(file size) cost this change exists to remove. The two
+// facts that read used to supply are tracked here instead.
+
+/**
+ * Per message, the sandbox recovery action already durable for each of its
+ * tool calls. Deliberately NOT the whole persisted message — this is the only
+ * field a revision must not silently regress (see
+ * `preservePersistedSandboxRecoveryActions`), and keeping just it costs a
+ * couple of short strings per tool call instead of a second copy of history.
+ */
+const persistedSandboxActions = new Map<string, Map<string, SandboxRecoveryAction>>();
+
+/**
+ * `pid` per message: the ledger tail at the moment the message was FIRST
+ * written. A revision must reuse it rather than re-parent itself to whatever
+ * is at the tail now (plan §3.2) — otherwise a 5 s streaming revision would
+ * rewrite the chain into nonsense.
+ */
+const parentIdByMessage = new Map<string, string>();
+
+/** Per conversation, the id of the last message in the folded log. */
+const lastMessageIdByConv = new Map<string, string>();
+
+function rememberPersistedMessage(message: Message): void {
+  if (!message.toolCalls?.length) return;
+  const actions = new Map<string, SandboxRecoveryAction>();
+  for (const toolCall of message.toolCalls) {
+    if (toolCall.sandboxRecoveryAction != null) {
+      actions.set(toolCall.id, toolCall.sandboxRecoveryAction);
+    }
+  }
+  if (actions.size > 0) persistedSandboxActions.set(message.id, actions);
+  else persistedSandboxActions.delete(message.id);
+}
+
+/**
+ * Serialize one `msg.put` line.
+ *
+ * `lk` is left off: an absent kind IS `msg.put` (plan §3.1), so omitting it
+ * keeps revision lines byte-identical in shape to the bare `Message` rows
+ * every previous version wrote — nothing about a revised log looks new to an
+ * older build. `pid` is written but never read (plan §3.2).
+ */
+function serializeLedgerPut(message: Message, pid: string | undefined): string {
+  const line = stripForDisk(message) as LedgerLine;
+  if (pid === undefined) delete line.pid;
+  else line.pid = pid;
+  return JSON.stringify(line) + '\n';
+}
+
+// ════════════════════════════════════════════════════════════
+// Stream snapshot — the hot revisions that must NOT enter the ledger
+// ════════════════════════════════════════════════════════════
+//
+// Plan §3.6. Once a replacement is an append, the two highest-frequency
+// writers stop being idempotent overwrites and start being physical lines:
+// the 5 s crash-protection flush during streaming, and the per-tool-result
+// write of the enclosing message. A ten-minute turn with N tool calls would
+// append the whole (growing) message on the order of N + 120 times.
+//
+// So those writers go to `stream-snapshot.json` instead — one atomic
+// whole-file overwrite per revision, no growth, and `loadMessages` folds it on
+// top of the ledger so crash recovery still sees the newest state. The ledger
+// only collects a revision at a stable checkpoint (tool batch done, turn end,
+// stop), which is what keeps revision lines per turn in the single digits.
+
+const STREAM_SNAPSHOT_FILENAME = 'stream-snapshot.json';
+
+interface StreamSnapshotFile {
+  version: 1;
+  messages: Message[];
+}
+
+/** convId → messageId → newest revision not yet checkpointed into the ledger. */
+const streamSnapshots = new Map<string, Map<string, Message>>();
+
+function streamSnapshotPath(convId: string): string {
+  return joinPath(basePath!, convId, STREAM_SNAPSHOT_FILENAME);
+}
+
+async function writeStreamSnapshot(convId: string, entries: Map<string, Message>): Promise<void> {
+  const path = streamSnapshotPath(convId);
+  try {
+    if (entries.size === 0) {
+      if (await exists(path)) await remove(path);
+      return;
+    }
+    const payload: StreamSnapshotFile = { version: 1, messages: [...entries.values()] };
+    await atomicWrite(path, JSON.stringify(payload));
+  } catch {
+    // Best-effort crash protection. The ledger checkpoint is the durable write;
+    // losing a snapshot only costs the in-flight revision.
+  }
+}
+
+/**
+ * Record an in-flight revision without touching the ledger.
+ *
+ * Use this for anything that fires on a timer or per tool result while a turn
+ * is still running. Use `replaceMessageById` at the checkpoints where the
+ * state is worth a permanent line.
+ */
+export async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
+  await ensureBase();
+  const entries = streamSnapshots.get(convId) ?? new Map<string, Message>();
+  entries.set(message.id, stripForDisk(message));
+  streamSnapshots.set(convId, entries);
+  await writeStreamSnapshot(convId, entries);
+}
+
+/**
+ * Forget the snapshot entry for a message the ledger has now recorded (or that
+ * has been deleted). Cheap no-op when there is nothing buffered for that id,
+ * which is the common case.
+ */
+async function dropStreamSnapshotEntry(convId: string, messageId: string): Promise<void> {
+  const entries = streamSnapshots.get(convId);
+  if (!entries?.delete(messageId)) return;
+  if (entries.size === 0) streamSnapshots.delete(convId);
+  await writeStreamSnapshot(convId, entries);
+}
+
+/** Read the snapshot file back and re-arm the in-memory buffer from it. */
+async function readStreamSnapshot(convId: string): Promise<Message[]> {
+  const path = streamSnapshotPath(convId);
+  try {
+    if (!(await exists(path))) return [];
+    const parsed = JSON.parse(await readTextFile(path)) as StreamSnapshotFile;
+    const messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+    if (messages.length === 0) return [];
+    const entries = new Map<string, Message>();
+    for (const message of messages) {
+      if (message && typeof message.id === 'string') entries.set(message.id, message);
+    }
+    streamSnapshots.set(convId, entries);
+    return [...entries.values()];
+  } catch {
+    // A damaged snapshot must never take the conversation down with it — the
+    // ledger alone is still a complete, if slightly older, history.
+    return [];
+  }
+}
+
+/**
+ * Promote every buffered revision into the ledger and drop the snapshot files.
+ * Called on shutdown so a snapshot never outlives the session that wrote it.
+ */
+export async function flushStreamSnapshots(): Promise<void> {
+  if (streamSnapshots.size === 0) return;
+  await ensureBase();
+  const promotions: { convId: string; done: Promise<unknown> }[] = [];
+  for (const [convId, entries] of [...streamSnapshots.entries()]) {
+    for (const message of entries.values()) {
+      promotions.push({
+        convId,
+        done: enqueueWrite(
+          messagesPath(convId),
+          serializeLedgerPut(message, parentIdByMessage.get(message.id)),
+          message.id,
+        ).then(() => {
+          writtenIds.add(message.id);
+        }),
+      });
+    }
+    streamSnapshots.delete(convId);
+  }
+  await flushWrites();
+
+  // Drop a snapshot file only AFTER its revision is durably in the ledger.
+  // Removing it in parallel with the promotion leaves a crash window in which
+  // neither copy exists, and a rejected promotion (disk full at exit) would
+  // discard the revision outright — keeping the file lets the next launch
+  // re-arm from it instead.
+  const results = await Promise.allSettled(promotions.map((p) => p.done));
+  const failedConvs = new Set(
+    promotions.filter((_, i) => results[i].status === 'rejected').map((p) => p.convId),
+  );
+  await Promise.allSettled(
+    [...new Set(promotions.map((p) => p.convId))]
+      .filter((convId) => !failedConvs.has(convId))
+      .map((convId) => writeStreamSnapshot(convId, new Map())),
+  );
 }
 
 /**
@@ -603,13 +900,19 @@ export async function appendMessage(
 
   const write = (async () => {
     await ensureBase();
-    const line = JSON.stringify(stripForDisk(message)) + '\n';
-    await enqueueWrite(messagesPath(convId), line);
+    // `pid` = the ledger tail at append time (plan §3.2). Claimed synchronously
+    // so two appends racing through `ensureBase` still chain in write order.
+    const pid = lastMessageIdByConv.get(convId);
+    lastMessageIdByConv.set(convId, message.id);
+    if (pid !== undefined) parentIdByMessage.set(message.id, pid);
+    const line = serializeLedgerPut(message, pid);
+    await enqueueWrite(messagesPath(convId), line, message.id);
 
     // Only claim the id after the append has actually succeeded. Marking it
     // before I/O made a transient disk failure permanently suppress retry and
     // allowed Reliable Run to execute without a durable user message.
     writtenIds.add(message.id);
+    rememberPersistedMessage(message);
 
     // The catalog is a rebuildable projection; JSONL success above is the
     // hard requirement and the catalog bump remains best-effort.
@@ -638,6 +941,14 @@ export async function deleteMessageById(
 ): Promise<boolean> {
   await ensureBase();
   const path = messagesPath(convId);
+  // Land every queued line BEFORE the rewrite reads the file. Since revisions
+  // became appends, a checkpoint put can still be sitting in the 100ms-debounced
+  // queue when a delete arrives (the abort path's ghost cleanup runs right
+  // behind the turn's last persist) — the rewrite would not see that line, and
+  // the later drain would append it back, resurrecting the deleted message.
+  // Draining here, outside `withFileLock`, is the same discipline
+  // `catalogReindexConversation` uses; doing it inside the lock would deadlock.
+  await flushWrites();
   if (!(await exists(path))) {
     if (writtenIds.has(messageId)) {
       throw new Error(`Conversation messages file does not exist for persisted message "${messageId}"`);
@@ -676,18 +987,28 @@ export async function deleteMessageById(
     }
 
     await atomicWrite(path, kept.length > 0 ? `${kept.join('\n')}\n` : '');
+    // The rewrite re-terminated the file, torn tail included.
+    tailCheckedPaths.add(path);
     writtenIds.delete(messageId);
+    // A buffered revision would otherwise resurrect the row on next load.
+    await dropStreamSnapshotEntry(convId, messageId);
     return true;
   });
 }
 
 /**
  * Replace a message in the JSONL file by its id.
- * Unlike updateLastMessage, this scans for the matching id, so it correctly
- * updates intermediate-turn messages even after later turns have appended new
- * lines. Used by the agent loop to flush each turn's full state (including
- * tool calls) immediately after the tool batch completes — without this,
- * only the very last turn's tool calls would survive a restart.
+ *
+ * Since the ledger change this appends a second line carrying the same id
+ * rather than rewriting the matching line in place: the fold keeps the last
+ * put for an id, at that id's original position, so an append expresses a
+ * revision exactly. That removes the read-modify-write — and with it the
+ * whole class of interleaved-rewrite corruption the file mutex was holding
+ * back — at the cost of the file growing by one line per checkpoint.
+ *
+ * Used by the agent loop to flush each turn's full state (including tool
+ * calls) at a checkpoint; the in-flight revisions between checkpoints go to
+ * `snapshotMessageRevision` instead so they never become lines at all.
  */
 const SETTLED_SANDBOX_RECOVERY_ACTIONS = new Set([
   'completed',
@@ -698,15 +1019,12 @@ const SETTLED_SANDBOX_RECOVERY_ACTIONS = new Set([
 
 function preservePersistedSandboxRecoveryActions(
   incoming: Message,
-  persisted: Message,
+  persistedActions: Map<string, SandboxRecoveryAction> | undefined,
 ): Message {
-  if (!incoming.toolCalls?.length || !persisted.toolCalls?.length) return incoming;
-  const persistedById = new Map(
-    persisted.toolCalls.map((toolCall) => [toolCall.id, toolCall]),
-  );
+  if (!incoming.toolCalls?.length || !persistedActions?.size) return incoming;
   let changed = false;
   const toolCalls = incoming.toolCalls.map((toolCall) => {
-    const persistedAction = persistedById.get(toolCall.id)?.sandboxRecoveryAction;
+    const persistedAction = persistedActions.get(toolCall.id);
     const incomingAction = toolCall.sandboxRecoveryAction;
     const shouldPreserve =
       persistedAction != null
@@ -724,6 +1042,26 @@ function preservePersistedSandboxRecoveryActions(
   return changed ? { ...incoming, toolCalls } : incoming;
 }
 
+/**
+ * Last-resort existence check for an id this process has neither written nor
+ * loaded. The old rewrite read the whole file on EVERY replace; this reads it
+ * only on a `writtenIds` miss, which in practice means never — both
+ * `loadMessages` and `appendMessage` populate that set. Folding rather than
+ * grepping means a message that a later event removed correctly reads as
+ * absent.
+ */
+async function ledgerContainsMessage(path: string, messageId: string): Promise<boolean> {
+  try {
+    const raw = await readTextFile(path);
+    if (!raw.includes(`"${messageId}"`)) return false;
+    const present = foldMessageLog(raw.split('\n')).messages.some((m) => m.id === messageId);
+    if (present) writtenIds.add(messageId);
+    return present;
+  } catch {
+    return false;
+  }
+}
+
 async function replaceMessageByIdInternal(
   convId: string,
   message: Message,
@@ -731,49 +1069,49 @@ async function replaceMessageByIdInternal(
 ): Promise<boolean> {
   await ensureBase();
   const path = messagesPath(convId);
-  if (!(await exists(path))) {
-    if (strict) throw new Error(`Conversation messages file does not exist: ${convId}`);
-    return false;
-  }
 
-  // Serialize with concurrent drain / updateLastMessage on the same path.
-  // We intentionally do NOT pre-flush via flushWrites(): drain would try
-  // to re-acquire the same lock and deadlock. The lock itself guarantees
-  // any queued drain runs before-or-after us, never mid-operation.
-  return withFileLock(path, async () => {
-    try {
-      const raw = await readTextFile(path);
-      const lines = raw.trimEnd().split('\n');
-      let replaced = false;
-      for (let i = 0; i < lines.length; i++) {
-        // Cheap pre-check: only parse lines that contain the id substring
-        if (!lines[i].includes(`"${message.id}"`)) continue;
-        try {
-          const parsed = JSON.parse(lines[i]) as Message;
-          if (parsed.id === message.id) {
-            const mergedMessage = preservePersistedSandboxRecoveryActions(message, parsed);
-            lines[i] = JSON.stringify(stripForDisk(mergedMessage));
-            replaced = true;
-            break;
-          }
-        } catch {
-          // Skip corrupt line
-        }
-      }
-
-      if (replaced) {
-        await atomicWrite(path, lines.join('\n') + '\n');
-        writtenIds.add(message.id);
-        return true;
-      }
-      if (strict) throw new Error(`Message "${message.id}" was not found in conversation "${convId}"`);
-      return false;
-    } catch (error) {
-      if (strict) throw error;
-      // Non-critical: leave the file as-is. Worst case the message disk state lags behind memory.
+  // An append is an upsert by nature; the old rewrite was not. Replacing an id
+  // the file never held used to be a no-op (and a throw under `strict`), and
+  // callers depend on that — a strict replace reporting success for a row that
+  // does not exist would make crash recovery lie about a saved choice. With no
+  // file scan left, `writtenIds` plus the still-queued puts are what answer
+  // "does this message exist on disk?" (plan §1, difference ②).
+  if (!hasPendingPut(path, message.id)) {
+    if (!(await exists(path))) {
+      if (strict) throw new Error(`Conversation messages file does not exist: ${convId}`);
       return false;
     }
-  });
+    if (!writtenIds.has(message.id) && !(await ledgerContainsMessage(path, message.id))) {
+      if (strict) throw new Error(`Message "${message.id}" was not found in conversation "${convId}"`);
+      return false;
+    }
+  }
+
+  try {
+    // The rewrite used to re-read the persisted row here to keep a settled
+    // sandbox recovery action from being clobbered by a stale in-memory one.
+    // Nothing is read now, so the same protection comes from the recorded
+    // per-message action map (plan §1, difference ①).
+    const merged = preservePersistedSandboxRecoveryActions(
+      message,
+      persistedSandboxActions.get(message.id),
+    );
+    await enqueueWrite(
+      path,
+      serializeLedgerPut(merged, parentIdByMessage.get(message.id)),
+      message.id,
+    );
+    writtenIds.add(message.id);
+    rememberPersistedMessage(merged);
+    // The ledger now carries this revision, so the crash-protection buffer
+    // must stop claiming a newer one.
+    await dropStreamSnapshotEntry(convId, message.id);
+    return true;
+  } catch (error) {
+    if (strict) throw error;
+    // Non-critical: leave the file as-is. Worst case the message disk state lags behind memory.
+    return false;
+  }
 }
 
 export async function replaceMessageById(
@@ -797,8 +1135,15 @@ export async function replaceMessageByIdStrict(
 }
 
 /**
- * Replace the last line in the JSONL file.
- * Used when streaming completes or tool results are added.
+ * Persist the tail of a conversation when streaming completes or tool results
+ * are added, for callers that do not know the message id they are finishing.
+ *
+ * This used to overwrite the last physical line WITHOUT checking its id, so a
+ * message that arrived mid-stream could be silently swallowed by the update of
+ * a different message. It now appends a put for `message.id` like any other
+ * revision, which means both rows survive the fold (plan §1, difference ③).
+ * That is a behaviour change, and a deliberate one: the failure it removes
+ * destroyed a message, and the cost is one extra line.
  */
 export async function updateLastMessage(
   convId: string,
@@ -806,29 +1151,28 @@ export async function updateLastMessage(
 ): Promise<void> {
   await ensureBase();
   const path = messagesPath(convId);
-  if (!(await exists(path))) return;
+  // Preserved from the rewrite era: with no conversation file there is nothing
+  // to finish, and this must not conjure one.
+  if (!hasPendingPut(path, message.id) && !(await exists(path))) return;
 
-  // Serialize with concurrent drain / replaceMessageById on the same path.
-  // Like replaceMessageById, we do not pre-flush — the lock does the job
-  // without the deadlock risk of flushWrites re-acquiring.
-  let updated = false;
   try {
-    await withFileLock(path, async () => {
-      const raw = await readTextFile(path);
-      const lines = raw.trimEnd().split('\n');
-      lines[lines.length - 1] = JSON.stringify(stripForDisk(message));
-      await atomicWrite(path, lines.join('\n') + '\n');
-      writtenIds.add(message.id);
-      updated = true;
-    });
+    const merged = preservePersistedSandboxRecoveryActions(
+      message,
+      persistedSandboxActions.get(message.id),
+    );
+    await enqueueWrite(
+      path,
+      serializeLedgerPut(merged, parentIdByMessage.get(message.id)),
+      message.id,
+    );
+    writtenIds.add(message.id);
+    rememberPersistedMessage(merged);
+    await dropStreamSnapshotEntry(convId, message.id);
   } catch {
-    // Swallow: fall through to append-fallback below
-  }
-  if (!updated) {
-    // If the in-lock update failed, appendMessage is a safer recovery — it
-    // re-uses the same lock internally so ordering is still preserved.
+    // Leave the id unclaimed so a later appendMessage can still get the
+    // message onto disk — the same recovery the old fallback provided, minus
+    // the second write path.
     writtenIds.delete(message.id);
-    await appendMessage(convId, message);
   }
 }
 
@@ -852,48 +1196,33 @@ export async function loadMessages(convId: string): Promise<Message[]> {
     );
     return [];
   }
+  // Free the next append from re-reading the file just to check its tail.
+  noteTailFromRead(path, raw);
 
-  // Per-line parse failures are tolerated: skip the bad line, keep the rest.
-  // Previously we .map()'d + caught the whole block, which meant any single
-  // corrupt line nuked the entire conversation for the UI even though most
-  // lines were fine. This is pure damage reduction for a storage bug we
-  // eventually need to fix on the write side (see conversationStorage write
-  // race / TODO in Task #15 follow-up).
-  const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);
-  const messages: Message[] = [];
-  let corruptCount = 0;
-  for (const line of lines) {
-    try {
-      messages.push(JSON.parse(line) as Message);
-    } catch {
-      corruptCount++;
-    }
-  }
+  // The whole read is one fold (see messageLedger.ts for the spec). It keeps
+  // the previous damage-reduction behaviour — a corrupt line is skipped, not
+  // fatal — and the previous keep-last-by-id dedup, which a non-idempotent
+  // append fallback can produce: if the native O(1) append durably writes a
+  // line but its invoke promise still rejects (IPC teardown / shutdown race),
+  // appendToFile falls through to read+rewrite and appends the same line again.
+  // The fold additionally makes a repeated id an in-place revision rather than
+  // a reorder, which is what lets the write side express "replace" as "append".
+  // Revisions that a crash caught between checkpoints live in the stream
+  // snapshot, not the ledger. Folding them in as trailing puts applies them
+  // with exactly the ledger's own last-write-wins-in-place rule.
+  const snapshot = await readStreamSnapshot(convId);
+  const { messages, corruptCount, totalLines } = foldMessageLog([
+    ...raw.split('\n'),
+    ...snapshot.map((m) => JSON.stringify(m)),
+  ]);
   if (corruptCount > 0) {
     console.warn(
-      `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${lines.length} corrupt line(s). ` +
+      `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${totalLines} corrupt line(s). ` +
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
-  // (so the skip-bad-lines net above can't catch it) but can arise from a
-  // non-idempotent append fallback: if the native O(1) append durably writes a
-  // line but its invoke promise still rejects (IPC teardown / shutdown race),
-  // appendToFile falls through to read+rewrite and appends the same line again.
-  // The last write reflects the most recent state; downstream consumers
-  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
-  // render — and be sent to the LLM — twice.
-  const deduped = dedupMessagesById(messages);
-  populateWrittenIds(deduped);
-  return deduped;
-}
-
-/** Keep the last occurrence of each message id, preserving order. */
-function dedupMessagesById(messages: Message[]): Message[] {
-  const lastIndex = new Map<string, number>();
-  messages.forEach((m, i) => lastIndex.set(m.id, i));
-  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
-  return messages.filter((m, i) => lastIndex.get(m.id) === i);
+  populateWrittenIds(convId, messages);
+  return messages;
 }
 
 /**
@@ -902,6 +1231,10 @@ function dedupMessagesById(messages: Message[]): Message[] {
  */
 export async function deleteConversationFiles(convId: string): Promise<void> {
   await ensureBase();
+  // Drop the crash-protection buffer first: leaving it armed would have a
+  // later flush recreate the conversation directory we are deleting.
+  streamSnapshots.delete(convId);
+  lastMessageIdByConv.delete(convId);
   // Remove new path
   const dir = convDir(convId);
   try {
@@ -1070,6 +1403,9 @@ export async function initConversationStorage(): Promise<void> {
  * Flushes all pending writes.
  */
 export async function shutdownConversationStorage(): Promise<void> {
+  // Promote buffered revisions into the ledger first, so a stream snapshot
+  // never outlives the session that produced it.
+  await flushStreamSnapshots();
   await flushWrites();
   await flushIndex();
 }

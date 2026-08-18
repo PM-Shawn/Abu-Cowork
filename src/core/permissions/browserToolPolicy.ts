@@ -32,32 +32,26 @@ const STATE_CHANGING_TOOLS = new Set([
 ]);
 
 /**
- * The state-changing tools that act ON the page, as opposed to driving the
- * session somewhere new. `navigate` is deliberately excluded: "only reads
- * information, changes nothing" still has to be able to open the page it
- * reads (permission plan §4.2 lists "view web pages" under that tier), while
- * the same tier explicitly cannot "click web page buttons".
- */
-const PAGE_MUTATING_TOOLS = [...STATE_CHANGING_TOOLS].filter((tool) => tool !== 'navigate');
-
-/**
- * Namespaced names of every page-mutating browser tool, for callers that gate
- * by tool name rather than per call.
+ * Wildcard patterns matching every tool exposed by the browser-automation MCP
+ * servers, gated or not — including `navigate` and the read-only tools
+ * (snapshot, screenshot, extract, get_tabs, ...) that are never enumerated in
+ * this module because the servers register them dynamically.
  *
- * The unattended read-only tier needs this because a standing per-site grant
- * short-circuits the approval chain entirely (`registry.ts` resolves an
- * 'allowed' verdict to `decideOtherTool(..., granted = true)` → 'allow', so no
- * confirmation callback ever runs). A site grant answers "is this site
- * trusted"; the tier answers "how far may this unattended run go". Per the
- * plan's own model (§2) the tier is the CEILING, so it has to be enforced
- * where the site grant cannot reach — at tool-list level.
+ * Used by the unattended read-only tier, which must not carry ANY browser
+ * capability at all (not even "view web pages" — a user correction reversed
+ * the earlier design that kept `navigate` available). A standing per-site
+ * grant also short-circuits the approval chain entirely (`registry.ts`
+ * resolves an 'allowed' verdict to `decideOtherTool(..., granted = true)` →
+ * 'allow', so no confirmation callback ever runs), so the exclusion has to
+ * hold at the tool-list level, not just at the confirm-callback level. A
+ * namespace wildcard (`server__*`) rather than an enumerated list means a
+ * newly added browser tool is blocked automatically instead of needing this
+ * module updated — the matching happens at `agentLoop.ts`'s `resolveTools`
+ * and `toolExecutor.ts`'s fail-closed check, both of which already
+ * understand `matchesToolName`'s glob patterns.
  */
-export function listPageMutatingBrowserTools(): string[] {
-  const names: string[] = [];
-  for (const server of BROWSER_SERVER_NAMES) {
-    for (const tool of PAGE_MUTATING_TOOLS) names.push(`${server}__${tool}`);
-  }
-  return names;
+export function listAllBrowserToolPatterns(): string[] {
+  return [...BROWSER_SERVER_NAMES].map((server) => `${server}__*`);
 }
 
 export type BrowserToolConsequence = 'read-only' | 'state-changing';

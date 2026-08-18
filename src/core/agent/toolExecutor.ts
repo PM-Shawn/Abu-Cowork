@@ -34,7 +34,7 @@ import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
-import { matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 
 const logger = createLogger('toolExecutor');
@@ -144,7 +144,12 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   } = params;
 
   const chatDelta = getChatDelta();
-  const blockedTools = new Set(params.blockedTools ?? []);
+  // Pattern-matched (not exact-name Set match) so a `server__*` namespace
+  // block from resolveTools' model-visible filter (agentLoop.ts) is equally
+  // authoritative here — the fail-closed check has to cover exactly what was
+  // hidden from the model, including tool names this module never enumerates
+  // (e.g. dynamically-registered MCP tools).
+  const blockedTools = params.blockedTools ?? [];
   const allowedTools = params.allowedTools ?? [];
 
   // Update the assistant message with tool calls
@@ -180,7 +185,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         duration: 0,
       };
     }
-    if (blockedTools.has(tc.name)) {
+    if (blockedTools.some((pattern) => matchesToolName(tc.name, pattern))) {
       return {
         id: tc.id,
         result: `Error: tool "${tc.name}" is blocked for this agent run`,

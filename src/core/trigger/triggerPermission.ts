@@ -9,7 +9,7 @@
 
 import type { TriggerAction, TriggerCapability, TriggerPermissions } from '../../types/trigger';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { listPageMutatingBrowserTools } from '../permissions/browserToolPolicy';
+import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { TOOL_NAMES } from '../tools/toolNames';
@@ -156,19 +156,21 @@ function buildCustomCallbacks(
 
 function buildBlockedTools(capability: TriggerCapability): string[] {
   // request_workspace is always blocked — triggers can't pop UI dialogs
-  const blocked = [TOOL_NAMES.REQUEST_WORKSPACE];
+  const blocked: string[] = [TOOL_NAMES.REQUEST_WORKSPACE];
 
-  // read_tools promises "reads information, changes nothing" (permission plan
-  // §4.2: may read files, view web pages and search; may NOT click web page
-  // buttons). The confirmation callback below cannot deliver that on its own:
-  // a persistent per-site grant makes `registry.ts` resolve the browser gate
-  // to 'allow' without ever calling the callback, so on any site the user once
+  // read_tools promises "reads information, changes nothing" — the read-only
+  // tier carries no browser capability at all (a user correction reversed an
+  // earlier design that kept `navigate` available for "view web pages"; the
+  // rule is now a single sentence: read_tools has no browser access, period).
+  // The confirmation callback below cannot deliver that on its own: a
+  // persistent per-site grant makes `registry.ts` resolve the browser gate to
+  // 'allow' without ever calling the callback, so on any site the user once
   // chose "always allow this site" for, an unattended read-only run could
-  // click, type and run page scripts unasked. Remove those tools from the run
-  // instead — the tier is the ceiling and has to hold above the site grant.
-  // `navigate` stays available so "view web pages" still works.
+  // still click, type, navigate and run page scripts unasked. Remove every
+  // browser-automation tool from the run instead — the tier is the ceiling
+  // and has to hold above the site grant.
   if (capability === 'read_tools') {
-    blocked.push(...listPageMutatingBrowserTools());
+    blocked.push(...listAllBrowserToolPatterns());
   }
 
   return blocked;

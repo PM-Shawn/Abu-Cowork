@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveTriggerCallbacks } from './triggerPermission';
+import { matchesToolName } from '../skill/toolFilter';
 
 describe('resolveTriggerCallbacks', () => {
   it('carries a custom trigger tool whitelist to the agent run', () => {
@@ -20,34 +21,36 @@ describe('resolveTriggerCallbacks', () => {
   // A standing "always allow this site" grant makes registry.ts resolve the
   // browser gate to 'allow' without consulting commandConfirmCallback at all,
   // so the read-only tier cannot be enforced by the callback alone — the tools
-  // have to be off the table. Otherwise "reads information, changes nothing"
-  // silently permits clicking and typing on every site the user ever allowed.
+  // have to be off the table. read_tools carries no browser capability at all
+  // (a user correction reversed the earlier design that kept `navigate`
+  // available for "view web pages") — the rule is now one sentence: the
+  // read-only tier has no browser access, period.
   describe('read_tools browser ceiling', () => {
-    it('removes the page-mutating browser tools from a read-only run', () => {
+    it('blocks every browser-automation tool via a namespace wildcard — including navigate and read-only tools', () => {
       const { blockedTools } = resolveTriggerCallbacks({ prompt: 'read', capability: 'read_tools' });
 
-      for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js']) {
-        expect(blockedTools, tool).toContain(`abu-browser__${tool}`);
-        expect(blockedTools, tool).toContain(`abu-browser-bridge__${tool}`);
+      // click/fill/select/keyboard/execute_js/navigate are the enumerated
+      // STATE_CHANGING_TOOLS; snapshot/screenshot/get_tabs stand in for the
+      // read-only tools this module never enumerates (they're registered
+      // dynamically by the browser servers) — the wildcard has to catch
+      // those too, not just the known state-changing set.
+      for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'snapshot', 'screenshot', 'get_tabs']) {
+        expect(blockedTools.some((p) => matchesToolName(`abu-browser__${tool}`, p)), tool).toBe(true);
+        expect(blockedTools.some((p) => matchesToolName(`abu-browser-bridge__${tool}`, p)), tool).toBe(true);
       }
-    });
-
-    it('keeps navigate available — "view web pages" is part of the tier', () => {
-      const { blockedTools } = resolveTriggerCallbacks({ prompt: 'read', capability: 'read_tools' });
-
-      expect(blockedTools).not.toContain('abu-browser__navigate');
-      expect(blockedTools).not.toContain('abu-browser__snapshot');
     });
 
     it('leaves the higher tiers untouched', () => {
       for (const capability of ['safe_tools', 'full'] as const) {
         const { blockedTools } = resolveTriggerCallbacks({ prompt: 'x', capability });
-        expect(blockedTools, capability).not.toContain('abu-browser__click');
+        expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p)), capability).toBe(false);
+        expect(blockedTools.some((p) => matchesToolName('abu-browser__navigate', p)), capability).toBe(false);
       }
     });
 
     it('applies to a task that predates the capability field (defaults to read_tools)', () => {
-      expect(resolveTriggerCallbacks({ prompt: 'x' }).blockedTools).toContain('abu-browser__click');
+      const { blockedTools } = resolveTriggerCallbacks({ prompt: 'x' });
+      expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p))).toBe(true);
     });
   });
 });

@@ -375,4 +375,84 @@ describe('pathSafety', () => {
       expect(result.reason ?? '').not.toContain('UNC');
     });
   });
+
+  // ── Abu's own config and state (self-protection red line, §4.6 ②) ──
+  //
+  // These paths used to fall through checkWritePath's final "offer a
+  // permission dialog" branch, which resolves to an automatic ALLOW under
+  // permissionMode 'autonomous' — so a generic write_file could rewrite the
+  // agent definitions, the MCP config, the persisted permission settings, or
+  // the scheduled task definitions without anyone being asked, bypassing the
+  // selfExtension confirmation that save_agent/manage_mcp_server go through.
+  describe('Abu self-managed paths', () => {
+    let cleanup: (() => void) | undefined;
+
+    afterEach(() => {
+      cleanup?.();
+      cleanup = undefined;
+      revokeWorkspace('/Users/testuser');
+    });
+
+    const blockedWrites = [
+      '/Users/testuser/.abu/agents/my-agent/AGENT.md',
+      '/Users/testuser/.abu/skills/my-skill/SKILL.md',
+      '/Users/testuser/.abu/mcp/config.json',
+      '/Users/testuser/.abu/task-log.json',
+      '/Users/testuser/Library/Application Support/Abu/Local Storage/leveldb/000003.log',
+      '/Users/testuser/Library/Application Support/abu-electron-dev/config.json',
+      '/Users/testuser/Library/Application Support/com.abu.app/secrets.bin',
+      '/Users/testuser/Library/Application Support/com.abu.app.dev/secrets.bin',
+    ];
+
+    for (const path of blockedWrites) {
+      it(`blocks write: ${path}`, async () => {
+        const result = await checkWritePath(path);
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+      });
+    }
+
+    it('still allows writes to the memory directories the agent maintains', async () => {
+      expect((await checkWritePath('/Users/testuser/.abu/memory/user_name.md')).allowed).toBe(true);
+      expect(
+        (await checkWritePath('/Users/testuser/.abu/projects/-ws-app/memory/notes.md')).allowed,
+      ).toBe(true);
+    });
+
+    it('is not overridden by an authorized parent workspace', async () => {
+      // Authorizing the home dir (or any ancestor) must not hand over write
+      // access to Abu's own config — the guard runs before the workspace
+      // shortcut for exactly this reason.
+      authorizeWorkspace('/Users/testuser');
+      const result = await checkWritePath('/Users/testuser/.abu/mcp/config.json');
+      expect(result.allowed).toBe(false);
+    });
+
+    it('leaves unrelated Application Support apps alone', async () => {
+      const result = await checkWritePath(
+        '/Users/testuser/Library/Application Support/SomeOtherApp/config.json',
+      );
+      expect(result.allowed).toBe(false);
+      expect(result.reason ?? '').not.toContain('阿布');
+      // Still dialog-eligible, just not hard-blocked as one of ours.
+      expect(result.needsPermission).toBe(true);
+    });
+
+    it('covers the Windows app-data root', async () => {
+      cleanup = setPlatformForTest('windows');
+      // Home-relative, matching how the other Windows cases are written (the
+      // mocked homeDir carries no drive letter). Mixed case exercises the
+      // case-insensitive segment match.
+      const result = await checkWritePath('/Users/testuser/AppData/Roaming/ABU/config.json');
+      expect(result.allowed).toBe(false);
+      expect(result.needsPermission).toBeUndefined();
+    });
+
+    it('does not block reads — the threat is rewriting config, not seeing it', async () => {
+      // Blocking reads would break the memory tools and the skill loader; the
+      // §4.6 red line is about modification.
+      const result = await checkReadPath('/Users/testuser/.abu/skills/my-skill/SKILL.md');
+      expect(result.reason ?? '').not.toContain('阿布');
+    });
+  });
 });

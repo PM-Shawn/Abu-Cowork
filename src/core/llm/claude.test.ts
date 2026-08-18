@@ -170,7 +170,7 @@ describe('ClaudeAdapter', () => {
 
     it('places the system breakpoint on the last cacheable section and none on volatile sections', async () => {
       const params = await chatAndCapture(
-        [{ role: 'user', content: 'hi', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'hi', id: '1', timestamp: FIXED_TIMESTAMP }],
         {
           systemPromptSections: [
             { name: 'persona', text: 'persona text', cacheable: true },
@@ -187,9 +187,9 @@ describe('ClaudeAdapter', () => {
 
     it('marks the last block of the last message as an incremental history breakpoint', async () => {
       const params = await chatAndCapture([
-        { role: 'user', content: 'first question', id: '1', timestamp: Date.now() },
-        { role: 'assistant', content: 'first answer', id: '2', timestamp: Date.now() },
-        { role: 'user', content: 'second question', id: '3', timestamp: Date.now() },
+        { role: 'user', content: 'first question', id: '1', timestamp: FIXED_TIMESTAMP },
+        { role: 'assistant', content: 'first answer', id: '2', timestamp: FIXED_TIMESTAMP },
+        { role: 'user', content: 'second question', id: '3', timestamp: FIXED_TIMESTAMP },
       ]);
       const last = params.messages[params.messages.length - 1];
       expect(Array.isArray(last.content)).toBe(true);
@@ -206,9 +206,9 @@ describe('ClaudeAdapter', () => {
     it('appends the volatile context tail AFTER the history breakpoint, uncached', async () => {
       const params = await chatAndCapture(
         [
-          { role: 'user', content: 'question', id: '1', timestamp: Date.now() },
-          { role: 'assistant', content: 'answer', id: '2', timestamp: Date.now() },
-          { role: 'user', content: 'follow-up', id: '3', timestamp: Date.now() },
+          { role: 'user', content: 'question', id: '1', timestamp: FIXED_TIMESTAMP },
+          { role: 'assistant', content: 'answer', id: '2', timestamp: FIXED_TIMESTAMP },
+          { role: 'user', content: 'follow-up', id: '3', timestamp: FIXED_TIMESTAMP },
         ],
         { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
       );
@@ -228,9 +228,9 @@ describe('ClaudeAdapter', () => {
     it('never exceeds the 4-breakpoint API limit (tools + system + history)', async () => {
       const params = await chatAndCapture(
         [
-          { role: 'user', content: 'q1', id: '1', timestamp: Date.now() },
-          { role: 'assistant', content: 'a1', id: '2', timestamp: Date.now() },
-          { role: 'user', content: 'q2', id: '3', timestamp: Date.now() },
+          { role: 'user', content: 'q1', id: '1', timestamp: FIXED_TIMESTAMP },
+          { role: 'assistant', content: 'a1', id: '2', timestamp: FIXED_TIMESTAMP },
+          { role: 'user', content: 'q2', id: '3', timestamp: FIXED_TIMESTAMP },
         ],
         {
           systemPromptSections: [

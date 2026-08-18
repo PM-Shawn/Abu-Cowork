@@ -133,9 +133,9 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
     // prefix stays cached and only this block is re-billed.
     const body = await requestBodyFor(
       [
-        { id: 'u1', role: 'user', content: 'question', timestamp: Date.now() } as Message,
-        { id: 'a1', role: 'assistant', content: 'answer', timestamp: Date.now() } as Message,
-        { id: 'u2', role: 'user', content: 'follow-up', timestamp: Date.now() } as Message,
+        { id: 'u1', role: 'user', content: 'question', timestamp: FIXED_TIMESTAMP } as Message,
+        { id: 'a1', role: 'assistant', content: 'answer', timestamp: FIXED_TIMESTAMP } as Message,
+        { id: 'u2', role: 'user', content: 'follow-up', timestamp: FIXED_TIMESTAMP } as Message,
       ],
       { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
     );
@@ -154,7 +154,7 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
       ]),
     );
     const adapter = new OpenAICompatibleAdapter();
-    const msgs = [{ id: 'u1', role: 'user', content: 'hi', timestamp: Date.now() } as Message];
+    const msgs = [{ id: 'u1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP } as Message];
     await adapter.chat(msgs, makeOptions({
       baseUrl: 'https://api.openai.com/v1',
       metadata: { conversationId: 'conv-123' },

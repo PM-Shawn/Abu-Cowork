@@ -10,31 +10,23 @@ import { Select } from '@/components/ui/select';
 import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
 import { getIMPlatformOptions, getPlatformDisplayName } from '@/core/im/platformLabels';
-import { getCapabilityTierLabel } from '@/core/permissions/permissionTiers';
 import WeChatQRPanel from './WeChatQRPanel';
 import type { WeChatCredentials } from '@/core/im/adapters/wechat';
 
-const CAPABILITY_OPTIONS: { value: IMCapabilityLevel; labelKey: IMCapabilityLevel }[] = [
+const CAPABILITY_OPTIONS: { value: IMCapabilityLevel; labelKey: keyof ReturnType<typeof useCapLabels> }[] = [
   { value: 'chat_only', labelKey: 'chat_only' },
   { value: 'read_tools', labelKey: 'read_tools' },
   { value: 'safe_tools', labelKey: 'safe_tools' },
   { value: 'full', labelKey: 'full' },
 ];
 
-/**
- * Wording comes from the shared unattended-autonomy vocabulary
- * (permission plan §4.2) instead of IM-only strings, so "only read, change
- * nothing" reads the same here as on a scheduled task or a trigger.
- * The values and the gating in `authGate.ts` are unchanged.
- */
-function useCapLabels(): Record<IMCapabilityLevel, string> {
-  // Re-render on locale change; the labels themselves come from getI18n().
-  useI18n();
+function useCapLabels() {
+  const { t } = useI18n();
   return {
-    chat_only: getCapabilityTierLabel('chat_only'),
-    read_tools: getCapabilityTierLabel('read_tools'),
-    safe_tools: getCapabilityTierLabel('safe_tools'),
-    full: getCapabilityTierLabel('full'),
+    chat_only: t.imChannel.capabilityChatOnly,
+    read_tools: t.imChannel.capabilityReadTools,
+    safe_tools: t.imChannel.capabilitySafeTools,
+    full: t.imChannel.capabilityFull,
   };
 }
 

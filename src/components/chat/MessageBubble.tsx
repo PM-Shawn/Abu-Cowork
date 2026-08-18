@@ -12,9 +12,11 @@ import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
+import { computeRewindImpact } from '@/utils/rewindImpact';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import abuAvatar from '@/assets/abu-avatar.png';
 
 // Regex to match [Attachment: `path`] patterns in user messages
@@ -423,6 +425,30 @@ export default function MessageBubble({
   const isConvRunning = activeConv?.status === 'running';
   const hasRunFailure = message.runState === 'failed' || message.runState === 'connection-failed';
 
+  // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
+  // from the redone turn onward via deleteMessagesFrom, durably discarding
+  // anything after it. When that redone turn isn't the conversation's last,
+  // later turns would be silently lost — gate those cases behind a confirm.
+  // `run` holds the exact same delete+resend steps the unconfirmed path would
+  // have executed immediately.
+  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
+  const rewindConfirmDialog = (
+    <ConfirmDialog
+      open={!!pendingRewind}
+      title={t.chat.rewindConfirmTitle}
+      message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
+      confirmText={t.common.confirm}
+      cancelText={t.common.cancel}
+      onConfirm={() => {
+        const run = pendingRewind?.run;
+        setPendingRewind(null);
+        run?.();
+      }}
+      onCancel={() => setPendingRewind(null)}
+      variant="danger"
+    />
+  );
+
   const textContent = getTextContent(message.content);
   const imageBlocks = getImageBlocks(message.content);
   const convId = activeConv?.id;
@@ -436,19 +462,34 @@ export default function MessageBubble({
     // Preserve image blocks from original message content
     const originalImages = getImageBlocks(message.content);
     setIsEditing(false);
-    // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
-    useChatStore.getState().deleteMessagesFrom(convId, message.id);
-    // Re-attach the original routing prefix (@expert or /skill) so the
-    // edited resend stays on the same agent / skill — otherwise the message
-    // falls back to the default `general` route and the expert is lost.
-    const routedContent = reattachRoutingPrefix(newContent, message);
-    // Regenerate response, passing original images if any
-    const imageAttachments = originalImages.map((img, i) => ({
-      id: `edit-${Date.now()}-${i}`,
-      data: img.source.data,
-      mediaType: img.source.media_type,
-    }));
-    await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+
+    const proceed = async () => {
+      // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
+      useChatStore.getState().deleteMessagesFrom(convId, message.id);
+      // Re-attach the original routing prefix (@expert or /skill) so the
+      // edited resend stays on the same agent / skill — otherwise the message
+      // falls back to the default `general` route and the expert is lost.
+      const routedContent = reattachRoutingPrefix(newContent, message);
+      // Regenerate response, passing original images if any
+      const imageAttachments = originalImages.map((img, i) => ({
+        id: `edit-${Date.now()}-${i}`,
+        data: img.source.data,
+        mediaType: img.source.media_type,
+      }));
+      await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+    };
+
+    // `message` is a user message and, per the invariant documented on
+    // handleRunRetry below, is itself the first message of its loop — so its
+    // loopId directly identifies the turn being redone.
+    const impact = activeConv
+      ? computeRewindImpact(activeConv.messages, message.loopId, message.id)
+      : { hasLaterTurns: false, laterTurnsCount: 0 };
+    if (impact.hasLaterTurns) {
+      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
+      return;
+    }
+    await proceed();
   };
 
   const handleRunRetry = async () => {
@@ -470,12 +511,22 @@ export default function MessageBubble({
     const truncateFromId = message.loopId
       ? activeConv.messages.find((m) => m.loopId === message.loopId)?.id ?? message.id
       : message.id;
-    useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
-    await runAgentLoopDispatched(
-      convId,
-      routedContent,
-      imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
-    );
+
+    const proceed = async () => {
+      useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
+      await runAgentLoopDispatched(
+        convId,
+        routedContent,
+        imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+      );
+    };
+
+    const impact = computeRewindImpact(activeConv.messages, message.loopId, message.id);
+    if (impact.hasLaterTurns) {
+      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
+      return;
+    }
+    await proceed();
   };
 
   const handleRegenerate = async () => {
@@ -506,37 +557,54 @@ export default function MessageBubble({
     }
 
     if (userMsgToRegenerate) {
-      // Delete from user message onwards and regenerate
-      useChatStore.getState().deleteMessagesFrom(convId, userMsgToRegenerate.id);
-      const userContent = getTextContent(userMsgToRegenerate.content);
+      // Bind to a const so the `proceed` closure below keeps the narrowed
+      // (non-undefined) type — TS narrowing on the outer `let` doesn't
+      // persist across a nested function boundary.
+      const targetUserMsg = userMsgToRegenerate;
+      const userContent = getTextContent(targetUserMsg.content);
       // Re-attach the original @expert / /skill prefix so the regenerated
       // turn stays on the same route — the user message stored content is
       // post-routing cleanInput, so the prefix is otherwise lost.
-      const routedContent = reattachRoutingPrefix(userContent, userMsgToRegenerate);
+      const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
       // Preserve image blocks from original user message
-      const originalImages = getImageBlocks(userMsgToRegenerate.content);
+      const originalImages = getImageBlocks(targetUserMsg.content);
       const imageAttachments = originalImages.map((img, i) => ({
         id: `regen-${Date.now()}-${i}`,
         data: img.source.data,
         mediaType: img.source.media_type,
       }));
-      await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+
+      const proceed = async () => {
+        // Delete from user message onwards and regenerate
+        useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
+        await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+      };
+
+      const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
+      if (impact.hasLaterTurns) {
+        setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
+        return;
+      }
+      await proceed();
     }
   };
 
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {
     return (
-      <div className="flex items-center gap-2">
-        <MessageActions
-          message={message}
-          onEdit={() => {}}
-          onRegenerate={handleRegenerate}
-          isUser={false}
-          conversationId={convId}
-        />
-        {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
-      </div>
+      <>
+        {rewindConfirmDialog}
+        <div className="flex items-center gap-2">
+          <MessageActions
+            message={message}
+            onEdit={() => {}}
+            onRegenerate={handleRegenerate}
+            isUser={false}
+            conversationId={convId}
+          />
+          {message.timestamp && <MessageTimestamp timestamp={message.timestamp} />}
+        </div>
+      </>
     );
   }
 
@@ -545,6 +613,7 @@ export default function MessageBubble({
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
       <div className="flex justify-end w-full group">
+        {rewindConfirmDialog}
         <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
@@ -663,6 +732,7 @@ export default function MessageBubble({
   if (hideAvatar) {
     return (
       <div className="assistant-turn">
+        {rewindConfirmDialog}
         {/* Thinking block if present */}
         {message.thinking && <ThinkingBlock thinking={message.thinking} />}
 
@@ -708,6 +778,7 @@ export default function MessageBubble({
 
   return (
     <div className="flex gap-3 w-full overflow-hidden group">
+      {rewindConfirmDialog}
       {/* ABU Avatar - 小布丁人 */}
       <div className="shrink-0 mt-0.5">
         <div className="w-7 h-7 rounded-full overflow-hidden">

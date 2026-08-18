@@ -426,6 +426,8 @@ const enUS: TranslationDict = {
       tooFew: 'Conversation is short — no compaction needed',
       failed: 'Compaction failed — please try again',
     },
+    rewindConfirmTitle: 'Redo this turn?',
+    rewindConfirmMessage: 'There are {count} later turn(s) after this one. Redoing it will permanently delete them too — this cannot be undone.',
   },
 
   share: {

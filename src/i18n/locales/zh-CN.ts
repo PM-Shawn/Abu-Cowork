@@ -426,6 +426,8 @@ const zhCN: TranslationDict = {
       tooFew: '对话较短，暂无需压缩',
       failed: '压缩失败，请稍后重试',
     },
+    rewindConfirmTitle: '确认重新生成？',
+    rewindConfirmMessage: '这之后还有 {count} 轮对话，重新生成会一并永久删除它们，且无法恢复。',
   },
 
   share: {

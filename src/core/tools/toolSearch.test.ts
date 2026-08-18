@@ -97,6 +97,25 @@ describe('toolSearch', () => {
       expect(coreTools.map(t => t.name)).toContain('rare_tool');
       expect(deferredTools).toHaveLength(0);
     });
+
+    it('keyword-prefetched promotion is sticky — no demotion on the next turn', () => {
+      // Real-app acceptance caught this flap: a tool promoted by turn N's
+      // input keywords was demoted on turn N+1 (no keyword), churning the
+      // deferred-tools system section AND the serialized tools list — each
+      // flap busting the provider prompt cache. Promotion must be monotonic
+      // per conversation scope.
+      const tools = [makeTool('manage_scheduled_task'), makeTool('rare_tool')];
+      // Turn 1: keyword matched → prefetched into core.
+      const turn1 = classifyTools(tools, new Set(['manage_scheduled_task']), 'conv-sticky');
+      expect(turn1.coreTools.map(t => t.name)).toContain('manage_scheduled_task');
+      // Turn 2: no keyword — the tool must STAY core via session promotion.
+      const turn2 = classifyTools(tools, new Set(), 'conv-sticky');
+      expect(turn2.coreTools.map(t => t.name)).toContain('manage_scheduled_task');
+      expect(turn2.deferredTools.map(t => t.name)).not.toContain('manage_scheduled_task');
+      // Other conversations are unaffected.
+      const other = classifyTools(tools, new Set(), 'conv-other');
+      expect(other.deferredTools.map(t => t.name)).toContain('manage_scheduled_task');
+    });
   });
 
   describe('session promotions', () => {

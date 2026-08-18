@@ -371,13 +371,32 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const hasTools = !!(options.tools && options.tools.length > 0);
     const useStreaming = !(isOllamaEndpoint && hasTools);
 
+    const convertedMessages = convertMessages(messages, options.systemPrompt, options.supportsVision);
+    // Volatile context tail rides as the LAST message, after the whole stored
+    // history: automatic prefix caching (DeepSeek/OpenAI) then keeps matching
+    // the stable [system + history] prefix across turns and only this small
+    // per-turn block is re-billed. In the system prompt it would sit BEFORE
+    // the history and re-bill the entire conversation on every change.
+    if (options.volatileContextTail) {
+      convertedMessages.push({ role: 'user', content: options.volatileContextTail });
+    }
+    // Official OpenAI endpoint only: pin the automatic prefix cache to this
+    // conversation with prompt_cache_key (improves cache routing across
+    // requests; same discipline as Codex CLI). Gated to api.openai.com — an
+    // unknown body param can be rejected by strict OpenAI-compatible gateways,
+    // and other providers (DeepSeek/GLM/…) don't support it.
+    const promptCacheKey = options.metadata?.conversationId;
+    const isOfficialOpenAI = /(^|\.)api\.openai\.com$/i.test((() => {
+      try { return new URL(baseUrl).hostname; } catch { return ''; }
+    })());
     const body: Record<string, unknown> = {
       model: options.model,
-      messages: convertMessages(messages, options.systemPrompt, options.supportsVision),
+      messages: convertedMessages,
       max_tokens: options.maxTokens ?? 4096,
       stream: useStreaming,
       // Request token usage in streaming responses (OpenAI-compatible providers, e.g. GLM)
       ...(useStreaming ? { stream_options: { include_usage: true } } : {}),
+      ...(isOfficialOpenAI && promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
     };
 
     // Reasoning controls. thinkingBudget is only set for reasoning models (the

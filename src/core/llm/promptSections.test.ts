@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeSections, sectionsToString, type PromptSection } from './promptSections';
+import { mergeSections, sectionsToString, orderSectionsForCaching, type PromptSection } from './promptSections';
 
 describe('promptSections', () => {
   describe('mergeSections', () => {
@@ -52,6 +52,81 @@ describe('promptSections', () => {
       expect(merged).toHaveLength(1);
       expect(merged[0].text).toBe('1\n\n2\n\n3');
       expect(merged[0].cacheable).toBe(false);
+    });
+  });
+
+  describe('orderSectionsForCaching', () => {
+    it('moves volatile sections behind every cacheable section', () => {
+      const sections: PromptSection[] = [
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'current-time', text: 't', cacheable: false },
+        { name: 'workspace', text: 'w', cacheable: true },
+        { name: 'proposal-signal', text: 's', cacheable: false },
+        { name: 'safety-anchor', text: 'a', cacheable: true },
+      ];
+      const ordered = orderSectionsForCaching(sections);
+      const lastCacheableIdx = ordered.map(s => s.cacheable).lastIndexOf(true);
+      const firstVolatileIdx = ordered.map(s => s.cacheable).indexOf(false);
+      expect(firstVolatileIdx).toBeGreaterThan(lastCacheableIdx);
+    });
+
+    it('is a stable partition — relative order within each group is preserved', () => {
+      const sections: PromptSection[] = [
+        { name: 'c1', text: '1', cacheable: true },
+        { name: 'v1', text: '2', cacheable: false },
+        { name: 'c2', text: '3', cacheable: true },
+        { name: 'v2', text: '4', cacheable: false },
+      ];
+      expect(orderSectionsForCaching(sections).map(s => s.name)).toEqual(['c1', 'c2', 'v1', 'v2']);
+    });
+
+    it('keeps the safety anchor as the last cacheable section (breakpoint carrier)', () => {
+      const sections: PromptSection[] = [
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'current-time', text: 't', cacheable: false },
+        { name: 'safety-anchor', text: 'a', cacheable: true },
+      ];
+      const ordered = orderSectionsForCaching(sections);
+      const cacheable = ordered.filter(s => s.cacheable);
+      expect(cacheable[cacheable.length - 1].name).toBe('safety-anchor');
+    });
+
+    it('pins pinToEnd sections after the volatile tail, preserving their order', () => {
+      const sections: PromptSection[] = [
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'safety-anchor', text: 'a', cacheable: false, pinToEnd: true },
+        { name: 'current-time', text: 't', cacheable: false },
+        { name: 'workspace', text: 'w', cacheable: true },
+      ];
+      expect(orderSectionsForCaching(sections).map(s => s.name)).toEqual([
+        'persona', 'workspace', 'current-time', 'safety-anchor',
+      ]);
+    });
+
+    it('is idempotent — re-partitioning after appending a volatile section keeps the pin last', () => {
+      const first = orderSectionsForCaching([
+        { name: 'persona', text: 'p', cacheable: true },
+        { name: 'safety-anchor', text: 'a', cacheable: false, pinToEnd: true },
+      ]);
+      const second = orderSectionsForCaching([
+        ...first,
+        { name: 'compression-hint', text: 'h', cacheable: false },
+      ]);
+      expect(second.map(s => s.name)).toEqual(['persona', 'compression-hint', 'safety-anchor']);
+    });
+
+    it('handles all-cacheable, all-volatile, and empty inputs unchanged', () => {
+      const allCacheable: PromptSection[] = [
+        { name: 'a', text: 'a', cacheable: true },
+        { name: 'b', text: 'b', cacheable: true },
+      ];
+      const allVolatile: PromptSection[] = [
+        { name: 'a', text: 'a', cacheable: false },
+        { name: 'b', text: 'b', cacheable: false },
+      ];
+      expect(orderSectionsForCaching(allCacheable)).toEqual(allCacheable);
+      expect(orderSectionsForCaching(allVolatile)).toEqual(allVolatile);
+      expect(orderSectionsForCaching([])).toEqual([]);
     });
   });
 

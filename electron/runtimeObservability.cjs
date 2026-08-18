@@ -64,7 +64,28 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'consecutiveNoChange',
   'recoveryUsed',
   'subscriptionCount',
+  'exitCode',
+  'windowLabel',
 ]);
+
+/**
+ * The ONE classifier for Electron's `render-process-gone` reasons, used both
+ * for the local record's `outcome` and for the remote-report decision.
+ *
+ * Deliberately a benign-list, not a severe-list: Electron documents eight
+ * reasons ('clean-exit' | 'abnormal-exit' | 'killed' | 'crashed' | 'oom' |
+ * 'launch-failed' | 'integrity-failure' | 'memory-eviction'), and a severe-list
+ * silently drops every reason it forgets — which is how 'abnormal-exit',
+ * 'launch-failed', 'integrity-failure' and 'memory-eviction' went unreported.
+ * Anything not listed here (including an unknown future reason) counts as a
+ * renderer death. 'killed' stays out of this set on purpose: no code path in
+ * this repo kills a renderer, so a 'killed' renderer is not a teardown we asked
+ * for and is worth hearing about.
+ */
+const BENIGN_RENDER_PROCESS_REASONS = new Set(['clean-exit']);
+
+/** Window within which the same error object is treated as one main crash. */
+const MAIN_CRASH_DEDUPE_WINDOW_MS = 50;
 
 const SECRET_PATTERNS = [
   /\bsk-[a-zA-Z0-9_-]{12,}/g,
@@ -94,7 +115,12 @@ function sanitizeAttributes(value) {
     if (raw === null || typeof raw === 'boolean') {
       output[key] = raw;
     } else if (typeof raw === 'number' && Number.isFinite(raw)) {
-      output[key] = Math.max(0, Math.round(raw));
+      // Durations, counts and byte sizes are non-negative by construction, so a
+      // negative one means a bad clock/caller and is clamped. `exitCode` is the
+      // exception: a crashed process legitimately reports a negative code
+      // (signal- and NTSTATUS-derived exits), and clamping that to 0 would turn
+      // the most diagnostic part of a crash record into "exited normally".
+      output[key] = key === 'exitCode' ? Math.round(raw) : Math.max(0, Math.round(raw));
     } else if (typeof raw === 'string') {
       output[key] = key === 'errorType' ? normalizeErrorType(raw) : redactString(raw);
     }
@@ -419,6 +445,46 @@ function createRuntimeState({
     emitEvent('main', 'main.renderer_resources_cleared', attributes);
   }
 
+  function noteMainUncaughtException(errorType, origin) {
+    emitEvent('main', 'main.uncaught_exception', {
+      stage: 'uncaught_exception',
+      outcome: 'error',
+      errorType,
+      reason: origin,
+    });
+  }
+
+  function noteMainUnhandledRejection(errorType) {
+    emitEvent('main', 'main.unhandled_rejection', {
+      stage: 'unhandled_rejection',
+      outcome: 'error',
+      errorType,
+    });
+  }
+
+  function noteRenderProcessGone(windowLabel, details) {
+    const reason = details?.reason;
+    emitEvent('main', 'main.render_process_gone', {
+      windowLabel,
+      stage: 'render_process_gone',
+      // Same classifier the remote-report decision uses: closing a window is a
+      // successful teardown, not an error record to page someone about.
+      outcome: BENIGN_RENDER_PROCESS_REASONS.has(reason) ? 'success' : 'error',
+      errorType: 'render_process_gone',
+      reason,
+      exitCode: details?.exitCode,
+    });
+  }
+
+  function noteRendererUnresponsive(windowLabel) {
+    emitEvent('main', 'main.renderer_unresponsive', {
+      windowLabel,
+      stage: 'renderer_unresponsive',
+      outcome: 'stalled',
+      errorType: 'renderer_unresponsive',
+    });
+  }
+
   function noteSidecarBridgeDeliveryMissed(stage) {
     emitEvent('main', 'main.sidecar_bridge_delivery_missed', {
       sidecarId: SIDECAR_ID,
@@ -499,6 +565,10 @@ function createRuntimeState({
     noteStdoutLine,
     noteRendererEvent,
     noteRendererResourcesCleared,
+    noteMainUncaughtException,
+    noteMainUnhandledRejection,
+    noteRenderProcessGone,
+    noteRendererUnresponsive,
     noteSidecarBridgeDeliveryMissed,
     noteSidecarTraceLine,
     snapshot,
@@ -509,6 +579,20 @@ function createRuntimeState({
 const appSessionId = randomUUID();
 let logFilePath = null;
 const recentEvents = [];
+// Events recorded before the log path was resolvable. They are already in
+// `recentEvents` (so a live diagnostics export sees them), but had nowhere to
+// land on disk; configureRuntimeObservability backfills them in one append.
+const eventsAwaitingLogFile = [];
+
+function appendLogLines(lines) {
+  if (!logFilePath || lines.length === 0) return;
+  try {
+    rotateIfNeeded();
+    fs.appendFileSync(logFilePath, lines.join(''), 'utf8');
+  } catch {
+    // Observability must never change product behavior.
+  }
+}
 
 function configureRuntimeObservability(app) {
   if (logFilePath || !app || typeof app.getPath !== 'function') return;
@@ -518,7 +602,12 @@ function configureRuntimeObservability(app) {
     logFilePath = path.join(logDir, LOG_FILE_NAME);
   } catch {
     logFilePath = null;
+    return;
   }
+  // Crashes during the pre-configure window (single-instance lock, deep-link
+  // wiring) would otherwise exist only in memory and die with the process.
+  const backfill = eventsAwaitingLogFile.splice(0, eventsAwaitingLogFile.length);
+  appendLogLines(backfill.map((entry) => `${JSON.stringify(entry)}\n`));
 }
 
 function rotateIfNeeded() {
@@ -546,13 +635,12 @@ function emitRuntimeEvent(processName, event, attributes) {
   };
   recentEvents.push(entry);
   if (recentEvents.length > MAX_RECENT_EVENTS) recentEvents.shift();
-  if (!logFilePath) return;
-  try {
-    rotateIfNeeded();
-    fs.appendFileSync(logFilePath, `${JSON.stringify(entry)}\n`, 'utf8');
-  } catch {
-    // Observability must never change product behavior.
+  if (!logFilePath) {
+    eventsAwaitingLogFile.push(entry);
+    if (eventsAwaitingLogFile.length > MAX_RECENT_EVENTS) eventsAwaitingLogFile.shift();
+    return;
   }
+  appendLogLines([`${JSON.stringify(entry)}\n`]);
 }
 
 const runtimeState = createRuntimeState({ emit: emitRuntimeEvent });
@@ -601,12 +689,159 @@ function getRuntimeDiagnostics() {
   };
 }
 
+function describeCrashError(error) {
+  if (error instanceof Error) {
+    return {
+      errorType: normalizeErrorType(error.name || 'error'),
+      message: redactString(error.message || ''),
+    };
+  }
+  return {
+    errorType: normalizeErrorType(typeof error),
+    message: typeof error === 'string' ? redactString(error) : '',
+  };
+}
+
+/** A crash observer must never become the reason the process misbehaves. */
+function safeNotify(onCrash, crash) {
+  if (typeof onCrash !== 'function') return;
+  try {
+    onCrash(crash);
+  } catch {
+    // Observability must never change product behavior.
+  }
+}
+
+/**
+ * Record main-process crashes WITHOUT changing what the process does next.
+ *
+ * `uncaughtExceptionMonitor` is deliberate, not a stylistic choice. Electron's
+ * own default 'uncaughtException' handler shows its "A JavaScript error
+ * occurred in the main process" dialog only while it is the sole listener
+ * (`process.listenerCount('uncaughtException') > 1` makes it bail out), and
+ * that count is already 1 at app-ready — so a plain `process.on(
+ * 'uncaughtException')` recorder would silently swallow the crash dialog.
+ * The monitor hook runs before the handlers, cannot preempt them, and leaves
+ * the listener count untouched, so existing crash behavior is preserved
+ * exactly (verified firsthand on Electron 43 / Node 24).
+ *
+ * 'unhandledRejection' has no monitor-only variant. Electron 43 runs Node's
+ * `warn` mode there (a rejected promise prints
+ * UnhandledPromiseRejectionWarning and the app keeps running), so attaching a
+ * listener suppresses that warning but cannot change any exit behavior; the
+ * caller re-surfaces the diagnostic from `onCrash`.
+ *
+ * That `warn` assumption is not load-bearing for correctness. Under Node's
+ * `strict` mode an unhandled rejection is re-thrown as an uncaught exception,
+ * so BOTH hooks would see the same rejection reason and one crash would be
+ * recorded and reported twice. The two hooks therefore share a short
+ * single-slot dedupe: the same error/reason value seen again within
+ * `dedupeWindowMs` is dropped, whichever hook saw it first.
+ *
+ * @param {NodeJS.Process} processRef
+ * @param {{
+ *   state?: object,
+ *   onCrash?: (crash: object) => void,
+ *   now?: () => number,
+ *   dedupeWindowMs?: number,
+ * }} [options]
+ * @returns {() => void} removes both observers
+ */
+function observeMainProcessCrashes(processRef, {
+  state = runtimeState,
+  onCrash,
+  now = () => Date.now(),
+  dedupeWindowMs = MAIN_CRASH_DEDUPE_WINDOW_MS,
+} = {}) {
+  let lastValue = null;
+  let lastSeenAt = -Infinity;
+  /** True when this exact error/reason was just recorded by the other hook. */
+  const isDuplicate = (value) => {
+    const at = now();
+    if (Object.is(value, lastValue) && at - lastSeenAt <= dedupeWindowMs) return true;
+    lastValue = value;
+    lastSeenAt = at;
+    return false;
+  };
+  const onMonitor = (error, origin) => {
+    if (isDuplicate(error)) return;
+    const described = describeCrashError(error);
+    state.noteMainUncaughtException(described.errorType, origin);
+    safeNotify(onCrash, { kind: 'main_uncaught_exception', ...described, reason: origin });
+  };
+  const onRejection = (reason) => {
+    if (isDuplicate(reason)) return;
+    const described = describeCrashError(reason);
+    state.noteMainUnhandledRejection(described.errorType);
+    safeNotify(onCrash, { kind: 'main_unhandled_rejection', ...described });
+  };
+  processRef.on('uncaughtExceptionMonitor', onMonitor);
+  processRef.on('unhandledRejection', onRejection);
+  return () => {
+    processRef.removeListener('uncaughtExceptionMonitor', onMonitor);
+    processRef.removeListener('unhandledRejection', onRejection);
+  };
+}
+
+/**
+ * Record renderer death and renderer hangs for one window's WebContents.
+ * Purely observational: nothing here reloads, recovers, or closes the window,
+ * so a crash keeps whatever outcome it had before.
+ *
+ * @param {import('electron').WebContents} webContents
+ * @param {string} windowLabel
+ * @param {{ state?: object, onCrash?: (crash: object) => void }} [options]
+ * @returns {() => void} removes both observers
+ */
+function observeWebContentsCrashes(webContents, windowLabel, { state = runtimeState, onCrash } = {}) {
+  // Per-WebContents (never module-level) hang latch, so one window hanging
+  // cannot mask another window's hang.
+  let isUnresponsive = false;
+  const onGone = (_event, details) => {
+    // The render process that was hanging is gone; a replacement one starts
+    // healthy and 'responsive' will not fire for it.
+    isUnresponsive = false;
+    state.noteRenderProcessGone(windowLabel, details);
+    // A hang or a clean teardown is not worth a remote report; every other
+    // way a renderer can die is (see BENIGN_RENDER_PROCESS_REASONS).
+    if (BENIGN_RENDER_PROCESS_REASONS.has(details?.reason)) return;
+    safeNotify(onCrash, {
+      kind: 'renderer_process_gone',
+      errorType: 'render_process_gone',
+      reason: details?.reason,
+      message: '',
+    });
+  };
+  const onUnresponsive = () => {
+    // Chromium re-fires 'unresponsive' for as long as one hang lasts. Record
+    // the healthy→hung transition only; otherwise a single stuck renderer
+    // would drive an unbounded stream of synchronous appendFileSync calls on
+    // the main process (same latch shape as mcpBridge's heartbeat timeout).
+    if (isUnresponsive) return;
+    isUnresponsive = true;
+    state.noteRendererUnresponsive(windowLabel);
+  };
+  const onResponsive = () => {
+    isUnresponsive = false;
+  };
+  webContents.on('render-process-gone', onGone);
+  webContents.on('unresponsive', onUnresponsive);
+  webContents.on('responsive', onResponsive);
+  return () => {
+    webContents.removeListener('render-process-gone', onGone);
+    webContents.removeListener('unresponsive', onUnresponsive);
+    webContents.removeListener('responsive', onResponsive);
+  };
+}
+
 module.exports = {
   RUNTIME_EVENT_CHANNEL,
   RUNTIME_DIAGNOSTICS_CHANNEL,
   SIDECAR_TRACE_PREFIX,
   configureRuntimeObservability,
   getRuntimeDiagnostics,
+  observeMainProcessCrashes,
+  observeWebContentsCrashes,
   runtimeState,
   sanitizeAttributes,
   parseJsonRpcMetadata,

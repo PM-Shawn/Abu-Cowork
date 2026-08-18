@@ -60,6 +60,16 @@ export interface ChatOptions {
    * Other adapters ignore this and use systemPrompt string instead.
    */
   systemPromptSections?: PromptSection[];
+  /**
+   * Per-turn volatile context (todos, relevant memories, compression hint),
+   * appended by the adapter as an EPHEMERAL user message AFTER the whole
+   * conversation history — and, on Anthropic, after the history cache
+   * breakpoint. Keeping these bytes out of the system prompt (which precedes
+   * the history in every provider's serialization) is what lets the stored
+   * history stay prefix-cached across turns; only this small tail is
+   * re-billed. Never persisted to conversation history.
+   */
+  volatileContextTail?: string;
   tools?: ToolDefinition[];
   maxTokens?: number;
   // New parameters for enhanced control
@@ -69,6 +79,8 @@ export interface ChatOptions {
   stopSequences?: string[];    // Custom stop sequences
   metadata?: {
     userId?: string;           // For tracking/analytics
+    /** Conversation id — used as prompt_cache_key on the official OpenAI endpoint. */
+    conversationId?: string;
   };
   // Extended thinking support (Claude Opus 4+)
   enableThinking?: boolean;

@@ -5,6 +5,8 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { ErrorBoundary } from '@/components/common/ErrorBoundary';
+import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
+import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
 import AutomationView from '@/components/automation/AutomationView';
@@ -131,6 +133,15 @@ async function drainPendingInbox(abuIsFocused = false): Promise<void> {
   } catch (err) {
     console.warn('[App] Notice inbox drain error:', err);
   }
+}
+
+/**
+ * A render crash that reaches the app-root boundary blanks the whole UI, so it
+ * gets a runtime-log record. Local only — see traceErrorBoundaryCatch.
+ * Module scope keeps the prop reference stable across renders.
+ */
+function traceAppRootRenderError(error: Error): void {
+  traceErrorBoundaryCatch('app_root', error);
 }
 
 function App() {
@@ -367,6 +378,25 @@ function App() {
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Severe shell crashes (main-process exception, renderer death) are recorded
+  // locally by the main process; the renderer owns the telemetry opt-out, so it
+  // is the tier that decides whether they may also be reported remotely.
+  useEffect(() => {
+    if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    subscribeShellCrashReports().then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    }).catch(() => {
+      // Observability is best-effort and must never block app startup.
     });
     return () => {
       cancelled = true;
@@ -756,7 +786,7 @@ function App() {
   };
 
   return (
-    <ErrorBoundary>
+    <ErrorBoundary onError={traceAppRootRenderError}>
     <TooltipProvider delayDuration={200}>
       <div
         data-abu-app-shell

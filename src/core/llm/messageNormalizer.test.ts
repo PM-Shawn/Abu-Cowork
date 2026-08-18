@@ -189,6 +189,24 @@ describe('messageNormalizer', () => {
         }
       });
 
+      it('serializes byte-identical tool ids across repeated normalizations', () => {
+        // Prompt caching is a byte-prefix match: the same stored history must
+        // serialize identically on every request. A timestamp/random suffix in
+        // the generated tool id used to change the bytes of every historical
+        // tool call per request, busting the provider cache mid-history.
+        const messages: Message[] = [
+          makeMessage({ role: 'user', content: 'do it' }),
+          makeMessage({
+            role: 'assistant',
+            content: 'ok',
+            toolCalls: [{ id: 'orig', name: 'read_file', input: { path: '/a' }, result: 'x', isExecuting: false }],
+          }),
+        ];
+        const first = normalizeMessages(messages);
+        const second = normalizeMessages(messages);
+        expect(JSON.stringify(second)).toBe(JSON.stringify(first));
+      });
+
       it('prefers toolCallsForContext over toolCalls', () => {
         const messages: Message[] = [
           makeMessage({

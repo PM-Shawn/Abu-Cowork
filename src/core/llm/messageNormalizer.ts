@@ -89,8 +89,16 @@ function getTextContent(content: string | MessageContent[]): string {
 function generateToolId(index: number, msgIndex: number): string {
   // Anthropic requires ^[a-zA-Z0-9_-]+$, max 64 chars
   // OpenAI typically uses call_xxx format
-  // We use a neutral format; serializers can re-prefix if needed
-  return `toolu_${msgIndex}_${index}_${Date.now().toString(36)}`;
+  // We use a neutral format; serializers can re-prefix if needed.
+  //
+  // DETERMINISTIC on purpose — no timestamp/random suffix. The id only needs
+  // to be unique WITHIN one request (to pair tool_use with tool_result);
+  // message position already guarantees that. A per-request-random suffix
+  // made the same historical tool call serialize differently on every
+  // request, changing prompt bytes mid-history and busting the provider
+  // prompt cache from that point on (verified by byte-diffing captured
+  // request bodies).
+  return `toolu_${msgIndex}_${index}`;
 }
 
 /** Extract images from ToolResultContent[] */

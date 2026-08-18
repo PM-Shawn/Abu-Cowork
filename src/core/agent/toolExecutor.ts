@@ -371,11 +371,15 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
   // Single source of truth for the batch routing — the execution branches
   // below switch on this same value, so the log can never disagree with
-  // what actually ran.
+  // what actually ran. 'concurrency-grouped' (not the misleading 'parallel')
+  // names the mixed-batch fallback: it does NOT run everything in parallel —
+  // it groups calls by each one's isConcurrencySafe verdict
+  // (groupToolCallsByConcurrency in toolConcurrency.ts), so a batch mixing
+  // safe and unsafe calls still serializes around the unsafe ones.
   const strategy = hasComputerTool
     ? 'computer-sequential'
     : !allRunCommand
-      ? 'parallel'
+      ? 'concurrency-grouped'
       : allCommandsConcurrencySafe
         ? 'command-parallel'
         : 'command-sequential';

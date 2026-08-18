@@ -9,8 +9,10 @@
  *
  * Design notes:
  * - **No LLM selector** — Abu users typically have 5-30 memories, so a
- *   simple keyword-overlap score performs comparably to a Sonnet selector
- *   without the per-turn cost. CC uses Sonnet because they face hundreds.
+ *   lexical overlap score (latin word tokens + CJK character bigrams, with
+ *   stopword pairs and a ≥2-bigram noise gate — see tokenize/scoreMemory)
+ *   performs comparably to a Sonnet selector without the per-turn cost. CC
+ *   uses Sonnet because they face hundreds.
  * - **Private memories never enter the candidate pool** — they're explicitly
  *   excluded from auto-injection. The agent reaches them only via
  *   read_memory, which surfaces them with a restraint reminder.
@@ -48,39 +50,85 @@ interface ScoredHeader {
 }
 
 /**
- * Tokenize a query for scoring. Lowercase, split on whitespace, drop tokens
- * shorter than 2 chars (which match too aggressively in CJK text where
- * single chars like "的" / "了" carry no information).
+ * Query tokens for scoring, in two channels:
+ *   - `words`: latin/ASCII tokens (length ≥2) — whitespace-delimited languages
+ *   - `bigrams`: adjacent-character pairs from CJK runs — Chinese queries are
+ *     whitespace-free, so the old whitespace split treated "帮我看看火山方舟"
+ *     as ONE token and substring-matched it against nothing. Bigrams are the
+ *     standard CJK fallback tokenization (SQLite FTS5, ES/Lucene CJKAnalyzer).
  */
-function tokenize(query: string): string[] {
-  return query
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(t => t.length >= 2);
+interface QueryTokens {
+  words: readonly string[];
+  bigrams: readonly string[];
+}
+
+/**
+ * Function-word bigrams that appear in almost any Chinese query and carry no
+ * topical signal. Without this, "帮我看看…" would match every memory whose
+ * description happens to contain 帮我/看看.
+ */
+const BIGRAM_STOPWORDS = new Set([
+  '我们', '你们', '他们', '我的', '你的', '这个', '那个', '什么', '怎么', '怎样',
+  '可以', '现在', '一下', '帮我', '请问', '一个', '不是', '没有', '就是', '如果',
+  '因为', '所以', '但是', '还是', '应该', '觉得', '知道', '时候', '东西', '看看',
+  '这样', '那样', '这里', '那里', '的话', '是不', '有没', '能不', '多少', '哪些',
+  '哪个', '今天', '昨天', '明天',
+]);
+
+const CJK_RUN_RE = /[一-鿿]+/g;
+const LATIN_WORD_RE = /[a-z0-9][a-z0-9_./+-]*/g;
+
+function tokenize(query: string): QueryTokens {
+  const lower = query.toLowerCase();
+  const words = new Set((lower.match(LATIN_WORD_RE) ?? []).filter(t => t.length >= 2));
+  const bigrams = new Set<string>();
+  for (const run of lower.match(CJK_RUN_RE) ?? []) {
+    for (let i = 0; i + 1 < run.length; i++) {
+      const bg = run.slice(i, i + 2);
+      if (!BIGRAM_STOPWORDS.has(bg)) bigrams.add(bg);
+    }
+  }
+  return { words: [...words], bigrams: [...bigrams] };
 }
 
 /**
  * Score a memory header against the query tokens.
  *
  * Weights:
- *   - name match:        +2 per token
- *   - description match: +1 per token
- *   - recency boost:     +1 / (1 + ageDays)  — same-score tiebreaker
+ *   - word in name:        +2      | bigram in name:        +1
+ *   - word in description: +1      | bigram in description: +0.5
+ *   - recency boost:       +1 / (1 + ageDays)  — same-score tiebreaker
  *
- * Returns 0 when no token matches (caller decides whether to fall back to
+ * Bigrams are half-weighted because a single shared character pair is far
+ * weaker evidence than a shared word. On top of that, a memory matched ONLY
+ * by bigrams needs ≥2 distinct matching bigrams — one shared pair (e.g. 数据)
+ * is noise, two (数据 + 备份) is topical overlap.
+ *
+ * Returns 0 when nothing matches (caller decides whether to fall back to
  * pure-recency selection).
  */
-function scoreMemory(tokens: readonly string[], h: MemoryHeader): number {
-  if (tokens.length === 0) return 0;
+function scoreMemory(tokens: QueryTokens, h: MemoryHeader): number {
+  if (tokens.words.length === 0 && tokens.bigrams.length === 0) return 0;
 
   const name = h.name.toLowerCase();
   const desc = h.description.toLowerCase();
 
   let score = 0;
-  for (const token of tokens) {
-    if (name.includes(token)) score += 2;
-    if (desc.includes(token)) score += 1;
+  for (const word of tokens.words) {
+    if (name.includes(word)) score += 2;
+    if (desc.includes(word)) score += 1;
   }
+
+  let bigramScore = 0;
+  let bigramMatches = 0;
+  for (const bg of tokens.bigrams) {
+    const inName = name.includes(bg);
+    const inDesc = desc.includes(bg);
+    if (inName) bigramScore += 1;
+    if (inDesc) bigramScore += 0.5;
+    if (inName || inDesc) bigramMatches++;
+  }
+  if (score > 0 || bigramMatches >= 2) score += bigramScore;
 
   if (score > 0) {
     const ageDays = (Date.now() - h.updated) / 86_400_000;

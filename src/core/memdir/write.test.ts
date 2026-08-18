@@ -379,3 +379,116 @@ describe('clearAllMemories', () => {
     expect(indexCall![1]).toBe('# Memory Index\n');
   });
 });
+
+// Secret hygiene at the write funnel: every caller (explicit tool, extractor,
+// migration, UI) passes through writeMemory, so credential-shaped text must
+// come out redacted regardless of which field carried it — the real-world
+// incident had the key in the DESCRIPTION, which the contentGuard scan never
+// covered.
+describe('writeMemory · secret sanitization', () => {
+  it('redacts a bare contextual credential in the description before persisting', async () => {
+    await writeMemory({
+      name: '模型配置',
+      description: '自定义端点,API Key:tp-fak3key0fak3key1xyz',
+      type: 'user',
+      content: '端点用法见配置页',
+      workspacePath: null,
+    });
+
+    const fileCall = atomicWriteCalls().find(([p]) => p.endsWith('.md') && !p.includes('MEMORY.md'));
+    expect(fileCall).toBeDefined();
+    expect(fileCall![1]).toContain('[REDACTED:credential]');
+    expect(fileCall![1]).not.toContain('tp-fak3key0fak3key1xyz');
+    // The index line carries the description too — must be redacted there as well.
+    const indexCall = atomicWriteCalls().find(([p]) => p.includes('MEMORY.md'));
+    expect(indexCall![1]).not.toContain('tp-fak3key0fak3key1xyz');
+  });
+
+  it('redacts vendor keys in content while keeping the rest of the memory', async () => {
+    await writeMemory({
+      name: 'note',
+      description: 'provider setup',
+      type: 'project',
+      content: 'endpoint https://api.example.com works; key sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCD',
+      workspacePath: null,
+    });
+
+    const fileCall = atomicWriteCalls().find(([p]) => p.endsWith('.md') && !p.includes('MEMORY.md'));
+    expect(fileCall![1]).toContain('[REDACTED:anthropic-key]');
+    expect(fileCall![1]).toContain('https://api.example.com');
+  });
+
+  it('leaves clean memories byte-identical', async () => {
+    await writeMemory({
+      name: 'Preference',
+      description: 'likes concise replies',
+      type: 'user',
+      content: '用户偏好简短回复,不要长篇解释。',
+      workspacePath: null,
+    });
+    const fileCall = atomicWriteCalls().find(([p]) => p.endsWith('.md') && !p.includes('MEMORY.md'));
+    expect(fileCall![1]).toContain('用户偏好简短回复,不要长篇解释。');
+    expect(fileCall![1]).not.toContain('REDACTED');
+  });
+
+  it('derives an omitted description from the SANITIZED content (truncation escape regression)', async () => {
+    // A credential straddling the 80-char cut must never reach the index as
+    // a fragment too short for the redaction patterns to catch.
+    const content = 'x'.repeat(66) + 'API Key: sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCD';
+    await writeMemory({
+      name: 'endpoint note',
+      description: '',
+      type: 'project',
+      content,
+      workspacePath: null,
+    });
+    const indexCall = atomicWriteCalls().find(([p]) => p.includes('MEMORY.md'));
+    expect(indexCall![1]).not.toContain('sk-an');
+    const fileCall = atomicWriteCalls().find(([p]) => p.endsWith('.md') && !p.includes('MEMORY.md'));
+    expect(fileCall![1]).toMatch(/description: .*x{3}/); // derived from content
+    expect(fileCall![1]).not.toContain('sk-ant-abcdefghijk');
+  });
+
+  it('replaces a foreign-label index line by link target instead of duplicating it', async () => {
+    // Hand-edited / imported indexes use `[name](filename)` labels. The
+    // rewrite must still replace that line — appending a second line for the
+    // same file would keep the stale (possibly secret-bearing) description
+    // live in the always-injected index.
+    mockReadTextFile.mockImplementation(async (p: string | URL) => {
+      if (String(p).endsWith('MEMORY.md')) {
+        return '# Memory Index\n\n- [模型配置旧档](user_old.md) — 自定义端点,API Key:tp-fak3key0fak3key1xyz\n';
+      }
+      throw new Error('not found');
+    });
+    await writeMemory({
+      name: '模型配置旧档',
+      description: '自定义端点,API Key:[REDACTED:credential]',
+      type: 'user',
+      content: 'clean body',
+      workspacePath: null,
+      filename: 'user_old.md',
+    });
+    const indexCall = atomicWriteCalls().find(([p]) => p.includes('MEMORY.md'));
+    expect(indexCall![1]).not.toContain('tp-fak3key0fak3key1xyz');
+    const lineCount = indexCall![1].split('\n').filter(l => l.includes('](user_old.md)')).length;
+    expect(lineCount).toBe(1);
+  });
+
+  it('preserves created/updated/accessCount when the caller passes them (sweep rewrites)', async () => {
+    await writeMemory({
+      name: 'old memory',
+      description: 'kept metadata',
+      type: 'user',
+      content: 'body',
+      workspacePath: null,
+      filename: 'user_old.md',
+      created: 1111,
+      updated: 2222,
+      accessCount: 7,
+    });
+    const fileCall = atomicWriteCalls().find(([p]) => p.endsWith('user_old.md'));
+    expect(fileCall![1]).toContain('created: 1111');
+    expect(fileCall![1]).toContain('updated: 2222');
+    expect(fileCall![1]).toContain('accessCount: 7');
+  });
+});

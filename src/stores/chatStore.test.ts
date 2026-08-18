@@ -9,6 +9,7 @@ import {
 } from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
+import { foldMessageLog } from '@/core/session/messageLedger';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -544,7 +545,12 @@ describe('chatStore', () => {
 
       try {
         useChatStore.getState().updateUserMessageRun(id, message.id, { state: 'interrupted' });
-        await waitForConversationPersistence(id);
+        // The strict replacement is an append now, so it settles on the write
+        // queue's 100 ms drain rather than writing inline — under fake timers
+        // that drain has to be driven explicitly.
+        const persisted = waitForConversationPersistence(id);
+        await vi.advanceTimersByTimeAsync(200);
+        await persisted;
 
         expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
           runState: 'interrupted',
@@ -915,8 +921,14 @@ describe('chatStore', () => {
 
         await waitForConversationPersistence(id);
         const rows = messagesJsonl.trim().split('\n').map((line) => JSON.parse(line));
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
+        // The append and its final-content revision may land as one merged
+        // line (both still queued) or as two ledger lines (the append already
+        // drained). Either is correct — what must hold is that every row is
+        // the same message, so the fold yields exactly one, finished message.
+        expect(rows.every((row) => row.id === messageId)).toBe(true);
+        const folded = foldMessageLog(messagesJsonl.split('\n')).messages;
+        expect(folded).toHaveLength(1);
+        expect(folded[0]).toMatchObject({
           id: messageId,
           content: 'final answer',
           isStreaming: false,
@@ -932,10 +944,11 @@ describe('chatStore', () => {
   // ── cancelStreaming ──
   describe('cancelStreaming persistence', () => {
     // Simulate just enough fs for conversationStorage.replaceMessageById:
-    // the JSONL exists, holds the pre-stop row, and atomic_write_text
-    // captures the rewrite. Asserting at the fs layer exercises the real
-    // storage module (the store reaches it via a dynamic import that
-    // module-level vi.mock cannot intercept).
+    // the JSONL exists, holds the pre-stop row, and every write to it is
+    // captured. Asserting at the fs layer exercises the real storage module
+    // (the store reaches it via a dynamic import that module-level vi.mock
+    // cannot intercept). A replacement is an append now, so the revision
+    // arrives via append_file_text rather than a whole-file rewrite.
     let written: string[];
 
     beforeEach(() => {
@@ -944,10 +957,10 @@ describe('chatStore', () => {
       vi.mocked(readTextFile).mockImplementation(async () =>
         JSON.stringify({ id: 'a1', role: 'assistant', content: '部分输出', timestamp: 1 }) + '\n');
       vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-        const a = args as { path?: string; content?: string } | undefined;
-        if (cmd === 'atomic_write_text' && a?.path?.endsWith('messages.jsonl')) {
-          written.push(a.content ?? '');
-        }
+        const a = args as { path?: string; content?: string; data?: string } | undefined;
+        if (!a?.path?.endsWith('messages.jsonl')) return undefined;
+        if (cmd === 'atomic_write_text') written.push(a.content ?? '');
+        if (cmd === 'append_file_text') written.push(a.data ?? '');
         return undefined;
       });
     });
@@ -1049,9 +1062,11 @@ describe('chatStore', () => {
 
   // ── setMessageToolCalls — intent durability ──
   describe('setMessageToolCalls persistence', () => {
-    // Same fs simulation as the cancelStreaming block above: assert at the
-    // atomic_write_text layer, because the store reaches conversationStorage
-    // through a dynamic import that a module-level vi.mock cannot intercept.
+    // Same fs simulation as the cancelStreaming block above, but watching
+    // BOTH destinations: mid-turn revisions go to stream-snapshot.json (they
+    // are far too frequent to become permanent ledger lines) and checkpoints
+    // go to messages.jsonl. The durability claim this block defends is
+    // "reached disk", not "reached a particular file".
     let written: string[];
 
     beforeEach(() => {
@@ -1060,10 +1075,13 @@ describe('chatStore', () => {
       vi.mocked(readTextFile).mockImplementation(async () =>
         JSON.stringify({ id: 'a1', role: 'assistant', content: '', timestamp: 1 }) + '\n');
       vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-        const a = args as { path?: string; content?: string } | undefined;
-        if (cmd === 'atomic_write_text' && a?.path?.endsWith('messages.jsonl')) {
-          written.push(a.content ?? '');
+        const a = args as { path?: string; content?: string; data?: string } | undefined;
+        const path = a?.path ?? '';
+        if (!path.endsWith('messages.jsonl') && !path.endsWith('stream-snapshot.json')) {
+          return undefined;
         }
+        if (cmd === 'atomic_write_text') written.push(a?.content ?? '');
+        if (cmd === 'append_file_text') written.push(a?.data ?? '');
         return undefined;
       });
     });

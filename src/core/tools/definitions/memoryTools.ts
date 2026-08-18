@@ -349,7 +349,7 @@ Keep ordinary user preferences/work habits non-private; description can be more 
         const existingFile = await readMemoryFile(existing.filePath);
 
         const name = (input.name as string) || existing.name;
-        const description = (input.description as string) || content.slice(0, 80);
+        const description = (input.description as string) || '';
         const type = ((input.type as string) || existing.type) as MemoryType;
         // private: explicit override > existing value
         const isPrivate = typeof input.private === 'boolean' ? (input.private as boolean) : existing.private;
@@ -357,17 +357,32 @@ Keep ordinary user preferences/work habits non-private; description can be more 
         const liveWorkspace = wsHeaders.some((h) => h.filename === filename) ? workspacePath : null;
 
         try {
+          // Pre-sanitize so the tool result can tell the model a secret was
+          // scrubbed (writeMemory sanitizes again at the funnel — idempotent).
+          // An omitted description defaults to a slice of the SANITIZED
+          // content — slicing raw content can truncate a credential below
+          // the redaction patterns' length thresholds (fragment escapes into
+          // the always-injected index).
+          const { sanitizeMemoryFields } = await import('../../memdir/sanitize');
+          const sanitized = sanitizeMemoryFields({ name, description, content });
           await writeMemory({
-            name,
-            description,
+            name: sanitized.name,
+            description: sanitized.description || sanitized.content.slice(0, 80),
             type,
-            content,
+            content: sanitized.content,
             source: existingFile?.header.source ?? 'agent_explicit',
             workspacePath: liveWorkspace,
             filename, // override → overwrites the existing .md
             private: isPrivate,
+            // An edit updates `updated` (default now) but must not reset the
+            // memory's creation time or recall count.
+            created: existingFile?.header.created,
+            accessCount: existingFile?.header.accessCount,
           });
-          return format(t.memoryUpdated, { type, name, filename, lock: isPrivate ? ' 🔒' : '' });
+          const base = format(t.memoryUpdated, { type, name: sanitized.name, filename, lock: isPrivate ? ' 🔒' : '' });
+          return sanitized.redactions.length > 0
+            ? `${base}\n${format(t.memoryRedactionNote, { labels: sanitized.redactions.join(', ') })}`
+            : base;
         } catch (err) {
           if (err instanceof ContentSafetyError) {
             const patterns = err.scan.findings
@@ -386,8 +401,6 @@ Keep ordinary user preferences/work habits non-private; description can be more 
 
       // action === 'append' (default): write a new .md memory file
       const content = (input.content as string) || '';
-      const name = (input.name as string) || content.slice(0, 40);
-      const description = (input.description as string) || content.slice(0, 80);
       const type = ((input.type as string) || 'project') as MemoryType;
       const isPrivate = (input.private as boolean) === true;
 
@@ -396,16 +409,31 @@ Keep ordinary user preferences/work habits non-private; description can be more 
       const { writeMemory } = await import('../../memdir/write');
       const { ContentSafetyError } = await import('../../safety/contentGuard');
       try {
-        const filename = await writeMemory({
-          name,
-          description,
-          type,
+        // Pre-sanitize so the tool result can tell the model a secret was
+        // scrubbed (writeMemory sanitizes again at the funnel — idempotent).
+        // Omitted name/description default to slices of the SANITIZED content
+        // — slicing raw content can truncate a credential below the redaction
+        // patterns' length thresholds (fragment escapes into the index).
+        const { sanitizeMemoryFields } = await import('../../memdir/sanitize');
+        const sanitized = sanitizeMemoryFields({
+          name: (input.name as string) || '',
+          description: (input.description as string) || '',
           content,
+        });
+        const displayName = sanitized.name || sanitized.content.slice(0, 40);
+        const filename = await writeMemory({
+          name: displayName,
+          description: sanitized.description || sanitized.content.slice(0, 80),
+          type,
+          content: sanitized.content,
           source: 'agent_explicit',
           workspacePath,
           private: isPrivate,
         });
-        return format(t.memorySaved, { type, name, filename, lock: isPrivate ? ' 🔒' : '' });
+        const base = format(t.memorySaved, { type, name: displayName, filename, lock: isPrivate ? ' 🔒' : '' });
+        return sanitized.redactions.length > 0
+          ? `${base}\n${format(t.memoryRedactionNote, { labels: sanitized.redactions.join(', ') })}`
+          : base;
       } catch (err) {
         if (err instanceof ContentSafetyError) {
           const patterns = err.scan.findings

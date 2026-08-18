@@ -2473,6 +2473,7 @@ const enUS: TranslationDict = {
       memoryUpdated: 'Memory updated [{type}]: {name} ({filename}){lock}',
       errAppendContentEmpty: 'Error: content cannot be empty when action=append.',
       memorySaved: 'Memory saved [{type}]: {name} → {filename}{lock}',
+      memoryRedactionNote: '[Security] Credential-shaped content was redacted before saving ({labels}). Memories are replayed into future prompts — never store secret values; store a POINTER instead (e.g. "the key lives in Settings › Models" or the keychain).',
       errNoActiveSession: 'Error: no active session',
       errItemsRequired: 'Error: items list is required',
       todosCreated: 'Created {n} todo items.\n',

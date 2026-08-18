@@ -45,7 +45,6 @@ describe('shell crash reports', () => {
       errorType: 'render_process_gone',
       reason: 'oom',
       message: '',
-      windowLabel: 'main',
     });
 
     expect(reportErrorMock).toHaveBeenCalledWith(

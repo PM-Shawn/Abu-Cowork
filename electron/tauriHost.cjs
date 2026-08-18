@@ -1318,6 +1318,16 @@ function registerTauriHost(app, options = {}) {
               /* deepLinkHost not wired (e.g. a harness) — nothing to flush */
             }
           }
+          // Same flush-on-subscribe deal for shell crashes: a crash observed
+          // before this subscriber existed (startup crashes, the ones that
+          // matter most) is queued rather than delivered to nobody.
+          if (a.event === 'runtime-crash') {
+            try {
+              require('./shellCrashChannel.cjs').flushPendingShellCrashReports();
+            } catch {
+              /* crash channel not wired (e.g. a harness) — nothing to flush */
+            }
+          }
           return id;
         }
         case 'plugin:event|unlisten': {

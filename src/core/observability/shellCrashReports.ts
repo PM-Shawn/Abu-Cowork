@@ -9,11 +9,12 @@
  * severe crashes here as a `runtime-crash` event and this module makes the
  * report through the normal opt-out-checked path.
  *
- * Reach: this only covers crashes a LIVE renderer can still hear about. A
- * main-process exception qualifies (Electron keeps running and shows its
- * dialog), and so does a secondary window dying. The main window killing its
- * own renderer does not — that record stays local, readable from the offline
- * diagnostic export.
+ * Reach: this covers crashes a renderer can still hear about — a main-process
+ * exception (Electron keeps running and shows its dialog) or a secondary window
+ * dying. A crash that happens BEFORE this subscriber exists is queued by
+ * electron/shellCrashChannel.cjs and flushed on subscribe, so startup crashes
+ * are not lost. The main window killing its own renderer is still out of reach:
+ * that record stays local, readable from the offline diagnostic export.
  */
 import { listen } from '@tauri-apps/api/event';
 import { reportError } from '@/utils/consoleError';
@@ -34,7 +35,6 @@ export interface ShellCrashReport {
   reason?: string;
   /** Already redacted and length-bounded by the main process. */
   message?: string;
-  windowLabel?: string;
 }
 
 const REMOTE_ERROR_TYPE: Record<ShellCrashKind, ConsoleErrorType> = {

@@ -4,13 +4,18 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   SIDECAR_TRACE_PREFIX,
+  configureRuntimeObservability,
   createRuntimeState,
   observeMainProcessCrashes,
   observeWebContentsCrashes,
   parseJsonRpcMetadata,
+  runtimeState,
   sanitizeAttributes,
 } = require('./runtimeObservability.cjs');
 
@@ -267,7 +272,8 @@ test('renderer death is recorded for every reason but only escalated when severe
       {
         windowLabel: 'main',
         stage: 'render_process_gone',
-        outcome: 'error',
+        // Closing a window is a successful teardown, not an error record.
+        outcome: 'success',
         errorType: 'render_process_gone',
         reason: 'clean-exit',
         exitCode: 0,
@@ -294,17 +300,141 @@ test('renderer death is recorded for every reason but only escalated when severe
   });
 
   // A clean teardown and a hang are not remote-report material; a death is.
+  // windowLabel is deliberately absent: nothing downstream reads it and the
+  // remote payload has no field for it — the local record above carries it.
   assert.deepEqual(crashes, [{
     kind: 'renderer_process_gone',
     errorType: 'render_process_gone',
     reason: 'crashed',
-    windowLabel: 'main',
     message: '',
   }]);
 
   dispose();
   webContents.emit('render-process-gone', {}, { reason: 'oom', exitCode: 9 });
   assert.equal(crashes.length, 1);
+});
+
+// Electron documents eight render-process-gone reasons. Only a clean exit is a
+// teardown we asked for; every other one — including the four a severe-list
+// would forget — has to reach the remote reporter.
+for (const [reason, escalates] of [
+  ['clean-exit', false],
+  ['abnormal-exit', true],
+  ['killed', true],
+  ['crashed', true],
+  ['oom', true],
+  ['launch-failed', true],
+  ['integrity-failure', true],
+  ['memory-eviction', true],
+]) {
+  test(`render-process-gone '${reason}' ${escalates ? 'escalates' : 'stays local'}`, () => {
+    const h = makeHarness();
+    const crashes = [];
+    const webContents = new EventEmitter();
+    const dispose = observeWebContentsCrashes(webContents, 'main', {
+      state: h.state,
+      onCrash: (crash) => crashes.push(crash),
+    });
+
+    webContents.emit('render-process-gone', {}, { reason, exitCode: 5 });
+    dispose();
+
+    const record = h.events.find((entry) => entry.event === 'main.render_process_gone');
+    assert.equal(record.attributes.reason, reason);
+    assert.equal(record.attributes.outcome, escalates ? 'error' : 'success');
+    assert.deepEqual(
+      crashes,
+      escalates
+        ? [{ kind: 'renderer_process_gone', errorType: 'render_process_gone', reason, message: '' }]
+        : [],
+    );
+  });
+}
+
+test('a negative renderer exit code survives attribute sanitization', () => {
+  const h = makeHarness();
+  const webContents = new EventEmitter();
+  const dispose = observeWebContentsCrashes(webContents, 'main', { state: h.state });
+
+  // Signal- and NTSTATUS-derived exits are negative; clamping them to 0 would
+  // read as "exited normally". Other numeric attributes keep their clamp.
+  webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: -1073741819 });
+  dispose();
+
+  const record = h.events.find((entry) => entry.event === 'main.render_process_gone');
+  assert.equal(record.attributes.exitCode, -1073741819);
+  assert.equal(sanitizeAttributes({ exitCode: -9.4 }).exitCode, -9);
+  assert.equal(sanitizeAttributes({ durationMs: -5 }).durationMs, 0);
+});
+
+test('a renderer hang is recorded once per hang, not once per unresponsive tick', () => {
+  const h = makeHarness();
+  const webContents = new EventEmitter();
+  const dispose = observeWebContentsCrashes(webContents, 'main', { state: h.state });
+  const hangCount = () => h.events.filter((e) => e.event === 'main.renderer_unresponsive').length;
+
+  // Chromium re-fires 'unresponsive' throughout one hang; each record is a
+  // synchronous main-process disk append, so only the transition counts.
+  webContents.emit('unresponsive');
+  webContents.emit('unresponsive');
+  webContents.emit('unresponsive');
+  assert.equal(hangCount(), 1);
+
+  // Recovery re-arms the latch, so the NEXT hang is recorded again.
+  webContents.emit('responsive');
+  webContents.emit('unresponsive');
+  assert.equal(hangCount(), 2);
+
+  // A renderer that dies while hung also re-arms it: the replacement render
+  // process starts healthy and never fires 'responsive' for the old hang.
+  webContents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 133 });
+  webContents.emit('unresponsive');
+  assert.equal(hangCount(), 3);
+
+  dispose();
+  webContents.emit('unresponsive');
+  assert.equal(hangCount(), 3);
+  assert.equal(webContents.listenerCount('responsive'), 0);
+});
+
+test('one rejection seen by both main-process hooks is recorded once', () => {
+  const h = makeHarness();
+  const crashes = [];
+  const processRef = new EventEmitter();
+  let clock = 1_000;
+  const dispose = observeMainProcessCrashes(processRef, {
+    state: h.state,
+    onCrash: (crash) => crashes.push(crash),
+    now: () => clock,
+    dedupeWindowMs: 50,
+  });
+
+  // Under Node's `strict` unhandled-rejection mode the same reason arrives at
+  // BOTH hooks; without dedupe that is one crash logged and reported twice.
+  const reason = new Error('rejected once');
+  processRef.emit('unhandledRejection', reason, Promise.resolve());
+  processRef.emit('uncaughtExceptionMonitor', reason, 'unhandledRejection');
+  assert.equal(h.events.length, 1);
+  assert.equal(h.events[0].event, 'main.unhandled_rejection');
+  assert.equal(crashes.length, 1);
+
+  // A different error in the same window is still its own crash.
+  processRef.emit('uncaughtExceptionMonitor', new Error('unrelated'), 'uncaughtException');
+  assert.equal(crashes.length, 2);
+
+  // Repeats of the same object inside one window stay a single crash...
+  clock += 51;
+  processRef.emit('uncaughtExceptionMonitor', reason, 'uncaughtException');
+  processRef.emit('uncaughtExceptionMonitor', reason, 'uncaughtException');
+  assert.equal(crashes.length, 3);
+  assert.equal(crashes.at(-1).kind, 'main_uncaught_exception');
+
+  // ...but once the window closes, the same object is a genuinely new crash.
+  clock += 51;
+  processRef.emit('uncaughtExceptionMonitor', reason, 'uncaughtException');
+  assert.equal(crashes.length, 4);
+
+  dispose();
 });
 
 test('tracks native helper start, readiness, restart, crash, and call timeout without payloads', () => {
@@ -334,4 +464,32 @@ test('tracks native helper start, readiness, restart, crash, and call timeout wi
     { helperGeneration: 1, stage: 'crashed', durationMs: 25 },
     { helperGeneration: 2, stage: 'starting', durationMs: 0 },
   ]);
+});
+
+// Runs last on purpose: it configures the module-level log file, which is a
+// one-shot for the lifetime of this process.
+test('events recorded before the log path is known are backfilled to disk', (t) => {
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-runtime-observability-'));
+  t.after(() => fs.rmSync(logDir, { recursive: true, force: true }));
+
+  // Crashes in the pre-configure startup window (single-instance lock,
+  // deep-link wiring) have no file to land in yet — they must not be lost.
+  runtimeState.noteMainUncaughtException('preconfigure_typeerror', 'uncaughtException');
+  assert.equal(fs.existsSync(path.join(logDir, 'runtime-observability.jsonl')), false);
+
+  configureRuntimeObservability({ getPath: () => logDir });
+  runtimeState.noteMainUnhandledRejection('postconfigure_error');
+
+  const written = fs.readFileSync(path.join(logDir, 'runtime-observability.jsonl'), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    written.map((entry) => entry.errorType),
+    ['preconfigure_typeerror', 'postconfigure_error'],
+  );
+  // Backfilled entries keep their original recording order and shape.
+  assert.equal(written[0].event, 'main.uncaught_exception');
+  assert.equal(written[0].process, 'main');
+  assert.ok(written[0].timestamp <= written[1].timestamp);
 });

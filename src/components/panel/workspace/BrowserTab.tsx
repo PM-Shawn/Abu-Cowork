@@ -70,6 +70,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // A workspace popover (tab-strip menu) is also a React overlay the native
   // webview would paint over — hide while one is up.
   const menuOpen = usePreviewStore((s) => s.menuOpen);
+  // App-global modals (close-window dialog) sit above the chat column but the
+  // native webview would still paint over them — treat like a blocking approval.
+  const appModalOpen = usePreviewStore((s) => s.appModalOpen);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const commandApproval = useSyncExternalStore(
     subscribeToCommandConfirmation,
@@ -90,7 +93,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const blockingApprovalOpen = hasVisibleBlockingApproval(
     activeConversationId,
     [commandApproval, fileApproval, workspaceApproval],
-    capabilitySetup !== null,
+    capabilitySetup !== null || appModalOpen,
   );
 
   const [addressInput, setAddressInput] = useState(url);
@@ -129,6 +132,17 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // during render (that would trip react-hooks/refs).
   const committedUrlRef = useRef(committedUrl);
 
+  // Freeze-frame shown while the native view is hidden for an overlay. The
+  // native view paints above React, so hiding it for a modal/menu would flash
+  // the pane to blank white; capturing the last frame first keeps the page
+  // visually "under" the overlay (Claude desktop's warm-capture approach).
+  // null while the native view is visible.
+  const [freezeFrame, setFreezeFrame] = useState<string | null>(null);
+  // Why the pane is about to hide. Only overlay hides deserve a capture — a
+  // keep-alive tab going off-screen would otherwise pay a capturePage round
+  // trip on every tab switch and retain a multi-MB data URL nobody can see.
+  const hiddenForOverlayRef = useRef(false);
+
   // Reconcile visibility serially. IPC failures leave `shownRef` unchanged so
   // the interval below retries instead of permanently believing the view moved.
   const reconcileNativeVisibility = useCallback(() => {
@@ -138,6 +152,27 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       while (createdRef.current) {
         const desired = desiredVisibleRef.current;
         if (shownRef.current === desired) return;
+        if (!desired) {
+          if (hiddenForOverlayRef.current) {
+            // Capture BEFORE hiding — a hidden view has no compositor frame.
+            // Best-effort: a null capture just falls back to the blank pane.
+            try {
+              const frame = await invoke<string | null>('browser_capture', { id: tabId });
+              if (typeof frame === 'string' && frame.startsWith('data:image/')) {
+                setFreezeFrame(frame);
+              }
+            } catch {
+              /* keep whatever frame we already have */
+            }
+            if (!createdRef.current) return;
+            // Overlay may have closed while capturing — re-check before hiding.
+            if (desiredVisibleRef.current !== desired) continue;
+          } else {
+            // Off-screen hide (tab switch, zero rect): no capture, and drop
+            // any stale frame so it cannot outlive the page it shows.
+            setFreezeFrame(null);
+          }
+        }
         try {
           await invoke(desired ? 'browser_show' : 'browser_hide', { id: tabId });
         } catch {
@@ -145,6 +180,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
         }
         if (!createdRef.current) return;
         shownRef.current = desired;
+        if (desired) setFreezeFrame(null);
       }
     })();
     visibilityOperationRef.current = operation;
@@ -164,14 +200,13 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     const r = el.getBoundingClientRect();
     // A CSS-hidden ancestor (inactive keep-alive tab) yields a zero rect; a
     // full-window modal should also force-hide even though the rect is valid.
-    const visible =
-      r.width >= 1
-      && r.height >= 1
-      && el.offsetParent !== null
-      && !systemSettingsOpen
-      && !menuOpen
-      && !blockingApprovalOpen;
+    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen;
+    const onScreen = r.width >= 1 && r.height >= 1 && el.offsetParent !== null;
+    const visible = onScreen && !overlayActive;
 
+    // Record WHY we are hiding: only "on screen but covered by an overlay"
+    // warrants the freeze-frame capture in reconcileNativeVisibility.
+    hiddenForOverlayRef.current = onScreen && overlayActive;
     desiredVisibleRef.current = visible;
     reconcileNativeVisibility();
     if (!visible) {
@@ -460,8 +495,19 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       </div>
 
       {/* Placeholder the native webview is positioned over. When there's no URL
-          yet, no webview exists, so this React start prompt is visible. */}
-      <div ref={containerRef} className="flex-1 min-h-0 bg-white">
+          yet, no webview exists, so this React start prompt is visible. While
+          the native view is hidden for an overlay, the freeze-frame keeps the
+          last rendered page visible instead of a blank pane. */}
+      <div ref={containerRef} className="relative flex-1 min-h-0 bg-white">
+        {freezeFrame && committedUrl && (
+          <img
+            src={freezeFrame}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full object-cover"
+            draggable={false}
+          />
+        )}
         {!committedUrl && (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-center p-4">
             <AppWindow className="w-6 h-6 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />

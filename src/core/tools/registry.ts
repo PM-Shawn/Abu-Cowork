@@ -7,7 +7,14 @@ import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
-import { classifyBrowserTool, grantBrowserAutomation, hasBrowserGrant } from '../permissions/browserToolPolicy';
+import {
+  classifyBrowserTool,
+  grantBrowserAutomation,
+  hasBrowserGrant,
+  getSiteVerdict,
+  isScriptingBrowserTool,
+  normalizeBrowserOrigin,
+} from '../permissions/browserToolPolicy';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
 import { reviewAction } from '../safety/reviewer';
@@ -280,6 +287,62 @@ export interface ToolApprovalDecision {
  * and every side-effecting call (`authorizeWorkspace`, `showPolicyConfirm`)
  * stays exactly as it was — this function still runs shell-side only.
  */
+/**
+ * Resolve which site a browser action targets, as an exact origin.
+ *
+ * `navigate` carries the destination in its input; every other action only
+ * carries a `tabId`, so we ask the same browser server for its tab list
+ * (`get_tabs` returns each tab's URL) and match the id. Best-effort: any
+ * failure resolves to null, which the gate treats as "unknown site" — the
+ * action can still be approved, but only one conversation at a time, never
+ * persistently.
+ */
+async function resolveBrowserActionOrigin(
+  namespacedName: string,
+  input: Record<string, unknown>,
+): Promise<string | null> {
+  const separator = namespacedName.indexOf('__');
+  const serverName = namespacedName.slice(0, separator);
+  const toolName = namespacedName.slice(separator + 2);
+
+  if (toolName === 'navigate') {
+    // Only `goto` actually navigates to `input.url`. For back/forward/reload
+    // the executor ignores `url` entirely, so trusting it here would let a
+    // decoy url ride an allowed-site verdict while the browser goes somewhere
+    // else (history/reload). Destination is unknowable → null → ask.
+    const action = typeof input.action === 'string' ? input.action : 'goto';
+    if (action !== 'goto') return null;
+    const url = typeof input.url === 'string' ? input.url : undefined;
+    return url ? normalizeBrowserOrigin(url) : null;
+  }
+
+  const tabId = Number(input.tabId);
+  if (!Number.isFinite(tabId)) return null;
+  try {
+    // Approval must never hang on a wedged browser server: the MCP browser
+    // timeout is 120s, so race a short deadline and fall back to "unknown
+    // origin" (which just asks). Known residual: the builtin server's
+    // get_tabs provisions an automation view when none exists — acceptable
+    // here because an approved action would do the same a moment later.
+    const result = await Promise.race([
+      mcpManager.callTool(serverName, 'get_tabs', {}),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
+    if (result === null || typeof result !== 'string') return null;
+    const parsed = JSON.parse(result) as {
+      windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }>;
+    };
+    for (const win of parsed.windows ?? []) {
+      for (const tab of win.tabs ?? []) {
+        if (tab.tabId === tabId) return normalizeBrowserOrigin(tab.url);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function checkToolApproval(
   name: string,
   input: Record<string, unknown>,
@@ -420,29 +483,55 @@ export async function checkToolApproval(
   // Browser automation acts inside the user's live, logged-in sessions — the
   // same consequence Computer Use already gates for browser apps. Gate the
   // state-changing subset here so the cheaper mechanism is not the ungated one.
-  // Approval is per conversation (like Computer Use's per-task grant): the user
-  // approves once for the task, not once per click.
+  // Two grant scopes: a persistent per-site verdict (settingsStore, written
+  // from the dialog's "always allow this site" / revocable in Settings) and
+  // the per-conversation TTL grant ("just this once"). Precedence:
+  // denied site > allowed site > conversation grant > ask. Scripting tools
+  // (execute_js) never ride a site grant — each use is its own ask.
   {
     const consequence = classifyBrowserTool(name);
     if (consequence === 'state-changing') {
-      const granted = hasBrowserGrant(toolContext?.conversationId);
+      const origin = await resolveBrowserActionOrigin(name, input);
+      const siteVerdict = getSiteVerdict(
+        origin,
+        getSettingsReader().getSnapshot().browserSitePermissions ?? {},
+      );
+      if (siteVerdict === 'denied') {
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
+      }
+      // Scripting (execute_js) is a stronger capability than clicking: the
+      // dialog promises "each run asks separately", so it must neither ride
+      // the conversation grant nor a persistent site grant.
+      const scripting = isScriptingBrowserTool(name);
+      const granted =
+        !scripting &&
+        (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
       const decision = strategy.decideOtherTool(consequence, granted);
       if (decision !== 'allow') {
         if (!onRequireConfirmation) {
           // No confirmation channel (headless/background run) — fail closed
-          // rather than silently acting in the user's session.
+          // rather than silently acting in the user's session. Sites the user
+          // explicitly allowed were already let through above, which is what
+          // makes pre-authorized unattended runs (scheduled tasks) possible.
           return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
         }
         const confirmed = await onRequireConfirmation({
-          command: `${t.commandConfirm.browserAction}: ${name}`,
+          command: origin
+            ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+            : `${t.commandConfirm.browserAction}: ${name}`,
           level: 'warn',
-          reason: t.commandConfirm.browserReason,
+          reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
           kind: 'browser',
+          browserOrigin: origin ?? undefined,
+          allowPersistentGrant: !scripting && origin !== null,
         });
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
-        grantBrowserAutomation(toolContext?.conversationId);
+        // A script approval covers that one run only — minting the
+        // conversation grant from it would silently unlock 30 minutes of
+        // click/fill/navigate the user never approved.
+        if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
       }
     }
   }

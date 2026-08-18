@@ -103,6 +103,7 @@ const BROWSER_CMDS = new Set([
   'browser_reload',
   'browser_hide',
   'browser_show',
+  'browser_capture',
   'browser_close',
   'browser_inspect_set',
 ]);
@@ -723,6 +724,27 @@ function browserHide({ id }) {
   return null;
 }
 
+/**
+ * Capture the view's current frame as a data URL. Used by the renderer to
+ * freeze-frame the pane right before hiding the native view for an overlay
+ * (modal/menu) — without it the pane flashes to blank white, since the
+ * native view paints above React and hiding it reveals the empty placeholder.
+ * Same idea as Claude desktop's "warm capture" before a preview hides.
+ * Returns null when the view is gone or the capture fails — callers fall
+ * back to the blank placeholder rather than blocking the hide.
+ */
+async function browserCapture({ id }) {
+  const view = getView(id);
+  if (!view || !view.webContents || view.webContents.isDestroyed()) return null;
+  try {
+    const image = await view.webContents.capturePage();
+    if (image.isEmpty()) return null;
+    return image.toDataURL();
+  } catch {
+    return null;
+  }
+}
+
 function browserShow({ id }) {
   const view = getView(id);
   if (view) {
@@ -788,6 +810,8 @@ function browserDispatch(app, cmd, args) {
       return browserHide(a);
     case 'browser_show':
       return browserShow(a);
+    case 'browser_capture':
+      return browserCapture(a);
     case 'browser_close':
       return browserClose(a);
     case 'browser_inspect_set':

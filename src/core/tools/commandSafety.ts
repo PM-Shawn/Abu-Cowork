@@ -29,6 +29,20 @@ export interface ConfirmationInfo {
    * existing caller keeps its current wording.
    */
   kind?: 'command' | 'browser' | 'self-extension';
+  /**
+   * Browser confirmations only: the exact origin the action targets, when it
+   * could be resolved. Lets the dialog offer "always allow this site".
+   */
+  browserOrigin?: string;
+  /**
+   * Browser confirmations only: whether the dialog may offer a persistent
+   * per-site grant. False for scripting tools (execute_js) and for actions
+   * whose origin could not be resolved — those are approved one use at a
+   * time. The requester decides this, mirroring how competitors dispatch
+   * allowed persistence scopes per request instead of letting the dialog
+   * guess.
+   */
+  allowPersistentGrant?: boolean;
 }
 
 /**

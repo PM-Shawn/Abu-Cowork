@@ -93,7 +93,7 @@ const chatDeltaSetConversationStatusMock = vi.fn();
 const chatDeltaCancelStreamingMock = vi.fn();
 const chatDeltaDeactivateSkillsMock = vi.fn();
 const chatDeltaAddMessageMock = vi.fn();
-const chatDeltaDeleteMessageMock = vi.fn();
+const chatDeltaDeleteMessagesFromMock = vi.fn();
 vi.mock('./ports/chatDelta', () => ({
   getChatDelta: () => ({
     appendToolCallContext: (...a: unknown[]) => appendToolCallContextMock(...a),
@@ -104,7 +104,7 @@ vi.mock('./ports/chatDelta', () => ({
     cancelStreaming: (...a: unknown[]) => chatDeltaCancelStreamingMock(...a),
     deactivateSkills: (...a: unknown[]) => chatDeltaDeactivateSkillsMock(...a),
     addMessage: (...a: unknown[]) => chatDeltaAddMessageMock(...a),
-    deleteMessage: (...a: unknown[]) => chatDeltaDeleteMessageMock(...a),
+    deleteMessagesFrom: (...a: unknown[]) => chatDeltaDeleteMessagesFromMock(...a),
   }),
 }));
 
@@ -464,7 +464,7 @@ describe('agentLoopRunner', () => {
     chatDeltaCancelStreamingMock.mockReset();
     chatDeltaDeactivateSkillsMock.mockReset();
     chatDeltaAddMessageMock.mockReset();
-    chatDeltaDeleteMessageMock.mockReset();
+    chatDeltaDeleteMessagesFromMock.mockReset();
     cancelExecutionMock.mockReset();
     scratchpadAddEntryMock.mockReset();
     recordMaxOutputTokensMock.mockReset();
@@ -2632,10 +2632,7 @@ describe('agentLoopRunner', () => {
       );
       expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
       expect(chatDeltaDeactivateSkillsMock).toHaveBeenCalledWith('conv-1');
-      expect(chatDeltaDeleteMessageMock).toHaveBeenCalledWith('conv-1', 'ghost-1', {
-        skipCatalogBump: false,
-        persist: true,
-      });
+      expect(chatDeltaDeleteMessagesFromMock).toHaveBeenCalledWith('conv-1', 'ghost-1');
       expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
       expect(drainSystemQueuedInputsMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();

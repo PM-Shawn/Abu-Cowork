@@ -47,7 +47,7 @@ describe('createFrameChatDelta', () => {
     delta.setMessageStreamingFlag('c1', 'm1', true);
     delta.setMessageToolCalls('c1', 'm1', []);
     delta.addMessage('c1', { id: 'm1', role: 'user', content: 'hi', timestamp: 1 });
-    delta.deleteMessage('c1', 'm1', { skipCatalogBump: true });
+    delta.deleteMessagesFrom('c1', 'm1');
     delta.updateToolCall(
       'c1',
       'm1',

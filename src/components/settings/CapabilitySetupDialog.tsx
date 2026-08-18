@@ -80,8 +80,10 @@ export default function CapabilitySetupDialog() {
           mediaType: item.type === 'image' ? item.source.media_type : 'image/png' as const,
         }))
       : [];
-    if (message.loopId) chat.deleteLoopMessages(request.conversationId, message.loopId);
-    else chat.deleteMessagesFrom(request.conversationId, message.id);
+    // `message` is the user message that started this loop (loops always
+    // begin with their user message), so truncating from its own id already
+    // removes the whole loop — deleteLoopMessages is retired (plan stage 3).
+    chat.deleteMessagesFrom(request.conversationId, message.id);
     await runAgentLoopDispatched(
       request.conversationId,
       summary,

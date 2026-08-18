@@ -61,7 +61,7 @@ const CHAT_METHODS = new Set<string>([
   'setMessageStreamingFlag',
   'setMessageToolCalls',
   'addMessage',
-  'deleteMessage',
+  'deleteMessagesFrom',
   'updateToolCall',
   'appendToolCallContext',
   'updateMessageUsage',

@@ -142,5 +142,35 @@ describe('messageLedger', () => {
       expect(event.pid).toBeUndefined();
       expect(Object.prototype.hasOwnProperty.call(event, 'from')).toBe(false);
     });
+
+    it(
+      'rollback safety (plan §5.2): an old build\'s parser — no `lk` handling at all — treats a real ' +
+      'msg.truncate line as just another harmless, invisible Message, and does not crash on it',
+      () => {
+        const lines = [
+          JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 }),
+          JSON.stringify({ id: 'm2', role: 'assistant', content: 'b', timestamp: 2 }),
+          JSON.stringify(createLedgerEvent('msg.truncate', { id: 'trunc_1', timestamp: 3, from: 'm2', pid: 'm1' })),
+        ];
+
+        let rendered: Message[] = [];
+        expect(() => { rendered = legacyLoad(lines); }).not.toThrow();
+
+        // The old dedup-only parser has no truncate semantics, so it renders
+        // all three rows — m1, m2, AND the event row itself — as if the
+        // delete never happened. This is the "rollback is not read-only"
+        // half of plan §5.2: no data is lost, but the delete intent is
+        // invisible until the user upgrades again.
+        expect(rendered.map((m) => m.id)).toEqual(['m1', 'm2', 'trunc_1']);
+
+        const eventRow = rendered[2];
+        // The four fields that make an event row a legal, harmless Message
+        // for a renderer that has never heard of `lk`.
+        expect(eventRow.content).toBe('');
+        expect(typeof eventRow.content).toBe('string');
+        expect(eventRow.isSystem).toBe(true);
+        expect(eventRow.role).toBe('system');
+      },
+    );
   });
 });

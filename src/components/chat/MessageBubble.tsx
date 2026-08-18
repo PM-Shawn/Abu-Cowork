@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, Trash2, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -209,7 +209,6 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
 interface MessageActionsProps {
   message: Message;
   onEdit: () => void;
-  onDelete: () => void;
   onRegenerate: () => void;
   isUser: boolean;
   conversationId?: string;
@@ -232,7 +231,7 @@ function MessageTimestamp({ timestamp, className = '' }: { timestamp: number; cl
   );
 }
 
-function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conversationId }: MessageActionsProps) {
+function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId }: MessageActionsProps) {
   const { t } = useI18n();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const [copied, setCopied] = useState(false);
@@ -347,14 +346,6 @@ function MessageActions({ message, onEdit, onDelete, onRegenerate, isUser, conve
         </button>
       )}
 
-      {/* Delete button */}
-      <button
-        onClick={onDelete}
-        className="btn-ghost p-1.5 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
-        title={t.common.delete}
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
     </div>
   );
 }
@@ -460,25 +451,6 @@ export default function MessageBubble({
     await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
   };
 
-  const handleDelete = () => {
-    if (!convId || !activeConv) return;
-    if (isUser && message.loopId) {
-      // For user messages, delete user + all assistant messages in this loop
-      useChatStore.getState().deleteLoopMessages(convId, message.loopId);
-    } else if (!isUser && message.loopId) {
-      // For assistant messages, only delete assistant messages in this loop (keep user message)
-      const assistantIdsInLoop = activeConv.messages
-        .filter((m) => m.loopId === message.loopId && m.role === 'assistant')
-        .map((m) => m.id);
-      for (const id of assistantIdsInLoop) {
-        useChatStore.getState().deleteMessage(convId, id);
-      }
-    } else {
-      // No loopId, just delete this one message
-      useChatStore.getState().deleteMessage(convId, message.id);
-    }
-  };
-
   const handleRunRetry = async () => {
     if (!convId || !activeConv || message.role !== 'user') return;
     const originalImages = getImageBlocks(message.content);
@@ -488,8 +460,17 @@ export default function MessageBubble({
       mediaType: img.source.media_type,
     }));
     const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
-    if (message.loopId) useChatStore.getState().deleteLoopMessages(convId, message.loopId);
-    else useChatStore.getState().deleteMessage(convId, message.id);
+    // Rewind semantics (plan stage 3): truncate from the retried turn's FIRST
+    // message. `message` is itself that first message when it belongs to a
+    // loop (the user message is always added before any assistant message of
+    // the same loop — see agentLoop.ts), so finding the earliest message
+    // sharing its loopId is equivalent to using `message.id` directly; doing
+    // the lookup explicitly keeps this correct even if that invariant ever
+    // changes upstream.
+    const truncateFromId = message.loopId
+      ? activeConv.messages.find((m) => m.loopId === message.loopId)?.id ?? message.id
+      : message.id;
+    useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
     await runAgentLoopDispatched(
       convId,
       routedContent,
@@ -550,7 +531,6 @@ export default function MessageBubble({
         <MessageActions
           message={message}
           onEdit={() => {}}
-          onDelete={handleDelete}
           onRegenerate={handleRegenerate}
           isUser={false}
           conversationId={convId}
@@ -666,7 +646,6 @@ export default function MessageBubble({
                   <MessageActions
                     message={message}
                     onEdit={handleEdit}
-                    onDelete={handleDelete}
                     onRegenerate={handleRegenerate}
                     isUser={true}
                   />
@@ -716,7 +695,6 @@ export default function MessageBubble({
             <MessageActions
               message={message}
               onEdit={() => {}}
-              onDelete={handleDelete}
               onRegenerate={handleRegenerate}
               isUser={false}
               conversationId={convId}
@@ -771,7 +749,6 @@ export default function MessageBubble({
             <MessageActions
               message={message}
               onEdit={() => {}}
-              onDelete={handleDelete}
               onRegenerate={handleRegenerate}
               isUser={false}
               conversationId={convId}

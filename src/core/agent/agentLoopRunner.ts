@@ -585,11 +585,11 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
             && !(streamingAssistant.toolCallsForContext?.length)
             && !streamingAssistant.thinking;
           if (isGhost) {
-            const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
-            chatDelta.deleteMessage(session.conversationId, streamingAssistant.id, {
-              skipCatalogBump: !isMessageWrittenToDisk(streamingAssistant.id),
-              persist: true,
-            });
+            // deleteMessagesFrom (plan stage 3) always persists, and its
+            // appendTruncateEvent skip guard already tells a never-durable
+            // ghost from one with a physical row to cut — no separate
+            // isMessageWrittenToDisk check needed here anymore.
+            chatDelta.deleteMessagesFrom(session.conversationId, streamingAssistant.id);
           }
         }
       } catch (err) {

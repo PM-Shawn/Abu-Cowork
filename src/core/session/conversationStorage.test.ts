@@ -151,20 +151,26 @@ describe('conversationStorage', () => {
     });
   });
 
-  describe('deleteMessageById', () => {
-    it('durably removes only the targeted JSONL row and releases its dedup id', async () => {
+  describe('appendTruncateEvent', () => {
+    it('durably truncates a persisted message and releases its dedup id', async () => {
       await storage.appendMessage('conv-delete-one', makeMsg({ id: 'keep', content: 'keep me' }));
       await storage.appendMessage('conv-delete-one', makeMsg({ id: 'ghost', role: 'assistant', content: '' }));
+      await storage.flushWrites();
 
-      await expect(storage.deleteMessageById('conv-delete-one', 'ghost')).resolves.toBe(true);
+      await expect(
+        storage.appendTruncateEvent('conv-delete-one', 'ghost', { pid: 'keep', removedIds: ['ghost'] }),
+      ).resolves.toBe(true);
+      await storage.flushWrites();
 
       const loaded = await storage.loadMessages('conv-delete-one');
       expect(loaded.map((message) => message.id)).toEqual(['keep']);
       expect(storage.isMessageWrittenToDisk('ghost')).toBe(false);
     });
 
-    it('treats an id that never reached disk as an idempotent no-op', async () => {
-      await expect(storage.deleteMessageById('conv-missing', 'never-written')).resolves.toBe(false);
+    it('is a no-op (skip guard) for an id that never reached disk and has no pending put', async () => {
+      await expect(
+        storage.appendTruncateEvent('conv-missing', 'never-written', { removedIds: ['never-written'] }),
+      ).resolves.toBe(false);
     });
   });
 
@@ -1193,6 +1199,116 @@ describe('conversationStorage', () => {
       });
     });
 
+    describe('appendTruncateEvent', () => {
+      it('edit-and-resend journey: append a,b,c → truncate from b → append d,e → fold keeps [a,d,e]', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'c', content: '3' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b', 'c'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'd', content: '4' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'e', content: '5' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a', 'd', 'e']);
+      });
+
+      it('revives a truncated id: re-appending it after the cut lands as a fresh row', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b'] });
+        await storage.flushWrites();
+        expect(await storage.loadMessages('conv-1')).toHaveLength(1);
+
+        // Without releasing `b` from writtenIds, this would be silently
+        // dedup-skipped (appendMessage's `writtenIds.has` early return) and
+        // the line would never even reach the queue.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: 'reborn' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a', 'b']);
+        expect(loaded[1].content).toBe('reborn');
+      });
+
+      it("the next message's parent pointer skips the removed tail and points at the surviving message", async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'c', content: '3' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b', 'c'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'd', content: '4' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        const dRow = rows.find((r) => r.id === 'd');
+        // Points at 'a' (the surviving tail), never at 'c' (the removed
+        // physical tail) — plan §3.2.
+        expect(dRow).toMatchObject({ pid: 'a' });
+      });
+
+      it('truncating from the conversation\'s first message omits pid, and the next append has none either', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'a', { removedIds: ['a'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        const eventRow = rows.find((r) => r.lk === 'msg.truncate');
+        expect(eventRow?.pid).toBeUndefined();
+        const bRow = rows.find((r) => r.id === 'b');
+        expect(bRow?.pid).toBeUndefined();
+      });
+
+      it('a persisted ghost gets a real truncate event line', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'user-1', content: 'hi' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'ghost-1', role: 'assistant', content: '' }));
+        await storage.flushWrites();
+
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'ghost-1', { pid: 'user-1', removedIds: ['ghost-1'] }),
+        ).resolves.toBe(true);
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        expect(rows.some((r) => r.lk === 'msg.truncate' && r.from === 'ghost-1')).toBe(true);
+      });
+
+      it('a never-persisted ghost writes no event line at all', async () => {
+        // Never appended, and nothing queued for it either — the pure
+        // in-memory case (a streaming placeholder aborted before its first
+        // checkpoint ever reached appendMessage).
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'ghost-never-written', { removedIds: ['ghost-never-written'] }),
+        ).resolves.toBe(false);
+        expect(memFs.files.has(MESSAGES)).toBe(false);
+      });
+
+      it('survives a restart: loadMessages after a fresh module re-import still folds the truncate', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b'] });
+        await storage.flushWrites();
+
+        // Simulate an app restart: all module-level state (writtenIds,
+        // parentIdByMessage, ...) is gone, and the only source of truth left
+        // is what actually landed in memFs.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a']);
+      });
+    });
+
     describe('stream snapshot', () => {
       it('keeps in-flight revisions out of the ledger but readable after a crash', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
@@ -1245,7 +1361,8 @@ describe('conversationStorage', () => {
         await storage.flushWrites();
         await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
 
-        await storage.deleteMessageById('conv-1', 'm2');
+        await storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] });
+        await storage.flushWrites();
 
         const loaded = await storage.loadMessages('conv-1');
         expect(loaded.map((m) => m.id)).toEqual(['m1']);
@@ -1292,20 +1409,31 @@ describe('conversationStorage', () => {
         expect(loaded.map((m) => m.id)).toEqual(['m1', 'm3']);
       });
 
-      it('a queued revision does not resurrect a message deleted before the drain', async () => {
+      it('a queued put lands BEFORE a same-drain-window truncate event, and the fold still removes it (queue ordering)', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
         await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
         await storage.flushWrites();
 
         // Checkpoint write still sitting in the 100ms-debounced queue when the
-        // delete lands — the abort path does exactly this (agentLoop's ghost
-        // cleanup runs right behind the turn's last persist).
+        // truncate lands — the abort path does exactly this (agentLoop's ghost
+        // cleanup runs right behind the turn's last persist). The pending put
+        // is what keeps appendTruncateEvent's skip guard from firing: `m2`
+        // isn't in `writtenIds` yet, but it IS `hasPendingPut`.
         const queued = storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-checkpoint' }));
         for (let i = 0; i < 20; i++) await Promise.resolve();
-        await storage.deleteMessageById('conv-1', 'm2');
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] }),
+        ).resolves.toBe(true);
         await storage.flushWrites();
         await queued;
 
+        const rows = physicalLines(MESSAGES);
+        // The put physically lands before the event line — order-sensitive
+        // enqueue, no coalescing across it.
+        expect(rows.map((r) => r.id)).toEqual(['m1', 'm2', 'm2', rows[3].id]);
+        expect(rows[2]).toMatchObject({ id: 'm2', content: 'b-checkpoint' });
+        expect(rows[3]).toMatchObject({ lk: 'msg.truncate', from: 'm2' });
+        // ...and the fold then removes it.
         const loaded = await storage.loadMessages('conv-1');
         expect(loaded.map((m) => m.id)).toEqual(['m1']);
       });

@@ -1762,14 +1762,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         if (streamFlushInFlight) return;
         streamFlushInFlight = true;
         try {
-          const { replaceMessageById } = await import('../session/conversationStorage');
+          const { snapshotMessageRevision } = await import('../session/conversationStorage');
           const currentMsg = getConversationReader().getConversation(conversationId)
             ?.messages.find((m) => m.id === assistantMsgId);
           // Re-read after the async import. If the turn completed while this
           // timer callback yielded, its final write is authoritative and this
           // older periodic snapshot must not overwrite it.
           if (!currentMsg?.isStreaming) return;
-          await replaceMessageById(conversationId, currentMsg);
+          // Snapshot, not ledger append: a ten-minute stream fires this ~120
+          // times, and each one would otherwise be a full copy of a message
+          // that only grows. The snapshot is overwritten in place and folded
+          // back in on load, so crash protection is unchanged.
+          await snapshotMessageRevision(conversationId, currentMsg);
         } catch {
           // Best-effort crash protection. Final turn persistence remains the
           // authoritative write when the request completes normally.

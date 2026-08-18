@@ -1129,10 +1129,16 @@ export const useChatStore = create<ChatStore>()(
         // only hit disk when finishStreaming / turn-boundary replaceMessageById fires —
         // so a crash/force-quit mid-stream (or a late-arriving result after the
         // enclosing message was already snapshotted) loses toolCalls on reload.
+        //
+        // This goes to the stream snapshot rather than the ledger: it fires once
+        // per tool result, and each write carries the whole message including
+        // every earlier result, so appending here would cost O(N²) bytes within
+        // a single tool-heavy turn. The turn-boundary checkpoint in agentLoop is
+        // what commits the batch to the ledger.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
           });
         }
       },
@@ -1419,10 +1425,15 @@ export const useChatStore = create<ChatStore>()(
         // anything" even though a side effect (rm, write_file, an API call) had
         // already run — the recovery path could not tell "not started" from
         // "started, unrecorded", and a retry would execute it twice.
+        //
+        // Same routing as updateToolCall: this is mid-turn state, so it belongs
+        // in the stream snapshot (durable, folded in on load) rather than as a
+        // permanent ledger line that the batch checkpoint would supersede
+        // seconds later anyway.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
           });
         }
       },

@@ -27,7 +27,12 @@ vi.mock('../enterprise/policy/enforcer', () => ({
 import { toolRegistry } from './registry';
 import { useMCPStore } from '../../stores/mcpStore';
 import { useSettingsStore } from '../../stores/settingsStore';
-import { computeCapabilitySnapshot } from './capabilitySnapshot';
+import {
+  computeCapabilitySnapshot,
+  classifyMcpErrorCategory,
+  sanitizeMcpError,
+  summarizeMcpConnectionError,
+} from './capabilitySnapshot';
 
 function makeTool(name: string, isConcurrencySafe?: ToolDefinition['isConcurrencySafe']): ToolDefinition {
   return {
@@ -129,7 +134,7 @@ describe('computeCapabilitySnapshot', () => {
     ]);
   });
 
-  it('reports an errored MCP server tool with its connection status and error', () => {
+  it('reports an errored MCP server tool with its connection status and a SANITIZED error category (never the raw error)', () => {
     useMCPStore.setState({
       servers: {
         notion: {
@@ -146,8 +151,34 @@ describe('computeCapabilitySnapshot', () => {
     const entry = snapshot.entries.find((e) => e.name === 'notion__query');
 
     expect(entry?.unavailableReasons).toEqual([
-      { kind: 'mcp-not-connected', server: 'notion', status: 'error', error: 'ECONNREFUSED' },
+      { kind: 'mcp-not-connected', server: 'notion', status: 'error', error: 'connection-refused' },
     ]);
+  });
+
+  it('never leaks a raw MCP connection error (URL query token / absolute path) into the reported reason', () => {
+    useMCPStore.setState({
+      servers: {
+        leaky: {
+          config: { name: 'leaky', enabled: true },
+          status: 'error',
+          error: 'fetch failed: https://mcp.example.com/sse?token=sk-super-secret-abc123 (config at /Users/shawn/.abu/mcp/leaky.json)',
+          tools: [{ name: 'leaky__do_thing' }],
+        },
+      },
+      isLoading: false,
+    });
+
+    const snapshot = computeCapabilitySnapshot();
+    const entry = snapshot.entries.find((e) => e.name === 'leaky__do_thing');
+    const reason = entry?.unavailableReasons.find((r) => r.kind === 'mcp-not-connected');
+
+    expect(reason?.kind).toBe('mcp-not-connected');
+    const errorText = reason && reason.kind === 'mcp-not-connected' ? reason.error : undefined;
+    expect(errorText).toBeDefined();
+    expect(errorText).not.toContain('?');
+    expect(errorText).not.toContain('/Users/');
+    expect(errorText).not.toContain('sk-super-secret-abc123');
+    expect(errorText).not.toContain('token=');
   });
 
   it('filters a Playwright browser tool as a duplicate when an Abu browser is connected', () => {
@@ -245,5 +276,69 @@ describe('computeCapabilitySnapshot', () => {
 
     expect(snapshot.permissionMode).toBe('autonomous');
     expect(snapshot.computerUseEnabled).toBe(true);
+  });
+});
+
+describe('classifyMcpErrorCategory', () => {
+  it.each([
+    ['ECONNREFUSED', 'connection-refused'],
+    ['connect ECONNREFUSED 127.0.0.1:9999', 'connection-refused'],
+    ['request timed out', 'timeout'],
+    ['ETIMEDOUT', 'timeout'],
+    ['getaddrinfo ENOTFOUND mcp.example.com', 'dns-failure'],
+    ['401 Unauthorized', 'auth-failed'],
+    ['403 Forbidden: invalid API key', 'auth-failed'],
+    ['spawn npx ENOENT', 'not-found'],
+    ['EACCES: permission denied', 'permission-denied'],
+    ['some completely unrecognized shape of error', 'unknown'],
+  ] as const)('classifies %j as %s', (raw, expected) => {
+    expect(classifyMcpErrorCategory(raw)).toBe(expected);
+  });
+});
+
+describe('sanitizeMcpError — leak prevention for the RECEIVER of a raw connection error', () => {
+  it('strips a URL query string entirely, including a bearer token', () => {
+    const out = sanitizeMcpError('fetch failed: https://mcp.example.com/sse?token=sk-secret-123&foo=bar');
+    expect(out).not.toContain('?');
+    expect(out).not.toContain('token=');
+    expect(out).not.toContain('sk-secret-123');
+  });
+
+  it('reduces an absolute Unix path to just its basename', () => {
+    const out = sanitizeMcpError('ENOENT: no such file or directory, open \'/Users/shawn/.abu/mcp/config.json\'');
+    expect(out).not.toContain('/Users/');
+    expect(out).toContain('config.json');
+  });
+
+  it('reduces an absolute Windows path to just its basename', () => {
+    const out = sanitizeMcpError('ENOENT: cannot open C:\\Users\\shawn\\AppData\\mcp\\config.json');
+    expect(out).not.toContain('C:\\Users\\');
+    expect(out).toContain('config.json');
+  });
+
+  it('truncates an overly long error to a bounded length', () => {
+    const out = sanitizeMcpError('x'.repeat(500));
+    expect(out.length).toBeLessThanOrEqual(161); // 160 chars + ellipsis
+  });
+
+  it('leaves an already-short, already-safe string untouched', () => {
+    expect(sanitizeMcpError('server closed the connection')).toBe('server closed the connection');
+  });
+});
+
+describe('summarizeMcpConnectionError', () => {
+  it('returns undefined for undefined input', () => {
+    expect(summarizeMcpConnectionError(undefined)).toBeUndefined();
+  });
+
+  it('prefers the coarse category over the sanitized raw string when recognized', () => {
+    expect(summarizeMcpConnectionError('connect ECONNREFUSED 127.0.0.1:9999')).toBe('connection-refused');
+  });
+
+  it('falls back to the sanitized string when the shape is unrecognized, still leak-free', () => {
+    const out = summarizeMcpConnectionError('weird backend said: /Users/shawn/secret/path?apikey=xyz');
+    expect(out).not.toContain('?');
+    expect(out).not.toContain('/Users/');
+    expect(out).not.toContain('xyz');
   });
 });

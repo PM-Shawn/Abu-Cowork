@@ -37,9 +37,82 @@ export type CapabilitySource =
 export type UnavailableReason =
   | { kind: 'labs-gated'; experimentId: string }
   | { kind: 'mcp-disabled'; server: string }
+  /** `error`, when present, is ALREADY sanitized by `summarizeMcpConnectionError`
+   *  below — never the raw `MCPServerEntry.error` string. Raw MCP connection
+   *  errors can carry a URL with a query-string token, or an absolute
+   *  filesystem path revealing the OS username, and this reason's text is
+   *  read directly by the LLM (capability_snapshot's tool result). */
   | { kind: 'mcp-not-connected'; server: string; status: string; error?: string }
   | { kind: 'duplicate-browser-tool'; server: string }
   | { kind: 'policy-denied'; reason?: string };
+
+/**
+ * Coarse, leak-free classification of a raw MCP connection error string.
+ * Recognized categories cover the common failure shapes well enough to be
+ * actionable ("auth-failed" tells the user to check credentials) without
+ * repeating the raw message.
+ */
+export type McpErrorCategory =
+  | 'timeout'
+  | 'connection-refused'
+  | 'dns-failure'
+  | 'auth-failed'
+  | 'not-found'
+  | 'permission-denied'
+  | 'unknown';
+
+const MCP_ERROR_CATEGORY_PATTERNS: readonly (readonly [McpErrorCategory, RegExp])[] = [
+  ['timeout', /timed?\s*out|ETIMEDOUT/i],
+  ['connection-refused', /ECONNREFUSED|connection refused/i],
+  ['dns-failure', /ENOTFOUND|EAI_AGAIN|getaddrinfo|dns lookup/i],
+  ['auth-failed', /\b401\b|\b403\b|unauthorized|forbidden|invalid[ _-]?(api[ _-]?)?key|invalid[ _-]?token/i],
+  ['not-found', /ENOENT|command not found/i],
+  ['permission-denied', /EACCES|permission denied/i],
+];
+
+export function classifyMcpErrorCategory(raw: string): McpErrorCategory {
+  for (const [category, pattern] of MCP_ERROR_CATEGORY_PATTERNS) {
+    if (pattern.test(raw)) return category;
+  }
+  return 'unknown';
+}
+
+const MAX_SANITIZED_MCP_ERROR_LENGTH = 160;
+
+/**
+ * Strip a raw MCP connection error of anything that could leak into the
+ * LLM's context: URL query strings (may carry an API token/secret) and
+ * absolute filesystem paths (may carry the OS username) are removed,
+ * keeping only a path's basename. Used as the fallback when
+ * `classifyMcpErrorCategory` can't recognize the shape — the category is
+ * always preferred when available (see `summarizeMcpConnectionError`).
+ */
+export function sanitizeMcpError(raw: string): string {
+  let s = raw
+    // Strip URL query strings — "?token=abc123" and everything after it up
+    // to the next whitespace/quote/paren.
+    .replace(/\?[^\s"')]*/g, '')
+    // Absolute Unix path -> basename only ("/Users/alice/x/y.txt" -> "y.txt").
+    .replace(/(?:\/[^\s"'()]+)+\/([^\s"'()/]+)/g, '$1')
+    // Absolute Windows path -> basename only ("C:\Users\alice\x.txt" -> "x.txt").
+    .replace(/[A-Za-z]:\\(?:[^\s"'()\\]+\\)+([^\s"'()\\]+)/g, '$1');
+  if (s.length > MAX_SANITIZED_MCP_ERROR_LENGTH) {
+    s = s.slice(0, MAX_SANITIZED_MCP_ERROR_LENGTH) + '…';
+  }
+  return s;
+}
+
+/**
+ * Turn a raw `MCPServerEntry.error` into something safe to hand the LLM:
+ * a bare category name when recognized ("timeout", "auth-failed", ...),
+ * else a query-string-stripped, path-redacted, length-capped fallback.
+ * `undefined` in, `undefined` out.
+ */
+export function summarizeMcpConnectionError(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const category = classifyMcpErrorCategory(raw);
+  return category !== 'unknown' ? category : sanitizeMcpError(raw);
+}
 
 export type ConcurrencySafety = 'safe' | 'unsafe' | 'input-dependent';
 
@@ -126,7 +199,10 @@ export function computeCapabilitySnapshot(): CapabilitySnapshot {
           kind: 'mcp-not-connected',
           server: serverName,
           status: serverEntry.status,
-          error: serverEntry.error,
+          // Sanitized — see summarizeMcpConnectionError's doc. Never pass
+          // serverEntry.error (the raw connection error) through directly:
+          // this text is read by the LLM.
+          error: summarizeMcpConnectionError(serverEntry.error),
         });
       } else if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(toolInfo.name)) {
         unavailableReasons.push({ kind: 'duplicate-browser-tool', server: serverName });

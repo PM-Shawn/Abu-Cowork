@@ -193,9 +193,14 @@ describe('buildSystemPrompt - structure', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');
 
-  it('includes current date/time', async () => {
+  it('includes the current date (day granularity, no clock time)', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain('## Current Time');
+    expect(prompt).toContain('## Current Date');
+    // A clock time here would change the prompt bytes every minute and break
+    // the cached prefix; the model is told to run `date` for the exact time.
+    const dateSection = prompt.slice(prompt.indexOf('## Current Date'));
+    const sectionText = dateSection.slice(0, dateSection.indexOf('\n## ', 1));
+    expect(sectionText).not.toMatch(/\d{1,2}:\d{2}/);
   });
 
   it('includes workspace path', async () => {

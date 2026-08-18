@@ -191,6 +191,16 @@ export class ClaudeAdapter implements LLMAdapter {
 
     const convertedMessages = convertMessages(messages);
     addIncrementalCacheBreakpoint(convertedMessages);
+    // The volatile context tail goes AFTER the breakpoint: the cached prefix
+    // ends at the last stored message, and this per-turn block is the only
+    // uncached remainder. (Consecutive user messages are valid — the API
+    // combines them into one turn.)
+    if (options.volatileContextTail) {
+      convertedMessages.push({
+        role: 'user',
+        content: [{ type: 'text', text: options.volatileContextTail }],
+      });
+    }
     const params: Anthropic.MessageCreateParams = {
       model: options.model,
       max_tokens: options.maxTokens ?? 4096,

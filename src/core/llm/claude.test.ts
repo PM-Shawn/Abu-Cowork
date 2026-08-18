@@ -200,6 +200,28 @@ describe('ClaudeAdapter', () => {
       }
     });
 
+    it('appends the volatile context tail AFTER the history breakpoint, uncached', async () => {
+      const params = await chatAndCapture(
+        [
+          { role: 'user', content: 'question', id: '1', timestamp: Date.now() },
+          { role: 'assistant', content: 'answer', id: '2', timestamp: Date.now() },
+          { role: 'user', content: 'follow-up', id: '3', timestamp: Date.now() },
+        ],
+        { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
+      );
+      const last = params.messages[params.messages.length - 1];
+      const lastBlocks = last.content as Array<Record<string, unknown>>;
+      // Tail is the final user message and carries NO cache_control — the
+      // history breakpoint must sit on the last STORED message so the cached
+      // prefix is not keyed to per-turn bytes.
+      expect(last.role).toBe('user');
+      expect(String(lastBlocks[0].text)).toContain('todos here');
+      expect(lastBlocks[0].cache_control).toBeUndefined();
+      const stored = params.messages[params.messages.length - 2];
+      const storedBlocks = stored.content as Array<Record<string, unknown>>;
+      expect(storedBlocks[storedBlocks.length - 1].cache_control).toEqual({ type: 'ephemeral' });
+    });
+
     it('never exceeds the 4-breakpoint API limit (tools + system + history)', async () => {
       const params = await chatAndCapture(
         [

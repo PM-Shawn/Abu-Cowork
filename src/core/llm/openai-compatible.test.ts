@@ -124,6 +124,55 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
     expect(asText.toLowerCase()).toContain('document');
   });
 
+  it('appends the volatile context tail as the LAST message, after the whole history', async () => {
+    // Automatic prefix caching (DeepSeek/OpenAI) matches [system + history]
+    // byte-for-byte — per-turn context must ride at the end so the stored
+    // prefix stays cached and only this block is re-billed.
+    const body = await requestBodyFor(
+      [
+        { id: 'u1', role: 'user', content: 'question', timestamp: Date.now() } as Message,
+        { id: 'a1', role: 'assistant', content: 'answer', timestamp: Date.now() } as Message,
+        { id: 'u2', role: 'user', content: 'follow-up', timestamp: Date.now() } as Message,
+      ],
+      { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
+    );
+    const last = body.messages[body.messages.length - 1];
+    expect(last.role).toBe('user');
+    expect(String(last.content)).toContain('todos here');
+    // The stored history precedes it untouched.
+    expect(body.messages[body.messages.length - 2].content).toContain('follow-up');
+  });
+
+  it('sends prompt_cache_key only to the official OpenAI endpoint', async () => {
+    mockFetch.mockResolvedValueOnce(
+      makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    );
+    const adapter = new OpenAICompatibleAdapter();
+    const msgs = [{ id: 'u1', role: 'user', content: 'hi', timestamp: Date.now() } as Message];
+    await adapter.chat(msgs, makeOptions({
+      baseUrl: 'https://api.openai.com/v1',
+      metadata: { conversationId: 'conv-123' },
+    }), () => {});
+    const officialBody = JSON.parse((mockFetch.mock.calls[0][1] as { body: string }).body) as Record<string, unknown>;
+    expect(officialBody.prompt_cache_key).toBe('conv-123');
+
+    mockFetch.mockResolvedValueOnce(
+      makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    );
+    await adapter.chat(msgs, makeOptions({
+      baseUrl: 'https://api.deepseek.com/v1',
+      metadata: { conversationId: 'conv-123' },
+    }), () => {});
+    const deepseekBody = JSON.parse((mockFetch.mock.calls[1][1] as { body: string }).body) as Record<string, unknown>;
+    expect(deepseekBody.prompt_cache_key).toBeUndefined();
+  });
+
   it('leaves a text breadcrumb for a document alongside an image (content-parts path)', async () => {
     const body = await requestBodyFor(
       [

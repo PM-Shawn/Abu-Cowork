@@ -5,12 +5,12 @@ exports[`System prompt section structure > general mode section names match snap
   "persona",
   "soul",
   "planning",
+  "current-time",
   "workspace",
   "memory-mgmt",
   "browser-guide",
   "agent-role",
   "response-language",
-  "current-time",
   "safety-anchor",
 ]
 `;

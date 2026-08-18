@@ -2168,10 +2168,6 @@ export interface TranslationDict {
     appSecret: string;
     appSecretPlaceholder: string;
     capability: string;
-    capabilityChatOnly: string;
-    capabilityReadTools: string;
-    capabilitySafeTools: string;
-    capabilityFull: string;
     responseMode: string;
     responseMentionOnly: string;
     responseMentionOnlyHint: string;
@@ -2780,10 +2776,6 @@ export interface TranslationDict {
       httpEndpointLine: string;
       externalTriggerCmd: string;
       sampleMessage: string;
-      capReadTools: string;
-      capSafeTools: string;
-      capFull: string;
-      capCustom: string;
       /** {label} */
       capLevelLine: string;
       /** {filter} */

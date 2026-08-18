@@ -7,6 +7,7 @@ import type { TriggerFilter, TriggerAction, DebounceConfig } from '../../../type
 import { addWatchRule, removeWatchRule, toggleWatchRule, listWatchRules, type FileWatchRule } from '../../agent/fileWatcher';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, getLocale, format } from '../../../i18n';
+import { getCapabilityTierLabel } from '../../permissions/permissionTiers';
 
 /** Locale tag for Date#toLocaleString, following the resolved UI locale. */
 const dateLocale = (): string => (getLocale() === 'zh-CN' ? 'zh-CN' : 'en-US');
@@ -414,12 +415,9 @@ export const manageTriggerTool: ToolDefinition = {
           );
         }
 
-        const capLabel = {
-          read_tools: t.capReadTools,
-          safe_tools: t.capSafeTools,
-          full: t.capFull,
-          custom: t.capCustom,
-        }[triggerAction.capability ?? 'read_tools'] ?? t.capReadTools;
+        // Shared unattended-autonomy wording (permission plan §4.2) — the same
+        // words the IM channel settings and scheduled tasks use.
+        const capLabel = getCapabilityTierLabel(triggerAction.capability ?? 'read_tools');
 
         resultLines.push(
           format(t.capLevelLine, { label: capLabel }),

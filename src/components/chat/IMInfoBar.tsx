@@ -12,6 +12,7 @@ import type { Conversation } from '@/types';
 import type { IMCapabilityLevel } from '@/types/imChannel';
 import { MoreHorizontal, Clock, MessageSquare, Shield, Hash, XCircle } from 'lucide-react';
 import { getPlatformShortLabel, getPlatformDisplayName } from '@/core/im/platformLabels';
+import { getCapabilityTierLabel } from '@/core/permissions/permissionTiers';
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -47,11 +48,13 @@ export default function IMInfoBar({ conversation }: IMInfoBarProps) {
   // Get channel info
   const channel = useIMChannelStore((s) => channelId ? s.channels[channelId] : null);
 
+  // Shared unattended-autonomy wording (permission plan §4.2) — same words
+  // here as in IM settings, trigger results and scheduled tasks.
   const capabilityLabels: Record<IMCapabilityLevel, string> = {
-    chat_only: t.imChannel.capabilityChatOnly,
-    read_tools: t.imChannel.capabilityReadTools,
-    safe_tools: t.imChannel.capabilitySafeTools,
-    full: t.imChannel.capabilityFull,
+    chat_only: getCapabilityTierLabel('chat_only'),
+    read_tools: getCapabilityTierLabel('read_tools'),
+    safe_tools: getCapabilityTierLabel('safe_tools'),
+    full: getCapabilityTierLabel('full'),
   };
 
   const capability = session?.capability ?? channel?.capability ?? 'safe_tools';

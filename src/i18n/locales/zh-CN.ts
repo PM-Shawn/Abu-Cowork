@@ -2474,6 +2474,7 @@ const zhCN: TranslationDict = {
       memoryUpdated: '已更新记忆 [{type}]: {name} ({filename}){lock}',
       errAppendContentEmpty: '错误：append 时 content 不能为空。',
       memorySaved: '已保存记忆 [{type}]: {name} → {filename}{lock}',
+      memoryRedactionNote: '[安全] 保存前已对疑似凭证内容脱敏({labels})。记忆会反复注入后续对话——不要存密钥原文,只存指向(如「密钥在 设置 › 模型服务」或钥匙串)。',
       errNoActiveSession: 'Error: 没有活跃会话',
       errItemsRequired: 'Error: 需要提供计划项列表',
       todosCreated: '已创建 {n} 个计划项。\n',

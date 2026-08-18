@@ -1,10 +1,44 @@
 /**
- * Computer Use session state — module-level reactive store.
+ * Computer Use session state — per-conversation reactive store.
  *
  * Used by toolExecutor to signal state changes, consumed by
  * ComputerUseStatusBar via useSyncExternalStore.
  *
  * Not a Zustand store because it bridges core/ and components/ without persistence.
+ *
+ * ── Why this is keyed by conversationId (it used to be one shared object) ──
+ * This module used to hold a single module-level `state: CUState` shared by
+ * every conversation. Abu's agent loop allows DIFFERENT conversations to run
+ * concurrently — `runAgentLoop`'s concurrency guard (agentLoop.ts) only
+ * blocks a SECOND loop on the SAME conversation, not a second conversation
+ * running in parallel (e.g. a background scheduled task while the user
+ * chats elsewhere) — and the sidecar's `cu.setState` RPC notification
+ * (agentLoopRunner.ts's `CU_SET_STATE_ACTIONS`) is dispatched into this
+ * module with no ownership check against who's currently "active". So
+ * conversation B starting or ending a Computer Use session could silently
+ * stomp conversation A's still-active session: A's step-limit/timeout
+ * bookkeeping (`checkCUSessionLimits`) would be corrupted by B's unrelated
+ * activity, and the physical Stop button/shortcut (`triggerAbort`, keyed off
+ * a single `activeConversationId`) could abort the WRONG conversation.
+ *
+ * Fix scope: this module now keys session state by conversationId and adds
+ * an ownership guard on `setComputerUseActive(false, id)` — a stale/late
+ * deactivate from a conversation that is no longer the current owner can no
+ * longer clobber whichever conversation legitimately owns the active session
+ * now. That was the concrete, reproducible contamination bug (every
+ * `setComputerUseActive(false)` call site in this codebase already had a
+ * conversationId in scope but wasn't passing it — see the call sites in
+ * agentLoop.ts/chatStore.ts).
+ *
+ * What this does NOT attempt: true parallel per-conversation CU tracking.
+ * Computer Use drives the one real mouse/screen, so at most one session is
+ * ever genuinely "active"; the six other setters forwarded verbatim over
+ * `cu.setState` (see sidecar/src/shims/computerUseStatusRun.ts) don't carry
+ * a conversationId on the wire at all, so they resolve against whichever
+ * conversation currently owns the active session. Giving them real
+ * per-conversation identity would need a wire-protocol change (out of this
+ * fix's scope — flag as a follow-up if genuine concurrent CU tracking is
+ * ever needed).
  */
 
 import { getI18n, format } from '@/i18n';
@@ -33,7 +67,11 @@ export interface CUState {
   sessionStartTime: number | null;
 }
 
-let state: CUState = {
+/** Stable idle snapshot — returned by `getCUStatusSnapshot()` whenever no
+ *  conversation owns an active session. Kept as one constant reference (not
+ *  freshly constructed per call) because `useSyncExternalStore` requires a
+ *  referentially stable snapshot when nothing changed, or React can loop. */
+const IDLE_STATE: CUState = {
   status: 'idle',
   stepCount: 0,
   currentAction: null,
@@ -46,27 +84,79 @@ let state: CUState = {
   sessionStartTime: null,
 };
 
+/** Per-conversation session table — see module doc for why this exists. */
+const sessions = new Map<string, CUState>();
+/** The conversation that currently owns the (at most one) active session, or
+ *  null when idle. The six parameterless setters below — forwarded 1:1 over
+ *  `cu.setState` with no conversationId argument — resolve against this. */
+let activeConversationId: string | null = null;
+
 const listeners = new Set<() => void>();
 
 function notify() {
   for (const fn of listeners) fn();
 }
 
-function update(partial: Partial<CUState>) {
-  state = { ...state, ...partial };
+/** The current owner's CUState, or undefined when idle. */
+function getActive(): CUState | undefined {
+  return activeConversationId ? sessions.get(activeConversationId) : undefined;
+}
+
+/** Merge a partial update into the current owner's state. No-ops (does NOT
+ *  create a phantom entry) when there is no active owner — matches the old
+ *  singleton's behavior where these setters were harmless no-ops on idle
+ *  state, since the UI never renders anything for `status !== 'active'`. */
+function updateActive(partial: Partial<CUState>) {
+  if (!activeConversationId) return;
+  const current = sessions.get(activeConversationId);
+  if (!current) return;
+  sessions.set(activeConversationId, { ...current, ...partial });
   notify();
 }
 
 // ─── Actions (called by toolExecutor) ───
 
-/** Enter Computer Use session. */
+/** Enter Computer Use session for `conversationId`, or (when `active` is
+ *  false) end the CURRENT owner's session. */
 export function setComputerUseActive(active: boolean, conversationId?: string) {
   if (active) {
-    update({ status: 'active', stepCount: 0, currentAction: null, phase: 'checking', targetApp: null, capabilityMode: null, latestScreenshot: null, activeConversationId: conversationId ?? null, sessionStartTime: Date.now() });
+    // Every real call site passes a conversationId (toolExecutor.ts); the
+    // fallback below only guards against a hypothetical caller that doesn't,
+    // so activation never silently no-ops.
+    const id = conversationId ?? 'unknown';
+    activeConversationId = id;
+    sessions.set(id, {
+      status: 'active',
+      stepCount: 0,
+      currentAction: null,
+      phase: 'checking',
+      targetApp: null,
+      capabilityMode: null,
+      latestScreenshot: null,
+      activeConversationId: id,
+      sessionWindowHidden: false,
+      sessionStartTime: Date.now(),
+    });
+    notify();
     setupAbortListener();
   } else {
-    const wasHidden = state.sessionWindowHidden;
-    update({ status: 'idle', stepCount: 0, currentAction: null, phase: 'checking', targetApp: null, capabilityMode: null, latestScreenshot: null, activeConversationId: null, sessionWindowHidden: false, sessionStartTime: null });
+    // ── Ownership guard — the actual contamination fix ──
+    // `conversationId === undefined` means a caller couldn't be threaded
+    // with an id; trust it and clear whatever is active rather than leaving
+    // a possibly-stuck CU overlay forever un-clearable (fail OPEN, not
+    // closed, for THIS specific case — every caller in this codebase does
+    // pass an id today, so this branch should be dead in practice). But a
+    // caller that DOES pass an id that isn't the current owner is a stale or
+    // late deactivate from a conversation that already lost ownership —
+    // ignore it instead of tearing down whoever owns the session now.
+    if (conversationId !== undefined && conversationId !== activeConversationId) {
+      return;
+    }
+    const owner = activeConversationId;
+    const wasHidden = owner ? (sessions.get(owner)?.sessionWindowHidden ?? false) : false;
+    if (owner) sessions.delete(owner);
+    activeConversationId = null;
+    notify();
     cleanupAbortListener();
     // Session-level cleanup: restore window and hide overlay
     if (wasHidden) {
@@ -83,16 +173,18 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
  *  disappears, but the session (window hidden state) is preserved for
  *  potential future computer batches in the same agent loop. */
 export function pauseComputerUseStatus() {
-  if (state.status === 'active') {
-    update({ status: 'paused', currentAction: null });
+  const current = getActive();
+  if (current?.status === 'active') {
+    updateActive({ status: 'paused', currentAction: null });
   }
 }
 
 /** Increment step count and optionally set current action description. */
 export function incrementComputerUseStep(action?: string) {
-  if (state.status === 'active') {
-    const newStep = state.stepCount + 1;
-    update({ stepCount: newStep, currentAction: action ?? null });
+  const current = getActive();
+  if (current?.status === 'active') {
+    const newStep = current.stepCount + 1;
+    updateActive({ stepCount: newStep, currentAction: action ?? null });
     // Push status to overlay window for display
     emitStatusToOverlay(newStep, action ?? null);
   }
@@ -110,19 +202,20 @@ function emitStatusToOverlay(step: number, action: string | null) {
 
 /** Update the latest screenshot for live preview. */
 export function updateLatestScreenshot(base64: string) {
-  if (state.status === 'active') {
-    update({ latestScreenshot: base64 });
+  const current = getActive();
+  if (current?.status === 'active') {
+    updateActive({ latestScreenshot: base64 });
   }
 }
 
 /** Mark that the window has been hidden for this CU session. */
 export function setSessionWindowHidden(hidden: boolean) {
-  update({ sessionWindowHidden: hidden });
+  updateActive({ sessionWindowHidden: hidden });
 }
 
 /** Check if window is already hidden for this session (avoid re-hiding across batches). */
 export function isSessionWindowHidden(): boolean {
-  return state.sessionWindowHidden;
+  return getActive()?.sessionWindowHidden ?? false;
 }
 
 /**
@@ -130,13 +223,14 @@ export function isSessionWindowHidden(): boolean {
  * Returns error message if exceeded, null if OK.
  */
 export function checkCUSessionLimits(): string | null {
-  if (state.status !== 'active') return null;
+  const current = getActive();
+  if (!current || current.status !== 'active') return null;
 
-  if (state.stepCount >= MAX_CU_STEPS) {
+  if (current.stepCount >= MAX_CU_STEPS) {
     return `Computer Use 操作已达上限（${MAX_CU_STEPS} 步）。请向用户汇报当前进度和结果，询问是否继续。`;
   }
 
-  if (state.sessionStartTime && Date.now() - state.sessionStartTime > MAX_CU_DURATION_MS) {
+  if (current.sessionStartTime && Date.now() - current.sessionStartTime > MAX_CU_DURATION_MS) {
     return `Computer Use 操作已超时（${MAX_CU_DURATION_MS / 60000} 分钟）。请向用户汇报当前进度和结果。`;
   }
 
@@ -145,12 +239,13 @@ export function checkCUSessionLimits(): string | null {
 
 /** Set current action description. */
 export function setCurrentAction(action: string | null) {
-  update({ currentAction: action });
+  updateActive({ currentAction: action });
 }
 
 /** Product-facing Computer Use phase; carries no prompt, AX label, or typed text. */
 export function setComputerUsePhase(phase: CUPhase) {
-  if (state.status === 'active') update({ phase });
+  const current = getActive();
+  if (current?.status === 'active') updateActive({ phase });
 }
 
 /** Set safe structural context shown in the status bar. */
@@ -158,8 +253,9 @@ export function setComputerUseContext(input: {
   targetApp?: string | null;
   capabilityMode?: CUCapabilityMode | null;
 }) {
-  if (state.status !== 'active') return;
-  update({
+  const current = getActive();
+  if (!current || current.status !== 'active') return;
+  updateActive({
     ...(input.targetApp !== undefined ? { targetApp: input.targetApp } : {}),
     ...(input.capabilityMode !== undefined ? { capabilityMode: input.capabilityMode } : {}),
   });
@@ -171,7 +267,7 @@ let abortUnlisten: (() => void) | null = null;
 let shortcutRegistered = false;
 
 function triggerAbort() {
-  const convId = state.activeConversationId;
+  const convId = activeConversationId;
   if (convId) {
     import('../../stores/chatStore').then(({ useChatStore }) => {
       useChatStore.getState().cancelStreaming(convId);
@@ -220,5 +316,5 @@ export function subscribeCUStatus(callback: () => void) {
 }
 
 export function getCUStatusSnapshot(): CUState {
-  return state;
+  return getActive() ?? IDLE_STATE;
 }

@@ -12,10 +12,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
-import { checkReadPath, checkWritePath, revokeWorkspace } from '../tools/pathSafety';
+import { checkWritePath, revokeWorkspace } from '../tools/pathSafety';
 
 // Mock agentLoop — control the exit reason. isIncompleteReason is a trivial pure
 // fn (tested in agentLoop.test.ts); duplicate it here to avoid importing the real
@@ -116,12 +117,17 @@ describe('SchedulerEngine output delivery by exit reason', () => {
   });
 });
 
-// ── Unattended autonomy tier (permission plan §3 + §7 decision B) ──
+// ── Unattended autonomy tier (permission plan §3, redone per user
+//    correction: reuse chat's own standard/smart/autonomous PermissionMode
+//    instead of a scheduler-only vocabulary) ──
 //
-// Before this, the scheduler hard-coded "deny anything that needs asking" and
-// reported a bare "failed". Two things are pinned here: the task's tier
-// actually decides what runs, and whatever it refused reaches the run's result
-// text so the user can act on it.
+// Before the original tier existed, the scheduler hard-coded "deny anything
+// that needs asking" and reported a bare "failed". Three things are pinned
+// here: the run's conversation actually gets the task's mode (or none, to
+// follow global settings), a "confirm"-requiring action is always denied
+// (nobody unattended can click through a dialog) regardless of mode, and
+// whatever got refused reaches the run's result text so the user can act on
+// it.
 describe('SchedulerEngine permission tier', () => {
   beforeEach(() => {
     useScheduleStore.setState({ tasks: {} });
@@ -134,17 +140,19 @@ describe('SchedulerEngine permission tier', () => {
       pendingInput: null,
       thinkingStartTime: null,
     });
+    // Pin the global fallback mode so "follows settings" tests are deterministic.
+    useSettingsStore.setState({ permissionMode: 'standard' });
     vi.clearAllMocks();
     initLanguage('zh-CN');
     // authorizeWorkspace is a module-level map that outlives a single test.
     revokeWorkspace('/Users/testuser/Projects/report');
-    revokeWorkspace('/Users/testuser/Projects/safe-report');
   });
 
   /** Drive the run's confirmation callback, then end the run with `reason`. */
   function runWithProbe(
     probe: (options: {
       commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
+      filePermissionCallback: (request: { path: string; capability: 'read' | 'write' }) => Promise<boolean>;
     }) => Promise<void>,
     reason: 'error' | 'completed' = 'error',
   ) {
@@ -154,48 +162,78 @@ describe('SchedulerEngine permission tier', () => {
     });
   }
 
-  function latestRunError(taskId: string): string | undefined {
+  function latestRun(taskId: string): { conversationId: string; error?: string } | undefined {
     const runs = useScheduleStore.getState().tasks[taskId]?.runs ?? [];
-    return runs[runs.length - 1]?.error;
+    return runs[runs.length - 1];
   }
 
-  it('read_tools refuses commands and says so in the result text', async () => {
-    const task = makeTask({ id: 'task-read', permissionMode: 'read_tools' });
+  function latestRunError(taskId: string): string | undefined {
+    return latestRun(taskId)?.error;
+  }
+
+  it('sets the run conversation permissionMode to the task\'s explicit mode', async () => {
+    const task = makeTask({ id: 'task-explicit', permissionMode: 'autonomous' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async () => {}, 'completed');
+
+    await schedulerEngine.runNow(task.id);
+
+    const conversationId = latestRun(task.id)?.conversationId;
+    expect(conversationId).toBeDefined();
+    expect(useChatStore.getState().conversations[conversationId!]?.permissionMode).toBe('autonomous');
+  });
+
+  it('leaves the conversation permissionMode unset when the task follows global settings', async () => {
+    const task = makeTask({ id: 'task-follow' }); // permissionMode undefined
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async () => {}, 'completed');
+
+    await schedulerEngine.runNow(task.id);
+
+    const conversationId = latestRun(task.id)?.conversationId;
+    expect(useChatStore.getState().conversations[conversationId!]?.permissionMode).toBeUndefined();
+  });
+
+  it('denies a confirm-requiring command and names the effective mode in the result text', async () => {
+    const task = makeTask({ id: 'task-standard', permissionMode: 'standard' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     let allowed: boolean | undefined;
     runWithProbe(async (options) => {
       allowed = await options.commandConfirmCallback({
-        command: 'ls -la', level: 'safe', reason: '',
+        command: 'rm -rf /tmp/x', level: 'danger', reason: '',
       });
     });
 
     await schedulerEngine.runNow(task.id);
 
     expect(allowed).toBe(false);
-    expect(latestRunError(task.id)).toContain('只看不动');
-    expect(latestRunError(task.id)).toContain('ls -la');
+    // '请求批准' is settings.permissionModeStandard (zh-CN) — the exact label
+    // PermissionModeChip shows in chat, not a scheduler-only word.
+    expect(latestRunError(task.id)).toContain('请求批准');
+    expect(latestRunError(task.id)).toContain('rm -rf /tmp/x');
   });
 
-  it('full lets a non-blocked command through', async () => {
-    const task = makeTask({ id: 'task-full', permissionMode: 'full' });
+  it('denies a confirm-requiring file access and records the path', async () => {
+    const task = makeTask({ id: 'task-file', permissionMode: 'standard' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
-    let allowed: boolean | undefined;
+    let granted: boolean | undefined;
     runWithProbe(async (options) => {
-      allowed = await options.commandConfirmCallback({
-        command: 'npm run build', level: 'warn', reason: '',
-      });
+      granted = await options.filePermissionCallback({ path: '/etc/hosts', capability: 'write' });
     });
 
     await schedulerEngine.runNow(task.id);
 
-    expect(allowed).toBe(true);
+    expect(granted).toBe(false);
+    expect(latestRunError(task.id)).toContain('/etc/hosts');
   });
 
-  it('names the site when a browser action is refused', async () => {
+  it('still denies a browser action in autonomous mode (hard floor) and names the site', async () => {
     // Browser gating reaches the scheduler through the same confirmation
     // callback (registry passes kind: 'browser' + the origin), which is what
     // makes the "authorize it in Settings" hint possible with no extra layer.
-    const task = makeTask({ id: 'task-browser', permissionMode: 'safe_tools' });
+    // autonomous still routes this through the confirm gate — decideOtherTool
+    // keeps browser/self-extension behind a hard floor in every mode.
+    const task = makeTask({ id: 'task-browser', permissionMode: 'autonomous' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     runWithProbe(async (options) => {
       await options.commandConfirmCallback({
@@ -211,63 +249,43 @@ describe('SchedulerEngine permission tier', () => {
 
     expect(latestRunError(task.id)).toContain('https://example.com');
     expect(latestRunError(task.id)).toContain('设置');
+    expect(latestRunError(task.id)).toContain('完全自主');
   });
 
-  it('falls back to the safe default when a task predates the field', async () => {
+  it('labels the denial with the global settings mode when the task follows settings', async () => {
     const task = makeTask({ id: 'task-legacy' });
     delete (task as { permissionMode?: unknown }).permissionMode;
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     let allowed: boolean | undefined;
     runWithProbe(async (options) => {
       allowed = await options.commandConfirmCallback({
-        command: 'ls', level: 'safe', reason: '',
+        command: 'ls', level: 'danger', reason: '',
       });
     });
 
     await schedulerEngine.runNow(task.id);
 
     expect(allowed).toBe(false);
-    expect(latestRunError(task.id)).toContain('只看不动');
+    expect(latestRunError(task.id)).toContain('请求批准');
   });
 
-  it('read_tools does not gain write access to its own workspace', async () => {
-    // resolveTriggerCallbacks pre-authorizes workspacePath with read+write for
-    // every tier, and an authorized workspace short-circuits checkWritePath
-    // before the file callback runs — so delegating the pre-authorization
-    // would have made "reads information, changes nothing" a lie.
+  it('authorizes the workspace with full read+write regardless of mode (no read-only rung in this model)', async () => {
     const task = makeTask({
       id: 'task-ws',
-      permissionMode: 'read_tools',
+      permissionMode: 'standard',
       workspacePath: '/Users/testuser/Projects/report',
     });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
-    runWithProbe(async () => {});
+    runWithProbe(async () => {}, 'completed');
 
     await schedulerEngine.runNow(task.id);
 
     const write = await checkWritePath('/Users/testuser/Projects/report/out.md');
-    expect(write.allowed).not.toBe(true);
-    // Reading is the whole point of the tier, so that stays open.
-    expect((await checkReadPath('/Users/testuser/Projects/report/in.md')).allowed).toBe(true);
-  });
-
-  it('safe_tools does get write access to its workspace', async () => {
-    const task = makeTask({
-      id: 'task-ws-write',
-      permissionMode: 'safe_tools',
-      workspacePath: '/Users/testuser/Projects/safe-report',
-    });
-    useScheduleStore.setState({ tasks: { [task.id]: task } });
-    runWithProbe(async () => {});
-
-    await schedulerEngine.runNow(task.id);
-
-    const write = await checkWritePath('/Users/testuser/Projects/safe-report/out.md');
     expect(write.allowed).toBe(true);
   });
 
   it('leaves the result text alone when nothing was refused', async () => {
-    const task = makeTask({ id: 'task-clean', permissionMode: 'read_tools' });
+    const task = makeTask({ id: 'task-clean', permissionMode: 'standard' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     runWithProbe(async () => {});
 

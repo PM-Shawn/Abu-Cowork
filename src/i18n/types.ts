@@ -1961,6 +1961,8 @@ export interface TranslationDict {
     /** Field label + hint for the unattended autonomy tier */
     permissionMode: string;
     permissionModeHint: string;
+    /** Option label: the task follows the global settings permission mode (the default). */
+    permissionModeFollowSettings: string;
     /** {origin} — a per-site browser refusal during an unattended run */
     denialBrowserSite: string;
     /** {command} */

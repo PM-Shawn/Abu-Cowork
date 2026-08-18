@@ -1820,6 +1820,7 @@ const zhCN: TranslationDict = {
     outputPushFailed: '结果推送到 IM 频道失败',
     permissionMode: '自主程度',
     permissionModeHint: '任务在无人值守时运行，超出该档位的操作会被直接拒绝，并在结果里写明原因。',
+    permissionModeFollowSettings: '跟随设置',
     denialBrowserSite: '在 {origin} 的操作被拦下（该站点未授权）',
     denialCommand: '命令被拦下：{command}',
     denialFile: '文件访问被拦下：{path}',

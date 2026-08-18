@@ -6,9 +6,8 @@ import type {
   ScheduledTaskRun,
   ScheduleConfig,
   ScheduledTaskStatus,
-  ScheduledTaskPermissionMode,
 } from '../types/schedule';
-import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '../types/schedule';
+import type { PermissionMode } from '../core/permissions/permissionMode';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -150,7 +149,8 @@ interface ScheduleActions {
     outputChannelId?: string;
     outputChatIds?: string;
     outputUserIds?: string;
-    permissionMode?: ScheduledTaskPermissionMode;
+    /** undefined = follow the global settings permission mode (default). */
+    permissionMode?: PermissionMode;
   }) => string;
   updateTask: (
     id: string,
@@ -165,7 +165,11 @@ interface ScheduleActions {
       outputChannelId: string | undefined;
       outputChatIds: string | undefined;
       outputUserIds: string | undefined;
-      permissionMode: ScheduledTaskPermissionMode;
+      /** undefined = follow the global settings permission mode. Distinct
+       *  from the key being omitted — see the `'permissionMode' in data`
+       *  check in the implementation below, which lets a caller explicitly
+       *  reset a task back to "follow settings". */
+      permissionMode: PermissionMode | undefined;
     }>
   ) => void;
   deleteTask: (id: string) => void;
@@ -219,7 +223,9 @@ export const useScheduleStore = create<ScheduleStore>()(
           outputChannelId: data.outputChannelId,
           outputChatIds: data.outputChatIds,
           outputUserIds: data.outputUserIds,
-          permissionMode: data.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE,
+          // undefined = follow the global settings permission mode (default) —
+          // NOT the strictest tier. See PermissionMode's doc comment.
+          permissionMode: data.permissionMode,
           createdAt: now,
           updatedAt: now,
           nextRunAt: computeNextRunAt(data.schedule, 'active', now),
@@ -245,7 +251,11 @@ export const useScheduleStore = create<ScheduleStore>()(
           if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
           if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
           if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
-          if (data.permissionMode !== undefined) task.permissionMode = data.permissionMode;
+          // 'permissionMode' in data (not `!== undefined`): a caller must be
+          // able to explicitly reset a task back to "follow settings"
+          // (undefined) — the key being *provided* is what matters, not
+          // whether its value happens to be undefined.
+          if ('permissionMode' in data) task.permissionMode = data.permissionMode;
           if (data.schedule !== undefined) {
             task.schedule = data.schedule;
             task.nextRunAt = computeNextRunAt(data.schedule, task.status);
@@ -395,7 +405,7 @@ export const useScheduleStore = create<ScheduleStore>()(
     })),
     {
       name: 'abu-schedule',
-      version: 4,
+      version: 5,
       migrate(persisted: unknown, version: number) {
         if (version < 2) {
           // v1→v2 added optional IM output fields (outputChannelId, outputChatIds, outputUserIds).
@@ -405,20 +415,23 @@ export const useScheduleStore = create<ScheduleStore>()(
           // v2→v3 added optional projectId field. No data transform needed.
         }
         if (version < 4) {
-          // v3→v4 added permissionMode. Existing tasks get the safe default
-          // ('read_tools', plan §7 decision B) rather than the closest match
-          // to their old behavior: before this field the scheduler denied
-          // every confirmation outright, so a task that needed to act was
-          // already failing. Backfilling the permissive tier would silently
-          // widen what tasks written under a deny-everything regime can do.
-          // Tasks that need more now fail with a stated reason and one
-          // dropdown to fix it.
-          const state = persisted as { tasks?: Record<string, ScheduledTask> };
+          // v3→v4 added permissionMode, at the time using TriggerCapability's
+          // read_tools/safe_tools/full vocabulary. Superseded by v5 below —
+          // no transform needed here, the v<5 step resets the field
+          // regardless of whatever v4 wrote into it.
+        }
+        if (version < 5) {
+          // v4→v5: permissionMode's vocabulary changed from TriggerCapability
+          // (read_tools/safe_tools/full/custom) to chat's own PermissionMode
+          // (standard/smart/autonomous) — the two are not the same axis, so
+          // there is no sound value-preserving translation between them.
+          // Reset every task back to undefined ("follow the global settings
+          // permission mode"), the same value a brand-new task gets — not
+          // the strictest tier, and not a guessed mapping.
+          const state = persisted as { tasks?: Record<string, { permissionMode?: unknown }> };
           if (state?.tasks) {
             for (const task of Object.values(state.tasks)) {
-              if (task && task.permissionMode === undefined) {
-                task.permissionMode = DEFAULT_SCHEDULED_PERMISSION_MODE;
-              }
+              if (task) task.permissionMode = undefined;
             }
           }
         }

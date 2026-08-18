@@ -9,7 +9,7 @@ const PERSISTED_STORES = [
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },
   { key: 'abu-mcp-store', minVersion: 1 },
-  { key: 'abu-schedule', minVersion: 4 },
+  { key: 'abu-schedule', minVersion: 5 },
   { key: 'abu-triggers', minVersion: 4 },
   { key: 'abu-im-channel', minVersion: 2 },
   { key: 'abu-projects', minVersion: 1 },

@@ -1819,6 +1819,7 @@ const enUS: TranslationDict = {
     outputPushFailed: 'Failed to push results to IM channel',
     permissionMode: 'Autonomy',
     permissionModeHint: 'The task runs unattended: anything beyond this tier is refused outright, and the reason is written into the result.',
+    permissionModeFollowSettings: 'Follow settings',
     denialBrowserSite: 'blocked acting on {origin} (site not authorized)',
     denialCommand: 'blocked command: {command}',
     denialFile: 'blocked file access: {path}',

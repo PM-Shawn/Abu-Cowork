@@ -10,18 +10,19 @@ import { Select } from '@/components/ui/select';
 import type {
   ScheduleFrequency,
   ScheduleConfig,
-  ScheduledTaskPermissionMode,
 } from '@/types/schedule';
-import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '@/types/schedule';
-import {
-  getCapabilityTierLabel,
-  getCapabilityTierDescription,
-} from '@/core/permissions/permissionTiers';
+import type { PermissionMode } from '@/core/permissions/permissionMode';
 
 const FREQUENCIES: ScheduleFrequency[] = ['hourly', 'daily', 'weekly', 'weekdays', 'manual'];
 
-/** Offered tiers, safest first. 'custom' is trigger-only (no whitelist UI here). */
-const PERMISSION_MODES: ScheduledTaskPermissionMode[] = ['read_tools', 'safe_tools', 'full'];
+/** Same three tiers chat already uses — reuse its wording rather than a
+ *  scheduler-only vocabulary. Offered alongside "follow settings" (the
+ *  `undefined` sentinel), which is the default. */
+const PERMISSION_MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
+
+/** Select component values are strings; '' is the sentinel for "follow
+ *  settings" (permissionMode === undefined). */
+const FOLLOW_SETTINGS_VALUE = '';
 
 export default function ScheduleEditor() {
   const { t } = useI18n();
@@ -52,9 +53,8 @@ export default function ScheduleEditor() {
   const [outputChannelId, setOutputChannelId] = useState('');
   const [outputChatIds, setOutputChatIds] = useState('');
   const [outputUserIds, setOutputUserIds] = useState('');
-  const [permissionMode, setPermissionMode] = useState<ScheduledTaskPermissionMode>(
-    DEFAULT_SCHEDULED_PERMISSION_MODE,
-  );
+  // undefined = follow the global settings permission mode (the default).
+  const [permissionMode, setPermissionMode] = useState<PermissionMode | undefined>(undefined);
 
   // Initialize form when editing task changes
   useEffect(() => {
@@ -72,7 +72,7 @@ export default function ScheduleEditor() {
       setOutputChannelId(editingTask.outputChannelId ?? '');
       setOutputChatIds(editingTask.outputChatIds ?? '');
       setOutputUserIds(editingTask.outputUserIds ?? '');
-      setPermissionMode(editingTask.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE);
+      setPermissionMode(editingTask.permissionMode);
     } else {
       setName('');
       setDescription('');
@@ -87,7 +87,7 @@ export default function ScheduleEditor() {
       setOutputChannelId('');
       setOutputChatIds('');
       setOutputUserIds('');
-      setPermissionMode(DEFAULT_SCHEDULED_PERMISSION_MODE);
+      setPermissionMode(undefined);
     }
   }, [editingTask, showEditor]);
 
@@ -120,6 +120,14 @@ export default function ScheduleEditor() {
     t.schedule.friday,
     t.schedule.saturday,
   ];
+
+  // Same wording chat's PermissionModeChip uses — one vocabulary, not a
+  // schedule-specific translation of it.
+  const permissionModeInfo: Record<PermissionMode, { label: string; description: string }> = {
+    standard: { label: t.settings.permissionModeStandard, description: t.settings.permissionModeStandardDesc },
+    smart: { label: t.settings.permissionModeSmart, description: t.settings.permissionModeSmartDesc },
+    autonomous: { label: t.settings.permissionModeAutonomous, description: t.settings.permissionModeAutonomousDesc },
+  };
 
   const showTimeSelector = frequency !== 'manual';
   const showHourSelector = frequency !== 'hourly';
@@ -379,18 +387,26 @@ export default function ScheduleEditor() {
             />
           </div>
 
-          {/* Autonomy tier — the ceiling for this unattended run */}
+          {/* Autonomy tier — the ceiling for this unattended run. Reuses
+              chat's own standard/smart/autonomous wording (plus a
+              schedule-only "follow settings" option) rather than a fourth
+              vocabulary. */}
           <div>
             <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
               {t.schedule.permissionMode}
             </label>
             <Select
-              value={permissionMode}
-              onChange={(v) => setPermissionMode(v as ScheduledTaskPermissionMode)}
-              options={PERMISSION_MODES.map((mode) => ({
-                value: mode,
-                label: `${getCapabilityTierLabel(mode)} — ${getCapabilityTierDescription(mode)}`,
-              }))}
+              value={permissionMode ?? FOLLOW_SETTINGS_VALUE}
+              onChange={(v) =>
+                setPermissionMode(v === FOLLOW_SETTINGS_VALUE ? undefined : (v as PermissionMode))
+              }
+              options={[
+                { value: FOLLOW_SETTINGS_VALUE, label: t.schedule.permissionModeFollowSettings },
+                ...PERMISSION_MODES.map((mode) => ({
+                  value: mode,
+                  label: `${permissionModeInfo[mode].label} — ${permissionModeInfo[mode].description}`,
+                })),
+              ]}
             />
             <p className="text-caption text-[var(--abu-text-muted)] mt-1">
               {t.schedule.permissionModeHint}

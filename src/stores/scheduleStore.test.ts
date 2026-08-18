@@ -90,54 +90,60 @@ describe('scheduleStore', () => {
       expect(task.nextRunAt).toBeDefined();
     });
 
-    // Plan §7 decision B: a task the user did not think about must not be able
-    // to act on its own.
-    it('defaults new tasks to the safe read-only tier', () => {
+    // undefined = "follow the global settings permission mode", the default —
+    // not the strictest tier, and not a scheduler-only vocabulary.
+    it('defaults new tasks to follow the global settings permission mode', () => {
       const id = useScheduleStore.getState().createTask({
         name: 'Daily Report',
         prompt: 'Generate daily report',
         schedule: { frequency: 'daily' },
       });
-      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('read_tools');
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBeUndefined();
     });
 
-    it('honours an explicitly chosen tier', () => {
+    it('honours an explicitly chosen mode', () => {
       const id = useScheduleStore.getState().createTask({
         name: 'Build', prompt: 'build', schedule: { frequency: 'daily' },
-        permissionMode: 'full',
+        permissionMode: 'autonomous',
       });
-      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('full');
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('autonomous');
     });
   });
 
   // ── persist migration ──
-  describe('v3 → v4 migration', () => {
-    it('backfills the safe tier onto tasks that predate the field', () => {
+  describe('v4 → v5 migration', () => {
+    it('resets a v4 TriggerCapability-vocabulary value back to undefined (follow settings)', () => {
       const migrate = useScheduleStore.persist.getOptions().migrate;
       expect(migrate).toBeDefined();
 
       const migrated = migrate?.(
-        { tasks: { a: { id: 'a', name: 'legacy' }, b: { id: 'b', name: 'legacy 2' } } },
-        3,
+        {
+          tasks: {
+            a: { id: 'a', name: 'legacy', permissionMode: 'read_tools' },
+            b: { id: 'b', name: 'legacy 2', permissionMode: 'full' },
+          },
+        },
+        4,
       ) as { tasks: Record<string, { permissionMode?: string }> };
 
-      expect(migrated.tasks.a.permissionMode).toBe('read_tools');
-      expect(migrated.tasks.b.permissionMode).toBe('read_tools');
+      expect(migrated.tasks.a.permissionMode).toBeUndefined();
+      expect(migrated.tasks.b.permissionMode).toBeUndefined();
     });
 
-    it('leaves an already-set tier alone', () => {
+    it('also resets a task that predates the field entirely (pre-v4)', () => {
       const migrate = useScheduleStore.persist.getOptions().migrate;
       const migrated = migrate?.(
-        { tasks: { a: { id: 'a', permissionMode: 'full' } } },
+        { tasks: { a: { id: 'a', name: 'ancient' } } },
         3,
       ) as { tasks: Record<string, { permissionMode?: string }> };
 
-      expect(migrated.tasks.a.permissionMode).toBe('full');
+      expect(migrated.tasks.a.permissionMode).toBeUndefined();
     });
 
     it('survives persisted state with no tasks map', () => {
       const migrate = useScheduleStore.persist.getOptions().migrate;
       expect(() => migrate?.({}, 3)).not.toThrow();
+      expect(() => migrate?.({}, 4)).not.toThrow();
     });
   });
 

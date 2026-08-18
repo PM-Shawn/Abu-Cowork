@@ -2,29 +2,10 @@
  * Scheduled Task Types
  */
 
-import type { TriggerCapability } from './trigger';
+import type { PermissionMode } from '../core/permissions/permissionMode';
 
 export type ScheduleFrequency = 'hourly' | 'daily' | 'weekly' | 'weekdays' | 'manual';
 
-/**
- * How much a scheduled task may do while it runs unattended.
- *
- * This is the *ceiling* half of the permission model (permission plan §2):
- * nobody is around to answer a confirmation, so the task's tier decides what
- * runs and everything above it is refused. Before this existed the scheduler
- * hard-coded "deny everything that needs asking", which is why tasks that
- * needed to touch a web page just failed at 3am with no explanation.
- *
- * Deliberately the same vocabulary as `TriggerCapability` rather than a new
- * enum — triggers, IM channels and scheduled tasks are the same unattended
- * question, and `resolveTriggerCallbacks` already implements these three
- * tiers. 'custom' is excluded: it needs a per-action whitelist
- * (`TriggerPermissions`) that scheduled tasks have no UI for.
- */
-export type ScheduledTaskPermissionMode = Exclude<TriggerCapability, 'custom'>;
-
-/** Safe default (plan §7 decision B): read-only unless the user opens it up. */
-export const DEFAULT_SCHEDULED_PERMISSION_MODE: ScheduledTaskPermissionMode = 'read_tools';
 export type ScheduledTaskStatus = 'active' | 'paused';
 export type ScheduledRunStatus = 'running' | 'completed' | 'error';
 
@@ -56,8 +37,19 @@ export interface ScheduledTask {
   outputUserIds?: string;
   /** Project this task belongs to */
   projectId?: string;
-  /** What the task may do while running unattended (default: read_tools) */
-  permissionMode?: ScheduledTaskPermissionMode;
+  /**
+   * The permission mode this task runs under while unattended. Reuses chat's
+   * own three-tier autonomy axis (`standard`/`smart`/`autonomous`,
+   * `src/core/permissions/permissionMode.ts`) rather than a scheduler-only
+   * vocabulary — same words a user already learned from the chat window.
+   * `undefined` means "follow the global settings permission mode", which is
+   * the default; it is NOT the same as picking the strictest tier
+   * explicitly. Confirmation-requiring actions have nobody to ask while
+   * unattended, so `standard`'s escalations and `smart`'s AI-reviewer
+   * escalations are both denied (with the reason recorded into the run's
+   * result text) rather than degrading to a prompt.
+   */
+  permissionMode?: PermissionMode;
   createdAt: number;
   updatedAt: number;
   lastRunAt?: number;

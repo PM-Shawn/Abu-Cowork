@@ -125,8 +125,7 @@ export function classifyTools(
       // the serialized tools list — each flap invalidates the provider-side
       // prompt cache. Promotion is monotonic per conversation: one cache
       // rebuild when a tool first becomes relevant, none when it stops being
-      // mentioned. (Verified against real captured request bodies — see
-      // docs/abu-token-latency-pass-plan.md §7.)
+      // mentioned. (Verified by byte-diffing real captured request bodies.)
       if (prefetchedNames.has(tool.name)) promoteToolToSession(tool.name, scope);
       coreTools.push(tool);
     } else {

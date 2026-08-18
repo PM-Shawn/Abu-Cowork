@@ -96,8 +96,8 @@ function generateToolId(index: number, msgIndex: number): string {
   // message position already guarantees that. A per-request-random suffix
   // made the same historical tool call serialize differently on every
   // request, changing prompt bytes mid-history and busting the provider
-  // prompt cache from that point on (verified against captured request
-  // bodies — see docs/abu-token-latency-pass-plan.md §7).
+  // prompt cache from that point on (verified by byte-diffing captured
+  // request bodies).
   return `toolu_${msgIndex}_${index}`;
 }
 

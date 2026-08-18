@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { pingDateUTC, shouldPingToday, maybeSendConsolePing } from './consolePing'
 
-// telemetry 目标固定为「已启用」，避免依赖 enterprise store
+// telemetry 目标可切换启用状态，避免依赖 enterprise store
+const mockTelemetry = vi.hoisted(() => ({ enabled: true }))
 vi.mock('./consoleTelemetryTarget', () => ({
-  getTelemetryTarget: () => ({ baseUrl: 'https://console.example', enabled: true }),
+  getTelemetryTarget: () => ({ baseUrl: 'https://console.example', enabled: mockTelemetry.enabled }),
 }))
 
 describe('pingDateUTC', () => {
@@ -28,11 +29,19 @@ describe('shouldPingToday', () => {
 
 describe('maybeSendConsolePing', () => {
   beforeEach(() => {
+    mockTelemetry.enabled = true
     localStorage.clear()
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true } as Response)))
   })
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('遥测关闭时不发送也不记录日期', () => {
+    mockTelemetry.enabled = false
+    expect(maybeSendConsolePing(new Date('2026-08-11T10:00:00Z'))).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(localStorage.getItem('abu_last_ping_date')).toBeNull()
   })
 
   it('首次调用发送一次并记录当天', () => {

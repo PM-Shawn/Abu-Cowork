@@ -36,10 +36,14 @@ export function sendConsolePing(): void {
 }
 
 /**
- * 每个 UTC 日历日至多发送一次 ping，把当天记进 localStorage，同日后续触发变 no-op。
- * 服务端幂等，偶发重发无害。返回是否真的发送了。
+ * 尽力保证每个 UTC 日历日至多发送一次 ping（best-effort 遥测）。
+ * 仅在遥测启用时才登记与发送；关闭时既不登记也不发送、返回 false
+ * （否则关闭期间记了日期，当天再开启会漏打——企业版 config 延迟加载时尤甚）。
+ * 注意：日期在发送前登记且失败不重试——网络抖动可能漏掉当天，次日自愈（宁可少报也不轰炸服务端）。
+ * 返回 true 表示本次触发确实发起了一次发送。
  */
 export function maybeSendConsolePing(now: Date = new Date()): boolean {
+  if (!getTelemetryTarget().enabled) return false
   let last: string | null = null
   try {
     last = localStorage.getItem(LAST_PING_KEY)

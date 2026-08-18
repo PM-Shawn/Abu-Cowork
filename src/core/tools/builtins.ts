@@ -41,6 +41,7 @@ import { skillManageTool } from './definitions/skillManageTool';
 
 // --- Tool discovery ---
 import { toolSearchTool } from './definitions/toolSearchTool';
+import { capabilitySnapshotTool } from './definitions/capabilitySnapshotTool';
 
 // --- Todo tools ---
 import { createTodoTool } from './definitions/todoTools';
@@ -94,6 +95,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(skillViewTool);
   toolRegistry.register(skillManageTool);
   toolRegistry.register(toolSearchTool);
+  toolRegistry.register(capabilitySnapshotTool);
   // create_todo feeds the Inbox. Registered unconditionally; getAllTools()
   // filters it out of the per-request schema when the 'todos-inbox' Labs flag
   // is off, so toggling the flag takes effect without an app restart.

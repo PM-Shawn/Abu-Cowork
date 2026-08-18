@@ -543,8 +543,27 @@ function App() {
       triggerEngine.start();
       imChannelRouter.start();
       reconcileIMSessions();
-      // Migrate old memory systems (entries.json / memory.md) to memdir (.md files)
-      import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded()).catch(() => {});
+      // Migrate old memory systems (entries.json / memory.md) to memdir (.md files),
+      // then run the one-shot secret sweep over existing memories — global dir,
+      // current workspace dir, and every workspace opened later (marker-gated
+      // per directory, so repeat calls cost one exists() check; new writes are
+      // sanitized at the writeMemory funnel). Fire-and-forget: a turn sent in
+      // the first seconds after launch may still see pre-sweep bytes — accepted
+      // one-shot race; blocking startup on the sweep would be worse.
+      import('@/core/memdir/migrate').then(m => m.migrateMemdirIfNeeded())
+        .then(async () => {
+          const { sweepMemorySecrets } = await import('@/core/memdir/secretSweep');
+          const { useWorkspaceStore } = await import('@/stores/workspaceStore');
+          await sweepMemorySecrets(null);
+          const current = useWorkspaceStore.getState().currentPath;
+          if (current) await sweepMemorySecrets(current);
+          useWorkspaceStore.subscribe((state, prev) => {
+            if (state.currentPath && state.currentPath !== prev.currentPath) {
+              void sweepMemorySecrets(state.currentPath);
+            }
+          });
+        })
+        .catch(() => {});
       // Initialize conversation storage before checking crash checkpoints.
       // Otherwise the checkpoint scan can beat the async Zustand index
       // rehydrate, mistake a valid conversation for a missing one, and delete

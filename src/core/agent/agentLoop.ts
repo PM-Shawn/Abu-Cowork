@@ -1246,8 +1246,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // leak an active skill into the next message, leave a phantom crash-recovery
       // checkpoint, and keep the Computer-Use overlay / AX session alive.
       deactivateAllSkills(conversationId);
+      // Pass conversationId so a stale/late deactivate can never clobber a
+      // DIFFERENT conversation's now-active CU session (ownership guard in
+      // computerUseStatus.ts — see that module's doc for the contamination
+      // bug this closes).
       import('./computerUseStatus').then(({ setComputerUseActive }) => {
-        setComputerUseActive(false);
+        setComputerUseActive(false, conversationId);
       }).catch(() => {});
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
         closeAxSession(conversationId, loopId).catch(() => {});
@@ -1758,14 +1762,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         if (streamFlushInFlight) return;
         streamFlushInFlight = true;
         try {
-          const { replaceMessageById } = await import('../session/conversationStorage');
+          const { snapshotMessageRevision } = await import('../session/conversationStorage');
           const currentMsg = getConversationReader().getConversation(conversationId)
             ?.messages.find((m) => m.id === assistantMsgId);
           // Re-read after the async import. If the turn completed while this
           // timer callback yielded, its final write is authoritative and this
           // older periodic snapshot must not overwrite it.
           if (!currentMsg?.isStreaming) return;
-          await replaceMessageById(conversationId, currentMsg);
+          // Snapshot, not ledger append: a ten-minute stream fires this ~120
+          // times, and each one would otherwise be a full copy of a message
+          // that only grows. The snapshot is overwritten in place and folded
+          // back in on load, so crash protection is unchanged.
+          await snapshotMessageRevision(conversationId, currentMsg);
         } catch {
           // Best-effort crash protection. Final turn persistence remains the
           // authoritative write when the request completes normally.
@@ -2374,9 +2382,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         });
         // Auto-deactivate skills after loop completes (single-turn lifecycle)
         deactivateAllSkills(conversationId);
-        // Clean up Computer Use session (restore window, hide overlay)
+        // Clean up Computer Use session (restore window, hide overlay). Pass
+        // conversationId — see computerUseStatus.ts's ownership guard doc.
         import('./computerUseStatus').then(({ setComputerUseActive }) => {
-          setComputerUseActive(false);
+          setComputerUseActive(false, conversationId);
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
@@ -2633,9 +2642,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       persistExecutionSnapshot(conversationId, loopId);
       // Auto-deactivate skills on error
       deactivateAllSkills(conversationId);
-      // Clean up Computer Use session
+      // Clean up Computer Use session. Pass conversationId — see
+      // computerUseStatus.ts's ownership guard doc.
       import('./computerUseStatus').then(({ setComputerUseActive }) => {
-        setComputerUseActive(false);
+        setComputerUseActive(false, conversationId);
       }).catch(() => {});
       // Close any open AX session (releases CFRetain'd element refs)
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
+import { foldMessageLog } from './messageLedger';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -630,8 +631,12 @@ describe('conversationStorage', () => {
         makeMsg({ id: 'strict-write-msg', content: 'before' }),
       );
       await storage.flushWrites();
+      // Both write paths fail: the native append AND the read+rewrite it falls
+      // back to. A strict replacement must surface that, never report success.
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-        if (cmd === 'atomic_write_text') throw new Error('disk full');
+        if (cmd === 'atomic_write_text' || cmd === 'append_file_text') {
+          throw new Error('disk full');
+        }
         return undefined;
       });
 
@@ -1045,6 +1050,346 @@ describe('conversationStorage', () => {
 
       const loaded = await storage.loadMessages('conv-1');
       expect(loaded[0].toolCalls![0].result).toBe(diskRef);
+    });
+  });
+  // ══════════════════════════════════════════════════════════
+  // Append-only ledger (docs/abu-message-ledger-plan.md, phase 2)
+  // ══════════════════════════════════════════════════════════
+
+  describe('ledger writes', () => {
+    const MESSAGES = '/Users/testuser/.abu/conversations/conv-1/messages.jsonl';
+    const SNAPSHOT = '/Users/testuser/.abu/conversations/conv-1/stream-snapshot.json';
+
+    function physicalLines(path = MESSAGES): Record<string, unknown>[] {
+      const raw = memFs.files.get(path) ?? '';
+      return raw.split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l));
+    }
+
+    describe('replaceMessageById', () => {
+      it('appends a revision instead of rewriting the matching line', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'v1' }));
+        await storage.flushWrites();
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v2' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows).toHaveLength(2);
+        // The original line is untouched — that is what append-only means.
+        expect(rows[0]).toMatchObject({ id: 'm1', content: 'v1' });
+        expect(rows[1]).toMatchObject({ id: 'm1', content: 'v2' });
+      });
+
+      it('keeps the revised message at its original position in the fold', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'first' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'second' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'third' }));
+        await storage.flushWrites();
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'first-edited' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+        expect(loaded[0].content).toBe('first-edited');
+      });
+
+      it('collapses revisions that are still queued into a single line', async () => {
+        // No flush between the calls: all four writes sit in the queue at once,
+        // so the same-id merge must leave exactly one physical line.
+        void storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'v1' }));
+        void storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v2' }));
+        void storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v3' }));
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v4' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ id: 'm1', content: 'v4' });
+      });
+
+      it('does not merge revisions of different messages into one line', async () => {
+        void storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+
+        expect(physicalLines().map((r) => r.id)).toEqual(['m1', 'm2']);
+      });
+
+      it('is a no-op for an id the conversation never held', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.flushWrites();
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'ghost', content: 'x' }));
+        await storage.flushWrites();
+
+        // An append is an upsert by nature; the old rewrite was not, and the
+        // non-strict variant must keep behaving like the old one.
+        expect(physicalLines()).toHaveLength(1);
+      });
+
+      it('preserves a settled sandbox recovery action without re-reading the file', async () => {
+        const toolCall = {
+          id: 'tc-1',
+          name: 'run_command',
+          input: {},
+          sandboxRecovery: { kind: 'app-automation' as const, targetApp: 'Notes' },
+        };
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', toolCalls: [toolCall] }));
+        await storage.flushWrites();
+        await storage.replaceMessageByIdStrict('conv-1', makeMsg({
+          id: 'm1',
+          toolCalls: [{ ...toolCall, sandboxRecoveryAction: 'completed' as const }],
+        }));
+        await storage.flushWrites();
+
+        // A late whole-message write that lost the settled action must not
+        // regress it — the protection now comes from the in-memory record, not
+        // from reading the persisted row back.
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', toolCalls: [toolCall] }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded[0].toolCalls?.[0].sandboxRecoveryAction).toBe('completed');
+      });
+
+      it('records a parent pointer on first write and never re-parents a revision', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'c' }));
+        await storage.flushWrites();
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-edited' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows[0].pid).toBeUndefined();   // first message of the log has no parent
+        expect(rows[1].pid).toBe('m1');
+        expect(rows[2].pid).toBe('m2');
+        // The revision keeps m2's original parent rather than pointing at the
+        // current tail (m3) — plan §3.2.
+        expect(rows[3]).toMatchObject({ id: 'm2', content: 'b-edited', pid: 'm1' });
+      });
+    });
+
+    describe('updateLastMessage', () => {
+      it('no longer overwrites a different message that happens to be last', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'partial' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'user-2', content: 'mid-stream question' }));
+        await storage.flushWrites();
+
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'complete' }));
+        await storage.flushWrites();
+
+        // The old blind last-line replace destroyed user-2 here.
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['assistant-1', 'user-2']);
+        expect(loaded[0].content).toBe('complete');
+        expect(loaded[1].content).toBe('mid-stream question');
+      });
+
+      it('writes nothing when the conversation has no file yet', async () => {
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'm1' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(MESSAGES)).toBe(false);
+      });
+    });
+
+    describe('stream snapshot', () => {
+      it('keeps in-flight revisions out of the ledger but readable after a crash', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+
+        for (const chunk of ['a', 'ab', 'abc']) {
+          await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: chunk }));
+        }
+
+        expect(physicalLines()).toHaveLength(1);       // ledger untouched
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);  // but the state is durable
+
+        // Simulate the reload after a crash mid-stream.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('abc');
+      });
+
+      it('drops the buffered revision once a checkpoint commits it', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'streaming' }));
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'final' }));
+        await storage.flushWrites();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded[0].content).toBe('final');
+      });
+
+      it('promotes anything still buffered into the ledger on shutdown', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        await storage.shutdownConversationStorage();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        const rows = physicalLines();
+        expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+      });
+
+      it('does not resurrect a message that was deleted while buffered', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
+
+        await storage.deleteMessageById('conv-1', 'm2');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+    });
+
+    describe('crash windows', () => {
+      it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        // Both ledger write paths fail at exit. Dropping the snapshot anyway
+        // would discard the revision with no copy left anywhere.
+        vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+          if (cmd === 'append_file_text' || cmd === 'atomic_write_text') {
+            throw new Error('disk full');
+          }
+          return undefined;
+        });
+
+        await storage.shutdownConversationStorage();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+
+      it('does not let a torn last line swallow the next append', async () => {
+        // A crash mid-append (native append has no atomicity guarantee, see
+        // appendToFile) leaves the tail unterminated. Nothing rewrites the file
+        // any more, so without an explicit repair every later append is glued
+        // onto that stump and both messages parse as one corrupt line.
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 }) + '\n'
+            + '{"id":"m2","role":"user","content":"tor',
+        );
+
+        await storage.loadMessages('conv-1');
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'after crash' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1', 'm3']);
+      });
+
+      it('a queued revision does not resurrect a message deleted before the drain', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+
+        // Checkpoint write still sitting in the 100ms-debounced queue when the
+        // delete lands — the abort path does exactly this (agentLoop's ghost
+        // cleanup runs right behind the turn's last persist).
+        const queued = storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-checkpoint' }));
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        await storage.deleteMessageById('conv-1', 'm2');
+        await storage.flushWrites();
+        await queued;
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+    });
+
+    describe('write amplification budget', () => {
+      // Plan §3.6: a tool-heavy conversation revises the same growing message
+      // many times per turn. The acceptance criterion is that messages.jsonl
+      // stays within 3x the folded content it represents.
+      //
+      // The simulation mirrors the real call sequence in agentLoop: each turn
+      // creates its OWN assistant message, buffers the streaming flushes and
+      // every tool result to the snapshot, then commits the finished message
+      // to the ledger at the batch checkpoint and again at turn end.
+      const TURNS = 4;
+      const TOOLS_PER_TURN = 3;
+      const STREAM_FLUSHES_PER_TURN = 6;
+
+      function assistantAfter(turn: number, toolResults: number): Message {
+        return {
+          id: `assistant-${turn}`,
+          role: 'assistant',
+          content: 'Working through the task. '.repeat(20),
+          timestamp: 100 + turn,
+          toolCalls: Array.from({ length: toolResults }, (_, i) => ({
+            id: `tc-${turn}-${i}`,
+            name: 'read_file',
+            input: { path: `/src/file-${turn}-${i}.ts` },
+            result: `contents of file ${i} `.repeat(40),
+          })),
+        };
+      }
+
+      function foldedBytes(path: string): number {
+        const raw = memFs.files.get(path) ?? '';
+        return foldMessageLog(raw.split('\n')).messages
+          .reduce((sum, m) => sum + JSON.stringify(m).length + 1, 0);
+      }
+
+      /**
+       * Drive one write all the way to disk as its own line. Draining
+       * explicitly instead of awaiting the 100 ms debounce keeps the
+       * simulation instant; the extra microtask turns just make sure the line
+       * has reached the queue before the drain (and cost nothing if it has).
+       */
+      async function commit(write: Promise<unknown>): Promise<void> {
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        await storage.flushWrites();
+        await write;
+      }
+
+      async function runTurn(convId: string, turn: number, toLedger: boolean): Promise<void> {
+        await commit(storage.appendMessage(convId, assistantAfter(turn, 0)));
+        const revise = async (message: Message) => {
+          if (toLedger) await commit(storage.replaceMessageById(convId, message));
+          else await storage.snapshotMessageRevision(convId, message);
+        };
+        for (let i = 0; i < STREAM_FLUSHES_PER_TURN; i++) await revise(assistantAfter(turn, 0));
+        for (let i = 1; i <= TOOLS_PER_TURN; i++) await revise(assistantAfter(turn, i));
+        // Batch checkpoint, then the turn-end persist — both real ledger writes.
+        await commit(storage.replaceMessageById(convId, assistantAfter(turn, TOOLS_PER_TURN)));
+        await commit(storage.replaceMessageById(convId, assistantAfter(turn, TOOLS_PER_TURN)));
+      }
+
+      it('holds messages.jsonl within 3x the folded content for a tool-heavy conversation', async () => {
+        await commit(storage.appendMessage('conv-1', makeMsg({ id: 'user-1', content: 'do the thing', timestamp: 1 })));
+        for (let turn = 0; turn < TURNS; turn++) await runTurn('conv-1', turn, false);
+
+        const physical = (memFs.files.get(MESSAGES) ?? '').length;
+        const folded = foldedBytes(MESSAGES);
+        expect(folded).toBeGreaterThan(0);
+        expect(physical).toBeLessThanOrEqual(folded * 3);
+      });
+
+      it('would blow the budget if every revision became a ledger line', async () => {
+        // Guards the test above from passing vacuously: the identical turns with
+        // the snapshot governance bypassed must exceed the same threshold.
+        const path = '/Users/testuser/.abu/conversations/conv-2/messages.jsonl';
+        await commit(storage.appendMessage('conv-2', makeMsg({ id: 'user-1', content: 'do the thing', timestamp: 1 })));
+        for (let turn = 0; turn < TURNS; turn++) await runTurn('conv-2', turn, true);
+
+        const physical = (memFs.files.get(path) ?? '').length;
+        expect(physical).toBeGreaterThan(foldedBytes(path) * 3);
+      });
     });
   });
 });

@@ -2654,6 +2654,8 @@ export interface TranslationDict {
       errAppendContentEmpty: string;
       /** Memory saved. {type}, {name}, {filename}, optional {lock} */
       memorySaved: string;
+      /** Security note appended when credential-shaped content was redacted before saving. {labels} */
+      memoryRedactionNote: string;
       // todoWriteTool
       /** Error: no active session. */
       errNoActiveSession: string;
@@ -3077,6 +3079,50 @@ export interface TranslationDict {
       schemaLabel: string;
       /** Results header and footer. {count}, {results} */
       resultsFound: string;
+    };
+    // capability_snapshot — read-only inventory of currently usable tools
+    capabilitySnapshot: {
+      /** Report header. {mode}, {computerUse}, {activeCount}, {unavailableCount} */
+      header: string;
+      /** Active tools section label. */
+      activeSectionLabel: string;
+      /** Unavailable tools section label. */
+      unavailableSectionLabel: string;
+      /** Shown when there are no unavailable tools. */
+      noneUnavailable: string;
+      /** Active tool line. {name}, {source}, {note} (note may be an empty string) */
+      activeLine: string;
+      /** Unavailable tool line. {name}, {source}, {reasons} */
+      unavailableLine: string;
+      /** Source label: builtin tool. */
+      sourceBuiltin: string;
+      /** Source label: MCP server tool. {server} */
+      sourceMcp: string;
+      /** Reason: Labs experiment gated off. {experimentId} */
+      reasonLabsGated: string;
+      /** Reason: MCP server disabled by the user. {server} */
+      reasonMcpDisabled: string;
+      /** Reason: MCP server not connected. {server}, {status} */
+      reasonMcpNotConnected: string;
+      /** Reason: MCP server connection error. {server}, {error} */
+      reasonMcpError: string;
+      /** Reason: filtered as a duplicate of Abu's built-in browser. {server} */
+      reasonDuplicateBrowser: string;
+      /** Reason: blocked by enterprise policy. {reason} */
+      reasonPolicyDenied: string;
+      /** Note: this active tool still needs enterprise policy confirmation at call time. {reason} */
+      notePolicyConfirm: string;
+      /** Note: concurrency safety depends on the call's input (e.g. run_command). */
+      noteConcurrencyInputDependent: string;
+      /** Note: computer-use tool exists but isn't enabled in Settings yet. */
+      noteComputerUseDisabled: string;
+      /** Permission mode display label. */
+      permissionModeStandard: string;
+      permissionModeSmart: string;
+      permissionModeAutonomous: string;
+      /** Computer use enabled/disabled display label. */
+      computerUseOn: string;
+      computerUseOff: string;
     };
     // ask_user_question — validation errors and result formatting
     askUserQuestion: {

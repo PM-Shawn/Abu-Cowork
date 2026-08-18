@@ -102,13 +102,17 @@ describe('System prompt section structure', () => {
     expect(names).toContain('planning');
   });
 
-  it('includes current-time as volatile section', async () => {
+  it('includes current-time as a CACHEABLE day-granularity date section', async () => {
     const route = routeInput('你好');
     const sections = await buildSystemPromptSections(route, '你是阿布', 'eval-conv-001');
 
     const timeSection = sections.find(s => s.name === 'current-time');
     expect(timeSection).toBeDefined();
-    expect(timeSection!.cacheable).toBe(false);
+    // Day granularity flips the prompt bytes once per day, so the section is
+    // deliberately cacheable — a minute-level timestamp here would invalidate
+    // the cached prompt prefix on every turn (see orchestrator.ts).
+    expect(timeSection!.cacheable).toBe(true);
+    expect(timeSection!.text).not.toMatch(/\d{1,2}:\d{2}/); // no clock time
   });
 
   it('persona and planning are cacheable', async () => {

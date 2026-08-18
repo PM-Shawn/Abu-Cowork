@@ -22,6 +22,7 @@ import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
 import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
+import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 
 /**
  * Simple pessimistic file lock for concurrent agent safety.
@@ -314,6 +315,26 @@ export const editFileTool: ToolDefinition = {
       const occurrences = content.split(oldContent).length - 1;
 
       if (occurrences === 0) {
+        // Exact match failed — try the tolerant strategies (line-trimmed,
+        // whitespace-normalized) that already serve skill patching. They only
+        // absorb whitespace drift (trailing spaces, tab↔space, per-line trim),
+        // and fuzzyFindAndReplace refuses ambiguous (multi-location) matches,
+        // so a fallback hit is safe to apply. Each avoided miss saves the model
+        // a full re-read → retry round trip.
+        const fuzzy = fuzzyFindAndReplace(content, oldContent, newContent);
+        if (fuzzy.error === null && fuzzy.matchCount === 1 && fuzzy.strategy !== 'exact') {
+          await snapshotBeforeAiEdit(path, {
+            loopId: context?.loopId,
+            conversationId: context?.conversationId,
+            knownContent: content,
+          });
+          await writeTextFile(path, fuzzy.newContent);
+          const oldLines = oldContent.split('\n').length;
+          const newLines = newContent.split('\n').length;
+          return `Successfully edited ${path}: replaced ${oldLines} line(s) with ${newLines} line(s) ` +
+            `(matched with whitespace-tolerant fallback '${fuzzy.strategy}' — old_content differed from the file only in whitespace)`;
+        }
+
         // Find most similar line to help the user
         const oldLines = oldContent.split('\n');
         const fileLines = content.split('\n');

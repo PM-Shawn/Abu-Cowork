@@ -77,7 +77,7 @@ vi.mock('../skill/preprocessor', () => ({
   executeInlineCommands: vi.fn((content: string) => content),
 }));
 
-import { buildSystemPrompt, routeInput } from './orchestrator';
+import { buildSystemPrompt, buildSystemPromptSections, routeInput } from './orchestrator';
 import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 
@@ -98,9 +98,9 @@ describe('buildSystemPrompt - security features', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');
 
-  it('ends with safety anchor', async () => {
+  it('ends with the safety anchor as the literal last section', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    // Safety anchor should be at the very end
+    // Safety anchor should be at the very end (recency bias)
     expect(prompt).toContain('## Safety Reminders');
     const safetyIdx = prompt.lastIndexOf('## Safety Reminders');
     const lastSection = prompt.slice(safetyIdx);
@@ -110,6 +110,24 @@ describe('buildSystemPrompt - security features', () => {
     // No other ## section should come after safety anchor
     const afterSafety = prompt.slice(safetyIdx + '## Safety Reminders'.length);
     expect(afterSafety).not.toContain('\n## ');
+  });
+
+  it('partitions sections cacheable-first with the pinned safety anchor last', async () => {
+    // Cache-prefix stability: no volatile section may precede a cacheable one
+    // (a mid-prompt timestamp would invalidate the cached prefix every turn),
+    // and the safety anchor is pinned as the literal last section so the
+    // recency-bias defense survives the partition.
+    const sections = await buildSystemPromptSections(generalRoute, basePrompt, 'test-conv');
+    expect(sections[sections.length - 1].name).toBe('safety-anchor');
+    expect(sections[sections.length - 1].pinToEnd).toBe(true);
+    // The pinned anchor must be uncached — it sits after volatile content, so
+    // caching it would embed per-turn bytes in the prefix.
+    expect(sections[sections.length - 1].cacheable).toBe(false);
+    const lastCacheableIdx = sections.map((s) => s.cacheable).lastIndexOf(true);
+    const firstVolatileIdx = sections.findIndex((s) => !s.cacheable && !s.pinToEnd);
+    if (firstVolatileIdx !== -1) {
+      expect(firstVolatileIdx).toBeGreaterThan(lastCacheableIdx);
+    }
   });
 
   it('wraps project rules in <user-rules> tags', async () => {
@@ -175,9 +193,14 @@ describe('buildSystemPrompt - structure', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');
 
-  it('includes current date/time', async () => {
+  it('includes the current date (day granularity, no clock time)', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
-    expect(prompt).toContain('## Current Time');
+    expect(prompt).toContain('## Current Date');
+    // A clock time here would change the prompt bytes every minute and break
+    // the cached prefix; the model is told to run `date` for the exact time.
+    const dateSection = prompt.slice(prompt.indexOf('## Current Date'));
+    const sectionText = dateSection.slice(0, dateSection.indexOf('\n## ', 1));
+    expect(sectionText).not.toMatch(/\d{1,2}:\d{2}/);
   });
 
   it('includes workspace path', async () => {

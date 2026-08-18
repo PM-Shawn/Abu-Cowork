@@ -118,6 +118,15 @@ export function classifyTools(
       prefetchedNames.has(tool.name) ||
       isSessionPromoted(tool.name, scope)
     ) {
+      // Keyword-prefetched tools become session-sticky, same as tool_search
+      // promotions. Without this the active/deferred split flaps with each
+      // turn's input keywords (promoted on a matching turn, demoted on the
+      // next), churning both the system prompt's deferred-tools section and
+      // the serialized tools list — each flap invalidates the provider-side
+      // prompt cache. Promotion is monotonic per conversation: one cache
+      // rebuild when a tool first becomes relevant, none when it stops being
+      // mentioned. (Verified by byte-diffing real captured request bodies.)
+      if (prefetchedNames.has(tool.name)) promoteToolToSession(tool.name, scope);
       coreTools.push(tool);
     } else {
       deferredTools.push(tool);

@@ -41,6 +41,13 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 
 const onClose = vi.fn();
 
+// Filler timestamp (TESTING.md §3) — SkillHistoryModal only feeds `entry.ts`
+// into relativeTime(ts, now = Date.now()) for on-screen "X ago" copy, which
+// none of these tests assert on; row order comes from array order (the
+// component never sorts by ts), not from the timestamp value itself.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+const ONE_DAY_MS = 86_400_000;
+
 beforeEach(() => {
   mockReadHistory.mockReset();
   mockRevertTurn.mockReset();
@@ -65,14 +72,14 @@ describe('SkillHistoryModal', () => {
     mockReadHistory.mockResolvedValueOnce([
       {
         turnId: 't-new',
-        ts: Date.now(),
+        ts: FIXED_TIMESTAMP,
         op: 'patch',
         files: [{ relPath: 'SKILL.md', snapshotPath: '/b1', action: 'modified' }],
         summary: 'replaced step 3',
       },
       {
         turnId: 't-old',
-        ts: Date.now() - 86_400_000,
+        ts: FIXED_TIMESTAMP - ONE_DAY_MS,
         op: 'edit',
         files: [{ relPath: 'SKILL.md', snapshotPath: '/b2', action: 'modified' }],
       },
@@ -92,7 +99,7 @@ describe('SkillHistoryModal', () => {
     mockReadHistory.mockResolvedValueOnce([
       {
         turnId: 't-1',
-        ts: Date.now(),
+        ts: FIXED_TIMESTAMP,
         op: 'patch',
         files: [{ relPath: 'SKILL.md', snapshotPath: '/b', action: 'modified' }],
         summary: 'replace step 3',
@@ -124,7 +131,7 @@ describe('SkillHistoryModal', () => {
     mockReadHistory.mockResolvedValueOnce([
       {
         turnId: 't-bad',
-        ts: Date.now(),
+        ts: FIXED_TIMESTAMP,
         op: 'patch',
         files: [{ relPath: 'SKILL.md', snapshotPath: '/gone', action: 'modified' }],
       },
@@ -155,7 +162,7 @@ describe('SkillHistoryModal', () => {
     mockReadHistory.mockResolvedValueOnce([
       {
         turnId: 't-rev',
-        ts: Date.now(),
+        ts: FIXED_TIMESTAMP,
         op: 'revert',
         files: [{ relPath: 'SKILL.md', snapshotPath: null, action: 'modified' }],
         summary: 'Reverted turn t-1',

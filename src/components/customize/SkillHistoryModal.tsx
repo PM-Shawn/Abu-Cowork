@@ -34,19 +34,12 @@ import {
   type HistoryFileChange,
 } from '@/core/skill/history';
 import { joinPath } from '@/utils/pathUtils';
+import { relativeTime } from './skillHistoryTime';
 
 interface Props {
   skillDir: string;
   skillName: string;
   onClose: () => void;
-}
-
-function relativeTime(ts: number, now: number = Date.now()): string {
-  const diff = now - ts;
-  if (diff < 60_000) return 'just now';
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)} min ago`;
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} h ago`;
-  return `${Math.round(diff / 86_400_000)} d ago`;
 }
 
 export default function SkillHistoryModal({ skillDir, skillName, onClose }: Props) {
@@ -197,7 +190,7 @@ function HistoryRow({ entry, skillDir, expanded, onToggle, onRevert, isReverting
           <ChevronRight className="h-3.5 w-3.5 text-[var(--abu-text-muted)] shrink-0" />
         )}
         <span className="text-minor text-[var(--abu-text-muted)] shrink-0">
-          {relativeTime(entry.ts)}
+          {relativeTime(entry.ts, Date.now())}
         </span>
         <span className="text-minor font-medium text-[var(--abu-text-primary)] shrink-0">
           {t.toolbox[historyOpLabelKey(entry.op)]}

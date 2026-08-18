@@ -316,7 +316,7 @@ describe('computerTool — accessibility permission branch', () => {
             process_id: 1,
           },
           classification: 'ordinary',
-          expires_at: Date.now() + 60_000,
+          expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
         });
       }
       if (cmd === 'get_overlay_window_id' || cmd === 'get_abu_window_id') {
@@ -483,7 +483,7 @@ describe('computerTool — accessibility permission branch', () => {
             process_id: 1,
           },
           classification: 'ordinary',
-          expires_at: Date.now() + 60_000,
+          expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
         });
       }
       if (cmd === 'ax_snapshot') {

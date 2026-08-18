@@ -7,6 +7,9 @@ import {
   type ChatDelta,
 } from './chatDelta';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('createInProcessChatDelta', () => {
   beforeEach(() => {
     useChatStore.setState({
@@ -26,7 +29,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.appendText(id, 'hello', 'a1');
     delta.flushTokens(id, 'a1'); // force immediate flush past the RAF buffer
@@ -37,7 +40,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: 'stale', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: 'stale', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.setLastMessageContent(id, '', 'a1');
     expect(useChatStore.getState().conversations[id].messages[0].content).toBe('');
@@ -47,7 +50,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.appendThinking(id, 'pondering...', 'a1');
     delta.flushTokens(id, 'a1'); // thinking is RAF-buffered same as text tokens — force immediate flush
@@ -58,7 +61,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.setThinkingDuration(id, 7, 'a1');
     expect(useChatStore.getState().conversations[id].messages[0].thinkingDuration).toBe(7);
@@ -68,7 +71,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: 'done', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: 'done', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.finishStreaming(id, 'a1');
     expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
@@ -79,7 +82,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '部分', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '部分', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.cancelStreaming(id);
     expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
@@ -104,7 +107,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.setMessageStreamingFlag(id, 'a1', false);
     expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
@@ -116,7 +119,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.appendThinking(id, 'first', 'a1');
     delta.flushTokens(id, 'a1'); // thinking is RAF-buffered same as text tokens — force immediate flush
@@ -130,7 +133,7 @@ describe('createInProcessChatDelta', () => {
     const delta = createInProcessChatDelta();
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, {
-      id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+      id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
     });
     delta.setMessageToolCalls(id, 'a1', [{ id: 't1', name: 'read_file', input: {} }]);
     const msg = useChatStore.getState().conversations[id].messages[0];
@@ -144,14 +147,14 @@ describe('createInProcessChatDelta', () => {
     it('addMessage() forwards to chatStore.addMessage', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
-      delta.addMessage(id, { id: 'm1', role: 'user', content: 'hi', timestamp: Date.now() });
+      delta.addMessage(id, { id: 'm1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP });
       expect(useChatStore.getState().conversations[id].messages[0].id).toBe('m1');
     });
 
     it('deleteMessage() forwards to chatStore.deleteMessage', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'hi', timestamp: Date.now() });
+      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP });
       delta.deleteMessage(id, 'm1');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
     });
@@ -160,7 +163,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(),
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP,
         toolCalls: [{ id: 't1', name: 'read_file', input: {} }],
       });
       delta.updateToolCall(id, 'a1', 't1', 'ok', undefined, false);
@@ -171,7 +174,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), loopId: 'loop1',
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop1',
       });
       delta.appendToolCallContext(id, 'loop1', { id: 't1', name: 'read_file', input: {}, result: 'ok' });
       expect(useChatStore.getState().conversations[id].messages[0].toolCallsForContext).toHaveLength(1);
@@ -180,7 +183,7 @@ describe('createInProcessChatDelta', () => {
     it('updateMessageUsage() forwards to chatStore.updateMessageUsage', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'a1', role: 'assistant', content: '', timestamp: Date.now() });
+      useChatStore.getState().addMessage(id, { id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP });
       delta.updateMessageUsage(id, { inputTokens: 10, outputTokens: 20 }, 'a1');
       expect(useChatStore.getState().conversations[id].messages[0].usage).toEqual({ inputTokens: 10, outputTokens: 20 });
     });
@@ -189,7 +192,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), loopId: 'loop1',
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop1',
       });
       delta.setExecutionStepsSnapshot(id, 'loop1', [
         { id: 's1', type: 'tool', label: 'step', status: 'completed', toolName: 'read_file' },
@@ -201,7 +204,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), loopId: 'loop1',
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop1',
       });
       delta.setPlannedStepsSnapshot(id, 'loop1', [{ index: 0, description: 'plan', status: 'pending' }]);
       expect(useChatStore.getState().conversations[id].messages[0].plannedSteps).toHaveLength(1);
@@ -243,7 +246,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       const cache = {
-        summaryMessage: { id: 'sum1', role: 'assistant' as const, content: 'summary', timestamp: Date.now() },
+        summaryMessage: { id: 'sum1', role: 'assistant' as const, content: 'summary', timestamp: FIXED_TIMESTAMP },
         summarizedRange: [0, 5] as [number, number],
         messageCountAtCompression: 5,
       };
@@ -271,7 +274,7 @@ describe('createInProcessChatDelta', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       const signal = {
-        computedAt: Date.now(), toolCallCount: 5, hadErrors: false, usedSkill: false,
+        computedAt: FIXED_TIMESTAMP, toolCallCount: 5, hadErrors: false, usedSkill: false,
         triggerLevel: 'companion' as const,
       };
       delta.setPendingProposalSignal(id, signal);

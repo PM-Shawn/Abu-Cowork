@@ -1,14 +1,26 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useUsageStatsStore } from './usageStatsStore';
 
-const today = new Date().toISOString().slice(0, 10);
+// Deterministic clock (TESTING.md §3) — usageStatsStore.ts's recordTurn() buckets
+// by `new Date().toISOString().slice(0, 10)` internally (no injectable clock), so
+// the test freezes the same day instead of racing a real midnight boundary.
+const FIXED_NOW = new Date('2026-05-15T12:00:00.000Z').getTime();
+const today = new Date(FIXED_NOW).toISOString().slice(0, 10);
 
 function reset() {
   useUsageStatsStore.setState({ records: [], conversationTotals: {} });
 }
 
 describe('usageStatsStore', () => {
-  beforeEach(reset);
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+    reset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   describe('recordTurn', () => {
     it('creates a daily record on first call', () => {

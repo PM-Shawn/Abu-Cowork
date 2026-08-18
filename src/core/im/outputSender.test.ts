@@ -43,7 +43,7 @@ function mockConversation(messages: { role: string; content: string | { type: st
           id: `msg-${i}`,
           role: m.role,
           content: m.content,
-          timestamp: Date.now(),
+          timestamp: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
         })),
       },
     },

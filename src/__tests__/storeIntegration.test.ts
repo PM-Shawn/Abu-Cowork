@@ -19,6 +19,9 @@ vi.mock('../stores/workspaceStore', () => ({
   },
 }));
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('Store Integration', () => {
   beforeEach(() => {
     useChatStore.setState({
@@ -57,7 +60,7 @@ describe('Store Integration', () => {
         id: 'msg-1',
         role: 'user',
         content: 'Hello',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         loopId,
       });
 
@@ -66,7 +69,7 @@ describe('Store Integration', () => {
         id: 'msg-2',
         role: 'assistant',
         content: 'Hi there!',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         loopId,
       });
 
@@ -88,7 +91,7 @@ describe('Store Integration', () => {
         toolName: 'read_file',
         toolInput: { path: '/test.txt' },
         status: 'running',
-        startedAt: Date.now(),
+        startedAt: FIXED_TIMESTAMP,
       });
 
       const updatedExec = useTaskExecutionStore.getState().executions[exec.id];
@@ -181,14 +184,14 @@ describe('Store Integration', () => {
         id: 'msg-1',
         role: 'user',
         content: 'Hello conv1',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
 
       useChatStore.getState().addMessage(conv2, {
         id: 'msg-2',
         role: 'user',
         content: 'Hello conv2',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
 
       expect(useChatStore.getState().conversations[conv1].messages).toHaveLength(1);

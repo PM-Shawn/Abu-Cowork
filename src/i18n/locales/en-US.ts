@@ -1817,6 +1817,26 @@ const enUS: TranslationDict = {
     outputChatIdPlaceholder: 'Chat IDs, separated by commas',
     outputUserIdPlaceholder: 'User IDs, separated by commas',
     outputPushFailed: 'Failed to push results to IM channel',
+    permissionMode: 'Autonomy',
+    permissionModeHint: 'The task runs unattended: anything beyond this tier is refused outright, and the reason is written into the result.',
+    denialBrowserSite: 'blocked acting on {origin} (site not authorized)',
+    denialCommand: 'blocked command: {command}',
+    denialFile: 'blocked file access: {path}',
+    denialMore: ', and {count} more',
+    denialSummary: '\n\nThe task was blocked by permissions at the "{mode}" tier: {list}. Raise the task\'s autonomy in its settings, or authorize the site in Settings → Capabilities → Authorized sites.',
+  },
+
+  permissionTiers: {
+    chatOnly: 'Chat only',
+    chatOnlyDesc: 'Replies only — no tools at all',
+    readTools: 'Read only',
+    readToolsDesc: 'Reads information, changes nothing',
+    safeTools: 'Standard',
+    safeToolsDesc: 'Normal work inside the workspace: edit workspace files, run safe commands, act on authorized sites',
+    full: 'Fully open',
+    fullDesc: 'Everything except the system red lines',
+    custom: 'Custom',
+    customDesc: 'Explicit whitelists for commands, paths and tools',
   },
 
   trigger: {

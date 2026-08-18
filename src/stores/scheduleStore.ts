@@ -6,7 +6,9 @@ import type {
   ScheduledTaskRun,
   ScheduleConfig,
   ScheduledTaskStatus,
+  ScheduledTaskPermissionMode,
 } from '../types/schedule';
+import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '../types/schedule';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -148,6 +150,7 @@ interface ScheduleActions {
     outputChannelId?: string;
     outputChatIds?: string;
     outputUserIds?: string;
+    permissionMode?: ScheduledTaskPermissionMode;
   }) => string;
   updateTask: (
     id: string,
@@ -162,6 +165,7 @@ interface ScheduleActions {
       outputChannelId: string | undefined;
       outputChatIds: string | undefined;
       outputUserIds: string | undefined;
+      permissionMode: ScheduledTaskPermissionMode;
     }>
   ) => void;
   deleteTask: (id: string) => void;
@@ -215,6 +219,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           outputChannelId: data.outputChannelId,
           outputChatIds: data.outputChatIds,
           outputUserIds: data.outputUserIds,
+          permissionMode: data.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE,
           createdAt: now,
           updatedAt: now,
           nextRunAt: computeNextRunAt(data.schedule, 'active', now),
@@ -240,6 +245,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
           if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
           if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
+          if (data.permissionMode !== undefined) task.permissionMode = data.permissionMode;
           if (data.schedule !== undefined) {
             task.schedule = data.schedule;
             task.nextRunAt = computeNextRunAt(data.schedule, task.status);
@@ -389,7 +395,7 @@ export const useScheduleStore = create<ScheduleStore>()(
     })),
     {
       name: 'abu-schedule',
-      version: 3,
+      version: 4,
       migrate(persisted: unknown, version: number) {
         if (version < 2) {
           // v1→v2 added optional IM output fields (outputChannelId, outputChatIds, outputUserIds).
@@ -397,6 +403,24 @@ export const useScheduleStore = create<ScheduleStore>()(
         }
         if (version < 3) {
           // v2→v3 added optional projectId field. No data transform needed.
+        }
+        if (version < 4) {
+          // v3→v4 added permissionMode. Existing tasks get the safe default
+          // ('read_tools', plan §7 decision B) rather than the closest match
+          // to their old behavior: before this field the scheduler denied
+          // every confirmation outright, so a task that needed to act was
+          // already failing. Backfilling the permissive tier would silently
+          // widen what tasks written under a deny-everything regime can do.
+          // Tasks that need more now fail with a stated reason and one
+          // dropdown to fix it.
+          const state = persisted as { tasks?: Record<string, ScheduledTask> };
+          if (state?.tasks) {
+            for (const task of Object.values(state.tasks)) {
+              if (task && task.permissionMode === undefined) {
+                task.permissionMode = DEFAULT_SCHEDULED_PERMISSION_MODE;
+              }
+            }
+          }
         }
         return persisted as Record<string, unknown>;
       },

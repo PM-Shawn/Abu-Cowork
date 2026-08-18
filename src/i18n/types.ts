@@ -1958,6 +1958,38 @@ export interface TranslationDict {
     outputChatIdPlaceholder: string;
     outputUserIdPlaceholder: string;
     outputPushFailed: string;
+    /** Field label + hint for the unattended autonomy tier */
+    permissionMode: string;
+    permissionModeHint: string;
+    /** {origin} — a per-site browser refusal during an unattended run */
+    denialBrowserSite: string;
+    /** {command} */
+    denialCommand: string;
+    /** {path} */
+    denialFile: string;
+    /** {count} — trailer when more denials happened than are listed */
+    denialMore: string;
+    /** {mode} {list} — appended to a failed run's result text */
+    denialSummary: string;
+  };
+
+  /**
+   * Shared autonomy vocabulary for unattended scenarios (permission plan
+   * §4.2). One set of words across scheduled tasks, triggers and IM channels
+   * so it only has to be learned once. Chat keeps its own
+   * standard/smart/autonomous wording on purpose (plan §8).
+   */
+  permissionTiers: {
+    chatOnly: string;
+    chatOnlyDesc: string;
+    readTools: string;
+    readToolsDesc: string;
+    safeTools: string;
+    safeToolsDesc: string;
+    full: string;
+    fullDesc: string;
+    custom: string;
+    customDesc: string;
   };
 
   // Triggers

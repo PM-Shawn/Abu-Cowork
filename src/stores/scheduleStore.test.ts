@@ -89,6 +89,56 @@ describe('scheduleStore', () => {
       expect(task.totalRuns).toBe(0);
       expect(task.nextRunAt).toBeDefined();
     });
+
+    // Plan §7 decision B: a task the user did not think about must not be able
+    // to act on its own.
+    it('defaults new tasks to the safe read-only tier', () => {
+      const id = useScheduleStore.getState().createTask({
+        name: 'Daily Report',
+        prompt: 'Generate daily report',
+        schedule: { frequency: 'daily' },
+      });
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('read_tools');
+    });
+
+    it('honours an explicitly chosen tier', () => {
+      const id = useScheduleStore.getState().createTask({
+        name: 'Build', prompt: 'build', schedule: { frequency: 'daily' },
+        permissionMode: 'full',
+      });
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('full');
+    });
+  });
+
+  // ── persist migration ──
+  describe('v3 → v4 migration', () => {
+    it('backfills the safe tier onto tasks that predate the field', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      expect(migrate).toBeDefined();
+
+      const migrated = migrate?.(
+        { tasks: { a: { id: 'a', name: 'legacy' }, b: { id: 'b', name: 'legacy 2' } } },
+        3,
+      ) as { tasks: Record<string, { permissionMode?: string }> };
+
+      expect(migrated.tasks.a.permissionMode).toBe('read_tools');
+      expect(migrated.tasks.b.permissionMode).toBe('read_tools');
+    });
+
+    it('leaves an already-set tier alone', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      const migrated = migrate?.(
+        { tasks: { a: { id: 'a', permissionMode: 'full' } } },
+        3,
+      ) as { tasks: Record<string, { permissionMode?: string }> };
+
+      expect(migrated.tasks.a.permissionMode).toBe('full');
+    });
+
+    it('survives persisted state with no tasks map', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      expect(() => migrate?.({}, 3)).not.toThrow();
+    });
   });
 
   // ── updateTask ──

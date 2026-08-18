@@ -7,9 +7,21 @@ import { useI18n } from '@/i18n';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
-import type { ScheduleFrequency, ScheduleConfig } from '@/types/schedule';
+import type {
+  ScheduleFrequency,
+  ScheduleConfig,
+  ScheduledTaskPermissionMode,
+} from '@/types/schedule';
+import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '@/types/schedule';
+import {
+  getCapabilityTierLabel,
+  getCapabilityTierDescription,
+} from '@/core/permissions/permissionTiers';
 
 const FREQUENCIES: ScheduleFrequency[] = ['hourly', 'daily', 'weekly', 'weekdays', 'manual'];
+
+/** Offered tiers, safest first. 'custom' is trigger-only (no whitelist UI here). */
+const PERMISSION_MODES: ScheduledTaskPermissionMode[] = ['read_tools', 'safe_tools', 'full'];
 
 export default function ScheduleEditor() {
   const { t } = useI18n();
@@ -40,6 +52,9 @@ export default function ScheduleEditor() {
   const [outputChannelId, setOutputChannelId] = useState('');
   const [outputChatIds, setOutputChatIds] = useState('');
   const [outputUserIds, setOutputUserIds] = useState('');
+  const [permissionMode, setPermissionMode] = useState<ScheduledTaskPermissionMode>(
+    DEFAULT_SCHEDULED_PERMISSION_MODE,
+  );
 
   // Initialize form when editing task changes
   useEffect(() => {
@@ -57,6 +72,7 @@ export default function ScheduleEditor() {
       setOutputChannelId(editingTask.outputChannelId ?? '');
       setOutputChatIds(editingTask.outputChatIds ?? '');
       setOutputUserIds(editingTask.outputUserIds ?? '');
+      setPermissionMode(editingTask.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE);
     } else {
       setName('');
       setDescription('');
@@ -71,6 +87,7 @@ export default function ScheduleEditor() {
       setOutputChannelId('');
       setOutputChatIds('');
       setOutputUserIds('');
+      setPermissionMode(DEFAULT_SCHEDULED_PERMISSION_MODE);
     }
   }, [editingTask, showEditor]);
 
@@ -134,6 +151,7 @@ export default function ScheduleEditor() {
         outputChannelId: outputChannelId || undefined,
         outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
         outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
+        permissionMode,
       });
     } else {
       createTask({
@@ -147,6 +165,7 @@ export default function ScheduleEditor() {
         outputChannelId: outputChannelId || undefined,
         outputChatIds: outputChannelId && outputChatIds.trim() ? outputChatIds.trim() : undefined,
         outputUserIds: outputChannelId && outputUserIds.trim() ? outputUserIds.trim() : undefined,
+        permissionMode,
       });
     }
 
@@ -358,6 +377,24 @@ export default function ScheduleEditor() {
                 projectId && 'opacity-60 cursor-not-allowed'
               )}
             />
+          </div>
+
+          {/* Autonomy tier — the ceiling for this unattended run */}
+          <div>
+            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
+              {t.schedule.permissionMode}
+            </label>
+            <Select
+              value={permissionMode}
+              onChange={(v) => setPermissionMode(v as ScheduledTaskPermissionMode)}
+              options={PERMISSION_MODES.map((mode) => ({
+                value: mode,
+                label: `${getCapabilityTierLabel(mode)} — ${getCapabilityTierDescription(mode)}`,
+              }))}
+            />
+            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
+              {t.schedule.permissionModeHint}
+            </p>
           </div>
 
           {/* Output to IM channel */}

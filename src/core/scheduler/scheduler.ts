@@ -8,38 +8,94 @@ import {
   notifyScheduledTaskError,
 } from '../../utils/notifications';
 import { getI18n, format } from '../../i18n';
-import type { ScheduledTask } from '../../types/schedule';
+import type { ScheduledTask, ScheduledTaskPermissionMode } from '../../types/schedule';
+import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '../../types/schedule';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { usePermissionStore } from '../../stores/permissionStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
+import { resolveTriggerCallbacks } from '../trigger/triggerPermission';
+import { getCapabilityTierLabel } from '../permissions/permissionTiers';
 import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
 
+/** How many distinct denials to quote back; beyond this the list is summarized. */
+const MAX_REPORTED_DENIALS = 5;
+
 /**
- * Auto-deny confirmation callback for scheduled tasks.
- * Since scheduled tasks run unattended, dangerous commands are automatically rejected.
+ * Permission callbacks for one scheduled run, plus a recorder for whatever the
+ * task's tier refused.
+ *
+ * The tier decision itself is delegated to `resolveTriggerCallbacks` — triggers
+ * and scheduled tasks are the same unattended question ("nobody is here to ask,
+ * how far may this go?"), and duplicating the read_tools/safe_tools/full
+ * judgement here would give Abu two implementations of one rule that could
+ * drift apart.
+ *
+ * The recorder exists because of the failure mode this whole change is about:
+ * a task used to run at 3am, hit a permission wall, and surface nothing but
+ * "failed". Browser gating flows through the same confirmation callback (the
+ * registry calls `onRequireConfirmation` with `kind: 'browser'` and the
+ * origin), so per-site refusals land here too — that is what makes the
+ * "blocked on example.com, authorize it in Settings" message possible without
+ * a separate accounting layer.
  */
-async function autoDenyConfirmation(_info: ConfirmationInfo): Promise<boolean> {
-  console.log('[Scheduler] Auto-denied dangerous command:', _info.command);
-  return false;
+function resolveScheduledRunPermissions(task: ScheduledTask): {
+  commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
+  filePermissionCallback: FilePermissionCallback;
+  blockedTools: string[];
+  getDenials: () => string[];
+} {
+  const mode = task.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE;
+  const base = resolveTriggerCallbacks({
+    prompt: task.prompt,
+    workspacePath: task.workspacePath,
+    capability: mode,
+  });
+
+  // Deduplicated: an agent retrying the same blocked action ten times should
+  // produce one line, not ten.
+  const denials = new Set<string>();
+
+  return {
+    commandConfirmCallback: async (info) => {
+      const allowed = await base.commandConfirmCallback(info);
+      if (!allowed) {
+        const t = getI18n();
+        denials.add(
+          info.kind === 'browser' && info.browserOrigin
+            ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
+            : format(t.schedule.denialCommand, { command: info.command }),
+        );
+      }
+      return allowed;
+    },
+    filePermissionCallback: async (request) => {
+      const allowed = await base.filePermissionCallback(request);
+      if (!allowed) {
+        const t = getI18n();
+        denials.add(format(t.schedule.denialFile, { path: request.path }));
+      }
+      return allowed;
+    },
+    blockedTools: base.blockedTools,
+    getDenials: () => Array.from(denials),
+  };
 }
 
 /**
- * Auto file permission callback for scheduled tasks.
- * Auto-allows paths that have persisted grants; auto-denies everything else.
+ * Turn recorded denials into the sentence appended to a failed run's result
+ * text, including where to grant what was missing (plan §4.4 — say the reason
+ * in the result, do not build a separate accounting UI).
  */
-const autoFilePermission: FilePermissionCallback = async (request) => {
-  const permStore = usePermissionStore.getState();
-
-  // Check if there's a persisted grant for this path
-  if (permStore.hasPermission(request.path, request.capability)) {
-    authorizeWorkspace(request.path);
-    return true;
-  }
-
-  console.log(`[Scheduler] Auto-denied file access: ${request.path} (${request.capability})`);
-  return false;
-};
+function describeDenials(denials: string[], mode: ScheduledTaskPermissionMode): string {
+  if (denials.length === 0) return '';
+  const t = getI18n();
+  const shown = denials.slice(0, MAX_REPORTED_DENIALS);
+  const more = denials.length - shown.length;
+  const list = shown.join('; ') + (more > 0 ? format(t.schedule.denialMore, { count: String(more) }) : '');
+  return format(t.schedule.denialSummary, {
+    mode: getCapabilityTierLabel(mode),
+    list,
+  });
+}
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
 
@@ -106,10 +162,13 @@ class SchedulerEngine {
       prompt = `/${task.skillName} ${prompt}`;
     }
 
+    const permissions = resolveScheduledRunPermissions(task);
+
     try {
       const result = await runAgentLoopDispatched(conversationId, prompt, {
-        commandConfirmCallback: autoDenyConfirmation,
-        filePermissionCallback: autoFilePermission,
+        commandConfirmCallback: permissions.commandConfirmCallback,
+        filePermissionCallback: permissions.filePermissionCallback,
+        blockedTools: permissions.blockedTools,
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
@@ -145,10 +204,17 @@ class SchedulerEngine {
       } else {
         // aborted, error, or no_progress (degenerate output) — no delivery; mark the
         // run with a reason-specific message instead of "Unknown error".
-        const errorMsg = result.error ?? (
+        const baseError = result.error ?? (
           result.reason === 'aborted' ? 'Task was cancelled'
           : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
           : 'Unknown error'
+        );
+        // A task that failed after being blocked used to read as a bare
+        // "failed". Say what was refused and at which tier, so the run history
+        // carries the fix instead of the user having to guess.
+        const errorMsg = baseError + describeDenials(
+          permissions.getDenials(),
+          task.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE,
         );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {

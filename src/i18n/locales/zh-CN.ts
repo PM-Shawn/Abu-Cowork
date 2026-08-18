@@ -1818,6 +1818,26 @@ const zhCN: TranslationDict = {
     outputChatIdPlaceholder: '群 ID，多个用逗号分隔',
     outputUserIdPlaceholder: '用户 ID，多个用逗号分隔',
     outputPushFailed: '结果推送到 IM 频道失败',
+    permissionMode: '自主程度',
+    permissionModeHint: '任务在无人值守时运行，超出该档位的操作会被直接拒绝，并在结果里写明原因。',
+    denialBrowserSite: '在 {origin} 的操作被拦下（该站点未授权）',
+    denialCommand: '命令被拦下：{command}',
+    denialFile: '文件访问被拦下：{path}',
+    denialMore: '，另有 {count} 项',
+    denialSummary: '\n\n任务在「{mode}」档位下被权限拦下：{list}。可在任务设置里调高自主程度，站点授权在 设置 → 能力 → 已授权的网站。',
+  },
+
+  permissionTiers: {
+    chatOnly: '只聊天',
+    chatOnlyDesc: '只回消息，不使用任何工具',
+    readTools: '只看不动',
+    readToolsDesc: '只读取信息，不做任何修改',
+    safeTools: '常规',
+    safeToolsDesc: '在工作区内正常干活：改工作区文件、跑安全命令、操作已授权的网站',
+    full: '完全放开',
+    fullDesc: '除系统红线外都允许',
+    custom: '自定义',
+    customDesc: '按白名单逐项指定可用的命令、路径和工具',
   },
 
   trigger: {

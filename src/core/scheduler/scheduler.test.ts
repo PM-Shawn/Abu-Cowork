@@ -13,6 +13,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import type { ScheduledTask } from '../../types/schedule';
+import type { ConfirmationInfo } from '../tools/registry';
+import { initLanguage } from '../../i18n';
 
 // Mock agentLoop — control the exit reason. isIncompleteReason is a trivial pure
 // fn (tested in agentLoop.test.ts); duplicate it here to avoid importing the real
@@ -110,5 +112,127 @@ describe('SchedulerEngine output delivery by exit reason', () => {
 
     expect(outputSender.buildMessage).not.toHaveBeenCalled();
     expect(latestRunStatus(task.id)).toBe('error');
+  });
+});
+
+// ── Unattended autonomy tier (permission plan §3 + §7 decision B) ──
+//
+// Before this, the scheduler hard-coded "deny anything that needs asking" and
+// reported a bare "failed". Two things are pinned here: the task's tier
+// actually decides what runs, and whatever it refused reaches the run's result
+// text so the user can act on it.
+describe('SchedulerEngine permission tier', () => {
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useChatStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      agentStatus: 'idle',
+      currentTool: null,
+      currentUsage: null,
+      pendingInput: null,
+      thinkingStartTime: null,
+    });
+    vi.clearAllMocks();
+    initLanguage('zh-CN');
+  });
+
+  /** Drive the run's confirmation callback, then end the run with `reason`. */
+  function runWithProbe(
+    probe: (options: {
+      commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
+    }) => Promise<void>,
+    reason: 'error' | 'completed' = 'error',
+  ) {
+    vi.mocked(runAgentLoop).mockImplementation(async (_conv, _msg, options) => {
+      await probe(options as never);
+      return { reason, error: reason === 'error' ? 'boom' : undefined } as never;
+    });
+  }
+
+  function latestRunError(taskId: string): string | undefined {
+    const runs = useScheduleStore.getState().tasks[taskId]?.runs ?? [];
+    return runs[runs.length - 1]?.error;
+  }
+
+  it('read_tools refuses commands and says so in the result text', async () => {
+    const task = makeTask({ id: 'task-read', permissionMode: 'read_tools' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let allowed: boolean | undefined;
+    runWithProbe(async (options) => {
+      allowed = await options.commandConfirmCallback({
+        command: 'ls -la', level: 'safe', reason: '',
+      });
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(allowed).toBe(false);
+    expect(latestRunError(task.id)).toContain('只看不动');
+    expect(latestRunError(task.id)).toContain('ls -la');
+  });
+
+  it('full lets a non-blocked command through', async () => {
+    const task = makeTask({ id: 'task-full', permissionMode: 'full' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let allowed: boolean | undefined;
+    runWithProbe(async (options) => {
+      allowed = await options.commandConfirmCallback({
+        command: 'npm run build', level: 'warn', reason: '',
+      });
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(allowed).toBe(true);
+  });
+
+  it('names the site when a browser action is refused', async () => {
+    // Browser gating reaches the scheduler through the same confirmation
+    // callback (registry passes kind: 'browser' + the origin), which is what
+    // makes the "authorize it in Settings" hint possible with no extra layer.
+    const task = makeTask({ id: 'task-browser', permissionMode: 'safe_tools' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async (options) => {
+      await options.commandConfirmCallback({
+        command: 'abu-browser__click (https://example.com)',
+        level: 'warn',
+        reason: '',
+        kind: 'browser',
+        browserOrigin: 'https://example.com',
+      });
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(latestRunError(task.id)).toContain('https://example.com');
+    expect(latestRunError(task.id)).toContain('设置');
+  });
+
+  it('falls back to the safe default when a task predates the field', async () => {
+    const task = makeTask({ id: 'task-legacy' });
+    delete (task as { permissionMode?: unknown }).permissionMode;
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let allowed: boolean | undefined;
+    runWithProbe(async (options) => {
+      allowed = await options.commandConfirmCallback({
+        command: 'ls', level: 'safe', reason: '',
+      });
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(allowed).toBe(false);
+    expect(latestRunError(task.id)).toContain('只看不动');
+  });
+
+  it('leaves the result text alone when nothing was refused', async () => {
+    const task = makeTask({ id: 'task-clean', permissionMode: 'read_tools' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async () => {});
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(latestRunError(task.id)).toBe('boom');
   });
 });

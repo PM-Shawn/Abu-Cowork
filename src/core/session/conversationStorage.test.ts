@@ -1245,6 +1245,65 @@ describe('conversationStorage', () => {
       });
     });
 
+    describe('crash windows', () => {
+      it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        // Both ledger write paths fail at exit. Dropping the snapshot anyway
+        // would discard the revision with no copy left anywhere.
+        vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+          if (cmd === 'append_file_text' || cmd === 'atomic_write_text') {
+            throw new Error('disk full');
+          }
+          return undefined;
+        });
+
+        await storage.shutdownConversationStorage();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+
+      it('does not let a torn last line swallow the next append', async () => {
+        // A crash mid-append (native append has no atomicity guarantee, see
+        // appendToFile) leaves the tail unterminated. Nothing rewrites the file
+        // any more, so without an explicit repair every later append is glued
+        // onto that stump and both messages parse as one corrupt line.
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 }) + '\n'
+            + '{"id":"m2","role":"user","content":"tor',
+        );
+
+        await storage.loadMessages('conv-1');
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'after crash' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1', 'm3']);
+      });
+
+      it('a queued revision does not resurrect a message deleted before the drain', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+
+        // Checkpoint write still sitting in the 100ms-debounced queue when the
+        // delete lands — the abort path does exactly this (agentLoop's ghost
+        // cleanup runs right behind the turn's last persist).
+        const queued = storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-checkpoint' }));
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        await storage.deleteMessageById('conv-1', 'm2');
+        await storage.flushWrites();
+        await queued;
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+    });
+
     describe('write amplification budget', () => {
       // Plan §3.6: a tool-heavy conversation revises the same growing message
       // many times per turn. The acceptance criterion is that messages.jsonl

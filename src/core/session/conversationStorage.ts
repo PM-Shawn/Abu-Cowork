@@ -243,6 +243,49 @@ async function drainAll(): Promise<void> {
 }
 
 /**
+ * Paths whose on-disk tail this process has already confirmed to be newline
+ * terminated. See `repairTornTail`.
+ */
+const tailCheckedPaths = new Set<string>();
+
+/**
+ * Prefix `data` with the newline a crashed append never got to write.
+ *
+ * Native append is not atomic (see `appendToFile` below), so a crash mid-write
+ * can leave the file ending in a partial line. That was self-healing while
+ * `replaceMessageById` rewrote the whole file — `lines.join('\n') + '\n'`
+ * re-terminated the stump within seconds. In an append-only ledger nothing
+ * ever rewrites, so the stump is permanent and the NEXT appended line gets
+ * glued onto it: one corrupt line, two messages lost instead of one.
+ *
+ * Checking costs one read of the file, once per path per process, on the first
+ * append only — `loadMessages` hands its own read to `noteTailFromRead` so the
+ * common path does not pay even that.
+ */
+async function repairTornTail(filePath: string, data: string): Promise<string> {
+  if (tailCheckedPaths.has(filePath)) return data;
+  try {
+    if (!(await exists(filePath))) {
+      tailCheckedPaths.add(filePath);
+      return data;
+    }
+    const raw = await readTextFile(filePath);
+    tailCheckedPaths.add(filePath);
+    if (raw.length === 0 || raw.endsWith('\n')) return data;
+    return `\n${data}`;
+  } catch {
+    // Unreadable: leave the flag unset so a later append tries again.
+    return data;
+  }
+}
+
+/** Record a tail already observed by a reader, so no append has to re-read it. */
+function noteTailFromRead(filePath: string, raw: string): void {
+  if (raw.length === 0 || raw.endsWith('\n')) tailCheckedPaths.add(filePath);
+  else tailCheckedPaths.delete(filePath);
+}
+
+/**
  * Append data to a file. Creates parent directory on first write.
  *
  * Part B1: tries the native `append_file_text` Rust command first — it opens
@@ -264,8 +307,9 @@ async function drainAll(): Promise<void> {
  *
  * Serialized against concurrent mutations on the same path via `withFileLock`.
  */
-async function appendToFile(filePath: string, data: string): Promise<void> {
+async function appendToFile(filePath: string, rawData: string): Promise<void> {
   return withFileLock(filePath, async () => {
+    const data = await repairTornTail(filePath, rawData);
     try {
       // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
       // if the command is unavailable or fails.
@@ -494,24 +538,38 @@ async function readStreamSnapshot(convId: string): Promise<Message[]> {
 export async function flushStreamSnapshots(): Promise<void> {
   if (streamSnapshots.size === 0) return;
   await ensureBase();
-  const pending: Promise<unknown>[] = [];
+  const promotions: { convId: string; done: Promise<unknown> }[] = [];
   for (const [convId, entries] of [...streamSnapshots.entries()]) {
     for (const message of entries.values()) {
-      pending.push(
-        enqueueWrite(
+      promotions.push({
+        convId,
+        done: enqueueWrite(
           messagesPath(convId),
           serializeLedgerPut(message, parentIdByMessage.get(message.id)),
           message.id,
         ).then(() => {
           writtenIds.add(message.id);
         }),
-      );
+      });
     }
     streamSnapshots.delete(convId);
-    pending.push(writeStreamSnapshot(convId, new Map()));
   }
   await flushWrites();
-  await Promise.allSettled(pending);
+
+  // Drop a snapshot file only AFTER its revision is durably in the ledger.
+  // Removing it in parallel with the promotion leaves a crash window in which
+  // neither copy exists, and a rejected promotion (disk full at exit) would
+  // discard the revision outright — keeping the file lets the next launch
+  // re-arm from it instead.
+  const results = await Promise.allSettled(promotions.map((p) => p.done));
+  const failedConvs = new Set(
+    promotions.filter((_, i) => results[i].status === 'rejected').map((p) => p.convId),
+  );
+  await Promise.allSettled(
+    [...new Set(promotions.map((p) => p.convId))]
+      .filter((convId) => !failedConvs.has(convId))
+      .map((convId) => writeStreamSnapshot(convId, new Map())),
+  );
 }
 
 /**
@@ -883,6 +941,14 @@ export async function deleteMessageById(
 ): Promise<boolean> {
   await ensureBase();
   const path = messagesPath(convId);
+  // Land every queued line BEFORE the rewrite reads the file. Since revisions
+  // became appends, a checkpoint put can still be sitting in the 100ms-debounced
+  // queue when a delete arrives (the abort path's ghost cleanup runs right
+  // behind the turn's last persist) — the rewrite would not see that line, and
+  // the later drain would append it back, resurrecting the deleted message.
+  // Draining here, outside `withFileLock`, is the same discipline
+  // `catalogReindexConversation` uses; doing it inside the lock would deadlock.
+  await flushWrites();
   if (!(await exists(path))) {
     if (writtenIds.has(messageId)) {
       throw new Error(`Conversation messages file does not exist for persisted message "${messageId}"`);
@@ -921,6 +987,8 @@ export async function deleteMessageById(
     }
 
     await atomicWrite(path, kept.length > 0 ? `${kept.join('\n')}\n` : '');
+    // The rewrite re-terminated the file, torn tail included.
+    tailCheckedPaths.add(path);
     writtenIds.delete(messageId);
     // A buffered revision would otherwise resurrect the row on next load.
     await dropStreamSnapshotEntry(convId, messageId);
@@ -1128,6 +1196,8 @@ export async function loadMessages(convId: string): Promise<Message[]> {
     );
     return [];
   }
+  // Free the next append from re-reading the file just to check its tail.
+  noteTailFromRead(path, raw);
 
   // The whole read is one fold (see messageLedger.ts for the spec). It keeps
   // the previous damage-reduction behaviour — a corrupt line is skipped, not

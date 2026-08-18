@@ -3,6 +3,7 @@ import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import type { DangerLevel } from '@/core/tools/commandSafety';
 
 export interface CommandConfirmRequest {
@@ -70,8 +71,11 @@ export default function CommandConfirmDialog({
   // "Always allow this site": persist the verdict, then resolve like a normal
   // confirm. The persistent grant is the dialog's own side effect — the
   // approval pipeline stays a plain boolean.
+  // `allowPersistentGrant` is the requester's ceiling; `mayOfferPersistentGrant`
+  // is the floor that high-consequence actions can never rise above. Both must
+  // agree before a "forever" button appears.
   const offerSiteGrant =
-    request.kind === 'browser' && request.allowPersistentGrant === true && !!request.browserOrigin;
+    request.kind === 'browser' && !!request.browserOrigin && mayOfferPersistentGrant(request);
   const handleAlwaysAllowSite = useCallback(() => {
     if (request.browserOrigin) {
       useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'allowed');

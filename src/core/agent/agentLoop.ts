@@ -2532,7 +2532,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // round trip — whether there is a physical row to cut. No
             // separate isMessageWrittenToDisk check is needed here anymore on
             // either the in-process or sidecar-run path.
-            chatDelta.deleteMessagesFrom(conversationId, assistantMsgId);
+            // Tail guard (defense-in-depth, review finding #2): the retired
+            // per-id delete only removed one row; deleteMessagesFrom cuts the
+            // tail. A ghost is by construction the last message — but if a
+            // stale isStreaming flag ever mislabels an earlier message, cut
+            // NOTHING rather than real turns behind it.
+            const tail = getConversationReader().getConversation(conversationId)?.messages.at(-1);
+            if (tail?.id === assistantMsgId) {
+              chatDelta.deleteMessagesFrom(conversationId, assistantMsgId);
+            }
           }
         }
 

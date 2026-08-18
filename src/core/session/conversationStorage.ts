@@ -229,6 +229,21 @@ function scheduleDrain(): void {
   }, DRAIN_INTERVAL_MS);
 }
 
+/**
+ * Put ids dequeued by a drain whose appendToFile has not settled yet, keyed
+ * `${filePath}\n${mergeKey}`. In that window a put is in neither writeQueues
+ * (hasPendingPut → false) nor writtenIds (added only after the caller's
+ * enqueue promise resolves) — appendTruncateEvent's skip-guard must still
+ * count it as "something durable to cut", or a truncate racing the turn-end
+ * checkpoint's drain silently skips its event and the cut turn resurrects on
+ * the next load (review finding #1).
+ */
+const inFlightPutKeys = new Set<string>();
+
+function hasInFlightPut(filePath: string, messageId: string): boolean {
+  return inFlightPutKeys.has(`${filePath}\n${messageId}`);
+}
+
 async function drainAll(): Promise<void> {
   const entries = [...writeQueues.entries()];
   writeQueues.clear();
@@ -236,11 +251,24 @@ async function drainAll(): Promise<void> {
   await Promise.allSettled(
     entries.map(async ([filePath, pending]) => {
       const data = pending.map((p) => p.line).join('');
+      const flightKeys = pending
+        .filter((p) => p.mergeKey !== undefined)
+        .map((p) => `${filePath}\n${p.mergeKey}`);
+      flightKeys.forEach((k) => inFlightPutKeys.add(k));
       try {
         await appendToFile(filePath, data);
+        // Claim the ids HERE, synchronously with the drain settling — not in
+        // the callers' microtask continuations — so there is no instant where
+        // a durably-landed put is in neither writtenIds nor the in-flight set
+        // (appendMessage's own later add is then redundant but harmless).
+        pending.forEach((p) => {
+          if (p.mergeKey !== undefined) writtenIds.add(p.mergeKey);
+        });
         pending.forEach((p) => p.settlers.forEach((s) => s.resolve()));
       } catch (err) {
         pending.forEach((p) => p.settlers.forEach((s) => s.reject(err)));
+      } finally {
+        flightKeys.forEach((k) => inFlightPutKeys.delete(k));
       }
     }),
   );
@@ -978,9 +1006,16 @@ export async function appendTruncateEvent(
   const path = messagesPath(convId);
 
   // Skip guard (plan stage 3): see this function's doc comment and
-  // `isMessageWrittenToDisk`'s doc comment for why both the durable-write set
-  // AND the still-queued puts count as "something to cut."
-  if (!writtenIds.has(fromMessageId) && !hasPendingPut(path, fromMessageId)) {
+  // `isMessageWrittenToDisk`'s doc comment for why the durable-write set,
+  // the still-queued puts AND the mid-drain in-flight puts all count as
+  // "something to cut" — the third one closes the dequeued-but-unsettled
+  // window where a turn-end checkpoint's put is otherwise invisible to both
+  // other checks (review finding #1).
+  if (
+    !writtenIds.has(fromMessageId)
+    && !hasPendingPut(path, fromMessageId)
+    && !hasInFlightPut(path, fromMessageId)
+  ) {
     return false;
   }
 

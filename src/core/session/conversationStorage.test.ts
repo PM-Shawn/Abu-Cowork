@@ -174,6 +174,47 @@ describe('conversationStorage', () => {
     });
   });
 
+  describe('appendTruncateEvent · mid-drain race (review finding #1)', () => {
+    it('still writes the truncate event while the target put is dequeued but unsettled', async () => {
+      // Block the native append so the drain holding the put stays in flight.
+      let releaseAppend!: () => void;
+      const appendGate = new Promise<void>((r) => { releaseAppend = r; });
+      let appendCalls = 0;
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string; data?: string }) => {
+        if (cmd === 'append_file_text') {
+          appendCalls++;
+          if (appendCalls === 1) await appendGate; // first drain (the put) blocks
+          memFs.files.set(args!.path!, (memFs.files.get(args!.path!) ?? '') + (args!.data ?? ''));
+          return undefined;
+        }
+        return undefined;
+      });
+
+      const putPromise = storage.appendMessage('race-conv', makeMsg({ id: 'race-put', content: 'checkpoint' }));
+      // Drain microtasks so appendMessage's async preamble finishes ENQUEUEING
+      // the put before we trigger the drain that dequeues it.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      const drain = storage.flushWrites(); // dequeues the put; append now in flight
+      await Promise.resolve(); // let drainAll register the in-flight keys
+      // Window under test: not in writeQueues, not yet in writtenIds. Don't
+      // await yet — the event's own drain queues behind the blocked append on
+      // the same file lock; release the gate first, then assert.
+      const truncPromise = storage.appendTruncateEvent('race-conv', 'race-put', { removedIds: ['race-put'] });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      releaseAppend();
+      const wrote = await truncPromise;
+      expect(wrote).toBe(true); // in-flight guard must count the put
+      await Promise.all([putPromise, drain]);
+      await storage.flushWrites();
+
+      const raw = memFs.files.get('/Users/testuser/.abu/conversations/race-conv/messages.jsonl') ?? '';
+      expect(raw).toContain('"race-put"');
+      expect(raw).toContain('"lk":"msg.truncate"');
+      const folded = foldMessageLog(raw.split('\n'));
+      expect(folded.messages.some((m) => m.id === 'race-put')).toBe(false);
+    });
+  });
+
   describe('appendToFile · native append (Part B1)', () => {
     it('uses the native append_file_text command and skips the atomic-write fallback when it succeeds', async () => {
       const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];

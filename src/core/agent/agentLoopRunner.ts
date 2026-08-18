@@ -589,7 +589,12 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
             // appendTruncateEvent skip guard already tells a never-durable
             // ghost from one with a physical row to cut — no separate
             // isMessageWrittenToDisk check needed here anymore.
-            chatDelta.deleteMessagesFrom(session.conversationId, streamingAssistant.id);
+            // Tail guard (defense-in-depth, review finding #2): only cut when
+            // the ghost really is the conversation tail — a stale isStreaming
+            // flag on an earlier message must not truncate real turns.
+            if (conversation?.messages.at(-1)?.id === streamingAssistant.id) {
+              chatDelta.deleteMessagesFrom(session.conversationId, streamingAssistant.id);
+            }
           }
         }
       } catch (err) {

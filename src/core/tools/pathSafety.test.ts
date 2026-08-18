@@ -438,6 +438,40 @@ describe('pathSafety', () => {
       expect(result.needsPermission).toBe(true);
     });
 
+    // macOS (APFS/HFS+ default) and Windows are case-INsensitive: `~/.Abu` and
+    // `~/.abu` are the same directory on disk. A case-sensitive prefix test
+    // therefore hands the whole red line away for one capital letter — and with
+    // the home directory authorized (the common case once a workspace under
+    // home is granted) the bypass resolved to a plain `allowed: true`.
+    const caseVariants = [
+      '/Users/testuser/.Abu/mcp/config.json',
+      '/Users/testuser/.ABU/agents/x/AGENT.md',
+      '/Users/testuser/Library/Application Support/ABU/config.json',
+      '/Users/testuser/library/Application Support/Abu/config.json',
+    ];
+
+    for (const path of caseVariants) {
+      it(`blocks the case variant: ${path}`, async () => {
+        authorizeWorkspace('/Users/testuser');
+        const result = await checkWritePath(path);
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+      });
+    }
+
+    it('keeps the memory carve-out working on Windows', async () => {
+      // getHomeDir() is not lowercased but normalizePath lowercases the whole
+      // path on Windows, so an unfolded `${home}/.abu` prefix never matched —
+      // which flipped the memory whitelist to a hard block on that platform.
+      cleanup = setPlatformForTest('windows');
+      expect((await checkWritePath('/Users/testuser/.abu/memory/user_name.md')).allowed).toBe(true);
+      expect(
+        (await checkWritePath('/Users/testuser/.abu/projects/-ws-app/memory/notes.md')).allowed,
+      ).toBe(true);
+      // …while the rest of the tree stays blocked there.
+      expect((await checkWritePath('/Users/testuser/.abu/mcp/config.json')).allowed).toBe(false);
+    });
+
     it('covers the Windows app-data root', async () => {
       cleanup = setPlatformForTest('windows');
       // Home-relative, matching how the other Windows cases are written (the

@@ -244,14 +244,31 @@ function isInAuthorizedWorkspace(path: string, capability: 'read' | 'write' = 'r
 }
 
 /**
+ * Fold a path for the `~/.abu` comparisons below.
+ *
+ * Two things go wrong without this. (1) `normalizePath` lowercases the whole
+ * path on Windows but `getHomeDir()` does not come back lowercased, so a raw
+ * `${home}/.abu` prefix never matched there. (2) macOS (APFS/HFS+ default) and
+ * Windows are case-INsensitive filesystems: `~/.Abu/mcp/config.json` and
+ * `~/.abu/mcp/config.json` are literally the same file, so a case-sensitive
+ * prefix test lets the self-protection red line be stepped over by changing
+ * one letter. Folded on every platform on purpose — over-matching a
+ * differently-cased `~/.ABU` fails closed, under-matching fails open.
+ */
+function foldPath(path: string): string {
+  return normalizeForCompare(path).toLowerCase();
+}
+
+/**
  * Check if an absolute path is inside an Abu memory directory.
  * Whitelists ~/.abu/memory/ and ~/.abu/projects/{key}/memory/.
  * This allows file tools (read_file, write_file, edit_file) to operate
  * on memory files without triggering permission dialogs.
  */
-async function isAbuMemoryPath(normalizedPath: string): Promise<boolean> {
+async function isAbuMemoryPath(rawPath: string): Promise<boolean> {
   const home = await getHomeDir();
-  const abuBase = `${home}/.abu`;
+  const abuBase = foldPath(`${home}/.abu`);
+  const normalizedPath = foldPath(rawPath);
 
   // ~/.abu/memory/
   if (normalizedPath.startsWith(`${abuBase}/memory/`) || normalizedPath === `${abuBase}/memory`) {
@@ -310,14 +327,17 @@ function isAbuAppDataSegment(segment: string): boolean {
 
 async function isAbuSelfManagedPath(normalizedPath: string): Promise<boolean> {
   const home = await getHomeDir();
-  const comparePath = normalizeForCompare(normalizedPath);
+  // Folded, not just normalized: on a case-insensitive filesystem `~/.Abu` IS
+  // `~/.abu`, and a case-sensitive prefix test would hand the whole red line
+  // away for the price of one capital letter. See `foldPath`.
+  const comparePath = foldPath(normalizedPath);
 
-  const abuBase = normalizeForCompare(`${home}/.abu`);
+  const abuBase = foldPath(`${home}/.abu`);
   if (comparePath === abuBase || comparePath.startsWith(`${abuBase}/`)) {
     return !(await isAbuMemoryPath(normalizedPath));
   }
 
-  const appDataRoot = normalizeForCompare(
+  const appDataRoot = foldPath(
     isWindows() ? `${home}/AppData/Roaming` : `${home}/Library/Application Support`,
   );
   if (comparePath.startsWith(`${appDataRoot}/`)) {

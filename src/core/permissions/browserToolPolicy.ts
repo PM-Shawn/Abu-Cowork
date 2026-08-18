@@ -31,6 +31,35 @@ const STATE_CHANGING_TOOLS = new Set([
   'navigate',
 ]);
 
+/**
+ * The state-changing tools that act ON the page, as opposed to driving the
+ * session somewhere new. `navigate` is deliberately excluded: "only reads
+ * information, changes nothing" still has to be able to open the page it
+ * reads (permission plan §4.2 lists "view web pages" under that tier), while
+ * the same tier explicitly cannot "click web page buttons".
+ */
+const PAGE_MUTATING_TOOLS = [...STATE_CHANGING_TOOLS].filter((tool) => tool !== 'navigate');
+
+/**
+ * Namespaced names of every page-mutating browser tool, for callers that gate
+ * by tool name rather than per call.
+ *
+ * The unattended read-only tier needs this because a standing per-site grant
+ * short-circuits the approval chain entirely (`registry.ts` resolves an
+ * 'allowed' verdict to `decideOtherTool(..., granted = true)` → 'allow', so no
+ * confirmation callback ever runs). A site grant answers "is this site
+ * trusted"; the tier answers "how far may this unattended run go". Per the
+ * plan's own model (§2) the tier is the CEILING, so it has to be enforced
+ * where the site grant cannot reach — at tool-list level.
+ */
+export function listPageMutatingBrowserTools(): string[] {
+  const names: string[] = [];
+  for (const server of BROWSER_SERVER_NAMES) {
+    for (const tool of PAGE_MUTATING_TOOLS) names.push(`${server}__${tool}`);
+  }
+  return names;
+}
+
 export type BrowserToolConsequence = 'read-only' | 'state-changing';
 
 /**

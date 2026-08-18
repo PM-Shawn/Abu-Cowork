@@ -35,6 +35,7 @@ import type { EventRouter } from './eventRouter';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern } from '../skill/toolFilter';
+import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 
 const logger = createLogger('toolExecutor');
 
@@ -450,10 +451,51 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         }
       }
       results = sequentialResults;
-    } else {
-      // Parallel execution for non-command batches
+    } else if (strategy === 'command-parallel') {
+      // Every call already proven read-only by isReadOnlyCommand (the
+      // allCommandsConcurrencySafe check above) — run the whole batch in one
+      // parallel pass directly, WITHOUT re-deriving per-call safety through
+      // toolInvoker.getAllTools() below: that registry lookup is a function
+      // value that does not survive the sidecar RPC boundary (and isn't
+      // guaranteed to carry run_command's definition at all in every
+      // ToolInvoker implementation), so re-checking it here would silently
+      // defeat the whole point of computing allCommandsConcurrencySafe via
+      // the RPC-safe classifier in the first place.
       const toolPromises = collectedToolCalls.map(tc => executeSingleTool(tc));
       results = await Promise.allSettled(toolPromises);
+    } else {
+      // Concurrency-aware scheduling for genuinely mixed batches (not
+      // all-run_command): consecutive concurrency-safe calls run in
+      // parallel; a concurrency-unsafe call (or a call to an unresolved
+      // tool, or one whose isConcurrencySafe throws on this input) runs
+      // alone and serially, preserving its position in the model's original
+      // order. See toolConcurrency.ts for the grouping/resolution rules.
+      const allTools = toolInvoker.getAllTools();
+      const batches = groupToolCallsByConcurrency(collectedToolCalls, (tc) =>
+        resolveToolConcurrencySafety(
+          allTools.find(t => t.name === tc.name),
+          tc.input,
+        ),
+      );
+
+      const batchedResults: PromiseSettledResult<ToolExecResult>[] = [];
+      for (const batch of batches) {
+        if (abortController.signal.aborted) break;
+        if (batch.safe) {
+          const settled = await Promise.allSettled(batch.calls.map(tc => executeSingleTool(tc)));
+          batchedResults.push(...settled);
+        } else {
+          for (const tc of batch.calls) {
+            try {
+              const value = await executeSingleTool(tc);
+              batchedResults.push({ status: 'fulfilled', value });
+            } catch (err) {
+              batchedResults.push({ status: 'rejected', reason: err });
+            }
+          }
+        }
+      }
+      results = batchedResults;
     }
   }
 

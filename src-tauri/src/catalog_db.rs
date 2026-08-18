@@ -772,10 +772,25 @@ fn parse_ledger_lines<'a, I: IntoIterator<Item = &'a str>>(lines: I) -> (Vec<Val
 /// onto ONE shared key — the legacy keep-last-dedup quirk this fold
 /// preserves.
 fn fold_message_log(rows: &[Value]) -> Vec<&Value> {
-    fn key_of(v: &Value) -> Option<String> {
-        v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string())
+    // Borrows straight out of `rows` — the id/target/from strings already
+    // live as long as the input slice, so the index never needs to clone
+    // them (the TS/JS ports pay zero allocation for the equivalent Map
+    // rebuild; this keeps the Rust port matching that, not just the
+    // algorithmic shape).
+    //
+    // Known, accepted divergence from the TS/JS ports (pre-dates this fold —
+    // the old position-based dedup normalized `id` the same way): a row
+    // whose `id` is present but not a JSON string (an explicit `null`, a
+    // number, ...) collapses onto the shared id-less bucket here, where a JS
+    // `Map` would key on that value literally (so e.g. `id: null` and a
+    // truly id-less row would NOT collapse together there). No Abu write
+    // path ever emits a non-string id — `Message.id` is a required `string`
+    // — so this only matters for a hand-crafted or corrupted file scanned by
+    // the legacy Tauri migration/rollback path this module serves.
+    fn key_of(v: &Value) -> Option<&str> {
+        v.get("id").and_then(|x| x.as_str())
     }
-    fn reindex<'a>(state: &[&'a Value], index: &mut HashMap<Option<String>, usize>) {
+    fn reindex<'a>(state: &[&'a Value], index: &mut HashMap<Option<&'a str>, usize>) {
         index.clear();
         for (i, v) in state.iter().enumerate() {
             index.insert(key_of(v), i);
@@ -783,7 +798,7 @@ fn fold_message_log(rows: &[Value]) -> Vec<&Value> {
     }
 
     let mut state: Vec<&Value> = Vec::new();
-    let mut index: HashMap<Option<String>, usize> = HashMap::new();
+    let mut index: HashMap<Option<&str>, usize> = HashMap::new();
 
     for row in rows {
         let kind = row.get("lk").and_then(|x| x.as_str()).unwrap_or("msg.put");
@@ -799,7 +814,7 @@ fn fold_message_log(rows: &[Value]) -> Vec<&Value> {
             }
             "msg.tomb" => {
                 if let Some(target) = row.get("target").and_then(|x| x.as_str()) {
-                    if let Some(&at) = index.get(&Some(target.to_string())) {
+                    if let Some(&at) = index.get(&Some(target)) {
                         state.remove(at);
                         reindex(&state, &mut index);
                     }
@@ -807,7 +822,7 @@ fn fold_message_log(rows: &[Value]) -> Vec<&Value> {
             }
             "msg.truncate" => {
                 if let Some(from) = row.get("from").and_then(|x| x.as_str()) {
-                    if let Some(&at) = index.get(&Some(from.to_string())) {
+                    if let Some(&at) = index.get(&Some(from)) {
                         state.truncate(at);
                         reindex(&state, &mut index);
                     }

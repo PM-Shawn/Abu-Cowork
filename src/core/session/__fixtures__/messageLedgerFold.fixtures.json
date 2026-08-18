@@ -200,6 +200,42 @@
       }
     },
     {
+      "name": "revival after truncate must not corrupt the id index (regression: a removed id's stale index entry must be dropped, not left pointing past the shrunk state)",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3}",
+        "{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"from\":\"m2\",\"timestamp\":4}",
+        "{\"id\":\"m2\",\"role\":\"user\",\"content\":\"m2-revived\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "a" },
+          { "id": "m2", "content": "m2-revived" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    },
+    {
+      "name": "revival after loopDrop must not corrupt the id index (regression: a stale entry pointing at a now-different survivor would silently overwrite it instead of appending)",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1,\"loopId\":\"L1\"}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2,\"loopId\":\"L1\"}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3,\"loopId\":\"L2\"}",
+        "{\"lk\":\"msg.loopDrop\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"loopId\":\"L1\",\"timestamp\":4}",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"m1-revived\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m3", "content": "c" },
+          { "id": "m1", "content": "m1-revived" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    },
+    {
       "name": "unknown future kind is ignored, never rendered as a message",
       "lines": [
         "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",

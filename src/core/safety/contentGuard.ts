@@ -208,6 +208,13 @@ export const THREAT_PATTERNS: ReadonlyArray<ThreatPattern> = [
   { id: 'agent_config_mod', severity: 'critical', category: 'persistence', regex: /AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules/i, description: 'references agent config files (could persist malicious instructions across sessions)' },
   { id: 'hermes_config_mod', severity: 'critical', category: 'persistence', regex: /\.hermes\/config\.yaml|\.hermes\/SOUL\.md/i, description: 'references Hermes configuration files directly' },
   { id: 'other_agent_config', severity: 'high', category: 'persistence', regex: /\.claude\/settings|\.codex\/config/i, description: 'references other agent configuration files' },
+  // NOTE (credential_exposure × memory writes): memdir/write.ts REDACTS
+  // credential-shaped text via memdir/sanitize.ts BEFORE this scan runs, so
+  // for the memory surface these patterns fire only on shapes the redactor
+  // doesn't cover. That is deliberate — memory policy is redact-and-keep, not
+  // block-and-lose (the model is told via the tool result). Other surfaces
+  // (skills etc.) still see raw text here. Keep the two lists in mind when
+  // adding patterns to either file.
   { id: 'hardcoded_secret', severity: 'critical', category: 'credential_exposure', regex: /(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+\/=_-]{20,}/i, description: 'possible hardcoded API key, token, or secret' },
   { id: 'embedded_private_key', severity: 'critical', category: 'credential_exposure', regex: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/i, description: 'embedded private key' },
   { id: 'github_token_leaked', severity: 'critical', category: 'credential_exposure', regex: /ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{80,}/i, description: 'GitHub personal access token in skill content' },

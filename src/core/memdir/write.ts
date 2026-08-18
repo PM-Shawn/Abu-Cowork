@@ -13,6 +13,8 @@ import { exists } from '@tauri-apps/plugin-fs';
 import { atomicWrite } from '../../utils/atomicFs';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
 import { scanContent, evaluate, ContentSafetyError } from '../safety/contentGuard';
+import { sanitizeMemoryFields } from './sanitize';
+import { createLogger } from '../logging/logger';
 import { getMemoryDir } from './paths';
 import { scanMemoryFiles, invalidateScanCache, _resetScanCache } from './scan';
 import type { MemoryType, MemorySource, MemoryHeader } from './types';
@@ -22,6 +24,8 @@ import {
   MAX_MEMORY_FILES,
   toMemoryFilename,
 } from './types';
+
+const logger = createLogger('memdir-write');
 
 // ── Write mutex: serialize all writes per directory ──
 
@@ -115,11 +119,14 @@ async function addToIndex(
   const newLine = formatIndexLine(filename, description, isPrivate);
   const lines = content.split('\n');
 
-  // Check if already in index (idempotent)
-  if (lines.some(l => l.includes(`[${filename}]`))) {
+  // Check if already in index (idempotent). Match on the link TARGET
+  // `](filename)` — not the label — so lines with a foreign label format
+  // (hand-edited or imported indexes use `[name](filename)`) are replaced
+  // instead of duplicated, which would leave the stale description live.
+  if (lines.some(l => l.includes(`](${filename})`))) {
     // Update the existing line
     const updated = lines.map(l =>
-      l.includes(`[${filename}]`) ? newLine : l
+      l.includes(`](${filename})`) ? newLine : l
     );
     await atomicWrite(indexPath, updated.join('\n'));
     return;
@@ -147,7 +154,8 @@ async function removeFromIndex(dir: string, filename: string): Promise<void> {
   try {
     const content = await readTextFile(indexPath);
     const lines = content.split('\n');
-    const filtered = lines.filter(l => !l.includes(`[${filename}]`));
+    // Match on the link target — see addToIndex for why not the label.
+    const filtered = lines.filter(l => !l.includes(`](${filename})`));
     await atomicWrite(indexPath, filtered.join('\n'));
   } catch {
     // Index doesn't exist — nothing to remove
@@ -179,6 +187,16 @@ export interface WriteMemoryOptions {
    * those must always be scanned.
    */
   bypassScan?: boolean;
+  /**
+   * Preserve original frontmatter metadata when rewriting an existing file
+   * in place (hygiene sweep, metadata-preserving edits). Defaults: created/
+   * updated = now, accessCount = 0 — correct for new writes, wrong for
+   * rewrites (a sweep-touched 8-month-old memory must not look freshly
+   * updated to staleness warnings, recency scoring, or eviction order).
+   */
+  created?: number;
+  updated?: number;
+  accessCount?: number;
 }
 
 /**
@@ -187,16 +205,36 @@ export interface WriteMemoryOptions {
  */
 export async function writeMemory(options: WriteMemoryOptions): Promise<string> {
   const {
-    name,
-    description,
     type,
-    content,
     source = 'agent_explicit',
     workspacePath,
     filename: overrideFilename,
     private: isPrivate = false,
     bypassScan = false,
   } = options;
+
+  // Secret hygiene at the single write funnel: memories are replayed into
+  // every future prompt (index → system prompt, relevant memories → context
+  // tail), so credential-shaped text is redacted BEFORE persistence — for
+  // every caller (explicit tool, extractor, migration, UI). Idempotent, so
+  // callers that pre-sanitize to surface a redaction note (memoryTools) are
+  // unaffected. Unlike contentGuard below this never rejects: the memory is
+  // kept, only the secret value is replaced.
+  const sanitized = sanitizeMemoryFields({
+    name: options.name,
+    description: options.description,
+    content: options.content,
+  });
+  const { content, redactions } = sanitized;
+  // Empty name/description default to slices of the SANITIZED content — never
+  // slice the raw input: a credential straddling the cut point gets truncated
+  // below the redaction patterns' length thresholds and the fragment would
+  // ride the always-injected MEMORY.md index verbatim.
+  const name = sanitized.name || content.slice(0, 40);
+  const description = sanitized.description || content.slice(0, 80);
+  if (redactions.length > 0) {
+    logger.info('Memory write redacted credential-shaped content', { redactions });
+  }
 
   // Safety scan before any disk I/O. Memory content is injected into the
   // system prompt — a blocked injection pattern here is as bad as a prompt
@@ -245,7 +283,7 @@ export async function writeMemory(options: WriteMemoryOptions): Promise<string> 
 
     const fileContent = buildFileContent(
       name, description, type, source, content,
-      undefined, undefined, undefined, isPrivate,
+      options.created, options.updated, options.accessCount, isPrivate,
     );
     await atomicWrite(filePath, fileContent);
     await addToIndex(dir, filename, description, isPrivate);

@@ -2654,6 +2654,8 @@ export interface TranslationDict {
       errAppendContentEmpty: string;
       /** Memory saved. {type}, {name}, {filename}, optional {lock} */
       memorySaved: string;
+      /** Security note appended when credential-shaped content was redacted before saving. {labels} */
+      memoryRedactionNote: string;
       // todoWriteTool
       /** Error: no active session. */
       errNoActiveSession: string;

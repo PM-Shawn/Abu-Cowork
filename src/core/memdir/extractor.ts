@@ -283,7 +283,10 @@ export async function extractMemoriesFromConversation(
         try {
           await deleteMemory(mem._replaces, workspacePath);
           replaced++;
-          console.log(`[Memory] Replaced ${mem._replaces} with new entry "${mem.name}"`);
+          // Log the replaced filename only — mem.name is model-generated and
+          // pre-sanitization, so echoing it here would bypass the redaction
+          // funnel for anything credential-shaped the extractor put in it.
+          console.log(`[Memory] Replaced ${mem._replaces} with a new entry`);
         } catch (err) {
           console.warn(`[Memory] Failed to delete ${mem._replaces} (proceeding with new entry):`, err);
         }
@@ -295,7 +298,10 @@ export async function extractMemoriesFromConversation(
       try {
         await writeMemory({
           name: mem.name,
-          description: mem.content.slice(0, 80),
+          // Empty description → writeMemory derives it from the SANITIZED
+          // content. Slicing mem.content here would run before redaction and
+          // could truncate a credential below the patterns' length thresholds.
+          description: '',
           type: mem.type,
           content: mem.content,
           source: 'auto_flush',
@@ -305,8 +311,9 @@ export async function extractMemoriesFromConversation(
       } catch (err) {
         if (err instanceof ContentSafetyError) {
           safetyBlocked++;
+          // patternIds only — mem.name is pre-sanitization model output.
           console.warn(
-            `[Memory] Auto-extraction skipped "${mem.name}" — content safety block:`,
+            '[Memory] Auto-extraction skipped one entry — content safety block:',
             err.scan.findings.map((f) => f.patternId).join(', '),
           );
         } else {

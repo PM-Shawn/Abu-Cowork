@@ -4,7 +4,7 @@
     "Replayed by every port of foldMessageLog so they can never drift:",
     "  - src/core/session/messageLedger.test.ts        (TS, renderer)",
     "  - electron/messageLedgerFold.contract.test.ts   (both TS and the Electron CJS port)",
-    "  - src-tauri/src/catalog_db.rs                   (Rust, legacy Tauri — NOT yet wired, see plan)",
+    "  - src-tauri/src/catalog_db.rs                   (Rust, legacy Tauri)",
     "Each case lists the physical JSONL lines and the expected folded projection.",
     "`expected.messages` pins id + content in order; `null` id means an id-less line."
   ],

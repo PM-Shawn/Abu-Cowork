@@ -42,11 +42,17 @@
  * lives in a different file, `conversationStorageRun.ts`, not
  * `portFrameSenders.ts` — it had zero prior test coverage), receiver via the
  * existing behavioral test in `frameApplier.test.ts`'s "session frames"
- * describe block. Genuinely out of scope for this pass: any FUTURE method
- * added to `ChatDelta`/`ExecutionPort`/`ScratchpadPort` — this fixture does
- * not self-update, so a newly added port method needs a new entry here (or
- * its own dedicated test) to be covered; nothing currently enforces that a
- * new interface method gets a fixture entry.
+ * describe block.
+ *
+ * Completeness IS enforced, not just hoped for: both contract test files'
+ * "fixture completeness" checks compare this fixture's method set against
+ * `Object.keys(createInProcessChatDelta())` / `createInProcessExecutionPort()`
+ * — the REAL interface's live method set — rather than a hardcoded count. A
+ * newly added `ChatDelta`/`ExecutionPort` method with no fixture entry and
+ * no dedicated special-case test turns that check red on both sides.
+ * `ScratchpadPort` is the one exception: it has a single method (`addEntry`)
+ * that IS the special case, so there is no "generic" subset left to compare
+ * a key set against — its one dedicated test on each side is the coverage.
  */
 
 export interface ContractFixtureEntry {

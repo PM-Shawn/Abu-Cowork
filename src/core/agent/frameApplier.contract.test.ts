@@ -38,6 +38,18 @@ const EXEC_METHOD_NAMES: (keyof ExecutionPort)[] = [
   'updateChildStep', 'addDetailBlock', 'appendThinking', 'setThinkingDuration', 'setUsage',
 ];
 
+/** Methods with their own dedicated special-case test above (id-preserving
+ *  or signature-translating) — deliberately excluded from the generic
+ *  fixture's completeness check, not just forgotten. */
+const CHAT_SPECIAL_CASED = new Set(['cancelStreaming']);
+const EXEC_SPECIAL_CASED = new Set([
+  'createExecution',
+  // Reads never travel as frames at all (see frameApplier.ts's module doc) —
+  // not part of the generic-dispatch WRITE surface this fixture covers.
+  'getExecutionByLoopId',
+  'getExecutionByConversationId',
+]);
+
 function makeSpyChatDelta(): ChatDelta {
   const spy = {} as Record<string, ReturnType<typeof vi.fn>>;
   for (const name of CHAT_METHOD_NAMES) spy[name] = vi.fn();
@@ -116,12 +128,23 @@ describe('frameApplier wire contract', () => {
   });
 
   describe('fixture completeness', () => {
-    it('the shared fixture covers all 27 generic chat methods (28 ChatDelta methods minus cancelStreaming)', () => {
-      expect(CHAT_CONTRACT_FIXTURES).toHaveLength(27);
+    // Compares against the REAL interface's method key set (via its
+    // canonical in-process implementation), not a hardcoded count — a newly
+    // added ChatDelta/ExecutionPort method with no fixture entry (and no
+    // dedicated special-case test) turns this red instead of silently going
+    // uncovered.
+    it('the shared fixture covers every generic-dispatch ChatDelta method (all of them, minus the special-cased ones)', () => {
+      const realMethods = new Set(Object.keys(createInProcessChatDelta()));
+      const expectedGenericMethods = [...realMethods].filter((m) => !CHAT_SPECIAL_CASED.has(m)).sort();
+      const fixtureMethods = CHAT_CONTRACT_FIXTURES.map((f) => f.method).sort();
+      expect(fixtureMethods).toEqual(expectedGenericMethods);
     });
 
-    it('the shared fixture covers all 13 generic exec methods (14 ExecutionPort methods minus createExecution)', () => {
-      expect(EXEC_CONTRACT_FIXTURES).toHaveLength(13);
+    it('the shared fixture covers every generic-dispatch ExecutionPort WRITE method (all of them, minus the special-cased ones)', () => {
+      const realMethods = new Set(Object.keys(createInProcessExecutionPort()));
+      const expectedGenericMethods = [...realMethods].filter((m) => !EXEC_SPECIAL_CASED.has(m)).sort();
+      const fixtureMethods = EXEC_CONTRACT_FIXTURES.map((f) => f.method).sort();
+      expect(fixtureMethods).toEqual(expectedGenericMethods);
     });
   });
 });

@@ -2317,6 +2317,10 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** "Block this site" button — writes a persistent 'denied' verdict and
+     *  refuses the pending action. Offered whenever the origin is known,
+     *  including for requests that may not be granted permanently. */
+    browserBlockSite: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };

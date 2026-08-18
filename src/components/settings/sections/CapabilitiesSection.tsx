@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { Select } from '@/components/ui/select';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -144,15 +145,21 @@ function CapabilityCard({
 }
 
 /**
- * Persistent per-site browser-automation grants ("always allow this site" from
- * the confirmation dialog). Listed here so every standing grant is visible and
- * revocable — revoking restores ask-every-time for that site.
+ * Persistent per-site browser-automation verdicts, written from the
+ * confirmation dialog ("always allow this site" / "block this site"). Listed
+ * here so every standing verdict is visible, switchable between allow and
+ * block, and removable — removing restores ask-every-time for that site.
  */
 function BrowserSitePermissionsList() {
   const { t } = useI18n();
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
   const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
   const origins = Object.keys(sitePermissions).sort();
+  const verdictOptions = [
+    { value: 'allowed', label: t.settings.browserSitePermsAllowed },
+    { value: 'denied', label: t.settings.browserSitePermsDenied },
+  ];
 
   return (
     <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
@@ -173,16 +180,18 @@ function BrowserSitePermissionsList() {
               <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
                 {origin}
               </span>
-              <span className={cn(
-                'shrink-0 rounded px-2 py-0.5 text-caption font-medium',
-                sitePermissions[origin] === 'allowed'
-                  ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
-                  : 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]',
-              )}>
-                {sitePermissions[origin] === 'allowed'
-                  ? t.settings.browserSitePermsAllowed
-                  : t.settings.browserSitePermsDenied}
-              </span>
+              <Select
+                variant="inline"
+                value={sitePermissions[origin]}
+                options={verdictOptions}
+                onChange={(v) => setBrowserSitePermission(origin, v as 'allowed' | 'denied')}
+                className={cn(
+                  'shrink-0',
+                  sitePermissions[origin] === 'allowed'
+                    ? 'text-[var(--abu-success)]'
+                    : 'text-[var(--abu-danger)]',
+                )}
+              />
               <button
                 type="button"
                 onClick={() => removeBrowserSitePermission(origin)}

@@ -629,4 +629,48 @@ describe('CapabilitiesSection', () => {
     });
     expect(invoke).toHaveBeenCalledWith('check_macos_permissions');
   });
+
+  // Settings is the one place where every standing site verdict has to be
+  // visible AND changeable: the dialog can only write a verdict for the site
+  // it is currently asking about, so tightening a site the user already
+  // allowed is otherwise impossible without wiping it and waiting to be asked.
+  describe('browser site permissions list', () => {
+    it('lists both verdicts and switches an allowed site to blocked', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: {
+          'https://allowed.example.com': 'allowed',
+          'https://blocked.example.com': 'denied',
+        },
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      const row = screen.getByTitle('https://allowed.example.com').closest('li');
+      expect(row).not.toBeNull();
+      expect(within(row as HTMLElement).getByRole('button', { name: 'Always allow' }))
+        .toBeInTheDocument();
+      expect(screen.getByTitle('https://blocked.example.com')).toBeInTheDocument();
+
+      await user.click(within(row as HTMLElement).getByRole('button', { name: 'Always allow' }));
+      await user.click(within(row as HTMLElement).getByRole('button', { name: 'Blocked' }));
+
+      expect(useSettingsStore.getState().browserSitePermissions).toEqual({
+        'https://allowed.example.com': 'denied',
+        'https://blocked.example.com': 'denied',
+      });
+    });
+
+    it('removes a verdict entirely, restoring ask-every-time', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { 'https://example.com': 'denied' },
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      const row = screen.getByTitle('https://example.com').closest('li');
+      await user.click(within(row as HTMLElement).getByRole('button', { name: 'Remove' }));
+
+      expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+    });
+  });
 });

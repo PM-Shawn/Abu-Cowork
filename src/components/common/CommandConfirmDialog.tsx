@@ -79,6 +79,21 @@ export default function CommandConfirmDialog({
     onConfirm();
   }, [request.browserOrigin, onConfirm]);
 
+  // "Block this site" is the mirror of "always allow", and it is offered
+  // wherever an origin is known — including the cases that may NOT be granted
+  // permanently (scripting tools, block-level actions). Tightening is always
+  // safe to make one click away; the asymmetry is deliberate, since the only
+  // way a user can currently stop being asked is to approve.
+  const offerSiteBlock = request.kind === 'browser' && !!request.browserOrigin;
+  const handleBlockSite = useCallback(() => {
+    if (request.browserOrigin) {
+      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'denied');
+    }
+    // Blocking also refuses the pending action — the user said "not this site",
+    // which necessarily includes the request they are looking at.
+    onCancel();
+  }, [request.browserOrigin, onCancel]);
+
   // Close on Escape key
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -149,7 +164,8 @@ export default function CommandConfirmDialog({
         </div>
 
         {/* Actions */}
-        <div className="flex gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
+        <div className="flex flex-col gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
+          <div className="flex gap-3">
           <Button
             variant="outline"
             onClick={onCancel}
@@ -180,6 +196,20 @@ export default function CommandConfirmDialog({
               title={request.browserOrigin}
             >
               {t.commandConfirm.browserAlwaysAllowSite}
+            </Button>
+          )}
+          </div>
+          {offerSiteBlock && (
+            // Second row, ghost styling: a standing block is consequential but
+            // never the action we nudge toward, so it stays visually quiet
+            // while remaining reachable without leaving the dialog.
+            <Button
+              variant="ghost"
+              onClick={handleBlockSite}
+              className="h-8 w-full text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
+              title={request.browserOrigin}
+            >
+              {t.commandConfirm.browserBlockSite}
             </Button>
           )}
         </div>

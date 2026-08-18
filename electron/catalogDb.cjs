@@ -49,6 +49,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { abuAppDataDir } = require('./appEnv.cjs');
+const { foldMessageLog } = require('./messageLedgerFold.cjs');
 
 /** Sentinel returned when `cmd` isn't a catalog command. */
 const CATALOG_MISS = Symbol('catalog-dispatch-miss');
@@ -409,11 +410,14 @@ function deriveTitle(text) {
 
 /** Read-only scan of one conversation's messages.jsonl. Returns `null` if the
  * file doesn't exist (mirrors `scan_conversation_file`'s `Ok(None)`). Never
- * mutates `jsonlPath`. Id-dedup keeps the LAST occurrence, with all id-less
- * messages collapsing onto ONE shared key (JS `Map` supports `undefined` as a
- * real, single, colliding key — exactly the semantics `dedupMessagesById()`
- * in conversationStorage.ts relies on, and what the Rust port explicitly
- * mirrors via `Option<String>`). */
+ * mutates `jsonlPath`.
+ *
+ * The JSONL→messages projection is delegated to `foldMessageLog` in
+ * `./messageLedgerFold.cjs`, which is pinned by fixture replay to the
+ * renderer's `src/core/session/messageLedger.ts`. That shared fold is what
+ * guarantees the catalog counts, `last_message_id` and FTS body describe
+ * exactly the conversation the UI shows — previously the two sides only
+ * promised each other so in a comment. */
 function scanConversationFile(jsonlPath) {
   let stat;
   try {
@@ -425,26 +429,7 @@ function scanConversationFile(jsonlPath) {
   const sourceMtime = Math.floor(stat.mtimeMs);
 
   const raw = fs.readFileSync(jsonlPath, 'utf8');
-  const parsed = [];
-  let corruptLines = 0;
-  for (const line of raw.split('\n')) {
-    if (line.trim() === '') continue;
-    try {
-      parsed.push(JSON.parse(line));
-    } catch {
-      corruptLines++;
-    }
-  }
-
-  const lastIndex = new Map();
-  parsed.forEach((v, i) => {
-    const key = typeof v.id === 'string' ? v.id : undefined;
-    lastIndex.set(key, i);
-  });
-  const deduped = parsed.filter((v, i) => {
-    const key = typeof v.id === 'string' ? v.id : undefined;
-    return lastIndex.get(key) === i;
-  });
+  const { messages: deduped, corruptCount: corruptLines } = foldMessageLog(raw.split('\n'));
 
   const messageCount = deduped.length;
   const lastIdRaw = deduped.length ? deduped[deduped.length - 1].id : undefined;

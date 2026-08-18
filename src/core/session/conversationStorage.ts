@@ -26,6 +26,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { foldMessageLog } from './messageLedger';
 import type { Message, MessageContent } from '@/types';
 
 // ════════════════════════════════════════════════════════════
@@ -853,47 +854,23 @@ export async function loadMessages(convId: string): Promise<Message[]> {
     return [];
   }
 
-  // Per-line parse failures are tolerated: skip the bad line, keep the rest.
-  // Previously we .map()'d + caught the whole block, which meant any single
-  // corrupt line nuked the entire conversation for the UI even though most
-  // lines were fine. This is pure damage reduction for a storage bug we
-  // eventually need to fix on the write side (see conversationStorage write
-  // race / TODO in Task #15 follow-up).
-  const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);
-  const messages: Message[] = [];
-  let corruptCount = 0;
-  for (const line of lines) {
-    try {
-      messages.push(JSON.parse(line) as Message);
-    } catch {
-      corruptCount++;
-    }
-  }
+  // The whole read is one fold (see messageLedger.ts for the spec). It keeps
+  // the previous damage-reduction behaviour — a corrupt line is skipped, not
+  // fatal — and the previous keep-last-by-id dedup, which a non-idempotent
+  // append fallback can produce: if the native O(1) append durably writes a
+  // line but its invoke promise still rejects (IPC teardown / shutdown race),
+  // appendToFile falls through to read+rewrite and appends the same line again.
+  // The fold additionally makes a repeated id an in-place revision rather than
+  // a reorder, which is what lets the write side express "replace" as "append".
+  const { messages, corruptCount, totalLines } = foldMessageLog(raw.split('\n'));
   if (corruptCount > 0) {
     console.warn(
-      `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${lines.length} corrupt line(s). ` +
+      `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${totalLines} corrupt line(s). ` +
         `The affected messages are lost, but ${messages.length} intact message(s) recovered.`,
     );
   }
-  // Dedup by id, keeping the last occurrence. A duplicate line is not "corrupt"
-  // (so the skip-bad-lines net above can't catch it) but can arise from a
-  // non-idempotent append fallback: if the native O(1) append durably writes a
-  // line but its invoke promise still rejects (IPC teardown / shutdown race),
-  // appendToFile falls through to read+rewrite and appends the same line again.
-  // The last write reflects the most recent state; downstream consumers
-  // (chatStore, memdir extractor) don't dedup, so a duplicate would otherwise
-  // render — and be sent to the LLM — twice.
-  const deduped = dedupMessagesById(messages);
-  populateWrittenIds(deduped);
-  return deduped;
-}
-
-/** Keep the last occurrence of each message id, preserving order. */
-function dedupMessagesById(messages: Message[]): Message[] {
-  const lastIndex = new Map<string, number>();
-  messages.forEach((m, i) => lastIndex.set(m.id, i));
-  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
-  return messages.filter((m, i) => lastIndex.get(m.id) === i);
+  populateWrittenIds(messages);
+  return messages;
 }
 
 /**

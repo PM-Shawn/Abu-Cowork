@@ -13,6 +13,7 @@ import {
   markRuntimeRunStage,
   runtimeErrorType,
   startRuntimeRun,
+  traceErrorBoundaryCatch,
   traceRuntimeEvent,
 } from './runtimeTrace';
 
@@ -101,6 +102,37 @@ describe('renderer runtime trace', () => {
   it('classifies errors without retaining their message', () => {
     expect(runtimeErrorType(new TypeError('secret prompt'))).toBe('typeerror');
     expect(runtimeErrorType('secret prompt')).toBe('string');
+  });
+
+  it('records an error-boundary catch by class only, never by message', () => {
+    traceErrorBoundaryCatch('app_root', new TypeError('cannot read secret prompt of undefined'));
+    traceErrorBoundaryCatch('message_render', new RangeError('bad index'));
+
+    const events = getRendererRuntimeTraceSnapshot().recentEvents;
+    expect(events).toEqual([
+      {
+        schemaVersion: 1,
+        timestamp: 1_000,
+        process: 'renderer',
+        event: 'renderer.error_boundary_caught',
+        reason: 'app_root',
+        outcome: 'error',
+        errorType: 'typeerror',
+      },
+      {
+        schemaVersion: 1,
+        timestamp: 1_000,
+        process: 'renderer',
+        event: 'renderer.error_boundary_caught',
+        reason: 'message_render',
+        outcome: 'error',
+        errorType: 'rangeerror',
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain('secret prompt');
+    // Local runtime log only: it goes straight to the shell recorder, never
+    // through the telemetry-gated remote reporter.
+    expect(recordElectronRuntimeEventMock).toHaveBeenCalledTimes(2);
   });
 
   it('keeps bounded route and exposure facts, including boolean gates', () => {

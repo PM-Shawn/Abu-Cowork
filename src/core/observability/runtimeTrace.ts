@@ -204,6 +204,21 @@ export function traceRuntimeEvent(eventName: string, attributes: RuntimeTraceAtt
   recordElectronRuntimeEvent({ event, ...safeAttributes });
 }
 
+/**
+ * Record a React render crash caught by an error boundary. Local-only by
+ * design: this writes to the same on-device runtime log as every other trace
+ * event and never leaves the machine, so it carries no telemetry opt-out.
+ * Only the error's CLASS is kept — a render error's message can quote the
+ * conversation content that produced it.
+ */
+export function traceErrorBoundaryCatch(boundary: string, error: unknown): void {
+  traceRuntimeEvent('renderer.error_boundary_caught', {
+    reason: boundary,
+    outcome: 'error',
+    errorType: runtimeErrorType(error),
+  });
+}
+
 export function startRuntimeRun(
   runId: string,
   executionPath: string,

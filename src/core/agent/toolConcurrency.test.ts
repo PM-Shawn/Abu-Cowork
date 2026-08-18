@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { ToolCall, ToolDefinition } from '../../types';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 
+// Deterministic id source — the repo's test rules ban Math.random()/Date.now()
+// in tests; a monotonic counter gives the same uniqueness with a fixed run.
+let tcSeq = 0;
 function tc(name: string, input: Record<string, unknown> = {}): ToolCall {
-  return { id: `id-${name}-${Math.random()}`, name, input };
+  tcSeq += 1;
+  return { id: `id-${name}-${tcSeq}`, name, input };
 }
 
 function makeTool(name: string, isConcurrencySafe: ToolDefinition['isConcurrencySafe']): ToolDefinition {

@@ -7,13 +7,20 @@ import type { Message } from '@/types';
 // We re-import the module fresh for each test to reset module-level state
 let storage: typeof import('./conversationStorage');
 
+// Deterministic id source (TESTING.md §3) — a monotonic counter guarantees each
+// makeMsg() call gets a distinct id, which storage.ts's writtenIds dedup logic
+// and "keep last occurrence per id" utilities depend on; a fixed constant would
+// silently collapse distinct messages under repeated no-override calls (e.g.
+// `[makeMsg(), makeMsg(), makeMsg()]`).
+let msgIdCounter = 0;
+
 // Helper: create a minimal message
 function makeMsg(overrides: Partial<Message> = {}): Message {
   return {
-    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    id: `msg-${++msgIdCounter}`,
     role: 'user',
     content: 'Hello',
-    timestamp: Date.now(),
+    timestamp: 1_700_000_000_000, // filler — not asserted on
     ...overrides,
   };
 }
@@ -469,7 +476,7 @@ describe('conversationStorage', () => {
           id: 'm-late',
           role: 'assistant',
           content: 'final reply',
-          timestamp: Date.now(),
+          timestamp: 1_700_000_000_000, // filler — not asserted on
         });
 
         await storage.catalogReindexConversation('conv-live2');

@@ -61,7 +61,7 @@ describe('skill command hooks', () => {
 
     const running = emitHook({
       type: 'preToolCall',
-      timestamp: Date.now(),
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3)
       toolName: 'write_file',
       toolInput: {},
       abortSignal: controller.signal,
@@ -97,7 +97,7 @@ describe('skill command hooks', () => {
 
     await emitHook({
       type: 'postToolCall',
-      timestamp: Date.now(),
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3)
       toolName: 'write_file',
       toolInput: {},
       abortSignal: controller.signal,

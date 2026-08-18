@@ -34,6 +34,9 @@ vi.mock('./sidecarRunPredicate', () => ({
 
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('applyDeltaFrames', () => {
   beforeEach(() => {
     useChatStore.setState({
@@ -59,7 +62,7 @@ describe('applyDeltaFrames', () => {
         {
           p: 'chat',
           m: 'addMessage',
-          a: [convId, { id: 'm1', role: 'user', content: 'hi', timestamp: Date.now() }],
+          a: [convId, { id: 'm1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP }],
         },
       ]);
       expect(useChatStore.getState().conversations[convId].messages[0].id).toBe('m1');
@@ -68,7 +71,7 @@ describe('applyDeltaFrames', () => {
     it('dispatches appendText + flushTokens to the real chatStore', async () => {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       await applyDeltaFrames([
         { p: 'chat', m: 'appendText', a: [convId, 'hello', 'a1'] },
@@ -87,7 +90,7 @@ describe('applyDeltaFrames', () => {
       // bypass that gate, so the marker still lands.
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       await applyDeltaFrames([{ p: 'chat', m: 'cancelStreaming', a: [convId] }]);
       const msg = useChatStore.getState().conversations[convId].messages[0];
@@ -147,7 +150,7 @@ describe('applyDeltaFrames', () => {
 
   describe('session frames', () => {
     it('replaceMessageById frame dynamically imports and calls conversationStorage.replaceMessageById', async () => {
-      const message = { id: 'm1', role: 'assistant' as const, content: 'x', timestamp: Date.now() };
+      const message = { id: 'm1', role: 'assistant' as const, content: 'x', timestamp: FIXED_TIMESTAMP };
       await applyDeltaFrames([{ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }]);
       expect(replaceMessageByIdMock).toHaveBeenCalledWith('conv-1', message);
     });
@@ -165,10 +168,10 @@ describe('applyDeltaFrames', () => {
       try {
         const convId = useChatStore.getState().createConversation();
         const message = {
-          id: `ordered-frame-${Date.now()}`,
+          id: 'ordered-frame-1',
           role: 'assistant' as const,
           content: 'final',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
         };
         const applying = applyDeltaFrames([
           { p: 'chat', m: 'addMessage', a: [convId, { ...message, content: '' }] },
@@ -206,7 +209,7 @@ describe('applyDeltaFrames', () => {
       });
 
       const frames: PortFrame[] = [
-        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: Date.now() }] },
+        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: FIXED_TIMESTAMP }] },
         { p: 'exec', m: 'createExecution', a: [convId, 'loop-order'] },
         { p: 'scratchpad', m: 'addEntry', a: ['sp-1', { conversationId: convId, title: 't', type: 'summary', content: 'c' }] },
       ];
@@ -250,7 +253,7 @@ describe('applyDeltaFrames', () => {
       const convId = useChatStore.getState().createConversation();
       await applyDeltaFrames([
         { p: 'chat', m: 'doesNotExist', a: [convId] },
-        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: Date.now() }] },
+        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: FIXED_TIMESTAMP }] },
       ]);
       expect(useChatStore.getState().conversations[convId].messages[0].id).toBe('m1');
     });

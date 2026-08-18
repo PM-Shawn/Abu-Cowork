@@ -58,6 +58,11 @@ vi.mock('../core/agent/sidecarRunPredicate', () => ({
   registerSidecarRunPredicate: () => {},
 }));
 
+// Filler timestamp (TESTING.md §3) — used for Message/Conversation fields that
+// are structurally required but whose exact value is never asserted on below
+// (no test in this file compares timestamps for ordering/recency).
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('chatStore', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
@@ -460,7 +465,7 @@ describe('chatStore', () => {
     it('adds a message to conversation', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Hello', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Hello', timestamp: FIXED_TIMESTAMP,
       });
       const conv = useChatStore.getState().conversations[id];
       expect(conv.messages).toHaveLength(1);
@@ -473,7 +478,7 @@ describe('chatStore', () => {
         id: 'client-msg-1',
         role: 'user',
         content: '/writer draft',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         runId: 'run-1',
         clientMessageId: 'client-msg-1',
         runState: 'pending',
@@ -573,10 +578,10 @@ describe('chatStore', () => {
       try {
         const id = useChatStore.getState().createConversation();
         useChatStore.getState().addMessage(id, {
-          id: `barrier-${Date.now()}`,
+          id: 'barrier-1',
           role: 'assistant',
           content: 'durable answer',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
         });
 
         let settled = false;
@@ -599,10 +604,10 @@ describe('chatStore', () => {
       vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: `barrier-failure-${Date.now()}`,
+        id: 'barrier-failure-1',
         role: 'user',
         content: 'must not execute',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
 
       await expect(waitForConversationPersistence(id)).rejects.toThrow('disk unavailable');
@@ -612,7 +617,7 @@ describe('chatStore', () => {
     it('auto-titles from first user message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: '帮我写一个函数', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: '帮我写一个函数', timestamp: FIXED_TIMESTAMP,
       });
       const title = useChatStore.getState().conversations[id].title;
       expect(title).toContain('帮我写一个函数');
@@ -621,7 +626,7 @@ describe('chatStore', () => {
     it('truncates long auto-titles to 30 chars', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'x'.repeat(50), timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'x'.repeat(50), timestamp: FIXED_TIMESTAMP,
       });
       const title = useChatStore.getState().conversations[id].title;
       expect(title.length).toBeLessThanOrEqual(34); // 30 + "..."
@@ -666,7 +671,7 @@ describe('chatStore', () => {
     it('appends token to last message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'assistant', content: 'Hello', timestamp: Date.now(),
+        id: 'msg1', role: 'assistant', content: 'Hello', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().appendToLastMessage(id, ' World');
       // Tokens are buffered via RAF; flush to apply immediately in test
@@ -683,14 +688,14 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'user-1', role: 'user', content: 'first', timestamp: Date.now(),
+        id: 'user-1', role: 'user', content: 'first', timestamp: FIXED_TIMESTAMP,
       });
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: 'Hello', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: 'Hello', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       // User sends another message mid-stream — now last message is user-2.
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'second', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'second', timestamp: FIXED_TIMESTAMP,
       });
       // Streaming token should still land on assistant-1, not user-2.
       store.appendToLastMessage(id, ' World', 'assistant-1');
@@ -704,10 +709,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-a', role: 'assistant', content: 'A', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-a', role: 'assistant', content: 'A', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.addMessage(id, {
-        id: 'user-x', role: 'user', content: 'tail', timestamp: Date.now(),
+        id: 'user-x', role: 'user', content: 'tail', timestamp: FIXED_TIMESTAMP,
       });
       store.appendToLastMessage(id, '+1', 'assistant-a');
       store.appendToLastMessage(id, '+2', 'assistant-a');
@@ -723,7 +728,7 @@ describe('chatStore', () => {
     it('does not apply synchronously — stays buffered until flushed', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'pondering', 'a1');
       // Not yet applied — still sitting in the RAF buffer.
@@ -739,7 +744,7 @@ describe('chatStore', () => {
       // this), so only the latest value in a batching window should survive.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       const store = useChatStore.getState();
       store.updateMessageThinking(id, 'p', 'a1');
@@ -757,10 +762,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'interrupt', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'interrupt', timestamp: FIXED_TIMESTAMP,
       });
       store.updateMessageThinking(id, 'still pondering', 'assistant-1');
       flushTokenBuffer(id, 'assistant-1');
@@ -776,7 +781,7 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'hello', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'hello', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.appendToLastMessage(id, ' world', 'a1');
       store.updateMessageThinking(id, 'thinking about it', 'a1');
@@ -789,7 +794,7 @@ describe('chatStore', () => {
     it('finishStreaming() flushes buffered thinking before finalizing the message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'buffered thought', 'a1');
       useChatStore.getState().finishStreaming(id, 'a1');
@@ -801,7 +806,7 @@ describe('chatStore', () => {
     it('cancelStreaming() (abort path) flushes buffered thinking — no lost content', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
       useChatStore.getState().cancelStreaming(id);
@@ -816,7 +821,7 @@ describe('chatStore', () => {
       // complete while a still-buffered thinking tail hasn't landed yet.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'final thought', 'a1');
       // Duration write happens WITHOUT an explicit prior flush call — the
@@ -830,7 +835,7 @@ describe('chatStore', () => {
     it('sets the duration synchronously (not itself batched)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinkingDuration(id, 7, 'a1');
       // No flush call needed — duration itself isn't RAF-buffered.
@@ -843,7 +848,7 @@ describe('chatStore', () => {
     it('sets isStreaming to false and resets agent status', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'assistant', content: 'Hi', timestamp: Date.now(), isStreaming: true,
+        id: 'msg1', role: 'assistant', content: 'Hi', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().finishStreaming(id);
       const state = useChatStore.getState();
@@ -858,11 +863,11 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       // Mid-stream user input becomes the new last message.
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'follow-up', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'follow-up', timestamp: FIXED_TIMESTAMP,
       });
       store.finishStreaming(id, 'assistant-1');
       const msgs = useChatStore.getState().conversations[id].messages;
@@ -901,13 +906,13 @@ describe('chatStore', () => {
       try {
         const id = useChatStore.getState().createConversation();
         targetConvId = id;
-        const messageId = `ordered-assistant-${Date.now()}`;
+        const messageId = 'ordered-assistant-1';
         const store = useChatStore.getState();
         store.addMessage(id, {
           id: messageId,
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           isStreaming: true,
         });
         store.appendToLastMessage(id, 'final answer', messageId);
@@ -961,7 +966,7 @@ describe('chatStore', () => {
     it('persists the assistant stop terminal to disk so reload matches the live view', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -980,7 +985,7 @@ describe('chatStore', () => {
       // text landed after the marker in memory and never reached disk.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '前段', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '前段', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().appendToLastMessage(id, '后段', 'a1'); // sits in the RAF buffer
 
@@ -997,7 +1002,7 @@ describe('chatStore', () => {
     it('does not rewrite the message row when nothing was streaming', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'u1', role: 'user', content: 'hi', timestamp: Date.now(),
+        id: 'u1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1012,7 +1017,7 @@ describe('chatStore', () => {
       // then had to hunt down. Empty content = pure isStreaming flip, no write.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1031,7 +1036,7 @@ describe('chatStore', () => {
         id: 'a1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         isStreaming: true,
         toolCalls: [{ id: 'tc1', name: 'tool_search', input: {}, result: 'ok' }],
       });
@@ -1081,7 +1086,7 @@ describe('chatStore', () => {
       // replayed as "never called", and retrying re-ran the side effect.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().setMessageToolCalls(id, 'a1', [
@@ -1120,7 +1125,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.setState({ agentStatus: 'thinking' });
       const controller = useChatStore.getState().getAbortController(id);
@@ -1150,7 +1155,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
@@ -1167,7 +1172,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1190,7 +1195,7 @@ describe('chatStore', () => {
     it('flips isStreaming on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
@@ -1199,7 +1204,7 @@ describe('chatStore', () => {
     it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setAgentStatus('streaming');
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
@@ -1209,7 +1214,7 @@ describe('chatStore', () => {
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageStreamingFlag(id, 'does-not-exist', false);
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(true);
@@ -1230,7 +1235,7 @@ describe('chatStore', () => {
     it('attaches toolCalls and flips isStreaming to false on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageToolCalls(id, 'a1', toolCalls);
       const msg = useChatStore.getState().conversations[id].messages[0];
@@ -1241,7 +1246,7 @@ describe('chatStore', () => {
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageToolCalls(id, 'does-not-exist', toolCalls);
       const msg = useChatStore.getState().conversations[id].messages[0];
@@ -1279,7 +1284,7 @@ describe('chatStore', () => {
     it('edits string content', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'old text', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'old text', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().editMessage(id, 'msg1', 'new text');
       expect(useChatStore.getState().conversations[id].messages[0].content).toBe('new text');
@@ -1293,7 +1298,7 @@ describe('chatStore', () => {
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
           { type: 'text', text: 'old text' },
         ],
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().editMessage(id, 'msg1', 'new text');
       const content = useChatStore.getState().conversations[id].messages[0].content;
@@ -1603,7 +1608,7 @@ describe('chatStore', () => {
     it('exports conversation as JSON', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Test', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Test', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id);
       expect(json).not.toBeNull();
@@ -1618,7 +1623,7 @@ describe('chatStore', () => {
     it('imports conversation with new ID', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Imported', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Imported', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id)!;
       const newId = useChatStore.getState().importConversation(json);
@@ -1634,10 +1639,10 @@ describe('chatStore', () => {
     it('round-trips a conversation through exportConversationForShare + importConversation', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Hello alice', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Hello alice', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().addMessage(id, {
-        id: 'msg2', role: 'assistant', content: 'Hi bob!', timestamp: Date.now(),
+        id: 'msg2', role: 'assistant', content: 'Hi bob!', timestamp: FIXED_TIMESTAMP,
       });
       const bundle = await useChatStore.getState().exportConversationForShare(id);
       expect(bundle).not.toBeNull();
@@ -1661,7 +1666,7 @@ describe('chatStore', () => {
       // raw conversation JSON to the legacy path (no importedFrom stamp).
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'undo me', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'undo me', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id)!;
       const newId = useChatStore.getState().importConversation(json)!;
@@ -1673,14 +1678,14 @@ describe('chatStore', () => {
       const raw: Conversation = {
         id: 'legacy-forged',
         title: 'legacy',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: FIXED_TIMESTAMP,
+        updatedAt: FIXED_TIMESTAMP,
         status: 'idle',
         messages: [{
           id: 'msg-forged',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           toolCalls: [{
             id: 'tc-forged',
             name: 'run_command',
@@ -1706,7 +1711,7 @@ describe('chatStore', () => {
       // updatedAt must be ignored — external refs are intentionally not
       // carried by the bundle shape.
       const makeBundle = () => ({
-        schema: { abuShareVersion: 1, tier: 'standard', exportedAt: Date.now() },
+        schema: { abuShareVersion: 1, tier: 'standard', exportedAt: FIXED_TIMESTAMP },
         conversation: {
           id: 'original-conv-id',
           title: 'Shared from Alice',
@@ -1786,7 +1791,7 @@ describe('chatStore', () => {
             id: 'msg-recovery',
             role: 'assistant',
             content: '',
-            timestamp: Date.now(),
+            timestamp: FIXED_TIMESTAMP,
             toolCalls: [{
               id: 'tc-recovery',
               name: 'run_command',
@@ -1828,7 +1833,7 @@ describe('chatStore', () => {
       // This test reproduces that exact shape to pin the data contract down.
       it('imports real-world shape: user + assistant(content="", toolCall) + assistant(text)', () => {
         const bundle = {
-          schema: { abuShareVersion: 1, tier: 'standard', exportedAt: Date.now() },
+          schema: { abuShareVersion: 1, tier: 'standard', exportedAt: FIXED_TIMESTAMP },
           conversation: {
             id: 'mo5tgdm8mg7l1b',
             title: '看看当前文件夹下有什么',
@@ -1905,7 +1910,7 @@ describe('chatStore', () => {
           id: 'msg-running-before-restart',
           role: 'user',
           content: 'continue the task',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           runId: 'run-before-restart',
           runState,
         }]);
@@ -1923,7 +1928,7 @@ describe('chatStore', () => {
           id: 'msg-recovery',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           isStreaming: true,
           toolCalls: [{
             id: 'tc-recovery',
@@ -1946,7 +1951,7 @@ describe('chatStore', () => {
         id: 'msg-recovery',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         toolCalls: [{
           id: 'tc-recovery',
           name: 'run_command',
@@ -1968,7 +1973,7 @@ describe('chatStore', () => {
           id: 'msg-recovery',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           toolCalls: [{
             id: 'tc-recovery',
             name: 'run_command',
@@ -2018,7 +2023,7 @@ describe('chatStore', () => {
         id: 'msg-1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         toolCalls: [
           {
             id: 'tc-1',
@@ -2314,7 +2319,7 @@ describe('chatStore', () => {
             id: msgId,
             role: 'assistant',
             content: '',
-            timestamp: Date.now(),
+            timestamp: FIXED_TIMESTAMP,
             toolCalls: [{ id: tcId, name: 'ask_user_question', input: {} }],
           });
         }

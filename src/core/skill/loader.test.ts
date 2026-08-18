@@ -35,7 +35,7 @@ const enterpriseConfig: EnterpriseConfigSnapshot = {
   brand: { name: 'Org', logoUrl: null, primaryColor: null }, defaultSoul: null,
   policyDefaults: {}, modules: ['skills', 'mcp', 'kb'], licenseStatus: 'valid',
   licenseExpiresAt: '2099-01-01T00:00:00Z',
-  serverTime: '2026-08-05T00:00:00Z', fetchedAt: Date.now(),
+  serverTime: '2026-08-05T00:00:00Z', fetchedAt: 1_700_000_000_000, // filler (TESTING.md §3)
 };
 
 /**

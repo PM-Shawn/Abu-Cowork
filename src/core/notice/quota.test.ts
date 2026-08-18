@@ -54,6 +54,6 @@ describe('L2 Quota (sliding window)', () => {
   });
 
   it('empty state always allows', () => {
-    expect(checkL2Quota(Date.now())).toBe(true);
+    expect(checkL2Quota(1_000_000)).toBe(true);
   });
 });

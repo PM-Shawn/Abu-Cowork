@@ -1000,7 +1000,9 @@ describe('Agent Pipeline Integration', () => {
       // Build a history of 10 messages so the cache check fires correctly.
       // runAgentLoop appends the user message, making the effective history
       // 10 messages when it slices messages.slice(0, -1) on each turn.
-      const now = Date.now();
+      // Fixed anchor (TESTING.md §3) — only the relative spacing between
+      // messages matters here, not the absolute value.
+      const now = 1_700_000_000_000;
       const historyMsgs: Message[] = Array.from({ length: 10 }, (_, i) => ({
         id: `hist-${i}`,
         role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',

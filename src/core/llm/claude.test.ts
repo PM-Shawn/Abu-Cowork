@@ -25,6 +25,9 @@ vi.mock('@anthropic-ai/sdk', () => {
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 function abortError(): Error {
   const e = new Error('The operation was aborted');
   e.name = 'AbortError';
@@ -65,7 +68,7 @@ describe('ClaudeAdapter', () => {
       const adapter = new ClaudeAdapter();
 
       const chatPromise = adapter.chat(
-        [{ role: 'user', content: 'hello', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
         { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024 },
         (event) => events.push(event),
       );
@@ -112,7 +115,7 @@ describe('ClaudeAdapter', () => {
       const events: Array<{ type: string; input?: Record<string, unknown> }> = [];
       const adapter = new ClaudeAdapter();
       await adapter.chat(
-        [{ role: 'user', content: 'what time is it', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'what time is it', id: '1', timestamp: FIXED_TIMESTAMP }],
         { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024 },
         (event) => events.push(event as { type: string; input?: Record<string, unknown> }),
       );

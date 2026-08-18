@@ -19,9 +19,14 @@ const mockHomeDir = vi.mocked(homeDir);
 
 type WatchCb = () => void;
 
+// Deterministic clock (TESTING.md §3) — registryWatcher.ts reads Date.now()
+// directly to compare against getLastDiscoveryRefreshAt().
+const FIXED_NOW = 1_700_000_000_000;
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
+  vi.setSystemTime(FIXED_NOW);
   lastRefreshAt = 0; // far in the past → refreshes are NOT treated as echoes
   mockHomeDir.mockResolvedValue('/Users/test');
   mockExists.mockResolvedValue(true);
@@ -73,7 +78,7 @@ describe('registryWatcher', () => {
     await startRegistryWatcher();
 
     // Simulate an explicit install-time refresh that just happened.
-    lastRefreshAt = Date.now();
+    lastRefreshAt = FIXED_NOW;
     cb();
     await vi.advanceTimersByTimeAsync(900);
     expect(refreshMock).not.toHaveBeenCalled(); // treated as the install's own echo

@@ -27,7 +27,7 @@ const statMock = stat as unknown as ReturnType<typeof vi.fn>;
 function makeEvent(overrides: Partial<PreToolCallEvent>): PreToolCallEvent {
   return {
     type: 'preToolCall',
-    timestamp: Date.now(),
+    timestamp: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
     toolName: 'write_file',
     toolInput: { path: '/tmp/report.html', content: 'x' },
     ...overrides,

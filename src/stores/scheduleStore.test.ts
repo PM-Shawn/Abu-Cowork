@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useScheduleStore, computeNextRunAt, applyCatchupOnRehydrate } from './scheduleStore';
 import type { ScheduleConfig, ScheduledTask } from '../types/schedule';
 
+// Filler timestamp (TESTING.md §3) — getDueTasks(now) is a pure function of the
+// passed `now`, so any fixed value works; the relative ordering below (nextRunAt
+// before/after FIXED_NOW) is what actually matters.
+const FIXED_NOW = 1_700_000_000_000;
+
 describe('scheduleStore', () => {
   beforeEach(() => {
     useScheduleStore.setState({
@@ -217,9 +222,9 @@ describe('scheduleStore', () => {
       });
       // Force nextRunAt to past
       useScheduleStore.setState((state) => {
-        state.tasks[id].nextRunAt = Date.now() - 1000;
+        state.tasks[id].nextRunAt = FIXED_NOW - 1000;
       });
-      const due = useScheduleStore.getState().getDueTasks(Date.now());
+      const due = useScheduleStore.getState().getDueTasks(FIXED_NOW);
       expect(due.some((t) => t.id === id)).toBe(true);
     });
 
@@ -228,7 +233,7 @@ describe('scheduleStore', () => {
         name: 'Task', prompt: 'test', schedule: { frequency: 'daily', time: { hour: 0, minute: 0 } },
       });
       useScheduleStore.getState().pauseTask(id);
-      const due = useScheduleStore.getState().getDueTasks(Date.now());
+      const due = useScheduleStore.getState().getDueTasks(FIXED_NOW);
       expect(due.some((t) => t.id === id)).toBe(false);
     });
   });
@@ -264,9 +269,10 @@ describe('scheduleStore', () => {
     // Pin wall clock to 14:00 UTC so daily/weekly boundary calculations
     // never coincide with the test's "now", preventing flaky failures
     // when CI runs between 09:00–10:00 UTC (the default schedule hour).
+    const PINNED_NOW = new Date('2026-01-15T14:00:00.000Z').getTime();
     beforeEach(() => {
       vi.useFakeTimers();
-      vi.setSystemTime(new Date('2026-01-15T14:00:00.000Z'));
+      vi.setSystemTime(PINNED_NOW);
     });
     afterEach(() => {
       vi.useRealTimers();
@@ -299,7 +305,7 @@ describe('scheduleStore', () => {
       // App was closed for 3 days. The "next expected" run (24h after
       // lastRunAt) is now ~2 days in the past — this is the signal to
       // collapse the gap into a single immediate run on boot.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({ id: 't1', lastRunAt: now - 3 * DAY }),
       };
@@ -311,7 +317,7 @@ describe('scheduleStore', () => {
       // Ran 1 hour ago. The "next expected" is at most 1 day out,
       // still in the future, so no catchup fires and we fall through
       // to the normal schedule.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({ id: 't1', lastRunAt: now - 1 * HOUR }),
       };
@@ -324,7 +330,7 @@ describe('scheduleStore', () => {
       // lastRunAt undefined → expectedIfCaughtUp undefined → catchup
       // branch short-circuits. Fresh tasks follow their natural
       // schedule; they do NOT fire on boot just because they exist.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({ id: 't1', lastRunAt: undefined }),
       };
@@ -336,7 +342,7 @@ describe('scheduleStore', () => {
       // computeNextRunAt returns undefined for paused — both
       // expectedIfCaughtUp and naturalNext are undefined, so neither
       // path fires. Paused tasks must never trigger on rehydrate.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({ id: 't1', status: 'paused', lastRunAt: now - 7 * DAY }),
       };
@@ -347,7 +353,7 @@ describe('scheduleStore', () => {
     it('skips catchup for manual-frequency tasks', () => {
       // Manual-frequency tasks are user-triggered. Same undefined-return
       // path as paused — catchup math never kicks in.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({
           id: 't1',
@@ -363,7 +369,7 @@ describe('scheduleStore', () => {
       // The app crashed mid-execution; the persisted run was left in
       // `running` state and would otherwise show a permanent spinner
       // in the UI forever. Rehydrate must flip these to error.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         t1: mkTask({
           id: 't1',
@@ -388,7 +394,7 @@ describe('scheduleStore', () => {
       // Mixed fleet; each task follows its own state without bleeding
       // into the others. Guards against accidental shared-state bugs
       // in future rewrites of the loop.
-      const now = Date.now();
+      const now = PINNED_NOW;
       const tasks: Record<string, ScheduledTask> = {
         missed: mkTask({ id: 'missed', lastRunAt: now - 3 * DAY }),
         onTime: mkTask({ id: 'onTime', lastRunAt: now - 1 * HOUR }),

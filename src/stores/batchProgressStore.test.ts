@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useBatchProgressStore } from './batchProgressStore';
 
 describe('batchProgressStore', () => {
@@ -17,12 +17,18 @@ describe('batchProgressStore', () => {
     });
 
     it('records startedAt close to now', () => {
-      const before = Date.now();
-      useBatchProgressStore.getState().initBatch('tc-2', ['X']);
-      const after = Date.now();
-      const batch = useBatchProgressStore.getState().batches['tc-2'];
-      expect(batch.startedAt).toBeGreaterThanOrEqual(before);
-      expect(batch.startedAt).toBeLessThanOrEqual(after);
+      // Deterministic: freeze the clock instead of bracketing a real
+      // Date.now() read with before/after real-time bounds (TESTING.md §3).
+      const fixedNow = 1_700_000_000_000;
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedNow);
+      try {
+        useBatchProgressStore.getState().initBatch('tc-2', ['X']);
+        const batch = useBatchProgressStore.getState().batches['tc-2'];
+        expect(batch.startedAt).toBe(fixedNow);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

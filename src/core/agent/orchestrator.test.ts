@@ -135,7 +135,7 @@ describe('buildSystemPrompt - security features', () => {
       filename: 'user_test.md', filePath: '/mock/user_test.md',
       name: '用户喜欢简洁回复', description: '用户喜欢简洁回复',
       type: 'user', source: 'agent_explicit',
-      created: Date.now(), updated: Date.now(), accessCount: 0,
+      created: 1_700_000_000_000, updated: 1_700_000_000_000, accessCount: 0, // filler (TESTING.md §3)
     }]);
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).not.toContain('## 近期记忆详情');

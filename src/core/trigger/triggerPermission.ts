@@ -37,9 +37,23 @@ export interface TriggerCallbacks {
 export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks {
   const capability = action.capability ?? 'read_tools';
 
-  // Pre-authorize workspace path
+  // Pre-authorize the workspace path with the rights the tier actually
+  // promises — NOT authorizeWorkspace's read+write default. An authorized
+  // workspace short-circuits `checkWritePath` inside registry.ts *before*
+  // `filePermissionCallback` is ever consulted, so a blanket read+write grant
+  // here silently overrides the read-only callback below: a 'read_tools'
+  // trigger ("reads information, changes nothing") could write anywhere
+  // inside its own workspace. b4ce62e8 closed exactly this hole on the
+  // scheduler side and its own commit note flagged the trigger path as still
+  // open; this closes it. (Note the map only ever *adds* capabilities — if
+  // the same directory was already authorized read+write by an interactive
+  // session, that standing grant still applies; this stops the trigger from
+  // minting the write grant itself.)
   if (action.workspacePath) {
-    authorizeWorkspace(action.workspacePath);
+    authorizeWorkspace(
+      action.workspacePath,
+      capability === 'read_tools' ? ['read'] : ['read', 'write'],
+    );
   }
 
   // Pre-authorize custom allowed paths

@@ -113,7 +113,7 @@ import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
 import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
-import { matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import {
   finishRuntimeRun,
   markRuntimeRunStage,
@@ -1070,7 +1070,14 @@ function assertRunToolAllowed(
   toolName: string,
   input: Record<string, unknown>,
 ): void {
-  if (session.options.blockedTools?.includes(toolName)) {
+  // Glob-matched, not exact `.includes()`: `blockedTools` may carry namespace
+  // wildcards (`abu-browser__*`, the read_tools trigger tier's browser
+  // ceiling). resolveTools (agentLoop.ts) and executeToolBatch
+  // (toolExecutor.ts) already match these as patterns; this shell-boundary
+  // check is the third enforcement point and has to cover the same set, or a
+  // reverse `tool.invoke` for a wildcard-blocked tool would sail through the
+  // one gate that is supposed to be authoritative.
+  if (session.options.blockedTools?.some((pattern) => matchesToolName(toolName, pattern))) {
     throw new SidecarRequestError(-32602, `Tool is blocked for this agent run: ${toolName}`);
   }
   if (

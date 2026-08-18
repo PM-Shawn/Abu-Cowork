@@ -1557,7 +1557,10 @@ export const useChatStore = create<ChatStore>()(
           // Deleting it here used to abandon run ownership while the
           // `agent.run` RPC could remain pending forever, leaving the UI on
           // "thinking" with no controller/session able to finish cleanup.
-          setComputerUseActive(false);
+          // Pass convId — see computerUseStatus.ts's ownership guard doc: a
+          // stale deactivate must never clobber a DIFFERENT conversation's
+          // now-active CU session.
+          setComputerUseActive(false, convId);
           import('@tauri-apps/api/core').then(({ invoke }) => {
             invoke('hide_screen_border').catch(() => {});
             invoke('window_show').catch(() => {});
@@ -1575,8 +1578,10 @@ export const useChatStore = create<ChatStore>()(
           controller.abort();
           abortControllers.delete(convId);
         }
-        // Clean up Computer Use overlay and status on abort (synchronous imports for reliability)
-        setComputerUseActive(false);
+        // Clean up Computer Use overlay and status on abort (synchronous
+        // imports for reliability). Pass convId — see computerUseStatus.ts's
+        // ownership guard doc.
+        setComputerUseActive(false, convId);
         import('@tauri-apps/api/core').then(({ invoke }) => {
           invoke('hide_screen_border').catch(() => {});
           invoke('window_show').catch(() => {});

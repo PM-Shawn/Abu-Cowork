@@ -327,7 +327,17 @@ export const delegateToAgentTool: ToolDefinition = {
       throw err;
     }
   },
-  isConcurrencySafe: false,
+  // true (not the fail-closed default): before toolExecutor.ts's scheduler
+  // consumed isConcurrencySafe, EVERY multi-call batch ran fully in parallel
+  // unconditionally — so a turn that fanned out several delegate_to_agent
+  // calls to independent sub-agents already ran them concurrently. Each call
+  // spawns its OWN subagent run with its own AbortController/conversation
+  // context (createSubagentController above) — concurrent calls don't share
+  // mutable state the way write_file/run_command do, so there's no new
+  // correctness risk. Leaving this at the fail-closed default would silently
+  // serialize multi-agent fan-out, a flagship-path product behavior change
+  // this batch never intended to make.
+  isConcurrencySafe: true,
 };
 
 /**

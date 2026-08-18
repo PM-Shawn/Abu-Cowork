@@ -6,10 +6,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const invoke = vi.fn();
 const listen = vi.fn();
 const resolveResource = vi.fn();
+const traceRuntimeEvent = vi.fn();
+const reportError = vi.fn();
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listen(...a) }));
 vi.mock('@tauri-apps/api/path', () => ({ resolveResource: (...a: unknown[]) => resolveResource(...a) }));
+vi.mock('@/core/observability/runtimeTrace', () => ({
+  traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEvent(...a),
+}));
+vi.mock('@/utils/consoleError', () => ({ reportError: (...a: unknown[]) => reportError(...a) }));
 
 import {
   startSidecar,
@@ -79,6 +85,8 @@ describe('sidecarManager', () => {
     invoke.mockReset();
     listen.mockReset();
     resolveResource.mockReset();
+    traceRuntimeEvent.mockReset();
+    reportError.mockReset();
     listenCallbacks = new Map();
     __resetForTests();
     useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
@@ -1106,6 +1114,61 @@ describe('sidecarManager', () => {
 
       expect(getSidecarStatus()).toBe('failed');
       expect(spawnCallCount()).toBe(spawnsBeforeFourth); // no further spawn calls
+    });
+
+    it('records every restart locally but only reports the breaker remotely', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      emitClose();
+      await vi.advanceTimersByTimeAsync(600);
+
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_restart_scheduled', {
+        sidecarId: 'abu-sidecar',
+        reason: 'close',
+        attemptCount: 1,
+        stage: 'restarting',
+        outcome: 'error',
+      });
+      // A single recovered restart is routine — nothing leaves the machine.
+      expect(reportError).not.toHaveBeenCalled();
+
+      for (let i = 0; i < 3; i++) {
+        emitClose();
+        await vi.advanceTimersByTimeAsync(600);
+      }
+
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_crash_loop', {
+        sidecarId: 'abu-sidecar',
+        reason: 'close',
+        attemptCount: 4,
+        outcome: 'error',
+        errorType: 'sidecar_crash_loop',
+      });
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        'sidecar_crash',
+        'close',
+        undefined,
+        undefined,
+        'Sidecar crash-looped: 4 restarts within 60000ms',
+      );
+    });
+
+    it('reports the crash-loop only once even if failures keep arriving', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      for (let i = 0; i < 6; i++) {
+        emitClose();
+        await vi.advanceTimersByTimeAsync(600);
+      }
+
+      expect(getSidecarStatus()).toBe('failed');
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(
+        traceRuntimeEvent.mock.calls.filter((call) => call[0] === 'renderer.sidecar_crash_loop'),
+      ).toHaveLength(1);
     });
   });
 });

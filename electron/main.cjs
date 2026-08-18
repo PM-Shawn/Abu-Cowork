@@ -51,6 +51,12 @@ const {
   mainWindowPlatformOptions,
 } = require('./windowChrome.cjs');
 const {
+  configureRuntimeObservability,
+  observeMainProcessCrashes,
+  observeWebContentsCrashes,
+} = require('./runtimeObservability.cjs');
+const { initShellCrashChannel, reportShellCrash } = require('./shellCrashChannel.cjs');
+const {
   hasValidSentinel,
   estimateMigrationSpace,
   inspectLegacyElectronSymlinkRepairs,
@@ -64,6 +70,11 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const FRONTEND_INDEX = path.join(REPO_ROOT, 'dist-electron-spike', 'index.html');
 const PLACEHOLDER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 const MIGRATION_INDEX = path.join(__dirname, 'migration-renderer', 'index.html');
+
+// One binding per window identity: the crash observer and the privileged-window
+// registry must agree on the label they record it under.
+const MAIN_WINDOW_LABEL = 'main';
+const TRANSITION_WINDOW_LABEL = 'transition';
 
 // E2E launches can redirect the app-data parent before Electron initializes
 // any path-backed service. Packaged builds require a second explicit flag so a
@@ -100,6 +111,34 @@ function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;
   (level === 'error' ? console.error : console.log)(line);
 }
+
+// Crash observability. Every hook below only RECORDS — the process keeps the
+// exact crash behavior it had before (see observeMainProcessCrashes' JSDoc for
+// why the uncaught-exception path uses the monitor hook rather than a plain
+// 'uncaughtException' listener, which would have swallowed Electron's own
+// crash dialog). A severe crash is additionally forwarded to any live renderer,
+// which is the only tier that can decide whether the user opted out of remote
+// telemetry, so it — not this process — makes the network call. That forward
+// goes through shellCrashChannel, which queues a crash that lands before the
+// renderer's subscriber exists and flushes it when the subscriber appears
+// (reportShellCrash never throws).
+initShellCrashChannel({ emit: emitEvent });
+const crashObserverOptions = {
+  onCrash: (crash) => {
+    log('error', 'crash observed', crash);
+    reportShellCrash(crash);
+  },
+};
+observeMainProcessCrashes(process, crashObserverOptions);
+// Resolve the local log path NOW, not at app-ready: a crash in the startup
+// gates below (single-instance lock, deep-link wiring) can take the process
+// with it before whenReady ever runs, and an unwritten record dies with it.
+// Verified firsthand on Electron 43.1.1/macOS that app.getPath('logs') before
+// app.whenReady() returns the same path it returns after ready and that the
+// directory is writable then; app.setName/setPath above have already applied.
+// The call is idempotent and is repeated at app-ready as a fallback for any
+// platform where an early resolution fails.
+configureRuntimeObservability(app);
 
 function isAutoConfirmedTransition() {
   return (
@@ -195,6 +234,8 @@ function createWindow(transitionWindow = null) {
     }
   });
 
+  observeWebContentsCrashes(win.webContents, MAIN_WINDOW_LABEL, crashObserverOptions);
+
   // Tauri drag regions use the [data-tauri-drag] attribute; under Electron a
   // window is dragged via CSS `-webkit-app-region`. Map them so the top bar
   // moves the window (interactive children stay clickable via no-drag).
@@ -220,7 +261,7 @@ function createWindow(transitionWindow = null) {
   wireWindowEvents(win);
 
   const trustedPage = hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX;
-  registerPrivilegedWindow(win, trustedPage, { label: 'main' });
+  registerPrivilegedWindow(win, trustedPage, { label: MAIN_WINDOW_LABEL });
   void win.loadFile(trustedPage);
 }
 
@@ -330,7 +371,14 @@ async function createTransitionWindow(appInstance, inspection) {
       partition: `abu-transition-${process.pid}`,
     },
   });
-  registerPrivilegedWindow(win, MIGRATION_INDEX, { label: 'transition' });
+  // Accepted limitation: this window's crashes get a LOCAL jsonl record only.
+  // The migration renderer is a one-shot upgrade-progress page (rare, short
+  // lived, no product surface), so it deliberately does not subscribe to
+  // `runtime-crash` — wiring a renderer subscription into it just to make its
+  // own death remotely reportable is not worth the surface. Its crash is still
+  // recoverable from the offline diagnostic export.
+  observeWebContentsCrashes(win.webContents, TRANSITION_WINDOW_LABEL, crashObserverOptions);
+  registerPrivilegedWindow(win, MIGRATION_INDEX, { label: TRANSITION_WINDOW_LABEL });
   await win.loadFile(MIGRATION_INDEX, {
     query: {
       locale: isZh ? 'zh-CN' : 'en-US',
@@ -370,6 +418,9 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    // Fallback for a platform where the pre-ready resolution above failed;
+    // idempotent, so it is a no-op on the normal path.
+    configureRuntimeObservability(app);
     let transitionInspection = null;
     let transitionWindow = null;
     try {

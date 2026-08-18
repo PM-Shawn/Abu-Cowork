@@ -127,6 +127,8 @@ import {
   subscribeElectronSidecarEvents,
   type ElectronSidecarEvent,
 } from '@/utils/electronHost';
+import { traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import { reportError } from '@/utils/consoleError';
 
 const logger = createLogger('sidecar');
 
@@ -752,12 +754,38 @@ function scheduleRestartOrGiveUp(reason: string): void {
         restartsInWindow: restartTimestamps.length,
         windowMs: CRASH_LOOP_WINDOW_MS,
       });
+      traceRuntimeEvent('renderer.sidecar_crash_loop', {
+        sidecarId: SIDECAR_ID,
+        reason,
+        attemptCount: restartTimestamps.length,
+        outcome: 'error',
+        errorType: 'sidecar_crash_loop',
+      });
+      // Repeated respawns already failed, so the agent runtime is gone for the
+      // rest of this session — the one sidecar signal worth a remote report.
+      // reportError() no-ops when the user opted out of telemetry.
+      reportError(
+        'sidecar_crash',
+        reason,
+        undefined,
+        undefined,
+        `Sidecar crash-looped: ${restartTimestamps.length} restarts within ${CRASH_LOOP_WINDOW_MS}ms`,
+      );
     }
     return;
   }
 
   status = 'restarting';
   logger.warn('Sidecar restarting', { reason, attempt: restartTimestamps.length });
+  // Local-only: a single respawn is routine and recovers on its own, so it is
+  // recorded for diagnosis but never reported remotely.
+  traceRuntimeEvent('renderer.sidecar_restart_scheduled', {
+    sidecarId: SIDECAR_ID,
+    reason,
+    attemptCount: restartTimestamps.length,
+    stage: 'restarting',
+    outcome: 'error',
+  });
   setTimeout(() => {
     void attemptSpawn('restart');
   }, RESTART_BACKOFF_MS);

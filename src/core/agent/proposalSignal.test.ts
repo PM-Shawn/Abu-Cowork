@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { computeProposalSignal, renderProposalSignalSection } from './proposalSignal';
 import type { Message, ToolCall } from '../../types';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 function tc(name: string, overrides: Partial<ToolCall> = {}): ToolCall {
   return {
-    id: `tc_${Math.random().toString(36).slice(2, 8)}`,
+    id: 'tc-default', // filler — computeProposalSignal never keys off tool-call id
     name,
     input: {},
     result: 'ok',
@@ -14,10 +17,10 @@ function tc(name: string, overrides: Partial<ToolCall> = {}): ToolCall {
 
 function msg(overrides: Partial<Message> = {}): Message {
   return {
-    id: `m_${Math.random().toString(36).slice(2, 8)}`,
+    id: 'm-default', // filler — computeProposalSignal never keys off message id
     role: 'assistant',
     content: '',
-    timestamp: Date.now(),
+    timestamp: FIXED_TIMESTAMP,
     ...overrides,
   };
 }
@@ -140,7 +143,7 @@ describe('computeProposalSignal · output shape', () => {
 describe('renderProposalSignalSection', () => {
   it('prompts the agent to call skill_manage with agent_proposed=true', () => {
     const rendered = renderProposalSignalSection({
-      computedAt: Date.now(),
+      computedAt: FIXED_TIMESTAMP,
       toolCallCount: 7,
       hadErrors: false,
       usedSkill: false,
@@ -155,7 +158,7 @@ describe('renderProposalSignalSection', () => {
 
   it('annotates when a skill was used in the loop (signals new-pattern vs. reuse)', () => {
     const rendered = renderProposalSignalSection({
-      computedAt: Date.now(),
+      computedAt: FIXED_TIMESTAMP,
       toolCallCount: 5,
       hadErrors: false,
       usedSkill: true,

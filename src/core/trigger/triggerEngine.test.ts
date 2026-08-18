@@ -63,8 +63,8 @@ function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
     filter: { type: 'always' },
     action: { prompt: 'Do something with $EVENT_DATA' },
     debounce: { enabled: false, windowSeconds: 0 },
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: 1_700_000_000_000, // filler (TESTING.md §3) — not read by TriggerEngine
+    updatedAt: 1_700_000_000_000,
     runs: [],
     totalRuns: 0,
     ...overrides,

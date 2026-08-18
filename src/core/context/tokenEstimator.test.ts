@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import type { Message } from '../../types';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below (estimateMessageTokens
+// counts content/thinking/toolCalls, not timestamps).
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('tokenEstimator', () => {
   // ── estimateTokens ──
   describe('estimateTokens', () => {
@@ -56,8 +60,8 @@ describe('tokenEstimator', () => {
 
     it('estimates string content messages', () => {
       const messages: Message[] = [
-        { id: '1', role: 'user', content: 'Hello world', timestamp: Date.now() },
-        { id: '2', role: 'assistant', content: 'Hi there!', timestamp: Date.now() },
+        { id: '1', role: 'user', content: 'Hello world', timestamp: FIXED_TIMESTAMP },
+        { id: '2', role: 'assistant', content: 'Hi there!', timestamp: FIXED_TIMESTAMP },
       ];
       const tokens = estimateMessageTokens(messages);
       // 2 messages × ~3 tokens + 2 × 4 overhead = ~14
@@ -72,7 +76,7 @@ describe('tokenEstimator', () => {
           { type: 'text', text: 'What is this?' },
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
         ],
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       }];
       const tokens = estimateMessageTokens(msgWithImage);
       expect(tokens).toBeGreaterThanOrEqual(1600);
@@ -84,7 +88,7 @@ describe('tokenEstimator', () => {
         role: 'assistant',
         content: 'Result',
         thinking: 'Let me think about this carefully and reason through it step by step.',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       }];
       const withThinking = estimateMessageTokens(msg);
 
@@ -92,7 +96,7 @@ describe('tokenEstimator', () => {
         id: '1',
         role: 'assistant',
         content: 'Result',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       }];
       const withoutThinking = estimateMessageTokens(msgNoThink);
       expect(withThinking).toBeGreaterThan(withoutThinking);
@@ -109,7 +113,7 @@ describe('tokenEstimator', () => {
           input: { path: '/tmp/test.txt' },
           result: 'File content here with some text.',
         }],
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       }];
       const tokens = estimateMessageTokens(msg);
       // Should include text + tool name + input JSON + result
@@ -126,7 +130,7 @@ describe('tokenEstimator', () => {
           input: { path: '/tmp/file.txt' },
           result: 'Long file content...',
         }],
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       }];
       const tokens = estimateMessageTokens(msg);
       expect(tokens).toBeGreaterThan(10);
@@ -134,7 +138,7 @@ describe('tokenEstimator', () => {
 
     it('includes per-message overhead of 4', () => {
       const msg: Message[] = [
-        { id: '1', role: 'user', content: '', timestamp: Date.now() },
+        { id: '1', role: 'user', content: '', timestamp: FIXED_TIMESTAMP },
       ];
       // Empty content = 0 text tokens + 4 overhead
       expect(estimateMessageTokens(msg)).toBe(4);

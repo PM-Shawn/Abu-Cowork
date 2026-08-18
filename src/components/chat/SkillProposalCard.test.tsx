@@ -20,6 +20,11 @@ const mockOpenToolbox = vi.fn();
 const mockSetToolboxSearchQuery = vi.fn();
 const mockWriteMemory = vi.fn().mockResolvedValue('memo.md');
 
+// Filler timestamp (TESTING.md §3) — only used as the store's "has
+// initialized" marker (non-null vs `null`, see the zombie-card-detection
+// describe block below); its exact value is never asserted on.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 // Drafts store state is controlled per-test via this mutable object.
 // Defaults mimic "draft is live, store has initialized" so existing
 // accept/reject/active tests still see buttons.
@@ -32,7 +37,7 @@ const draftsStoreState: {
 } = {
   drafts: [{ skillName: 'weekly-digest' }],
   isLoading: false,
-  lastRefreshedAt: Date.now(),
+  lastRefreshedAt: FIXED_TIMESTAMP,
   acceptDraft: mockAcceptDraft,
   rejectDraft: mockRejectDraft,
 };
@@ -117,7 +122,7 @@ beforeEach(() => {
   // Reset drafts state to "live draft, store initialized" baseline.
   draftsStoreState.drafts = [{ skillName: 'weekly-digest' }];
   draftsStoreState.isLoading = false;
-  draftsStoreState.lastRefreshedAt = Date.now();
+  draftsStoreState.lastRefreshedAt = FIXED_TIMESTAMP;
   // Reset onboarding to "done" baseline — the Task #50 gate tests flip
   // this to false locally.
   settingsState.soul.draftsOnboardingShown = true;

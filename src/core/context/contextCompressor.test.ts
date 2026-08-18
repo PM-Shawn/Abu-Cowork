@@ -20,6 +20,12 @@ describe('compressContextIfNeeded — independent timeout (Bug 1: 同意后死�
       chat: vi.fn(() => new Promise<void>(() => { /* never resolves */ })),
     } as unknown as LLMAdapter;
 
+    // Genuinely needs real wall-clock time: this measures actual elapsed time across a
+    // real setTimeout-driven Promise.race inside compressContextIfNeeded to prove the
+    // timeout mechanism itself resolves within budget (not just that a computed value is
+    // what we expect). Faking the clock would make the assertion trivially true without
+    // exercising the real timer/race behavior under test.
+    // eslint-disable-next-line no-restricted-syntax -- see rationale above
     const start = Date.now();
     const result = await compressContextIfNeeded(
       makeMessages(8),        // 8 rounds > RECENT_ROUNDS_TO_KEEP + 1
@@ -28,6 +34,8 @@ describe('compressContextIfNeeded — independent timeout (Bug 1: 同意后死�
       500,                    // reserveForOutput → maxInput 1500, threshold ~975
       { adapter: hangingAdapter, model: 'm', apiKey: 'k', timeoutMs: 50 },
     );
+    // Paired with the real Date.now() read above.
+    // eslint-disable-next-line no-restricted-syntax -- see rationale above
     const elapsed = Date.now() - start;
 
     expect(hangingAdapter.chat).toHaveBeenCalled();   // compression WAS attempted (over threshold)

@@ -4,23 +4,26 @@ import { useChatStore } from '../../stores/chatStore';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import type { Conversation, Message } from '../../types/index';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 function makeConversation(id: string, messages: Message[]): Conversation {
   return {
     id,
     title: 'test',
     messages,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
     status: 'idle',
   };
 }
 
 function makeMessage(overrides: Partial<Message>): Message {
   return {
-    id: `msg-${Math.random().toString(36).slice(2)}`,
+    id: 'msg-default', // filler — every call site below overrides this
     role: 'assistant',
     content: '',
-    timestamp: Date.now(),
+    timestamp: FIXED_TIMESTAMP,
     ...overrides,
   };
 }

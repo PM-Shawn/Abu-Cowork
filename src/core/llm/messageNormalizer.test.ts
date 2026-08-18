@@ -4,8 +4,8 @@ import type { Message } from '../../types';
 
 function makeMessage(overrides: Partial<Message> & Pick<Message, 'role' | 'content'>): Message {
   return {
-    id: `msg-${Math.random().toString(36).slice(2, 6)}`,
-    timestamp: Date.now(),
+    id: 'msg-default', // filler (TESTING.md §3) — normalizeMessages never keys off id
+    timestamp: 1_700_000_000_000, // filler — not asserted on
     ...overrides,
   };
 }

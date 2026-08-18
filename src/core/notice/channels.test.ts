@@ -46,7 +46,7 @@ function makeNotice(payload: Record<string, unknown>): Notice {
     source: 'agent',
     payload,
     dedupKey: 'task_complete:test',
-    createdAt: Date.now(),
+    createdAt: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
   };
 }
 

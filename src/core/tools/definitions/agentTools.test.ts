@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
-import { saveAgentTool } from './agentTools';
+import { saveAgentTool, delegateToAgentTool } from './agentTools';
 
 // Mock dependencies not covered by global setup
 vi.mock('../../skill/loader', () => ({
@@ -39,6 +39,12 @@ vi.mock('../../../utils/validation', () => ({
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),
 }));
+
+describe('delegateToAgentTool', () => {
+  it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {
+    expect(delegateToAgentTool.isConcurrencySafe).toBe(true);
+  });
+});
 
 // save_skill was deprecated — skill creation/modification now goes through
 // skill_manage (see skillManageTool.test.ts). save_agent tests continue below.

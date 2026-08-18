@@ -15,6 +15,7 @@ import { useChatStore } from '../../stores/chatStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
+import { checkReadPath, checkWritePath, revokeWorkspace } from '../tools/pathSafety';
 
 // Mock agentLoop — control the exit reason. isIncompleteReason is a trivial pure
 // fn (tested in agentLoop.test.ts); duplicate it here to avoid importing the real
@@ -135,6 +136,9 @@ describe('SchedulerEngine permission tier', () => {
     });
     vi.clearAllMocks();
     initLanguage('zh-CN');
+    // authorizeWorkspace is a module-level map that outlives a single test.
+    revokeWorkspace('/Users/testuser/Projects/report');
+    revokeWorkspace('/Users/testuser/Projects/safe-report');
   });
 
   /** Drive the run's confirmation callback, then end the run with `reason`. */
@@ -224,6 +228,42 @@ describe('SchedulerEngine permission tier', () => {
 
     expect(allowed).toBe(false);
     expect(latestRunError(task.id)).toContain('只看不动');
+  });
+
+  it('read_tools does not gain write access to its own workspace', async () => {
+    // resolveTriggerCallbacks pre-authorizes workspacePath with read+write for
+    // every tier, and an authorized workspace short-circuits checkWritePath
+    // before the file callback runs — so delegating the pre-authorization
+    // would have made "reads information, changes nothing" a lie.
+    const task = makeTask({
+      id: 'task-ws',
+      permissionMode: 'read_tools',
+      workspacePath: '/Users/testuser/Projects/report',
+    });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async () => {});
+
+    await schedulerEngine.runNow(task.id);
+
+    const write = await checkWritePath('/Users/testuser/Projects/report/out.md');
+    expect(write.allowed).not.toBe(true);
+    // Reading is the whole point of the tier, so that stays open.
+    expect((await checkReadPath('/Users/testuser/Projects/report/in.md')).allowed).toBe(true);
+  });
+
+  it('safe_tools does get write access to its workspace', async () => {
+    const task = makeTask({
+      id: 'task-ws-write',
+      permissionMode: 'safe_tools',
+      workspacePath: '/Users/testuser/Projects/safe-report',
+    });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    runWithProbe(async () => {});
+
+    await schedulerEngine.runNow(task.id);
+
+    const write = await checkWritePath('/Users/testuser/Projects/safe-report/out.md');
+    expect(write.allowed).toBe(true);
   });
 
   it('leaves the result text alone when nothing was refused', async () => {

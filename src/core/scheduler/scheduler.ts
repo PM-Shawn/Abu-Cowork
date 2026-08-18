@@ -12,6 +12,7 @@ import type { ScheduledTask, ScheduledTaskPermissionMode } from '../../types/sch
 import { DEFAULT_SCHEDULED_PERMISSION_MODE } from '../../types/schedule';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { resolveTriggerCallbacks } from '../trigger/triggerPermission';
+import { authorizeWorkspace } from '../tools/pathSafety';
 import { getCapabilityTierLabel } from '../permissions/permissionTiers';
 import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
@@ -44,11 +45,22 @@ function resolveScheduledRunPermissions(task: ScheduledTask): {
   getDenials: () => string[];
 } {
   const mode = task.permissionMode ?? DEFAULT_SCHEDULED_PERMISSION_MODE;
+  // workspacePath is deliberately NOT handed to resolveTriggerCallbacks: it
+  // pre-authorizes with read+write for every tier, and an authorized workspace
+  // short-circuits checkWritePath before the file callback is ever consulted —
+  // so a 'read_tools' task ("reads information, changes nothing") would still
+  // be able to write inside its own workspace. Authorize it here with the
+  // rights the tier actually promises instead.
   const base = resolveTriggerCallbacks({
     prompt: task.prompt,
-    workspacePath: task.workspacePath,
     capability: mode,
   });
+  if (task.workspacePath) {
+    authorizeWorkspace(
+      task.workspacePath,
+      mode === 'read_tools' ? ['read'] : ['read', 'write'],
+    );
+  }
 
   // Deduplicated: an agent retrying the same blocked action ten times should
   // produce one line, not ten.

@@ -146,10 +146,25 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     // fallback below only guards against a hypothetical caller that doesn't,
     // so activation never silently no-ops.
     const id = conversationId ?? 'unknown';
+    // ── Budget continuity across batches (RB-04) ──
+    // toolExecutor calls this at the top of EVERY computer batch, and one CU
+    // task normally spans many. Rebuilding the row unconditionally reset
+    // `stepCount` to 0 and `sessionStartTime` to now, so the 30-step /
+    // 5-minute caps restarted each batch and the displayed step count fell
+    // back to 1 mid-task. Re-entry by the SAME owner is a continuation:
+    // carry the budget. A different conversation taking over is a genuinely
+    // new session and still starts at zero.
+    //
+    // The renderer is a MIRROR of this budget, not its enforcer — the
+    // authoritative counter lives on the host task lease
+    // (electron/computerUseGate.cjs, `taskBudgets`), which the renderer
+    // cannot reach around. Keeping this side honest matters for what the
+    // user is shown, and so the two never disagree.
+    const previous = id === activeConversationId ? sessions.get(id) : undefined;
     activeConversationId = id;
     sessions.set(id, {
       status: 'active',
-      stepCount: 0,
+      stepCount: previous?.stepCount ?? 0,
       currentAction: null,
       phase: 'checking',
       targetApp: null,
@@ -159,7 +174,7 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
       // Mirror the module-level flag — NEVER hardcode false here: the window
       // may already be hidden by this same batch (see `windowHiddenForCU`).
       sessionWindowHidden: windowHiddenForCU,
-      sessionStartTime: Date.now(),
+      sessionStartTime: previous?.sessionStartTime ?? Date.now(),
     });
     notify();
     setupAbortListener();

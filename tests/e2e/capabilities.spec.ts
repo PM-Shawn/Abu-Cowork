@@ -168,4 +168,66 @@ test.describe.serial('Electron capability overview', () => {
       /(?:requires an authorization token|authorization token is required)/i,
     );
   });
+
+  // RB-04, in the real shell. The 30-step cap used to live only in the
+  // renderer, where `setComputerUseActive(true, …)` zeroed it at the top of
+  // every computer batch — so a multi-batch task never reached it. The
+  // budget now rides on the host task lease, and this drives the real main
+  // process over that lease to prove the cap holds outside unit tests.
+  //
+  // Deliberately asserts on WHICH error comes back rather than on success:
+  // the budget is consumed before target resolution and the OS permission
+  // probe, so the outcome is the same whether or not this machine has
+  // screen-recording permission — no environment dependency, and that
+  // ordering is itself part of what makes the cap unskippable.
+  test('enforces the Computer Use step budget in the main process, across batches', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForWelcomeScreen(page);
+
+    const errors = await page.evaluate(async () => {
+      const tauri = (
+        globalThis as typeof globalThis & {
+          __TAURI_INTERNALS__?: {
+            invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
+      if (!tauri) return ['Tauri bridge unavailable'];
+
+      await tauri.invoke('computer_use_set_enabled', { enabled: true });
+
+      const collected: string[] = [];
+      // 31 actions spread over what the renderer would treat as many
+      // separate batches — same conversation and loop, i.e. one task.
+      for (let i = 0; i < 31; i++) {
+        try {
+          await tauri.invoke('computer_use_begin_session', {
+            conversationId: 'e2ecuconv',
+            loopId: 'e2eculoop',
+            toolCallId: `e2ecutool${i}`,
+            interactionMode: 'foreground',
+            scope: 'screen-read',
+            permissionMode: 'standard',
+            actionIntent: { action: 'screenshot', category: 'none', summary: '' },
+          });
+          collected.push('');
+        } catch (error) {
+          collected.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      return collected;
+    });
+
+    expect(errors).toHaveLength(31);
+    // None of the first 30 may be refused for budget — that is the exact
+    // regression: a per-batch reset would let this run forever.
+    for (const [index, message] of errors.slice(0, 30).entries()) {
+      expect(message, `step ${index + 1}`).not.toMatch(/step limit/i);
+    }
+    expect(errors[30]).toMatch(/30-step limit/i);
+  });
 });

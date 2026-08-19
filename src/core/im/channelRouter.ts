@@ -12,7 +12,7 @@ import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import type { NormalizedIMMessage } from './inboundRouter';
-import { resolveCapability, getCallbacksForLevel, getBlockedToolsForLevel } from './authGate';
+import { resolveCapability, getCallbacksForLevel, getBlockedToolsForLevel, getAllowedToolsForLevel } from './authGate';
 import { sessionMapper } from './sessionMapper';
 import { sendThinking, sendFinal, addProcessingReaction } from './streamingReply';
 import type { AbuMessage } from './adapters/types';
@@ -246,6 +246,11 @@ class IMChannelRouter {
           // would otherwise let it act without the confirm callback ever
           // running.
           blockedTools: getBlockedToolsForLevel(capability),
+          // The read-only tier's positive ceiling (RB-02): its confirm
+          // callback is skipped whenever the strategy resolves to 'allow' on
+          // its own, so the roster — not the callback — is what keeps an
+          // unattended read-only channel from writing.
+          allowedTools: getAllowedToolsForLevel(capability),
           imContext: {
             platform: message.platform,
             workspacePath: channel.workspacePaths[0] ?? null,

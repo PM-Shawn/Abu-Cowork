@@ -12,6 +12,7 @@ import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry
 import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
+import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 export type AuthResult =
@@ -114,4 +115,22 @@ export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
     blocked.push(...listAllBrowserToolPatterns());
   }
   return blocked;
+}
+
+/**
+ * The tier's positive ceiling — the twin of `getBlockedToolsForLevel`, and
+ * the IM half of the RB-02 fix (`triggerPermission.ts` carries the trigger
+ * half). `read_tools` is capped at `READ_ONLY_TOOL_ALLOWLIST` because its
+ * `commandConfirmCallback` above is never consulted for a workspace-internal
+ * command the strategy already resolved to 'allow'.
+ *
+ * Returns `undefined` — not `[]` — for the tiers that carry no allowlist:
+ * every enforcement point treats an EMPTY array as "no restriction"
+ * (`allowedTools?.length &&  ...`), so an empty array would read as
+ * unrestricted rather than as "nothing allowed". `chat_only` is deliberately
+ * absent for the same reason: `getCallbacksForLevel` disables tools outright
+ * for it, and handing it a read allowlist here could only ever widen that.
+ */
+export function getAllowedToolsForLevel(level: IMCapabilityLevel): string[] | undefined {
+  return level === 'read_tools' ? [...READ_ONLY_TOOL_ALLOWLIST] : undefined;
 }

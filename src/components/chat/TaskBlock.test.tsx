@@ -1,6 +1,6 @@
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, it, expect } from 'vitest';
 import TaskBlock, { generateSummary, type UnifiedStep } from './TaskBlock';
 import { getI18n, getLocale, format } from '@/i18n';
@@ -93,5 +93,81 @@ describe('TaskBlock — expand-on-mount wrappers', () => {
     expect(wrapper!.querySelector('.flow-timeline')).not.toBeNull();
     expect(wrapper!.hasAttribute('inert')).toBe(true);
     expect(wrapper!.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+// The thinking pane's running and completed states share one skeleton so the
+// running → completed swap is a class mutation on mounted nodes, not a subtree
+// replacement — the old two-structure swap landed a ~24px height change
+// (toggle button + gap) in one frame, below SmoothHeight's threshold.
+describe('TaskBlock — thinking pane running → completed', () => {
+  afterEach(() => cleanup());
+
+  const t = getI18n();
+  const findThinkingToggle = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('button')).find((b) =>
+      b.textContent?.includes(t.chat.thinkingProcess),
+    );
+  // The button's own animated slot (button → .pb-2 → slot). `closest` would
+  // walk past it up to the timeline wrapper, which is also a .block-expand.
+  const toggleSlot = (toggle: HTMLElement) => toggle.parentElement!.parentElement!;
+
+  it('keeps the streamed content mounted and animates the toggle button in', () => {
+    const { container, rerender } = render(
+      <TaskBlock executionSteps={[execThinkingStep()]} isActive />,
+    );
+    // Running: pane content present, no toggle button yet.
+    expect(container.textContent).toContain('reasoning tokens streaming in');
+    expect(findThinkingToggle(container)).toBeUndefined();
+
+    rerender(
+      <TaskBlock
+        executionSteps={[execThinkingStep({ status: 'completed', duration: 3 })]}
+        isActive={false}
+      />,
+    );
+    // Completed: the content pre is still mounted, inside an OPEN panel
+    // (thinkingExpanded persists across the transition)…
+    const pre = container.querySelector('pre');
+    expect(pre?.textContent).toContain('reasoning tokens streaming in');
+    expect(pre!.closest('.block-expand')!.classList.contains('block-expand-open')).toBe(true);
+    // …and the toggle button grows in through an animated slot instead of
+    // landing its height in one frame.
+    const toggle = findThinkingToggle(container);
+    expect(toggle).toBeDefined();
+    expect(toggleSlot(toggle!).classList.contains('block-expand')).toBe(true);
+    expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(true);
+  });
+
+  it('collapse via the toggle rolls the panel up (closed + inert), not unmounted; history mounts render the button statically', () => {
+    const { container } = render(
+      <TaskBlock
+        executionSteps={[execThinkingStep({ status: 'completed', duration: 3 })]}
+        isActive={false}
+      />,
+    );
+    // Fresh settled mount: the timeline only mounts when the user opens the
+    // summary header, so expand it first.
+    fireEvent.click(container.querySelector('button')!);
+    // Toggle button present but NOT inside an enter-animated slot (history
+    // remounts must not animate), panel starts collapsed.
+    const toggle = findThinkingToggle(container);
+    expect(toggle).toBeDefined();
+    expect(toggleSlot(toggle!).classList.contains('block-expand')).toBe(true);
+    expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(false);
+    const panel = container.querySelector('pre')!.closest('.block-expand')!;
+    expect(panel.classList.contains('block-expand-closed')).toBe(true);
+    expect(panel.hasAttribute('inert')).toBe(true);
+
+    fireEvent.click(toggle!);
+    expect(panel.classList.contains('block-expand-open')).toBe(true);
+    expect(panel.hasAttribute('inert')).toBe(false);
+
+    fireEvent.click(toggle!);
+    // Roll-up: still mounted, clipped closed.
+    expect(panel.classList.contains('block-expand-closed')).toBe(true);
+    expect(container.querySelector('pre')?.textContent).toContain(
+      'reasoning tokens streaming in',
+    );
   });
 });

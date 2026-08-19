@@ -25,9 +25,17 @@
  * `allowedTools` is enforced at the same three points as `blockedTools`:
  * `resolveTools` (the model never sees the tool), `executeToolBatch` (refused
  * at dispatch), and `assertRunToolAllowed` (the sidecar/shell boundary, which
- * also covers reverse `tool.invoke`). It propagates into subagents too —
- * `delegate_to_agent` forwards it and `subagentLoop` enforces it — so the
- * ceiling cannot be escaped by delegating.
+ * also covers reverse `tool.invoke`). It also follows `delegate_to_agent`
+ * into subagents, which forwards it for `subagentLoop` to enforce.
+ *
+ * One delegation path does NOT inherit it yet: the `@agent` prefix route in
+ * `agentLoop.ts` reaches `runSubagent` without passing through
+ * `delegate_to_agent`, and forwards neither restriction. The tier is chosen
+ * by the channel but the prompt is user-authored, so an IM message on a
+ * read-only channel beginning with `@researcher` still delegates an
+ * unrestricted subagent. That gap predates this roster and is not widened by
+ * it; it is closed in the blockedTools-propagation change, which forwards
+ * both restrictions on this route too.
  */
 
 import { TOOL_NAMES } from '../tools/toolNames';

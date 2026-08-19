@@ -2,7 +2,7 @@
  * AuthGate Tests
  */
 import { describe, it, expect } from 'vitest';
-import { resolveCapability, getBlockedToolsForLevel } from './authGate';
+import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel } from './authGate';
 import { matchesToolName } from '../skill/toolFilter';
 import type { IMChannel } from '../../types/imChannel';
 
@@ -114,5 +114,27 @@ describe('getBlockedToolsForLevel', () => {
   it('does not block non-browser tools whose names merely start similarly', () => {
     expect(blocks('read_tools', 'abu-browserish__click')).toBe(false);
     expect(blocks('read_tools', 'read_file')).toBe(false);
+  });
+});
+
+// RB-02, IM half. Same hole as the trigger tier: the level's
+// `commandConfirmCallback` returns false, but it is never reached for a
+// workspace-internal command the strategy already resolved to 'allow'.
+describe('getAllowedToolsForLevel', () => {
+  it('caps read_tools at a positive roster that excludes every write tool', () => {
+    const allowed = getAllowedToolsForLevel('read_tools') ?? [];
+    expect(allowed).toContain('read_file');
+    for (const tool of ['run_command', 'write_file', 'edit_file', 'delete_file', 'http_fetch', 'manage_mcp_server']) {
+      expect(allowed.some((p) => matchesToolName(tool, p)), tool).toBe(false);
+    }
+  });
+
+  it('returns undefined — never an empty array — for the levels with no roster', () => {
+    // An empty array reads as "unrestricted" at every enforcement point
+    // (`allowedTools?.length && ...`), so returning [] here would hand
+    // safe_tools/full a silently-open gate.
+    for (const level of ['chat_only', 'safe_tools', 'full'] as const) {
+      expect(getAllowedToolsForLevel(level), level).toBeUndefined();
+    }
   });
 });

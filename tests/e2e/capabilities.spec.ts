@@ -168,4 +168,74 @@ test.describe.serial('Electron capability overview', () => {
       /(?:requires an authorization token|authorization token is required)/i,
     );
   });
+
+  // RB-04, in the real shell: drives the actual main process over the real
+  // IPC for 31 actions in ONE task (same conversation + loop), which is what
+  // the renderer would spread across many batches and reset each time.
+  //
+  // Which property this can prove depends on whether this machine grants the
+  // OS permission a Computer Use action needs, so it asserts whichever one
+  // the environment allows — both are properties of the same fix, and
+  // neither branch lets a regression through:
+  //
+  //  - permission granted → actions authorize, so the 31st must be refused
+  //    for budget. A per-batch reset would let it run forever.
+  //  - permission absent → every action is refused before it is charged, so
+  //    NO call may ever come back with a step-limit error. Charging up front
+  //    (the shape this fix corrected) would burn the budget on refusals and
+  //    surface a bogus "30-step limit" for a task that never acted.
+  test('enforces the Computer Use step budget in the main process, across batches', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForWelcomeScreen(page);
+
+    const errors = await page.evaluate(async () => {
+      const tauri = (
+        globalThis as typeof globalThis & {
+          __TAURI_INTERNALS__?: {
+            invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
+      if (!tauri) return ['Tauri bridge unavailable'];
+
+      await tauri.invoke('computer_use_set_enabled', { enabled: true });
+
+      const collected: string[] = [];
+      for (let i = 0; i < 31; i++) {
+        try {
+          await tauri.invoke('computer_use_begin_session', {
+            conversationId: 'e2ecuconv',
+            loopId: 'e2eculoop',
+            toolCallId: `e2ecutool${i}`,
+            interactionMode: 'foreground',
+            scope: 'screen-read',
+            permissionMode: 'standard',
+            actionIntent: { action: 'screenshot', category: 'none', summary: '' },
+          });
+          collected.push('');
+        } catch (error) {
+          collected.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      return collected;
+    });
+
+    expect(errors).toHaveLength(31);
+    const actionsAuthorize = errors[0] === '';
+
+    if (actionsAuthorize) {
+      for (const [index, message] of errors.slice(0, 30).entries()) {
+        expect(message, `step ${index + 1}`).not.toMatch(/step limit/i);
+      }
+      expect(errors[30]).toMatch(/30-step limit/i);
+    } else {
+      for (const [index, message] of errors.entries()) {
+        expect(message, `attempt ${index + 1}`).not.toMatch(/step limit/i);
+      }
+    }
+  });
 });

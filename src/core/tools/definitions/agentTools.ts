@@ -313,6 +313,7 @@ export const delegateToAgentTool: ToolDefinition = {
         commandConfirmCallback: loopCtx?.commandConfirmCallback,
         filePermissionCallback: loopCtx?.filePermissionCallback,
         allowedTools: loopCtx?.allowedTools,
+        blockedTools: loopCtx?.blockedTools,
         ...getSubagentRunInheritance(loopCtx),
         onProgress,
       });

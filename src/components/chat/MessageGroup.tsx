@@ -29,8 +29,9 @@ import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
-import abuAvatar from '@/assets/abu-avatar.png';
 import { cn } from '@/lib/utils';
+import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import { GROUP_CONTENT_GAP } from './chatSpacing';
 
 interface MessageGroupProps {
   messages: Message[];
@@ -783,7 +784,8 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
         // transition-colors lives on the base class so the highlight fades both
         // in AND out (a conditional transition class vanishes with the bg and
         // makes the removal instant).
-        'message-group space-y-4 w-full rounded-lg transition-colors duration-700',
+        'message-group w-full rounded-lg transition-colors duration-700',
+        GROUP_CONTENT_GAP,
         highlightMessageId != null &&
           messages.some((m) => m.id === highlightMessageId) &&
           'bg-[var(--abu-clay-bg-15)]',
@@ -811,11 +813,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       {(assistantMsgs.length > 0 || isStopped) && (
         <div className="flex gap-3 w-full overflow-hidden group">
           {/* ABU Avatar - only shown once for the group */}
-          <div className="shrink-0 mt-0.5">
-            <div className="w-7 h-7 rounded-full overflow-hidden">
-              <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
-            </div>
-          </div>
+          <AssistantRowAvatar />
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
@@ -845,18 +843,10 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                 itself, so a plan card from an earlier turn in the same group does
                 not suppress the dots for the fresh empty turn that follows. */}
             {isStreaming && !streamingHasContent && (
-              /* Geometry MUST mirror the TaskBlock active header and the
-                 "已处理 Xs" fold header that replace this row in later states:
-                 text-body (not text-minor), tertiary color, no top padding,
-                 mb-2 below. The old text-minor + py-2 version put the label
-                 2px smaller and ~8px lower than its successors, so every
-                 state swap read as the label jumping up a line ("错行"). */
-              <div className="flex items-center gap-1.5 mb-2">
-                <span className="text-body text-[var(--abu-text-tertiary)]">{t.status.thinking}</span>
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-                <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-              </div>
+              /* mb-2 matches the TaskBlock header / "已处理 Xs" fold header
+                 buttons that replace this row in later states; the label
+                 geometry itself lives in the shared ThinkingStatusLine. */
+              <ThinkingStatusLine label={t.status.thinking} className="mb-2" />
             )}
 
             {/* Render segments: text blocks and merged step groups.

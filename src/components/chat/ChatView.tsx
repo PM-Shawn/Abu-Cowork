@@ -36,6 +36,11 @@ import { Input } from '@/components/ui/input';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
+import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import {
+  VIRTUOSO_ITEM_TRAILING_PAD,
+  TYPING_FOOTER_GAP_COMPENSATION,
+} from './chatSpacing';
 
 /**
  * Context passed to the Virtuoso `Footer` component (the streaming typing
@@ -55,7 +60,8 @@ interface MessageListContext {
 // Row wrapper for each virtualized message group. Spacing between groups
 // MUST be padding, not margin (react-virtuoso guidance: margins on measured
 // rows break height measurement/collapse behavior), so this replaces the
-// previous `space-y-5` (margin) gap with a `pb-5` (padding-bottom) applied
+// previous `space-y-5` (margin) gap with a padding-bottom
+// (VIRTUOSO_ITEM_TRAILING_PAD in chatSpacing.ts) applied
 // to every row uniformly. This is deliberately unconditional (no "skip on
 // last item" special-casing): virtualized rows are NOT reliably
 // `:first-child`/`:last-child` in the DOM (whichever row is topmost/
@@ -71,7 +77,7 @@ const VirtuosoMessageItem: NonNullable<Components<Message[], MessageListContext>
   context: _context,
   ...props
 }) => (
-  <div {...props} className="pb-5">
+  <div {...props} className={VIRTUOSO_ITEM_TRAILING_PAD}>
     {children}
   </div>
 );
@@ -83,28 +89,16 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   context,
 }) => {
   if (!context?.showTypingIndicator) return null;
-  // Layout mirrors a MessageGroup's assistant row (avatar mt-0.5, gap-3,
-  // text-body tertiary label with no extra padding) so the hand-off from this
-  // footer to the real assistant placeholder — and then to the TaskBlock
-  // header / "已处理 Xs" fold header — keeps the label on the same baseline
-  // at the same size instead of hopping between typographies ("错行").
-  // -mt-1: this footer sits after the last row's pb-5 (20px) item padding,
-  // while the in-group placeholder row it hands off to sits after the group's
-  // internal space-y-4 (16px) — without the compensation the label hops up
-  // 4px at the swap (measured frame-by-frame from a screen recording).
+  // Layout mirrors a MessageGroup's assistant row (shared AssistantRowAvatar,
+  // gap-3, shared ThinkingStatusLine) so the hand-off from this footer to the
+  // real assistant placeholder — and then to the TaskBlock header / "已处理
+  // Xs" fold header — keeps the label on the same baseline at the same size
+  // instead of hopping between typographies ("错行"). The negative top margin
+  // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
   return (
-    <div className="-mt-1 flex gap-3">
-      <div className="w-7 h-7 mt-0.5 rounded-full overflow-hidden shrink-0">
-        <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-body text-[var(--abu-text-tertiary)]">
-          {context.retryingLabel ?? context.thinkingLabel}
-        </span>
-        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-        <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
-      </div>
+    <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
+      <AssistantRowAvatar />
+      <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
     </div>
   );
 };
@@ -728,7 +722,12 @@ export default function ChatView() {
               retryingLabel: retryInfo
                 ? format(t.chat.retrying, { attempt: retryInfo.attempt, max: retryInfo.maxAttempts })
                 : null,
-              thinkingLabel: t.chat.thinking,
+              // status.thinking ("思考中", no trailing ellipsis) — the same
+              // string the in-group placeholder shows and the TaskBlock active
+              // header reduces to (it strips the ellipsis). chat.thinking
+              // ("思考中…") here made the "…" blink out at the footer →
+              // placeholder hand-off, and reads odd before the animated dots.
+              thinkingLabel: t.status.thinking,
             }}
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (

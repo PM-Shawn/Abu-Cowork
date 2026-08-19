@@ -42,7 +42,7 @@ const mockEmptyTrash = vi.mocked(drafts.emptyExpiredTrash);
 const WS = '/Users/testuser/projects/myapp';
 
 function makeRecord(name: string, overrides: Partial<DraftRecord> = {}): DraftRecord {
-  const now = Date.now();
+  const now = 1_700_000_000_000; // filler (TESTING.md §3) — store.ts never reads this field
   return {
     id: name,
     skillName: name,
@@ -253,12 +253,12 @@ describe('skillDraftsStore · card sync', () => {
           id: MSG_ID,
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: 1_700_000_000_000, // filler (TESTING.md §3)
           toolCalls: [tc],
         },
       ],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
       status: 'idle',
     };
     useChatStore.setState({ conversations: { [CONV_ID]: conv } });

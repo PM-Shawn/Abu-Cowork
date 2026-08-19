@@ -34,6 +34,9 @@ vi.mock('./tauriFetch', () => ({
 import { OpenAICompatibleAdapter, toOpenAIToolChoice } from './openai-compatible';
 import type { ToolChoice } from './adapter';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 /** Build an SSE Response from a list of JSON-serializable chunks (plus [DONE]). */
 function makeSSEResponse(chunks: unknown[]): Response {
   const lines: string[] = [];
@@ -75,7 +78,7 @@ const userMessage: Message = {
   id: 'm1',
   role: 'user',
   content: 'read the file',
-  timestamp: Date.now(),
+  timestamp: FIXED_TIMESTAMP,
 };
 
 async function runChat(chunks: unknown[]): Promise<StreamEvent[]> {
@@ -117,7 +120,7 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
 
   it('leaves a text breadcrumb for a document-only user message (text-join path)', async () => {
     const body = await requestBodyFor([
-      { id: 'u1', role: 'user', content: [{ type: 'text', text: 'summarize this' }, pdfBlock], timestamp: Date.now() } as Message,
+      { id: 'u1', role: 'user', content: [{ type: 'text', text: 'summarize this' }, pdfBlock], timestamp: FIXED_TIMESTAMP } as Message,
     ]);
     const user = body.messages.find((m) => m.role === 'user');
     const asText = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content);
@@ -130,9 +133,9 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
     // prefix stays cached and only this block is re-billed.
     const body = await requestBodyFor(
       [
-        { id: 'u1', role: 'user', content: 'question', timestamp: Date.now() } as Message,
-        { id: 'a1', role: 'assistant', content: 'answer', timestamp: Date.now() } as Message,
-        { id: 'u2', role: 'user', content: 'follow-up', timestamp: Date.now() } as Message,
+        { id: 'u1', role: 'user', content: 'question', timestamp: FIXED_TIMESTAMP } as Message,
+        { id: 'a1', role: 'assistant', content: 'answer', timestamp: FIXED_TIMESTAMP } as Message,
+        { id: 'u2', role: 'user', content: 'follow-up', timestamp: FIXED_TIMESTAMP } as Message,
       ],
       { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
     );
@@ -151,7 +154,7 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
       ]),
     );
     const adapter = new OpenAICompatibleAdapter();
-    const msgs = [{ id: 'u1', role: 'user', content: 'hi', timestamp: Date.now() } as Message];
+    const msgs = [{ id: 'u1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP } as Message];
     await adapter.chat(msgs, makeOptions({
       baseUrl: 'https://api.openai.com/v1',
       metadata: { conversationId: 'conv-123' },
@@ -184,7 +187,7 @@ describe('OpenAICompatibleAdapter — document attachment placeholder (B6)', () 
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
             pdfBlock,
           ],
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
         } as Message,
       ],
       { supportsVision: true },
@@ -596,7 +599,7 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
         id: 'a1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         toolCalls: [{
           id: 'tc_prior',
           name: 'read_file',
@@ -608,7 +611,7 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
       const history: Message[] = [
         userMessage,
         assistantWithToolCall,
-        { id: 'u2', role: 'user', content: 'now summarize', timestamp: Date.now() },
+        { id: 'u2', role: 'user', content: 'now summarize', timestamp: FIXED_TIMESTAMP },
       ];
 
       mockFetch.mockResolvedValueOnce(makeSSEResponse([
@@ -631,7 +634,7 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
         id: 'a1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         thinking: 'let me think about this',
         toolCalls: [{
           id: 'tc_prior',
@@ -643,7 +646,7 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
       const history: Message[] = [
         userMessage,
         assistantWithThinking,
-        { id: 'u2', role: 'user', content: 'next', timestamp: Date.now() },
+        { id: 'u2', role: 'user', content: 'next', timestamp: FIXED_TIMESTAMP },
       ];
 
       mockFetch.mockResolvedValueOnce(makeSSEResponse([

@@ -2603,6 +2603,11 @@ export interface TranslationDict {
   // Computer-use runtime status bar + screen-border overlay windows
   computerUse: {
     controlling: string;
+    /** Names the conversation that owns the CU session when it is NOT the
+     *  one on screen. Interpolates {title}. */
+    fromConversation: string;
+    /** Fallback for {title} above when the owner's title can't be resolved. */
+    otherConversation: string;
     /** Interpolates {step}, e.g. "· Step {step}". */
     step: string;
     stop: string;

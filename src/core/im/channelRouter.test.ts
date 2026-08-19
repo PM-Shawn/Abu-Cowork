@@ -9,6 +9,11 @@ import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '@/types/imChannel';
 import { matchesToolName } from '../skill/toolFilter';
 
+// Deterministic filler timestamp (TESTING.md §3) — used where a numeric
+// timestamp field is structurally required but its exact value is never
+// asserted on.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 // ── Mocks ──
 
 const mockSessions: Record<string, unknown> = {};
@@ -31,12 +36,16 @@ vi.mock('../../stores/imChannelStore', () => ({
 }));
 
 const mockConversations: Record<string, { messages: { role: string; content: string }[] }> = {};
+// Deterministic id source (TESTING.md §3) — a monotonic counter guarantees each
+// createConversation() call gets a distinct id, which real Date.now() only did
+// incidentally (two calls within the same millisecond would have collided).
+let mockConvIdCounter = 0;
 vi.mock('../../stores/chatStore', () => ({
   useChatStore: {
     getState: () => ({
       conversations: mockConversations,
       createConversation: vi.fn(() => {
-        const id = 'conv-' + Date.now();
+        const id = 'conv-' + (++mockConvIdCounter);
         mockConversations[id] = { messages: [] };
         return id;
       }),
@@ -87,7 +96,7 @@ vi.mock('./sessionMapper', () => {
             key: 'test:chat1:window',
             channelId: 'ch1',
             conversationId: convId,
-            lastActiveAt: Date.now(),
+            lastActiveAt: FIXED_TIMESTAMP,
             messageCount: 1,
             userId: 'u1',
             userName: '张三',
@@ -171,7 +180,7 @@ function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
     responseMode: 'mention_only',
     allowedUsers: [], workspacePaths: [], sessionTimeoutMinutes: 30,
     maxRoundsPerSession: 50, status: 'connected',
-    createdAt: Date.now(), updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP, updatedAt: FIXED_TIMESTAMP,
     ...overrides,
   };
 }
@@ -419,7 +428,11 @@ describe('handleMessage dedup', () => {
     const router = getInternal();
     const dedupKey = 'dingtalk:ttl-msg';
 
-    // Seed with an "old" timestamp beyond the 30-minute TTL
+    // Seed with an "old" timestamp beyond the 30-minute TTL. Genuinely needs real
+    // wall-clock time: per the comment above, processMessage's dynamic import doesn't
+    // play well with fake timers, and the production TTL check compares against a real
+    // Date.now() read at dispatch time, so the seed must be relative to that same clock.
+    // eslint-disable-next-line no-restricted-syntax -- see rationale above
     router.recentMessageIds.set(dedupKey, Date.now() - 31 * 60 * 1000);
 
     router.dispatchMessage(makeDedupMessage({
@@ -430,6 +443,8 @@ describe('handleMessage dedup', () => {
     // TTL expired → message should process, and recentMessageIds timestamp
     // should be refreshed to ~now (within the current millisecond window).
     const ts = router.recentMessageIds.get(dedupKey)!;
+    // Paired with the real Date.now() seed above (same "no fake timers here" rationale).
+    // eslint-disable-next-line no-restricted-syntax -- see rationale above
     expect(ts).toBeGreaterThan(Date.now() - 1000);
     expect(mockSendThinking).toHaveBeenCalledTimes(1);
   });
@@ -438,8 +453,8 @@ describe('handleMessage dedup', () => {
     // Does NOT dispatch through the full pipeline — we just want to confirm
     // the synchronous state machine: stop() clears, dispatch re-populates.
     const router = getInternal();
-    router.recentMessageIds.set('dingtalk:foo', Date.now());
-    router.recentMessageIds.set('dingtalk:bar', Date.now());
+    router.recentMessageIds.set('dingtalk:foo', FIXED_TIMESTAMP);
+    router.recentMessageIds.set('dingtalk:bar', FIXED_TIMESTAMP);
     expect(router.recentMessageIds.size).toBe(2);
 
     router.stop();
@@ -449,7 +464,7 @@ describe('handleMessage dedup', () => {
     // a fresh cache, proving stop() is the only path that clears. The IM WS
     // reconnect path (feishu_ws.rs) does NOT call stop() — it only reloads
     // the Rust-side connection, leaving this TS cache intact across reconnects.
-    router.recentMessageIds.set('dingtalk:after-stop', Date.now());
+    router.recentMessageIds.set('dingtalk:after-stop', FIXED_TIMESTAMP);
     expect(router.recentMessageIds.size).toBe(1);
   });
 });

@@ -135,7 +135,7 @@ describe('sidecarManager', () => {
             licenseStatus: 'valid',
             licenseExpiresAt: '2099-01-01T00:00:00Z',
             serverTime: '2026-08-05T00:00:00Z',
-            fetchedAt: Date.now(),
+            fetchedAt: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
           },
         },
       });
@@ -722,6 +722,9 @@ describe('sidecarManager', () => {
       const spawnsBefore = spawnCallCount();
       const killsBefore = killCallCount();
 
+      // vi.useFakeTimers() is active (outer beforeEach) — Date.now() reads the fake,
+      // advancing clock, not real wall-clock time.
+      // eslint-disable-next-line no-restricted-syntax -- fake timers active, see comment above
       const baseNow = Date.now();
       const perfNow = spyOnPerfNowWithOffset();
       let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
@@ -729,6 +732,10 @@ describe('sidecarManager', () => {
       try {
         for (let i = 0; i < 3; i++) {
           perfNow.setOffset(0);
+          // Re-read the fake clock's current (advanced) value each iteration —
+          // this drives the next vi.advanceTimersByTimeAsync() delta below, so it
+          // cannot be a fixed constant.
+          // eslint-disable-next-line no-restricted-syntax -- fake timers active, see comment above
           const now = Date.now();
           // Advance exactly to the next heartbeat interval firing — this is
           // where runHeartbeat() captures `start` via performance.now()
@@ -784,6 +791,9 @@ describe('sidecarManager', () => {
       const spawnsBefore = spawnCallCount();
       const killsBefore = killCallCount();
 
+      // vi.useFakeTimers() is active (outer beforeEach) — Date.now() reads the fake,
+      // advancing clock, not real wall-clock time.
+      // eslint-disable-next-line no-restricted-syntax -- fake timers active, see comment above
       const baseNow = Date.now();
       const perfNow = spyOnPerfNowWithOffset();
       let nextIntervalAt = baseNow + HEARTBEAT_INTERVAL;
@@ -802,6 +812,10 @@ describe('sidecarManager', () => {
       try {
         for (const kind of cycles) {
           perfNow.setOffset(0);
+          // Re-read the fake clock's current (advanced) value each iteration —
+          // this drives the next vi.advanceTimersByTimeAsync() delta below, so it
+          // cannot be a fixed constant.
+          // eslint-disable-next-line no-restricted-syntax -- fake timers active, see comment above
           const now = Date.now();
           // Advance exactly to the next heartbeat interval firing — this is
           // where runHeartbeat() captures `start` via performance.now()

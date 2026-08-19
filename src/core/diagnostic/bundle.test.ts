@@ -7,8 +7,11 @@ import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 function makeMessage(id: string, text: string): Message {
-  return { id, role: 'user', content: text, timestamp: Date.now() };
+  return { id, role: 'user', content: text, timestamp: FIXED_TIMESTAMP };
 }
 
 function makeConversation(id: string): Conversation {
@@ -16,8 +19,8 @@ function makeConversation(id: string): Conversation {
     id,
     title: `Conversation ${id}`,
     messages: [makeMessage(`${id}-m0`, 'hello')],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
     status: 'idle',
   };
 }
@@ -26,8 +29,8 @@ function makeMeta(id: string): ConversationMeta {
   return {
     id,
     title: `Conversation ${id}`,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
     messageCount: 1,
   };
 }

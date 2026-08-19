@@ -25,6 +25,9 @@ vi.mock('@anthropic-ai/sdk', () => {
 import { ClaudeAdapter } from './claude';
 import { LLMError } from './adapter';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 function abortError(): Error {
   const e = new Error('The operation was aborted');
   e.name = 'AbortError';
@@ -65,7 +68,7 @@ describe('ClaudeAdapter', () => {
       const adapter = new ClaudeAdapter();
 
       const chatPromise = adapter.chat(
-        [{ role: 'user', content: 'hello', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'hello', id: '1', timestamp: FIXED_TIMESTAMP }],
         { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024 },
         (event) => events.push(event),
       );
@@ -112,7 +115,7 @@ describe('ClaudeAdapter', () => {
       const events: Array<{ type: string; input?: Record<string, unknown> }> = [];
       const adapter = new ClaudeAdapter();
       await adapter.chat(
-        [{ role: 'user', content: 'what time is it', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'what time is it', id: '1', timestamp: FIXED_TIMESTAMP }],
         { apiKey: 'test-key', model: 'claude-sonnet-4-6', maxTokens: 1024 },
         (event) => events.push(event as { type: string; input?: Record<string, unknown> }),
       );
@@ -167,7 +170,7 @@ describe('ClaudeAdapter', () => {
 
     it('places the system breakpoint on the last cacheable section and none on volatile sections', async () => {
       const params = await chatAndCapture(
-        [{ role: 'user', content: 'hi', id: '1', timestamp: Date.now() }],
+        [{ role: 'user', content: 'hi', id: '1', timestamp: FIXED_TIMESTAMP }],
         {
           systemPromptSections: [
             { name: 'persona', text: 'persona text', cacheable: true },
@@ -184,9 +187,9 @@ describe('ClaudeAdapter', () => {
 
     it('marks the last block of the last message as an incremental history breakpoint', async () => {
       const params = await chatAndCapture([
-        { role: 'user', content: 'first question', id: '1', timestamp: Date.now() },
-        { role: 'assistant', content: 'first answer', id: '2', timestamp: Date.now() },
-        { role: 'user', content: 'second question', id: '3', timestamp: Date.now() },
+        { role: 'user', content: 'first question', id: '1', timestamp: FIXED_TIMESTAMP },
+        { role: 'assistant', content: 'first answer', id: '2', timestamp: FIXED_TIMESTAMP },
+        { role: 'user', content: 'second question', id: '3', timestamp: FIXED_TIMESTAMP },
       ]);
       const last = params.messages[params.messages.length - 1];
       expect(Array.isArray(last.content)).toBe(true);
@@ -203,9 +206,9 @@ describe('ClaudeAdapter', () => {
     it('appends the volatile context tail AFTER the history breakpoint, uncached', async () => {
       const params = await chatAndCapture(
         [
-          { role: 'user', content: 'question', id: '1', timestamp: Date.now() },
-          { role: 'assistant', content: 'answer', id: '2', timestamp: Date.now() },
-          { role: 'user', content: 'follow-up', id: '3', timestamp: Date.now() },
+          { role: 'user', content: 'question', id: '1', timestamp: FIXED_TIMESTAMP },
+          { role: 'assistant', content: 'answer', id: '2', timestamp: FIXED_TIMESTAMP },
+          { role: 'user', content: 'follow-up', id: '3', timestamp: FIXED_TIMESTAMP },
         ],
         { volatileContextTail: '<runtime-context>\ntodos here\n</runtime-context>' },
       );
@@ -225,9 +228,9 @@ describe('ClaudeAdapter', () => {
     it('never exceeds the 4-breakpoint API limit (tools + system + history)', async () => {
       const params = await chatAndCapture(
         [
-          { role: 'user', content: 'q1', id: '1', timestamp: Date.now() },
-          { role: 'assistant', content: 'a1', id: '2', timestamp: Date.now() },
-          { role: 'user', content: 'q2', id: '3', timestamp: Date.now() },
+          { role: 'user', content: 'q1', id: '1', timestamp: FIXED_TIMESTAMP },
+          { role: 'assistant', content: 'a1', id: '2', timestamp: FIXED_TIMESTAMP },
+          { role: 'user', content: 'q2', id: '3', timestamp: FIXED_TIMESTAMP },
         ],
         {
           systemPromptSections: [

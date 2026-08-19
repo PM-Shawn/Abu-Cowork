@@ -55,8 +55,8 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
     // Output configured so the delivery path (pushToIMChannel → buildMessage) is reachable
     outputChannelId: 'channel-1',
     outputChatIds: 'chat-1',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: 1_700_000_000_000, // filler (TESTING.md §3) — not read by scheduler.ts
+    updatedAt: 1_700_000_000_000,
     runs: [],
     totalRuns: 0,
     ...overrides,

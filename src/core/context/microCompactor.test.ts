@@ -54,7 +54,7 @@ describe('microCompactor', () => {
       id: 'msg-1',
       role: 'assistant',
       content: 'done',
-      timestamp: Date.now(),
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
       toolCallsForContext: [{
         name: toolName,
         input: {},
@@ -66,7 +66,7 @@ describe('microCompactor', () => {
       id: 'msg-2',
       role: 'user',
       content: 'hello',
-      timestamp: Date.now(),
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
     });
 
     it('returns same array if no compaction needed', () => {

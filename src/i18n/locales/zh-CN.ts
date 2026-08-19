@@ -2394,6 +2394,8 @@ const zhCN: TranslationDict = {
 
   computerUse: {
     controlling: '正在操控电脑',
+    fromConversation: '来自「{title}」',
+    otherConversation: '其他会话',
     step: '· 第 {step} 步',
     stop: '停止',
     overlayStep: '第 {step} 步',

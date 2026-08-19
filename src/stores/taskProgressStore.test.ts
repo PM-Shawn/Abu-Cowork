@@ -4,7 +4,7 @@ import type { TaskStep } from './taskProgressStore';
 
 function makeStep(overrides: Partial<TaskStep> = {}): TaskStep {
   return {
-    id: Math.random().toString(36),
+    id: 'step-default', // filler (TESTING.md §3) — callers that care override it
     label: 'Test step',
     status: 'pending',
     ...overrides,

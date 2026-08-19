@@ -22,6 +22,10 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 // Imported lazily after mocks are configured
 let mod: typeof import('./outputSnapshots');
 
+// Filler mtime (TESTING.md §3) — the mock FS below needs some Date for its
+// records' `mtime` field, but no test in this file asserts on the exact value.
+const FIXED_MTIME = new Date(1_700_000_000_000);
+
 // Helper: minimal in-memory FS that the snapshot module operates against
 function createMemoryFs() {
   const files = new Map<string, { content: string; size: number; mtime: Date | null; isFile: boolean }>();
@@ -46,7 +50,7 @@ function createMemoryFs() {
   });
 
   mockedWriteText.mockImplementation(async (path: string, content: string) => {
-    files.set(path, { content, size: content.length, mtime: new Date(), isFile: true });
+    files.set(path, { content, size: content.length, mtime: FIXED_MTIME, isFile: true });
     const parts = path.split('/');
     for (let i = 1; i < parts.length; i++) {
       dirs.add(parts.slice(0, i).join('/'));
@@ -105,7 +109,7 @@ function createMemoryFs() {
   mockedWriteFile.mockImplementation(async (path: string, bytes: Uint8Array) => {
     // Binary payload stored as a hex-y tag — these tests only need to
     // assert "a write happened with N bytes", not round-trip the content.
-    files.set(path, { content: `[binary:${bytes.length}]`, size: bytes.length, mtime: new Date(), isFile: true });
+    files.set(path, { content: `[binary:${bytes.length}]`, size: bytes.length, mtime: FIXED_MTIME, isFile: true });
     const parts = path.split('/');
     for (let i = 1; i < parts.length; i++) {
       dirs.add(parts.slice(0, i).join('/'));
@@ -506,7 +510,7 @@ describe('outputSnapshots', () => {
       memFs.files.set(`${OUTPUTS_DIR}/manifest.json`, {
         content: '{ corrupted',
         size: 11,
-        mtime: new Date(),
+        mtime: FIXED_MTIME,
         isFile: true,
       });
 
@@ -519,7 +523,7 @@ describe('outputSnapshots', () => {
       memFs.files.set(`${OUTPUTS_DIR}/manifest.json`, {
         content: JSON.stringify({ version: 999, entries: { foo: { originalPath: 'foo' } } }),
         size: 50,
-        mtime: new Date(),
+        mtime: FIXED_MTIME,
         isFile: true,
       });
 

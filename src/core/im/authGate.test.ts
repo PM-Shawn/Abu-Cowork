@@ -20,8 +20,8 @@ function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
     maxRoundsPerSession: 50,
     enabled: true,
     status: 'connected',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: 1_700_000_000_000, // filler (TESTING.md §3) — not asserted on
+    updatedAt: 1_700_000_000_000,
     ...overrides,
   };
 }

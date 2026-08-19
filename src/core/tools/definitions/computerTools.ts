@@ -1229,18 +1229,24 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           if (runKey) {
             await closeNativeAxSession(computerUseController.clearObservation(runKey));
           }
-          const targetApp = (input.app as string | undefined)
-            ?? (input.app_name as string | undefined)
-            ?? null;
+          const explicitApp = explicitTargetApp(input);
           // Bring the target app forward first (best-effort) so the window is visible,
           // the screenshot is meaningful, and the display anchor is correct. Native
-          // activation — no Apple Events permission needed.
-          if (targetApp) {
+          // activation — no Apple Events permission needed. Only for a model-named
+          // app: raising windows is a visible side effect, so it must stay opt-in
+          // and not fire just because the fallback below picked a name for us.
+          if (explicitApp) {
             try {
-              await invokeComputerUse(invocation, 'activate_app', { appName: targetApp });
+              await invokeComputerUse(invocation, 'activate_app', { appName: explicitApp });
               await abortableDelay(250, invocation.abortSignal);
             } catch { /* app may not be running yet; ax_snapshot will report */ }
           }
+          // Structured-mode (non-vision) models have no way to name the app they
+          // haven't seen. Fall back to the app name the Host Gate already resolved
+          // for this session (hostSession.target.app_name, from the same
+          // NSWorkspace.frontmostApplication() lookup the security check below
+          // relies on) so ax_snapshot still gets a real name instead of null.
+          const targetApp = explicitApp ?? hostSession?.target.app_name ?? null;
           let axPart: string;
           let observedElements: AxElement[] = [];
           try {

@@ -2,24 +2,7 @@ import { getDeviceId } from './deviceId'
 import { APP_VERSION } from './version'
 import { getPlatform } from './platform'
 import { getTelemetryTarget } from './consoleTelemetryTarget'
-
-const MAX_ERROR_MESSAGE_CHARS = 500
-const SECRET_PATTERNS: RegExp[] = [
-  /\bsk-[a-zA-Z0-9_-]{12,}/g,
-  /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g,
-  /\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi,
-  /\b(?:token|api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi,
-]
-
-function safeErrorMessage(value: string | undefined): string | null {
-  if (!value) return null
-  let result = value
-  for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, '[REDACTED]')
-  return Array.from(result, (char) => {
-    const code = char.charCodeAt(0)
-    return code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127 ? '' : char
-  }).join('').slice(0, MAX_ERROR_MESSAGE_CHARS)
-}
+import { normalizeErrorMessage, errorFingerprint } from './errorTelemetryScrub'
 
 /**
  * `api_error` / `agent_crash` come from the agent loop. The three crash types
@@ -46,6 +29,11 @@ export function reportError(
   const { baseUrl, enabled } = getTelemetryTarget()
   if (!enabled) return
 
+  // Shape, not content — see errorTelemetryScrub.ts. The raw message stays
+  // local (runtime-observability log + diagnostic bundle); what leaves the
+  // machine is the skeleton plus a grouping key derived from it.
+  const safeMessage = normalizeErrorMessage(errorMessage)
+
   fetch(`${baseUrl}/api/error`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -53,7 +41,11 @@ export function reportError(
       deviceId: getDeviceId(),
       errorType,
       errorCode: errorCode ?? null,
-      errorMessage: safeErrorMessage(errorMessage),
+      errorMessage: safeMessage,
+      // Stable across machines for the same failure, so a new error is
+      // countable ("this shape, 240 times, all Windows 0.40.0") without the
+      // free text that used to be the only way to tell two errors apart.
+      fingerprint: errorFingerprint(safeMessage),
       // Provider bodies can contain echoed prompts, credentials, proxy pages,
       // or upstream request metadata. Status/errorCode retain the useful
       // classification signal; raw bodies stay local and may only enter a

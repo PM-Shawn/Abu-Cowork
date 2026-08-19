@@ -62,6 +62,44 @@ describe('reportError privacy boundary', () => {
     },
   )
 
+  // RB-05. The audit intercepted this payload and found a real user path in
+  // it, next to a stable device id. Assert on the wire body, not on the
+  // scrub helper, so any future field added to the payload has to face this
+  // test too.
+  it('sends no user path, url, or business text in the wire payload', () => {
+    reportError(
+      'main_crash',
+      'Error',
+      undefined,
+      undefined,
+      "Failed reading /Users/alice/SecretClient/客户方案.txt from https://acme.internal/x",
+    )
+
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+    const raw = String(init.body)
+    for (const leaked of ['alice', 'SecretClient', '客户方案', 'acme.internal']) {
+      expect(raw, leaked).not.toContain(leaked)
+    }
+
+    const body = JSON.parse(raw) as Record<string, unknown>
+    // What survives is the shape plus a grouping key — still enough to say
+    // what broke and how often, which is what the remote report is for.
+    expect(String(body.errorMessage)).toContain('Failed reading')
+    expect(body.fingerprint).toEqual(expect.any(String))
+    expect(body.errorType).toBe('main_crash')
+    expect(body.errorCode).toBe('Error')
+  })
+
+  it('groups two machines hitting the same failure under one fingerprint', () => {
+    reportError('renderer_crash', 'Error', undefined, undefined, "ENOENT: open '/Users/alice/a.txt'")
+    reportError('renderer_crash', 'Error', undefined, undefined, "ENOENT: open '/Users/bob/b.txt'")
+
+    const bodies = vi.mocked(fetch).mock.calls.map(
+      ([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>,
+    )
+    expect(bodies[0].fingerprint).toBe(bodies[1].fingerprint)
+  })
+
   it.each(['main_crash', 'renderer_crash', 'sidecar_crash'] as const)(
     'never sends %s once telemetry is opted out',
     (errorType) => {

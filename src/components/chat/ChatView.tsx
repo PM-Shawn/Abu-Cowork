@@ -83,13 +83,22 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   context,
 }) => {
   if (!context?.showTypingIndicator) return null;
+  // Layout mirrors a MessageGroup's assistant row (avatar mt-0.5, gap-3,
+  // text-body tertiary label with no extra padding) so the hand-off from this
+  // footer to the real assistant placeholder — and then to the TaskBlock
+  // header / "已处理 Xs" fold header — keeps the label on the same baseline
+  // at the same size instead of hopping between typographies ("错行").
+  // -mt-1: this footer sits after the last row's pb-5 (20px) item padding,
+  // while the in-group placeholder row it hands off to sits after the group's
+  // internal space-y-4 (16px) — without the compensation the label hops up
+  // 4px at the swap (measured frame-by-frame from a screen recording).
   return (
-    <div className="flex items-center gap-3 py-1">
-      <div className="w-7 h-7 rounded-full overflow-hidden shrink-0">
+    <div className="-mt-1 flex gap-3">
+      <div className="w-7 h-7 mt-0.5 rounded-full overflow-hidden shrink-0">
         <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
       </div>
-      <div className="flex items-center gap-1.5 py-2">
-        <span className="text-minor text-[var(--abu-text-muted)]">
+      <div className="flex items-center gap-1.5">
+        <span className="text-body text-[var(--abu-text-tertiary)]">
           {context.retryingLabel ?? context.thinkingLabel}
         </span>
         <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />

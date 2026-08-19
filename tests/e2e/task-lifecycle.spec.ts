@@ -211,12 +211,18 @@ function diskContains(rootDir: string, expectedText: string, fileName = 'message
  * in EITHER of two places: a checkpointed `messages.jsonl` line (stable
  * checkpoints only — tool batch done, turn end, stop) or the per-turn
  * `stream-snapshot.json` (one atomic whole-file overwrite per revision,
- * written on a timer/per-tool-result while a turn is still running; shape
- * `{"version":1,"messages":[Message,...]}`, see conversationStorage.ts
- * `writeStreamSnapshot`). `loadMessages` folds the snapshot on top of the
- * ledger on load, so either location recovers the exact content after an
- * abrupt termination. This predicate pins that widened contract rather than
- * the old ledger-only shape.
+ * written on a timer/per-tool-result while a turn is still running, see
+ * conversationStorage.ts `writeStreamSnapshot`). `loadMessages` folds the
+ * snapshot on top of the ledger on load, so either location recovers the
+ * exact content after an abrupt termination. This predicate pins that widened
+ * contract rather than the old ledger-only shape.
+ *
+ * Both on-disk snapshot shapes count, because a machine upgrading into this
+ * build can still be holding a snapshot written by the previous one:
+ *   v1 (legacy writer) `{"version":1,"messages":[Message,...]}`
+ *   v2 (current writer) `{"version":2,"entries":[{"message":Message,...},...]}`
+ * — the per-entry `stamp` watermark the RB-03 supersede guard added is not
+ * part of the recoverability contract, so it is deliberately not asserted here.
  */
 function diskContainsRecoverableAssistantMessage(rootDir: string, expectedContent: string): boolean {
   const matchesAssistantMessage = (message: { role?: unknown; content?: unknown }): boolean =>
@@ -247,10 +253,18 @@ function diskContainsRecoverableAssistantMessage(rootDir: string, expectedConten
           const parsed = JSON.parse(fs.readFileSync(entryPath, 'utf8')) as {
             version?: unknown;
             messages?: unknown;
+            entries?: unknown;
           };
-          if (parsed.version !== 1 || !Array.isArray(parsed.messages)) return false;
-          return parsed.messages.some((message) =>
-            matchesAssistantMessage(message as { role?: unknown; content?: unknown }));
+          if (parsed.version === 1 && Array.isArray(parsed.messages)) {
+            return parsed.messages.some((message) =>
+              matchesAssistantMessage(message as { role?: unknown; content?: unknown }));
+          }
+          if (parsed.version === 2 && Array.isArray(parsed.entries)) {
+            return parsed.entries.some((snapshotEntry) =>
+              matchesAssistantMessage(
+                (snapshotEntry as { message?: { role?: unknown; content?: unknown } }).message ?? {}));
+          }
+          return false;
         } catch {
           return false;
         }

@@ -38,6 +38,14 @@ describe('normalizeErrorMessage', () => {
     expect(out).toContain('[REDACTED]');
   });
 
+  // Pins what the rule ORDER actually produces, since the quote rule runs
+  // last and swallows the placeholder the path rule just wrote. Documented
+  // in the module; asserted here so the two cannot drift apart again.
+  it('redacts a quoted path to <str> and a bare path to <path>', () => {
+    expect(normalizeErrorMessage("ENOENT: open '/Users/a/b.txt'")).toBe('ENOENT: open <str>');
+    expect(normalizeErrorMessage('ENOENT: open /Users/a/b.txt')).toBe('ENOENT: open <path>');
+  });
+
   it('leaves a message that carries no user content readable', () => {
     expect(normalizeErrorMessage('Maximum call stack size exceeded'))
       .toBe('Maximum call stack size exceeded');

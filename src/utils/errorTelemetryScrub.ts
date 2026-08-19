@@ -63,10 +63,14 @@ const CONTENT_PATTERNS: Array<[RegExp, string]> = [
   [/\b[a-zA-Z]:[\\/][^\s'"`<>|?*]*/g, '<path>'],
   [/\\\\[^\s'"`<>|?*]+/g, '<path>'],
   [/(?<![\w<])\/(?:[^\s'"`<>|?*/]+\/)*[^\s'"`<>|?*/]*/g, '<path>'],
-  // Any run of CJK is user content by construction — no runtime error
-  // message this app produces is written in Chinese (AGENTS.md §1 keeps
-  // code, comments and LLM-facing prompts English), so a CJK run can only
-  // have come from data: a filename, a conversation title, a customer name.
+  // A CJK run is redacted because it is far more likely to be user content —
+  // a filename, a conversation title, a customer name — than something this
+  // report needs. It is NOT true that the app produces no Chinese error
+  // text: AGENTS.md §1 keeps code, comments and LLM-facing prompts English,
+  // but deliberately keeps tool-result strings and commandSafety reasons
+  // user-facing Chinese, and those can reach an `Error.message`. Redacting
+  // them costs some readability for zh-CN users and is the conservative
+  // trade — `errorType` and `errorCode` still classify the failure.
   [/[㐀-䶿一-鿿぀-ヿ가-힯]+/g, '<text>'],
   // Quoted spans last — the catch-all for interpolated values that none of
   // the shape rules above recognised.

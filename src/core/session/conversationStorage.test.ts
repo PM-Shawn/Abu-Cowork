@@ -1410,6 +1410,151 @@ describe('conversationStorage', () => {
       });
     });
 
+    // ══════════════════════════════════════════════════════════
+    // RB-03 (V0.40.0-RELEASE-READINESS-AUDIT.md): a crash-leftover stream
+    // snapshot is folded in as a trailing put with no regard for whether the
+    // ledger has since moved past it — a newer durable revision, or a
+    // truncate that removed the id, can both be silently overridden by the
+    // stale in-memory content. The fix stamps each snapshot entry with the
+    // ledger's byte length at capture time and drops the entry at load if
+    // the ledger contains, at or after that offset, either a newer put for
+    // the same id or a removal event that cut it.
+    //
+    // Every "stale leftover" case below manipulates `memFs.files` directly
+    // to restore a snapshot file AFTER the normal drop path (checkpoint /
+    // truncate) already deleted it — that is exactly what a crash between
+    // the ledger write landing and the snapshot delete completing leaves
+    // behind, and is not reachable by driving the public API alone.
+    describe('RB-03: stale stream-snapshot supersede guard', () => {
+      it('audit repro 1: a stale snapshot must not override a newer final ledger revision', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'partial' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        // The checkpoint lands the final revision and (in the non-crash case)
+        // deletes the now-superseded snapshot file.
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'FINAL' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate a crash between that ledger append landing and the
+        // snapshot delete completing: the stale file survives on disk.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('FINAL');
+      });
+
+      it('audit repro 2: a stale snapshot must not revive a message a truncate already cut', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] });
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate the same crash window as above, but on the truncate path.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+
+      it('checkpoint-then-crash-before-delete via updateLastMessage also drops the stale entry', async () => {
+        // Same hazard as audit repro 1, exercised through the OTHER checkpoint
+        // call site (`updateLastMessage`, used when the caller does not know
+        // the finishing message's id ahead of time) to cover both drop sites.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'assistant-1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'assistant-1', content: 'streaming...' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'complete' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('complete');
+      });
+
+      it('a legacy (pre-fix) unstamped snapshot keeps the old unconditional-merge behavior', async () => {
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify(makeMsg({ id: 'm1', content: 'FINAL' })) + '\n',
+        );
+        // v1 on-disk shape: no `stamp` on any entry — a build predating this
+        // fix could have left this file behind.
+        memFs.files.set(
+          SNAPSHOT,
+          JSON.stringify({
+            version: 1,
+            messages: [{ id: 'm1', role: 'user', content: 'legacy-partial', timestamp: 1 }],
+          }),
+        );
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Unchanged from pre-fix behavior: an unstamped entry has nothing to
+        // compare against the ledger, so it still folds in unconditionally.
+        expect(loaded[0].content).toBe('legacy-partial');
+      });
+
+      it('a snapshot entry with no later ledger write still applies (crash-protection survives)', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'still-streaming' }));
+
+        // Crash before any checkpoint ever reaches the ledger — the buffered
+        // revision is the ONLY copy of this content anywhere.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('still-streaming');
+      });
+
+      it('a truncate BEFORE the snapshot stamp does not drop a post-truncate revival', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.flushWrites();
+        await storage.appendTruncateEvent('conv-1', 'm1', { removedIds: ['m1'] });
+        await storage.flushWrites();
+
+        // The user revives m1 (a fresh put after the truncate — the fold's
+        // put-after-truncate resurrection rule) and it is still streaming
+        // when the crash-protection buffer captures it, well AFTER the
+        // truncate's offset.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'revived' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'revived-streaming' }));
+
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Must NOT be misfiltered by the earlier (now-irrelevant) truncate —
+        // the revival the user performed after it must survive.
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+        expect(loaded[0].content).toBe('revived-streaming');
+      });
+    });
+
     describe('crash windows', () => {
       it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));

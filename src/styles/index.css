@@ -176,6 +176,52 @@
 .typing-dot:nth-child(2) { animation-delay: 0.15s; }
 .typing-dot:nth-child(3) { animation-delay: 0.3s; }
 
+/* Expand/collapse for the live step timeline / streaming thinking pane.
+   Grid trick (same pattern claude.ai ships): grid-template-rows 0fr↔1fr on a
+   container with exactly ONE child whose min-height is 0; the container's own
+   overflow:hidden clips mid-animation. Deliberately NOT setting overflow on
+   the child — it may be (or contain) its own scroll area (max-h + overflow-y).
+
+   Two motion paths:
+   - .block-expand-enter (animation): plays once on MOUNT, for content that
+     appears mid-stream already open. Without it the full height lands in one
+     layout pass and the pinned bottom-stick shifts the view up in one frame.
+   - open/closed classes (transition): state toggles AFTER mount. Crucially the
+     collapsing content stays mounted and gets rolled up (clipped) over 280ms —
+     unmount-then-animate reads as the content blinking away, which is exactly
+     the completion jump this replaces. */
+.block-expand {
+  display: grid;
+  overflow: hidden;
+  transition: grid-template-rows 280ms ease-out;
+}
+.block-expand > * {
+  min-height: 0;
+}
+.block-expand-open {
+  grid-template-rows: 1fr;
+}
+.block-expand-closed {
+  grid-template-rows: 0fr;
+}
+.block-expand-enter {
+  animation: block-expand-enter 200ms ease-out;
+}
+@keyframes block-expand-enter {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .block-expand {
+    transition: none;
+  }
+  .block-expand-enter {
+    animation: none;
+  }
+}
+
 /* Update activity before byte totals are known and while the downloaded
    package is being verified. The segment sweeps continuously so slow network
    setup never looks like a frozen 0% bar. */

@@ -15,8 +15,11 @@ describe('resolveTriggerCallbacks', () => {
     expect(callbacks.blockedTools).toContain('request_workspace');
   });
 
-  it('does not create a whitelist for the predefined capability levels', () => {
+  // read_tools is the exception since RB-02 — see the read_tools write
+  // ceiling block below. The confirming tiers stay callback-driven.
+  it('does not create a whitelist for the confirming capability levels', () => {
     expect(resolveTriggerCallbacks({ prompt: 'safe', capability: 'safe_tools' }).allowedTools).toBeUndefined();
+    expect(resolveTriggerCallbacks({ prompt: 'full', capability: 'full' }).allowedTools).toBeUndefined();
   });
 
   // b4ce62e8 closed this hole on the scheduler side and its own note flagged
@@ -87,6 +90,53 @@ describe('resolveTriggerCallbacks', () => {
     it('applies to a task that predates the capability field (defaults to read_tools)', () => {
       const { blockedTools } = resolveTriggerCallbacks({ prompt: 'x' });
       expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p))).toBe(true);
+    });
+  });
+
+  // RB-02. The tier's deny callback is only reached when the permission
+  // strategy resolves to `confirm`; a workspace-internal command that
+  // `commandSafety` calls `safe` resolves to `allow` outright, so the
+  // callback never runs and `touch` / `mkdir` / `cp` wrote unasked. The
+  // roster is what actually holds the "changes nothing" promise.
+  describe('read_tools write ceiling', () => {
+    const allowedFor = (capability: 'read_tools' | 'safe_tools' | 'full') =>
+      resolveTriggerCallbacks({ prompt: 'x', capability }).allowedTools;
+
+    it('caps the tier at a positive roster instead of relying on the deny callback', () => {
+      const allowed = allowedFor('read_tools');
+      expect(allowed?.length).toBeGreaterThan(0);
+      // Non-empty matters on its own: every enforcement point reads an empty
+      // array as "unrestricted", so an accidentally-empty roster would be a
+      // silent regression back to the RB-02 behaviour.
+      expect(allowed).toContain('read_file');
+    });
+
+    it('keeps every write and self-extension tool off the roster', () => {
+      const allowed = allowedFor('read_tools') ?? [];
+      for (const tool of [
+        'run_command', 'write_file', 'edit_file', 'delete_file', 'http_fetch',
+        'update_memory', 'update_soul', 'clipboard_write', 'skill_manage',
+        'save_agent', 'manage_scheduled_task', 'manage_trigger',
+        'manage_file_watch', 'manage_mcp_server', 'computer', 'generate_image',
+        'delegate_to_agent', 'run_agent_batch',
+      ]) {
+        expect(allowed.some((p) => matchesToolName(tool, p)), tool).toBe(false);
+      }
+    });
+
+    it('still admits the reads the tier advertises', () => {
+      const allowed = allowedFor('read_tools') ?? [];
+      for (const tool of [
+        'read_file', 'list_directory', 'search_files', 'find_files',
+        'recall', 'read_memory', 'web_search', 'get_system_info',
+      ]) {
+        expect(allowed.some((p) => matchesToolName(tool, p)), tool).toBe(true);
+      }
+    });
+
+    it('applies to a task that predates the capability field (defaults to read_tools)', () => {
+      const allowed = resolveTriggerCallbacks({ prompt: 'x' }).allowedTools ?? [];
+      expect(allowed.some((p) => matchesToolName('run_command', p))).toBe(false);
     });
   });
 });

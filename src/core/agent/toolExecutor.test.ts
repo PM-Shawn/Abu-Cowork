@@ -71,6 +71,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 import { executeToolBatch } from './toolExecutor';
+import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
 
 function makeToolCall(name: string, input: Record<string, unknown> = {}): ToolCall {
   return {
@@ -178,6 +179,63 @@ describe('executeToolBatch · hard run restrictions', () => {
         error: true,
       }],
     });
+  });
+
+  // RB-02: the read-only tier's ceiling has to hold at the execution
+  // boundary, not just in the tool list the model was shown. This is the
+  // audit's exact repro input — `touch marker`, which `commandSafety`
+  // classifies `safe` and the standard strategy therefore resolves to
+  // 'allow' outright, skipping the tier's deny callback entirely.
+  it('fails closed on run_command under the unattended read-only roster', async () => {
+    const executeAnyTool = vi.fn();
+    const toolCall = makeToolCall('run_command', { command: 'touch marker', cwd: '/tmp/ws' });
+
+    const result = await executeToolBatch(
+      makeParams(toolCall, makeInvoker(executeAnyTool), undefined, [...READ_ONLY_TOOL_ALLOWLIST]),
+    );
+
+    expect(executeAnyTool).not.toHaveBeenCalled();
+    expect(result.observations).toEqual([{
+      name: 'run_command',
+      input: { command: 'touch marker', cwd: '/tmp/ws' },
+      result: 'Error: tool "run_command" is not allowed for this agent run',
+      error: true,
+    }]);
+  });
+
+  it.each([
+    ['write_file', { path: '/tmp/ws/a.txt', content: 'x' }],
+    ['edit_file', { path: '/tmp/ws/a.txt' }],
+    ['delete_file', { path: '/tmp/ws/a.txt' }],
+    ['http_fetch', { url: 'https://example.com', method: 'POST' }],
+    ['update_memory', { content: 'x' }],
+    ['manage_mcp_server', { action: 'add' }],
+  ])('fails closed on %s under the unattended read-only roster', async (name, input) => {
+    const executeAnyTool = vi.fn();
+
+    const result = await executeToolBatch(
+      makeParams(makeToolCall(name, input), makeInvoker(executeAnyTool), undefined, [...READ_ONLY_TOOL_ALLOWLIST]),
+    );
+
+    expect(executeAnyTool).not.toHaveBeenCalled();
+    expect(result.observations[0]?.error).toBe(true);
+  });
+
+  // The ceiling must not be so tight that the tier stops being useful — the
+  // reads it advertises still have to run.
+  it('still executes a read tool under the unattended read-only roster', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('file contents');
+
+    await executeToolBatch(
+      makeParams(
+        makeToolCall('read_file', { path: '/tmp/ws/a.txt' }),
+        makeInvoker(executeAnyTool),
+        undefined,
+        [...READ_ONLY_TOOL_ALLOWLIST],
+      ),
+    );
+
+    expect(executeAnyTool).toHaveBeenCalled();
   });
 
   it('installs the frozen parent settings reader for nested delegate tools', async () => {

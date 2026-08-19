@@ -204,7 +204,24 @@ function diskContains(rootDir: string, expectedText: string, fileName = 'message
   return visit(rootDir);
 }
 
-function diskContainsExactAssistantMessage(rootDir: string, expectedContent: string): boolean {
+/**
+ * Since the message-ledger stage-2 write-amplification governance (see
+ * docs/abu-message-ledger-plan.md §3.6, merged PR #212), an in-flight
+ * assistant revision is durable crash-protection content the moment it lands
+ * in EITHER of two places: a checkpointed `messages.jsonl` line (stable
+ * checkpoints only — tool batch done, turn end, stop) or the per-turn
+ * `stream-snapshot.json` (one atomic whole-file overwrite per revision,
+ * written on a timer/per-tool-result while a turn is still running; shape
+ * `{"version":1,"messages":[Message,...]}`, see conversationStorage.ts
+ * `writeStreamSnapshot`). `loadMessages` folds the snapshot on top of the
+ * ledger on load, so either location recovers the exact content after an
+ * abrupt termination. This predicate pins that widened contract rather than
+ * the old ledger-only shape.
+ */
+function diskContainsRecoverableAssistantMessage(rootDir: string, expectedContent: string): boolean {
+  const matchesAssistantMessage = (message: { role?: unknown; content?: unknown }): boolean =>
+    message.role === 'assistant' && message.content === expectedContent;
+
   const visit = (dir: string): boolean => {
     let entries: fs.Dirent[];
     try {
@@ -215,18 +232,30 @@ function diskContainsExactAssistantMessage(rootDir: string, expectedContent: str
     return entries.some((entry) => {
       const entryPath = path.join(dir, entry.name);
       if (entry.isDirectory()) return visit(entryPath);
-      if (entry.name !== 'messages.jsonl') return false;
-      try {
-        return fs.readFileSync(entryPath, 'utf8')
-          .trimEnd()
-          .split('\n')
-          .some((line) => {
-            const message = JSON.parse(line) as { role?: unknown; content?: unknown };
-            return message.role === 'assistant' && message.content === expectedContent;
-          });
-      } catch {
-        return false;
+      if (entry.name === 'messages.jsonl') {
+        try {
+          return fs.readFileSync(entryPath, 'utf8')
+            .trimEnd()
+            .split('\n')
+            .some((line) => matchesAssistantMessage(JSON.parse(line)));
+        } catch {
+          return false;
+        }
       }
+      if (entry.name === 'stream-snapshot.json') {
+        try {
+          const parsed = JSON.parse(fs.readFileSync(entryPath, 'utf8')) as {
+            version?: unknown;
+            messages?: unknown;
+          };
+          if (parsed.version !== 1 || !Array.isArray(parsed.messages)) return false;
+          return parsed.messages.some((message) =>
+            matchesAssistantMessage(message as { role?: unknown; content?: unknown }));
+        } catch {
+          return false;
+        }
+      }
+      return false;
     });
   };
   return visit(rootDir);
@@ -431,7 +460,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     // terminal carries the stop state. Together they prove no later stream
     // token was appended and the status can be reconstructed after restart.
     await expect.poll(
-      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, partial),
+      () => diskContainsRecoverableAssistantMessage(dataRoot!.appDataDir, partial),
       { timeout: READY_TIMEOUT },
     ).toBe(true);
     await expect.poll(
@@ -474,7 +503,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     expect(secondRequestBody).toContain(followUp);
     await expect(secondPage.getByText(followUpResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(
-      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, followUpResponse),
+      () => diskContainsRecoverableAssistantMessage(dataRoot!.appDataDir, followUpResponse),
       { timeout: READY_TIMEOUT },
     ).toBe(true);
   });
@@ -511,7 +540,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     // The stream intentionally sends no more chunks. Crash protection must be
     // driven by elapsed time, not by waiting for another provider event.
     await expect.poll(
-      () => diskContainsExactAssistantMessage(dataRoot!.appDataDir, partial),
+      () => diskContainsRecoverableAssistantMessage(dataRoot!.appDataDir, partial),
       { timeout: 15_000 },
     ).toBe(true);
 

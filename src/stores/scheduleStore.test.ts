@@ -94,6 +94,62 @@ describe('scheduleStore', () => {
       expect(task.totalRuns).toBe(0);
       expect(task.nextRunAt).toBeDefined();
     });
+
+    // undefined = "follow the global settings permission mode", the default —
+    // not the strictest tier, and not a scheduler-only vocabulary.
+    it('defaults new tasks to follow the global settings permission mode', () => {
+      const id = useScheduleStore.getState().createTask({
+        name: 'Daily Report',
+        prompt: 'Generate daily report',
+        schedule: { frequency: 'daily' },
+      });
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBeUndefined();
+    });
+
+    it('honours an explicitly chosen mode', () => {
+      const id = useScheduleStore.getState().createTask({
+        name: 'Build', prompt: 'build', schedule: { frequency: 'daily' },
+        permissionMode: 'autonomous',
+      });
+      expect(useScheduleStore.getState().tasks[id].permissionMode).toBe('autonomous');
+    });
+  });
+
+  // ── persist migration ──
+  describe('v4 → v5 migration', () => {
+    it('resets a v4 TriggerCapability-vocabulary value back to undefined (follow settings)', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      expect(migrate).toBeDefined();
+
+      const migrated = migrate?.(
+        {
+          tasks: {
+            a: { id: 'a', name: 'legacy', permissionMode: 'read_tools' },
+            b: { id: 'b', name: 'legacy 2', permissionMode: 'full' },
+          },
+        },
+        4,
+      ) as { tasks: Record<string, { permissionMode?: string }> };
+
+      expect(migrated.tasks.a.permissionMode).toBeUndefined();
+      expect(migrated.tasks.b.permissionMode).toBeUndefined();
+    });
+
+    it('also resets a task that predates the field entirely (pre-v4)', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      const migrated = migrate?.(
+        { tasks: { a: { id: 'a', name: 'ancient' } } },
+        3,
+      ) as { tasks: Record<string, { permissionMode?: string }> };
+
+      expect(migrated.tasks.a.permissionMode).toBeUndefined();
+    });
+
+    it('survives persisted state with no tasks map', () => {
+      const migrate = useScheduleStore.persist.getOptions().migrate;
+      expect(() => migrate?.({}, 3)).not.toThrow();
+      expect(() => migrate?.({}, 4)).not.toThrow();
+    });
   });
 
   // ── updateTask ──

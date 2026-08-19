@@ -644,7 +644,10 @@ export default function ChatView() {
       {!activeConv.imPlatform && <SourceInfoBar conversation={activeConv} />}
 
       {/* Computer Use Status Bar — visible during screen control */}
-      <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
+      {/* The stopped conversation is the one that OWNS the CU session (passed
+          up by the bar), NOT `activeConv.id` — a background conversation can be
+          driving the screen while an unrelated tab is open. See the component. */}
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);

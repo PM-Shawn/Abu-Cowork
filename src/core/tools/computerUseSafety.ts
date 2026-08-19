@@ -10,7 +10,25 @@ import { isMacOS } from '../../utils/platform';
 import policy from './computerUsePolicy.json';
 
 // ─── Sensitive App Blocklist (by bundle ID) ───
-
+//
+// `computerUsePolicy.json` cannot carry comments, so the non-obvious hardDeny
+// entries are explained here. Beyond the credential/terminal/system-settings
+// apps the list started with, three entries encode the self-protection red
+// line (permission plan §4.6 ②) — an agent must never be able to operate the
+// UI that grants agents permission, nor its own app:
+//
+//  - `com.abu.app` — Abu itself. Driving our own window would let a single
+//    injected instruction click through Abu's confirmation dialogs, flip the
+//    permission mode, or approve a site, converting one approval into a
+//    permanent back door. (The dev shell runs under Electron's own bundle id
+//    and is NOT covered; blocking that would block every Electron app.)
+//  - `com.apple.SecurityAgent` — the macOS authorization prompt (admin
+//    password / Touch ID). This is the OS's own "grant permission" UI.
+//  - `com.apple.authorizationhost` — the same authorization flow's other
+//    process identity.
+//
+// Windows gets `abu` / `abu.exe` for the same self-protection reason
+// (electron-builder productName is "Abu"; Windows matches on process name).
 const HARD_DENY_MACOS = new Set(policy.macos.hardDeny);
 const APPROVAL_REQUIRED_MACOS = new Set(policy.macos.approvalRequired);
 const HARD_DENY_WINDOWS = new Set(policy.windows.hardDeny.map((value) => value.toLowerCase()));

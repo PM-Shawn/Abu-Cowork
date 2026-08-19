@@ -340,11 +340,15 @@ export function resolveTools(
     tools = tools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
     deferredTools = deferredTools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
   }
-  // Headless / IM mode: block specific tools that require UI interaction
+  // Headless / IM / trigger mode: block specific tools that require UI
+  // interaction, or a whole namespace of tools via a `server__*` pattern
+  // (e.g. the read_tools trigger tier blocking every browser-automation
+  // tool without needing to enumerate names the server registers
+  // dynamically). Pattern-matched like the skill/allowedTools filters above
+  // — a plain name with no `*` still matches only itself.
   if (blockedTools && blockedTools.length > 0) {
-    const blocked = new Set(blockedTools);
-    tools = tools.filter(t => !blocked.has(t.name));
-    deferredTools = deferredTools.filter(t => !blocked.has(t.name));
+    tools = tools.filter(t => !blockedTools.some(pattern => matchesToolName(t.name, pattern)));
+    deferredTools = deferredTools.filter(t => !blockedTools.some(pattern => matchesToolName(t.name, pattern)));
   }
   return { tools, deferredTools, inputValidators };
 }

@@ -111,3 +111,7 @@ electron/chrome-bridge-runtime/dist/
 # electron-builder packaged output
 release-electron/
 release-electron-e2e/
+
+# Internal release-readiness audits — working notes that describe unfixed
+# issues in detail. This is a public repo; keep them out of it.
+*-RELEASE-READINESS-AUDIT.md

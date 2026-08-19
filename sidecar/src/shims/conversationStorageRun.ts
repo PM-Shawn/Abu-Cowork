@@ -9,8 +9,7 @@
  * `isMessageWrittenToDisk` ghost-cleanup call site: the durability check now
  * lives inside the shell-side `appendTruncateEvent` skip guard, so the
  * forwarding shim and its `session.isMessageWrittenToDisk` RPC method were
- * removed with it. ⚠️ `snapshotMessageRevision` is NOT yet forwarded here —
- * tracked as a follow-up.) `memdir/extractor.ts` additionally consumes
+ * removed with it.) `memdir/extractor.ts` additionally consumes
  * `loadMessages` (see below). No other export of the real module is
  * destructured by sidecar-bundled code; the remaining ~23 exports are
  * correctly omitted, not silently missing.
@@ -27,8 +26,21 @@
  * [string, Parameters<typeof replaceMessageById>[1]]; await
  * replaceMessageById(convId, message);` — my `[convId, message]` tuple
  * matches exactly, and `frameApplier.ts` already lists
- * `'replaceMessageById'` as the one allowlisted `SESSION_METHODS` entry, so
+ * `'replaceMessageById'` as an allowlisted `SESSION_METHODS` entry, so
  * no shell-side change is needed for this half.
+ *
+ * ── `snapshotMessageRevision` → real forwarding shim, via `pushFrame` ───
+ * Same wire pattern: `{ p: 'session', m: 'snapshotMessageRevision', a:
+ * [convId, message] }`. agentLoop.ts's 5 s crash-protection flush
+ * (`flushStreamingMessage`) calls this during streaming (plan stage 3's
+ * stream-snapshot path). It MUST be a frame, not a `sendRequest` round trip:
+ * the shell's checkpoint writers (`replaceMessageById`/`updateLastMessage`/
+ * `appendTruncateEvent`) call `dropStreamSnapshotEntry` when a revision
+ * enters the ledger, so snapshot writes and ledger checkpoints must apply in
+ * the exact order the loop issued them — a snapshot delivered on a separate
+ * RPC channel could land AFTER the turn-end checkpoint that superseded it
+ * and resurrect the stale revision on the next load. The single `pushFrame`
+ * FIFO gives that ordering for free.
  *
  * ── `loadMessages` → P1-3d-2 addition, real LOCAL-FS shim (no wire round trip) ──
  * `memdir/extractor.ts` dynamically imports `loadMessages` from this module
@@ -59,6 +71,10 @@ import { appDataDir } from '@tauri-apps/api/path';
 
 export async function replaceMessageById(convId: string, message: Message): Promise<void> {
   getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'replaceMessageById', a: [convId, message] });
+}
+
+export async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
+  getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'snapshotMessageRevision', a: [convId, message] });
 }
 
 // joinPath copied verbatim from src/utils/pathUtils.ts (same inlining

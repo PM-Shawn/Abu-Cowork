@@ -101,8 +101,8 @@ const EXEC_METHODS = new Set<string>([
 /** ScratchpadPort's one write method — id-preserving special case, see dispatch switch below. */
 const SCRATCHPAD_METHODS = new Set<string>(['addEntry']);
 
-/** conversationStorage — only `replaceMessageById` is wired this batch (design doc §5's explicit scope: "support m:'replaceMessageById' only for now"). */
-const SESSION_METHODS = new Set<string>(['replaceMessageById']);
+/** conversationStorage — the sidecar loop's two write forwarders: `replaceMessageById` (ledger checkpoint) and `snapshotMessageRevision` (the 5 s crash-protection flush's stream-snapshot write, ledger plan §3.6). Both travel as ordered frames rather than RPC because the checkpoint writers drop the snapshot entry for a checkpointed id (`dropStreamSnapshotEntry`) — applying a snapshot out of order with its superseding checkpoint would resurrect the stale revision on the next load. */
+const SESSION_METHODS = new Set<string>(['replaceMessageById', 'snapshotMessageRevision']);
 
 // ── Dispatch ─────────────────────────────────────────────────────────────
 
@@ -169,16 +169,20 @@ async function applySessionFrame(m: string, a: unknown[]): Promise<void> {
     return;
   }
   // Dynamic import — same discipline as agentLoop.ts's own
-  // replaceMessageById call sites (avoids conversationStorage's Tauri-fs
+  // conversationStorage call sites (avoids conversationStorage's Tauri-fs
   // dependency graph on any code path that never needs it).
-  const { replaceMessageById } = await import('../session/conversationStorage');
-  const [convId, message] = a as [string, Parameters<typeof replaceMessageById>[1]];
+  const storage = await import('../session/conversationStorage');
+  const [convId, message] = a as [string, Parameters<typeof storage.replaceMessageById>[1]];
   // Chat frames enqueue addMessage persistence without blocking rendering.
   // A later explicit session replacement must not overtake that append or it
   // will fail to find the assistant placeholder and silently leave the empty
-  // row behind.
+  // row behind. The snapshot write waits too: a checkpoint still pending in
+  // that queue drops the snapshot entry for its id when it lands, which
+  // would silently discard a snapshot revision applied while the older write
+  // was in flight.
   await waitForConversationPersistence(convId);
-  await replaceMessageById(convId, message);
+  if (m === 'snapshotMessageRevision') await storage.snapshotMessageRevision(convId, message);
+  else await storage.replaceMessageById(convId, message);
 }
 
 /**

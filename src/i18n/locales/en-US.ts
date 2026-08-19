@@ -2384,6 +2384,8 @@ const enUS: TranslationDict = {
 
   computerUse: {
     controlling: 'Controlling computer',
+    fromConversation: 'Started by “{title}”',
+    otherConversation: 'another chat',
     step: '· Step {step}',
     stop: 'Stop',
     overlayStep: 'Step {step}',

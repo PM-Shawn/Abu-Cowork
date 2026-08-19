@@ -16,12 +16,16 @@
  *   └── ...
  *
  * Write strategy:
- *   - messages.jsonl is an append-only ledger. A revision is a second line
- *     carrying the same id; `foldMessageLog` (messageLedger.ts) keeps the last
- *     one, in place. Nothing rewrites an existing line except deletion, which
- *     is still a rewrite until the tombstone phase lands.
+ *   - messages.jsonl is a fully append-only ledger (plan stage 3): a revision
+ *     is a second line carrying the same id, and removal is a `msg.truncate`
+ *     event line (messageLedger.ts) rather than a rewrite. `foldMessageLog`
+ *     keeps the last put per id and applies truncate/tomb events strictly in
+ *     the order they were written. Nothing rewrites an existing line anymore
+ *     except `appendToFile`'s fallback (read+rewrite only when the native
+ *     O(1) append command itself is unavailable).
  *   - WriteQueue batches writes per file (100ms debounce) and collapses queued
- *     revisions of the same message into one line
+ *     revisions of the same message into one line; event rows (truncates)
+ *     are order-sensitive and never merge across a put
  *   - UUID-based dedup prevents duplicate writes on restart
  *   - Streaming tokens stay in memory; only complete messages hit disk
  *   - The 5s crash-protection flush and per-tool-result writes go to
@@ -34,7 +38,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
-import { foldMessageLog, type LedgerLine } from './messageLedger';
+import { foldMessageLog, createLedgerEvent, type LedgerLine } from './messageLedger';
 import type { Message, MessageContent, SandboxRecoveryAction } from '@/types';
 
 // ════════════════════════════════════════════════════════════
@@ -101,14 +105,14 @@ function indexFilePath(): string {
 // Per-file mutex — serializes read-modify-write against same path
 // ════════════════════════════════════════════════════════════
 //
-// Two call sites still do non-atomic read-modify-write on messages.jsonl:
+// One call site still does non-atomic read-modify-write on messages.jsonl:
 //   - appendToFile's fallback (from drain, when the native append is missing)
-//   - deleteMessageById (whole-file rewrite, until tombstones land)
 //
-// replaceMessageById and updateLastMessage used to be here too. They are pure
-// appends now, which is why they no longer take this lock — the class of bug
-// described below is structurally gone for them rather than held back by a
-// mutex.
+// replaceMessageById, updateLastMessage, and (plan stage 3) appendTruncateEvent
+// are pure appends, which is why none of them take this lock — the class of
+// bug described below is structurally gone for them rather than held back by
+// a mutex. `deleteMessageById`, the last whole-file rewrite on a delete, was
+// retired once `msg.truncate` events made every removal an append too.
 //
 // Without serialization two of these concurrent on the same file can
 // interleave — one reads a stale snapshot and later overwrites changes
@@ -225,6 +229,21 @@ function scheduleDrain(): void {
   }, DRAIN_INTERVAL_MS);
 }
 
+/**
+ * Put ids dequeued by a drain whose appendToFile has not settled yet, keyed
+ * `${filePath}\n${mergeKey}`. In that window a put is in neither writeQueues
+ * (hasPendingPut → false) nor writtenIds (added only after the caller's
+ * enqueue promise resolves) — appendTruncateEvent's skip-guard must still
+ * count it as "something durable to cut", or a truncate racing the turn-end
+ * checkpoint's drain silently skips its event and the cut turn resurrects on
+ * the next load (review finding #1).
+ */
+const inFlightPutKeys = new Set<string>();
+
+function hasInFlightPut(filePath: string, messageId: string): boolean {
+  return inFlightPutKeys.has(`${filePath}\n${messageId}`);
+}
+
 async function drainAll(): Promise<void> {
   const entries = [...writeQueues.entries()];
   writeQueues.clear();
@@ -232,11 +251,24 @@ async function drainAll(): Promise<void> {
   await Promise.allSettled(
     entries.map(async ([filePath, pending]) => {
       const data = pending.map((p) => p.line).join('');
+      const flightKeys = pending
+        .filter((p) => p.mergeKey !== undefined)
+        .map((p) => `${filePath}\n${p.mergeKey}`);
+      flightKeys.forEach((k) => inFlightPutKeys.add(k));
       try {
         await appendToFile(filePath, data);
+        // Claim the ids HERE, synchronously with the drain settling — not in
+        // the callers' microtask continuations — so there is no instant where
+        // a durably-landed put is in neither writtenIds nor the in-flight set
+        // (appendMessage's own later add is then redundant but harmless).
+        pending.forEach((p) => {
+          if (p.mergeKey !== undefined) writtenIds.add(p.mergeKey);
+        });
         pending.forEach((p) => p.settlers.forEach((s) => s.resolve()));
       } catch (err) {
         pending.forEach((p) => p.settlers.forEach((s) => s.reject(err)));
+      } finally {
+        flightKeys.forEach((k) => inFlightPutKeys.delete(k));
       }
     }),
   );
@@ -577,11 +609,15 @@ export async function flushStreamSnapshots(): Promise<void> {
  * mirrors the exact dedup condition `appendMessage` uses to decide whether to
  * fire its `catalogBumpCount(+1)` (see `writtenIds.has` / `.add` above).
  *
- * Used by chatStore's ghost-message deletion path (agentLoop.ts) to avoid an
- * unbalanced catalog `-1`: a streamed assistant placeholder that never
- * durably reached messages.jsonl (aborted before `addMessage`'s
- * fire-and-forget `appendMessage` call ran) never had a `+1` to offset, so
- * deleting it must skip the catalog bump entirely (code-review fix #8).
+ * Used by `appendTruncateEvent`'s skip guard (plan stage 3) to tell a purely
+ * in-memory message (never durably appended, and no put still queued either)
+ * from one that has — or will have — a physical row to cut. A streamed
+ * assistant placeholder aborted before `addMessage`'s fire-and-forget
+ * `appendMessage` call ever ran never had a catalog `+1` to offset, so
+ * truncating it must write no ledger event at all and let chatStore's
+ * approximate nudge (`bumpCatalogAfterDelete`) handle the count instead of a
+ * reindex that would find nothing on disk to reconcile (code-review fix #8,
+ * carried forward from the retired `deleteMessage`/`deleteMessageById` path).
  */
 export function isMessageWrittenToDisk(id: string): boolean {
   return writtenIds.has(id);
@@ -703,10 +739,13 @@ function conversationsRoot(): string {
  * reconcile from redundantly rescanning). Swallows all errors — the catalog
  * is disposable.
  *
- * Exported for chatStore's delete paths (deleteMessage/deleteMessagesFrom/
- * deleteLoopMessages), which call this with a negative delta after mutating
- * in-memory state — see call sites there for why that's a display-level
- * adjustment, not a JSONL rewrite.
+ * Exported for chatStore's `deleteMessagesFrom` — the sole delete primitive
+ * as of plan stage 3 — which calls this with a negative delta ONLY when
+ * `appendTruncateEvent` reports nothing durable to truncate (a pure
+ * in-memory ghost); the durable case runs `catalogReindexConversation`
+ * instead, which derives an exact count from the folded ledger rather than
+ * an approximate nudge. See that call site for why the fallback nudge is a
+ * display-level adjustment, not a JSONL rewrite.
  */
 export async function catalogBumpCount(
   convId: string,
@@ -927,73 +966,89 @@ export async function appendMessage(
 }
 
 /**
- * Durably remove one message row from a conversation JSONL file.
- *
- * The operation shares the per-file mutex with append/replace, so a ghost
- * placeholder queued for append immediately before Stop is either deleted
- * after that append lands or the append failure is surfaced by the caller's
- * persistence barrier. A missing row is a valid no-op only when this process
- * has never observed the id as persisted.
+ * Unique id for a ledger event row (never the id of the affected message).
+ * Mirrors the store-wide id convention (`Date.now().toString(36) +
+ * Math.random().toString(36).substring(2, 8)`, AGENTS.md §5) with a short
+ * kind prefix so a raw event line is recognizable at a glance in
+ * `messages.jsonl` (plan §3.1's `tomb_…` example).
  */
-export async function deleteMessageById(
+function generateEventId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
+}
+
+/**
+ * Append a `msg.truncate` event: the sole delete primitive as of plan stage 3
+ * (`deleteMessageById` and the whole-file rewrite it did are retired). Every
+ * remaining removal path — edit-and-resend, retry/regenerate rewind, capability
+ * setup cleanup, ghost placeholder cleanup — expresses itself as "cut the log
+ * from this message onward," which the fold (messageLedger.ts) already
+ * understands.
+ *
+ * @param fromMessageId The first message to remove; it and everything the
+ *   fold has placed after it disappear from the projection.
+ * @param opts.pid The id of the last message SURVIVING the truncate (plan
+ *   §3.2) — omit when truncating from the conversation's first message.
+ * @param opts.removedIds Every id being cut, so their disk-side dedup state
+ *   can be released (see below).
+ * @returns `false` when nothing durable existed to cut — a purely in-memory
+ *   message (never durably appended, and no put still queued either). Writing
+ *   an event for it would be a permanent no-op line for a message no build
+ *   ever persisted; the caller (chatStore) falls back to its approximate
+ *   catalog nudge instead of relying on a reindex that would find nothing to
+ *   reconcile.
+ */
+export async function appendTruncateEvent(
   convId: string,
-  messageId: string,
+  fromMessageId: string,
+  opts: { pid?: string; removedIds: string[] },
 ): Promise<boolean> {
   await ensureBase();
   const path = messagesPath(convId);
-  // Land every queued line BEFORE the rewrite reads the file. Since revisions
-  // became appends, a checkpoint put can still be sitting in the 100ms-debounced
-  // queue when a delete arrives (the abort path's ghost cleanup runs right
-  // behind the turn's last persist) — the rewrite would not see that line, and
-  // the later drain would append it back, resurrecting the deleted message.
-  // Draining here, outside `withFileLock`, is the same discipline
-  // `catalogReindexConversation` uses; doing it inside the lock would deadlock.
-  await flushWrites();
-  if (!(await exists(path))) {
-    if (writtenIds.has(messageId)) {
-      throw new Error(`Conversation messages file does not exist for persisted message "${messageId}"`);
-    }
+
+  // Skip guard (plan stage 3): see this function's doc comment and
+  // `isMessageWrittenToDisk`'s doc comment for why the durable-write set,
+  // the still-queued puts AND the mid-drain in-flight puts all count as
+  // "something to cut" — the third one closes the dequeued-but-unsettled
+  // window where a turn-end checkpoint's put is otherwise invisible to both
+  // other checks (review finding #1).
+  if (
+    !writtenIds.has(fromMessageId)
+    && !hasPendingPut(path, fromMessageId)
+    && !hasInFlightPut(path, fromMessageId)
+  ) {
     return false;
   }
 
-  return withFileLock(path, async () => {
-    const raw = await readTextFile(path);
-    const lines = raw.trimEnd().split('\n');
-    const kept: string[] = [];
-    let removed = false;
-
-    for (const line of lines) {
-      if (!line.includes(`"${messageId}"`)) {
-        if (line) kept.push(line);
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(line) as Message;
-        if (parsed.id === messageId) {
-          removed = true;
-          continue;
-        }
-      } catch {
-        // Preserve corrupt/non-matching lines; loadMessages already skips them.
-      }
-      if (line) kept.push(line);
-    }
-
-    if (!removed) {
-      if (writtenIds.has(messageId)) {
-        throw new Error(`Message "${messageId}" was not found in conversation "${convId}"`);
-      }
-      return false;
-    }
-
-    await atomicWrite(path, kept.length > 0 ? `${kept.join('\n')}\n` : '');
-    // The rewrite re-terminated the file, torn tail included.
-    tailCheckedPaths.add(path);
-    writtenIds.delete(messageId);
-    // A buffered revision would otherwise resurrect the row on next load.
-    await dropStreamSnapshotEntry(convId, messageId);
-    return true;
+  const event = createLedgerEvent('msg.truncate', {
+    id: generateEventId('trunc'),
+    timestamp: Date.now(),
+    from: fromMessageId,
+    pid: opts.pid,
   });
+  // Order-sensitive (no mergeKey): any put already queued for this file lands
+  // BEFORE this line (so a same-drain-window edit-and-resend still lands),
+  // and nothing queued after it can coalesce across it — see
+  // `findMergeTarget`'s doc comment.
+  await enqueueWrite(path, JSON.stringify(event) + '\n');
+
+  // The event row is now the physical tail, but the NEXT message's parent
+  // pointer must skip over it and point at the last SURVIVING message (plan
+  // §3.2) — update the same per-conversation bookkeeping `appendMessage` uses
+  // for an ordinary put.
+  if (opts.pid !== undefined) lastMessageIdByConv.set(convId, opts.pid);
+  else lastMessageIdByConv.delete(convId);
+
+  // A future re-append of a truncated id must not be dedup-skipped by
+  // appendMessage's `writtenIds.has` check — the fold treats a put after a
+  // truncate as a legitimate revival (plan §3.3), so both the disk-side dedup
+  // cache and any buffered stream-snapshot revision must forget these ids, or
+  // the next load would resurrect exactly what the ledger just cut.
+  for (const id of opts.removedIds) {
+    writtenIds.delete(id);
+    await dropStreamSnapshotEntry(convId, id);
+  }
+
+  return true;
 }
 
 /**

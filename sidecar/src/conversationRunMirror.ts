@@ -195,10 +195,16 @@ export function createConversationRunMirror(
         }
         break;
       }
-      case 'deleteMessage': {
+      case 'deleteMessagesFrom': {
+        // Truncate semantics (plan stage 3): remove the given message AND
+        // everything the mirror has placed after it — mirrors chatStore's
+        // `deleteMessagesFrom`, the sole delete primitive.
         const [, messageId] = args as [string, string];
-        conversation.messages = conversation.messages.filter((m) => m.id !== messageId);
-        conversation.updatedAt = Date.now();
+        const idx = conversation.messages.findIndex((m) => m.id === messageId);
+        if (idx !== -1) {
+          conversation.messages = conversation.messages.slice(0, idx);
+          conversation.updatedAt = Date.now();
+        }
         break;
       }
       case 'appendToolCallContext': {

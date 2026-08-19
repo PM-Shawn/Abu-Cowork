@@ -18,7 +18,7 @@
  * protocol this implements (the sidecar→shell half — `agent.delta` /
  * `approval.drain` / `plan.clear` / `caps.record` / `shell.notifyTask` /
  * `cu.setState` / `native.invoke` / `tool.list` / `tool.invoke` /
- * `session.isMessageWrittenToDisk` / `skillHooks.clearAll` /
+ * `skillHooks.clearAll` /
  * `approval.check` — P1-3d-3 — / `workspace.bindFromWrite` /
  * `snapshot.beforeAiEdit` — both P1-3d A-write, see those handlers' own docs /
  * `workspace.authorizedWritablePaths` / `shell.sandboxBlocked` — both P1-3d-5
@@ -585,11 +585,16 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
             && !(streamingAssistant.toolCallsForContext?.length)
             && !streamingAssistant.thinking;
           if (isGhost) {
-            const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
-            chatDelta.deleteMessage(session.conversationId, streamingAssistant.id, {
-              skipCatalogBump: !isMessageWrittenToDisk(streamingAssistant.id),
-              persist: true,
-            });
+            // deleteMessagesFrom (plan stage 3) always persists, and its
+            // appendTruncateEvent skip guard already tells a never-durable
+            // ghost from one with a physical row to cut — no separate
+            // isMessageWrittenToDisk check needed here anymore.
+            // Tail guard (defense-in-depth, review finding #2): only cut when
+            // the ghost really is the conversation tail — a stale isStreaming
+            // flag on an earlier message must not truncate real turns.
+            if (conversation?.messages.at(-1)?.id === streamingAssistant.id) {
+              chatDelta.deleteMessagesFrom(session.conversationId, streamingAssistant.id);
+            }
           }
         }
       } catch (err) {
@@ -893,16 +898,6 @@ async function handleToolList(): Promise<unknown> {
  */
 async function handleWorkspaceAuthorizedPaths(): Promise<unknown> {
   return getAuthorizedWritablePaths();
-}
-
-/** `session.isMessageWrittenToDisk` (REQUEST) → {conversationId, messageId} → conversationStorage.isMessageWrittenToDisk(messageId), dynamically imported (same discipline as agentLoop.ts's own call site — avoid a static Tauri-fs dependency on any path that never needs it). */
-async function handleIsMessageWrittenToDisk(rawParams: unknown): Promise<unknown> {
-  const params = rawParams as { conversationId?: unknown; messageId?: unknown } | null;
-  if (!params || typeof params.messageId !== 'string') {
-    throw new SidecarRequestError(-32602, 'Invalid session.isMessageWrittenToDisk params: messageId must be a string');
-  }
-  const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
-  return isMessageWrittenToDisk(params.messageId);
 }
 
 /**
@@ -1258,7 +1253,6 @@ export function ensureHandlersRegistered(): void {
 
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
-  onSidecarRequest('session.isMessageWrittenToDisk', handleIsMessageWrittenToDisk);
   onSidecarRequest('approval.check', handleApprovalCheck);
   onSidecarRequest('snapshot.beforeAiEdit', handleSnapshotBeforeAiEdit);
   onSidecarRequest('workspace.authorizedWritablePaths', handleWorkspaceAuthorizedPaths);

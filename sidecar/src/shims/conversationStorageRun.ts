@@ -2,22 +2,17 @@
  * Sidecar-local replacement for `src/core/session/conversationStorage.ts`.
  *
  * `agentLoop.ts` never statically imports this module — it reaches it ONLY
- * via 3 DYNAMIC `await import('../session/conversationStorage')` call
- * sites (verified: `grep -n "conversationStorage" src/core/agent/agentLoop.ts`),
- * destructuring exactly 2 names total across all 3 sites:
- * `replaceMessageById` (2 call sites) and `isMessageWrittenToDisk` (1 call
- * site). No other function this module exports (`appendMessage`/
- * `updateIndexEntry`/`updateLastMessage`/`catalogSearch`/`flushWrites`/...
- * — 23 more exports, enumerated by reading the file's full `^export` list)
- * is ever destructured by `agentLoop.ts`. A repo-wide grep for
- * `session/conversationStorage` importers confirms only `agentLoop.ts`
- * itself, `agentLoopRunner.ts` (shell-side, already has its own
- * `session.isMessageWrittenToDisk` handler), `frameApplier.ts` (shell-side
- * applier, already dynamic-imports `replaceMessageById`), and
- * `ports/conversationReader.ts` (type-only) touch this module anywhere
- * reachable — so this shim's 2-function surface is a COMPLETE, not partial,
- * cover of what's actually consumed. The other 23 exports are correctly
- * omitted, not silently missing.
+ * via DYNAMIC `await import('../session/conversationStorage')` call sites
+ * (verified: `grep -n "conversationStorage" src/core/agent/agentLoop.ts`),
+ * currently destructuring `replaceMessageById` and `snapshotMessageRevision`.
+ * (The truncate-only ledger work — plan stage 3 — retired the old
+ * `isMessageWrittenToDisk` ghost-cleanup call site: the durability check now
+ * lives inside the shell-side `appendTruncateEvent` skip guard, so the
+ * forwarding shim and its `session.isMessageWrittenToDisk` RPC method were
+ * removed with it.) `memdir/extractor.ts` additionally consumes
+ * `loadMessages` (see below). No other export of the real module is
+ * destructured by sidecar-bundled code; the remaining ~23 exports are
+ * correctly omitted, not silently missing.
  *
  * ── `replaceMessageById` → real forwarding shim, via `pushFrame` ────────
  * Sends a `{ p: 'session', m: 'replaceMessageById', a: [convId, message] }`
@@ -31,18 +26,21 @@
  * [string, Parameters<typeof replaceMessageById>[1]]; await
  * replaceMessageById(convId, message);` — my `[convId, message]` tuple
  * matches exactly, and `frameApplier.ts` already lists
- * `'replaceMessageById'` as the one allowlisted `SESSION_METHODS` entry, so
+ * `'replaceMessageById'` as an allowlisted `SESSION_METHODS` entry, so
  * no shell-side change is needed for this half.
  *
- * ── `isMessageWrittenToDisk` → real forwarding shim, `session.isMessageWrittenToDisk` REQUEST ──
- * Params/response shape verified against `agentLoopRunner.ts`'s
- * `handleIsMessageWrittenToDisk` (already built, this batch's cluster):
- * `{ conversationId, messageId }` → boolean. `conversationId` comes from the
- * current run context (`agentLoop.ts`'s call site doesn't pass a
- * conversationId explicitly — it's implicit in which run is calling — so
- * this shim reads it off `AgentRunContext.conversationId` rather than
- * requiring a caller-supplied param, matching the real function's own
- * single-arg `(id: string)` signature exactly).
+ * ── `snapshotMessageRevision` → real forwarding shim, via `pushFrame` ───
+ * Same wire pattern: `{ p: 'session', m: 'snapshotMessageRevision', a:
+ * [convId, message] }`. agentLoop.ts's 5 s crash-protection flush
+ * (`flushStreamingMessage`) calls this during streaming (plan stage 3's
+ * stream-snapshot path). It MUST be a frame, not a `sendRequest` round trip:
+ * the shell's checkpoint writers (`replaceMessageById`/`updateLastMessage`/
+ * `appendTruncateEvent`) call `dropStreamSnapshotEntry` when a revision
+ * enters the ledger, so snapshot writes and ledger checkpoints must apply in
+ * the exact order the loop issued them — a snapshot delivered on a separate
+ * RPC channel could land AFTER the turn-end checkpoint that superseded it
+ * and resurrect the stale revision on the next load. The single `pushFrame`
+ * FIFO gives that ordering for free.
  *
  * ── `loadMessages` → P1-3d-2 addition, real LOCAL-FS shim (no wire round trip) ──
  * `memdir/extractor.ts` dynamically imports `loadMessages` from this module
@@ -52,9 +50,8 @@
  * reachable. Implemented as a verbatim-ported LOCAL read (same pattern as
  * `memdirScan.ts`/`memdirPaths.ts`) rather than a `sendRequest` round trip:
  * it's a pure read with no shared mutable state to coordinate (unlike
- * `replaceMessageById`'s frame-ordering requirement or
- * `isMessageWrittenToDisk`'s dependence on the SHELL's own `writtenIds`
- * dedup set), and `messages.jsonl` lives on the SAME machine/disk the shell
+ * `replaceMessageById`'s frame-ordering requirement), and
+ * `messages.jsonl` lives on the SAME machine/disk the shell
  * writes to — `appDataDir()` here resolves through the existing
  * `@tauri-apps/api/path` bare-specifier shim (`tauriPathRun.ts`), which reads
  * the identical spawn-time bootstrap value the shell's own Tauri
@@ -64,12 +61,10 @@
  * (per-line tolerant JSON.parse + `dedupMessagesById`) are ported verbatim
  * from the real `conversationStorage.ts` — `populateWrittenIds` is
  * intentionally NOT replicated: that mutates the SHELL's own module-level
- * `writtenIds` Set (which `isMessageWrittenToDisk` above queries via RPC, not
- * a local read), so a sidecar-local copy of that state would just be dead
+ * `writtenIds` Set, so a sidecar-local copy of that state would just be dead
  * — nothing sidecar-side reads it.
  */
 import type { Message } from '@/types';
-import { sendRequest } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -78,9 +73,8 @@ export async function replaceMessageById(convId: string, message: Message): Prom
   getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'replaceMessageById', a: [convId, message] });
 }
 
-export async function isMessageWrittenToDisk(id: string): Promise<boolean> {
-  const { conversationId } = getCurrentAgentRunContext();
-  return sendRequest('session.isMessageWrittenToDisk', { conversationId, messageId: id }) as Promise<boolean>;
+export async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
+  getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'snapshotMessageRevision', a: [convId, message] });
 }
 
 // joinPath copied verbatim from src/utils/pathUtils.ts (same inlining

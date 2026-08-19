@@ -66,7 +66,7 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
       send('setMessageStreamingFlag', [convId, messageId, streaming]),
     setMessageToolCalls: (convId, messageId, toolCalls) => send('setMessageToolCalls', [convId, messageId, toolCalls]),
     addMessage: (convId, message) => send('addMessage', [convId, message]),
-    deleteMessage: (convId, messageId, opts) => send('deleteMessage', [convId, messageId, opts]),
+    deleteMessagesFrom: (convId, messageId) => send('deleteMessagesFrom', [convId, messageId]),
     updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) =>
       send('updateToolCall', [
         convId,

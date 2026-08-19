@@ -139,7 +139,7 @@ const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'core/agent/computerUseStatus.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/computerUseStatusRun.ts') },
   // Whole-module barrel redirect — builtins.ts drags all ~19 tool-definition files + registry.ts; only clearAllSkillHooks/setComputerUseBatchMode/setSkipAutoScreenshot are consumed sidecar-side — see builtinsRun.ts.
   { real: path.resolve(srcDir, 'core/tools/builtins.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/builtinsRun.ts') },
-  // Real forwarding shim (replaceMessageById via pushFrame, isMessageWrittenToDisk via REQUEST) — see conversationStorageRun.ts.
+  // Real forwarding shim (replaceMessageById + snapshotMessageRevision via pushFrame, loadMessages as a local-fs port) — see conversationStorageRun.ts.
   { real: path.resolve(srcDir, 'core/session/conversationStorage.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/conversationStorageRun.ts') },
   // In-sidecar direct call shim (nested nested subagent shares the parent main-loop run's ports) — see subagentRunnerRun.ts.
   { real: path.resolve(srcDir, 'core/agent/subagentRunner.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/subagentRunnerRun.ts') },

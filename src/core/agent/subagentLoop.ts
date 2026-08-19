@@ -204,6 +204,16 @@ export interface SubagentLoopOptions {
   filePermissionCallback?: FilePermissionCallback;
   /** Parent-run tool whitelist inherited by delegated work. */
   allowedTools?: string[];
+  /**
+   * Parent-run tool denylist inherited by delegated work — the twin of
+   * `allowedTools`, and inherited for the same reason: a run-scoped
+   * restriction that stops at the delegation boundary is not a restriction,
+   * it is a detour. `allowedTools` was already forwarded here; this was not,
+   * so an unattended tier that removed a tool from its own roster
+   * (`request_workspace` on every trigger/IM run, the whole browser
+   * namespace on the read-only ones) got it back by delegating.
+   */
+  blockedTools?: string[];
   onProgress?: (event: SubagentProgressEvent) => void;
   /** IM context — provides correct workspace path in headless mode */
   imContext?: IMContext;
@@ -333,6 +343,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     if (options.allowedTools && options.allowedTools.length > 0) {
       tools = tools.filter((tool) =>
         options.allowedTools!.some((pattern) => matchesToolName(tool.name, pattern)),
+      );
+    }
+    // Pattern-matched like every other blockedTools check (agentLoop.ts's
+    // resolveTools, toolExecutor's executeToolBatch, agentLoopRunner's
+    // assertRunToolAllowed): the list carries namespace wildcards such as
+    // `abu-browser__*`, so exact-name matching would let most of a blocked
+    // namespace through.
+    if (options.blockedTools && options.blockedTools.length > 0) {
+      tools = tools.filter((tool) =>
+        !options.blockedTools!.some((pattern) => matchesToolName(tool.name, pattern)),
       );
     }
     // Always strip the orchestration tools from sub-agents to prevent recursive
@@ -673,6 +693,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           }
           if (options.allowedTools?.length && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
             return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
+          }
+          // Denylist checked at execution too, not just when the tool list
+          // was assembled: the model can name a tool that was never offered.
+          if (options.blockedTools?.some((pattern) => matchesToolName(tc.name, pattern))) {
+            return { id: tc.id, result: `Error: tool "${tc.name}" is blocked for this agent run` };
           }
 
           // Emit preToolCall — may block or modify input

@@ -1001,6 +1001,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         imContext: options?.imContext,
         parentConversationId: conversationId,
         settingsReader: entrySettingsReader,
+        // The `@agent` route reaches runSubagent WITHOUT passing through
+        // `delegate_to_agent`, so it never inherited either run-scoped tool
+        // restriction. An unattended tier is picked by the channel, but the
+        // prompt is user-authored — an IM message on a read-only channel
+        // beginning with `@researcher` delegated a subagent with no ceiling
+        // at all, which is the one hole a roster on the parent cannot see.
+        allowedTools: options?.allowedTools,
+        blockedTools: options?.blockedTools,
       });
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort

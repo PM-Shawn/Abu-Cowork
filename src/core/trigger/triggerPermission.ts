@@ -10,6 +10,7 @@
 import type { TriggerAction, TriggerCapability, TriggerPermissions } from '../../types/trigger';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
+import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { TOOL_NAMES } from '../tools/toolNames';
@@ -69,6 +70,11 @@ export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks
   switch (capability) {
     case 'read_tools':
       return {
+        // Kept as the last line of defence for anything that still reaches a
+        // confirmation, but it is no longer what makes this tier read-only:
+        // the strategy resolves a workspace-internal `safe` command to
+        // 'allow' without ever calling it (RB-02). `allowedTools` below is
+        // the actual ceiling.
         commandConfirmCallback: async (info) => {
           console.log(`[Trigger] read_tools: denied command "${info.command}"`);
           return false;
@@ -86,6 +92,7 @@ export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks
           return false;
         },
         blockedTools,
+        allowedTools: [...READ_ONLY_TOOL_ALLOWLIST],
       };
 
     case 'safe_tools':

@@ -11,6 +11,8 @@ import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
+import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
+import { TOOL_NAMES } from '../tools/toolNames';
 
 export type AuthResult =
   | { allowed: true; capability: IMCapabilityLevel }
@@ -83,4 +85,33 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
         filePermissionCallback: async () => true,
       };
   }
+}
+
+/**
+ * Tools removed from an IM run before the model ever sees them, by tier.
+ *
+ * Mirrors `triggerPermission.ts`'s `buildBlockedTools` and shares its single
+ * source for the browser patterns (`listAllBrowserToolPatterns`) rather than
+ * repeating the namespace list — an unattended IM channel is the same
+ * question as an unattended trigger.
+ *
+ * - `request_workspace` is always blocked: an IM run can never answer a UI
+ *   dialog.
+ * - `read_tools` carries NO browser capability at all. The confirmation
+ *   callback cannot deliver that on its own: a persistent per-site grant
+ *   makes `registry.ts` resolve the browser gate to 'allow' without ever
+ *   calling the callback, so on a site the user once chose "always allow"
+ *   for, a read-only IM run could still click, type, navigate and run page
+ *   scripts unasked. The tier is the CEILING, so it has to hold above the
+ *   site grant — at tool-list level.
+ * - `chat_only` also gets the patterns for consistency, though
+ *   `getCallbacksForLevel` already disables tools entirely for it.
+ * - `safe_tools` / `full` are unchanged: `request_workspace` only.
+ */
+export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
+  const blocked: string[] = [TOOL_NAMES.REQUEST_WORKSPACE];
+  if (level === 'read_tools' || level === 'chat_only') {
+    blocked.push(...listAllBrowserToolPatterns());
+  }
+  return blocked;
 }

@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '@/types/imChannel';
+import { matchesToolName } from '../skill/toolFilter';
 
 // Deterministic filler timestamp (TESTING.md §3) — used where a numeric
 // timestamp field is structurally required but its exact value is never
@@ -68,7 +69,11 @@ vi.mock('./streamingReply', () => ({
   sendFinal: (...args: unknown[]) => mockSendFinal(...args),
 }));
 
-vi.mock('./authGate', () => ({
+// Partial mock: `getBlockedToolsForLevel` is deliberately REAL so this file
+// pins what the router actually forwards to the agent run per tier — a
+// hand-written stub here would let the tier ceiling regress unnoticed.
+vi.mock('./authGate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./authGate')>()),
   resolveCapability: vi.fn((_userId: string, _channel: unknown) => ({
     allowed: true,
     capability: 'safe_tools',
@@ -221,6 +226,29 @@ describe('IMChannelRouter', () => {
     expect(mockRunAgentLoop).toHaveBeenCalledOnce();
     expect(mockSendFinal).toHaveBeenCalledOnce();
     expect(mockSendFinal.mock.calls[0][1].content).toBe('AI reply');
+  });
+
+  it('forwards the tier ceiling as blockedTools — read_tools gets no browser tools', async () => {
+    mockRunAgentLoop.mockResolvedValue({ reason: 'completed' });
+
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'read_tools');
+
+    const options = mockRunAgentLoop.mock.calls[0][2];
+    expect(options.blockedTools).toContain('request_workspace');
+    for (const tool of ['click', 'navigate', 'execute_js', 'snapshot']) {
+      expect(
+        options.blockedTools.some((p: string) => matchesToolName(`abu-browser__${tool}`, p)),
+        tool,
+      ).toBe(true);
+    }
+  });
+
+  it('does not strip browser tools for the higher tiers', async () => {
+    mockRunAgentLoop.mockResolvedValue({ reason: 'completed' });
+
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'full');
+
+    expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace']);
   });
 
   it('sets channel error status when agentLoop throws', async () => {

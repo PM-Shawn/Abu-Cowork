@@ -1552,6 +1552,46 @@ describe('agentLoopRunner', () => {
       },
     );
 
+    it('refuses a reverse tool call matching a blockedTools NAMESPACE WILDCARD, not just an exact name', async () => {
+      // `blockedTools` carries `abu-browser__*` for the read_tools trigger
+      // tier (browserToolPolicy.listAllBrowserToolPatterns). resolveTools and
+      // executeToolBatch glob-match it; this shell boundary is the third
+      // enforcement point and must not fall back to exact-name matching.
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      session.options = { blockedTools: ['request_workspace', 'abu-browser__*'] };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await expect(
+        handler({ runId: 'run-1', toolName: 'abu-browser__click', input: {} }),
+      ).rejects.toThrow(/blocked/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+    });
+
+    it('still matches a non-wildcard blockedTools entry exactly — no accidental prefix widening', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      session.options = { blockedTools: ['request_workspace'] };
+      registerRunSession('run-1', session);
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      await expect(
+        handler({ runId: 'run-1', toolName: 'request_workspace', input: {} }),
+      ).rejects.toThrow(/blocked/);
+      // A name merely *containing* the blocked entry must still run.
+      await handler({ runId: 'run-1', toolName: 'request_workspace_v2', input: {} });
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'request_workspace_v2',
+        {},
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
     it('marks the session committed on the first tool.invoke', async () => {
       const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
       ensureHandlersRegistered();

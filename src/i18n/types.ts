@@ -1958,6 +1958,21 @@ export interface TranslationDict {
     outputChatIdPlaceholder: string;
     outputUserIdPlaceholder: string;
     outputPushFailed: string;
+    /** Field label + hint for the unattended autonomy tier */
+    permissionMode: string;
+    permissionModeHint: string;
+    /** Option label: the task follows the global settings permission mode (the default). */
+    permissionModeFollowSettings: string;
+    /** {origin} — a per-site browser refusal during an unattended run */
+    denialBrowserSite: string;
+    /** {command} */
+    denialCommand: string;
+    /** {path} */
+    denialFile: string;
+    /** {count} — trailer when more denials happened than are listed */
+    denialMore: string;
+    /** {mode} {list} — appended to a failed run's result text */
+    denialSummary: string;
   };
 
   // Triggers
@@ -2317,6 +2332,10 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** "Block this site" button — writes a persistent 'denied' verdict and
+     *  refuses the pending action. Offered whenever the origin is known,
+     *  including for requests that may not be granted permanently. */
+    browserBlockSite: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };

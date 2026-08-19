@@ -7,8 +7,9 @@
  * Core principle: authorize at creation time, execute without prompts at runtime.
  */
 
-import type { TriggerAction, TriggerPermissions } from '../../types/trigger';
+import type { TriggerAction, TriggerCapability, TriggerPermissions } from '../../types/trigger';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
+import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
 import { authorizeWorkspace } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
 import { TOOL_NAMES } from '../tools/toolNames';
@@ -36,9 +37,23 @@ export interface TriggerCallbacks {
 export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks {
   const capability = action.capability ?? 'read_tools';
 
-  // Pre-authorize workspace path
+  // Pre-authorize the workspace path with the rights the tier actually
+  // promises — NOT authorizeWorkspace's read+write default. An authorized
+  // workspace short-circuits `checkWritePath` inside registry.ts *before*
+  // `filePermissionCallback` is ever consulted, so a blanket read+write grant
+  // here silently overrides the read-only callback below: a 'read_tools'
+  // trigger ("reads information, changes nothing") could write anywhere
+  // inside its own workspace. b4ce62e8 closed exactly this hole on the
+  // scheduler side and its own commit note flagged the trigger path as still
+  // open; this closes it. (Note the map only ever *adds* capabilities — if
+  // the same directory was already authorized read+write by an interactive
+  // session, that standing grant still applies; this stops the trigger from
+  // minting the write grant itself.)
   if (action.workspacePath) {
-    authorizeWorkspace(action.workspacePath);
+    authorizeWorkspace(
+      action.workspacePath,
+      capability === 'read_tools' ? ['read'] : ['read', 'write'],
+    );
   }
 
   // Pre-authorize custom allowed paths
@@ -49,7 +64,7 @@ export function resolveTriggerCallbacks(action: TriggerAction): TriggerCallbacks
   }
 
   // Triggers never need UI-only tools
-  const blockedTools = buildBlockedTools();
+  const blockedTools = buildBlockedTools(capability);
 
   switch (capability) {
     case 'read_tools':
@@ -153,9 +168,24 @@ function buildCustomCallbacks(
   };
 }
 
-function buildBlockedTools(): string[] {
+function buildBlockedTools(capability: TriggerCapability): string[] {
   // request_workspace is always blocked — triggers can't pop UI dialogs
-  const blocked = [TOOL_NAMES.REQUEST_WORKSPACE];
+  const blocked: string[] = [TOOL_NAMES.REQUEST_WORKSPACE];
+
+  // read_tools promises "reads information, changes nothing" — the read-only
+  // tier carries no browser capability at all (a user correction reversed an
+  // earlier design that kept `navigate` available for "view web pages"; the
+  // rule is now a single sentence: read_tools has no browser access, period).
+  // The confirmation callback below cannot deliver that on its own: a
+  // persistent per-site grant makes `registry.ts` resolve the browser gate to
+  // 'allow' without ever calling the callback, so on any site the user once
+  // chose "always allow this site" for, an unattended read-only run could
+  // still click, type, navigate and run page scripts unasked. Remove every
+  // browser-automation tool from the run instead — the tier is the ceiling
+  // and has to hold above the site grant.
+  if (capability === 'read_tools') {
+    blocked.push(...listAllBrowserToolPatterns());
+  }
 
   return blocked;
 }

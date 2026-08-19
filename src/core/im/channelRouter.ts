@@ -8,12 +8,11 @@
  * alongside the trigger engine's own IM listener.
  */
 
-import { TOOL_NAMES } from '../tools/toolNames';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import type { NormalizedIMMessage } from './inboundRouter';
-import { resolveCapability, getCallbacksForLevel } from './authGate';
+import { resolveCapability, getCallbacksForLevel, getBlockedToolsForLevel } from './authGate';
 import { sessionMapper } from './sessionMapper';
 import { sendThinking, sendFinal, addProcessingReaction } from './streamingReply';
 import type { AbuMessage } from './adapters/types';
@@ -241,7 +240,12 @@ class IMChannelRouter {
         runAgentLoopDispatched(session.conversationId, userText, {
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
-          blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+          // Tier-scoped, not a hard-coded single entry: the read-only tier
+          // must carry no browser capability at all (same rule
+          // triggerPermission.ts enforces), and a standing per-site grant
+          // would otherwise let it act without the confirm callback ever
+          // running.
+          blockedTools: getBlockedToolsForLevel(capability),
           imContext: {
             platform: message.platform,
             workspacePath: channel.workspacePaths[0] ?? null,

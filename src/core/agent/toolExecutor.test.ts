@@ -155,6 +155,31 @@ describe('executeToolBatch · hard run restrictions', () => {
     });
   });
 
+  // The fail-closed check has to be authoritative for exactly what
+  // resolveTools (agentLoop.ts) hid from the model — including a whole
+  // namespace blocked via a `server__*` pattern (e.g. read_tools triggers
+  // blocking every browser-automation tool), not just an exact tool name.
+  it('fails closed on a tool matched only by a wildcard pattern on the per-run denylist', async () => {
+    const executeAnyTool = vi.fn();
+    const toolCall = makeToolCall('abu-browser__click');
+
+    const result = await executeToolBatch(
+      makeParams(toolCall, makeInvoker(executeAnyTool), ['abu-browser__*']),
+    );
+
+    expect(executeAnyTool).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      mcpChanged: false,
+      requiresUserRecovery: false,
+      observations: [{
+        name: 'abu-browser__click',
+        input: {},
+        result: 'Error: tool "abu-browser__click" is blocked for this agent run',
+        error: true,
+      }],
+    });
+  });
+
   it('installs the frozen parent settings reader for nested delegate tools', async () => {
     const executeAnyTool = vi.fn().mockResolvedValue('ok');
     const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));

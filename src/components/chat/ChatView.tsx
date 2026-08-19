@@ -686,8 +686,24 @@ export default function ChatView() {
             // images, charts) changes the total list height while the user is
             // pinned, re-stick to the newest message. Event-driven — replaces
             // any "scroll again after N ms" guesswork.
+            //
+            // Gated on an actual gap from the bottom: `followOutput="auto"`
+            // already re-sticks on ordinary content growth (e.g. streamed
+            // thinking/answer tokens, which fire this callback many times a
+            // second), so an unconditional raw `scrollTop = scrollHeight` here
+            // raced it every frame — two independent corrections computed from
+            // slightly different scrollHeight snapshots, which read as the
+            // answer pane jittering up/down while streaming. Only step in when
+            // followOutput hasn't already closed the gap (its actual target
+            // case: content whose size resolves after layout, like images/
+            // iframes finishing their own async measurement).
             totalListHeightChanged={() => {
-              if (pinnedRef.current) stickToBottom(scrollParentEl);
+              if (!pinnedRef.current) return;
+              const el = scrollParentEl;
+              if (!el) return;
+              if (el.scrollHeight - el.scrollTop - el.clientHeight > 2) {
+                stickToBottom(el);
+              }
             }}
             // Keep ~one viewport of rows mounted above/below the visible window.
             // Rows still virtualize (far-off messages stay unmounted), but this

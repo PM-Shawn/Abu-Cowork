@@ -21,7 +21,15 @@ vi.mock('../../agent/subagentAbort', () => ({
   createSubagentController: vi.fn(),
 }));
 vi.mock('../../../stores/chatStore', () => ({
-  useChatStore: { getState: vi.fn().mockReturnValue({ activeConversationId: 'test', getActiveConversation: vi.fn() }) },
+  useChatStore: {
+    getState: vi.fn().mockReturnValue({
+      activeConversationId: 'test',
+      getActiveConversation: vi.fn(),
+      setAgentStatus: vi.fn(),
+      addActiveAgent: vi.fn(),
+      removeActiveAgent: vi.fn(),
+    }),
+  },
 }));
 vi.mock('../../../stores/settingsStore', () => ({
   useSettingsStore: { getState: vi.fn().mockReturnValue({ disabledSkills: [] }) },
@@ -39,10 +47,57 @@ vi.mock('../../../utils/validation', () => ({
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),
 }));
+vi.mock('../../agent/ports/settingsReader', () => ({
+  getSettingsReader: () => ({ getSnapshot: () => ({ disabledAgents: [], disabledSkills: [] }) }),
+}));
 
 describe('delegateToAgentTool', () => {
   it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {
     expect(delegateToAgentTool.isConcurrencySafe).toBe(true);
+  });
+
+  // A run-scoped restriction that stops at the delegation boundary is not a
+  // restriction. `allowedTools` was forwarded here; `blockedTools` was not,
+  // so an unattended tier that had removed a tool from its own roster got it
+  // back by delegating. Asserted on the call to runSubagent, because the
+  // regression this guards against is a call site forgetting to forward.
+  it('forwards BOTH run-scoped tool restrictions into the delegated run', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done' } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      allowedTools: ['read_file'],
+      blockedTools: ['request_workspace', 'abu-browser__*'],
+      toolCallToStepId: new Map(),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate: () => undefined,
+        completeChildStep: () => undefined,
+      },
+    } as never);
+
+    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'look something up' });
+
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ['read_file'],
+        blockedTools: ['request_workspace', 'abu-browser__*'],
+      }),
+    );
   });
 });
 

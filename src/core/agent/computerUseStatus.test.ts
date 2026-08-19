@@ -107,6 +107,33 @@ describe('computerUseStatus — per-conversation session table', () => {
       expect(checkCUSessionLimits()).toContain('已达上限');
     });
 
+    // RB-04, renderer mirror. toolExecutor re-activates at the top of EVERY
+    // computer batch; a task normally spans several. Rebuilding the row on
+    // each one reset the count to 0 and the clock to now, so the caps could
+    // never be reached and the UI restarted at step 1 mid-task.
+    it('a same-owner re-activation continues the session budget instead of resetting it', () => {
+      setComputerUseActive(true, 'conv-A');
+      for (let i = 0; i < 29; i++) incrementComputerUseStep('click');
+      const startedAt = getCUStatusSnapshot().sessionStartTime;
+
+      // Next batch in the same task.
+      setComputerUseActive(true, 'conv-A');
+
+      expect(getCUStatusSnapshot().stepCount).toBe(29);
+      expect(getCUStatusSnapshot().sessionStartTime).toBe(startedAt);
+      incrementComputerUseStep('click');
+      expect(checkCUSessionLimits()).toContain('已达上限');
+    });
+
+    it('a different conversation taking over is a new session and still starts at zero', () => {
+      setComputerUseActive(true, 'conv-A');
+      for (let i = 0; i < 5; i++) incrementComputerUseStep('click');
+
+      setComputerUseActive(true, 'conv-B');
+
+      expect(getCUStatusSnapshot().stepCount).toBe(0);
+    });
+
     it('setCurrentAction/pauseComputerUseStatus are harmless no-ops when idle (no phantom entry created)', () => {
       setCurrentAction('click');
       pauseComputerUseStatus();

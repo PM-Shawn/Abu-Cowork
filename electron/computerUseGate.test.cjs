@@ -6,6 +6,8 @@ const {
   createComputerUseGate,
   COMPUTER_USE_GATE_MISS,
   TASK_GRANT_TTL_MS,
+  MAX_TASK_CU_STEPS,
+  MAX_TASK_CU_DURATION_MS,
 } = require('./computerUseGate.cjs');
 const { COMPUTER_USE_TOKEN_ARG } = require('./computerUseCommands.cjs');
 
@@ -1442,5 +1444,125 @@ test('AX sessions from an expired task cannot be reused by a later task', async 
       [COMPUTER_USE_TOKEN_ARG]: laterSession.token,
     }),
     /belongs to a different task/,
+  );
+});
+
+// ── RB-04: the task CU budget is enforced HERE, across batches ──
+// The renderer used to own these caps, and reset them at the top of every
+// computer batch (`setComputerUseActive(true, …)`), so a task spanning
+// several batches never reached either limit. These pin the host as the
+// authoritative counter.
+
+/** One begin_session that consumes exactly one step (screen-read never
+ *  triggers the observe-then-act pair that a stateful ui-control action
+ *  does, so the arithmetic below stays honest). */
+async function readStep(h, extra = {}) {
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+  return h.gate.dispatch(h.record, h.sender, 'computer_use_begin_session', {
+    conversationId: 'conversation-1',
+    toolCallId: 'tool-1',
+    loopId: 'loop-1',
+    interactionMode: 'foreground',
+    scope: 'screen-read',
+    permissionMode: 'standard',
+    actionIntent: { action: 'screenshot', category: 'none', summary: '' },
+    ...extra,
+  });
+}
+
+test('CU step budget accumulates across batches instead of resetting', async () => {
+  const h = harness();
+  for (let i = 0; i < MAX_TASK_CU_STEPS; i++) {
+    await readStep(h, { toolCallId: `tool-${i}` });
+  }
+
+  // The 31st action in the SAME task is refused — under the old renderer
+  // budget each new batch zeroed the counter, so this never happened.
+  await assert.rejects(
+    readStep(h, { toolCallId: 'tool-over' }),
+    /30-step limit/,
+  );
+});
+
+test('CU step budget is per task — a later task starts with a full one', async () => {
+  const h = harness();
+  for (let i = 0; i < MAX_TASK_CU_STEPS; i++) {
+    await readStep(h, { toolCallId: `tool-${i}` });
+  }
+  await assert.rejects(readStep(h, { toolCallId: 'tool-over' }), /30-step limit/);
+
+  // Single-flight is unchanged by this fix: the spent task still holds the
+  // global reservation until it ends, exactly as before. End it the way the
+  // agent loop does, and the next task gets its own full budget rather than
+  // inheriting the exhausted one.
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+
+  await assert.doesNotReject(
+    readStep(h, { loopId: 'loop-2', toolCallId: 'tool-fresh' }),
+  );
+});
+
+test('CU time budget is fixed at first use and re-entry does not extend it', async () => {
+  const h = harness();
+  await readStep(h);
+
+  // Just inside the window: still allowed, and this re-entry must NOT push
+  // the deadline forward.
+  h.advance(MAX_TASK_CU_DURATION_MS - 1_000);
+  await assert.doesNotReject(readStep(h, { toolCallId: 'tool-late' }));
+
+  h.advance(2_000);
+  await assert.rejects(
+    readStep(h, { toolCallId: 'tool-expired' }),
+    /5-minute limit/,
+  );
+});
+
+test('an over-budget task keeps its budget across a re-entry attempt', async () => {
+  const h = harness();
+  for (let i = 0; i < MAX_TASK_CU_STEPS; i++) {
+    await readStep(h, { toolCallId: `tool-${i}` });
+  }
+
+  // Refused, and STAYS refused: a rejected action must not have banked a
+  // step back or rebuilt the budget, or retrying would walk past the cap one
+  // failure at a time.
+  await assert.rejects(readStep(h, { toolCallId: 'tool-over-1' }), /30-step limit/);
+  await assert.rejects(readStep(h, { toolCallId: 'tool-over-2' }), /30-step limit/);
+});
+
+// Review finding on the first cut of this change: the budget was charged
+// before `reserveTaskAuthorization`, which throws when another task holds
+// the global single-flight reservation. The throw does not refund, so a task
+// that never executed anything could burn its whole budget on transient
+// "already active" errors — and would then be told it hit a 30-step limit
+// instead of the real reason.
+test('a reservation refused for single-flight does not burn the budget', async () => {
+  const h = harness();
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+
+  // Task A takes the global reservation.
+  await readStep(h, { conversationId: 'conversation-a', loopId: 'loop-a', toolCallId: 'a-1' });
+
+  // Task B is refused for single-flight, MAX times over — the natural shape
+  // of an agent retrying a transient error.
+  for (let i = 0; i < MAX_TASK_CU_STEPS; i++) {
+    await assert.rejects(
+      readStep(h, { conversationId: 'conversation-b', loopId: 'loop-b', toolCallId: `b-${i}` }),
+      /already active in another foreground task/,
+    );
+  }
+
+  // A now finishes. B must still have its full budget: it never ran a step.
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-a',
+    loopId: 'loop-a',
+  });
+
+  await assert.doesNotReject(
+    readStep(h, { conversationId: 'conversation-b', loopId: 'loop-b', toolCallId: 'b-final' }),
   );
 });

@@ -309,24 +309,28 @@ function findTargetMessage(messages: Message[] | undefined, msgId: string): Mess
 }
 
 /**
- * Best-effort catalog count adjustment after a message deletion
- * (message-storage P1 step 2). Shared by deleteMessage / deleteMessagesFrom /
- * deleteLoopMessages (code-review fix #9 — was three copies of this same
- * block). This is a DISPLAY-LEVEL / session-level count nudge, not a claim
- * that the JSONL file itself shrank by `removedCount` — delete never
- * rewrites messages.jsonl, so the catalog's message_count would otherwise
- * drift upward forever relative to what's actually rendered. A wrong/stale
- * bump here is harmless and self-heals: `catalog_reconcile` re-derives the
- * true count from JSONL on next startup (same accepted-drift posture as the
- * P0 write-through comment elsewhere in this file). Do NOT "fix" this into
- * an exact JSONL-truth accounting — that's an intentional trade-off, not an
- * oversight.
+ * Best-effort catalog count adjustment for the one case `deleteMessagesFrom`
+ * cannot durably reconcile: a truncate whose `from` id never reached disk
+ * (see `appendTruncateEvent`'s skip guard) writes no ledger event at all, so
+ * there is nothing for `catalogReindexConversation` to re-derive from. This
+ * is a DISPLAY-LEVEL / session-level count nudge, not a claim that the JSONL
+ * file itself shrank by `removedCount`. A wrong/stale bump here is harmless
+ * and self-heals: `catalog_reconcile` re-derives the true count from JSONL on
+ * next startup (same accepted-drift posture as the P0 write-through comment
+ * elsewhere in this file). Do NOT "fix" this into an exact JSONL-truth
+ * accounting — that's an intentional trade-off, not an oversight. (Plan
+ * stage 3 retired the other two former callers, `deleteMessage` and
+ * `deleteLoopMessages` — every durable truncate now goes through the exact
+ * reindex path instead of this nudge.)
+ *
+ * Returns a promise (its only caller now runs inside `trackConversationPersistence`'s
+ * tracked operation and awaits it) so `waitForConversationPersistence` actually
+ * waits for this fallback bump instead of racing ahead of it.
  */
-function bumpCatalogAfterDelete(convId: string, removedCount: number): void {
+async function bumpCatalogAfterDelete(convId: string, removedCount: number): Promise<void> {
   if (removedCount <= 0) return;
-  import('../core/session/conversationStorage').then(({ catalogBumpCount }) => {
-    catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
-  });
+  const { catalogBumpCount } = await import('../core/session/conversationStorage');
+  await catalogBumpCount(convId, -removedCount, Date.now(), null).catch(() => {});
 }
 
 let flushScheduled = false;
@@ -499,9 +503,14 @@ interface ChatActions {
       delegateAgent?: Message['delegateAgent'];
     },
   ) => void;
-  deleteMessage: (convId: string, messageId: string, opts?: { skipCatalogBump?: boolean; persist?: boolean }) => void;
+  /**
+   * The sole delete/truncate primitive (plan stage 3 — `deleteMessage` and
+   * `deleteLoopMessages` are retired). Cuts `messageId` and everything after
+   * it from the in-memory slice, then durably persists the cut via
+   * `appendTruncateEvent` — see the implementation for the exact wiring and
+   * the in-memory-only fallback.
+   */
   deleteMessagesFrom: (convId: string, messageId: string) => void;
-  deleteLoopMessages: (convId: string, loopId: string) => void;
   updateMessageThinking: (convId: string, thinking: string, msgId?: string) => void;
   updateMessageThinkingDuration: (convId: string, duration: number, msgId?: string) => void;
   updateMessageUsage: (convId: string, usage: TokenUsage, msgId?: string) => void;
@@ -985,10 +994,10 @@ export const useChatStore = create<ChatStore>()(
             // code-review fix #1): in P0 there is no partial load, so
             // conv.messages is always the full history. Re-derivation is
             // both correct AND self-healing across deletes/edits/retries —
-            // deleteMessage/deleteMessagesFrom/deleteLoopMessages mutate
-            // conv.messages but never adjust conversationIndex.messageCount,
-            // so an increment-only counter drifts upward forever while
-            // re-derivation always reflects reality.
+            // deleteMessagesFrom mutates conv.messages but never adjusts
+            // conversationIndex.messageCount itself, so an increment-only
+            // counter drifts upward forever while re-derivation always
+            // reflects reality.
             if (state.conversationIndex[convId]) {
               state.conversationIndex[convId].messageCount = conv.messages.length;
               state.conversationIndex[convId].updatedAt = conv.updatedAt;
@@ -1129,10 +1138,16 @@ export const useChatStore = create<ChatStore>()(
         // only hit disk when finishStreaming / turn-boundary replaceMessageById fires —
         // so a crash/force-quit mid-stream (or a late-arriving result after the
         // enclosing message was already snapshotted) loses toolCalls on reload.
+        //
+        // This goes to the stream snapshot rather than the ledger: it fires once
+        // per tool result, and each write carries the whole message including
+        // every earlier result, so appending here would cost O(N²) bytes within
+        // a single tool-heavy turn. The turn-boundary checkpoint in agentLoop is
+        // what commits the batch to the ledger.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
           });
         }
       },
@@ -1288,83 +1303,60 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      deleteMessage: (convId, messageId, opts) => {
-        let removedCount = 0;
-        let metaToPersist: ConversationMeta | undefined;
-        set((state) => {
-          const conv = state.conversations[convId];
-          if (conv) {
-            const before = conv.messages.length;
-            conv.messages = conv.messages.filter((m) => m.id !== messageId);
-            removedCount = before - conv.messages.length;
-            conv.updatedAt = Date.now();
-            conv.contextCache = undefined;  // Invalidate compression cache
-            const meta = state.conversationIndex[convId];
-            if (meta && removedCount > 0) {
-              meta.messageCount = conv.messages.length;
-              meta.updatedAt = conv.updatedAt;
-              metaToPersist = { ...meta };
-            }
-          }
-        });
-        if (opts?.persist && removedCount > 0) {
-          const finalMeta = metaToPersist;
-          trackConversationPersistence(
-            convId,
-            () => import('../core/session/conversationStorage').then(async ({
-              catalogReindexConversation,
-              deleteMessageById,
-              updateIndexEntry,
-            }) => {
-              await deleteMessageById(convId, messageId);
-              if (finalMeta) await updateIndexEntry(finalMeta);
-              await catalogReindexConversation(convId);
-            }),
-          );
-          return;
-        }
-        // See bumpCatalogAfterDelete's doc comment for why this is an
-        // intentionally approximate, self-healing display-level nudge.
-        // `skipCatalogBump` (code-review fix #8): the agentLoop ghost-message
-        // deletion path passes this when the placeholder was never durably
-        // appended to messages.jsonl — appendMessage's own catalog `+1` only
-        // fires once the disk-append path is actually taken (see
-        // `isMessageWrittenToDisk`), so a ghost that never reached disk has
-        // no `+1` to offset and an unconditional `-1` here would transiently
-        // undercount the catalog until the next turn-end reindex.
-        if (!opts?.skipCatalogBump) bumpCatalogAfterDelete(convId, removedCount);
-      },
-
       deleteMessagesFrom: (convId, messageId) => {
-        let removedCount = 0;
+        let removedIds: string[] = [];
+        let survivingTailId: string | undefined;
+        let metaToPersist: ConversationMeta | undefined;
         set((state) => {
           const conv = state.conversations[convId];
           if (conv) {
             const idx = conv.messages.findIndex((m) => m.id === messageId);
             if (idx !== -1) {
-              removedCount = conv.messages.length - idx;
+              removedIds = conv.messages.slice(idx).map((m) => m.id);
+              // The id of the last message SURVIVING the cut — omitted (left
+              // undefined) when truncating from the conversation's first
+              // message (plan §3.2's `pid` definition).
+              survivingTailId = idx > 0 ? conv.messages[idx - 1].id : undefined;
               conv.messages = conv.messages.slice(0, idx);
               conv.updatedAt = Date.now();
               conv.contextCache = undefined;  // Invalidate compression cache
+              const meta = state.conversationIndex[convId];
+              if (meta) {
+                meta.messageCount = conv.messages.length;
+                meta.updatedAt = conv.updatedAt;
+                metaToPersist = { ...meta };
+              }
             }
           }
         });
-        bumpCatalogAfterDelete(convId, removedCount);
-      },
-
-      deleteLoopMessages: (convId, loopId) => {
-        let removedCount = 0;
-        set((state) => {
-          const conv = state.conversations[convId];
-          if (conv) {
-            const before = conv.messages.length;
-            conv.messages = conv.messages.filter((m) => m.loopId !== loopId);
-            removedCount = before - conv.messages.length;
-            conv.updatedAt = Date.now();
-            conv.contextCache = undefined;  // Invalidate compression cache
-          }
-        });
-        bumpCatalogAfterDelete(convId, removedCount);
+        if (removedIds.length === 0) return;
+        const finalMeta = metaToPersist;
+        const pid = survivingTailId;
+        const removedCount = removedIds.length;
+        // Durable persistence (plan stage 3): appendTruncateEvent decides
+        // whether there is anything on disk to cut. When it durably writes
+        // the event, catalogReindexConversation derives an EXACT count from
+        // the folded ledger — no approximate bump needed. When it reports
+        // nothing durable (a pure in-memory ghost never appended to disk),
+        // there is no ledger event and thus nothing for a reindex to
+        // reconcile, so fall back to the same approximate display-level nudge
+        // the retired deleteMessage's skipCatalogBump path used to apply.
+        trackConversationPersistence(
+          convId,
+          () => import('../core/session/conversationStorage').then(async ({
+            appendTruncateEvent,
+            updateIndexEntry,
+            catalogReindexConversation,
+          }) => {
+            const wrote = await appendTruncateEvent(convId, messageId, { pid, removedIds });
+            if (wrote) {
+              if (finalMeta) await updateIndexEntry(finalMeta);
+              await catalogReindexConversation(convId);
+            } else {
+              await bumpCatalogAfterDelete(convId, removedCount);
+            }
+          }),
+        );
       },
 
       updateMessageThinking: (convId, thinking, msgId) => {
@@ -1419,10 +1411,15 @@ export const useChatStore = create<ChatStore>()(
         // anything" even though a side effect (rm, write_file, an API call) had
         // already run — the recovery path could not tell "not started" from
         // "started, unrecorded", and a retry would execute it twice.
+        //
+        // Same routing as updateToolCall: this is mid-turn state, so it belongs
+        // in the stream snapshot (durable, folded in on load) rather than as a
+        // permanent ledger line that the batch checkpoint would supersede
+        // seconds later anyway.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
           });
         }
       },

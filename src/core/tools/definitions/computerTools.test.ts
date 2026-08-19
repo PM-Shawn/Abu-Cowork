@@ -316,7 +316,7 @@ describe('computerTool — accessibility permission branch', () => {
             process_id: 1,
           },
           classification: 'ordinary',
-          expires_at: Date.now() + 60_000,
+          expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
         });
       }
       if (cmd === 'get_overlay_window_id' || cmd === 'get_abu_window_id') {
@@ -412,6 +412,129 @@ describe('computerTool — accessibility permission branch', () => {
     expect(commands).not.toContain('get_active_window');
   });
 
+  it('structured-mode model with no app name gets AX data for the Host-resolved frontmost app', async () => {
+    // Repro: a non-vision model (e.g. deepseek-v4-flash) cannot see the screen, so it
+    // has no way to name the app it wants observed. It must still be able to call
+    // get_app_state with no `app`/`app_name` and land on the app the Host Gate already
+    // resolved as frontmost for this session, instead of forwarding a null app name to
+    // ax_snapshot and hitting the native "AX identity requires an explicit target app"
+    // guard (accessibility_macos.rs ax_snapshot_impl).
+    setElectronHost(true);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          token: 'structured-no-app-token',
+          target: {
+            app_name: 'Finder',
+            bundle_id: 'com.apple.finder',
+            process_id: 42,
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-finder-structured',
+          app: 'Finder',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const result = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-structured-no-app',
+        toolCallId: 'tool-structured-no-app',
+        interactionMode: 'foreground',
+        computerUseTier: 'structured',
+        modelId: 'deepseek-v4-flash',
+        supportsVision: false,
+      },
+    );
+
+    expect(result as string).not.toContain('explicit target app');
+    const axCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'ax_snapshot');
+    expect(axCall?.[1]).toMatchObject({ appName: 'Finder' });
+    // The Host-resolved fallback must not trigger activate_app: that raises every
+    // window of the target app and adds a 250ms stall, which is unwanted for what
+    // the model asked as a pure observe (no app named) — only an explicit app name
+    // should raise windows.
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    expect(commands).not.toContain('activate_app');
+  });
+
+  it('treats a whitespace-only app name as absent and still falls back to the Host-resolved app', async () => {
+    setElectronHost(true);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          token: 'structured-whitespace-app-token',
+          target: {
+            app_name: 'Finder',
+            bundle_id: 'com.apple.finder',
+            process_id: 42,
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-finder-whitespace',
+          app: 'Finder',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    await computerTool.execute(
+      { action: 'get_app_state', app: '   ', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-whitespace-app',
+        toolCallId: 'tool-whitespace-app',
+        interactionMode: 'foreground',
+        computerUseTier: 'structured',
+        modelId: 'deepseek-v4-flash',
+        supportsVision: false,
+      },
+    );
+
+    const axCall = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'ax_snapshot');
+    expect(axCall?.[1]).toMatchObject({ appName: 'Finder' });
+    const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
+    expect(commands).not.toContain('activate_app');
+  });
+
   it('keeps the Windows foreground-process probe instead of calling macOS-only identity APIs', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);
@@ -483,7 +606,7 @@ describe('computerTool — accessibility permission branch', () => {
             process_id: 1,
           },
           classification: 'ordinary',
-          expires_at: Date.now() + 60_000,
+          expires_at: 1_700_000_060_000, // filler (TESTING.md §3), matches sibling literals below
         });
       }
       if (cmd === 'ax_snapshot') {

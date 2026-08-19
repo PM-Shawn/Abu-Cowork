@@ -3,6 +3,7 @@ import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import type { DangerLevel } from '@/core/tools/commandSafety';
 
 export interface CommandConfirmRequest {
@@ -70,14 +71,32 @@ export default function CommandConfirmDialog({
   // "Always allow this site": persist the verdict, then resolve like a normal
   // confirm. The persistent grant is the dialog's own side effect — the
   // approval pipeline stays a plain boolean.
+  // `allowPersistentGrant` is the requester's ceiling; `mayOfferPersistentGrant`
+  // is the floor that high-consequence actions can never rise above. Both must
+  // agree before a "forever" button appears.
   const offerSiteGrant =
-    request.kind === 'browser' && request.allowPersistentGrant === true && !!request.browserOrigin;
+    request.kind === 'browser' && !!request.browserOrigin && mayOfferPersistentGrant(request);
   const handleAlwaysAllowSite = useCallback(() => {
     if (request.browserOrigin) {
       useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'allowed');
     }
     onConfirm();
   }, [request.browserOrigin, onConfirm]);
+
+  // "Block this site" is the mirror of "always allow", and it is offered
+  // wherever an origin is known — including the cases that may NOT be granted
+  // permanently (scripting tools, block-level actions). Tightening is always
+  // safe to make one click away; the asymmetry is deliberate, since the only
+  // way a user can currently stop being asked is to approve.
+  const offerSiteBlock = request.kind === 'browser' && !!request.browserOrigin;
+  const handleBlockSite = useCallback(() => {
+    if (request.browserOrigin) {
+      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'denied');
+    }
+    // Blocking also refuses the pending action — the user said "not this site",
+    // which necessarily includes the request they are looking at.
+    onCancel();
+  }, [request.browserOrigin, onCancel]);
 
   // Close on Escape key
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -149,7 +168,8 @@ export default function CommandConfirmDialog({
         </div>
 
         {/* Actions */}
-        <div className="flex gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
+        <div className="flex flex-col gap-3 px-6 py-6 shrink-0 border-t border-[var(--abu-bg-muted)]">
+          <div className="flex gap-3">
           <Button
             variant="outline"
             onClick={onCancel}
@@ -180,6 +200,20 @@ export default function CommandConfirmDialog({
               title={request.browserOrigin}
             >
               {t.commandConfirm.browserAlwaysAllowSite}
+            </Button>
+          )}
+          </div>
+          {offerSiteBlock && (
+            // Second row, ghost styling: a standing block is consequential but
+            // never the action we nudge toward, so it stays visually quiet
+            // while remaining reachable without leaving the dialog.
+            <Button
+              variant="ghost"
+              onClick={handleBlockSite}
+              className="h-8 w-full text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)]"
+              title={request.browserOrigin}
+            >
+              {t.commandConfirm.browserBlockSite}
             </Button>
           )}
         </div>

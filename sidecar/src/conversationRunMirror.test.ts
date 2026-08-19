@@ -142,13 +142,15 @@ describe('conversationRunMirror', () => {
       expect(tc?.isError).toBe(true);
     });
 
-    it('deleteMessage removes the message by id', () => {
-      const conv = makeConversation({ messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' })] });
+    it('deleteMessagesFrom truncates from the given message onward', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' }), makeMessage({ id: 'm3' })],
+      });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });
-      mirror.applyChatDeltaWrite('deleteMessage', ['conv-1', 'm1']);
+      mirror.applyChatDeltaWrite('deleteMessagesFrom', ['conv-1', 'm2']);
       const msgs = mirror.reader.getConversation('conv-1')?.messages;
       expect(msgs).toHaveLength(1);
-      expect(msgs?.[0].id).toBe('m2');
+      expect(msgs?.[0].id).toBe('m1');
     });
 
     it('setMessageStreamingFlag flips isStreaming', () => {

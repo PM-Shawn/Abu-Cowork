@@ -1,6 +1,9 @@
 {
   "macos": {
     "hardDeny": [
+      "com.abu.app",
+      "com.apple.SecurityAgent",
+      "com.apple.authorizationhost",
       "com.apple.keychainaccess",
       "com.apple.systempreferences",
       "com.apple.systemsettings",
@@ -54,6 +57,8 @@
   },
   "windows": {
     "hardDeny": [
+      "abu",
+      "abu.exe",
       "cmd",
       "cmd.exe",
       "powershell",

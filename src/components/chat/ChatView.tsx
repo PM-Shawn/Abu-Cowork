@@ -83,13 +83,22 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   context,
 }) => {
   if (!context?.showTypingIndicator) return null;
+  // Layout mirrors a MessageGroup's assistant row (avatar mt-0.5, gap-3,
+  // text-body tertiary label with no extra padding) so the hand-off from this
+  // footer to the real assistant placeholder — and then to the TaskBlock
+  // header / "已处理 Xs" fold header — keeps the label on the same baseline
+  // at the same size instead of hopping between typographies ("错行").
+  // -mt-1: this footer sits after the last row's pb-5 (20px) item padding,
+  // while the in-group placeholder row it hands off to sits after the group's
+  // internal space-y-4 (16px) — without the compensation the label hops up
+  // 4px at the swap (measured frame-by-frame from a screen recording).
   return (
-    <div className="flex items-center gap-3 py-1">
-      <div className="w-7 h-7 rounded-full overflow-hidden shrink-0">
+    <div className="-mt-1 flex gap-3">
+      <div className="w-7 h-7 mt-0.5 rounded-full overflow-hidden shrink-0">
         <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
       </div>
-      <div className="flex items-center gap-1.5 py-2">
-        <span className="text-minor text-[var(--abu-text-muted)]">
+      <div className="flex items-center gap-1.5">
+        <span className="text-body text-[var(--abu-text-tertiary)]">
           {context.retryingLabel ?? context.thinkingLabel}
         </span>
         <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
@@ -644,7 +653,10 @@ export default function ChatView() {
       {!activeConv.imPlatform && <SourceInfoBar conversation={activeConv} />}
 
       {/* Computer Use Status Bar — visible during screen control */}
-      <ComputerUseStatusBar onStop={() => useChatStore.getState().cancelStreaming(activeConv.id)} />
+      {/* The stopped conversation is the one that OWNS the CU session (passed
+          up by the bar), NOT `activeConv.id` — a background conversation can be
+          driving the screen while an unrelated tab is open. See the component. */}
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);
@@ -683,8 +695,24 @@ export default function ChatView() {
             // images, charts) changes the total list height while the user is
             // pinned, re-stick to the newest message. Event-driven — replaces
             // any "scroll again after N ms" guesswork.
+            //
+            // Gated on an actual gap from the bottom: `followOutput="auto"`
+            // already re-sticks on ordinary content growth (e.g. streamed
+            // thinking/answer tokens, which fire this callback many times a
+            // second), so an unconditional raw `scrollTop = scrollHeight` here
+            // raced it every frame — two independent corrections computed from
+            // slightly different scrollHeight snapshots, which read as the
+            // answer pane jittering up/down while streaming. Only step in when
+            // followOutput hasn't already closed the gap (its actual target
+            // case: content whose size resolves after layout, like images/
+            // iframes finishing their own async measurement).
             totalListHeightChanged={() => {
-              if (pinnedRef.current) stickToBottom(scrollParentEl);
+              if (!pinnedRef.current) return;
+              const el = scrollParentEl;
+              if (!el) return;
+              if (el.scrollHeight - el.scrollTop - el.clientHeight > 2) {
+                stickToBottom(el);
+              }
             }}
             // Keep ~one viewport of rows mounted above/below the visible window.
             // Rows still virtualize (far-off messages stay unmounted), but this

@@ -244,14 +244,31 @@ function isInAuthorizedWorkspace(path: string, capability: 'read' | 'write' = 'r
 }
 
 /**
+ * Fold a path for the `~/.abu` comparisons below.
+ *
+ * Two things go wrong without this. (1) `normalizePath` lowercases the whole
+ * path on Windows but `getHomeDir()` does not come back lowercased, so a raw
+ * `${home}/.abu` prefix never matched there. (2) macOS (APFS/HFS+ default) and
+ * Windows are case-INsensitive filesystems: `~/.Abu/mcp/config.json` and
+ * `~/.abu/mcp/config.json` are literally the same file, so a case-sensitive
+ * prefix test lets the self-protection red line be stepped over by changing
+ * one letter. Folded on every platform on purpose — over-matching a
+ * differently-cased `~/.ABU` fails closed, under-matching fails open.
+ */
+function foldPath(path: string): string {
+  return normalizeForCompare(path).toLowerCase();
+}
+
+/**
  * Check if an absolute path is inside an Abu memory directory.
  * Whitelists ~/.abu/memory/ and ~/.abu/projects/{key}/memory/.
  * This allows file tools (read_file, write_file, edit_file) to operate
  * on memory files without triggering permission dialogs.
  */
-async function isAbuMemoryPath(normalizedPath: string): Promise<boolean> {
+async function isAbuMemoryPath(rawPath: string): Promise<boolean> {
   const home = await getHomeDir();
-  const abuBase = `${home}/.abu`;
+  const abuBase = foldPath(`${home}/.abu`);
+  const normalizedPath = foldPath(rawPath);
 
   // ~/.abu/memory/
   if (normalizedPath.startsWith(`${abuBase}/memory/`) || normalizedPath === `${abuBase}/memory`) {
@@ -270,6 +287,62 @@ async function isAbuMemoryPath(normalizedPath: string): Promise<boolean> {
         return true;
       }
     }
+  }
+
+  return false;
+}
+
+/**
+ * Whether a path belongs to Abu's own configuration and state, which the agent
+ * must never rewrite (permission plan §4.6 ②: "Abu cannot touch its own
+ * config — persona, skill definitions, MCP config, secret store, task
+ * definitions, and the permission configuration itself").
+ *
+ * Why this is a separate guard rather than a `BLOCKED_PATHS` entry: those are
+ * enforced for reads as well, and reading is not the threat here (nor is it
+ * something to break — the memory tools, the skill loader and the agent's own
+ * `~/.abu` writes via save_agent/save_skill all depend on that directory).
+ * The threat is a *generic* file write reaching config that a dedicated tool
+ * would have had to ask about first: `save_agent` and `manage_mcp_server` go
+ * through `classifySelfExtension`'s confirmation, but `write_file` on
+ * `~/.abu/agents/x/AGENT.md` bypassed it entirely — and under
+ * `permissionMode: 'autonomous'` `checkWritePath`'s final "offer a permission
+ * dialog" branch resolves to an automatic allow, so no one is asked at all.
+ *
+ * Two roots:
+ *  - `~/.abu` — skills, agents, MCP configs, task log. `~/.abu/memory` and
+ *    `~/.abu/projects/{key}/memory` are carved out: memory is the one part of
+ *    this tree the agent is meant to maintain, and the memory tools rely on it.
+ *  - The app-data root — Electron `userData` ('Abu' packaged, 'abu-electron-dev'
+ *    in dev) plus the legacy `com.abu.*` Tauri identifiers that still carry
+ *    migrated state. This is where the persisted settings (including
+ *    `browserSitePermissions` and `permissionMode` — the permission
+ *    configuration itself), the scheduled task definitions, and the secret
+ *    store live.
+ */
+function isAbuAppDataSegment(segment: string): boolean {
+  const name = segment.toLowerCase();
+  return name === 'abu' || name.startsWith('abu-') || name.startsWith('com.abu.');
+}
+
+async function isAbuSelfManagedPath(normalizedPath: string): Promise<boolean> {
+  const home = await getHomeDir();
+  // Folded, not just normalized: on a case-insensitive filesystem `~/.Abu` IS
+  // `~/.abu`, and a case-sensitive prefix test would hand the whole red line
+  // away for the price of one capital letter. See `foldPath`.
+  const comparePath = foldPath(normalizedPath);
+
+  const abuBase = foldPath(`${home}/.abu`);
+  if (comparePath === abuBase || comparePath.startsWith(`${abuBase}/`)) {
+    return !(await isAbuMemoryPath(normalizedPath));
+  }
+
+  const appDataRoot = foldPath(
+    isWindows() ? `${home}/AppData/Roaming` : `${home}/Library/Application Support`,
+  );
+  if (comparePath.startsWith(`${appDataRoot}/`)) {
+    const segment = comparePath.slice(appDataRoot.length + 1).split('/')[0];
+    return isAbuAppDataSegment(segment);
   }
 
   return false;
@@ -600,6 +673,14 @@ export async function checkWritePath(path: string): Promise<PathCheckResult> {
   const blockCheck = await isBlockedPath(normalizedPath);
   if (blockCheck.blocked) {
     return { allowed: false, reason: blockCheck.reason };
+  }
+
+  // Abu's own config and state — checked before the authorized-workspace
+  // shortcut on purpose: authorizing a parent directory (or the home dir)
+  // must not hand the agent write access to its own permission config,
+  // secret store, or task definitions.
+  if (await isAbuSelfManagedPath(normalizedPath)) {
+    return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
 
   // Check for symlink bypass — symlinks could point to blocked paths

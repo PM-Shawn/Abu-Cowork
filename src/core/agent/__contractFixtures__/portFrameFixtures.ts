@@ -132,7 +132,7 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setMessageStreamingFlag', args: ['conv-1', 'msg-1', true] },
   { port: 'chat', method: 'setMessageToolCalls', args: ['conv-1', 'msg-1', [sampleToolCall]] },
   { port: 'chat', method: 'addMessage', args: ['conv-1', sampleMessage] },
-  { port: 'chat', method: 'deleteMessage', args: ['conv-1', 'msg-1', { skipCatalogBump: true, persist: false }] },
+  { port: 'chat', method: 'deleteMessagesFrom', args: ['conv-1', 'msg-1'] },
   {
     port: 'chat',
     method: 'updateToolCall',

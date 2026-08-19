@@ -41,80 +41,111 @@ interface Rule {
   regex: RegExp;
   /** Replacement. May be a literal string or a function of the match. */
   replace: string | ((match: string, ...groups: string[]) => string);
+  /**
+   * True for rules that redact CREDENTIALS (as opposed to privacy scrubbing
+   * like home paths). Colocated on the rule so a new vendor pattern can't be
+   * added without deciding whether the memory-hygiene path gets it too.
+   */
+  credential: boolean;
 }
 
 // Anthropic key must come before the generic OpenAI rule so it wins.
+// ⚠️ When adding/widening a credential rule, bump SWEEP_MARKER in
+// core/memdir/secretSweep.ts so already-written memory files get re-swept.
 const RULES: Rule[] = [
   {
     kind: 'anthropic-key',
     regex: /sk-ant-[A-Za-z0-9_-]{20,}/g,
     replace: '[REDACTED:anthropic-key]',
+    credential: true,
   },
   {
     kind: 'openai-key',
     // Matches sk-... but excludes sk-ant- (handled above) via negative lookahead.
     regex: /sk-(?!ant-)[A-Za-z0-9_-]{20,}/g,
     replace: '[REDACTED:openai-key]',
+    credential: true,
   },
   {
     kind: 'google-api-key',
     regex: /AIza[0-9A-Za-z_-]{35}/g,
     replace: '[REDACTED:google-api-key]',
+    credential: true,
   },
   {
     kind: 'aws-access-key',
     regex: /AKIA[0-9A-Z]{16}/g,
     replace: '[REDACTED:aws-access-key]',
+    credential: true,
   },
   {
     kind: 'github-token',
     regex: /gh[pousr]_[A-Za-z0-9_]{36,}/g,
     replace: '[REDACTED:github-token]',
+    credential: true,
   },
   {
     kind: 'slack-token',
     regex: /xox[baprs]-[A-Za-z0-9-]{10,}/g,
     replace: '[REDACTED:slack-token]',
+    credential: true,
   },
   {
     kind: 'jwt',
     regex: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
     replace: '[REDACTED:jwt]',
+    credential: true,
   },
   {
     kind: 'private-key-block',
     regex: /-----BEGIN (?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |OPENSSH |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----/g,
     replace: '[REDACTED:private-key-block]',
+    credential: true,
   },
   {
     kind: 'bearer-header',
     // "Authorization: Bearer <token>" — replace only the token portion.
     regex: /(Authorization:\s*Bearer\s+)([A-Za-z0-9._-]{16,})/gi,
     replace: (_m, prefix: string) => `${prefix}[REDACTED:bearer]`,
+    credential: true,
   },
   {
     kind: 'home-path-posix',
     // /Users/<name>/ on macOS and /home/<name>/ on Linux.
     regex: /\/(?:Users|home)\/[A-Za-z0-9._-]+(?=\/)/g,
     replace: '~',
+    credential: false,
   },
   {
     kind: 'home-path-windows',
     // C:\Users\<name>\ — keep the trailing slash so paths continue to parse.
     regex: /[A-Za-z]:\\Users\\[A-Za-z0-9._-]+(?=\\)/g,
     replace: '~',
+    credential: false,
   },
 ];
 
-/** Redact a single string. Safe on empty input. */
-export function redactText(input: string): RedactionResult {
+const CREDENTIAL_RULES: readonly Rule[] = RULES.filter(r => r.credential);
+
+/**
+ * Redact only credential-shaped matches (vendor keys, tokens, JWTs, private
+ * key blocks, bearer headers) — home paths and other privacy scrubbing are
+ * left untouched, since consumers like memory hygiene legitimately reference
+ * local files. Same result shape as redactText.
+ */
+export function redactCredentials(input: string): RedactionResult {
+  return applyRules(input, CREDENTIAL_RULES);
+}
+
+/** Apply a rule subset to one string. Shared by redactText / redactCredentials. */
+function applyRules(input: string, rules: readonly Rule[]): RedactionResult {
   if (!input) return { text: input, count: 0, samples: [] };
 
   let text = input;
   let count = 0;
   const samples: RedactionSample[] = [];
 
-  for (const rule of RULES) {
+  for (const rule of rules) {
     // Collect samples before replacing so we preserve the original form.
     const matches = text.match(rule.regex);
     if (matches && matches.length > 0) {
@@ -131,6 +162,11 @@ export function redactText(input: string): RedactionResult {
   }
 
   return { text, count, samples };
+}
+
+/** Redact a single string. Safe on empty input. */
+export function redactText(input: string): RedactionResult {
+  return applyRules(input, RULES);
 }
 
 /**

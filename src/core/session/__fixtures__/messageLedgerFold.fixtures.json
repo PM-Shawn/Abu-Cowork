@@ -1,0 +1,269 @@
+{
+  "$comment": [
+    "Shared fold fixtures for the message ledger (docs/abu-message-ledger-plan.md §3.3).",
+    "Replayed by every port of foldMessageLog so they can never drift:",
+    "  - src/core/session/messageLedger.test.ts        (TS, renderer)",
+    "  - electron/messageLedgerFold.contract.test.ts   (both TS and the Electron CJS port)",
+    "  - src-tauri/src/catalog_db.rs                   (Rust, legacy Tauri)",
+    "Each case lists the physical JSONL lines and the expected folded projection.",
+    "`expected.messages` pins id + content in order; `null` id means an id-less line."
+  ],
+  "cases": [
+    {
+      "name": "empty log",
+      "lines": [],
+      "expected": { "messages": [], "corruptCount": 0, "totalLines": 0 }
+    },
+    {
+      "name": "blank lines are skipped and never counted",
+      "lines": ["", "   ", "\t"],
+      "expected": { "messages": [], "corruptCount": 0, "totalLines": 0 }
+    },
+    {
+      "name": "bare legacy Message lines fold to themselves",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"hello\",\"timestamp\":2}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "hi" },
+          { "id": "m2", "content": "hello" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 2
+      }
+    },
+    {
+      "name": "duplicate id keeps the last line IN PLACE (no move-to-end)",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"v1\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"between\",\"timestamp\":2}",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"v2\",\"timestamp\":3}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "v2" },
+          { "id": "m2", "content": "between" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 3
+      }
+    },
+    {
+      "name": "explicit lk msg.put behaves exactly like a bare line",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"v1\",\"timestamp\":1}",
+        "{\"lk\":\"msg.put\",\"pid\":\"m1\",\"id\":\"m1\",\"role\":\"user\",\"content\":\"v2\",\"timestamp\":2}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m1", "content": "v2" }],
+        "corruptCount": 0,
+        "totalLines": 2
+      }
+    },
+    {
+      "name": "corrupt lines are skipped, intact lines survive",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"ok\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"user\",\"content\":\"trun",
+        "not json at all",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"ok2\",\"timestamp\":3}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "ok" },
+          { "id": "m3", "content": "ok2" }
+        ],
+        "corruptCount": 2,
+        "totalLines": 4
+      }
+    },
+    {
+      "name": "non-object JSON lines count as corrupt instead of crashing the fold",
+      "lines": [
+        "null",
+        "123",
+        "\"a string\"",
+        "[1,2,3]",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"ok\",\"timestamp\":1}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m1", "content": "ok" }],
+        "corruptCount": 4,
+        "totalLines": 5
+      }
+    },
+    {
+      "name": "id-less lines all collapse onto one shared key",
+      "lines": [
+        "{\"role\":\"user\",\"content\":\"first\",\"timestamp\":1}",
+        "{\"role\":\"user\",\"content\":\"second\",\"timestamp\":2}",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"kept\",\"timestamp\":3}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": null, "content": "second" },
+          { "id": "m1", "content": "kept" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 3
+      }
+    },
+    {
+      "name": "msg.tomb removes its target",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"user\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"lk\":\"msg.tomb\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"target\":\"m1\",\"timestamp\":3}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m2", "content": "b" }],
+        "corruptCount": 0,
+        "totalLines": 3
+      }
+    },
+    {
+      "name": "a put AFTER a tomb resurrects the message at the end",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"user\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"lk\":\"msg.tomb\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"target\":\"m1\",\"timestamp\":3}",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a-again\",\"timestamp\":4}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m2", "content": "b" },
+          { "id": "m1", "content": "a-again" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 4
+      }
+    },
+    {
+      "name": "msg.tomb for an unknown target is a no-op",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"lk\":\"msg.tomb\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"target\":\"nope\",\"timestamp\":2}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m1", "content": "a" }],
+        "corruptCount": 0,
+        "totalLines": 2
+      }
+    },
+    {
+      "name": "msg.truncate removes from the anchor onward",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3}",
+        "{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"from\":\"m2\",\"timestamp\":4}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m1", "content": "a" }],
+        "corruptCount": 0,
+        "totalLines": 4
+      }
+    },
+    {
+      "name": "edit-and-resend: messages appended AFTER a truncate must survive it",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"from\":\"m2\",\"timestamp\":3}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"edited\",\"timestamp\":4}",
+        "{\"id\":\"m4\",\"role\":\"assistant\",\"content\":\"new reply\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "a" },
+          { "id": "m3", "content": "edited" },
+          { "id": "m4", "content": "new reply" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    },
+    {
+      "name": "msg.loopDrop removes every message of that loop",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1,\"loopId\":\"L1\"}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2,\"loopId\":\"L1\"}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3,\"loopId\":\"L2\"}",
+        "{\"lk\":\"msg.loopDrop\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"loopId\":\"L1\",\"timestamp\":4}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m3", "content": "c" }],
+        "corruptCount": 0,
+        "totalLines": 4
+      }
+    },
+    {
+      "name": "revival after truncate must not corrupt the id index (regression: a removed id's stale index entry must be dropped, not left pointing past the shrunk state)",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3}",
+        "{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"from\":\"m2\",\"timestamp\":4}",
+        "{\"id\":\"m2\",\"role\":\"user\",\"content\":\"m2-revived\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "a" },
+          { "id": "m2", "content": "m2-revived" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    },
+    {
+      "name": "revival after loopDrop must not corrupt the id index (regression: a stale entry pointing at a now-different survivor would silently overwrite it instead of appending)",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1,\"loopId\":\"L1\"}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2,\"loopId\":\"L1\"}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"c\",\"timestamp\":3,\"loopId\":\"L2\"}",
+        "{\"lk\":\"msg.loopDrop\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"loopId\":\"L1\",\"timestamp\":4}",
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"m1-revived\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m3", "content": "c" },
+          { "id": "m1", "content": "m1-revived" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    },
+    {
+      "name": "unknown future kind is ignored, never rendered as a message",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"lk\":\"msg.somethingNew\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"timestamp\":2}"
+      ],
+      "expected": {
+        "messages": [{ "id": "m1", "content": "a" }],
+        "corruptCount": 0,
+        "totalLines": 2
+      }
+    },
+    {
+      "name": "revision after truncate updates in place, does not reappend",
+      "lines": [
+        "{\"id\":\"m1\",\"role\":\"user\",\"content\":\"a\",\"timestamp\":1}",
+        "{\"id\":\"m2\",\"role\":\"assistant\",\"content\":\"b\",\"timestamp\":2}",
+        "{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"from\":\"m2\",\"timestamp\":3}",
+        "{\"id\":\"m3\",\"role\":\"user\",\"content\":\"edited\",\"timestamp\":4}",
+        "{\"lk\":\"msg.put\",\"id\":\"m1\",\"role\":\"user\",\"content\":\"a-revised\",\"timestamp\":5}"
+      ],
+      "expected": {
+        "messages": [
+          { "id": "m1", "content": "a-revised" },
+          { "id": "m3", "content": "edited" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 5
+      }
+    }
+  ]
+}

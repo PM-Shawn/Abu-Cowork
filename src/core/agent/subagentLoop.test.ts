@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { isNoProgressTurn, shouldRecoverMaxTokens, appendTurnText, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
@@ -133,15 +133,21 @@ describe('subagent lifecycle event builders', () => {
 
   describe('buildSubagentStartEvent', () => {
     it('returns a subagentStart event with correct shape', () => {
-      const before = Date.now();
-      const event = buildSubagentStartEvent('my-agent', 'write a report');
-      const after = Date.now();
+      // Deterministic: freeze the clock instead of bracketing a real
+      // Date.now() read with before/after real-time bounds (TESTING.md §3).
+      const fixedNow = 1_700_000_000_000;
+      vi.useFakeTimers();
+      vi.setSystemTime(fixedNow);
+      try {
+        const event = buildSubagentStartEvent('my-agent', 'write a report');
 
-      expect(event.type).toBe('subagentStart');
-      expect(event.agentName).toBe('my-agent');
-      expect(event.task).toBe('write a report');
-      expect(event.timestamp).toBeGreaterThanOrEqual(before);
-      expect(event.timestamp).toBeLessThanOrEqual(after);
+        expect(event.type).toBe('subagentStart');
+        expect(event.agentName).toBe('my-agent');
+        expect(event.task).toBe('write a report');
+        expect(event.timestamp).toBe(fixedNow);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

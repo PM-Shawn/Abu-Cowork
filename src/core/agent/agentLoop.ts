@@ -340,11 +340,15 @@ export function resolveTools(
     tools = tools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
     deferredTools = deferredTools.filter(t => t.name !== TOOL_NAMES.WEB_SEARCH);
   }
-  // Headless / IM mode: block specific tools that require UI interaction
+  // Headless / IM / trigger mode: block specific tools that require UI
+  // interaction, or a whole namespace of tools via a `server__*` pattern
+  // (e.g. the read_tools trigger tier blocking every browser-automation
+  // tool without needing to enumerate names the server registers
+  // dynamically). Pattern-matched like the skill/allowedTools filters above
+  // — a plain name with no `*` still matches only itself.
   if (blockedTools && blockedTools.length > 0) {
-    const blocked = new Set(blockedTools);
-    tools = tools.filter(t => !blocked.has(t.name));
-    deferredTools = deferredTools.filter(t => !blocked.has(t.name));
+    tools = tools.filter(t => !blockedTools.some(pattern => matchesToolName(t.name, pattern)));
+    deferredTools = deferredTools.filter(t => !blockedTools.some(pattern => matchesToolName(t.name, pattern)));
   }
   return { tools, deferredTools, inputValidators };
 }
@@ -1762,14 +1766,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         if (streamFlushInFlight) return;
         streamFlushInFlight = true;
         try {
-          const { replaceMessageById } = await import('../session/conversationStorage');
+          const { snapshotMessageRevision } = await import('../session/conversationStorage');
           const currentMsg = getConversationReader().getConversation(conversationId)
             ?.messages.find((m) => m.id === assistantMsgId);
           // Re-read after the async import. If the turn completed while this
           // timer callback yielded, its final write is authoritative and this
           // older periodic snapshot must not overwrite it.
           if (!currentMsg?.isStreaming) return;
-          await replaceMessageById(conversationId, currentMsg);
+          // Snapshot, not ledger append: a ten-minute stream fires this ~120
+          // times, and each one would otherwise be a full copy of a message
+          // that only grows. The snapshot is overwritten in place and folded
+          // back in on load, so crash protection is unchanged.
+          await snapshotMessageRevision(conversationId, currentMsg);
         } catch {
           // Best-effort crash protection. Final turn persistence remains the
           // authoritative write when the request completes normally.
@@ -2519,26 +2527,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             && !(placeholder.toolCallsForContext?.length)
             && !placeholder.thinking;
           if (isGhost) {
-            // code-review fix #8: chatStore.deleteMessage's catalog `-1` only
-            // balances a `+1` that addMessage's appendMessage call actually
-            // fired. If this ghost placeholder aborted before that
-            // fire-and-forget disk-append ran, there was never a `+1` to
-            // offset, so skip the bump — otherwise the catalog would
-            // transiently undercount until the next turn-end reindex.
-            // P1-3B-3B fix: in-process this call is synchronous, but the
-            // sidecar-run path shims it to an async reverse RPC
-            // (session.isMessageWrittenToDisk — see
-            // sidecar/src/shims/conversationStorageRun.ts). An un-awaited
-            // call there always resolved a truthy Promise, so
-            // skipCatalogBump was always `false` on the sidecar path
-            // regardless of the real answer. `await`ing a synchronous
-            // boolean is harmless (Promise.resolve(value) semantics), so
-            // this is safe for both paths.
-            const { isMessageWrittenToDisk } = await import('../session/conversationStorage');
-            chatDelta.deleteMessage(conversationId, assistantMsgId, {
-              skipCatalogBump: !(await isMessageWrittenToDisk(assistantMsgId)),
-              persist: true,
-            });
+            // code-review fix #8's invariant (a ghost that never durably
+            // reached messages.jsonl must not cause an unbalanced catalog
+            // `-1`) now lives inside `appendTruncateEvent`'s skip guard on the
+            // shell side (plan stage 3): `deleteMessagesFrom` always persists,
+            // and the skip guard itself decides — from the shell's own
+            // `writtenIds`/pending-queue state, never a cross-process RPC
+            // round trip — whether there is a physical row to cut. No
+            // separate isMessageWrittenToDisk check is needed here anymore on
+            // either the in-process or sidecar-run path.
+            // Tail guard (defense-in-depth, review finding #2): the retired
+            // per-id delete only removed one row; deleteMessagesFrom cuts the
+            // tail. A ghost is by construction the last message — but if a
+            // stale isStreaming flag ever mislabels an earlier message, cut
+            // NOTHING rather than real turns behind it.
+            const tail = getConversationReader().getConversation(conversationId)?.messages.at(-1);
+            if (tail?.id === assistantMsgId) {
+              chatDelta.deleteMessagesFrom(conversationId, assistantMsgId);
+            }
           }
         }
 

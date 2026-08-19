@@ -110,6 +110,49 @@ describe('resolveTools · per-run restrictions', () => {
     ]).toContain('computer');
   });
 
+  // The read_tools trigger tier blocks a whole browser-automation namespace
+  // via a `server__*` pattern rather than an enumerated tool list, since the
+  // browser servers register some tools (snapshot, screenshot, ...)
+  // dynamically. blockedTools has to be pattern-matched, not exact-Set
+  // matched, for that to actually hide them from the model.
+  it('removes every tool matched by a `server__*` wildcard on the blocklist', () => {
+    const tools = [
+      makeTool('abu-browser__click'),
+      makeTool('abu-browser__navigate'),
+      makeTool('abu-browser__snapshot'),
+      makeTool('abu-browser-bridge__click'),
+      makeTool('read_file'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'read only' },
+      false,
+      ['abu-browser__*', 'abu-browser-bridge__*'],
+      {
+        userInput: 'read only',
+        computerUseEnabled: false,
+        activeSkills: [],
+        turnCount: 1,
+      },
+    );
+
+    const visibleNames = [
+      ...resolved.tools.map((tool) => tool.name),
+      ...resolved.deferredTools.map((tool) => tool.name),
+    ];
+    expect(visibleNames).not.toContain('abu-browser__click');
+    expect(visibleNames).not.toContain('abu-browser__navigate');
+    expect(visibleNames).not.toContain('abu-browser__snapshot');
+    expect(visibleNames).not.toContain('abu-browser-bridge__click');
+    expect(visibleNames).toContain('read_file');
+  });
+
   it('exposes only tools matching a per-run whitelist and disables deferred tools', () => {
     const tools = [
       makeTool('read_file'),

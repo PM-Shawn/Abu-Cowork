@@ -1,19 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
+import { foldMessageLog } from './messageLedger';
+import { APP_VERSION } from '@/utils/version';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
 // We re-import the module fresh for each test to reset module-level state
 let storage: typeof import('./conversationStorage');
 
+// Deterministic id source (TESTING.md §3) — a monotonic counter guarantees each
+// makeMsg() call gets a distinct id, which storage.ts's writtenIds dedup logic
+// and "keep last occurrence per id" utilities depend on; a fixed constant would
+// silently collapse distinct messages under repeated no-override calls (e.g.
+// `[makeMsg(), makeMsg(), makeMsg()]`).
+let msgIdCounter = 0;
+
 // Helper: create a minimal message
 function makeMsg(overrides: Partial<Message> = {}): Message {
   return {
-    id: `msg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    id: `msg-${++msgIdCounter}`,
     role: 'user',
     content: 'Hello',
-    timestamp: Date.now(),
+    timestamp: 1_700_000_000_000, // filler — not asserted on
     ...overrides,
   };
 }
@@ -143,20 +152,67 @@ describe('conversationStorage', () => {
     });
   });
 
-  describe('deleteMessageById', () => {
-    it('durably removes only the targeted JSONL row and releases its dedup id', async () => {
+  describe('appendTruncateEvent', () => {
+    it('durably truncates a persisted message and releases its dedup id', async () => {
       await storage.appendMessage('conv-delete-one', makeMsg({ id: 'keep', content: 'keep me' }));
       await storage.appendMessage('conv-delete-one', makeMsg({ id: 'ghost', role: 'assistant', content: '' }));
+      await storage.flushWrites();
 
-      await expect(storage.deleteMessageById('conv-delete-one', 'ghost')).resolves.toBe(true);
+      await expect(
+        storage.appendTruncateEvent('conv-delete-one', 'ghost', { pid: 'keep', removedIds: ['ghost'] }),
+      ).resolves.toBe(true);
+      await storage.flushWrites();
 
       const loaded = await storage.loadMessages('conv-delete-one');
       expect(loaded.map((message) => message.id)).toEqual(['keep']);
       expect(storage.isMessageWrittenToDisk('ghost')).toBe(false);
     });
 
-    it('treats an id that never reached disk as an idempotent no-op', async () => {
-      await expect(storage.deleteMessageById('conv-missing', 'never-written')).resolves.toBe(false);
+    it('is a no-op (skip guard) for an id that never reached disk and has no pending put', async () => {
+      await expect(
+        storage.appendTruncateEvent('conv-missing', 'never-written', { removedIds: ['never-written'] }),
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe('appendTruncateEvent · mid-drain race (review finding #1)', () => {
+    it('still writes the truncate event while the target put is dequeued but unsettled', async () => {
+      // Block the native append so the drain holding the put stays in flight.
+      let releaseAppend!: () => void;
+      const appendGate = new Promise<void>((r) => { releaseAppend = r; });
+      let appendCalls = 0;
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string; data?: string }) => {
+        if (cmd === 'append_file_text') {
+          appendCalls++;
+          if (appendCalls === 1) await appendGate; // first drain (the put) blocks
+          memFs.files.set(args!.path!, (memFs.files.get(args!.path!) ?? '') + (args!.data ?? ''));
+          return undefined;
+        }
+        return undefined;
+      });
+
+      const putPromise = storage.appendMessage('race-conv', makeMsg({ id: 'race-put', content: 'checkpoint' }));
+      // Drain microtasks so appendMessage's async preamble finishes ENQUEUEING
+      // the put before we trigger the drain that dequeues it.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      const drain = storage.flushWrites(); // dequeues the put; append now in flight
+      await Promise.resolve(); // let drainAll register the in-flight keys
+      // Window under test: not in writeQueues, not yet in writtenIds. Don't
+      // await yet — the event's own drain queues behind the blocked append on
+      // the same file lock; release the gate first, then assert.
+      const truncPromise = storage.appendTruncateEvent('race-conv', 'race-put', { removedIds: ['race-put'] });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      releaseAppend();
+      const wrote = await truncPromise;
+      expect(wrote).toBe(true); // in-flight guard must count the put
+      await Promise.all([putPromise, drain]);
+      await storage.flushWrites();
+
+      const raw = memFs.files.get('/Users/testuser/.abu/conversations/race-conv/messages.jsonl') ?? '';
+      expect(raw).toContain('"race-put"');
+      expect(raw).toContain('"lk":"msg.truncate"');
+      const folded = foldMessageLog(raw.split('\n'));
+      expect(folded.messages.some((m) => m.id === 'race-put')).toBe(false);
     });
   });
 
@@ -187,8 +243,15 @@ describe('conversationStorage', () => {
       expect(appendCalls[0].args?.path).toEqual(expect.stringContaining('conv-native'));
       expect(appendCalls[0].args?.data).toEqual(expect.stringContaining('native hello'));
 
-      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire.
-      expect(calls.some((c) => c.cmd === 'atomic_write_text')).toBe(false);
+      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire
+      // for THIS conversation's messages.jsonl. Scoped to that path rather than
+      // "no atomic_write_text call at all": ensureBase's first call in a fresh
+      // process also does a one-time, version-gated snapshot sweep (plan §3.6
+      // addendum, part B) that writes its own marker file via atomicWrite —
+      // an unrelated call this test isn't pinning down.
+      expect(
+        calls.some((c) => c.cmd === 'atomic_write_text' && String(c.args?.path ?? '').includes('conv-native')),
+      ).toBe(false);
     });
 
     it('falls back to read + atomic-write when native append fails, and no data is lost', async () => {
@@ -469,7 +532,7 @@ describe('conversationStorage', () => {
           id: 'm-late',
           role: 'assistant',
           content: 'final reply',
-          timestamp: Date.now(),
+          timestamp: 1_700_000_000_000, // filler — not asserted on
         });
 
         await storage.catalogReindexConversation('conv-live2');
@@ -623,8 +686,12 @@ describe('conversationStorage', () => {
         makeMsg({ id: 'strict-write-msg', content: 'before' }),
       );
       await storage.flushWrites();
+      // Both write paths fail: the native append AND the read+rewrite it falls
+      // back to. A strict replacement must surface that, never report success.
       vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-        if (cmd === 'atomic_write_text') throw new Error('disk full');
+        if (cmd === 'atomic_write_text' || cmd === 'append_file_text') {
+          throw new Error('disk full');
+        }
         return undefined;
       });
 
@@ -1038,6 +1105,743 @@ describe('conversationStorage', () => {
 
       const loaded = await storage.loadMessages('conv-1');
       expect(loaded[0].toolCalls![0].result).toBe(diskRef);
+    });
+  });
+  // ══════════════════════════════════════════════════════════
+  // Append-only ledger (docs/abu-message-ledger-plan.md, phase 2)
+  // ══════════════════════════════════════════════════════════
+
+  describe('ledger writes', () => {
+    const MESSAGES = '/Users/testuser/.abu/conversations/conv-1/messages.jsonl';
+    const SNAPSHOT = '/Users/testuser/.abu/conversations/conv-1/stream-snapshot.json';
+
+    function physicalLines(path = MESSAGES): Record<string, unknown>[] {
+      const raw = memFs.files.get(path) ?? '';
+      return raw.split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l));
+    }
+
+    describe('replaceMessageById', () => {
+      it('appends a revision instead of rewriting the matching line', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'v1' }));
+        await storage.flushWrites();
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v2' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows).toHaveLength(2);
+        // The original line is untouched — that is what append-only means.
+        expect(rows[0]).toMatchObject({ id: 'm1', content: 'v1' });
+        expect(rows[1]).toMatchObject({ id: 'm1', content: 'v2' });
+      });
+
+      it('keeps the revised message at its original position in the fold', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'first' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'second' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'third' }));
+        await storage.flushWrites();
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'first-edited' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1', 'm2', 'm3']);
+        expect(loaded[0].content).toBe('first-edited');
+      });
+
+      it('collapses revisions that are still queued into a single line', async () => {
+        // No flush between the calls: all four writes sit in the queue at once,
+        // so the same-id merge must leave exactly one physical line.
+        void storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'v1' }));
+        void storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v2' }));
+        void storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v3' }));
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'v4' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ id: 'm1', content: 'v4' });
+      });
+
+      it('does not merge revisions of different messages into one line', async () => {
+        void storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+
+        expect(physicalLines().map((r) => r.id)).toEqual(['m1', 'm2']);
+      });
+
+      it('is a no-op for an id the conversation never held', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.flushWrites();
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'ghost', content: 'x' }));
+        await storage.flushWrites();
+
+        // An append is an upsert by nature; the old rewrite was not, and the
+        // non-strict variant must keep behaving like the old one.
+        expect(physicalLines()).toHaveLength(1);
+      });
+
+      it('preserves a settled sandbox recovery action without re-reading the file', async () => {
+        const toolCall = {
+          id: 'tc-1',
+          name: 'run_command',
+          input: {},
+          sandboxRecovery: { kind: 'app-automation' as const, targetApp: 'Notes' },
+        };
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', toolCalls: [toolCall] }));
+        await storage.flushWrites();
+        await storage.replaceMessageByIdStrict('conv-1', makeMsg({
+          id: 'm1',
+          toolCalls: [{ ...toolCall, sandboxRecoveryAction: 'completed' as const }],
+        }));
+        await storage.flushWrites();
+
+        // A late whole-message write that lost the settled action must not
+        // regress it — the protection now comes from the in-memory record, not
+        // from reading the persisted row back.
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', toolCalls: [toolCall] }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded[0].toolCalls?.[0].sandboxRecoveryAction).toBe('completed');
+      });
+
+      it('records a parent pointer on first write and never re-parents a revision', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'c' }));
+        await storage.flushWrites();
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-edited' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines();
+        expect(rows[0].pid).toBeUndefined();   // first message of the log has no parent
+        expect(rows[1].pid).toBe('m1');
+        expect(rows[2].pid).toBe('m2');
+        // The revision keeps m2's original parent rather than pointing at the
+        // current tail (m3) — plan §3.2.
+        expect(rows[3]).toMatchObject({ id: 'm2', content: 'b-edited', pid: 'm1' });
+      });
+    });
+
+    describe('updateLastMessage', () => {
+      it('no longer overwrites a different message that happens to be last', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'partial' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'user-2', content: 'mid-stream question' }));
+        await storage.flushWrites();
+
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'complete' }));
+        await storage.flushWrites();
+
+        // The old blind last-line replace destroyed user-2 here.
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['assistant-1', 'user-2']);
+        expect(loaded[0].content).toBe('complete');
+        expect(loaded[1].content).toBe('mid-stream question');
+      });
+
+      it('writes nothing when the conversation has no file yet', async () => {
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'm1' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(MESSAGES)).toBe(false);
+      });
+    });
+
+    describe('appendTruncateEvent', () => {
+      it('edit-and-resend journey: append a,b,c → truncate from b → append d,e → fold keeps [a,d,e]', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'c', content: '3' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b', 'c'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'd', content: '4' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'e', content: '5' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a', 'd', 'e']);
+      });
+
+      it('revives a truncated id: re-appending it after the cut lands as a fresh row', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b'] });
+        await storage.flushWrites();
+        expect(await storage.loadMessages('conv-1')).toHaveLength(1);
+
+        // Without releasing `b` from writtenIds, this would be silently
+        // dedup-skipped (appendMessage's `writtenIds.has` early return) and
+        // the line would never even reach the queue.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: 'reborn' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a', 'b']);
+        expect(loaded[1].content).toBe('reborn');
+      });
+
+      it("the next message's parent pointer skips the removed tail and points at the surviving message", async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'c', content: '3' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b', 'c'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'd', content: '4' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        const dRow = rows.find((r) => r.id === 'd');
+        // Points at 'a' (the surviving tail), never at 'c' (the removed
+        // physical tail) — plan §3.2.
+        expect(dRow).toMatchObject({ pid: 'a' });
+      });
+
+      it('truncating from the conversation\'s first message omits pid, and the next append has none either', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.flushWrites();
+
+        await storage.appendTruncateEvent('conv-1', 'a', { removedIds: ['a'] });
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        const eventRow = rows.find((r) => r.lk === 'msg.truncate');
+        expect(eventRow?.pid).toBeUndefined();
+        const bRow = rows.find((r) => r.id === 'b');
+        expect(bRow?.pid).toBeUndefined();
+      });
+
+      it('a persisted ghost gets a real truncate event line', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'user-1', content: 'hi' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'ghost-1', role: 'assistant', content: '' }));
+        await storage.flushWrites();
+
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'ghost-1', { pid: 'user-1', removedIds: ['ghost-1'] }),
+        ).resolves.toBe(true);
+        await storage.flushWrites();
+
+        const rows = physicalLines(MESSAGES);
+        expect(rows.some((r) => r.lk === 'msg.truncate' && r.from === 'ghost-1')).toBe(true);
+      });
+
+      it('a never-persisted ghost writes no event line at all', async () => {
+        // Never appended, and nothing queued for it either — the pure
+        // in-memory case (a streaming placeholder aborted before its first
+        // checkpoint ever reached appendMessage).
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'ghost-never-written', { removedIds: ['ghost-never-written'] }),
+        ).resolves.toBe(false);
+        expect(memFs.files.has(MESSAGES)).toBe(false);
+      });
+
+      it('survives a restart: loadMessages after a fresh module re-import still folds the truncate', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'a', content: '1' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'b', content: '2' }));
+        await storage.flushWrites();
+        await storage.appendTruncateEvent('conv-1', 'b', { pid: 'a', removedIds: ['b'] });
+        await storage.flushWrites();
+
+        // Simulate an app restart: all module-level state (writtenIds,
+        // parentIdByMessage, ...) is gone, and the only source of truth left
+        // is what actually landed in memFs.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['a']);
+      });
+    });
+
+    describe('stream snapshot', () => {
+      it('keeps in-flight revisions out of the ledger but readable after a crash', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+
+        for (const chunk of ['a', 'ab', 'abc']) {
+          await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: chunk }));
+        }
+
+        expect(physicalLines()).toHaveLength(1);       // ledger untouched
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);  // but the state is durable
+
+        // Simulate the reload after a crash mid-stream.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('abc');
+      });
+
+      it('drops the buffered revision once a checkpoint commits it', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'streaming' }));
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'final' }));
+        await storage.flushWrites();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded[0].content).toBe('final');
+      });
+
+      it('promotes anything still buffered into the ledger on shutdown', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        await storage.shutdownConversationStorage();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        const rows = physicalLines();
+        expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+      });
+
+      it('does not resurrect a message that was deleted while buffered', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
+
+        await storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] });
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+    });
+
+    // ══════════════════════════════════════════════════════════
+    // RB-03 (V0.40.0-RELEASE-READINESS-AUDIT.md): a crash-leftover stream
+    // snapshot is folded in as a trailing put with no regard for whether the
+    // ledger has since moved past it — a newer durable revision, or a
+    // truncate that removed the id, can both be silently overridden by the
+    // stale in-memory content. The fix stamps each snapshot entry with the
+    // ledger's byte length at capture time and drops the entry at load if
+    // the ledger contains, at or after that offset, either a newer put for
+    // the same id or a removal event that cut it.
+    //
+    // Every "stale leftover" case below manipulates `memFs.files` directly
+    // to restore a snapshot file AFTER the normal drop path (checkpoint /
+    // truncate) already deleted it — that is exactly what a crash between
+    // the ledger write landing and the snapshot delete completing leaves
+    // behind, and is not reachable by driving the public API alone.
+    describe('RB-03: stale stream-snapshot supersede guard', () => {
+      it('audit repro 1: a stale snapshot must not override a newer final ledger revision', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'partial' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        // The checkpoint lands the final revision and (in the non-crash case)
+        // deletes the now-superseded snapshot file.
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'FINAL' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate a crash between that ledger append landing and the
+        // snapshot delete completing: the stale file survives on disk.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('FINAL');
+      });
+
+      it('audit repro 2: a stale snapshot must not revive a message a truncate already cut', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] });
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate the same crash window as above, but on the truncate path.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+
+      it('checkpoint-then-crash-before-delete via updateLastMessage also drops the stale entry', async () => {
+        // Same hazard as audit repro 1, exercised through the OTHER checkpoint
+        // call site (`updateLastMessage`, used when the caller does not know
+        // the finishing message's id ahead of time) to cover both drop sites.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'assistant-1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'assistant-1', content: 'streaming...' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'complete' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('complete');
+      });
+
+      it('a legacy (pre-fix) unstamped snapshot keeps the old unconditional-merge behavior', async () => {
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify(makeMsg({ id: 'm1', content: 'FINAL' })) + '\n',
+        );
+        // v1 on-disk shape: no `stamp` on any entry — a build predating this
+        // fix could have left this file behind.
+        memFs.files.set(
+          SNAPSHOT,
+          JSON.stringify({
+            version: 1,
+            messages: [{ id: 'm1', role: 'user', content: 'legacy-partial', timestamp: 1 }],
+          }),
+        );
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Unchanged from pre-fix behavior: an unstamped entry has nothing to
+        // compare against the ledger, so it still folds in unconditionally.
+        expect(loaded[0].content).toBe('legacy-partial');
+      });
+
+      it('a snapshot entry with no later ledger write still applies (crash-protection survives)', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'still-streaming' }));
+
+        // Crash before any checkpoint ever reaches the ledger — the buffered
+        // revision is the ONLY copy of this content anywhere.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('still-streaming');
+      });
+
+      it('a truncate BEFORE the snapshot stamp does not drop a post-truncate revival', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.flushWrites();
+        await storage.appendTruncateEvent('conv-1', 'm1', { removedIds: ['m1'] });
+        await storage.flushWrites();
+
+        // The user revives m1 (a fresh put after the truncate — the fold's
+        // put-after-truncate resurrection rule) and it is still streaming
+        // when the crash-protection buffer captures it, well AFTER the
+        // truncate's offset.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'revived' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'revived-streaming' }));
+
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Must NOT be misfiltered by the earlier (now-irrelevant) truncate —
+        // the revival the user performed after it must survive.
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+        expect(loaded[0].content).toBe('revived-streaming');
+      });
+    });
+
+    describe('ledger byte watermark (plan §3.6 addendum, part A)', () => {
+      // A snapshot's `ledgerBytes` records how long messages.jsonl was when the
+      // snapshot was last written. `loadMessages` compares that against the
+      // ledger it just read: append-only ledgers never shrink on their own, so
+      // a shorter-than-watermark ledger means a foreign/older build rewrote the
+      // file in place since the snapshot was taken (the downgrade-then-
+      // reupgrade scenario) — the snapshot's revisions no longer apply and must
+      // be discarded rather than merged over the user's edited history.
+
+      it('discards and deletes a snapshot whose watermark exceeds the current ledger length', async () => {
+        memFs.files.set(MESSAGES, JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n');
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'STALE — relative to a ledger tail that no longer exists' })],
+          // Far beyond the (much shorter) ledger set above — simulates a
+          // foreign/older build having rewritten messages.jsonl smaller since
+          // this snapshot was taken.
+          ledgerBytes: 1_000_000,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('ledger-content'); // snapshot's stale revision was NOT merged
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);    // and the snapshot file itself was deleted
+      });
+
+      it('still merges when the watermark equals the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true); // merge is the normal path — nothing discarded
+      });
+
+      it('still merges when the watermark is smaller than the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length - 1,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+      it('merges unconditionally when the snapshot predates the watermark field (legacy snapshot)', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          // No `ledgerBytes` — a snapshot written by a build that predates this
+          // field. Missing watermark must fall back to today's behavior: merge.
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+    });
+
+    describe('crash windows', () => {
+      it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        // Both ledger write paths fail at exit. Dropping the snapshot anyway
+        // would discard the revision with no copy left anywhere.
+        vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+          if (cmd === 'append_file_text' || cmd === 'atomic_write_text') {
+            throw new Error('disk full');
+          }
+          return undefined;
+        });
+
+        await storage.shutdownConversationStorage();
+
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+
+      it('does not let a torn last line swallow the next append', async () => {
+        // A crash mid-append (native append has no atomicity guarantee, see
+        // appendToFile) leaves the tail unterminated. Nothing rewrites the file
+        // any more, so without an explicit repair every later append is glued
+        // onto that stump and both messages parse as one corrupt line.
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 }) + '\n'
+            + '{"id":"m2","role":"user","content":"tor',
+        );
+
+        await storage.loadMessages('conv-1');
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm3', content: 'after crash' }));
+        await storage.flushWrites();
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1', 'm3']);
+      });
+
+      it('a queued put lands BEFORE a same-drain-window truncate event, and the fold still removes it (queue ordering)', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+
+        // Checkpoint write still sitting in the 100ms-debounced queue when the
+        // truncate lands — the abort path does exactly this (agentLoop's ghost
+        // cleanup runs right behind the turn's last persist). The pending put
+        // is what keeps appendTruncateEvent's skip guard from firing: `m2`
+        // isn't in `writtenIds` yet, but it IS `hasPendingPut`.
+        const queued = storage.replaceMessageById('conv-1', makeMsg({ id: 'm2', content: 'b-checkpoint' }));
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        await expect(
+          storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] }),
+        ).resolves.toBe(true);
+        await storage.flushWrites();
+        await queued;
+
+        const rows = physicalLines(MESSAGES);
+        // The put physically lands before the event line — order-sensitive
+        // enqueue, no coalescing across it.
+        expect(rows.map((r) => r.id)).toEqual(['m1', 'm2', 'm2', rows[3].id]);
+        expect(rows[2]).toMatchObject({ id: 'm2', content: 'b-checkpoint' });
+        expect(rows[3]).toMatchObject({ lk: 'msg.truncate', from: 'm2' });
+        // ...and the fold then removes it.
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+    });
+
+    describe('write amplification budget', () => {
+      // Plan §3.6: a tool-heavy conversation revises the same growing message
+      // many times per turn. The acceptance criterion is that messages.jsonl
+      // stays within 3x the folded content it represents.
+      //
+      // The simulation mirrors the real call sequence in agentLoop: each turn
+      // creates its OWN assistant message, buffers the streaming flushes and
+      // every tool result to the snapshot, then commits the finished message
+      // to the ledger at the batch checkpoint and again at turn end.
+      const TURNS = 4;
+      const TOOLS_PER_TURN = 3;
+      const STREAM_FLUSHES_PER_TURN = 6;
+
+      function assistantAfter(turn: number, toolResults: number): Message {
+        return {
+          id: `assistant-${turn}`,
+          role: 'assistant',
+          content: 'Working through the task. '.repeat(20),
+          timestamp: 100 + turn,
+          toolCalls: Array.from({ length: toolResults }, (_, i) => ({
+            id: `tc-${turn}-${i}`,
+            name: 'read_file',
+            input: { path: `/src/file-${turn}-${i}.ts` },
+            result: `contents of file ${i} `.repeat(40),
+          })),
+        };
+      }
+
+      function foldedBytes(path: string): number {
+        const raw = memFs.files.get(path) ?? '';
+        return foldMessageLog(raw.split('\n')).messages
+          .reduce((sum, m) => sum + JSON.stringify(m).length + 1, 0);
+      }
+
+      /**
+       * Drive one write all the way to disk as its own line. Draining
+       * explicitly instead of awaiting the 100 ms debounce keeps the
+       * simulation instant; the extra microtask turns just make sure the line
+       * has reached the queue before the drain (and cost nothing if it has).
+       */
+      async function commit(write: Promise<unknown>): Promise<void> {
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        await storage.flushWrites();
+        await write;
+      }
+
+      async function runTurn(convId: string, turn: number, toLedger: boolean): Promise<void> {
+        await commit(storage.appendMessage(convId, assistantAfter(turn, 0)));
+        const revise = async (message: Message) => {
+          if (toLedger) await commit(storage.replaceMessageById(convId, message));
+          else await storage.snapshotMessageRevision(convId, message);
+        };
+        for (let i = 0; i < STREAM_FLUSHES_PER_TURN; i++) await revise(assistantAfter(turn, 0));
+        for (let i = 1; i <= TOOLS_PER_TURN; i++) await revise(assistantAfter(turn, i));
+        // Batch checkpoint, then the turn-end persist — both real ledger writes.
+        await commit(storage.replaceMessageById(convId, assistantAfter(turn, TOOLS_PER_TURN)));
+        await commit(storage.replaceMessageById(convId, assistantAfter(turn, TOOLS_PER_TURN)));
+      }
+
+      it('holds messages.jsonl within 3x the folded content for a tool-heavy conversation', async () => {
+        await commit(storage.appendMessage('conv-1', makeMsg({ id: 'user-1', content: 'do the thing', timestamp: 1 })));
+        for (let turn = 0; turn < TURNS; turn++) await runTurn('conv-1', turn, false);
+
+        const physical = (memFs.files.get(MESSAGES) ?? '').length;
+        const folded = foldedBytes(MESSAGES);
+        expect(folded).toBeGreaterThan(0);
+        expect(physical).toBeLessThanOrEqual(folded * 3);
+      });
+
+      it('would blow the budget if every revision became a ledger line', async () => {
+        // Guards the test above from passing vacuously: the identical turns with
+        // the snapshot governance bypassed must exceed the same threshold.
+        const path = '/Users/testuser/.abu/conversations/conv-2/messages.jsonl';
+        await commit(storage.appendMessage('conv-2', makeMsg({ id: 'user-1', content: 'do the thing', timestamp: 1 })));
+        for (let turn = 0; turn < TURNS; turn++) await runTurn('conv-2', turn, true);
+
+        const physical = (memFs.files.get(path) ?? '').length;
+        expect(physical).toBeGreaterThan(foldedBytes(path) * 3);
+      });
+    });
+  });
+
+  describe('snapshot sweep on version change (plan §3.6 addendum, part B)', () => {
+    const BASE = '/Users/testuser/.abu/conversations';
+    const MARKER = `${BASE}/.snapshot-sweep-version`;
+
+    it('deletes every stale stream-snapshot.json exactly once, then the marker gates repeats across a restart', async () => {
+      // Simulate leftovers from a previous app version, present before any
+      // storage call has had a chance to run ensureBase's one-shot sweep.
+      memFs.dirs.add(BASE);
+      memFs.dirs.add(`${BASE}/conv-1`);
+      memFs.dirs.add(`${BASE}/conv-2`);
+      memFs.files.set(`${BASE}/conv-1/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm1' })] }));
+      memFs.files.set(`${BASE}/conv-2/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm2' })] }));
+
+      // "Launch" 1: no marker on disk yet → the first ensureBase() must sweep.
+      await storage.loadIndex();
+
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.has(`${BASE}/conv-2/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+
+      // A legitimate new snapshot gets written later in this same launch.
+      await storage.appendMessage('conv-1', makeMsg({ id: 'live', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'live', content: 'still streaming' }));
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+
+      // "Restart" with no version change: module-level state resets, but the
+      // on-disk marker still matches APP_VERSION.
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+
+      await storage.loadIndex();
+
+      // The marker gates this launch's sweep — the still-fresh snapshot from
+      // moments ago survives instead of being wiped as "stale".
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+    });
+
+    it('a sweep failure (fs throw) does not break loadMessages or storage init', async () => {
+      (readDir as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        throw new Error('boom: readDir unavailable');
+      });
+
+      // ensureBase's sweep must swallow this and still let normal storage
+      // operations proceed — it must never block or throw out of the init path.
+      await expect(
+        storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'hello' })),
+      ).resolves.toBeUndefined();
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-1');
+      expect(loaded.map((m) => m.content)).toEqual(['hello']);
     });
   });
 });

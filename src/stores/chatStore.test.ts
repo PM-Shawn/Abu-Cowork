@@ -9,6 +9,7 @@ import {
 } from './chatStore';
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
+import { foldMessageLog } from '@/core/session/messageLedger';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -57,6 +58,11 @@ vi.mock('../core/agent/sidecarRunPredicate', () => ({
   // graph) — stub it out so that side effect no-ops against this mock.
   registerSidecarRunPredicate: () => {},
 }));
+
+// Filler timestamp (TESTING.md §3) — used for Message/Conversation fields that
+// are structurally required but whose exact value is never asserted on below
+// (no test in this file compares timestamps for ordering/recency).
+const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 describe('chatStore', () => {
   beforeEach(() => {
@@ -460,7 +466,7 @@ describe('chatStore', () => {
     it('adds a message to conversation', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Hello', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Hello', timestamp: FIXED_TIMESTAMP,
       });
       const conv = useChatStore.getState().conversations[id];
       expect(conv.messages).toHaveLength(1);
@@ -473,7 +479,7 @@ describe('chatStore', () => {
         id: 'client-msg-1',
         role: 'user',
         content: '/writer draft',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         runId: 'run-1',
         clientMessageId: 'client-msg-1',
         runState: 'pending',
@@ -544,7 +550,12 @@ describe('chatStore', () => {
 
       try {
         useChatStore.getState().updateUserMessageRun(id, message.id, { state: 'interrupted' });
-        await waitForConversationPersistence(id);
+        // The strict replacement is an append now, so it settles on the write
+        // queue's 100 ms drain rather than writing inline — under fake timers
+        // that drain has to be driven explicitly.
+        const persisted = waitForConversationPersistence(id);
+        await vi.advanceTimersByTimeAsync(200);
+        await persisted;
 
         expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
           runState: 'interrupted',
@@ -573,10 +584,10 @@ describe('chatStore', () => {
       try {
         const id = useChatStore.getState().createConversation();
         useChatStore.getState().addMessage(id, {
-          id: `barrier-${Date.now()}`,
+          id: 'barrier-1',
           role: 'assistant',
           content: 'durable answer',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
         });
 
         let settled = false;
@@ -599,10 +610,10 @@ describe('chatStore', () => {
       vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: `barrier-failure-${Date.now()}`,
+        id: 'barrier-failure-1',
         role: 'user',
         content: 'must not execute',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
 
       await expect(waitForConversationPersistence(id)).rejects.toThrow('disk unavailable');
@@ -612,7 +623,7 @@ describe('chatStore', () => {
     it('auto-titles from first user message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: '帮我写一个函数', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: '帮我写一个函数', timestamp: FIXED_TIMESTAMP,
       });
       const title = useChatStore.getState().conversations[id].title;
       expect(title).toContain('帮我写一个函数');
@@ -621,7 +632,7 @@ describe('chatStore', () => {
     it('truncates long auto-titles to 30 chars', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'x'.repeat(50), timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'x'.repeat(50), timestamp: FIXED_TIMESTAMP,
       });
       const title = useChatStore.getState().conversations[id].title;
       expect(title.length).toBeLessThanOrEqual(34); // 30 + "..."
@@ -638,11 +649,11 @@ describe('chatStore', () => {
     });
 
     // Regression (code-review fix #1, message-storage P0): messageCount must be
-    // RE-DERIVED from conv.messages.length, not incremented. deleteMessage /
-    // deleteMessagesFrom / deleteLoopMessages mutate conv.messages but never
-    // touch conversationIndex.messageCount, so an increment-only counter would
-    // drift upward forever across deletes/edits/retries. Re-derivation self-heals.
-    it('messageCount self-heals across deletes: add 4, delete 3, add 1 → 2 (not 6)', () => {
+    // RE-DERIVED from conv.messages.length, not incremented. deleteMessagesFrom
+    // mutates conv.messages but never touches conversationIndex.messageCount
+    // itself, so an increment-only counter would drift upward forever across
+    // truncates/edits/retries. Re-derivation self-heals.
+    it('messageCount self-heals across a truncate: add 4, truncate from m2, add 1 → 2 (not 6)', async () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
@@ -650,14 +661,20 @@ describe('chatStore', () => {
       store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
       store.addMessage(id, { id: 'm4', role: 'assistant', content: 'd', timestamp: 4 });
       expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(4);
+      // Drain every addMessage's disk append before truncating, and drain the
+      // truncate's own disk write before the test returns — deleteMessagesFrom
+      // is durably persisted now (plan stage 3), so leaving it unawaited would
+      // let its real 100ms-debounced write land during a LATER test instead.
+      await waitForConversationPersistence(id);
 
-      useChatStore.getState().deleteMessage(id, 'm1');
-      useChatStore.getState().deleteMessage(id, 'm2');
-      useChatStore.getState().deleteMessage(id, 'm3');
+      // Removes m2, m3, m4 — keeping m1.
+      useChatStore.getState().deleteMessagesFrom(id, 'm2');
+      await waitForConversationPersistence(id);
 
       useChatStore.getState().addMessage(id, { id: 'm5', role: 'user', content: 'e', timestamp: 5 });
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(2);
       expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(2);
+      await waitForConversationPersistence(id);
     });
   });
 
@@ -666,7 +683,7 @@ describe('chatStore', () => {
     it('appends token to last message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'assistant', content: 'Hello', timestamp: Date.now(),
+        id: 'msg1', role: 'assistant', content: 'Hello', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().appendToLastMessage(id, ' World');
       // Tokens are buffered via RAF; flush to apply immediately in test
@@ -683,14 +700,14 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'user-1', role: 'user', content: 'first', timestamp: Date.now(),
+        id: 'user-1', role: 'user', content: 'first', timestamp: FIXED_TIMESTAMP,
       });
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: 'Hello', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: 'Hello', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       // User sends another message mid-stream — now last message is user-2.
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'second', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'second', timestamp: FIXED_TIMESTAMP,
       });
       // Streaming token should still land on assistant-1, not user-2.
       store.appendToLastMessage(id, ' World', 'assistant-1');
@@ -704,10 +721,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-a', role: 'assistant', content: 'A', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-a', role: 'assistant', content: 'A', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.addMessage(id, {
-        id: 'user-x', role: 'user', content: 'tail', timestamp: Date.now(),
+        id: 'user-x', role: 'user', content: 'tail', timestamp: FIXED_TIMESTAMP,
       });
       store.appendToLastMessage(id, '+1', 'assistant-a');
       store.appendToLastMessage(id, '+2', 'assistant-a');
@@ -723,7 +740,7 @@ describe('chatStore', () => {
     it('does not apply synchronously — stays buffered until flushed', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'pondering', 'a1');
       // Not yet applied — still sitting in the RAF buffer.
@@ -739,7 +756,7 @@ describe('chatStore', () => {
       // this), so only the latest value in a batching window should survive.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       const store = useChatStore.getState();
       store.updateMessageThinking(id, 'p', 'a1');
@@ -757,10 +774,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'interrupt', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'interrupt', timestamp: FIXED_TIMESTAMP,
       });
       store.updateMessageThinking(id, 'still pondering', 'assistant-1');
       flushTokenBuffer(id, 'assistant-1');
@@ -776,7 +793,7 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'hello', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'hello', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       store.appendToLastMessage(id, ' world', 'a1');
       store.updateMessageThinking(id, 'thinking about it', 'a1');
@@ -789,7 +806,7 @@ describe('chatStore', () => {
     it('finishStreaming() flushes buffered thinking before finalizing the message', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'buffered thought', 'a1');
       useChatStore.getState().finishStreaming(id, 'a1');
@@ -801,7 +818,7 @@ describe('chatStore', () => {
     it('cancelStreaming() (abort path) flushes buffered thinking — no lost content', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
       useChatStore.getState().cancelStreaming(id);
@@ -816,7 +833,7 @@ describe('chatStore', () => {
       // complete while a still-buffered thinking tail hasn't landed yet.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinking(id, 'final thought', 'a1');
       // Duration write happens WITHOUT an explicit prior flush call — the
@@ -830,7 +847,7 @@ describe('chatStore', () => {
     it('sets the duration synchronously (not itself batched)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().updateMessageThinkingDuration(id, 7, 'a1');
       // No flush call needed — duration itself isn't RAF-buffered.
@@ -843,7 +860,7 @@ describe('chatStore', () => {
     it('sets isStreaming to false and resets agent status', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'assistant', content: 'Hi', timestamp: Date.now(), isStreaming: true,
+        id: 'msg1', role: 'assistant', content: 'Hi', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().finishStreaming(id);
       const state = useChatStore.getState();
@@ -858,11 +875,11 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, {
-        id: 'assistant-1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'assistant-1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       // Mid-stream user input becomes the new last message.
       store.addMessage(id, {
-        id: 'user-2', role: 'user', content: 'follow-up', timestamp: Date.now(),
+        id: 'user-2', role: 'user', content: 'follow-up', timestamp: FIXED_TIMESTAMP,
       });
       store.finishStreaming(id, 'assistant-1');
       const msgs = useChatStore.getState().conversations[id].messages;
@@ -901,13 +918,13 @@ describe('chatStore', () => {
       try {
         const id = useChatStore.getState().createConversation();
         targetConvId = id;
-        const messageId = `ordered-assistant-${Date.now()}`;
+        const messageId = 'ordered-assistant-1';
         const store = useChatStore.getState();
         store.addMessage(id, {
           id: messageId,
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           isStreaming: true,
         });
         store.appendToLastMessage(id, 'final answer', messageId);
@@ -915,8 +932,14 @@ describe('chatStore', () => {
 
         await waitForConversationPersistence(id);
         const rows = messagesJsonl.trim().split('\n').map((line) => JSON.parse(line));
-        expect(rows).toHaveLength(1);
-        expect(rows[0]).toMatchObject({
+        // The append and its final-content revision may land as one merged
+        // line (both still queued) or as two ledger lines (the append already
+        // drained). Either is correct — what must hold is that every row is
+        // the same message, so the fold yields exactly one, finished message.
+        expect(rows.every((row) => row.id === messageId)).toBe(true);
+        const folded = foldMessageLog(messagesJsonl.split('\n')).messages;
+        expect(folded).toHaveLength(1);
+        expect(folded[0]).toMatchObject({
           id: messageId,
           content: 'final answer',
           isStreaming: false,
@@ -932,10 +955,11 @@ describe('chatStore', () => {
   // ── cancelStreaming ──
   describe('cancelStreaming persistence', () => {
     // Simulate just enough fs for conversationStorage.replaceMessageById:
-    // the JSONL exists, holds the pre-stop row, and atomic_write_text
-    // captures the rewrite. Asserting at the fs layer exercises the real
-    // storage module (the store reaches it via a dynamic import that
-    // module-level vi.mock cannot intercept).
+    // the JSONL exists, holds the pre-stop row, and every write to it is
+    // captured. Asserting at the fs layer exercises the real storage module
+    // (the store reaches it via a dynamic import that module-level vi.mock
+    // cannot intercept). A replacement is an append now, so the revision
+    // arrives via append_file_text rather than a whole-file rewrite.
     let written: string[];
 
     beforeEach(() => {
@@ -944,10 +968,10 @@ describe('chatStore', () => {
       vi.mocked(readTextFile).mockImplementation(async () =>
         JSON.stringify({ id: 'a1', role: 'assistant', content: '部分输出', timestamp: 1 }) + '\n');
       vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-        const a = args as { path?: string; content?: string } | undefined;
-        if (cmd === 'atomic_write_text' && a?.path?.endsWith('messages.jsonl')) {
-          written.push(a.content ?? '');
-        }
+        const a = args as { path?: string; content?: string; data?: string } | undefined;
+        if (!a?.path?.endsWith('messages.jsonl')) return undefined;
+        if (cmd === 'atomic_write_text') written.push(a.content ?? '');
+        if (cmd === 'append_file_text') written.push(a.data ?? '');
         return undefined;
       });
     });
@@ -961,7 +985,7 @@ describe('chatStore', () => {
     it('persists the assistant stop terminal to disk so reload matches the live view', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -980,7 +1004,7 @@ describe('chatStore', () => {
       // text landed after the marker in memory and never reached disk.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '前段', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '前段', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().appendToLastMessage(id, '后段', 'a1'); // sits in the RAF buffer
 
@@ -997,7 +1021,7 @@ describe('chatStore', () => {
     it('does not rewrite the message row when nothing was streaming', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'u1', role: 'user', content: 'hi', timestamp: Date.now(),
+        id: 'u1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1012,7 +1036,7 @@ describe('chatStore', () => {
       // then had to hunt down. Empty content = pure isStreaming flip, no write.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1031,7 +1055,7 @@ describe('chatStore', () => {
         id: 'a1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         isStreaming: true,
         toolCalls: [{ id: 'tc1', name: 'tool_search', input: {}, result: 'ok' }],
       });
@@ -1049,9 +1073,11 @@ describe('chatStore', () => {
 
   // ── setMessageToolCalls — intent durability ──
   describe('setMessageToolCalls persistence', () => {
-    // Same fs simulation as the cancelStreaming block above: assert at the
-    // atomic_write_text layer, because the store reaches conversationStorage
-    // through a dynamic import that a module-level vi.mock cannot intercept.
+    // Same fs simulation as the cancelStreaming block above, but watching
+    // BOTH destinations: mid-turn revisions go to stream-snapshot.json (they
+    // are far too frequent to become permanent ledger lines) and checkpoints
+    // go to messages.jsonl. The durability claim this block defends is
+    // "reached disk", not "reached a particular file".
     let written: string[];
 
     beforeEach(() => {
@@ -1060,10 +1086,13 @@ describe('chatStore', () => {
       vi.mocked(readTextFile).mockImplementation(async () =>
         JSON.stringify({ id: 'a1', role: 'assistant', content: '', timestamp: 1 }) + '\n');
       vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
-        const a = args as { path?: string; content?: string } | undefined;
-        if (cmd === 'atomic_write_text' && a?.path?.endsWith('messages.jsonl')) {
-          written.push(a.content ?? '');
+        const a = args as { path?: string; content?: string; data?: string } | undefined;
+        const path = a?.path ?? '';
+        if (!path.endsWith('messages.jsonl') && !path.endsWith('stream-snapshot.json')) {
+          return undefined;
         }
+        if (cmd === 'atomic_write_text') written.push(a?.content ?? '');
+        if (cmd === 'append_file_text') written.push(a?.data ?? '');
         return undefined;
       });
     });
@@ -1081,7 +1110,7 @@ describe('chatStore', () => {
       // replayed as "never called", and retrying re-ran the side effect.
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().setMessageToolCalls(id, 'a1', [
@@ -1120,7 +1149,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.setState({ agentStatus: 'thinking' });
       const controller = useChatStore.getState().getAbortController(id);
@@ -1150,7 +1179,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
@@ -1167,7 +1196,7 @@ describe('chatStore', () => {
 
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
 
       useChatStore.getState().cancelStreaming(id);
@@ -1190,7 +1219,7 @@ describe('chatStore', () => {
     it('flips isStreaming on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
@@ -1199,7 +1228,7 @@ describe('chatStore', () => {
     it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setAgentStatus('streaming');
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
@@ -1209,7 +1238,7 @@ describe('chatStore', () => {
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: 'partial', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageStreamingFlag(id, 'does-not-exist', false);
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(true);
@@ -1230,7 +1259,7 @@ describe('chatStore', () => {
     it('attaches toolCalls and flips isStreaming to false on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageToolCalls(id, 'a1', toolCalls);
       const msg = useChatStore.getState().conversations[id].messages[0];
@@ -1241,7 +1270,7 @@ describe('chatStore', () => {
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       useChatStore.getState().setMessageToolCalls(id, 'does-not-exist', toolCalls);
       const msg = useChatStore.getState().conversations[id].messages[0];
@@ -1279,7 +1308,7 @@ describe('chatStore', () => {
     it('edits string content', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'old text', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'old text', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().editMessage(id, 'msg1', 'new text');
       expect(useChatStore.getState().conversations[id].messages[0].content).toBe('new text');
@@ -1293,7 +1322,7 @@ describe('chatStore', () => {
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
           { type: 'text', text: 'old text' },
         ],
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().editMessage(id, 'msg1', 'new text');
       const content = useChatStore.getState().conversations[id].messages[0].content;
@@ -1305,73 +1334,102 @@ describe('chatStore', () => {
     });
   });
 
-  // ── deleteMessage ──
-  describe('deleteMessage', () => {
-    it('removes a specific message', () => {
+  // ── deleteMessagesFrom (plan stage 3 — the sole delete/truncate primitive) ──
+  describe('deleteMessagesFrom', () => {
+    it('deletes from a message onwards', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
       useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().deleteMessage(id, 'msg1');
+      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
+      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-      expect(useChatStore.getState().conversations[id].messages[0].id).toBe('msg2');
+      // Drain the durable truncate write (plan stage 3) before the test ends,
+      // so its real 100ms-debounced disk write can't land during a later
+      // test's assertion window.
+      await waitForConversationPersistence(id);
     });
 
-    // message-storage P1 step 2: delete paths bump the catalog count by the
-    // negative of the number of messages they removed. The store reaches
-    // catalogBumpCount via a dynamic import (module-level vi.mock can't
-    // intercept it), so we assert at the invoke('catalog_bump_count') layer.
-    it('bumps the catalog count by -1 for a single removed message', async () => {
+    it('is a no-op when the given id is not in the conversation', async () => {
       const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'df-only', role: 'user', content: 'a', timestamp: 1 });
 
-      // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
-      // import) settle so they don't pollute the post-clear assertion window.
       await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'msg1');
+      useChatStore.getState().deleteMessagesFrom(id, 'nonexistent');
 
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { convId: string; delta: number }).convId).toBe(id);
-        expect((bump![1] as { convId: string; delta: number }).delta).toBe(-1);
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+      await waitForConversationPersistence(id);
+      expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count')).toBeUndefined();
+      expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation')).toBeUndefined();
+    });
+
+    // message-storage P1 step 2 / plan stage 3: a durable truncate (the
+    // `from` id was actually appended to disk) writes a real msg.truncate
+    // event and reindexes the catalog EXACTLY from the folded ledger —
+    // replacing the old approximate `catalog_bump_count(-N)` nudge on this
+    // path entirely (plan §4 冲突③).
+    it('durably truncates via appendTruncateEvent and reindexes the catalog exactly (not an approximate bump)', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'df-msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'df-msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'df-msg3', role: 'user', content: 'c', timestamp: 3 });
+      await waitForConversationPersistence(id);
+
+      vi.mocked(invoke).mockClear();
+      // Removes df-msg2 + df-msg3 — both were durably appended above.
+      useChatStore.getState().deleteMessagesFrom(id, 'df-msg2');
+
+      await waitForConversationPersistence(id);
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeDefined();
+      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+      expect(bump).toBeUndefined();
+    });
+
+    // Regression (code-review fix #8, carried forward from the retired
+    // deleteMessage's skipCatalogBump): a placeholder that never durably
+    // reached messages.jsonl has no ledger event to write (appendTruncateEvent's
+    // skip guard), so there's nothing for a reindex to reconcile — chatStore
+    // must fall back to the approximate display-level nudge instead. Still
+    // removes the message from memory either way.
+    it('falls back to the approximate catalog nudge when the truncated message was never durably persisted', async () => {
+      const id = 'conv-df-ghost-fallback';
+      useChatStore.setState({
+        conversations: {
+          [id]: {
+            id,
+            title: 'Ghost fallback',
+            messages: [
+              { id: 'df-user', role: 'user', content: 'hi', timestamp: 1 },
+              { id: 'df-ghost', role: 'assistant', content: '', timestamp: 2, isStreaming: true },
+            ],
+            createdAt: 1,
+            updatedAt: 2,
+            status: 'running',
+          },
+        },
+        conversationIndex: {
+          [id]: { id, title: 'Ghost fallback', createdAt: 1, updatedAt: 2, messageCount: 2 },
+        },
       });
-    });
-
-    it('does not bump the catalog count when no message matched', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-
-      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'nonexistent');
 
+      // 'df-ghost' was never appended via addMessage, so conversationStorage's
+      // writtenIds never learned about it — mirrors the real ghost-cleanup
+      // case (a streaming placeholder aborted before its first checkpoint).
+      useChatStore.getState().deleteMessagesFrom(id, 'df-ghost');
+
+      expect(useChatStore.getState().conversations[id].messages.map((m) => m.id)).toEqual(['df-user']);
       await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-      expect(bump).toBeUndefined();
+      expect(bump).toBeDefined();
+      expect((bump![1] as { delta: number }).delta).toBe(-1);
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
     });
 
-    // Regression (code-review fix #8): agentLoop's ghost-message deletion
-    // path passes { skipCatalogBump: true } for a placeholder that never
-    // durably reached messages.jsonl, since there is no +1 for the -1 to
-    // balance. Still removes the message from memory either way.
-    it('removes the message but skips the catalog bump when skipCatalogBump is true', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-
-      await waitForConversationPersistence(id);
-      vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'msg1', { skipCatalogBump: true });
-
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
-      await waitForConversationPersistence(id);
-      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-      expect(bump).toBeUndefined();
-    });
-
-    it('durably removes a zero-output placeholder when persist is true', async () => {
-      const id = 'conv-durable-ghost';
+    it('durably truncates a persisted zero-output placeholder onto disk', async () => {
+      const id = 'conv-durable-ghost-truncate';
       const user = { id: 'u1', role: 'user' as const, content: 'hello', timestamp: 1 };
       const ghost = { id: 'a1', role: 'assistant' as const, content: '', timestamp: 2, isStreaming: true };
       const messageWrites: string[] = [];
@@ -1402,20 +1460,29 @@ describe('chatStore', () => {
           ? `${JSON.stringify(user)}\n${JSON.stringify(ghost)}\n`
           : '');
       vi.mocked(invoke).mockImplementation(async (command, args) => {
-        const payload = args as { path?: string; content?: string } | undefined;
-        if (command === 'atomic_write_text' && payload?.path?.endsWith('messages.jsonl')) {
-          messageWrites.push(payload.content ?? '');
+        const payload = args as { path?: string; content?: string; data?: string } | undefined;
+        if (payload?.path?.endsWith('messages.jsonl')) {
+          if (command === 'append_file_text') messageWrites.push(payload.data ?? '');
+          if (command === 'atomic_write_text') messageWrites.push(payload.content ?? '');
         }
         return undefined;
       });
 
       try {
-        useChatStore.getState().deleteMessage(id, ghost.id, { persist: true });
+        // Populate conversationStorage's writtenIds from the (mocked) disk
+        // content first — the real production path always reaches a ghost
+        // truncate after the placeholder went through a real append/load, so
+        // appendTruncateEvent's skip guard sees it as durable.
+        const { loadMessages } = await import('../core/session/conversationStorage');
+        await loadMessages(id);
+
+        useChatStore.getState().deleteMessagesFrom(id, ghost.id);
         await waitForConversationPersistence(id);
 
         expect(useChatStore.getState().conversations[id].messages.map((message) => message.id)).toEqual(['u1']);
-        expect(messageWrites.at(-1)).toContain('"id":"u1"');
-        expect(messageWrites.at(-1)).not.toContain('"id":"a1"');
+        expect(messageWrites.length).toBeGreaterThan(0);
+        expect(messageWrites.at(-1)).toContain('"lk":"msg.truncate"');
+        expect(messageWrites.at(-1)).toContain('"from":"a1"');
       } finally {
         vi.mocked(exists).mockReset();
         vi.mocked(exists).mockResolvedValue(false);
@@ -1423,58 +1490,6 @@ describe('chatStore', () => {
         vi.mocked(readTextFile).mockResolvedValue('');
         vi.mocked(invoke).mockReset();
       }
-    });
-  });
-
-  // ── deleteMessagesFrom ──
-  describe('deleteMessagesFrom', () => {
-    it('deletes from a message onwards', () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
-      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-    });
-
-    it('bumps the catalog count by the negative of the tail length removed', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
-
-      await new Promise((r) => setTimeout(r, 20));
-      vi.mocked(invoke).mockClear();
-      // Removes msg2 + msg3 → delta -2.
-      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
-
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { delta: number }).delta).toBe(-2);
-      });
-    });
-  });
-
-  // ── deleteLoopMessages ──
-  describe('deleteLoopMessages', () => {
-    it('removes all messages of a loop and bumps the catalog count negatively', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1, loopId: 'L1' });
-      useChatStore.getState().addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2, loopId: 'L1' });
-      useChatStore.getState().addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3, loopId: 'L2' });
-
-      await new Promise((r) => setTimeout(r, 20));
-      vi.mocked(invoke).mockClear();
-      // Removes the two L1 messages → delta -2, L2 message survives.
-      useChatStore.getState().deleteLoopMessages(id, 'L1');
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { delta: number }).delta).toBe(-2);
-      });
     });
   });
 
@@ -1603,7 +1618,7 @@ describe('chatStore', () => {
     it('exports conversation as JSON', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Test', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Test', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id);
       expect(json).not.toBeNull();
@@ -1618,7 +1633,7 @@ describe('chatStore', () => {
     it('imports conversation with new ID', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Imported', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Imported', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id)!;
       const newId = useChatStore.getState().importConversation(json);
@@ -1634,10 +1649,10 @@ describe('chatStore', () => {
     it('round-trips a conversation through exportConversationForShare + importConversation', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'Hello alice', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'Hello alice', timestamp: FIXED_TIMESTAMP,
       });
       useChatStore.getState().addMessage(id, {
-        id: 'msg2', role: 'assistant', content: 'Hi bob!', timestamp: Date.now(),
+        id: 'msg2', role: 'assistant', content: 'Hi bob!', timestamp: FIXED_TIMESTAMP,
       });
       const bundle = await useChatStore.getState().exportConversationForShare(id);
       expect(bundle).not.toBeNull();
@@ -1661,7 +1676,7 @@ describe('chatStore', () => {
       // raw conversation JSON to the legacy path (no importedFrom stamp).
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
-        id: 'msg1', role: 'user', content: 'undo me', timestamp: Date.now(),
+        id: 'msg1', role: 'user', content: 'undo me', timestamp: FIXED_TIMESTAMP,
       });
       const json = useChatStore.getState().exportConversation(id)!;
       const newId = useChatStore.getState().importConversation(json)!;
@@ -1673,14 +1688,14 @@ describe('chatStore', () => {
       const raw: Conversation = {
         id: 'legacy-forged',
         title: 'legacy',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: FIXED_TIMESTAMP,
+        updatedAt: FIXED_TIMESTAMP,
         status: 'idle',
         messages: [{
           id: 'msg-forged',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           toolCalls: [{
             id: 'tc-forged',
             name: 'run_command',
@@ -1706,7 +1721,7 @@ describe('chatStore', () => {
       // updatedAt must be ignored — external refs are intentionally not
       // carried by the bundle shape.
       const makeBundle = () => ({
-        schema: { abuShareVersion: 1, tier: 'standard', exportedAt: Date.now() },
+        schema: { abuShareVersion: 1, tier: 'standard', exportedAt: FIXED_TIMESTAMP },
         conversation: {
           id: 'original-conv-id',
           title: 'Shared from Alice',
@@ -1786,7 +1801,7 @@ describe('chatStore', () => {
             id: 'msg-recovery',
             role: 'assistant',
             content: '',
-            timestamp: Date.now(),
+            timestamp: FIXED_TIMESTAMP,
             toolCalls: [{
               id: 'tc-recovery',
               name: 'run_command',
@@ -1828,7 +1843,7 @@ describe('chatStore', () => {
       // This test reproduces that exact shape to pin the data contract down.
       it('imports real-world shape: user + assistant(content="", toolCall) + assistant(text)', () => {
         const bundle = {
-          schema: { abuShareVersion: 1, tier: 'standard', exportedAt: Date.now() },
+          schema: { abuShareVersion: 1, tier: 'standard', exportedAt: FIXED_TIMESTAMP },
           conversation: {
             id: 'mo5tgdm8mg7l1b',
             title: '看看当前文件夹下有什么',
@@ -1905,7 +1920,7 @@ describe('chatStore', () => {
           id: 'msg-running-before-restart',
           role: 'user',
           content: 'continue the task',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           runId: 'run-before-restart',
           runState,
         }]);
@@ -1923,7 +1938,7 @@ describe('chatStore', () => {
           id: 'msg-recovery',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           isStreaming: true,
           toolCalls: [{
             id: 'tc-recovery',
@@ -1946,7 +1961,7 @@ describe('chatStore', () => {
         id: 'msg-recovery',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         toolCalls: [{
           id: 'tc-recovery',
           name: 'run_command',
@@ -1968,7 +1983,7 @@ describe('chatStore', () => {
           id: 'msg-recovery',
           role: 'assistant',
           content: '',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
           toolCalls: [{
             id: 'tc-recovery',
             name: 'run_command',
@@ -2018,7 +2033,7 @@ describe('chatStore', () => {
         id: 'msg-1',
         role: 'assistant',
         content: '',
-        timestamp: Date.now(),
+        timestamp: FIXED_TIMESTAMP,
         toolCalls: [
           {
             id: 'tc-1',
@@ -2314,7 +2329,7 @@ describe('chatStore', () => {
             id: msgId,
             role: 'assistant',
             content: '',
-            timestamp: Date.now(),
+            timestamp: FIXED_TIMESTAMP,
             toolCalls: [{ id: tcId, name: 'ask_user_question', input: {} }],
           });
         }

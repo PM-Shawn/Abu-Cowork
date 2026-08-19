@@ -9,37 +9,119 @@ import {
 } from '../../utils/notifications';
 import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
+import type { PermissionMode } from '../permissions/permissionMode';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { usePermissionStore } from '../../stores/permissionStore';
 import { authorizeWorkspace } from '../tools/pathSafety';
+import { getSettingsReader } from '../agent/ports/settingsReader';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
 
-/**
- * Auto-deny confirmation callback for scheduled tasks.
- * Since scheduled tasks run unattended, dangerous commands are automatically rejected.
- */
-async function autoDenyConfirmation(_info: ConfirmationInfo): Promise<boolean> {
-  console.log('[Scheduler] Auto-denied dangerous command:', _info.command);
-  return false;
+/** How many distinct denials to quote back; beyond this the list is summarized. */
+const MAX_REPORTED_DENIALS = 5;
+
+/** task.permissionMode, falling back to the global settings mode — the same
+ *  fallback registry.ts applies for a conversation carrying no mode of its
+ *  own. `undefined` on the task means "follow settings", not "strictest". */
+function resolveEffectivePermissionMode(task: ScheduledTask): PermissionMode {
+  return task.permissionMode ?? getSettingsReader().getSnapshot().permissionMode;
+}
+
+/** Same wording chat's PermissionModeChip uses — no scheduler-only vocabulary. */
+function permissionModeLabel(mode: PermissionMode): string {
+  const t = getI18n();
+  switch (mode) {
+    case 'smart': return t.settings.permissionModeSmart;
+    case 'autonomous': return t.settings.permissionModeAutonomous;
+    case 'standard':
+    default: return t.settings.permissionModeStandard;
+  }
 }
 
 /**
- * Auto file permission callback for scheduled tasks.
- * Auto-allows paths that have persisted grants; auto-denies everything else.
+ * Permission callbacks for one scheduled run, plus a recorder for whatever got
+ * refused.
+ *
+ * There is nobody unattended to answer a confirmation, so this reuses the
+ * exact gate chat itself uses instead of a scheduler-only tier vocabulary:
+ * `executeTask` sets the run's conversation `permissionMode` (via
+ * `setConversationPermissionMode`) to the task's mode (or leaves it unset to
+ * follow the global settings mode), and `registry.ts` already reads that
+ * per-conversation mode — same standard/smart/autonomous strategy, same AI
+ * reviewer for 'smart' escalations. These callbacks only decide what happens
+ * on the "confirm" outcome that strategy produces: whatever reaches here
+ * would have popped a dialog in an interactive session, so with nobody
+ * present it is an auto-deny, regardless of mode. ('smart' still gets its AI
+ * reviewer pass first — a low-risk escalation there can be silently allowed
+ * without ever reaching this callback; 'autonomous' still routes browser/
+ * self-extension actions through this same confirm gate, per the hard floor
+ * `decideOtherTool` keeps in every mode.)
+ *
+ * The recorder exists because of the failure mode this whole change is about:
+ * a task used to run at 3am, hit a permission wall, and surface nothing but
+ * "failed". Browser gating flows through the same confirmation callback (the
+ * registry calls `onRequireConfirmation` with `kind: 'browser'` and the
+ * origin), so per-site refusals land here too — that is what makes the
+ * "blocked on example.com, authorize it in Settings" message possible without
+ * a separate accounting layer.
  */
-const autoFilePermission: FilePermissionCallback = async (request) => {
-  const permStore = usePermissionStore.getState();
-
-  // Check if there's a persisted grant for this path
-  if (permStore.hasPermission(request.path, request.capability)) {
-    authorizeWorkspace(request.path);
-    return true;
+function resolveScheduledRunPermissions(task: ScheduledTask): {
+  commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
+  filePermissionCallback: FilePermissionCallback;
+  blockedTools: string[];
+  getDenials: () => string[];
+} {
+  // The workspace gets the same rights an interactive chat conversation would
+  // have in it — standard/smart/autonomous all treat "inside the authorized
+  // workspace" as free read+write; the ceiling is entirely about escalations
+  // (outside the workspace, risky commands, browser actions), not about
+  // capping the workspace itself to read-only. Unlike the old TriggerCapability
+  // tiers this model has no read-only rung, so there is nothing to restrict here.
+  if (task.workspacePath) {
+    authorizeWorkspace(task.workspacePath);
   }
 
-  console.log(`[Scheduler] Auto-denied file access: ${request.path} (${request.capability})`);
-  return false;
-};
+  // Deduplicated: an agent retrying the same blocked action ten times should
+  // produce one line, not ten.
+  const denials = new Set<string>();
+
+  return {
+    commandConfirmCallback: async (info) => {
+      const t = getI18n();
+      denials.add(
+        info.kind === 'browser' && info.browserOrigin
+          ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
+          : format(t.schedule.denialCommand, { command: info.command }),
+      );
+      return false;
+    },
+    filePermissionCallback: async (request) => {
+      const t = getI18n();
+      denials.add(format(t.schedule.denialFile, { path: request.path }));
+      return false;
+    },
+    // request_workspace pops a UI dialog a scheduled run can never answer.
+    blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+    getDenials: () => Array.from(denials),
+  };
+}
+
+/**
+ * Turn recorded denials into the sentence appended to a failed run's result
+ * text, including where to grant what was missing (plan §4.4 — say the reason
+ * in the result, do not build a separate accounting UI).
+ */
+function describeDenials(denials: string[], mode: PermissionMode): string {
+  if (denials.length === 0) return '';
+  const t = getI18n();
+  const shown = denials.slice(0, MAX_REPORTED_DENIALS);
+  const more = denials.length - shown.length;
+  const list = shown.join('; ') + (more > 0 ? format(t.schedule.denialMore, { count: String(more) }) : '');
+  return format(t.schedule.denialSummary, {
+    mode: permissionModeLabel(mode),
+    list,
+  });
+}
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
 
@@ -87,6 +169,12 @@ class SchedulerEngine {
       task.workspacePath ?? null,
       { scheduledTaskId: task.id, projectId: task.projectId, skipActivate: true }
     );
+    // Selects the standard/smart/autonomous strategy `registry.ts` applies to
+    // every tool call in this run. `task.permissionMode` is undefined for a
+    // "follow settings" task — passing that through leaves the conversation's
+    // mode unset, which is exactly the fallback registry.ts already reads
+    // from the global settings mode.
+    chatStore.setConversationPermissionMode(conversationId, task.permissionMode);
 
     // Set conversation title
     const timeStr = new Date().toLocaleString('zh-CN', {
@@ -106,10 +194,13 @@ class SchedulerEngine {
       prompt = `/${task.skillName} ${prompt}`;
     }
 
+    const permissions = resolveScheduledRunPermissions(task);
+
     try {
       const result = await runAgentLoopDispatched(conversationId, prompt, {
-        commandConfirmCallback: autoDenyConfirmation,
-        filePermissionCallback: autoFilePermission,
+        commandConfirmCallback: permissions.commandConfirmCallback,
+        filePermissionCallback: permissions.filePermissionCallback,
+        blockedTools: permissions.blockedTools,
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
@@ -145,10 +236,17 @@ class SchedulerEngine {
       } else {
         // aborted, error, or no_progress (degenerate output) — no delivery; mark the
         // run with a reason-specific message instead of "Unknown error".
-        const errorMsg = result.error ?? (
+        const baseError = result.error ?? (
           result.reason === 'aborted' ? 'Task was cancelled'
           : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
           : 'Unknown error'
+        );
+        // A task that failed after being blocked used to read as a bare
+        // "failed". Say what was refused and at which tier, so the run history
+        // carries the fix instead of the user having to guess.
+        const errorMsg = baseError + describeDenials(
+          permissions.getDenials(),
+          resolveEffectivePermissionMode(task),
         );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {

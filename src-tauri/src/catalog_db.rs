@@ -726,11 +726,130 @@ fn derive_title(text: &str) -> String {
     }
 }
 
+/// Parse raw `messages.jsonl` lines: split into successfully-parsed objects
+/// vs. a corrupt-line count, matching `foldMessageLog`'s parse step in
+/// `src/core/session/messageLedger.ts` exactly — a line that fails to parse
+/// AND a line that parses to a non-object JSON value (`null`, a number, a
+/// bare string, an array) both count as corrupt and are excluded, rather
+/// than being pushed through and crashing later `.get()` calls on a
+/// non-object `Value`. Shared by `scan_conversation_file` and the
+/// fixture-replay test below so corrupt-line semantics can't drift between
+/// what production scans and what the test asserts.
+///
+/// Returns `(parsed objects, corrupt_count, total_non_blank_lines)`.
+fn parse_ledger_lines<'a, I: IntoIterator<Item = &'a str>>(lines: I) -> (Vec<Value>, i64, i64) {
+    let mut parsed = Vec::new();
+    let mut corrupt_count = 0i64;
+    let mut total_lines = 0i64;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        total_lines += 1;
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) if v.is_object() => parsed.push(v),
+            _ => corrupt_count += 1,
+        }
+    }
+    (parsed, corrupt_count, total_lines)
+}
+
+/// Ledger fold — Rust mirror of `foldMessageLog` in
+/// `src/core/session/messageLedger.ts` (that file's module doc is the
+/// authoritative spec; both are pinned to identical output by the shared
+/// fixtures in `src/core/session/__fixtures__/messageLedgerFold.fixtures.json`,
+/// exercised by `fold_matches_shared_fixtures` below).
+///
+/// Sequential semantics: every event applies to state folded from the rows
+/// BEFORE it — a `msg.put` for an id already alive revises IN PLACE (does
+/// NOT move to the end, so a revision can't reorder the conversation), and
+/// `msg.tomb` / `msg.truncate` / `msg.loopDrop` remove rows; a later
+/// `msg.put` for a removed id re-inserts it at the end (this is how
+/// edit-and-resend looks on disk: a truncate line followed by new turn
+/// lines, and how a delete can be undone by a fresh put). Unknown `lk`
+/// kinds are reserved no-ops. Rows without a string `id` (including
+/// non-object JSON, already filtered out by `parse_ledger_lines`) collapse
+/// onto ONE shared key — the legacy keep-last-dedup quirk this fold
+/// preserves.
+fn fold_message_log(rows: &[Value]) -> Vec<&Value> {
+    // Borrows straight out of `rows` — the id/target/from strings already
+    // live as long as the input slice, so the index never needs to clone
+    // them (the TS/JS ports pay zero allocation for the equivalent Map
+    // rebuild; this keeps the Rust port matching that, not just the
+    // algorithmic shape).
+    //
+    // Known, accepted divergence from the TS/JS ports (pre-dates this fold —
+    // the old position-based dedup normalized `id` the same way): a row
+    // whose `id` is present but not a JSON string (an explicit `null`, a
+    // number, ...) collapses onto the shared id-less bucket here, where a JS
+    // `Map` would key on that value literally (so e.g. `id: null` and a
+    // truly id-less row would NOT collapse together there). No Abu write
+    // path ever emits a non-string id — `Message.id` is a required `string`
+    // — so this only matters for a hand-crafted or corrupted file scanned by
+    // the legacy Tauri migration/rollback path this module serves.
+    fn key_of(v: &Value) -> Option<&str> {
+        v.get("id").and_then(|x| x.as_str())
+    }
+    fn reindex<'a>(state: &[&'a Value], index: &mut HashMap<Option<&'a str>, usize>) {
+        index.clear();
+        for (i, v) in state.iter().enumerate() {
+            index.insert(key_of(v), i);
+        }
+    }
+
+    let mut state: Vec<&Value> = Vec::new();
+    let mut index: HashMap<Option<&str>, usize> = HashMap::new();
+
+    for row in rows {
+        let kind = row.get("lk").and_then(|x| x.as_str()).unwrap_or("msg.put");
+        match kind {
+            "msg.put" => {
+                let key = key_of(row);
+                if let Some(&at) = index.get(&key) {
+                    state[at] = row; // in-place revision — does not reorder
+                } else {
+                    index.insert(key, state.len());
+                    state.push(row);
+                }
+            }
+            "msg.tomb" => {
+                if let Some(target) = row.get("target").and_then(|x| x.as_str()) {
+                    if let Some(&at) = index.get(&Some(target)) {
+                        state.remove(at);
+                        reindex(&state, &mut index);
+                    }
+                }
+            }
+            "msg.truncate" => {
+                if let Some(from) = row.get("from").and_then(|x| x.as_str()) {
+                    if let Some(&at) = index.get(&Some(from)) {
+                        state.truncate(at);
+                        reindex(&state, &mut index);
+                    }
+                }
+            }
+            "msg.loopDrop" => {
+                if let Some(loop_id) = row.get("loopId").and_then(|x| x.as_str()) {
+                    let before = state.len();
+                    state.retain(|v| v.get("loopId").and_then(|x| x.as_str()) != Some(loop_id));
+                    if state.len() != before {
+                        reindex(&state, &mut index);
+                    }
+                }
+            }
+            _ => { /* unknown event kind: reserved no-op, forward-compatible */ }
+        }
+    }
+
+    state
+}
+
 /// Scan one conversation's `messages.jsonl` and derive catalog fields.
-/// Read-only: never mutates `path`. Mirrors the id-dedup-keep-last and
-/// per-line corrupt-line-tolerance semantics of `loadMessages` in
-/// `conversationStorage.ts` so the catalog's `message_count` always matches
-/// what the app would actually load into memory.
+/// Read-only: never mutates `path`. Row survival/order comes from the shared
+/// ledger fold (`fold_message_log`, mirroring `loadMessages`'s fold in
+/// `conversationStorage.ts` via `messageLedger.ts`) so the catalog's
+/// `message_count` always matches what the app would actually load into
+/// memory.
 ///
 /// Returns `Ok(None)` if the file does not exist (caller treats the
 /// conversation as missing).
@@ -744,40 +863,8 @@ pub fn scan_conversation_file(path: &Path) -> Result<Option<ScannedConversation>
 
     let raw = fs::read_to_string(path).map_err(|e| format!("read {} failed: {}", path.display(), e))?;
 
-    let mut parsed: Vec<Value> = Vec::new();
-    let mut corrupt_lines = 0i64;
-    for line in raw.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Value>(line) {
-            Ok(v) => parsed.push(v),
-            Err(_) => corrupt_lines += 1,
-        }
-    }
-
-    // Dedup by id, keeping the LAST occurrence — same semantics as
-    // dedupMessagesById() in conversationStorage.ts. Crucially, id-less
-    // messages are NOT all kept as distinct: TS's `Map<string, number>` keyed
-    // by `m.id` collapses every message whose `id` is `undefined` onto the
-    // SAME map key (`undefined`), so only the last id-less message survives.
-    // We mirror that by using `Option<String>` (None == "no id") as the dedup
-    // key instead of only tracking `Some(id)` — treating `None` as its own
-    // shared key, exactly like the JS Map behavior (fix #2).
-    let mut last_index: HashMap<Option<String>, usize> = HashMap::new();
-    for (i, v) in parsed.iter().enumerate() {
-        let key = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
-        last_index.insert(key, i);
-    }
-    let deduped: Vec<&Value> = parsed
-        .iter()
-        .enumerate()
-        .filter(|(i, v)| {
-            let key = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
-            last_index.get(&key) == Some(i)
-        })
-        .map(|(_, v)| v)
-        .collect();
+    let (parsed, corrupt_lines, _total_lines) = parse_ledger_lines(raw.lines());
+    let deduped: Vec<&Value> = fold_message_log(&parsed);
 
     let message_count = deduped.len() as i64;
     let last_message_id = deduped
@@ -1754,10 +1841,10 @@ mod tests {
         assert!(row.missing);
     }
 
-    // ── 5. id-dedup keep-last (matches loadMessages semantics) ─────────
+    // ── 5. ledger fold: revision in place, not move-to-end ──────────────
 
     #[test]
-    fn dedup_keeps_last_occurrence_of_duplicate_id() {
+    fn fold_revises_duplicate_id_in_place() {
         let root = tempdir().unwrap();
         let path = write_jsonl(
             root.path(),
@@ -1765,21 +1852,93 @@ mod tests {
             &[
                 &msg("m1", "user", "first version", 100),
                 &msg("m2", "assistant", "reply", 200),
-                &msg("m1", "user", "edited version", 300), // duplicate id, later in file
+                &msg("m1", "user", "edited version", 300), // revision line, later in file
             ],
         );
         let scanned = scan_conversation_file(&path).unwrap().unwrap();
-        assert_eq!(scanned.message_count, 2, "duplicate id must collapse to one entry");
-        // last_message_id is the id of the LAST line in file order after dedup
-        // filtering preserves original position order; m1's kept occurrence is
-        // at index 2 (last), so it becomes the tail of the deduped sequence.
-        assert_eq!(scanned.last_message_id, Some("m1".to_string()));
-        // Dedup keeps each id's LAST occurrence, so m1 survives at its later
-        // position ("edited version"), not its earlier one — same as
-        // dedupMessagesById() in conversationStorage.ts. The deduped sequence
-        // is [m2 (assistant, "reply"), m1 (user, "edited version")], so the
-        // forward scan for the first user-role message lands on the edited text.
-        assert_eq!(scanned.title, "edited version", "title must reflect the surviving (last) occurrence of the duplicate id, matching loadMessages' dedup-keep-last semantics");
+        assert_eq!(scanned.message_count, 2, "a revision must collapse onto the original entry, not add a second one");
+        // Ledger fold semantics (shared with messageLedger.ts /
+        // messageLedgerFold.cjs): the later write WINS but the message keeps
+        // its ORIGINAL position — a revision must not move a mid-history
+        // message to the end. Folded sequence is [m1 (edited version), m2
+        // (reply)], so the tail is m2 and the title scan (first user-role
+        // message) lands on m1's surviving (edited) content.
+        assert_eq!(scanned.last_message_id, Some("m2".to_string()));
+        assert_eq!(
+            scanned.title, "edited version",
+            "title must reflect the surviving (last-write) content at the original position"
+        );
+    }
+
+    /// Pin the Rust fold to the SAME fixtures that drive the TS/JS sides
+    /// (`src/core/session/messageLedger.test.ts`,
+    /// `electron/messageLedgerFold.contract.test.ts`). Any semantic drift
+    /// between `fold_message_log` and `messageLedger.ts` /
+    /// `messageLedgerFold.cjs` turns exactly one of these suites red instead
+    /// of silently diverging.
+    #[test]
+    fn fold_matches_shared_fixtures() {
+        #[derive(serde::Deserialize)]
+        struct FixtureFile {
+            cases: Vec<FixtureCase>,
+        }
+        #[derive(serde::Deserialize)]
+        struct FixtureCase {
+            name: String,
+            lines: Vec<String>,
+            expected: ExpectedResult,
+        }
+        #[derive(serde::Deserialize)]
+        struct ExpectedResult {
+            messages: Vec<ExpectedMessage>,
+            #[serde(rename = "corruptCount")]
+            corrupt_count: i64,
+            #[serde(rename = "totalLines")]
+            total_lines: i64,
+        }
+        #[derive(serde::Deserialize)]
+        struct ExpectedMessage {
+            id: Option<String>,
+            content: String,
+        }
+
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src/core/session/__fixtures__/messageLedgerFold.fixtures.json");
+        let raw = stdfs::read_to_string(&fixture_path)
+            .unwrap_or_else(|e| panic!("failed to read shared fixture {}: {}", fixture_path.display(), e));
+        let file: FixtureFile = serde_json::from_str(&raw).expect("fixture file must be valid JSON");
+        assert!(file.cases.len() > 5, "fixture set unexpectedly small");
+
+        for case in &file.cases {
+            let (parsed, corrupt_count, total_lines) =
+                parse_ledger_lines(case.lines.iter().map(|s| s.as_str()));
+            assert_eq!(corrupt_count, case.expected.corrupt_count, "corruptCount mismatch in fixture: {}", case.name);
+            assert_eq!(total_lines, case.expected.total_lines, "totalLines mismatch in fixture: {}", case.name);
+
+            let folded = fold_message_log(&parsed);
+            let projected: Vec<(Option<String>, String)> = folded
+                .iter()
+                .map(|v| {
+                    let id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+                    // Mirrors projectFolded() in src/test/foldFixtures.ts: string
+                    // content passes through, anything else is JSON-stringified.
+                    let content = match v.get("content") {
+                        Some(Value::String(s)) => s.clone(),
+                        Some(other) => other.to_string(),
+                        None => "null".to_string(),
+                    };
+                    (id, content)
+                })
+                .collect();
+            let expected: Vec<(Option<String>, String)> = case
+                .expected
+                .messages
+                .iter()
+                .map(|m| (m.id.clone(), m.content.clone()))
+                .collect();
+            assert_eq!(projected, expected, "folded messages mismatch in fixture: {}", case.name);
+        }
     }
 
     // ── Rust-only extras: sync state + row shape sanity ────────────────

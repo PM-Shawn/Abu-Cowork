@@ -378,47 +378,63 @@ describe('drafts · rejectDraft', () => {
 
 describe('drafts · cleanExpiredDrafts', () => {
   it('moves expired drafts to trash and leaves fresh ones alone', async () => {
-    const vfs = makeVfs();
-    const now = Date.now();
-    vfs.seed(DRAFTS);
-    vfs.seed(`${DRAFTS}/old`);
-    vfs.seed(`${DRAFTS}/old/SKILL.md`, '---\n---\n');
-    vfs.seed(
-      `${DRAFTS}/old/.abu-draft-meta.json`,
-      JSON.stringify({ action: 'create', triggerReason: '', createdAt: now - 1e8, expiresAt: now - 1000 }),
-    );
-    vfs.seed(`${DRAFTS}/fresh`);
-    vfs.seed(`${DRAFTS}/fresh/SKILL.md`, '---\n---\n');
-    vfs.seed(
-      `${DRAFTS}/fresh/.abu-draft-meta.json`,
-      JSON.stringify({ action: 'create', triggerReason: '', createdAt: now, expiresAt: now + 1e6 }),
-    );
-    vfs.install();
+    // Deterministic clock (TESTING.md §3) — cleanExpiredDrafts() reads Date.now()
+    // directly (no injectable clock), so the seed must match production's read.
+    vi.useFakeTimers();
+    try {
+      const now = 1_700_000_000_000;
+      vi.setSystemTime(now);
+      const vfs = makeVfs();
+      vfs.seed(DRAFTS);
+      vfs.seed(`${DRAFTS}/old`);
+      vfs.seed(`${DRAFTS}/old/SKILL.md`, '---\n---\n');
+      vfs.seed(
+        `${DRAFTS}/old/.abu-draft-meta.json`,
+        JSON.stringify({ action: 'create', triggerReason: '', createdAt: now - 1e8, expiresAt: now - 1000 }),
+      );
+      vfs.seed(`${DRAFTS}/fresh`);
+      vfs.seed(`${DRAFTS}/fresh/SKILL.md`, '---\n---\n');
+      vfs.seed(
+        `${DRAFTS}/fresh/.abu-draft-meta.json`,
+        JSON.stringify({ action: 'create', triggerReason: '', createdAt: now, expiresAt: now + 1e6 }),
+      );
+      vfs.install();
 
-    const swept = await cleanExpiredDrafts(WS);
-    expect(swept).toBe(1);
-    // old was renamed to trash
-    const renames = renameMock.mock.calls.map((c) => c[0]);
-    expect(renames).toContain(`${DRAFTS}/old`);
-    expect(renames).not.toContain(`${DRAFTS}/fresh`);
+      const swept = await cleanExpiredDrafts(WS);
+      expect(swept).toBe(1);
+      // old was renamed to trash
+      const renames = renameMock.mock.calls.map((c) => c[0]);
+      expect(renames).toContain(`${DRAFTS}/old`);
+      expect(renames).not.toContain(`${DRAFTS}/fresh`);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
 describe('drafts · emptyExpiredTrash', () => {
   it('removes trash entries older than 7 days', async () => {
-    const vfs = makeVfs();
-    const now = Date.now();
-    const oldTs = now - 8 * 24 * 60 * 60 * 1000;
-    const freshTs = now - 1 * 24 * 60 * 60 * 1000;
-    const trashRoot = `${DRAFTS}/.trash`;
-    vfs.seed(trashRoot);
-    vfs.seed(`${trashRoot}/old-${oldTs}`);
-    vfs.seed(`${trashRoot}/fresh-${freshTs}`);
-    vfs.install();
+    // Deterministic clock (TESTING.md §3) — emptyExpiredTrash() reads Date.now()
+    // directly (no injectable clock), so the seed must match production's read.
+    vi.useFakeTimers();
+    try {
+      const now = 1_700_000_000_000;
+      vi.setSystemTime(now);
+      const vfs = makeVfs();
+      const oldTs = now - 8 * 24 * 60 * 60 * 1000;
+      const freshTs = now - 1 * 24 * 60 * 60 * 1000;
+      const trashRoot = `${DRAFTS}/.trash`;
+      vfs.seed(trashRoot);
+      vfs.seed(`${trashRoot}/old-${oldTs}`);
+      vfs.seed(`${trashRoot}/fresh-${freshTs}`);
+      vfs.install();
 
-    const removed = await emptyExpiredTrash(WS);
-    expect(removed).toBe(1);
-    expect(mockRemove).toHaveBeenCalledWith(`${trashRoot}/old-${oldTs}`, { recursive: true });
+      const removed = await emptyExpiredTrash(WS);
+      expect(removed).toBe(1);
+      expect(mockRemove).toHaveBeenCalledWith(`${trashRoot}/old-${oldTs}`, { recursive: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns 0 when trash is absent', async () => {

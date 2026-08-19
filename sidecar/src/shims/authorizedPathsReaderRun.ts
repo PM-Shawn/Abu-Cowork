@@ -2,7 +2,7 @@
  * Sidecar-local replacement for `src/core/agent/ports/authorizedPathsReader.ts`.
  *
  * Real forwarding shim (same class as `conversationStorageRun.ts`'s
- * `isMessageWrittenToDisk`, NOT a throwing bundle-graph-only stub): the
+ * `replaceMessageById`, NOT a throwing bundle-graph-only stub): the
  * shell's `authorizedWorkspaces` map (`src/core/tools/pathSafety.ts`) is
  * populated by `authorizeWorkspace()` calls that only happen shell-side
  * (`registry.ts:407`, `triggerPermission.ts`) — the sidecar process has no

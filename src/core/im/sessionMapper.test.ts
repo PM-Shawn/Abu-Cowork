@@ -1,7 +1,12 @@
 /**
  * SessionMapper Tests
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Deterministic clock (TESTING.md §3) — sessionMapper.ts reads Date.now() directly
+// (no injectable clock), so tests freeze the global clock via fake timers instead of
+// depending on real wall-clock time for TTL/staleness comparisons.
+const FIXED_NOW = 1_700_000_000_000;
 
 // Mock stores
 vi.mock('../../stores/imChannelStore', () => {
@@ -24,7 +29,7 @@ vi.mock('../../stores/imChannelStore', () => {
           const s = sessions[key] as { messageCount: number; lastActiveAt: number } | undefined;
           if (s) {
             s.messageCount++;
-            s.lastActiveAt = Date.now();
+            s.lastActiveAt = FIXED_NOW;
           }
         }),
         archiveSession: vi.fn((windowKey: string, session: unknown) => {
@@ -84,8 +89,8 @@ function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
     maxRoundsPerSession: 50,
     enabled: true,
     status: 'connected',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_NOW,
+    updatedAt: FIXED_NOW,
     ...overrides,
   };
 }
@@ -94,6 +99,8 @@ describe('SessionMapper', () => {
   let mapper: SessionMapper;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
     mapper = new SessionMapper();
     const store = useIMChannelStore.getState();
     for (const key of Object.keys(store.channels)) {
@@ -105,6 +112,10 @@ describe('SessionMapper', () => {
     for (const key of Object.keys(store.archivedSessions)) {
       delete store.archivedSessions[key];
     }
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('creates new session for first message', () => {
@@ -130,7 +141,7 @@ describe('SessionMapper', () => {
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { lastActiveAt: number };
-    if (session) session.lastActiveAt = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    if (session) session.lastActiveAt = FIXED_NOW - 365 * 24 * 60 * 60 * 1000;
 
     const result = mapper.resolve(msg, channel, 'safe_tools');
     expect(result.isNew).toBe(false);
@@ -166,7 +177,7 @@ describe('SessionMapper', () => {
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { lastActiveAt: number };
-    if (session) session.lastActiveAt = Date.now() - 31 * 60 * 1000;
+    if (session) session.lastActiveAt = FIXED_NOW - 31 * 60 * 1000;
 
     const result = mapper.resolve(msg, channel, 'safe_tools');
     expect(result.isNew).toBe(true);
@@ -204,7 +215,7 @@ describe('SessionMapper', () => {
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { lastActiveAt: number };
-    if (session) session.lastActiveAt = Date.now() - 31 * 60 * 1000;
+    if (session) session.lastActiveAt = FIXED_NOW - 31 * 60 * 1000;
 
     const result = mapper.resolve(msg, channel, 'safe_tools');
     expect(result.isNew).toBe(true);
@@ -217,7 +228,7 @@ describe('SessionMapper', () => {
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { lastActiveAt: number };
-    if (session) session.lastActiveAt = Date.now() - 31 * 60 * 1000;
+    if (session) session.lastActiveAt = FIXED_NOW - 31 * 60 * 1000;
 
     mapper.resolve(makeMessage({ text: 'new topic' }), channel, 'safe_tools');
 
@@ -257,7 +268,7 @@ describe('SessionMapper', () => {
       const store = useIMChannelStore.getState();
       const key = 'dchat:chat1:u1:window';
       const session = store.sessions[key] as { lastActiveAt: number; channelId: string };
-      if (session) session.lastActiveAt = Date.now() - 31 * 60 * 1000;
+      if (session) session.lastActiveAt = FIXED_NOW - 31 * 60 * 1000;
       (store.channels as Record<string, unknown>)['ch1'] = channel;
 
       mapper.cleanup();
@@ -272,7 +283,7 @@ describe('SessionMapper', () => {
       const store = useIMChannelStore.getState();
       const key = 'dchat:chat1:u1:window';
       const session = store.sessions[key] as { lastActiveAt: number; channelId: string };
-      if (session) session.lastActiveAt = Date.now() - 365 * 24 * 60 * 60 * 1000;
+      if (session) session.lastActiveAt = FIXED_NOW - 365 * 24 * 60 * 60 * 1000;
       (store.channels as Record<string, unknown>)['ch1'] = channel;
 
       mapper.cleanup();
@@ -286,12 +297,14 @@ describe('SessionMapper', () => {
       const store = useIMChannelStore.getState();
       const key = 'dchat:chat1:u1:window';
       const session = store.sessions[key] as { lastActiveAt: number; channelId: string };
-      if (session) session.lastActiveAt = Date.now() - 31 * 60 * 1000;
+      if (session) session.lastActiveAt = FIXED_NOW - 31 * 60 * 1000;
       (store.channels as Record<string, unknown>)['ch1'] = channel;
 
       mapper.cleanup();
 
-      vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 25 * 60 * 60 * 1000);
+      // Advance the frozen clock 25h forward (was: vi.spyOn(Date, 'now').mockReturnValue(
+      // Date.now() + ...), which read the real current time — non-deterministic).
+      vi.setSystemTime(FIXED_NOW + 25 * 60 * 60 * 1000);
       mapper.cleanup();
 
       const recovered = mapper.resolve(
@@ -300,7 +313,6 @@ describe('SessionMapper', () => {
         'safe_tools',
       );
       expect(recovered.isRecovered).toBeUndefined();
-      vi.restoreAllMocks();
     });
   });
 });

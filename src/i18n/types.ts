@@ -444,6 +444,12 @@ export interface TranslationDict {
       tooFew: string;
       failed: string;
     };
+    /** Rewind confirmation (edit-resend / regenerate / retry) — shown only
+     * when the redone turn is not the conversation's last, so later turns
+     * would otherwise be silently and permanently discarded. */
+    rewindConfirmTitle: string;
+    /** Body. {count} = number of later turns that will be discarded. */
+    rewindConfirmMessage: string;
   };
 
   // Share (conversation export / import)
@@ -1958,6 +1964,21 @@ export interface TranslationDict {
     outputChatIdPlaceholder: string;
     outputUserIdPlaceholder: string;
     outputPushFailed: string;
+    /** Field label + hint for the unattended autonomy tier */
+    permissionMode: string;
+    permissionModeHint: string;
+    /** Option label: the task follows the global settings permission mode (the default). */
+    permissionModeFollowSettings: string;
+    /** {origin} — a per-site browser refusal during an unattended run */
+    denialBrowserSite: string;
+    /** {command} */
+    denialCommand: string;
+    /** {path} */
+    denialFile: string;
+    /** {count} — trailer when more denials happened than are listed */
+    denialMore: string;
+    /** {mode} {list} — appended to a failed run's result text */
+    denialSummary: string;
   };
 
   // Triggers
@@ -2317,6 +2338,10 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** "Block this site" button — writes a persistent 'denied' verdict and
+     *  refuses the pending action. Offered whenever the origin is known,
+     *  including for requests that may not be granted permanently. */
+    browserBlockSite: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };
@@ -2584,6 +2609,11 @@ export interface TranslationDict {
   // Computer-use runtime status bar + screen-border overlay windows
   computerUse: {
     controlling: string;
+    /** Names the conversation that owns the CU session when it is NOT the
+     *  one on screen. Interpolates {title}. */
+    fromConversation: string;
+    /** Fallback for {title} above when the owner's title can't be resolved. */
+    otherConversation: string;
     /** Interpolates {step}, e.g. "· Step {step}". */
     step: string;
     stop: string;
@@ -2654,6 +2684,8 @@ export interface TranslationDict {
       errAppendContentEmpty: string;
       /** Memory saved. {type}, {name}, {filename}, optional {lock} */
       memorySaved: string;
+      /** Security note appended when credential-shaped content was redacted before saving. {labels} */
+      memoryRedactionNote: string;
       // todoWriteTool
       /** Error: no active session. */
       errNoActiveSession: string;

@@ -11,6 +11,7 @@ import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
+import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
@@ -19,6 +20,8 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { computeRewindImpact } from '@/utils/rewindImpact';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
@@ -528,6 +531,12 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
   }, [isAgentDone, fileOutputs, openPreview, activeConv?.id]);
 
+  // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
+  // this loop's first assistant message onward, discarding anything after —
+  // silently, if this isn't the conversation's last loop. See
+  // computeRewindImpact for the "later turns exist" check.
+  const [pendingRewind, setPendingRewind] = useState<{ laterTurnsCount: number; run: () => void } | null>(null);
+
   // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
@@ -547,11 +556,20 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     }
 
     const firstAssistantInLoop = assistantMsgs[0];
-    if (firstAssistantInLoop) {
-      useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
-    }
 
-    await runAgentLoopDispatched(convId, userContent, { images: retryImages });
+    const proceed = async () => {
+      if (firstAssistantInLoop) {
+        useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
+      }
+      await runAgentLoopDispatched(convId, userContent, { images: retryImages });
+    };
+
+    const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
+    if (impact.hasLaterTurns) {
+      setPendingRewind({ laterTurnsCount: impact.laterTurnsCount, run: proceed });
+      return;
+    }
+    await proceed();
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside
@@ -771,6 +789,21 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
           'bg-[var(--abu-clay-bg-15)]',
       )}
     >
+      <ConfirmDialog
+        open={!!pendingRewind}
+        title={t.chat.rewindConfirmTitle}
+        message={pendingRewind ? format(t.chat.rewindConfirmMessage, { count: String(pendingRewind.laterTurnsCount) }) : ''}
+        confirmText={t.common.confirm}
+        cancelText={t.common.cancel}
+        onConfirm={() => {
+          const run = pendingRewind?.run;
+          setPendingRewind(null);
+          run?.();
+        }}
+        onCancel={() => setPendingRewind(null)}
+        variant="danger"
+      />
+
       {/* User message renders standalone */}
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
@@ -795,13 +828,31 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
               </div>
             )}
 
+            {/* SmoothHeight bridges the layout SWAPS inside this region — most
+                importantly the completion fold: the expanded thinking/step
+                block unmounts and the one-line "已处理 Xs" header takes its
+                place in the same render, a -100~200px one-frame shrink that
+                (while pinned to the bottom) used to clamp scrollTop and jump
+                the whole view down. Streamed token growth stays instant (it's
+                under the wrapper's threshold); mount-direction growth is
+                handled by .block-expand-enter inside TaskBlock. Enabled only
+                for the last group — that's the only place the completion swap
+                happens; settled history groups keep the wrapper (stable DOM,
+                no child remounts when a new turn arrives) but observe nothing. */}
+            <SmoothHeight enabled={isLastGroupProp}>
             {/* Typing dots — shown while the current turn is streaming but has not
                 yet emitted any renderable content. Tracks the streaming message
                 itself, so a plan card from an earlier turn in the same group does
                 not suppress the dots for the fresh empty turn that follows. */}
             {isStreaming && !streamingHasContent && (
-              <div className="flex items-center gap-1.5 py-2">
-                <span className="text-minor text-[var(--abu-text-muted)]">{t.status.thinking}</span>
+              /* Geometry MUST mirror the TaskBlock active header and the
+                 "已处理 Xs" fold header that replace this row in later states:
+                 text-body (not text-minor), tertiary color, no top padding,
+                 mb-2 below. The old text-minor + py-2 version put the label
+                 2px smaller and ~8px lower than its successors, so every
+                 state swap read as the label jumping up a line ("错行"). */
+              <div className="flex items-center gap-1.5 mb-2">
+                <span className="text-body text-[var(--abu-text-tertiary)]">{t.status.thinking}</span>
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
                 <span className="typing-dot w-1.5 h-1.5 rounded-full bg-[var(--abu-clay-60)]" />
@@ -838,6 +889,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>
             )}
+            </SmoothHeight>
 
             {/* Interactive notice cards (Module I) — skill proposals etc.
                 MessageBubble's tool-call branch doesn't fire for assistant

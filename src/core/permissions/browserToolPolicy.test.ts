@@ -7,9 +7,11 @@ import {
   grantBrowserAutomation,
   hasBrowserGrant,
   isScriptingBrowserTool,
+  listAllBrowserToolPatterns,
   normalizeBrowserOrigin,
   revokeBrowserGrant,
 } from './browserToolPolicy';
+import { matchesToolName } from '../skill/toolFilter';
 
 describe('browser tool policy', () => {
   beforeEach(() => {
@@ -38,6 +40,31 @@ describe('browser tool policy', () => {
 
     it('does not let a server name ending in the browser name slip through', () => {
       expect(classifyBrowserTool('evil-abu-browser__click')).toBeNull();
+    });
+  });
+
+  describe('listAllBrowserToolPatterns', () => {
+    it('returns one namespace wildcard per browser server', () => {
+      expect(listAllBrowserToolPatterns().sort()).toEqual(
+        ['abu-browser-bridge__*', 'abu-browser__*'].sort(),
+      );
+    });
+
+    it('matches every tool under those servers — state-changing, navigate, and read-only alike', () => {
+      const patterns = listAllBrowserToolPatterns();
+      for (const server of ['abu-browser', 'abu-browser-bridge']) {
+        for (const tool of ['click', 'fill', 'navigate', 'snapshot', 'screenshot', 'get_tabs', 'anything-not-yet-invented']) {
+          expect(
+            patterns.some((p) => matchesToolName(`${server}__${tool}`, p)),
+            `${server}__${tool}`,
+          ).toBe(true);
+        }
+      }
+    });
+
+    it('does not match a differently-named server', () => {
+      const patterns = listAllBrowserToolPatterns();
+      expect(patterns.some((p) => matchesToolName('some-other-server__click', p))).toBe(false);
     });
   });
 

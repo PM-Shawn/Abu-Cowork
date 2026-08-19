@@ -426,6 +426,8 @@ const zhCN: TranslationDict = {
       tooFew: '对话较短，暂无需压缩',
       failed: '压缩失败，请稍后重试',
     },
+    rewindConfirmTitle: '确认重新生成？',
+    rewindConfirmMessage: '这之后还有 {count} 轮对话，重新生成会一并永久删除它们，且无法恢复。',
   },
 
   share: {
@@ -669,11 +671,11 @@ const zhCN: TranslationDict = {
     capabilityMyChromeDesc: '连接你正在使用的 Chrome，复用已有标签页、Cookie 和登录状态。',
     capabilityMyChromeScope: '仅在你明确要求使用 Chrome 或现有登录状态时使用',
     browserSitePermsTitle: '已授权的网站',
-    browserSitePermsDesc: '适用于内置浏览器和已连接的 Chrome：这些网站上的浏览器操作不再逐次询问。撤销后恢复为每次询问。',
-    browserSitePermsEmpty: '还没有授权任何网站。在浏览器操作确认弹窗里选择「以后都允许」，网站会出现在这里。',
+    browserSitePermsDesc: '适用于内置浏览器和已连接的 Chrome：设为「始终允许」的网站不再逐次询问，设为「禁止」的网站一律拒绝。移除后恢复为每次询问。',
+    browserSitePermsEmpty: '还没有为任何网站定过规则。在浏览器操作确认弹窗里选择「此网站以后都允许」或「禁止此网站」，网站会出现在这里。',
     browserSitePermsAllowed: '始终允许',
     browserSitePermsDenied: '禁止',
-    browserSitePermsRevoke: '撤销',
+    browserSitePermsRevoke: '移除',
     capabilityComputerTitle: '操作电脑',
     capabilityComputerDesc: '让阿布读取屏幕并通过辅助功能操作界面。高风险应用和按键仍受安全规则保护。',
     capabilityExtensionsTitle: '扩展能力',
@@ -1818,6 +1820,14 @@ const zhCN: TranslationDict = {
     outputChatIdPlaceholder: '群 ID，多个用逗号分隔',
     outputUserIdPlaceholder: '用户 ID，多个用逗号分隔',
     outputPushFailed: '结果推送到 IM 频道失败',
+    permissionMode: '自主程度',
+    permissionModeHint: '任务在无人值守时运行，超出该档位的操作会被直接拒绝，并在结果里写明原因。',
+    permissionModeFollowSettings: '跟随设置',
+    denialBrowserSite: '在 {origin} 的操作被拦下（该站点未授权）',
+    denialCommand: '命令被拦下：{command}',
+    denialFile: '文件访问被拦下：{path}',
+    denialMore: '，另有 {count} 项',
+    denialSummary: '\n\n任务在「{mode}」档位下被权限拦下：{list}。可在任务设置里调高自主程度，站点授权在 设置 → 能力 → 已授权的网站。',
   },
 
   trigger: {
@@ -2160,6 +2170,7 @@ const zhCN: TranslationDict = {
     browserScriptReason: '将在页面里运行一段脚本。脚本拥有该页面的全部权限（可读取内容、代表你操作），因此每次运行都会单独询问，不提供"以后都允许"。',
     browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
+    browserBlockSite: '禁止此网站',
     selfExtensionTitle: '新增能力确认',
     selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',
   },
@@ -2385,6 +2396,8 @@ const zhCN: TranslationDict = {
 
   computerUse: {
     controlling: '正在操控电脑',
+    fromConversation: '来自「{title}」',
+    otherConversation: '其他会话',
     step: '· 第 {step} 步',
     stop: '停止',
     overlayStep: '第 {step} 步',
@@ -2474,6 +2487,7 @@ const zhCN: TranslationDict = {
       memoryUpdated: '已更新记忆 [{type}]: {name} ({filename}){lock}',
       errAppendContentEmpty: '错误：append 时 content 不能为空。',
       memorySaved: '已保存记忆 [{type}]: {name} → {filename}{lock}',
+      memoryRedactionNote: '[安全] 保存前已对疑似凭证内容脱敏({labels})。记忆会反复注入后续对话——不要存密钥原文,只存指向(如「密钥在 设置 › 模型服务」或钥匙串)。',
       errNoActiveSession: 'Error: 没有活跃会话',
       errItemsRequired: 'Error: 需要提供计划项列表',
       todosCreated: '已创建 {n} 个计划项。\n',

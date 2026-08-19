@@ -5,6 +5,7 @@ import { useScratchpadStore } from '@/stores/scratchpadStore';
 import { invoke } from '@tauri-apps/api/core';
 
 const replaceMessageByIdMock = vi.fn().mockResolvedValue(undefined);
+const snapshotMessageRevisionMock = vi.fn().mockResolvedValue(undefined);
 // Partial mock (importOriginal) — chatStore.ts dynamically imports this SAME
 // resolved module (via a different relative specifier, '../core/session/
 // conversationStorage') for several other exports (updateIndexEntry,
@@ -16,6 +17,7 @@ vi.mock('../session/conversationStorage', async (importOriginal) => {
   return {
     ...actual,
     replaceMessageById: (...a: unknown[]) => replaceMessageByIdMock(...a),
+    snapshotMessageRevision: (...a: unknown[]) => snapshotMessageRevisionMock(...a),
   };
 });
 
@@ -34,6 +36,9 @@ vi.mock('./sidecarRunPredicate', () => ({
 
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 describe('applyDeltaFrames', () => {
   beforeEach(() => {
     useChatStore.setState({
@@ -50,6 +55,7 @@ describe('applyDeltaFrames', () => {
     useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
     useScratchpadStore.setState({ entries: {}, order: [] });
     replaceMessageByIdMock.mockClear();
+    snapshotMessageRevisionMock.mockClear();
   });
 
   describe('chat frames', () => {
@@ -59,7 +65,7 @@ describe('applyDeltaFrames', () => {
         {
           p: 'chat',
           m: 'addMessage',
-          a: [convId, { id: 'm1', role: 'user', content: 'hi', timestamp: Date.now() }],
+          a: [convId, { id: 'm1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP }],
         },
       ]);
       expect(useChatStore.getState().conversations[convId].messages[0].id).toBe('m1');
@@ -68,7 +74,7 @@ describe('applyDeltaFrames', () => {
     it('dispatches appendText + flushTokens to the real chatStore', async () => {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
-        id: 'a1', role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       await applyDeltaFrames([
         { p: 'chat', m: 'appendText', a: [convId, 'hello', 'a1'] },
@@ -87,7 +93,7 @@ describe('applyDeltaFrames', () => {
       // bypass that gate, so the marker still lands.
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {
-        id: 'a1', role: 'assistant', content: '部分输出', timestamp: Date.now(), isStreaming: true,
+        id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
       await applyDeltaFrames([{ p: 'chat', m: 'cancelStreaming', a: [convId] }]);
       const msg = useChatStore.getState().conversations[convId].messages[0];
@@ -147,7 +153,7 @@ describe('applyDeltaFrames', () => {
 
   describe('session frames', () => {
     it('replaceMessageById frame dynamically imports and calls conversationStorage.replaceMessageById', async () => {
-      const message = { id: 'm1', role: 'assistant' as const, content: 'x', timestamp: Date.now() };
+      const message = { id: 'm1', role: 'assistant' as const, content: 'x', timestamp: FIXED_TIMESTAMP };
       await applyDeltaFrames([{ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }]);
       expect(replaceMessageByIdMock).toHaveBeenCalledWith('conv-1', message);
     });
@@ -165,10 +171,10 @@ describe('applyDeltaFrames', () => {
       try {
         const convId = useChatStore.getState().createConversation();
         const message = {
-          id: `ordered-frame-${Date.now()}`,
+          id: 'ordered-frame-1',
           role: 'assistant' as const,
           content: 'final',
-          timestamp: Date.now(),
+          timestamp: FIXED_TIMESTAMP,
         };
         const applying = applyDeltaFrames([
           { p: 'chat', m: 'addMessage', a: [convId, { ...message, content: '' }] },
@@ -187,9 +193,53 @@ describe('applyDeltaFrames', () => {
       }
     });
 
+    it('snapshotMessageRevision frame dynamically imports and calls conversationStorage.snapshotMessageRevision', async () => {
+      const message = { id: 'm1', role: 'assistant' as const, content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true };
+      await applyDeltaFrames([{ p: 'session', m: 'snapshotMessageRevision', a: ['conv-1', message] }]);
+      expect(snapshotMessageRevisionMock).toHaveBeenCalledWith('conv-1', message);
+      expect(replaceMessageByIdMock).not.toHaveBeenCalled();
+    });
+
+    it('does not let a snapshot write overtake pending chat-append persistence (a pending checkpoint would drop the fresher snapshot entry when it lands)', async () => {
+      let releaseAppend!: () => void;
+      const appendPending = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'append_file_text') await appendPending;
+        return undefined;
+      });
+
+      try {
+        const convId = useChatStore.getState().createConversation();
+        const message = {
+          id: 'snap-frame-1',
+          role: 'assistant' as const,
+          content: 'partial',
+          timestamp: FIXED_TIMESTAMP,
+          isStreaming: true,
+        };
+        const applying = applyDeltaFrames([
+          { p: 'chat', m: 'addMessage', a: [convId, { ...message, content: '' }] },
+          { p: 'session', m: 'snapshotMessageRevision', a: [convId, message] },
+        ]);
+
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(snapshotMessageRevisionMock).not.toHaveBeenCalled();
+
+        releaseAppend();
+        await applying;
+        expect(snapshotMessageRevisionMock).toHaveBeenCalledWith(convId, message);
+      } finally {
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     it('unknown session method is skipped, not dispatched', async () => {
       await applyDeltaFrames([{ p: 'session', m: 'deleteEverything', a: ['conv-1'] }]);
       expect(replaceMessageByIdMock).not.toHaveBeenCalled();
+      expect(snapshotMessageRevisionMock).not.toHaveBeenCalled();
     });
   });
 
@@ -206,7 +256,7 @@ describe('applyDeltaFrames', () => {
       });
 
       const frames: PortFrame[] = [
-        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: Date.now() }] },
+        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: FIXED_TIMESTAMP }] },
         { p: 'exec', m: 'createExecution', a: [convId, 'loop-order'] },
         { p: 'scratchpad', m: 'addEntry', a: ['sp-1', { conversationId: convId, title: 't', type: 'summary', content: 'c' }] },
       ];
@@ -250,7 +300,7 @@ describe('applyDeltaFrames', () => {
       const convId = useChatStore.getState().createConversation();
       await applyDeltaFrames([
         { p: 'chat', m: 'doesNotExist', a: [convId] },
-        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: Date.now() }] },
+        { p: 'chat', m: 'addMessage', a: [convId, { id: 'm1', role: 'user', content: 'a', timestamp: FIXED_TIMESTAMP }] },
       ]);
       expect(useChatStore.getState().conversations[convId].messages[0].id).toBe('m1');
     });

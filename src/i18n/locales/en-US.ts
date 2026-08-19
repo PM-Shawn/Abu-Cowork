@@ -426,6 +426,8 @@ const enUS: TranslationDict = {
       tooFew: 'Conversation is short — no compaction needed',
       failed: 'Compaction failed — please try again',
     },
+    rewindConfirmTitle: 'Redo this turn?',
+    rewindConfirmMessage: 'There are {count} later turn(s) after this one. Redoing it will permanently delete them too — this cannot be undone.',
   },
 
   share: {
@@ -669,11 +671,11 @@ const enUS: TranslationDict = {
     capabilityMyChromeDesc: 'Connect the Chrome you already use and reuse its tabs, cookies, and signed-in state.',
     capabilityMyChromeScope: 'Used only when you explicitly request Chrome or an existing signed-in session',
     browserSitePermsTitle: 'Authorized sites',
-    browserSitePermsDesc: 'Applies to the built-in browser and connected Chrome: browser actions on these sites no longer ask each time. Revoking restores ask-every-time.',
-    browserSitePermsEmpty: 'No sites authorized yet. Choose "Always allow" in the browser action confirmation dialog and the site will appear here.',
+    browserSitePermsDesc: 'Applies to the built-in browser and connected Chrome: sites set to "Always allow" stop asking each time, sites set to "Blocked" are always refused. Removing restores ask-every-time.',
+    browserSitePermsEmpty: 'No site rules yet. Choose "Always allow this site" or "Block this site" in the browser action confirmation dialog and the site will appear here.',
     browserSitePermsAllowed: 'Always allow',
     browserSitePermsDenied: 'Blocked',
-    browserSitePermsRevoke: 'Revoke',
+    browserSitePermsRevoke: 'Remove',
     capabilityComputerTitle: 'Control the computer',
     capabilityComputerDesc: 'Let Abu read the screen and operate the interface through Accessibility. Sensitive apps and key combinations remain protected.',
     capabilityExtensionsTitle: 'Extended capabilities',
@@ -1817,6 +1819,14 @@ const enUS: TranslationDict = {
     outputChatIdPlaceholder: 'Chat IDs, separated by commas',
     outputUserIdPlaceholder: 'User IDs, separated by commas',
     outputPushFailed: 'Failed to push results to IM channel',
+    permissionMode: 'Autonomy',
+    permissionModeHint: 'The task runs unattended: anything beyond this tier is refused outright, and the reason is written into the result.',
+    permissionModeFollowSettings: 'Follow settings',
+    denialBrowserSite: 'blocked acting on {origin} (site not authorized)',
+    denialCommand: 'blocked command: {command}',
+    denialFile: 'blocked file access: {path}',
+    denialMore: ', and {count} more',
+    denialSummary: '\n\nThe task was blocked by permissions at the "{mode}" tier: {list}. Raise the task\'s autonomy in its settings, or authorize the site in Settings → Capabilities → Authorized sites.',
   },
 
   trigger: {
@@ -2159,6 +2169,7 @@ const enUS: TranslationDict = {
     browserScriptReason: 'This runs a script inside the page. Scripts act with the page\'s full authority (reading content, acting as you), so each run asks separately — there is no "always allow".',
     browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
+    browserBlockSite: 'Block this site',
     selfExtensionTitle: 'Confirm new capability',
     selfExtensionDescription: 'Abu wants to add or rewrite one of its own long-lived capabilities:',
   },
@@ -2384,6 +2395,8 @@ const enUS: TranslationDict = {
 
   computerUse: {
     controlling: 'Controlling computer',
+    fromConversation: 'Started by “{title}”',
+    otherConversation: 'another chat',
     step: '· Step {step}',
     stop: 'Stop',
     overlayStep: 'Step {step}',
@@ -2473,6 +2486,7 @@ const enUS: TranslationDict = {
       memoryUpdated: 'Memory updated [{type}]: {name} ({filename}){lock}',
       errAppendContentEmpty: 'Error: content cannot be empty when action=append.',
       memorySaved: 'Memory saved [{type}]: {name} → {filename}{lock}',
+      memoryRedactionNote: '[Security] Credential-shaped content was redacted before saving ({labels}). Memories are replayed into future prompts — never store secret values; store a POINTER instead (e.g. "the key lives in Settings › Models" or the keychain).',
       errNoActiveSession: 'Error: no active session',
       errItemsRequired: 'Error: items list is required',
       todosCreated: 'Created {n} todo items.\n',

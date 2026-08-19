@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { agentRunContext, type AgentRunContext } from '../agentRunContext';
 import type { PortFrame } from '../portFrameCoalescer';
-import { replaceMessageById } from './conversationStorageRun';
+import { replaceMessageById, snapshotMessageRevision } from './conversationStorageRun';
 
 function makeCtx(pushFrame: (frame: PortFrame) => void): AgentRunContext {
   return {
@@ -42,5 +42,31 @@ describe('conversationStorageRun.replaceMessageById wire contract', () => {
     });
 
     expect(frames).toEqual([{ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] }]);
+  });
+});
+
+describe('conversationStorageRun.snapshotMessageRevision wire contract', () => {
+  it('pushes {p:"session", m:"snapshotMessageRevision", a:[convId, message]} — matching frameApplier.ts\'s applySessionFrame unpacking exactly', async () => {
+    const frames: PortFrame[] = [];
+    const message = { id: 'm1', role: 'assistant' as const, content: 'partial stream', timestamp: 1700000000000, isStreaming: true };
+
+    await agentRunContext.run(makeCtx((f) => frames.push(f)), async () => {
+      await snapshotMessageRevision('conv-1', message);
+    });
+
+    expect(frames).toEqual([{ p: 'session', m: 'snapshotMessageRevision', a: ['conv-1', message] }]);
+  });
+
+  it('preserves issue order with replaceMessageById through the same pushFrame FIFO — the ordering the shell\'s dropStreamSnapshotEntry logic depends on', async () => {
+    const frames: PortFrame[] = [];
+    const partial = { id: 'm1', role: 'assistant' as const, content: 'part', timestamp: 1700000000000, isStreaming: true };
+    const final = { id: 'm1', role: 'assistant' as const, content: 'final', timestamp: 1700000000000 };
+
+    await agentRunContext.run(makeCtx((f) => frames.push(f)), async () => {
+      await snapshotMessageRevision('conv-1', partial);
+      await replaceMessageById('conv-1', final);
+    });
+
+    expect(frames.map((f) => f.m)).toEqual(['snapshotMessageRevision', 'replaceMessageById']);
   });
 });

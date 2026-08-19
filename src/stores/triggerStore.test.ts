@@ -146,8 +146,8 @@ describe('triggerStore', () => {
             debounce: { enabled: false, windowSeconds: 0 },
             runs: [],
             totalRuns: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            createdAt: 1_700_000_000_000, // filler (TESTING.md §3)
+            updatedAt: 1_700_000_000_000,
           },
         },
       };
@@ -189,8 +189,8 @@ describe('triggerStore', () => {
             debounce: { enabled: true, windowSeconds: 300 },
             runs: [],
             totalRuns: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            createdAt: 1_700_000_000_000, // filler (TESTING.md §3)
+            updatedAt: 1_700_000_000_000,
           },
         },
       };
@@ -245,8 +245,8 @@ describe('triggerStore', () => {
             },
             runs: [],
             totalRuns: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            createdAt: 1_700_000_000_000, // filler (TESTING.md §3)
+            updatedAt: 1_700_000_000_000,
           },
         },
       };
@@ -281,8 +281,8 @@ describe('triggerStore', () => {
             },
             runs: [],
             totalRuns: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            createdAt: 1_700_000_000_000, // filler (TESTING.md §3)
+            updatedAt: 1_700_000_000_000,
           },
         },
       };

@@ -15,13 +15,16 @@ import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { clearLogs, createLogger } from '@/core/logging/logger';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 
+// Filler timestamp (TESTING.md §3) — not asserted on below.
+const FIXED_TIMESTAMP = 1_700_000_000_000;
+
 beforeEach(() => {
   diagnosticRunnerMock.mockReset().mockResolvedValue([]);
   useDiagnosticStore.setState({ results: {}, lastCheckedAt: null, isChecking: false });
 });
 
 function makeMessage(id: string, text: string): Message {
-  return { id, role: 'user', content: text, timestamp: Date.now() };
+  return { id, role: 'user', content: text, timestamp: FIXED_TIMESTAMP };
 }
 
 function makeConversation(id: string, messageCount = 2): Conversation {
@@ -29,8 +32,8 @@ function makeConversation(id: string, messageCount = 2): Conversation {
     id,
     title: `Conversation ${id}`,
     messages: Array.from({ length: messageCount }, (_, i) => makeMessage(`${id}-m${i}`, `hello ${i}`)),
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
     status: 'idle',
   };
 }
@@ -39,8 +42,8 @@ function makeMeta(id: string): ConversationMeta {
   return {
     id,
     title: `Conversation ${id}`,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: FIXED_TIMESTAMP,
+    updatedAt: FIXED_TIMESTAMP,
     messageCount: 2,
   };
 }

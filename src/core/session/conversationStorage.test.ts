@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
+import { APP_VERSION } from '@/utils/version';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -242,8 +243,15 @@ describe('conversationStorage', () => {
       expect(appendCalls[0].args?.path).toEqual(expect.stringContaining('conv-native'));
       expect(appendCalls[0].args?.data).toEqual(expect.stringContaining('native hello'));
 
-      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire.
-      expect(calls.some((c) => c.cmd === 'atomic_write_text')).toBe(false);
+      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire
+      // for THIS conversation's messages.jsonl. Scoped to that path rather than
+      // "no atomic_write_text call at all": ensureBase's first call in a fresh
+      // process also does a one-time, version-gated snapshot sweep (plan §3.6
+      // addendum, part B) that writes its own marker file via atomicWrite —
+      // an unrelated call this test isn't pinning down.
+      expect(
+        calls.some((c) => c.cmd === 'atomic_write_text' && String(c.args?.path ?? '').includes('conv-native')),
+      ).toBe(false);
     });
 
     it('falls back to read + atomic-write when native append fails, and no data is lost', async () => {
@@ -1410,6 +1418,80 @@ describe('conversationStorage', () => {
       });
     });
 
+    describe('ledger byte watermark (plan §3.6 addendum, part A)', () => {
+      // A snapshot's `ledgerBytes` records how long messages.jsonl was when the
+      // snapshot was last written. `loadMessages` compares that against the
+      // ledger it just read: append-only ledgers never shrink on their own, so
+      // a shorter-than-watermark ledger means a foreign/older build rewrote the
+      // file in place since the snapshot was taken (the downgrade-then-
+      // reupgrade scenario) — the snapshot's revisions no longer apply and must
+      // be discarded rather than merged over the user's edited history.
+
+      it('discards and deletes a snapshot whose watermark exceeds the current ledger length', async () => {
+        memFs.files.set(MESSAGES, JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n');
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'STALE — relative to a ledger tail that no longer exists' })],
+          // Far beyond the (much shorter) ledger set above — simulates a
+          // foreign/older build having rewritten messages.jsonl smaller since
+          // this snapshot was taken.
+          ledgerBytes: 1_000_000,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('ledger-content'); // snapshot's stale revision was NOT merged
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);    // and the snapshot file itself was deleted
+      });
+
+      it('still merges when the watermark equals the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true); // merge is the normal path — nothing discarded
+      });
+
+      it('still merges when the watermark is smaller than the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length - 1,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+      it('merges unconditionally when the snapshot predates the watermark field (legacy snapshot)', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          // No `ledgerBytes` — a snapshot written by a build that predates this
+          // field. Missing watermark must fall back to today's behavior: merge.
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+    });
+
     describe('crash windows', () => {
       it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
@@ -1559,6 +1641,62 @@ describe('conversationStorage', () => {
         const physical = (memFs.files.get(path) ?? '').length;
         expect(physical).toBeGreaterThan(foldedBytes(path) * 3);
       });
+    });
+  });
+
+  describe('snapshot sweep on version change (plan §3.6 addendum, part B)', () => {
+    const BASE = '/Users/testuser/.abu/conversations';
+    const MARKER = `${BASE}/.snapshot-sweep-version`;
+
+    it('deletes every stale stream-snapshot.json exactly once, then the marker gates repeats across a restart', async () => {
+      // Simulate leftovers from a previous app version, present before any
+      // storage call has had a chance to run ensureBase's one-shot sweep.
+      memFs.dirs.add(BASE);
+      memFs.dirs.add(`${BASE}/conv-1`);
+      memFs.dirs.add(`${BASE}/conv-2`);
+      memFs.files.set(`${BASE}/conv-1/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm1' })] }));
+      memFs.files.set(`${BASE}/conv-2/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm2' })] }));
+
+      // "Launch" 1: no marker on disk yet → the first ensureBase() must sweep.
+      await storage.loadIndex();
+
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.has(`${BASE}/conv-2/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+
+      // A legitimate new snapshot gets written later in this same launch.
+      await storage.appendMessage('conv-1', makeMsg({ id: 'live', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'live', content: 'still streaming' }));
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+
+      // "Restart" with no version change: module-level state resets, but the
+      // on-disk marker still matches APP_VERSION.
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+
+      await storage.loadIndex();
+
+      // The marker gates this launch's sweep — the still-fresh snapshot from
+      // moments ago survives instead of being wiped as "stale".
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+    });
+
+    it('a sweep failure (fs throw) does not break loadMessages or storage init', async () => {
+      (readDir as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        throw new Error('boom: readDir unavailable');
+      });
+
+      // ensureBase's sweep must swallow this and still let normal storage
+      // operations proceed — it must never block or throw out of the init path.
+      await expect(
+        storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'hello' })),
+      ).resolves.toBeUndefined();
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-1');
+      expect(loaded.map((m) => m.content)).toEqual(['hello']);
     });
   });
 });

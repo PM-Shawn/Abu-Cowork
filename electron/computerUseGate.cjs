@@ -21,6 +21,25 @@ const COMPUTER_USE_GATE_MISS = Symbol('computer-use-gate-miss');
 const SESSION_TTL_MS = 2 * 60 * 1000;
 const TASK_GRANT_TTL_MS = 30 * 60 * 1000;
 const COMPUTER_STATE_TTL_MS = 30 * 1000;
+/**
+ * The Computer Use safety budget, enforced HERE rather than in the renderer.
+ *
+ * These caps existed only in `src/core/agent/computerUseStatus.ts`, whose
+ * `setComputerUseActive(true, …)` runs at the top of EVERY computer batch and
+ * unconditionally reset `stepCount` to 0 and `sessionStartTime` to now. A
+ * task that spans several batches — the normal shape of any non-trivial CU
+ * run — therefore restarted its budget on each batch and could never reach
+ * either cap. The renderer also cannot be the place this is decided: it is
+ * the process the budget exists to restrain.
+ *
+ * The budget rides on the task lease (`taskKey` = conversationId + loopId),
+ * which already survives across batches, and the deadline is fixed when the
+ * lease is first taken — re-entry reuses it, never extends it. Values match
+ * the renderer's former MAX_CU_STEPS / MAX_CU_DURATION_MS so the cap the
+ * product promised is the cap that now actually holds.
+ */
+const MAX_TASK_CU_STEPS = 30;
+const MAX_TASK_CU_DURATION_MS = 5 * 60 * 1000;
 const NO_PROGRESS_BEFORE_RECOVERY = 3;
 const NO_PROGRESS_AFTER_RECOVERY = 2;
 const VALID_SCOPES = new Set(['screen-read', 'ui-control']);
@@ -121,6 +140,17 @@ function createComputerUseGate(options) {
   const taskAttemptLedgers = new Map();
   const taskGrants = new Map();
   const taskLeases = new Map();
+  /**
+   * taskKey → { stepCount, deadlineAt }. Deliberately a sibling map rather
+   * than a field on the lease: a lease is only written once `authorizeTask`
+   * succeeds, but the DEADLINE has to start running from the first attempt,
+   * or a task could sit in an approval round-trip for free. The step count
+   * is charged separately, only for actions that were actually authorized —
+   * see `assertTaskBudgetAvailable` / `chargeTaskBudget`. Torn down
+   * everywhere a lease is (`revokeSender`, `pruneExpired`, `revokeTask`), so
+   * a finished task's budget never outlives it.
+   */
+  const taskBudgets = new Map();
   let activeTask = null;
 
   function revokeSender(sender) {
@@ -159,10 +189,12 @@ function createComputerUseGate(options) {
     for (const [key, lease] of taskLeases) {
       if (lease.sender === sender) {
         taskLeases.delete(key);
+        taskBudgets.delete(key);
         revoked = true;
       }
     }
     if (activeTask?.sender === sender) {
+      taskBudgets.delete(activeTask.key);
       activeTask = null;
       revoked = true;
     }
@@ -182,6 +214,7 @@ function createComputerUseGate(options) {
     for (const [key, lease] of taskLeases) {
       if (lease.expiresAt <= current) {
         taskLeases.delete(key);
+        taskBudgets.delete(key);
         if (activeTask === lease.authorization) {
           activeTask = null;
           killNativeHelper();
@@ -400,6 +433,61 @@ function createComputerUseGate(options) {
     }
   }
 
+  /**
+   * The task's budget, created on first reservation and REUSED on every
+   * re-entry. `deadlineAt` is stamped once here and never recomputed: a task
+   * that keeps starting fresh batches must not be able to walk its own clock
+   * forward, which is exactly how the renderer-side budget was defeated.
+   */
+  function ensureTaskBudget(key) {
+    let budget = taskBudgets.get(key);
+    if (!budget) {
+      budget = { stepCount: 0, deadlineAt: now() + MAX_TASK_CU_DURATION_MS };
+      taskBudgets.set(key, budget);
+    }
+    return budget;
+  }
+
+  /**
+   * Refuse an over-budget task. Checked BEFORE the reservation, so a task
+   * that has nothing left cannot re-take the global single-flight
+   * reservation after `pruneExpired` drops its lapsed lease.
+   */
+  function assertTaskBudgetAvailable(key) {
+    const budget = ensureTaskBudget(key);
+    if (now() > budget.deadlineAt) {
+      throw new Error(
+        `Computer Use has hit its ${MAX_TASK_CU_DURATION_MS / 60000}-minute limit for this task. `
+        + 'Report progress to the user and ask whether to continue.',
+      );
+    }
+    if (budget.stepCount >= MAX_TASK_CU_STEPS) {
+      throw new Error(
+        `Computer Use has hit its ${MAX_TASK_CU_STEPS}-step limit for this task. `
+        + 'Report progress to the user and ask whether to continue.',
+      );
+    }
+  }
+
+  /**
+   * Spend one step, once the action is actually authorized to run.
+   *
+   * Deliberately separate from the check above, and deliberately last: an
+   * attempt refused for single-flight ('already active in another foreground
+   * task'), for a denied approval, or by any of the target/permission
+   * assertions in between must not cost the task a step. Charging up front
+   * meant a task that never executed anything could burn its whole budget
+   * retrying a transient conflict — and would then be told it had hit a
+   * 30-step limit rather than the real reason.
+   *
+   * One step per `computer_use_begin_session`, which is one CU action — the
+   * same unit the renderer's status bar counts, so the number the user sees
+   * and the number that is enforced are the same number.
+   */
+  function chargeTaskBudget(key) {
+    ensureTaskBudget(key).stepCount += 1;
+  }
+
   function reserveTaskAuthorization(sender, args) {
     const key = taskKey(args);
     const existing = taskLeases.get(key);
@@ -530,9 +618,11 @@ function createComputerUseGate(options) {
     const lease = taskLeases.get(key);
     if (lease?.sender === sender) {
       taskLeases.delete(key);
+      taskBudgets.delete(key);
       revoked = true;
     }
     if (activeTask?.sender === sender && activeTask.key === key) {
+      taskBudgets.delete(key);
       activeTask = null;
       revoked = true;
     }
@@ -679,6 +769,11 @@ function createComputerUseGate(options) {
         throw new Error('Computer Use session scope is invalid');
       }
       const actionIntent = normalizeActionIntent(args?.actionIntent, args.scope);
+      // Refuse an over-budget task before it can take the reservation; the
+      // step itself is charged only once the action is authorized, further
+      // down. (Single-flight is unchanged either way: a task holds its
+      // reservation until `computer_use_end_task`, as always.)
+      assertTaskBudgetAvailable(taskKey(args));
       const reservation = reserveTaskAuthorization(sender, args);
       const { authorization } = reservation;
       try {
@@ -724,6 +819,9 @@ function createComputerUseGate(options) {
           authorization
         );
         assertTaskAuthorizationLive(authorization);
+        // Authorized — everything that could refuse this action has now run,
+        // so the step is real and the task pays for it.
+        chargeTaskBudget(taskKey(args));
         const token = tokenFactory();
         const expiresAt = now() + SESSION_TTL_MS;
         sessions.set(token, {
@@ -954,6 +1052,7 @@ function createComputerUseGate(options) {
     taskAttemptLedgers.clear();
     taskGrants.clear();
     taskLeases.clear();
+    taskBudgets.clear();
     activeTask = null;
     killNativeHelper();
   }
@@ -972,6 +1071,8 @@ module.exports = {
   SESSION_TTL_MS,
   TASK_GRANT_TTL_MS,
   COMPUTER_STATE_TTL_MS,
+  MAX_TASK_CU_STEPS,
+  MAX_TASK_CU_DURATION_MS,
   NO_PROGRESS_BEFORE_RECOVERY,
   NO_PROGRESS_AFTER_RECOVERY,
   normalizeIdentity,

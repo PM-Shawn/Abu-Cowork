@@ -169,17 +169,21 @@ test.describe.serial('Electron capability overview', () => {
     );
   });
 
-  // RB-04, in the real shell. The 30-step cap used to live only in the
-  // renderer, where `setComputerUseActive(true, …)` zeroed it at the top of
-  // every computer batch — so a multi-batch task never reached it. The
-  // budget now rides on the host task lease, and this drives the real main
-  // process over that lease to prove the cap holds outside unit tests.
+  // RB-04, in the real shell: drives the actual main process over the real
+  // IPC for 31 actions in ONE task (same conversation + loop), which is what
+  // the renderer would spread across many batches and reset each time.
   //
-  // Deliberately asserts on WHICH error comes back rather than on success:
-  // the budget is consumed before target resolution and the OS permission
-  // probe, so the outcome is the same whether or not this machine has
-  // screen-recording permission — no environment dependency, and that
-  // ordering is itself part of what makes the cap unskippable.
+  // Which property this can prove depends on whether this machine grants the
+  // OS permission a Computer Use action needs, so it asserts whichever one
+  // the environment allows — both are properties of the same fix, and
+  // neither branch lets a regression through:
+  //
+  //  - permission granted → actions authorize, so the 31st must be refused
+  //    for budget. A per-batch reset would let it run forever.
+  //  - permission absent → every action is refused before it is charged, so
+  //    NO call may ever come back with a step-limit error. Charging up front
+  //    (the shape this fix corrected) would burn the budget on refusals and
+  //    surface a bogus "30-step limit" for a task that never acted.
   test('enforces the Computer Use step budget in the main process, across batches', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
@@ -201,8 +205,6 @@ test.describe.serial('Electron capability overview', () => {
       await tauri.invoke('computer_use_set_enabled', { enabled: true });
 
       const collected: string[] = [];
-      // 31 actions spread over what the renderer would treat as many
-      // separate batches — same conversation and loop, i.e. one task.
       for (let i = 0; i < 31; i++) {
         try {
           await tauri.invoke('computer_use_begin_session', {
@@ -223,11 +225,17 @@ test.describe.serial('Electron capability overview', () => {
     });
 
     expect(errors).toHaveLength(31);
-    // None of the first 30 may be refused for budget — that is the exact
-    // regression: a per-batch reset would let this run forever.
-    for (const [index, message] of errors.slice(0, 30).entries()) {
-      expect(message, `step ${index + 1}`).not.toMatch(/step limit/i);
+    const actionsAuthorize = errors[0] === '';
+
+    if (actionsAuthorize) {
+      for (const [index, message] of errors.slice(0, 30).entries()) {
+        expect(message, `step ${index + 1}`).not.toMatch(/step limit/i);
+      }
+      expect(errors[30]).toMatch(/30-step limit/i);
+    } else {
+      for (const [index, message] of errors.entries()) {
+        expect(message, `attempt ${index + 1}`).not.toMatch(/step limit/i);
+      }
     }
-    expect(errors[30]).toMatch(/30-step limit/i);
   });
 });

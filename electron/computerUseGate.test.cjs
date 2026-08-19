@@ -1533,3 +1533,36 @@ test('an over-budget task keeps its budget across a re-entry attempt', async () 
   await assert.rejects(readStep(h, { toolCallId: 'tool-over-1' }), /30-step limit/);
   await assert.rejects(readStep(h, { toolCallId: 'tool-over-2' }), /30-step limit/);
 });
+
+// Review finding on the first cut of this change: the budget was charged
+// before `reserveTaskAuthorization`, which throws when another task holds
+// the global single-flight reservation. The throw does not refund, so a task
+// that never executed anything could burn its whole budget on transient
+// "already active" errors — and would then be told it hit a 30-step limit
+// instead of the real reason.
+test('a reservation refused for single-flight does not burn the budget', async () => {
+  const h = harness();
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+
+  // Task A takes the global reservation.
+  await readStep(h, { conversationId: 'conversation-a', loopId: 'loop-a', toolCallId: 'a-1' });
+
+  // Task B is refused for single-flight, MAX times over — the natural shape
+  // of an agent retrying a transient error.
+  for (let i = 0; i < MAX_TASK_CU_STEPS; i++) {
+    await assert.rejects(
+      readStep(h, { conversationId: 'conversation-b', loopId: 'loop-b', toolCallId: `b-${i}` }),
+      /already active in another foreground task/,
+    );
+  }
+
+  // A now finishes. B must still have its full budget: it never ran a step.
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-a',
+    loopId: 'loop-a',
+  });
+
+  await assert.doesNotReject(
+    readStep(h, { conversationId: 'conversation-b', loopId: 'loop-b', toolCallId: 'b-final' }),
+  );
+});

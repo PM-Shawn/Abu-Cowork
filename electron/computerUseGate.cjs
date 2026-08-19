@@ -143,8 +143,10 @@ function createComputerUseGate(options) {
   /**
    * taskKey → { stepCount, deadlineAt }. Deliberately a sibling map rather
    * than a field on the lease: a lease is only written once `authorizeTask`
-   * succeeds, but the budget has to start counting from the FIRST reservation
-   * so a task cannot spend steps during the approval round-trip. Torn down
+   * succeeds, but the DEADLINE has to start running from the first attempt,
+   * or a task could sit in an approval round-trip for free. The step count
+   * is charged separately, only for actions that were actually authorized —
+   * see `assertTaskBudgetAvailable` / `chargeTaskBudget`. Torn down
    * everywhere a lease is (`revokeSender`, `pruneExpired`, `revokeTask`), so
    * a finished task's budget never outlives it.
    */
@@ -447,12 +449,11 @@ function createComputerUseGate(options) {
   }
 
   /**
-   * Spend one step, or refuse. Called once per `computer_use_begin_session`,
-   * which is one CU action — the same unit the renderer's status bar counts,
-   * so the number the user sees and the number that is enforced are the same
-   * number.
+   * Refuse an over-budget task. Checked BEFORE the reservation, so a task
+   * that has nothing left cannot re-take the global single-flight
+   * reservation after `pruneExpired` drops its lapsed lease.
    */
-  function consumeTaskBudget(key) {
+  function assertTaskBudgetAvailable(key) {
     const budget = ensureTaskBudget(key);
     if (now() > budget.deadlineAt) {
       throw new Error(
@@ -466,8 +467,25 @@ function createComputerUseGate(options) {
         + 'Report progress to the user and ask whether to continue.',
       );
     }
-    budget.stepCount += 1;
-    return budget;
+  }
+
+  /**
+   * Spend one step, once the action is actually authorized to run.
+   *
+   * Deliberately separate from the check above, and deliberately last: an
+   * attempt refused for single-flight ('already active in another foreground
+   * task'), for a denied approval, or by any of the target/permission
+   * assertions in between must not cost the task a step. Charging up front
+   * meant a task that never executed anything could burn its whole budget
+   * retrying a transient conflict — and would then be told it had hit a
+   * 30-step limit rather than the real reason.
+   *
+   * One step per `computer_use_begin_session`, which is one CU action — the
+   * same unit the renderer's status bar counts, so the number the user sees
+   * and the number that is enforced are the same number.
+   */
+  function chargeTaskBudget(key) {
+    ensureTaskBudget(key).stepCount += 1;
   }
 
   function reserveTaskAuthorization(sender, args) {
@@ -751,12 +769,11 @@ function createComputerUseGate(options) {
         throw new Error('Computer Use session scope is invalid');
       }
       const actionIntent = normalizeActionIntent(args?.actionIntent, args.scope);
-      // Spend the step BEFORE reserving, so an over-budget task cannot
-      // re-take the global single-flight reservation after `pruneExpired`
-      // above has dropped its lapsed lease. (It does NOT release a
-      // reservation the task already holds — single-flight is unchanged by
-      // this fix; the task releases it at `computer_use_end_task` as always.)
-      consumeTaskBudget(taskKey(args));
+      // Refuse an over-budget task before it can take the reservation; the
+      // step itself is charged only once the action is authorized, further
+      // down. (Single-flight is unchanged either way: a task holds its
+      // reservation until `computer_use_end_task`, as always.)
+      assertTaskBudgetAvailable(taskKey(args));
       const reservation = reserveTaskAuthorization(sender, args);
       const { authorization } = reservation;
       try {
@@ -802,6 +819,9 @@ function createComputerUseGate(options) {
           authorization
         );
         assertTaskAuthorizationLive(authorization);
+        // Authorized — everything that could refuse this action has now run,
+        // so the step is real and the task pays for it.
+        chargeTaskBudget(taskKey(args));
         const token = tokenFactory();
         const expiresAt = now() + SESSION_TTL_MS;
         sessions.set(token, {

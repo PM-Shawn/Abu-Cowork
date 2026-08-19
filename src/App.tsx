@@ -91,7 +91,7 @@ import { useI18n } from '@/i18n';
 import CloseDialog from '@/components/common/CloseDialog';
 import SensitiveAuditDialog from '@/components/settings/SensitiveAuditDialog';
 import { checkForUpdate } from '@/core/updates/checker';
-import { sendConsolePing } from '@/utils/consolePing';
+import { usePingCadence } from '@/hooks/usePingCadence';
 import { fetchUnseenAnnouncements, markSeen, type AnnouncementItem } from '@/utils/consoleAnnouncement';
 import AnnouncementBanner from '@/components/common/AnnouncementBanner';
 import DisclaimerBanner from '@/components/common/DisclaimerBanner';
@@ -169,6 +169,7 @@ function App() {
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
   const activeConv = useActiveConversation();
   const { t } = useI18n();
+  usePingCadence();
 
   useEffect(() => {
     let cancelled = false;
@@ -435,7 +436,6 @@ function App() {
     provisionFirstPartyMCPServers();
     initMCPStoreSync();
     initBuiltinBrowserRuntime();
-    sendConsolePing();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
     // plaintext apiKey is still persisted via localStorage as a fallback,

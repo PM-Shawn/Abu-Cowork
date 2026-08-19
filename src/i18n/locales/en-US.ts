@@ -969,8 +969,8 @@ const enUS: TranslationDict = {
   },
 
   diagnostic: {
-    telemetryOptOut: 'Send anonymous usage and error reports',
-    telemetryOptOutDesc: 'Helps diagnose crashes and failures. Turn this off and Abu stops sending any usage, error, or diagnostic data.',
+    telemetryOptOut: 'Send usage and error reports',
+    telemetryOptOutDesc: 'Helps diagnose crashes and failures. Sends the error type, error code, and a grouping fingerprint only — never file contents, file paths, URLs, or conversation text. The full error stays on this machine and leaves it only in a diagnostic bundle you export yourself. Turn this off and Abu stops sending any usage, error, or diagnostic data.',
     title: 'Diagnostic',
     desc: 'Check Abu\'s health. Export a diagnostic bundle when reporting issues.',
     bannerAllPassed: 'All systems healthy',

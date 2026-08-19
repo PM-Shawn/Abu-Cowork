@@ -416,11 +416,6 @@ vi.mock('../../i18n', () => ({
   getLocale: () => 'zh-CN',
 }));
 
-const isMessageWrittenToDiskMock = vi.fn().mockReturnValue(true);
-vi.mock('../session/conversationStorage', () => ({
-  isMessageWrittenToDisk: (...a: unknown[]) => isMessageWrittenToDiskMock(...a),
-}));
-
 const tauriInvokeMock = vi.fn().mockResolvedValue({ ok: true });
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...a: unknown[]) => tauriInvokeMock(...a),
@@ -514,7 +509,6 @@ describe('agentLoopRunner', () => {
     // (or the convPatch emitter's "no data yet" case) override chatState
     // themselves before asserting.
     chatState = { conversations: { 'conv-1': {} }, conversationIndex: {} };
-    isMessageWrittenToDiskMock.mockClear();
     tauriInvokeMock.mockClear();
     execSubscribeMock.mockClear();
     execUnsubMock.mockReset();
@@ -618,13 +612,13 @@ describe('agentLoopRunner', () => {
 
       // 12 notifications (including the ordered agent.terminal fact and
       // hook.notify via the
-      // shared hookBridge) and 8 requests (native.invoke/tool.list/
-      // session.isMessageWrittenToDisk/approval.check — P1-3d-3 — /
+      // shared hookBridge) and 7 requests (native.invoke/tool.list/
+      // approval.check — P1-3d-3 — /
       // snapshot.beforeAiEdit — P1-3d A-write — /
       // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(8);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(7);
       expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
@@ -633,7 +627,7 @@ describe('agentLoopRunner', () => {
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'session.isMessageWrittenToDisk', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
     });
 
@@ -1001,27 +995,6 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarRequest, 'tool.list') as (p: unknown) => Promise<unknown>;
       const result = await handler(undefined);
       expect(result).toEqual([{ name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} } }]);
-    });
-  });
-
-  // ── session.isMessageWrittenToDisk ────────────────────────────────────
-
-  describe('session.isMessageWrittenToDisk handler', () => {
-    it('dynamically imports conversationStorage and returns its boolean result', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
-      ensureHandlersRegistered();
-      const handler = handlerFor(onSidecarRequest, 'session.isMessageWrittenToDisk') as (p: unknown) => Promise<unknown>;
-      isMessageWrittenToDiskMock.mockReturnValue(true);
-      const result = await handler({ conversationId: 'c1', messageId: 'm1' });
-      expect(isMessageWrittenToDiskMock).toHaveBeenCalledWith('m1');
-      expect(result).toBe(true);
-    });
-
-    it('rejects malformed params (missing messageId)', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
-      ensureHandlersRegistered();
-      const handler = handlerFor(onSidecarRequest, 'session.isMessageWrittenToDisk') as (p: unknown) => Promise<unknown>;
-      await expect(handler({ conversationId: 'c1' })).rejects.toThrow(MockSidecarRequestError);
     });
   });
 

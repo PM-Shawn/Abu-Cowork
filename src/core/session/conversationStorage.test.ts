@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
+import { APP_VERSION } from '@/utils/version';
 import type { Message } from '@/types';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -242,8 +243,15 @@ describe('conversationStorage', () => {
       expect(appendCalls[0].args?.path).toEqual(expect.stringContaining('conv-native'));
       expect(appendCalls[0].args?.data).toEqual(expect.stringContaining('native hello'));
 
-      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire.
-      expect(calls.some((c) => c.cmd === 'atomic_write_text')).toBe(false);
+      // Fallback path (atomicWrite → invoke('atomic_write_text')) must never fire
+      // for THIS conversation's messages.jsonl. Scoped to that path rather than
+      // "no atomic_write_text call at all": ensureBase's first call in a fresh
+      // process also does a one-time, version-gated snapshot sweep (plan §3.6
+      // addendum, part B) that writes its own marker file via atomicWrite —
+      // an unrelated call this test isn't pinning down.
+      expect(
+        calls.some((c) => c.cmd === 'atomic_write_text' && String(c.args?.path ?? '').includes('conv-native')),
+      ).toBe(false);
     });
 
     it('falls back to read + atomic-write when native append fails, and no data is lost', async () => {
@@ -1410,6 +1418,225 @@ describe('conversationStorage', () => {
       });
     });
 
+    // ══════════════════════════════════════════════════════════
+    // RB-03 (V0.40.0-RELEASE-READINESS-AUDIT.md): a crash-leftover stream
+    // snapshot is folded in as a trailing put with no regard for whether the
+    // ledger has since moved past it — a newer durable revision, or a
+    // truncate that removed the id, can both be silently overridden by the
+    // stale in-memory content. The fix stamps each snapshot entry with the
+    // ledger's byte length at capture time and drops the entry at load if
+    // the ledger contains, at or after that offset, either a newer put for
+    // the same id or a removal event that cut it.
+    //
+    // Every "stale leftover" case below manipulates `memFs.files` directly
+    // to restore a snapshot file AFTER the normal drop path (checkpoint /
+    // truncate) already deleted it — that is exactly what a crash between
+    // the ledger write landing and the snapshot delete completing leaves
+    // behind, and is not reachable by driving the public API alone.
+    describe('RB-03: stale stream-snapshot supersede guard', () => {
+      it('audit repro 1: a stale snapshot must not override a newer final ledger revision', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'partial' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        // The checkpoint lands the final revision and (in the non-crash case)
+        // deletes the now-superseded snapshot file.
+        await storage.replaceMessageById('conv-1', makeMsg({ id: 'm1', content: 'FINAL' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate a crash between that ledger append landing and the
+        // snapshot delete completing: the stale file survives on disk.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('FINAL');
+      });
+
+      it('audit repro 2: a stale snapshot must not revive a message a truncate already cut', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm2', content: 'b' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm2', content: 'b-live' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.appendTruncateEvent('conv-1', 'm2', { pid: 'm1', removedIds: ['m2'] });
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        // Simulate the same crash window as above, but on the truncate path.
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+      });
+
+      it('checkpoint-then-crash-before-delete via updateLastMessage also drops the stale entry', async () => {
+        // Same hazard as audit repro 1, exercised through the OTHER checkpoint
+        // call site (`updateLastMessage`, used when the caller does not know
+        // the finishing message's id ahead of time) to cover both drop sites.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'assistant-1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'assistant-1', content: 'streaming...' }));
+        const staleSnapshot = memFs.files.get(SNAPSHOT);
+        expect(staleSnapshot).toBeDefined();
+
+        await storage.updateLastMessage('conv-1', makeMsg({ id: 'assistant-1', content: 'complete' }));
+        await storage.flushWrites();
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+
+        memFs.files.set(SNAPSHOT, staleSnapshot!);
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('complete');
+      });
+
+      it('a legacy (pre-fix) unstamped snapshot keeps the old unconditional-merge behavior', async () => {
+        memFs.files.set(
+          MESSAGES,
+          JSON.stringify(makeMsg({ id: 'm1', content: 'FINAL' })) + '\n',
+        );
+        // v1 on-disk shape: no `stamp` on any entry — a build predating this
+        // fix could have left this file behind.
+        memFs.files.set(
+          SNAPSHOT,
+          JSON.stringify({
+            version: 1,
+            messages: [{ id: 'm1', role: 'user', content: 'legacy-partial', timestamp: 1 }],
+          }),
+        );
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Unchanged from pre-fix behavior: an unstamped entry has nothing to
+        // compare against the ledger, so it still folds in unconditionally.
+        expect(loaded[0].content).toBe('legacy-partial');
+      });
+
+      it('a snapshot entry with no later ledger write still applies (crash-protection survives)', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'still-streaming' }));
+
+        // Crash before any checkpoint ever reaches the ledger — the buffered
+        // revision is the ONLY copy of this content anywhere.
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('still-streaming');
+      });
+
+      it('a truncate BEFORE the snapshot stamp does not drop a post-truncate revival', async () => {
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'a' }));
+        await storage.flushWrites();
+        await storage.appendTruncateEvent('conv-1', 'm1', { removedIds: ['m1'] });
+        await storage.flushWrites();
+
+        // The user revives m1 (a fresh put after the truncate — the fold's
+        // put-after-truncate resurrection rule) and it is still streaming
+        // when the crash-protection buffer captures it, well AFTER the
+        // truncate's offset.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'revived' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'revived-streaming' }));
+
+        vi.resetModules();
+        storage = await import('./conversationStorage');
+
+        const loaded = await storage.loadMessages('conv-1');
+        // Must NOT be misfiltered by the earlier (now-irrelevant) truncate —
+        // the revival the user performed after it must survive.
+        expect(loaded.map((m) => m.id)).toEqual(['m1']);
+        expect(loaded[0].content).toBe('revived-streaming');
+      });
+    });
+
+    describe('ledger byte watermark (plan §3.6 addendum, part A)', () => {
+      // A snapshot's `ledgerBytes` records how long messages.jsonl was when the
+      // snapshot was last written. `loadMessages` compares that against the
+      // ledger it just read: append-only ledgers never shrink on their own, so
+      // a shorter-than-watermark ledger means a foreign/older build rewrote the
+      // file in place since the snapshot was taken (the downgrade-then-
+      // reupgrade scenario) — the snapshot's revisions no longer apply and must
+      // be discarded rather than merged over the user's edited history.
+
+      it('discards and deletes a snapshot whose watermark exceeds the current ledger length', async () => {
+        memFs.files.set(MESSAGES, JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n');
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'STALE — relative to a ledger tail that no longer exists' })],
+          // Far beyond the (much shorter) ledger set above — simulates a
+          // foreign/older build having rewritten messages.jsonl smaller since
+          // this snapshot was taken.
+          ledgerBytes: 1_000_000,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded).toHaveLength(1);
+        expect(loaded[0].content).toBe('ledger-content'); // snapshot's stale revision was NOT merged
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);    // and the snapshot file itself was deleted
+      });
+
+      it('still merges when the watermark equals the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true); // merge is the normal path — nothing discarded
+      });
+
+      it('still merges when the watermark is smaller than the current ledger length', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          ledgerBytes: raw.length - 1,
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+
+      it('merges unconditionally when the snapshot predates the watermark field (legacy snapshot)', async () => {
+        const raw = JSON.stringify(makeMsg({ id: 'm1', content: 'ledger-content' })) + '\n';
+        memFs.files.set(MESSAGES, raw);
+        memFs.files.set(SNAPSHOT, JSON.stringify({
+          version: 1,
+          messages: [makeMsg({ id: 'm1', content: 'still-streaming' })],
+          // No `ledgerBytes` — a snapshot written by a build that predates this
+          // field. Missing watermark must fall back to today's behavior: merge.
+        }));
+
+        const loaded = await storage.loadMessages('conv-1');
+
+        expect(loaded[0].content).toBe('still-streaming');
+        expect(memFs.files.has(SNAPSHOT)).toBe(true);
+      });
+    });
+
     describe('crash windows', () => {
       it('keeps the snapshot file when a shutdown promotion never reaches the ledger', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
@@ -1559,6 +1786,62 @@ describe('conversationStorage', () => {
         const physical = (memFs.files.get(path) ?? '').length;
         expect(physical).toBeGreaterThan(foldedBytes(path) * 3);
       });
+    });
+  });
+
+  describe('snapshot sweep on version change (plan §3.6 addendum, part B)', () => {
+    const BASE = '/Users/testuser/.abu/conversations';
+    const MARKER = `${BASE}/.snapshot-sweep-version`;
+
+    it('deletes every stale stream-snapshot.json exactly once, then the marker gates repeats across a restart', async () => {
+      // Simulate leftovers from a previous app version, present before any
+      // storage call has had a chance to run ensureBase's one-shot sweep.
+      memFs.dirs.add(BASE);
+      memFs.dirs.add(`${BASE}/conv-1`);
+      memFs.dirs.add(`${BASE}/conv-2`);
+      memFs.files.set(`${BASE}/conv-1/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm1' })] }));
+      memFs.files.set(`${BASE}/conv-2/stream-snapshot.json`, JSON.stringify({ version: 1, messages: [makeMsg({ id: 'm2' })] }));
+
+      // "Launch" 1: no marker on disk yet → the first ensureBase() must sweep.
+      await storage.loadIndex();
+
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.has(`${BASE}/conv-2/stream-snapshot.json`)).toBe(false);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+
+      // A legitimate new snapshot gets written later in this same launch.
+      await storage.appendMessage('conv-1', makeMsg({ id: 'live', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'live', content: 'still streaming' }));
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+
+      // "Restart" with no version change: module-level state resets, but the
+      // on-disk marker still matches APP_VERSION.
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+
+      await storage.loadIndex();
+
+      // The marker gates this launch's sweep — the still-fresh snapshot from
+      // moments ago survives instead of being wiped as "stale".
+      expect(memFs.files.has(`${BASE}/conv-1/stream-snapshot.json`)).toBe(true);
+      expect(memFs.files.get(MARKER)).toBe(APP_VERSION);
+    });
+
+    it('a sweep failure (fs throw) does not break loadMessages or storage init', async () => {
+      (readDir as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        throw new Error('boom: readDir unavailable');
+      });
+
+      // ensureBase's sweep must swallow this and still let normal storage
+      // operations proceed — it must never block or throw out of the init path.
+      await expect(
+        storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: 'hello' })),
+      ).resolves.toBeUndefined();
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-1');
+      expect(loaded.map((m) => m.content)).toEqual(['hello']);
     });
   });
 });

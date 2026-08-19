@@ -85,8 +85,8 @@ export interface ChatDelta {
   // ── Discrete family (one-shot writes — turn/message/status boundaries) ──
   /** Mirrors chatStore's `addMessage`. */
   addMessage(convId: string, message: Message): void;
-  /** Mirrors chatStore's `deleteMessage`. */
-  deleteMessage(convId: string, messageId: string, opts?: { skipCatalogBump?: boolean; persist?: boolean }): void;
+  /** Mirrors chatStore's `deleteMessagesFrom`. */
+  deleteMessagesFrom(convId: string, messageId: string): void;
   /** Mirrors chatStore's `updateToolCall`. */
   updateToolCall(
     convId: string,
@@ -161,8 +161,8 @@ export function createInProcessChatDelta(): ChatDelta {
       useChatStore.getState().setMessageToolCalls(convId, messageId, toolCalls),
 
     addMessage: (convId, message) => useChatStore.getState().addMessage(convId, message),
-    deleteMessage: (convId, messageId, opts) =>
-      useChatStore.getState().deleteMessage(convId, messageId, opts),
+    deleteMessagesFrom: (convId, messageId) =>
+      useChatStore.getState().deleteMessagesFrom(convId, messageId),
     updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) =>
       useChatStore.getState().updateToolCall(
         convId,

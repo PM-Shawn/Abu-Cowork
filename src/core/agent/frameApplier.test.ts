@@ -5,6 +5,7 @@ import { useScratchpadStore } from '@/stores/scratchpadStore';
 import { invoke } from '@tauri-apps/api/core';
 
 const replaceMessageByIdMock = vi.fn().mockResolvedValue(undefined);
+const snapshotMessageRevisionMock = vi.fn().mockResolvedValue(undefined);
 // Partial mock (importOriginal) — chatStore.ts dynamically imports this SAME
 // resolved module (via a different relative specifier, '../core/session/
 // conversationStorage') for several other exports (updateIndexEntry,
@@ -16,6 +17,7 @@ vi.mock('../session/conversationStorage', async (importOriginal) => {
   return {
     ...actual,
     replaceMessageById: (...a: unknown[]) => replaceMessageByIdMock(...a),
+    snapshotMessageRevision: (...a: unknown[]) => snapshotMessageRevisionMock(...a),
   };
 });
 
@@ -53,6 +55,7 @@ describe('applyDeltaFrames', () => {
     useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
     useScratchpadStore.setState({ entries: {}, order: [] });
     replaceMessageByIdMock.mockClear();
+    snapshotMessageRevisionMock.mockClear();
   });
 
   describe('chat frames', () => {
@@ -190,9 +193,53 @@ describe('applyDeltaFrames', () => {
       }
     });
 
+    it('snapshotMessageRevision frame dynamically imports and calls conversationStorage.snapshotMessageRevision', async () => {
+      const message = { id: 'm1', role: 'assistant' as const, content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true };
+      await applyDeltaFrames([{ p: 'session', m: 'snapshotMessageRevision', a: ['conv-1', message] }]);
+      expect(snapshotMessageRevisionMock).toHaveBeenCalledWith('conv-1', message);
+      expect(replaceMessageByIdMock).not.toHaveBeenCalled();
+    });
+
+    it('does not let a snapshot write overtake pending chat-append persistence (a pending checkpoint would drop the fresher snapshot entry when it lands)', async () => {
+      let releaseAppend!: () => void;
+      const appendPending = new Promise<void>((resolve) => {
+        releaseAppend = resolve;
+      });
+      vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+        if (cmd === 'append_file_text') await appendPending;
+        return undefined;
+      });
+
+      try {
+        const convId = useChatStore.getState().createConversation();
+        const message = {
+          id: 'snap-frame-1',
+          role: 'assistant' as const,
+          content: 'partial',
+          timestamp: FIXED_TIMESTAMP,
+          isStreaming: true,
+        };
+        const applying = applyDeltaFrames([
+          { p: 'chat', m: 'addMessage', a: [convId, { ...message, content: '' }] },
+          { p: 'session', m: 'snapshotMessageRevision', a: [convId, message] },
+        ]);
+
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(snapshotMessageRevisionMock).not.toHaveBeenCalled();
+
+        releaseAppend();
+        await applying;
+        expect(snapshotMessageRevisionMock).toHaveBeenCalledWith(convId, message);
+      } finally {
+        vi.mocked(invoke).mockReset();
+      }
+    });
+
     it('unknown session method is skipped, not dispatched', async () => {
       await applyDeltaFrames([{ p: 'session', m: 'deleteEverything', a: ['conv-1'] }]);
       expect(replaceMessageByIdMock).not.toHaveBeenCalled();
+      expect(snapshotMessageRevisionMock).not.toHaveBeenCalled();
     });
   });
 

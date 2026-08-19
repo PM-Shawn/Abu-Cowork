@@ -143,15 +143,18 @@ export function generateSummary(
   }
 
   // Thinking is its own standalone block now — the collapsed header is the only
-  // line, so surface the duration ("思考了 N 秒") at a glance; fall back to the
-  // topic label when duration is unknown (still streaming).
+  // line, so surface the duration ("思考了 N 秒") at a glance. While the block
+  // is still live the label must be "思考中", CONTINUING the placeholder dots
+  // row it replaces mid-stream (same words, same spot — the trailing …/... is
+  // stripped by the active header before its animated dots); "思考过程" is only
+  // for settled blocks whose duration got lost (old persisted history).
   const thinkingStep = steps.find((s) => s.type === 'thinking');
   const onlyThinking = thinkingStep && readCount + writeCount + createCount + commandCount + otherCount === 0 && !skillStep;
   if (onlyThinking) {
     actions.push(
       thinkingStep.duration != null
         ? format(t.task.thoughtFor, { seconds: thinkingStep.duration })
-        : t.chat.thinkingProcess,
+        : isActive ? t.chat.thinking : t.chat.thinkingProcess,
     );
   }
 
@@ -286,6 +289,21 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
 
   // Determine which steps to display based on mode
   const isOpen = displayMode !== 'collapsed';
+  // Timeline mount gate. Blocks that mount already collapsed (history rows
+  // remounting during virtualized scrolling) never render the timeline at all
+  // — no DOM cost, no risk of a mount animation. But once the timeline HAS
+  // been open, collapsing keeps it mounted at grid-rows 0fr so the close is a
+  // 280ms roll-up (see .block-expand in index.css). Unmounting here instead
+  // made the auto-collapse when the answer starts streaming read as the whole
+  // thinking/step block blinking away in one frame.
+  // Monotonic latch (false→true) via the render-phase state adjustment
+  // pattern: the latch must flip in the SAME render that opens the timeline
+  // (an effect would paint the first open one frame without it), and it must
+  // be STATE, not a ref mutated during render — ref writes aren't tied to
+  // commit, so a discarded concurrent render could latch it for a timeline
+  // that never showed (also react-hooks/refs forbids it).
+  const [timelineEverOpened, setTimelineEverOpened] = useState(isOpen);
+  if (isOpen && !timelineEverOpened) setTimelineEverOpened(true);
   const needsTruncation = unifiedSteps.length > PREVIEW_LIMIT;
   const visibleSteps = (displayMode === 'preview' && needsTruncation)
     ? unifiedSteps.slice(0, PREVIEW_LIMIT)
@@ -350,8 +368,22 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
         </button>
       )}
 
-      {/* Flow Timeline */}
-      {isOpen && visibleSteps.length > 0 && (
+      {/* Flow Timeline. block-expand-enter animates the height open when this
+          mounts mid-stream (the "思考中" dots swapping to the first thinking/
+          tool step while pinned to the bottom must not land in one frame);
+          open/closed classes roll it up/down on later toggles — including the
+          auto-collapse when the answer starts streaming — while the content
+          stays mounted (inert + hidden from a11y when closed). */}
+      {timelineEverOpened && visibleSteps.length > 0 && (
+        <div
+          inert={!isOpen || undefined}
+          aria-hidden={!isOpen || undefined}
+          className={cn(
+            'block-expand',
+            isOpen ? 'block-expand-open' : 'block-expand-closed',
+            'block-expand-enter',
+          )}
+        >
         <div className="flow-timeline pl-1">
           {visibleSteps.map((step, index) => {
             const isLastVisible = index === visibleSteps.length - 1;
@@ -463,6 +495,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
               </div>
             </div>
           )}
+        </div>
         </div>
       )}
     </div>
@@ -578,7 +611,13 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
     if (!isThinking || !step.detail) return null;
     if (isRunning) {
       return (
-        <div className="mt-1 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
+        // block-expand + enter: the pane can also first mount inside an
+        // ALREADY open timeline (a later turn's thinking starting after tool
+        // steps), where the timeline-level mount animation won't fire — so the
+        // pane animates its own height open too. Same one-frame-jump rationale
+        // as the timeline wrapper above. Always open; it leaves by the
+        // timeline collapsing around it, so no closed state here.
+        <div className="block-expand block-expand-open block-expand-enter mt-1 rounded-lg bg-[var(--abu-bg-muted)] border border-[var(--abu-bg-hover)] overflow-hidden">
           <div ref={thinkingScrollRef} className="px-3 py-2 max-h-48 overflow-y-auto">
             <pre className="text-minor text-[var(--abu-text-tertiary)] italic whitespace-pre-wrap break-words leading-relaxed font-sans m-0">
               {step.detail}

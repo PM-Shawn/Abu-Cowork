@@ -649,11 +649,11 @@ describe('chatStore', () => {
     });
 
     // Regression (code-review fix #1, message-storage P0): messageCount must be
-    // RE-DERIVED from conv.messages.length, not incremented. deleteMessage /
-    // deleteMessagesFrom / deleteLoopMessages mutate conv.messages but never
-    // touch conversationIndex.messageCount, so an increment-only counter would
-    // drift upward forever across deletes/edits/retries. Re-derivation self-heals.
-    it('messageCount self-heals across deletes: add 4, delete 3, add 1 → 2 (not 6)', () => {
+    // RE-DERIVED from conv.messages.length, not incremented. deleteMessagesFrom
+    // mutates conv.messages but never touches conversationIndex.messageCount
+    // itself, so an increment-only counter would drift upward forever across
+    // truncates/edits/retries. Re-derivation self-heals.
+    it('messageCount self-heals across a truncate: add 4, truncate from m2, add 1 → 2 (not 6)', async () => {
       const id = useChatStore.getState().createConversation();
       const store = useChatStore.getState();
       store.addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1 });
@@ -661,14 +661,20 @@ describe('chatStore', () => {
       store.addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3 });
       store.addMessage(id, { id: 'm4', role: 'assistant', content: 'd', timestamp: 4 });
       expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(4);
+      // Drain every addMessage's disk append before truncating, and drain the
+      // truncate's own disk write before the test returns — deleteMessagesFrom
+      // is durably persisted now (plan stage 3), so leaving it unawaited would
+      // let its real 100ms-debounced write land during a LATER test instead.
+      await waitForConversationPersistence(id);
 
-      useChatStore.getState().deleteMessage(id, 'm1');
-      useChatStore.getState().deleteMessage(id, 'm2');
-      useChatStore.getState().deleteMessage(id, 'm3');
+      // Removes m2, m3, m4 — keeping m1.
+      useChatStore.getState().deleteMessagesFrom(id, 'm2');
+      await waitForConversationPersistence(id);
 
       useChatStore.getState().addMessage(id, { id: 'm5', role: 'user', content: 'e', timestamp: 5 });
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(2);
       expect(useChatStore.getState().conversationIndex[id].messageCount).toBe(2);
+      await waitForConversationPersistence(id);
     });
   });
 
@@ -1328,73 +1334,102 @@ describe('chatStore', () => {
     });
   });
 
-  // ── deleteMessage ──
-  describe('deleteMessage', () => {
-    it('removes a specific message', () => {
+  // ── deleteMessagesFrom (plan stage 3 — the sole delete/truncate primitive) ──
+  describe('deleteMessagesFrom', () => {
+    it('deletes from a message onwards', async () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
       useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().deleteMessage(id, 'msg1');
+      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
+      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-      expect(useChatStore.getState().conversations[id].messages[0].id).toBe('msg2');
+      // Drain the durable truncate write (plan stage 3) before the test ends,
+      // so its real 100ms-debounced disk write can't land during a later
+      // test's assertion window.
+      await waitForConversationPersistence(id);
     });
 
-    // message-storage P1 step 2: delete paths bump the catalog count by the
-    // negative of the number of messages they removed. The store reaches
-    // catalogBumpCount via a dynamic import (module-level vi.mock can't
-    // intercept it), so we assert at the invoke('catalog_bump_count') layer.
-    it('bumps the catalog count by -1 for a single removed message', async () => {
+    it('is a no-op when the given id is not in the conversation', async () => {
       const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'df-only', role: 'user', content: 'a', timestamp: 1 });
 
-      // Let the addMessage-triggered append bumps (+1 each, fired via dynamic
-      // import) settle so they don't pollute the post-clear assertion window.
       await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'msg1');
+      useChatStore.getState().deleteMessagesFrom(id, 'nonexistent');
 
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { convId: string; delta: number }).convId).toBe(id);
-        expect((bump![1] as { convId: string; delta: number }).delta).toBe(-1);
+      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
+      await waitForConversationPersistence(id);
+      expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count')).toBeUndefined();
+      expect(vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation')).toBeUndefined();
+    });
+
+    // message-storage P1 step 2 / plan stage 3: a durable truncate (the
+    // `from` id was actually appended to disk) writes a real msg.truncate
+    // event and reindexes the catalog EXACTLY from the folded ledger —
+    // replacing the old approximate `catalog_bump_count(-N)` nudge on this
+    // path entirely (plan §4 冲突③).
+    it('durably truncates via appendTruncateEvent and reindexes the catalog exactly (not an approximate bump)', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, { id: 'df-msg1', role: 'user', content: 'a', timestamp: 1 });
+      useChatStore.getState().addMessage(id, { id: 'df-msg2', role: 'assistant', content: 'b', timestamp: 2 });
+      useChatStore.getState().addMessage(id, { id: 'df-msg3', role: 'user', content: 'c', timestamp: 3 });
+      await waitForConversationPersistence(id);
+
+      vi.mocked(invoke).mockClear();
+      // Removes df-msg2 + df-msg3 — both were durably appended above.
+      useChatStore.getState().deleteMessagesFrom(id, 'df-msg2');
+
+      await waitForConversationPersistence(id);
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeDefined();
+      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
+      expect(bump).toBeUndefined();
+    });
+
+    // Regression (code-review fix #8, carried forward from the retired
+    // deleteMessage's skipCatalogBump): a placeholder that never durably
+    // reached messages.jsonl has no ledger event to write (appendTruncateEvent's
+    // skip guard), so there's nothing for a reindex to reconcile — chatStore
+    // must fall back to the approximate display-level nudge instead. Still
+    // removes the message from memory either way.
+    it('falls back to the approximate catalog nudge when the truncated message was never durably persisted', async () => {
+      const id = 'conv-df-ghost-fallback';
+      useChatStore.setState({
+        conversations: {
+          [id]: {
+            id,
+            title: 'Ghost fallback',
+            messages: [
+              { id: 'df-user', role: 'user', content: 'hi', timestamp: 1 },
+              { id: 'df-ghost', role: 'assistant', content: '', timestamp: 2, isStreaming: true },
+            ],
+            createdAt: 1,
+            updatedAt: 2,
+            status: 'running',
+          },
+        },
+        conversationIndex: {
+          [id]: { id, title: 'Ghost fallback', createdAt: 1, updatedAt: 2, messageCount: 2 },
+        },
       });
-    });
-
-    it('does not bump the catalog count when no message matched', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-
-      await waitForConversationPersistence(id);
       vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'nonexistent');
 
+      // 'df-ghost' was never appended via addMessage, so conversationStorage's
+      // writtenIds never learned about it — mirrors the real ghost-cleanup
+      // case (a streaming placeholder aborted before its first checkpoint).
+      useChatStore.getState().deleteMessagesFrom(id, 'df-ghost');
+
+      expect(useChatStore.getState().conversations[id].messages.map((m) => m.id)).toEqual(['df-user']);
       await waitForConversationPersistence(id);
       const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-      expect(bump).toBeUndefined();
+      expect(bump).toBeDefined();
+      expect((bump![1] as { delta: number }).delta).toBe(-1);
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
     });
 
-    // Regression (code-review fix #8): agentLoop's ghost-message deletion
-    // path passes { skipCatalogBump: true } for a placeholder that never
-    // durably reached messages.jsonl, since there is no +1 for the -1 to
-    // balance. Still removes the message from memory either way.
-    it('removes the message but skips the catalog bump when skipCatalogBump is true', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-
-      await waitForConversationPersistence(id);
-      vi.mocked(invoke).mockClear();
-      useChatStore.getState().deleteMessage(id, 'msg1', { skipCatalogBump: true });
-
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
-      await waitForConversationPersistence(id);
-      const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-      expect(bump).toBeUndefined();
-    });
-
-    it('durably removes a zero-output placeholder when persist is true', async () => {
-      const id = 'conv-durable-ghost';
+    it('durably truncates a persisted zero-output placeholder onto disk', async () => {
+      const id = 'conv-durable-ghost-truncate';
       const user = { id: 'u1', role: 'user' as const, content: 'hello', timestamp: 1 };
       const ghost = { id: 'a1', role: 'assistant' as const, content: '', timestamp: 2, isStreaming: true };
       const messageWrites: string[] = [];
@@ -1425,20 +1460,29 @@ describe('chatStore', () => {
           ? `${JSON.stringify(user)}\n${JSON.stringify(ghost)}\n`
           : '');
       vi.mocked(invoke).mockImplementation(async (command, args) => {
-        const payload = args as { path?: string; content?: string } | undefined;
-        if (command === 'atomic_write_text' && payload?.path?.endsWith('messages.jsonl')) {
-          messageWrites.push(payload.content ?? '');
+        const payload = args as { path?: string; content?: string; data?: string } | undefined;
+        if (payload?.path?.endsWith('messages.jsonl')) {
+          if (command === 'append_file_text') messageWrites.push(payload.data ?? '');
+          if (command === 'atomic_write_text') messageWrites.push(payload.content ?? '');
         }
         return undefined;
       });
 
       try {
-        useChatStore.getState().deleteMessage(id, ghost.id, { persist: true });
+        // Populate conversationStorage's writtenIds from the (mocked) disk
+        // content first — the real production path always reaches a ghost
+        // truncate after the placeholder went through a real append/load, so
+        // appendTruncateEvent's skip guard sees it as durable.
+        const { loadMessages } = await import('../core/session/conversationStorage');
+        await loadMessages(id);
+
+        useChatStore.getState().deleteMessagesFrom(id, ghost.id);
         await waitForConversationPersistence(id);
 
         expect(useChatStore.getState().conversations[id].messages.map((message) => message.id)).toEqual(['u1']);
-        expect(messageWrites.at(-1)).toContain('"id":"u1"');
-        expect(messageWrites.at(-1)).not.toContain('"id":"a1"');
+        expect(messageWrites.length).toBeGreaterThan(0);
+        expect(messageWrites.at(-1)).toContain('"lk":"msg.truncate"');
+        expect(messageWrites.at(-1)).toContain('"from":"a1"');
       } finally {
         vi.mocked(exists).mockReset();
         vi.mocked(exists).mockResolvedValue(false);
@@ -1446,58 +1490,6 @@ describe('chatStore', () => {
         vi.mocked(readTextFile).mockResolvedValue('');
         vi.mocked(invoke).mockReset();
       }
-    });
-  });
-
-  // ── deleteMessagesFrom ──
-  describe('deleteMessagesFrom', () => {
-    it('deletes from a message onwards', () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
-      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-    });
-
-    it('bumps the catalog count by the negative of the tail length removed', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'msg1', role: 'user', content: 'a', timestamp: 1 });
-      useChatStore.getState().addMessage(id, { id: 'msg2', role: 'assistant', content: 'b', timestamp: 2 });
-      useChatStore.getState().addMessage(id, { id: 'msg3', role: 'user', content: 'c', timestamp: 3 });
-
-      await new Promise((r) => setTimeout(r, 20));
-      vi.mocked(invoke).mockClear();
-      // Removes msg2 + msg3 → delta -2.
-      useChatStore.getState().deleteMessagesFrom(id, 'msg2');
-
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { delta: number }).delta).toBe(-2);
-      });
-    });
-  });
-
-  // ── deleteLoopMessages ──
-  describe('deleteLoopMessages', () => {
-    it('removes all messages of a loop and bumps the catalog count negatively', async () => {
-      const id = useChatStore.getState().createConversation();
-      useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'a', timestamp: 1, loopId: 'L1' });
-      useChatStore.getState().addMessage(id, { id: 'm2', role: 'assistant', content: 'b', timestamp: 2, loopId: 'L1' });
-      useChatStore.getState().addMessage(id, { id: 'm3', role: 'user', content: 'c', timestamp: 3, loopId: 'L2' });
-
-      await new Promise((r) => setTimeout(r, 20));
-      vi.mocked(invoke).mockClear();
-      // Removes the two L1 messages → delta -2, L2 message survives.
-      useChatStore.getState().deleteLoopMessages(id, 'L1');
-      expect(useChatStore.getState().conversations[id].messages).toHaveLength(1);
-
-      await vi.waitFor(() => {
-        const bump = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_bump_count');
-        expect(bump).toBeDefined();
-        expect((bump![1] as { delta: number }).delta).toBe(-2);
-      });
     });
   });
 

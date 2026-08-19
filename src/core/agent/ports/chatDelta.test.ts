@@ -151,11 +151,11 @@ describe('createInProcessChatDelta', () => {
       expect(useChatStore.getState().conversations[id].messages[0].id).toBe('m1');
     });
 
-    it('deleteMessage() forwards to chatStore.deleteMessage', () => {
+    it('deleteMessagesFrom() forwards to chatStore.deleteMessagesFrom', () => {
       const delta = createInProcessChatDelta();
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, { id: 'm1', role: 'user', content: 'hi', timestamp: FIXED_TIMESTAMP });
-      delta.deleteMessage(id, 'm1');
+      delta.deleteMessagesFrom(id, 'm1');
       expect(useChatStore.getState().conversations[id].messages).toHaveLength(0);
     });
 
@@ -318,7 +318,7 @@ describe('getChatDelta / setChatDelta', () => {
       setMessageStreamingFlag: () => calls.push('setMessageStreamingFlag'),
       setMessageToolCalls: () => calls.push('setMessageToolCalls'),
       addMessage: () => calls.push('addMessage'),
-      deleteMessage: () => calls.push('deleteMessage'),
+      deleteMessagesFrom: () => calls.push('deleteMessagesFrom'),
       updateToolCall: () => calls.push('updateToolCall'),
       appendToolCallContext: () => calls.push('appendToolCallContext'),
       updateMessageUsage: () => calls.push('updateMessageUsage'),

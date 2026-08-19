@@ -1070,6 +1070,14 @@ pub fn ax_snapshot_impl(
             let ax_title = attr_string(app, "AXTitle");
             (app, ax_title.or(Some(found.name)))
         } else {
+            // Every Electron caller of the `ax_snapshot` RPC (electron/native-helper/src/main.rs)
+            // always attaches expected_bundle_id, so this branch is a guaranteed dead end for
+            // ANY caller that omits target_app without first resolving a real name — a structured
+            // (non-vision) model calling get_app_state with no `app` hit exactly this until
+            // computerTools.ts's get_app_state/get_ui handler started defaulting to the Host's
+            // already-resolved hostSession.target.app_name. Any new caller reaching this RPC
+            // must do the same (thread the Host-resolved identity through), not rely on this
+            // fallback resolving "current frontmost" for it — see docs/2026-08-12-computer-use-m1-checkpoint.md §7.8.
             if expected_bundle_id.is_some() || expected_process_id.is_some() {
                 return Err("Computer Use AX identity requires an explicit target app".to_string());
             }

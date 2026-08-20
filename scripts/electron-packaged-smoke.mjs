@@ -3236,6 +3236,20 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       // launcher wrapper through app.process(), and killing that wrapper does
       // not crash the packaged application.
       await restoredInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      // Wait for the aborted run's DURABLE terminal, not a UI proxy. Killing
+      // the command tree happens on the sidecar's fast path; the shell still
+      // has to finalize the run before the conversation leaves 'running', and
+      // ChatInput stages anything submitted before that as a follow-up — the
+      // abort terminal then parks the queue as paused and this crash task
+      // never starts. The Stop button is no good as the gate either: it hides
+      // on `agentStatus`, which flips on the click itself, while ChatInput
+      // reads `conversation.status`, which flips ~20ms later at the end of
+      // finalization. `runState":"interrupted"` is written as part of that
+      // same finalization, so seeing it on disk means the run really settled.
+      await waitUntil(
+        () => diskContains(appDataDir, '"runState":"interrupted"'),
+        'the stopped run to reach its durable interrupted terminal',
+      );
       await restoredInput.fill(crashPrompt);
       await restoredInput.press('Enter');
       await waitUntil(

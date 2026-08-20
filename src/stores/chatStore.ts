@@ -1646,13 +1646,29 @@ export const useChatStore = create<ChatStore>()(
         // Persist the stop mutation (terminal + cancelled tool calls) — without
         // this the live view shows "已停止" while reload shows the pre-stop
         // JSONL snapshot (often a blank bubble).
+        //
+        // MUST go through trackConversationPersistence, not a bare
+        // fire-and-forget: the assistant placeholder's own append (addMessage's
+        // diskAppend) rides that per-conversation serial queue, and under load
+        // it can still be in flight when Stop lands. An untracked
+        // replaceMessageById then overtakes the append, finds no row on disk,
+        // and hits the upsert guard's silent no-op (`id-not-found`) — the
+        // placeholder lands moments later as a permanent content:"" ghost and
+        // the visible partial reply is durably lost. frameApplier.ts defends
+        // its session replacements against exactly this with
+        // waitForConversationPersistence; chaining onto the tracked queue
+        // gives this path the same ordering AND makes the write visible to
+        // finalizeAbortedRun's durability barrier.
         if (cancelledMsgId) {
           const finalMsg = useChatStore.getState().conversations[convId]
             ?.messages.find((m) => m.id === cancelledMsgId);
           if (finalMsg) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, finalMsg).catch(() => {});
-            }).catch(() => {});
+            trackConversationPersistence(
+              convId,
+              () => import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+                replaceMessageById(convId, finalMsg)
+              ),
+            );
           }
         }
       },

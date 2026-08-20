@@ -7,6 +7,39 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.40.0 · 2026-08-20
+
+### ✨ Features
+
+- **Longer conversations cost less and start answering sooner** — The system prompt is now stable across turns: the clock is day-granularity (ask the model to run `date` when it needs the exact time), and per-turn state (todos, recalled memories) rides after the conversation instead of inside the prompt. Together with a message-history cache breakpoint, a long session stops re-billing its whole history on every request. Read-only `run_command` batches (greps, listings, file reads) now run concurrently instead of one after another, and `edit_file` tolerates whitespace drift in the quoted original rather than costing a full retry round-trip.
+- **Memory recall works for Chinese** — The relevance tokenizer only split on whitespace, so a whitespace-free Chinese query was a single token that matched nothing and recall was effectively dead. Chinese queries are now tokenized into character bigrams, weighted below word matches and gated so a single shared pair cannot pull in an unrelated memory.
+- **Blocking a site is now one click** — v0.39.0 shipped per-site verdicts but no way to record "no": the only way to stop being asked about a site was to approve it. The confirmation dialog now offers "block this site", and Settings › Capabilities lets an already-allowed site be switched to blocked.
+- **Scheduled tasks carry their own permission mode** — A task can run at a different trust level than your interactive chat, and always-ask actions no longer offer a permanent grant.
+- **New `capability_snapshot` tool** — A read-only report of what the current run can actually do.
+
+### 🔒 Security
+
+- **`read_tools` is now an enforced ceiling, not a request** — The unattended read-only tier promised "reads information, changes nothing" but rested on a confirmation callback that a workspace-internal `safe` command never reached, so `touch`, `mkdir`, `cp`, `node` and `npm install` all ran. The tier is now a positive allowlist enforced on the tool roster, at dispatch, and at the sidecar boundary. Any tool not classified — including MCP tools — is denied.
+- **Delegation no longer escapes the tier** — An `@agent` message and `delegate_to_agent`/`run_agent_batch` forwarded neither the run's allowlist nor its blocklist, so a single message on a read-only channel could spawn a subagent with no ceiling at all. All three delegation entry points now pass both restrictions, and subagents enforce them.
+- **The Computer Use safety budget actually holds** — The 30-step / 5-minute cap was enforced only in the renderer and reset at the top of every batch, so a multi-batch task never reached either limit. The budget now rides the main-process task lease and its deadline is fixed the first time it is taken.
+- **Crash reports carry the shape of an error, not its contents** — Automatic error reports normalize paths, URLs, emails, CJK runs and quoted spans out of the message before it leaves the machine. Raw messages stay local, in the runtime log and in a user-initiated diagnostic bundle.
+- Credential-shaped content is redacted at the memory write funnel, and raw MCP connection errors are sanitized before reaching the model.
+
+### 🐛 Fixes
+
+- **Stopping a stream no longer loses the partial reply** — The stop revision was written outside the conversation's serial persistence queue, so under load it could overtake the assistant row's own append, find no row to revise, and be silently dropped. The visible partial answer then disappeared on the next load, with no error anywhere on the path.
+- Message history is now an append-only ledger: a crash mid-write can no longer truncate a conversation, and a stale crash-leftover snapshot can no longer overwrite a finished reply or resurrect a removed one.
+- Main-process and renderer crashes are recorded locally, and a sidecar crash loop is reported instead of failing quietly.
+- Computer Use stop now targets the session that owns the run rather than whichever conversation is on screen, and structured-mode `get_app_state` resolves the frontmost app correctly.
+- The thinking block's placeholder → thinking → done transitions are steadier: the block now animates open and rolls up instead of remounting, the status line keeps one size and position throughout, and the streaming answer pane no longer jitters from the manual bottom-stick. Some residual movement during these transitions is still under investigation and is not fully resolved in this release.
+- `delegate_to_agent` is scheduled as concurrency-safe again, so fan-out is not serialized.
+
+### ⚠️ Behavior change
+
+- **Deleting a single message has been replaced by redoing a turn.** None of the comparable tools ship per-message delete; all answer "redo this turn" with a rewind, and a rewind is what the durable message ledger can guarantee. Redoing a turn that is not the last one now asks first and tells you how many later turns it discards.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.39.0...v0.40.0
+
 ## v0.39.0 · 2026-08-18
 
 ### ✨ Features

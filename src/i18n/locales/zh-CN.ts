@@ -936,6 +936,7 @@ const zhCN: TranslationDict = {
     modelsPickHint: '请勾选要添加的模型',
     selectAllModels: '全选',
     clearSelectedModels: '清空',
+    modelFromFetch: '来自接口',
     enterpriseMode: '企业模式',
   },
 

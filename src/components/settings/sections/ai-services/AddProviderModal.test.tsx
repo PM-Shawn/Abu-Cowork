@@ -684,3 +684,108 @@ describe('AddProviderModal — fetched model checklist', () => {
     await screen.findByText('Select the models you want to add');
   });
 });
+
+describe('AddProviderModal — curated provider fetch', () => {
+  // DeepSeek ships a curated list of exactly these two.
+  const CURATED = ['deepseek-v4-pro', 'deepseek-v4-flash'];
+  // What a live fetch returns: the curated pair plus 8 ids we never shipped —
+  // enough rows to cross MODEL_FILTER_MIN_ITEMS so the dropdown grows its
+  // search + counter header.
+  const FETCHED_ONLY = [
+    'deepseek-v5-preview', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder',
+    'deepseek-v4-pro-thinking', 'deepseek-v4-lite', 'deepseek-math', 'deepseek-vl',
+  ];
+  const FETCHED = [...CURATED, ...FETCHED_ONLY];
+  const TOTAL_ROWS = CURATED.length + FETCHED_ONLY.length;
+
+  const curatedProvider: ProviderInstance = {
+    id: 'deepseek',
+    source: 'builtin',
+    name: 'DeepSeek',
+    enabled: true,
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://api.deepseek.com',
+    apiKey: 'sk-ds',
+    models: [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }],
+    status: 'unchecked',
+    sortOrder: 0,
+    userAdded: true,
+  };
+
+  const anthropicProvider: ProviderInstance = {
+    ...curatedProvider,
+    id: 'anthropic',
+    name: 'Anthropic',
+    apiFormat: 'anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    models: [],
+  };
+
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({ providers: [curatedProvider], failedSecretKeys: [] });
+    vi.mocked(fetchProviderModels).mockResolvedValue({
+      success: true,
+      models: FETCHED.map((id) => ({ id, label: id })),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchProviderModels).mockReset();
+  });
+
+  async function renderAndFetch(provider: ProviderInstance = curatedProvider) {
+    render(<AddProviderModal open={true} editProvider={provider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED.length} models`);
+  }
+
+  it('offers a fetch button on a curated built-in (it used to be hidden — static list only)', () => {
+    render(<AddProviderModal open={true} editProvider={curatedProvider} onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
+  });
+
+  it('offers it on an anthropic-format provider too (previously excluded outright)', () => {
+    useSettingsStore.setState({ providers: [anthropicProvider], failedSecretKeys: [] });
+    render(<AddProviderModal open={true} editProvider={anthropicProvider} onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
+  });
+
+  it('merges fetched-only ids into the curated dropdown, tagged as coming from the API', async () => {
+    await renderAndFetch();
+
+    // The dropdown opens itself on success — no second click needed.
+    expect(await screen.findByText('deepseek-v5-preview')).toBeInTheDocument();
+    // Exactly the ids the shipped list lacks carry the tag; curated rows don't.
+    expect(screen.getAllByText('from API')).toHaveLength(FETCHED_ONLY.length);
+  });
+
+  it('pre-checks nothing it fetched — only the provider\'s saved model stays selected', async () => {
+    await renderAndFetch();
+
+    expect(await screen.findByText(`1 of ${TOTAL_ROWS} selected`)).toBeInTheDocument();
+  });
+
+  it('searching inside the dropdown narrows the merged list', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'reasoner' } });
+
+    await waitFor(() => expect(screen.queryByText('deepseek-v5-preview')).not.toBeInTheDocument());
+    expect(screen.getByText('deepseek-reasoner')).toBeInTheDocument();
+  });
+
+  it('"Select all" in the dropdown applies to the search results only', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'deepseek-v4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+
+    // deepseek-v4-pro / -flash / -pro-thinking / -lite match; -pro was already
+    // selected, so the count lands at 4 rather than growing by 4.
+    await screen.findByText(`4 of ${TOTAL_ROWS} selected`);
+  });
+});

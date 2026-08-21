@@ -60,9 +60,14 @@ export function unionSelectAll(
  * Filter the checklist by a free-text query, matching either the model id or
  * its display label (an Ollama label carries the parameter size, a curated
  * label can differ from the raw id) — case-insensitive, whitespace-trimmed.
- * An empty/whitespace query returns the list unchanged.
+ * An empty/whitespace query returns the list unchanged. Generic over the
+ * row shape so a curated row's extra fields (e.g. `fromFetch`) survive the
+ * filter instead of being widened away to ModelInfo.
  */
-export function filterModels(models: ModelInfo[], query: string): ModelInfo[] {
+export function filterModels<T extends { id: string; label: string }>(
+  models: T[],
+  query: string,
+): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return models;
   return models.filter(

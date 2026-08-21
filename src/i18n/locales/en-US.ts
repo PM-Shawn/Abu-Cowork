@@ -936,6 +936,7 @@ const enUS: TranslationDict = {
     modelsPickHint: 'Select the models you want to add',
     selectAllModels: 'Select all',
     clearSelectedModels: 'Clear',
+    modelFromFetch: 'from API',
     enterpriseMode: 'Enterprise',
   },
 

@@ -1047,6 +1047,8 @@ export interface TranslationDict {
     modelsPickHint: string;
     selectAllModels: string;
     clearSelectedModels: string;
+    /** Tag on a curated-dropdown row that came from a live fetch, not the shipped list. */
+    modelFromFetch: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };

@@ -322,14 +322,23 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       : []),
     [isBuiltinCurated, selectedOption, activePlan],
   );
-  // Curated options plus any ids the user typed via the dropdown's add-model
-  // input that aren't curated — so they render as checked rows and show in the
-  // trigger summary.
-  const builtinModelList = useMemo(() => {
-    const ids = new Set(builtinModelOptions.map((m) => m.id));
-    const extra = [...selectedModels].filter((id) => !ids.has(id)).map((id) => ({ id, label: id }));
-    return [...builtinModelOptions, ...extra];
-  }, [builtinModelOptions, selectedModels]);
+  // What the curated dropdown actually lists, in three tiers:
+  //   1. the curated options (hand-maintained: real labels + vendor ordering),
+  //   2. anything a live fetch returned that the curated list doesn't have —
+  //      this is what keeps a shipped-static list from going stale between
+  //      releases; flagged so the row can say where it came from,
+  //   3. ids the user typed via "使用其他模型" that neither tier covers.
+  const builtinModelList = useMemo<{ id: string; label: string; fromFetch?: boolean }[]>(() => {
+    const curatedIds = new Set(builtinModelOptions.map((m) => m.id));
+    const fetchedExtra = fetchedModels
+      .filter((m) => !curatedIds.has(m.id))
+      .map((m) => ({ id: m.id, label: m.label, fromFetch: true }));
+    const listed = new Set([...curatedIds, ...fetchedExtra.map((m) => m.id)]);
+    const manualExtra = [...selectedModels]
+      .filter((id) => !listed.has(id))
+      .map((id) => ({ id, label: id }));
+    return [...builtinModelOptions, ...fetchedExtra, ...manualExtra];
+  }, [builtinModelOptions, fetchedModels, selectedModels]);
 
   // Non-applicable "config method" row placeholder (§4.3): the row is always
   // rendered, never hidden — only its content varies with the selection.
@@ -679,6 +688,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       if (isLMStudio) {
         setSelectedModels((prev) => unionSelectAll(sorted, prev));
       }
+      // A curated provider's models live behind a closed dropdown, so a fetch
+      // would otherwise look like nothing happened. Open it on the result.
+      if (isBuiltinCurated) {
+        computeModelPanel();
+        setModelDropdownOpen(true);
+      }
       if (showAdvanced) {
         seedDeclaredDefaults(sorted.map((m) => m.id));
       }
@@ -690,7 +705,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       setFetchModelsStatus('error');
       setFetchModelsError(result.error ?? t.settings.fetchModelsFailed);
     }
-  }, [baseUrl, apiKey, effectiveFormat, isLMStudio, t, showAdvanced, seedDeclaredDefaults]);
+  }, [baseUrl, apiKey, effectiveFormat, isLMStudio, isBuiltinCurated, computeModelPanel, t, showAdvanced, seedDeclaredDefaults]);
 
   // ── Ollama handlers ──
 
@@ -1350,10 +1365,14 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                 {t.settings.models}
               </label>
               <div className="flex items-center gap-3">
-                {/* Fetch/refresh models button — custom, LM Studio, and the
-                    aggregator built-ins (OpenRouter/SiliconFlow) that ship no
-                    curated list; curated built-ins don't need it. */}
-                {(isCustom || isLMStudio || usesFetchedModels) && effectiveFormat !== 'anthropic' && baseUrl.trim() && (
+                {/* Fetch/refresh models button — every non-Ollama provider
+                    (Ollama has its own probe button below). Curated built-ins
+                    get it too: their model list is a hand-maintained static
+                    table that goes stale between releases, so "fetch" is how a
+                    user reaches a model we haven't shipped yet. The anthropic
+                    format is no longer excluded — modelFetcher routes it
+                    through the Anthropic Models API. */}
+                {!isOllama && baseUrl.trim() && (
                   <button
                     type="button"
                     onClick={handleFetchModels}
@@ -1439,22 +1458,86 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                         style={modelPanelStyle}
                         className="flex flex-col rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg overflow-hidden"
                       >
-                        <div className="flex-1 min-h-0 overflow-y-auto py-1">
-                          {builtinModelList.map((model) => {
-                            const checked = selectedModels.has(model.id);
-                            return (
-                              <button
-                                key={model.id}
-                                type="button"
-                                onClick={() => handleToggleModel(model.id)}
-                                className="w-full px-3 py-2 flex items-center gap-2.5 text-body hover:bg-[var(--abu-bg-hover)] transition-colors"
-                              >
-                                <span className={cn('flex-1 text-left truncate', checked ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-primary)]')}>{model.label}</span>
-                                {checked && <Check className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />}
-                              </button>
-                            );
-                          })}
-                        </div>
+                        {(() => {
+                          // Same "search + counter + bulk" affordances as the
+                          // fetched checklist below, scoped to this dropdown —
+                          // a fetch can turn a 4-row curated list into a
+                          // 300-row catalog, and scrolling that is unusable.
+                          const showFilter = builtinModelList.length >= MODEL_FILTER_MIN_ITEMS;
+                          const visible = showFilter
+                            ? filterModels(builtinModelList, modelListFilter)
+                            : builtinModelList;
+                          const visibleIds = visible.map((m) => m.id);
+                          const visibleSelected = visibleIds.filter((id) => selectedModels.has(id)).length;
+                          return (
+                            <>
+                              {showFilter && (
+                                <div className="shrink-0 p-2 space-y-2 border-b border-[var(--abu-border)]">
+                                  <div className="relative">
+                                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-placeholder)]" />
+                                    <Input
+                                      value={modelListFilter}
+                                      onChange={(e) => setModelListFilter(e.target.value)}
+                                      placeholder={t.settings.filterModelsPlaceholder}
+                                      className="pl-8 h-7 text-minor"
+                                    />
+                                  </div>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-minor text-[var(--abu-text-tertiary)] truncate">
+                                      {t.settings.modelsSelectedCount
+                                        .replace('{selected}', String(selectedModels.size))
+                                        .replace('{total}', String(builtinModelList.length))}
+                                    </span>
+                                    <div className="flex items-center gap-3 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectModels(visibleIds)}
+                                        disabled={visibleIds.length === 0 || visibleSelected === visibleIds.length}
+                                        className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                                      >
+                                        {t.settings.selectAllModels}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeselectModels(visibleIds)}
+                                        disabled={visibleSelected === 0}
+                                        className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                                      >
+                                        {t.settings.clearSelectedModels}
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                              <div className="flex-1 min-h-0 overflow-y-auto py-1">
+                                {showFilter && visible.length === 0 && (
+                                  <p className="text-minor text-[var(--abu-text-tertiary)] px-3 py-2">
+                                    {t.settings.filterModelsNoResults}
+                                  </p>
+                                )}
+                                {visible.map((model) => {
+                                  const checked = selectedModels.has(model.id);
+                                  return (
+                                    <button
+                                      key={model.id}
+                                      type="button"
+                                      onClick={() => handleToggleModel(model.id)}
+                                      className="w-full px-3 py-2 flex items-center gap-2.5 text-body hover:bg-[var(--abu-bg-hover)] transition-colors"
+                                    >
+                                      <span className={cn('flex-1 text-left truncate', checked ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-primary)]')}>{model.label}</span>
+                                      {model.fromFetch && (
+                                        <span className="shrink-0 text-caption text-[var(--abu-text-tertiary)]">
+                                          {t.settings.modelFromFetch}
+                                        </span>
+                                      )}
+                                      {checked && <Check className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          );
+                        })()}
                         {/* Add a model id the curated list doesn't have — a
                             "使用其他模型" menu row by default that reveals the
                             model-id input on click, collapsing back after add. */}

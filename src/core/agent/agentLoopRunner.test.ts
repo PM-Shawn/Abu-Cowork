@@ -10,7 +10,7 @@
  * `sessions`/`handlersRegistered`/`emittersInstalled` state must not leak
  * across tests.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -428,22 +428,44 @@ async function importFresh() {
 
 /** Pull the handler fn registered for a given method out of a mocked onSidecarNotification/onSidecarRequest call list. */
 function handlerFor(mock: ReturnType<typeof vi.fn>, method: string): (params: unknown) => unknown {
-  const call = mock.mock.calls.find((c) => c[0] === method);
+  // Newest registration wins: the running test always registers last, so a
+  // stale handler leaked in by an abandoned (timed-out) test body cannot be
+  // picked up ahead of it.
+  const call = mock.mock.calls.findLast((c) => c[0] === method);
   if (!call) throw new Error(`no handler registered for ${method}`);
   return call[1] as (params: unknown) => unknown;
 }
 
-function makeSession(overrides: Partial<{ conversationId: string; loopId: string }> = {}) {
+function makeSession(
+  overrides: Partial<{ conversationId: string; loopId: string; terminalPublished: boolean }> = {},
+) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
     options: {},
     shellAbortController: new AbortController(),
     toolCallToStepId: new Map<string, string>(),
+    ...(overrides.terminalPublished === undefined
+      ? {}
+      : { terminalPublished: overrides.terminalPublished }),
   };
 }
 
 describe('agentLoopRunner', () => {
+  // The FIRST import of this module graph pays Vite's cold transform cost
+  // (measured ~4.0 s here; more under v8 coverage or a loaded runner), and the
+  // default 5 s testTimeout applies to test BODIES only. Left inside the first
+  // `await importFresh()` that cost blew the timeout; vitest then failed that
+  // test WITHOUT cancelling its body, so the abandoned continuation later ran
+  // ensureHandlersRegistered() against the *next* test's freshly-reset mocks —
+  // turning one slow test into a cascade of unrelated red assertions.
+  // Paying it here instead is safe: hookTimeout is 30 s, and vi.resetModules()
+  // drops the evaluated-module cache but NOT the transform cache, so every
+  // later importFresh() only re-evaluates (~10-400 ms).
+  beforeAll(async () => {
+    await import('./agentLoopRunner');
+  });
+
   beforeEach(() => {
     onSidecarNotification.mockReset();
     onSidecarRequest.mockReset();
@@ -639,7 +661,7 @@ describe('agentLoopRunner', () => {
         accepted: true,
         userMessageId: 'msg-connection',
       });
-      const handler = onSidecarConnectionState.mock.calls[0][0] as (
+      const handler = onSidecarConnectionState.mock.calls.at(-1)![0] as (
         event: { state: 'connected' | 'recovering' | 'failed'; reason: string },
       ) => void;
 
@@ -3133,6 +3155,43 @@ describe('agentLoopRunner', () => {
         expect(result).toEqual({ reason: 'enqueued' });
         expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('starts a new run instead of staging into a session whose terminal is already published', async () => {
+        // Regression: the crashed/stopped run stays REGISTERED while its
+        // teardown finishes (persistence + the Computer Use lease release over
+        // IPC), long after the UI shows the run as over. A send in that window
+        // used to be staged into the dead run and then parked as a paused
+        // queue chip, so it never reached the model — the real-Electron
+        // sidecar-crash E2E lost this race on busy machines.
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-tearing-down', makeSession({
+          conversationId: 'conv-1',
+          terminalPublished: true,
+        }));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        const result = await runAgentLoopDispatched('conv-1', 'sent right after the error banner');
+
+        expect(result).toEqual({ reason: 'completed' });
+        expect(enqueueUserInputMock).not.toHaveBeenCalled();
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).toHaveBeenCalled();
+      });
+
+      it('still stages into a sibling session that has NOT published its terminal', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-tearing-down', makeSession({
+          conversationId: 'conv-1',
+          terminalPublished: true,
+        }));
+        registerRunSession('run-live', makeSession({ conversationId: 'conv-1', loopId: 'loop-2' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'more instructions');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 

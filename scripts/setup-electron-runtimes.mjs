@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
+import { setTimeout } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,6 +17,29 @@ const RUNTIME_TARGET_ROOT = path.join(ROOT, 'electron', '.runtime');
 const NODE_TARGET = path.join(RUNTIME_TARGET_ROOT, 'node-runtime');
 const PYTHON_TARGET = path.join(RUNTIME_TARGET_ROOT, 'python-runtime');
 const MARKER_NAME = '.abu-runtime.json';
+
+// Node's fetch (undici) ignores HTTP(S)_PROXY unless NODE_USE_ENV_PROXY is set, so
+// on networks where these hosts are only reachable through a proxy every download
+// dies as a bare `TypeError: fetch failed` that names neither the proxy nor a fix.
+// Opt in before the first fetch creates the global dispatcher (NO_PROXY is honoured).
+const PROXY_ENV_KEYS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'];
+const envProxy = PROXY_ENV_KEYS.map((key) => process.env[key]).find(Boolean) || null;
+const envProxySupported = Number(process.versions.node.split('.')[0]) >= 24;
+
+function redactProxy(value) {
+  try {
+    const url = new URL(value);
+    if (!url.username && !url.password) return url.origin;
+    return `${url.origin} (credentials hidden)`;
+  } catch {
+    return '(unparseable proxy URL)';
+  }
+}
+
+if (envProxy && envProxySupported && !process.env.NODE_USE_ENV_PROXY) {
+  process.env.NODE_USE_ENV_PROXY = '1';
+  console.log(`[runtime] using proxy from environment: ${redactProxy(envProxy)}`);
+}
 
 const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
 const args = new Set(process.argv.slice(2));
@@ -68,13 +92,74 @@ function run(file, commandArgs, options = {}) {
   return options.capture ? String(result.stdout || '').trim() : '';
 }
 
-async function download(url, destination) {
-  console.log(`[runtime] downloading ${url}`);
+const DOWNLOAD_ATTEMPTS = 3;
+
+function describeError(error) {
+  return error?.cause?.code || error?.code
+    || (error instanceof Error ? error.message : String(error));
+}
+
+// Deterministic HTTP answers (a wrong URL, a 403) will not improve on a retry;
+// dropped sockets and timeouts routinely do, which is the normal failure mode
+// when the archive is pulled through a proxy.
+function isRetryable(error) {
+  if (typeof error?.status === 'number') {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  return true;
+}
+
+function downloadFailureHint(error) {
+  const lines = [`  cause: ${describeError(error)}`];
+  if (envProxy && !envProxySupported) {
+    lines.push(
+      `  a proxy is configured (${redactProxy(envProxy)}) but Node ${process.versions.node}`,
+      '  cannot apply it to fetch — that needs Node 24+. Upgrade Node and re-run.'
+    );
+  } else if (envProxy) {
+    lines.push(
+      `  downloads are going through ${redactProxy(envProxy)}; a proxy that drops long`,
+      '  transfers will fail here repeatedly. Retry, or fetch the archive another way.'
+    );
+  } else {
+    lines.push(
+      '  no HTTP(S)_PROXY is set. If this host is only reachable through a proxy on',
+      '  your network, set HTTPS_PROXY and re-run.'
+    );
+  }
+  return lines.join('\n');
+}
+
+async function downloadOnce(url, destination) {
   const response = await fetch(url, { redirect: 'follow' });
   if (!response.ok || !response.body) {
-    throw new Error(`download failed (${response.status} ${response.statusText}): ${url}`);
+    const error = new Error(`HTTP ${response.status} ${response.statusText}`);
+    error.status = response.status;
+    throw error;
   }
+  // The body can still abort mid-stream, so the write is part of the attempt.
   await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(destination, { flags: 'wx' }));
+}
+
+async function download(url, destination) {
+  console.log(`[runtime] downloading ${url}`);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await downloadOnce(url, destination);
+      return;
+    } catch (error) {
+      // 'wx' refuses an existing file, so a partial write must go before a retry.
+      fs.rmSync(destination, { force: true });
+      if (attempt >= DOWNLOAD_ATTEMPTS || !isRetryable(error)) {
+        throw new Error(
+          `download failed after ${attempt} attempt(s): ${url}\n${downloadFailureHint(error)}`,
+          { cause: error }
+        );
+      }
+      console.warn(`[runtime] attempt ${attempt}/${DOWNLOAD_ATTEMPTS} failed (${describeError(error)}); retrying`);
+      await setTimeout(attempt * 1000);
+    }
+  }
 }
 
 function verifyArchive(filePath, expectedSha256) {

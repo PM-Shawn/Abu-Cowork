@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Message, MessageContent, ToolResultContent } from '../../types';
 import { enforceImageBudget, OFFLOADED_IMAGE_NOTE } from './imageBudget';
+import { normalizeMessages } from './messageNormalizer';
 
 // Filler timestamp (TESTING.md §3) — never asserted on.
 const TS = 1_700_000_000_000;
@@ -40,12 +41,24 @@ function survivingPayloads(messages: Message[]): string[] {
     for (const call of calls ?? []) {
       for (const block of call.resultContent ?? []) if (block.type === 'image') out.push(block.source.data);
     }
+    // (tool-result images are also asserted through normalizeMessages below)
   }
   return out;
 }
 
+/**
+ * How many times the note reaches the MODEL — counted on the normalized turns,
+ * not on the message tree.
+ *
+ * The original version stringified `Message[]`, which certified nothing: a text
+ * block sitting in a tool result looks present there but is dropped by
+ * `normalizeMessages` (it builds the `tool` message from the `result` string and
+ * reads `resultContent` only via `extractImages`). That gap shipped once and the
+ * test stayed green through it.
+ */
 function noteCount(messages: Message[]): number {
-  return JSON.stringify(messages).split(OFFLOADED_IMAGE_NOTE).length - 1;
+  const turns = normalizeMessages(messages, { supportsVision: true });
+  return JSON.stringify(turns).split(OFFLOADED_IMAGE_NOTE).length - 1;
 }
 
 describe('enforceImageBudget', () => {
@@ -154,5 +167,32 @@ describe('enforceImageBudget', () => {
     const out = enforceImageBudget([userWith(image(500, 'a'))], 100);
     expect(OFFLOADED_IMAGE_NOTE).toMatch(/omitted/i);
     expect(JSON.stringify(out)).toContain(OFFLOADED_IMAGE_NOTE);
+  });
+});
+
+// The regression these tests exist for: the note has to survive normalization
+// and land in the request, not merely sit in the message tree. Asserted on the
+// serialized turns, the same way openai-vision-gating.test.ts checks images.
+describe('enforceImageBudget — the note actually reaches the model', () => {
+  it('puts the note in the tool message the model reads, not in a dropped block', () => {
+    const messages = [assistantWithToolImage(200, 'a'), userWith(image(100, 'b'))];
+    const turns = normalizeMessages(enforceImageBudget(messages, 150), { supportsVision: true });
+    const wire = JSON.stringify(turns);
+
+    expect(wire).toContain(OFFLOADED_IMAGE_NOTE);
+    // The original tool text survives alongside it.
+    expect(wire).toContain('Screenshot taken');
+    // And the dropped screenshot is gone from what the model sees.
+    expect(wire).not.toContain(payload(200, 'a'));
+  });
+
+  it('carries the note for a dropped user image too', () => {
+    const turns = normalizeMessages(enforceImageBudget([userWith(image(500, 'a'))], 100), { supportsVision: true });
+    expect(JSON.stringify(turns)).toContain(OFFLOADED_IMAGE_NOTE);
+  });
+
+  it('says nothing when the request already fits', () => {
+    const turns = normalizeMessages(enforceImageBudget([userWith(image(50, 'a'))], 1000), { supportsVision: true });
+    expect(JSON.stringify(turns)).not.toContain(OFFLOADED_IMAGE_NOTE);
   });
 });

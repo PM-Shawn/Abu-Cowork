@@ -8,10 +8,17 @@
  * number is wrong in both directions — 2000 needlessly rejects images DeepSeek
  * would happily read, 8192 earns a 400 from Anthropic.
  *
- * Before this module those thresholds were four unrelated magic numbers
- * (`SCREENSHOT_MAX_WIDTH`, `resizeImageIfNeeded`'s 1280, `getMaxScreenshots`,
- * `TOKENS_PER_IMAGE`), and none of them knew which route the turn was going to.
- * This is the one table they resolve from.
+ * Before this module those thresholds were unrelated magic numbers
+ * (`SCREENSHOT_MAX_WIDTH`, `resizeImageIfNeeded`'s 1280, `getMaxScreenshots`),
+ * none of which knew which route the turn was going to. This is the one table
+ * they resolve from.
+ *
+ * Per-image token pricing deliberately does NOT live here. It was tried and
+ * withdrawn: the only per-turn route identity available to `tokenEstimator` is a
+ * module global that concurrent conversations overwrite, and that number feeds
+ * the INPUT_TOO_LARGE refusal — borrowing another conversation's route could
+ * under-count and wave an oversized request past the guard. See the comment on
+ * `TOKENS_PER_IMAGE` in tokenEstimator.ts.
  *
  * Keyed on model id alone, mirroring `resolveCapabilities`' resolution order, so
  * no call site needs new plumbing — every consumer already has the model id.
@@ -19,8 +26,14 @@
 
 export interface ImagePolicy {
   /**
-   * Largest allowed pixel length of either side. Images above it are downscaled
-   * at admission (never silently — the model is told), not rejected.
+   * The route's own pixel ceiling on either side, as its provider documents it.
+   *
+   * ⚠️ Read today by `admissionMaxDimension()` only, which takes the MINIMUM
+   * across every route — so the effective admission limit is the strictest entry
+   * here, and a route's own larger value never loosens anything for it. Lowering
+   * one route therefore tightens admission for ALL routes. Kept per-route because
+   * it documents where each number comes from and makes the floor self-updating,
+   * not because each route is enforced separately.
    */
   maxDimension: number;
   /**
@@ -33,12 +46,6 @@ export interface ImagePolicy {
    * wedging the session for good.
    */
   maxRequestImageBytes: number;
-  /**
-   * Tokens to charge one image when estimating context usage. Providers differ by
-   * more than an order of magnitude, and over-charging is not harmless: it inflates
-   * the water level and triggers an auto-compaction that costs a full LLM round trip.
-   */
-  tokensPerImage: number;
 }
 
 const MIB = 1024 * 1024;
@@ -46,34 +53,28 @@ const MIB = 1024 * 1024;
 /**
  * Anthropic. 2000px is the documented multi-image ceiling, observed firsthand in
  * the Claude Code binary ("dimension limit for many-image requests (2000px)").
- * ~1600 tokens/image matches Anthropic's published vision sizing.
  */
 const ANTHROPIC_POLICY: ImagePolicy = {
   maxDimension: 2000,
   maxRequestImageBytes: 20 * MIB,
-  tokensPerImage: 1600,
 };
 
 /**
  * DeepSeek. Official docs allow 8192px per side but drop to 4096px as soon as a
  * request carries 15 or more images; we take the stricter number unconditionally
  * rather than making the limit depend on how many images a turn happens to hold.
- * Images are resized to ~800x800 server-side and capped at 384 tokens each.
  */
 const DEEPSEEK_POLICY: ImagePolicy = {
   maxDimension: 4096,
   maxRequestImageBytes: 32 * MIB,
-  tokensPerImage: 384,
 };
 
 /**
- * OpenAI. Matches Codex's own `HIGH_DETAIL_LIMITS` (2048px) and its measured
- * ~1844 tokens for a resized image.
+ * OpenAI. Matches Codex's own `HIGH_DETAIL_LIMITS` (2048px).
  */
 const OPENAI_POLICY: ImagePolicy = {
   maxDimension: 2048,
   maxRequestImageBytes: 20 * MIB,
-  tokensPerImage: 1844,
 };
 
 /**
@@ -86,7 +87,6 @@ const OPENAI_POLICY: ImagePolicy = {
 const FALLBACK_POLICY: ImagePolicy = {
   maxDimension: 2000,
   maxRequestImageBytes: 20 * MIB,
-  tokensPerImage: 1600,
 };
 
 /**

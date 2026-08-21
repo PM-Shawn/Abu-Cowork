@@ -61,8 +61,12 @@ function eachImage(
  * Replace the next `remaining.count` images in one content array with the note.
  * Returns the original array reference when nothing in it changed, so unaffected
  * messages keep their identity and downstream `===` checks stay cheap.
+ *
+ * Only valid for message content, where `convertUserContent` turns a text block
+ * into a real content part. Tool results take `replaceOldestInToolResult` — see
+ * its comment for why a text block would be swallowed there.
  */
-function replaceOldest<T extends MessageContent | ToolResultContent>(
+function replaceOldest<T extends MessageContent>(
   content: readonly T[] | undefined,
   remaining: { count: number },
 ): readonly T[] | undefined {
@@ -75,6 +79,39 @@ function replaceOldest<T extends MessageContent | ToolResultContent>(
     return { type: 'text', text: OFFLOADED_IMAGE_NOTE } as unknown as T;
   });
   return changed ? next : content;
+}
+
+/**
+ * Drop the next `remaining.count` images from one tool result.
+ *
+ * A tool result cannot carry the note the way a message can. `normalizeMessages`
+ * builds the `tool` wire message from the `result` STRING and reads
+ * `resultContent` only through `extractImages`, which collects image blocks and
+ * ignores everything else — so a text block left here reaches nobody and the
+ * model would lose a screenshot with no explanation.
+ *
+ * Both DSH and Codex avoid this by deriving the tool message from its content
+ * blocks (`toolResultText(result.content)` / `FunctionCallOutputContentItem`), so
+ * a placeholder block is automatically on the wire. Abu's `result` string is
+ * produced by `toolResultToString` from the same raw value, so folding the blocks
+ * in would duplicate text it already contains. The equivalent move here is to put
+ * the note where Abu's wire actually reads from: the `result` string.
+ *
+ * @returns the surviving blocks, and how many images this call lost.
+ */
+function replaceOldestInToolResult(
+  content: readonly ToolResultContent[] | undefined,
+  remaining: { count: number },
+): { content: readonly ToolResultContent[] | undefined; dropped: number } {
+  if (!content || remaining.count === 0) return { content, dropped: 0 };
+  let dropped = 0;
+  const next = content.filter((block) => {
+    if (block.type !== 'image' || remaining.count === 0) return true;
+    remaining.count -= 1;
+    dropped += 1;
+    return false;
+  });
+  return dropped > 0 ? { content: next, dropped } : { content, dropped: 0 };
 }
 
 /**
@@ -139,10 +176,16 @@ export function enforceImageBudget(messages: Message[], maxRequestImageBytes: nu
     if (key) {
       let callsChanged = false;
       const calls = message[key]!.map((call) => {
-        const resultContent = replaceOldest(call.resultContent, remaining);
-        if (resultContent === call.resultContent) return call;
+        const { content: resultContent, dropped } = replaceOldestInToolResult(call.resultContent, remaining);
+        if (dropped === 0) return call;
         callsChanged = true;
-        return { ...call, resultContent: resultContent as ToolResultContent[] };
+        // One note per call that lost images, not per image — still a pure
+        // function of position, and N copies of the same sentence would only
+        // crowd the result the model still has to read.
+        const result = call.result === undefined || call.result === ''
+          ? OFFLOADED_IMAGE_NOTE
+          : `${call.result}\n\n${OFFLOADED_IMAGE_NOTE}`;
+        return { ...call, result, resultContent: resultContent as ToolResultContent[] };
       });
       if (callsChanged) next = { ...next, [key]: calls };
     }

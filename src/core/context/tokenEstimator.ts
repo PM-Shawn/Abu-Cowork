@@ -9,7 +9,6 @@
 
 import type { Message, MessageContent, ToolDefinition, ToolResultContent } from '../../types';
 import { getMessageText } from './contextUtils';
-import { resolveImagePolicy } from '../llm/imagePolicy';
 
 // CJK Unicode ranges
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]/g;
@@ -79,33 +78,29 @@ export function estimateTokens(text: string): number {
   return Math.ceil((cjkTokens + nonCjkTokens) * getCalibrationRatio());
 }
 
-/**
- * Tokens to charge one image, for the route this turn is going to.
- *
- * Providers differ by more than an order of magnitude — DeepSeek caps an image
- * at 384 tokens, Anthropic bills around 1600 — and this number is not cosmetic:
- * it feeds the 65% auto-compaction trigger and the `INPUT_TOO_LARGE` refusal.
- * Charging 1600 for a 384-token image inflates the water level, so a session can
- * buy a *lossy* compaction (history summarised away, plus a full extra round
- * trip) it did not need, and on a small configured context window a batch of
- * screenshots can be refused before it is ever sent.
- *
- * Reads `activeModelId` rather than taking a parameter, matching how
- * `getCalibrationRatio` already resolves per-model state in this module — so
- * compaction and budget enforcement stay on one shared value instead of
- * disagreeing about what an image costs. Before `setActiveModel` runs,
- * `resolveImagePolicy('')` falls through to the conservative default, which is
- * the 1600 this file used unconditionally before.
- */
-function tokensPerImage(): number {
-  return resolveImagePolicy(activeModelId).tokensPerImage;
-}
+// Approximate tokens per image, deliberately provider-agnostic.
+//
+// Routes differ by more than an order of magnitude (DeepSeek caps an image at
+// 384 tokens, Anthropic bills around 1600), and an earlier revision priced this
+// per route. That was withdrawn: the only per-turn model identity available here
+// is a module global, which concurrent conversations overwrite — and this number
+// feeds the INPUT_TOO_LARGE refusal, so borrowing another conversation's route
+// could under-count and let an oversized request through the guard that exists
+// to stop it. Passing the route in explicitly (Codex's shape) would mean
+// threading a parameter through ~20 call sites in two subsystems this change has
+// no other business touching.
+//
+// So this stays a single conservative constant, which is also DSH's stance:
+// provider-agnostic estimation does not guess vision pricing, and the usage the
+// provider returns is the authoritative number. Over-counting only costs an
+// earlier compaction; under-counting costs a failed request.
+const TOKENS_PER_IMAGE = 1600;
 
 function estimateToolResultContentTokens(content: ToolResultContent[] | undefined): number {
   if (!content) return 0;
   return content.reduce((total, block) => (
     block.type === 'image'
-      ? total + tokensPerImage()
+      ? total + TOKENS_PER_IMAGE
       : total + estimateTokens(block.text)
   ), 0);
 }
@@ -128,8 +123,8 @@ export function estimateMessageTokens(messages: Message[]): number {
     // Message text content
     total += estimateTokens(getMessageText(msg.content));
 
-    // Image content, priced for the active route.
-    total += countImages(msg.content) * tokensPerImage();
+    // Image content (~1600 tokens per image)
+    total += countImages(msg.content) * TOKENS_PER_IMAGE;
 
     // Thinking content
     if (msg.thinking) {

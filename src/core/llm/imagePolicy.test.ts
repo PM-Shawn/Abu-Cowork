@@ -24,16 +24,8 @@ describe('resolveImagePolicy', () => {
     expect(anthropic).not.toBe(deepseek);
   });
 
-  // Over-charging is not the safe direction: it inflates the context water level
-  // and buys an auto-compaction (a full extra LLM round trip) that was not needed.
-  it('charges DeepSeek images at its published cap, far below the Anthropic figure', () => {
-    expect(resolveImagePolicy('deepseek-v4-flash-vision-exp').tokensPerImage).toBe(384);
-    expect(resolveImagePolicy('claude-sonnet-4-6').tokensPerImage).toBe(1600);
-  });
-
-  it('matches Codex-measured OpenAI numbers for the gpt/o families', () => {
+  it('matches Codex-measured OpenAI dimensions for the gpt/o families', () => {
     expect(resolveImagePolicy('gpt-4o').maxDimension).toBe(2048);
-    expect(resolveImagePolicy('gpt-4o').tokensPerImage).toBe(1844);
     expect(resolveImagePolicy('o1-mini').maxDimension).toBe(2048);
   });
 
@@ -48,7 +40,6 @@ describe('resolveImagePolicy', () => {
   it('falls back to the strictest column for unknown routes', () => {
     const unknown = resolveImagePolicy('some-self-hosted-vlm-v3');
     expect(unknown.maxDimension).toBe(2000);
-    expect(unknown.tokensPerImage).toBe(1600);
 
     const strictestDimension = Math.min(
       ...['claude-sonnet-4-6', 'deepseek-v4-flash', 'gpt-4o', 'unknown-x']
@@ -62,7 +53,6 @@ describe('resolveImagePolicy', () => {
       const policy = resolveImagePolicy(id);
       expect(policy.maxDimension).toBeGreaterThan(0);
       expect(policy.maxRequestImageBytes).toBeGreaterThan(0);
-      expect(policy.tokensPerImage).toBeGreaterThan(0);
       expect(Number.isFinite(policy.maxRequestImageBytes)).toBe(true);
     }
   });
@@ -91,5 +81,21 @@ describe('admissionMaxDimension', () => {
   it('tracks the table rather than restating a literal', () => {
     expect(admissionMaxDimension()).toBe(2000);
     expect(admissionMaxDimension()).toBeGreaterThan(0);
+  });
+});
+
+// Pins the caveat documented on ImagePolicy.maxDimension: the per-route values
+// feed a single global floor, so lowering any one of them tightens admission for
+// every route. Someone adding a niche stricter provider should see this fail and
+// realise the blast radius before shipping it.
+describe('maxDimension is a global floor, not per-route enforcement', () => {
+  it('admission tracks the strictest entry, so no route enforces its own value', () => {
+    const perRoute = ['claude-sonnet-4-6', 'deepseek-v4-flash', 'gpt-4o', 'unknown-x']
+      .map((id) => resolveImagePolicy(id).maxDimension);
+    const admission = admissionMaxDimension();
+
+    expect(admission).toBe(Math.min(...perRoute));
+    // The looser routes genuinely do not get their own ceiling.
+    expect(perRoute.some((value) => value > admission)).toBe(true);
   });
 });

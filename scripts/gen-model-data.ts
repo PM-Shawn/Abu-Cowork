@@ -105,8 +105,9 @@ export function loadAndMerge(): ModelRecord[] {
   }
   const volc = JSON.parse(readFileSync(resolve(DATA, 'overlay/volcengine.json'), 'utf8')).models as ModelRecord[];
   const local = JSON.parse(readFileSync(resolve(DATA, 'overlay/local-models.json'), 'utf8')).models as ModelRecord[];
+  const deepseek = JSON.parse(readFileSync(resolve(DATA, 'overlay/deepseek.json'), 'utf8')).models as ModelRecord[];
   const overrides = JSON.parse(readFileSync(resolve(DATA, 'overlay/abu-overrides.json'), 'utf8')).overrides as Record<string, Partial<ModelRecord>>;
-  return mergeLayers(snapshot, [...volc, ...local], overrides);
+  return mergeLayers(snapshot, [...volc, ...local, ...deepseek], overrides);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

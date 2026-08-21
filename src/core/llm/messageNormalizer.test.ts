@@ -380,7 +380,7 @@ describe('messageNormalizer', () => {
         if (turns[0].kind === 'user') {
           expect(turns[0].content).toHaveLength(2);
           expect(turns[0].content[0]).toEqual({ type: 'text', text: 'Check this' });
-          expect(turns[0].content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('不支持图片理解') });
+          expect(turns[0].content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('does not support image understanding') });
         }
       });
     });

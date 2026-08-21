@@ -436,13 +436,18 @@ function handlerFor(mock: ReturnType<typeof vi.fn>, method: string): (params: un
   return call[1] as (params: unknown) => unknown;
 }
 
-function makeSession(overrides: Partial<{ conversationId: string; loopId: string }> = {}) {
+function makeSession(
+  overrides: Partial<{ conversationId: string; loopId: string; terminalPublished: boolean }> = {},
+) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
     options: {},
     shellAbortController: new AbortController(),
     toolCallToStepId: new Map<string, string>(),
+    ...(overrides.terminalPublished === undefined
+      ? {}
+      : { terminalPublished: overrides.terminalPublished }),
   };
 }
 
@@ -3150,6 +3155,43 @@ describe('agentLoopRunner', () => {
         expect(result).toEqual({ reason: 'enqueued' });
         expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('starts a new run instead of staging into a session whose terminal is already published', async () => {
+        // Regression: the crashed/stopped run stays REGISTERED while its
+        // teardown finishes (persistence + the Computer Use lease release over
+        // IPC), long after the UI shows the run as over. A send in that window
+        // used to be staged into the dead run and then parked as a paused
+        // queue chip, so it never reached the model — the real-Electron
+        // sidecar-crash E2E lost this race on busy machines.
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-tearing-down', makeSession({
+          conversationId: 'conv-1',
+          terminalPublished: true,
+        }));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        const result = await runAgentLoopDispatched('conv-1', 'sent right after the error banner');
+
+        expect(result).toEqual({ reason: 'completed' });
+        expect(enqueueUserInputMock).not.toHaveBeenCalled();
+        expect(notifySidecar).not.toHaveBeenCalledWith('agent.enqueueInput', expect.anything());
+        expect(sidecarRequestMock).toHaveBeenCalled();
+      });
+
+      it('still stages into a sibling session that has NOT published its terminal', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-tearing-down', makeSession({
+          conversationId: 'conv-1',
+          terminalPublished: true,
+        }));
+        registerRunSession('run-live', makeSession({ conversationId: 'conv-1', loopId: 'loop-2' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'more instructions');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'more instructions');
         expect(sidecarRequestMock).not.toHaveBeenCalled();
       });
 

@@ -123,7 +123,21 @@ async function importFresh() {
   return mod;
 }
 
-describe('subagentRunner', () => {
+/**
+ * Timeout note: every case here starts with `importFresh()` —
+ * `vi.resetModules()` plus a fresh `import` of the module under test —
+ * which pulls the whole module graph through the transformer again.
+ * Vitest's 5 s default is enough once the cache is warm (a full
+ * `npm run verify` passes), but `vitest related --run`, which the
+ * pre-commit hook runs, starts cold on a subset: the first re-import of
+ * the run can exceed it. That failed the hook for anyone editing a file
+ * this one transitively imports, with nothing wrong in the test or the
+ * change. Stating the cost beats failing on it; no assertion is relaxed.
+ *
+ * The real fix is to stop paying for a full re-import per case. Tracked
+ * separately — do not treat this timeout as the resolution.
+ */
+describe('subagentRunner', { timeout: 30_000 }, () => {
   beforeEach(() => {
     getSidecarStatus.mockReset();
     sidecarRequestMock.mockReset();

@@ -157,6 +157,10 @@ export const PROVIDER_CONFIGS = {
     models: [
       { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
       { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+      // The only DeepSeek route that accepts image input. Its vision capability
+      // is declared in model-data/overlay/deepseek.json — without that entry the
+      // /deepseek/i pattern fallback would resolve vision:false and strip images.
+      { id: 'deepseek-v4-flash-vision-exp', label: 'DeepSeek V4 Flash Vision (Exp)' },
     ],
   },
   moonshot: {

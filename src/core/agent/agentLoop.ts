@@ -79,6 +79,7 @@ import { calculateTurnCost } from '../llm/costTracker';
 import { formatPlannedStepsForPrompt } from './plannedStepsPrompt';
 import { getBuiltinSearchConfig } from '../capabilities';
 import { resolveAgentModelCapabilities, resolveCapabilities, resolveEffectiveContextWindow, computeReasoningParams, type ModelCapabilities } from '../llm/modelCapabilities';
+import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { rehydrateForSend, type ImageBase64Cache } from '../llm/imageRehydration';
@@ -198,6 +199,10 @@ export async function buildUserMessageContent(
 ): Promise<string | MessageContent[]> {
   if (!images || images.length === 0) return text;
   const savedPaths = await saveUserImagesToDisk(conversationId, images);
+  // Admission may have downscaled an image; record that on the block itself.
+  // `messageNormalizer` renders it into a model-visible notice at send time — it
+  // must NOT be a sibling text block here, or the user sees LLM plumbing inside
+  // their own chat bubble.
   const blocks: MessageContent[] = images.map((img, i) => ({
     type: 'image' as const,
     source: {
@@ -206,6 +211,7 @@ export async function buildUserMessageContent(
       data: img.data,
     },
     filePath: savedPaths[i],
+    ...(img.resized ? { resized: img.resized } : {}),
   }));
   if (text) {
     blocks.push({ type: 'text' as const, text });
@@ -1381,6 +1387,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // No-op when activeProvider has no declaredCapabilities (builtin providers).
       modelCaps = applyDeclaredCapabilities(modelCaps, modelDeclared);
       modelSupportsVision = modelCaps.vision;
+      // Image limits belong to the route, not to Abu: the same picture is fine
+      // for DeepSeek and a 400 from Anthropic. Resolved from the model actually
+      // being called, alongside the rest of its capabilities.
+      const imagePolicy = resolveImagePolicy(effectiveModelId);
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
@@ -1697,6 +1707,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         conversationId,
         workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
         cache: imageBase64Cache,
+        maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
       });
 
       // The final provider-boundary invariant. Re-run after image rehydration so
@@ -2066,6 +2077,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             conversationId,
             workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
             cache: imageBase64Cache,
+            maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
           });
           const recoveryBudgetResult = enforceContextBudget(
             preparedMessages,

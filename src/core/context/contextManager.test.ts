@@ -3,7 +3,9 @@ import {
   ContextBudgetError,
   enforceContextBudget,
   prepareContextMessages,
+  trimOldScreenshots,
 } from './contextManager';
+import { normalizeMessages } from '../llm/messageNormalizer';
 import { estimateMessageTokens, estimateTokens } from './tokenEstimator';
 import type { Message } from '../../types';
 
@@ -274,4 +276,54 @@ describe('contextManager', () => {
       expect(independentlyEstimated).toBeLessThanOrEqual(result.inputBudget);
     },
   );
+});
+
+// trimOldScreenshots drops all but the most recent few screenshots. That policy
+// matches every comparable harness (DSH offloads oldest-first, Codex spends a
+// retained-history budget, Claude Code strips on a media budget) — the risk is
+// not the trimming, it is leaving the surrounding text pointing at a picture
+// that is no longer there.
+describe('trimOldScreenshots — the model is told what happened', () => {
+  const TS = 1_700_000_000_000;
+
+  /** A computer-use turn whose text instructs the model to look at the shot. */
+  function screenshotTurn(id: string, marker: string): Message {
+    const resultContent = [
+      { type: 'text' as const, text: 'Auto-screenshot after action: 1280x800\nExamine the screenshot to verify the action result.' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+    ];
+    const call = {
+      id: `tc-${id}`,
+      name: 'computer',
+      input: {},
+      result: 'Auto-screenshot after action: 1280x800\nExamine the screenshot to verify the action result.',
+      resultContent,
+    };
+    return { id, role: 'assistant', content: '', timestamp: TS, toolCalls: [call] } as Message;
+  }
+
+  // Six screenshots, tight context → only the newest 2 survive.
+  const many = ['a', 'b', 'c', 'd', 'e', 'f'].map((m, i) => screenshotTurn(`m${i}`, m));
+
+  it('keeps only the most recent screenshots', () => {
+    const wire = JSON.stringify(normalizeMessages(trimOldScreenshots(many, 90), { supportsVision: true }));
+    expect(wire).not.toContain('"a"');
+    expect(wire).toContain('"f"'); // newest survives
+  });
+
+  // The regression this test exists for. The note used to be appended to
+  // resultContent, which normalizeMessages reads only via extractImages — so it
+  // reached nobody, while "Examine the screenshot" stayed in the result string.
+  // The model was told to inspect a picture that had been removed.
+  it('puts the removal note in the text the model actually receives', () => {
+    const wire = JSON.stringify(normalizeMessages(trimOldScreenshots(many, 90), { supportsVision: true }));
+    expect(wire).toContain('screenshot(s) removed from history');
+  });
+
+  it('leaves the turns it keeps untouched', () => {
+    const few = [screenshotTurn('only', 'z')];
+    const wire = JSON.stringify(normalizeMessages(trimOldScreenshots(few, 90), { supportsVision: true }));
+    expect(wire).toContain('"z"');
+    expect(wire).not.toContain('screenshot(s) removed from history');
+  });
 });

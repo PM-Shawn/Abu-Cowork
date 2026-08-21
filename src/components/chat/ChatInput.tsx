@@ -24,7 +24,9 @@ import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
-import { generateAttachmentId, readFileAsBase64, SUPPORTED_IMAGE_TYPES } from '@/utils/imageUtils';
+import { generateAttachmentId, SUPPORTED_IMAGE_TYPES } from '@/utils/imageUtils';
+import { fitImageToDimension } from '@/utils/imageCompress';
+import { admissionMaxDimension } from '@/core/llm/imagePolicy';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import FolderSelector from '@/components/common/FolderSelector';
 import PromoteToProjectHint from '@/components/chat/PromoteToProjectHint';
@@ -114,13 +116,36 @@ interface FileAttachmentItem {
   name: string;
 }
 
+/**
+ * The single admission gate for composer images.
+ *
+ * Providers reject an image whose longest side exceeds their limit, and the
+ * rejected image is already in durable history by then — every later request in
+ * that session fails too, including text-only ones. Downscaling here keeps the
+ * picture usable instead of letting one oversized screenshot kill the thread.
+ *
+ * `resized` rides along so the send path can tell the model the image it is
+ * looking at is not at original scale (see `buildUserMessageContent`).
+ */
+async function admitImage(
+  bytes: Uint8Array,
+  mediaType: ImageAttachment['mediaType'],
+): Promise<ImageAttachment> {
+  const fitted = await fitImageToDimension({ bytes, mediaType }, admissionMaxDimension());
+  return {
+    id: generateAttachmentId(),
+    data: uint8ArrayToBase64(fitted.bytes),
+    mediaType: fitted.mediaType as ImageAttachment['mediaType'],
+    ...(fitted.resized ? { resized: fitted.resized } : {}),
+  };
+}
+
 /** Read a local image file path into an ImageAttachment via Tauri fs */
 async function readLocalImage(filePath: string): Promise<ImageAttachment> {
   const bytes = await readFile(filePath);
-  const base64 = uint8ArrayToBase64(bytes);
   const ext = filePath.toLowerCase().split('.').pop() ?? '';
   const mediaType = (IMAGE_MIME_MAP[ext] ?? 'image/jpeg') as ImageAttachment['mediaType'];
-  return { id: generateAttachmentId(), data: base64, mediaType };
+  return admitImage(bytes, mediaType);
 }
 
 /** Process file paths: read images as base64, collect non-image paths as file badges */
@@ -322,8 +347,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // (b) Bitmap-only fallback (screenshots etc.) — use pre-captured File objects.
     for (const file of bitmapFiles) {
-      const { data, mediaType } = await readFileAsBase64(file);
-      setImages((prev) => [...prev, { id: generateAttachmentId(), data, mediaType }]);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const image = await admitImage(bytes, file.type as ImageAttachment['mediaType']);
+      setImages((prev) => [...prev, image]);
     }
   }, []);
 

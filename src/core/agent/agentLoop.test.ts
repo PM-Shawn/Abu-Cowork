@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildUserMessageContent,
   isInteractiveDesktop,
   shouldComputeProposalSignal,
   isIncompleteReason,
@@ -560,5 +561,34 @@ describe('buildVolatileContextTail', () => {
       relevantMemoriesSection: '<memory filename="a.md">plain note</memory>',
     })!;
     expect(tail).toContain('<memory filename="a.md">plain note</memory>');
+  });
+});
+
+describe('buildUserMessageContent — resize record', () => {
+  const png = { id: 'i1', data: 'BASE64', mediaType: 'image/png' as const };
+
+  // Regression (caught on real hardware): the resize note used to be appended as
+  // a sibling text block, so the chat UI rendered raw `<image_resize_notice>`
+  // XML inside the user's own message bubble. It is model-only plumbing — it
+  // belongs on the block as metadata, and messageNormalizer renders it at send.
+  it('never puts the notice into persisted content', async () => {
+    const content = await buildUserMessageContent('c1', 'look', [
+      { ...png, resized: { fromWidth: 2940, fromHeight: 1846, toWidth: 2000, toHeight: 1256 } },
+    ]);
+    expect(JSON.stringify(content)).not.toContain('image_resize_notice');
+  });
+
+  it('records the resize on the image block so the send path can render it', async () => {
+    const content = await buildUserMessageContent('c1', 'look', [
+      { ...png, resized: { fromWidth: 2940, fromHeight: 1846, toWidth: 2000, toHeight: 1256 } },
+    ]) as { type: string; resized?: unknown }[];
+
+    expect(content[0].type).toBe('image');
+    expect(content[0].resized).toEqual({ fromWidth: 2940, fromHeight: 1846, toWidth: 2000, toHeight: 1256 });
+  });
+
+  it('leaves the block clean when nothing was resized', async () => {
+    const content = await buildUserMessageContent('c1', 'look', [png]) as { resized?: unknown }[];
+    expect(content[0].resized).toBeUndefined();
   });
 });

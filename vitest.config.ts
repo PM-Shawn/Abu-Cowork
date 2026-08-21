@@ -38,7 +38,12 @@ export default defineConfig({
     // testTimeout is deliberately NOT set here — test bodies keep the default 5 s
     // so hung tests fail fast rather than masking hangs with a generous ceiling.
     hookTimeout: 30000,
-    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts'],
+    // `abu-chrome-extension` and `abu-browser-bridge` are the DOM executor and
+    // the MCP tool contract for both browser surfaces (the extension bridge and
+    // the built-in Electron browser, which injects the same content bundle).
+    // They were outside the gate entirely; anything shipped from them was
+    // unverified. Keep them in.
+    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts'],
     exclude: [...configDefaults.exclude, 'src/__tests__/quarantine/**'],
     // NOTE: the existing *.integration.test.ts files here are fast, in-process
     // (Tauri/SDKs mocked — no real DB or network), so they stay in the default

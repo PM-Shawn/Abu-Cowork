@@ -148,11 +148,12 @@ function convertUserContent(
     }
   }
 
-  // If images were stripped, add a hint
+  // If images were stripped, add a hint. LLM-facing → English (the reply
+  // language is set by the response-language section, not by this string).
   if (imageCount > 0 && !supportsVision) {
     blocks.push({
       type: 'text',
-      text: `[用户上传了${imageCount}张图片，但当前模型不支持图片理解，也无法通过 read_file 等工具间接查看图片。请直接告知用户当前模型不支持图片识别，建议切换到支持视觉的模型。]`,
+      text: `[The user attached ${imageCount} image(s), but the current model does not support image understanding, and the images cannot be viewed indirectly through tools such as read_file. Tell the user directly that the current model does not support image recognition, and suggest switching to a vision-capable model.]`,
     });
   }
 

@@ -89,6 +89,30 @@ export async function clearCheckpoint(convId: string): Promise<void> {
   }
 }
 
+/**
+ * Clear the checkpoint only while it still belongs to `loopId`.
+ *
+ * A run's teardown can outlive its own visible terminal (see
+ * `agentLoopRunner.ts`'s `RunSession.terminalPublished`), so by the time this
+ * fire-and-forget cleanup runs, the next turn may already own the
+ * conversation — and checkpoints are keyed by conversation, not by loop.
+ * Deleting unconditionally there would strip the LIVE turn of its crash
+ * recovery. Reading first costs one extra file read on a path that is already
+ * best-effort.
+ */
+export async function clearCheckpointForLoop(convId: string, loopId: string): Promise<void> {
+  try {
+    const path = await checkpointPath(convId);
+    if (!(await exists(path))) return;
+    const current = JSON.parse(await readTextFile(path)) as Checkpoint;
+    if (current.loopId !== loopId) return;
+    await remove(path);
+  } catch {
+    // Non-critical — an unreadable/corrupt checkpoint is left for the startup
+    // orphan scan, which already handles stale entries.
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // Orphan detection (startup scan)
 // ════════════════════════════════════════════════════════════

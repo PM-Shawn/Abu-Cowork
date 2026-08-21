@@ -78,7 +78,22 @@ export function estimateTokens(text: string): number {
   return Math.ceil((cjkTokens + nonCjkTokens) * getCalibrationRatio());
 }
 
-// Approximate tokens per image (Anthropic vision: ~1600 tokens per image)
+// Approximate tokens per image, deliberately provider-agnostic.
+//
+// Routes differ by more than an order of magnitude (DeepSeek caps an image at
+// 384 tokens, Anthropic bills around 1600), and an earlier revision priced this
+// per route. That was withdrawn: the only per-turn model identity available here
+// is a module global, which concurrent conversations overwrite — and this number
+// feeds the INPUT_TOO_LARGE refusal, so borrowing another conversation's route
+// could under-count and let an oversized request through the guard that exists
+// to stop it. Passing the route in explicitly (Codex's shape) would mean
+// threading a parameter through ~20 call sites in two subsystems this change has
+// no other business touching.
+//
+// So this stays a single conservative constant, which is also DSH's stance:
+// provider-agnostic estimation does not guess vision pricing, and the usage the
+// provider returns is the authoritative number. Over-counting only costs an
+// earlier compaction; under-counting costs a failed request.
 const TOKENS_PER_IMAGE = 1600;
 
 function estimateToolResultContentTokens(content: ToolResultContent[] | undefined): number {

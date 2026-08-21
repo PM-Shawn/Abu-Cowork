@@ -3,6 +3,7 @@ import { resolveFileSource } from '../session/outputSnapshots';
 import { uint8ArrayToBase64 } from '../../utils/base64';
 import { getBaseName } from '../../utils/pathUtils';
 import { createLogger } from '../logging/logger';
+import { enforceImageBudget } from './imageBudget';
 
 const logger = createLogger('imageRehydration');
 
@@ -115,8 +116,23 @@ export async function rehydrateForSend(
     conversationId: string | undefined;
     workspacePath: string | null;
     cache?: ImageBase64Cache;
+    /** Route's ceiling on total base64 image payload (`resolveImagePolicy`).
+     *  Omitted → no budget is applied (the pre-policy behaviour). */
+    maxRequestImageBytes?: number;
   },
 ): Promise<Message[]> {
   if (!opts.vision) return messages;
-  return rehydrateImageData(messages, opts.conversationId, opts.workspacePath, opts.cache);
+  const rehydrated = await rehydrateImageData(messages, opts.conversationId, opts.workspacePath, opts.cache);
+  // Budget AFTER rehydration, and inside this seam rather than beside it.
+  //
+  // After, because only rehydrated blocks carry their real base64 — measuring
+  // here bounds the actual request body instead of estimating from file sizes,
+  // and unrecoverable images have already collapsed to text placeholders.
+  //
+  // Inside, because this function exists precisely so a second send site cannot
+  // silently skip the send-prep step (see this file's header — that is how the
+  // recovery retry regressed once already). A sibling call in agentLoop would
+  // reintroduce that trap for the next person.
+  if (opts.maxRequestImageBytes === undefined) return rehydrated;
+  return enforceImageBudget(rehydrated, opts.maxRequestImageBytes);
 }

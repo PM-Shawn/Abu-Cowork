@@ -260,20 +260,30 @@ function browserSessionForViews() {
   return browserSession;
 }
 
+// Only two sources are trusted: the packaged copy, and the extension's own build
+// output. There is deliberately no fallback to the committed
+// src-tauri/browser-extension/ bundle — that copy is synced for the Tauri bundle,
+// so falling through to it would silently run a build of unknown vintage whenever
+// the dev build output is missing, making DOM-layer fixes look ineffective.
 function automationRuntimePath() {
   const candidates = [
     process.resourcesPath
       ? path.join(process.resourcesPath, 'browser-extension', 'content.js')
       : '',
     path.join(__dirname, '..', 'abu-chrome-extension', 'dist', 'content.js'),
-    path.join(__dirname, '..', 'src-tauri', 'browser-extension', 'content.js'),
   ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
 function loadAutomationRuntime() {
   if (automationRuntime !== null) return automationRuntime;
   const runtimePath = automationRuntimePath();
+  if (!runtimePath) {
+    throw new Error(
+      'browser automation runtime is missing (no content.js in the packaged resources ' +
+        'or in abu-chrome-extension/dist/); build it with `npm run build:browser-extension`'
+    );
+  }
   try {
     automationRuntime = fs.readFileSync(runtimePath, 'utf8');
     return automationRuntime;

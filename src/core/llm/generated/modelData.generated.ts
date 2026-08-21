@@ -1797,6 +1797,15 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     maxOutputTokens: 8192,
     outputCeiling: 8192,
     contextWindow: 204800
+  },
+  'deepseek-v4-flash-vision-exp': {
+    vision: true,
+    thinking: 'uncontrollable',
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 32768,
+    outputCeiling: 384000,
+    contextWindow: 1000000
   }
 };
 

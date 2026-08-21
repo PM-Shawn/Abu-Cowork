@@ -10,7 +10,7 @@
  * `sessions`/`handlersRegistered`/`emittersInstalled` state must not leak
  * across tests.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -428,7 +428,10 @@ async function importFresh() {
 
 /** Pull the handler fn registered for a given method out of a mocked onSidecarNotification/onSidecarRequest call list. */
 function handlerFor(mock: ReturnType<typeof vi.fn>, method: string): (params: unknown) => unknown {
-  const call = mock.mock.calls.find((c) => c[0] === method);
+  // Newest registration wins: the running test always registers last, so a
+  // stale handler leaked in by an abandoned (timed-out) test body cannot be
+  // picked up ahead of it.
+  const call = mock.mock.calls.findLast((c) => c[0] === method);
   if (!call) throw new Error(`no handler registered for ${method}`);
   return call[1] as (params: unknown) => unknown;
 }
@@ -449,6 +452,20 @@ function makeSession(
 }
 
 describe('agentLoopRunner', () => {
+  // The FIRST import of this module graph pays Vite's cold transform cost
+  // (measured ~4.0 s here; more under v8 coverage or a loaded runner), and the
+  // default 5 s testTimeout applies to test BODIES only. Left inside the first
+  // `await importFresh()` that cost blew the timeout; vitest then failed that
+  // test WITHOUT cancelling its body, so the abandoned continuation later ran
+  // ensureHandlersRegistered() against the *next* test's freshly-reset mocks —
+  // turning one slow test into a cascade of unrelated red assertions.
+  // Paying it here instead is safe: hookTimeout is 30 s, and vi.resetModules()
+  // drops the evaluated-module cache but NOT the transform cache, so every
+  // later importFresh() only re-evaluates (~10-400 ms).
+  beforeAll(async () => {
+    await import('./agentLoopRunner');
+  });
+
   beforeEach(() => {
     onSidecarNotification.mockReset();
     onSidecarRequest.mockReset();
@@ -644,7 +661,7 @@ describe('agentLoopRunner', () => {
         accepted: true,
         userMessageId: 'msg-connection',
       });
-      const handler = onSidecarConnectionState.mock.calls[0][0] as (
+      const handler = onSidecarConnectionState.mock.calls.at(-1)![0] as (
         event: { state: 'connected' | 'recovering' | 'failed'; reason: string },
       ) => void;
 

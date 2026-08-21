@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { recordSourceDigest } from './check-browser-artifacts.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -31,6 +32,7 @@ async function main() {
         'const require = __abuCreateRequire(import.meta.url);\n',
     },
   });
+  recordSourceDigest('electron/chrome-bridge-runtime/dist/server.mjs');
   console.log(
     '[build-electron-chrome-bridge-runtime] ' +
     'electron/chrome-bridge-runtime/dist/server.mjs built',

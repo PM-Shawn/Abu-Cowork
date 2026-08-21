@@ -212,6 +212,7 @@ const enUS: TranslationDict = {
     inputPlaceholderWithSkill: 'Enter parameters...',
     inputPlaceholderWithAgent: 'Enter task description...',
     inputPlaceholderMidTask: 'Add instructions (Abu reads next turn)...',
+    sendTooltip: 'Send (Enter) · New line (Shift + Enter)',
     start: 'Start',
     stop: 'Stop',
     welcomeTitle: 'Leave it to Abu ✨',

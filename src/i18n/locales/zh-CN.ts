@@ -212,6 +212,7 @@ const zhCN: TranslationDict = {
     inputPlaceholderWithSkill: '输入参数...',
     inputPlaceholderWithAgent: '输入任务描述...',
     inputPlaceholderMidTask: '追加指令（阿布会在下轮读取）...',
+    sendTooltip: '发送（Enter）· 换行（Shift + Enter）',
     start: '开始',
     stop: '停止',
     welcomeTitle: '交给阿布就行啦 ✨',

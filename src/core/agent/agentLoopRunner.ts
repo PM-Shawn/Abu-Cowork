@@ -238,6 +238,21 @@ export interface RunSession {
   terminalPromise?: Promise<AgentRunTerminal>;
   resolveTerminal?: (terminal: AgentRunTerminal) => void;
   failureFinalizationPromise?: Promise<void>;
+  /**
+   * Set the moment a terminal finalizer (`finalizeFailedRun` /
+   * `finalizeAbortedRun`) starts, i.e. before it publishes the visible
+   * terminal state. The session stays REGISTERED past that point — the
+   * finalizer still has to await persistence, and the dispatch `finally`
+   * still has to release the Computer Use lease over IPC — so for a few
+   * hundred milliseconds `findRunSessionForConversation` keeps answering
+   * "a run owns this conversation" while the UI already shows the run as
+   * over (banner up, Stop hidden, composer editable). A send inside that
+   * window was staged into this dead run's queue and then parked by
+   * `runAgentLoopDispatched`'s pause branch, so it never reached the model.
+   * `findJoinableRunSessionForConversation` reads this flag so the staging
+   * decision matches what the user can see.
+   */
+  terminalPublished?: boolean;
   runtimeStartedAt?: number;
   firstDeltaAt?: number;
   firstFrameApplied?: boolean;
@@ -257,6 +272,24 @@ export function registerRunSession(runId: string, session: RunSession): void {
 export function findRunSessionForConversation(conversationId: string): RunSession | undefined {
   for (const session of sessions.values()) {
     if (session.conversationId === conversationId) return session;
+  }
+  return undefined;
+}
+
+/**
+ * The still-joinable session for a conversationId — the concurrency guard's
+ * view of "is a run live for this conversation right now". Unlike
+ * `findRunSessionForConversation` it skips sessions whose terminal has
+ * already been published (see `RunSession.terminalPublished`), so a send
+ * made after the run visibly ended starts its own run instead of being
+ * staged into a session that is only still registered because its teardown
+ * has not finished. Full scan rather than filtering the first match: during
+ * the teardown window a newer, genuinely live session for the same
+ * conversation can already be registered behind the dying one.
+ */
+function findJoinableRunSessionForConversation(conversationId: string): RunSession | undefined {
+  for (const session of sessions.values()) {
+    if (session.conversationId === conversationId && !session.terminalPublished) return session;
   }
   return undefined;
 }
@@ -509,6 +542,10 @@ async function finalizeFailedRun(
 ): Promise<void> {
   if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
 
+  // Before anything else: this run is over. Nothing sent from here on may be
+  // staged into it — see `RunSession.terminalPublished`.
+  session.terminalPublished = true;
+
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
     updateSessionMessageState(session, state, displayMessage);
@@ -545,6 +582,11 @@ async function finalizeFailedRun(
  */
 async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog' | 'run-terminal'): Promise<void> {
   if (session.abortFinalizationPromise) return session.abortFinalizationPromise;
+
+  // Before anything else — including the queue pause below, which is meant to
+  // preserve follow-ups staged while the run was still live, not to swallow
+  // ones typed after it ended. See `RunSession.terminalPublished`.
+  session.terminalPublished = true;
 
   session.abortFinalizationPromise = (async () => {
     try {
@@ -631,7 +673,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
         .then(({ drainCapabilitySetupRequests }) => drainCapabilitySetupRequests(session.loopId))
         .catch(() => {});
       void import('../session/checkpoint')
-        .then(({ clearCheckpoint }) => clearCheckpoint(session.conversationId))
+        .then(({ clearCheckpointForLoop }) => clearCheckpointForLoop(session.conversationId, session.loopId))
         .catch(() => {});
       void import('../tools/definitions/computerTools')
         .then(({ closeAxSession }) => closeAxSession(session.conversationId, session.loopId))
@@ -2066,7 +2108,7 @@ async function runSingleAgentLoopDispatched(
     const getBusyError = (): string => hasImages
       ? getI18n().chat.attachmentDuringRun
       : getI18n().chat.conversationBusy;
-    const runningSession = findRunSessionForConversation(conversationId);
+    const runningSession = findJoinableRunSessionForConversation(conversationId);
     if (runningSession?.runId) {
       const interactive = isInteractiveDesktop(options, runningConv);
       if (!interactive || hasImages || !stageable) {
@@ -2667,7 +2709,12 @@ async function runSingleAgentLoopDispatched(
     unregisterRunSession(runId);
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
     if (!handedOffToLocal) {
-      abortRegistry.clearAbortController(conversationId);
+      // Ownership-checked: everything above the `finally` can outlive this
+      // run's visible terminal (persistence, the Computer Use lease release
+      // over IPC), and a send made in that window now legitimately starts a
+      // new run — see `RunSession.terminalPublished`. An unconditional clear
+      // here would delete THAT run's controller and leave its Stop inert.
+      abortRegistry.clearAbortController(conversationId, shellAbortController);
     }
   }
 }

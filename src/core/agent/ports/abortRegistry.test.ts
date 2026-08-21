@@ -42,6 +42,30 @@ describe('createInProcessAbortRegistry', () => {
     expect(registry.hasAbortController('conv-abort-a')).toBe(false);
   });
 
+  it('clearAbortController(convId, owned) leaves a NEWER run\'s controller registered', () => {
+    // Regression: a run tearing down asynchronously (its visible terminal
+    // already published) must not delete the controller a newer run has since
+    // registered for the same conversation — that would leave the live run's
+    // Stop button inert.
+    const registry = createInProcessAbortRegistry();
+    const dying = registry.getAbortController('conv-abort-a');
+    registry.clearAbortController('conv-abort-a');
+    const replacement = registry.getAbortController('conv-abort-a');
+    expect(replacement).not.toBe(dying);
+
+    registry.clearAbortController('conv-abort-a', dying);
+
+    expect(registry.hasAbortController('conv-abort-a')).toBe(true);
+    expect(registry.getAbortController('conv-abort-a')).toBe(replacement);
+  });
+
+  it('clearAbortController(convId, owned) still clears while that controller is the registered one', () => {
+    const registry = createInProcessAbortRegistry();
+    const controller = registry.getAbortController('conv-abort-a');
+    registry.clearAbortController('conv-abort-a', controller);
+    expect(registry.hasAbortController('conv-abort-a')).toBe(false);
+  });
+
   it('is scoped per conversation id', () => {
     const registry = createInProcessAbortRegistry();
     registry.getAbortController('conv-abort-a');

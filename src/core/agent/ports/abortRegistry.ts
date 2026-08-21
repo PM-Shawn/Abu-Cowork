@@ -39,8 +39,11 @@ export interface AbortRegistry {
    *  exists yet for `convId` (this is chatStore's real behavior, not this
    *  port's invention; see chatStore.ts's `getAbortController`). */
   getAbortController(convId: string): AbortController;
-  /** Mirrors chatStore's `clearAbortController`. */
-  clearAbortController(convId: string): void;
+  /** Mirrors chatStore's `clearAbortController`. `owned` makes the clear
+   *  ownership-checked — the controller is dropped only if it is still the
+   *  registered one, so a run whose teardown outlives its visible terminal
+   *  cannot delete a newer run's controller. */
+  clearAbortController(convId: string, owned?: AbortController): void;
 }
 
 /** Default in-process implementation over the Zustand store's synchronous
@@ -51,7 +54,7 @@ export function createInProcessAbortRegistry(): AbortRegistry {
   return {
     hasAbortController: (convId) => useChatStore.getState().hasAbortController(convId),
     getAbortController: (convId) => useChatStore.getState().getAbortController(convId),
-    clearAbortController: (convId) => useChatStore.getState().clearAbortController(convId),
+    clearAbortController: (convId, owned) => useChatStore.getState().clearAbortController(convId, owned),
   };
 }
 

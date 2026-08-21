@@ -135,6 +135,19 @@ function convertUserContent(
         imageCount++;
       } else if (c.source.data) {
         blocks.push({ type: 'image', mediaType: c.source.media_type, data: c.source.data });
+        // Composer admission downscaled this image to fit provider dimension
+        // limits. Tell the model, or it reads fine print and reports pixel
+        // coordinates as though it were seeing the original resolution. Produced
+        // here rather than stored as content so it never renders in the user's
+        // own message bubble; the recorded dimensions make it deterministic.
+        // LLM-facing → English, like the other agent-loop prompts.
+        if (c.resized) {
+          const { fromWidth, fromHeight, toWidth, toHeight } = c.resized;
+          blocks.push({
+            type: 'text',
+            text: `<image_resize_notice>The preceding image was resized from ${fromWidth}x${fromHeight} to ${toWidth}x${toHeight} pixels.</image_resize_notice>`,
+          });
+        }
       } else {
         // Vision model, but the base64 was stripped and rehydration couldn't
         // refill it (no filePath to recover from). Never emit an empty

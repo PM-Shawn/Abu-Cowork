@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
+import { describe, it, expect, afterEach } from 'vitest';
+import { estimateTokens, estimateMessageTokens, setActiveModel } from './tokenEstimator';
 import type { Message } from '../../types';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below (estimateMessageTokens
@@ -143,5 +143,59 @@ describe('tokenEstimator', () => {
       // Empty content = 0 text tokens + 4 overhead
       expect(estimateMessageTokens(msg)).toBe(4);
     });
+  });
+});
+
+// The per-image price is not cosmetic: it feeds the 65% auto-compaction trigger
+// and the INPUT_TOO_LARGE refusal. Charging every route Anthropic's ~1600 buys
+// DeepSeek sessions a lossy compaction they did not need, and on a small
+// configured window can refuse a batch of screenshots that would have fit.
+describe('estimateMessageTokens — per-route image pricing', () => {
+  // activeModelId is module-global (same mechanism getCalibrationRatio uses), so
+  // leaving it set would silently reprice images for every later test in the file.
+  afterEach(() => setActiveModel(''));
+
+  const withImage: Message[] = [{
+    id: '1',
+    role: 'user',
+    content: [
+      { type: 'text', text: 'What is this?' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abc' } },
+    ],
+    timestamp: FIXED_TIMESTAMP,
+  }];
+  const withoutImage: Message[] = [{
+    id: '1',
+    role: 'user',
+    content: [{ type: 'text', text: 'What is this?' }],
+    timestamp: FIXED_TIMESTAMP,
+  }];
+
+  /** What one image adds, isolated from per-message structural overhead. */
+  const imageCost = () => estimateMessageTokens(withImage) - estimateMessageTokens(withoutImage);
+
+  it('charges a DeepSeek image at its published cap, not the Anthropic figure', () => {
+    setActiveModel('deepseek-v4-flash-vision-exp');
+    expect(imageCost()).toBe(384);
+  });
+
+  it('still charges ~1600 on an Anthropic route', () => {
+    setActiveModel('claude-sonnet-4-6');
+    expect(imageCost()).toBe(1600);
+  });
+
+  // Before setActiveModel runs, behaviour must be exactly what it was when this
+  // file hardcoded 1600 — an unpriced route may not silently under-count.
+  it('falls back to the conservative default before a route is known', () => {
+    expect(imageCost()).toBe(1600);
+  });
+
+  // The point of the whole exercise: the same picture must not cost the same on
+  // every route, or the policy table is doing nothing.
+  it('prices the identical image differently per route', () => {
+    setActiveModel('deepseek-v4-flash-vision-exp');
+    const deepseek = imageCost();
+    setActiveModel('claude-sonnet-4-6');
+    expect(imageCost()).toBeGreaterThan(deepseek);
   });
 });

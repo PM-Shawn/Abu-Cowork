@@ -210,6 +210,12 @@ export interface ImageContent {
     data: string;
   };
   filePath?: string;  // Disk path for persistence — base64 data is stripped on persist, filePath survives
+  /** Set when composer admission downscaled this image to fit provider limits.
+   *  Metadata on the block, NOT a sibling text block: the note it produces is
+   *  for the model only, and a text block would render in the user's own chat
+   *  bubble. `messageNormalizer` turns this into the model-visible notice at
+   *  send time, the same place the non-vision note is produced. */
+  resized?: { fromWidth: number; fromHeight: number; toWidth: number; toHeight: number };
 }
 
 export interface DocumentContent {
@@ -228,6 +234,11 @@ export interface ImageAttachment {
   id: string;
   data: string;        // base64 data (no prefix)
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  /** Set when composer admission downscaled the image to fit provider limits.
+   *  Carried to the send path so the model can be told it is not looking at the
+   *  original resolution — otherwise it reads coordinates and fine print off a
+   *  shrunken picture believing it is full size. */
+  resized?: { fromWidth: number; fromHeight: number; toWidth: number; toHeight: number };
 }
 
 // Thinking block for extended thinking

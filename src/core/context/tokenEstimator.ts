@@ -9,6 +9,7 @@
 
 import type { Message, MessageContent, ToolDefinition, ToolResultContent } from '../../types';
 import { getMessageText } from './contextUtils';
+import { resolveImagePolicy } from '../llm/imagePolicy';
 
 // CJK Unicode ranges
 const CJK_REGEX = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef]/g;
@@ -78,14 +79,33 @@ export function estimateTokens(text: string): number {
   return Math.ceil((cjkTokens + nonCjkTokens) * getCalibrationRatio());
 }
 
-// Approximate tokens per image (Anthropic vision: ~1600 tokens per image)
-const TOKENS_PER_IMAGE = 1600;
+/**
+ * Tokens to charge one image, for the route this turn is going to.
+ *
+ * Providers differ by more than an order of magnitude — DeepSeek caps an image
+ * at 384 tokens, Anthropic bills around 1600 — and this number is not cosmetic:
+ * it feeds the 65% auto-compaction trigger and the `INPUT_TOO_LARGE` refusal.
+ * Charging 1600 for a 384-token image inflates the water level, so a session can
+ * buy a *lossy* compaction (history summarised away, plus a full extra round
+ * trip) it did not need, and on a small configured context window a batch of
+ * screenshots can be refused before it is ever sent.
+ *
+ * Reads `activeModelId` rather than taking a parameter, matching how
+ * `getCalibrationRatio` already resolves per-model state in this module — so
+ * compaction and budget enforcement stay on one shared value instead of
+ * disagreeing about what an image costs. Before `setActiveModel` runs,
+ * `resolveImagePolicy('')` falls through to the conservative default, which is
+ * the 1600 this file used unconditionally before.
+ */
+function tokensPerImage(): number {
+  return resolveImagePolicy(activeModelId).tokensPerImage;
+}
 
 function estimateToolResultContentTokens(content: ToolResultContent[] | undefined): number {
   if (!content) return 0;
   return content.reduce((total, block) => (
     block.type === 'image'
-      ? total + TOKENS_PER_IMAGE
+      ? total + tokensPerImage()
       : total + estimateTokens(block.text)
   ), 0);
 }
@@ -108,8 +128,8 @@ export function estimateMessageTokens(messages: Message[]): number {
     // Message text content
     total += estimateTokens(getMessageText(msg.content));
 
-    // Image content (~1600 tokens per image)
-    total += countImages(msg.content) * TOKENS_PER_IMAGE;
+    // Image content, priced for the active route.
+    total += countImages(msg.content) * tokensPerImage();
 
     // Thinking content
     if (msg.thinking) {

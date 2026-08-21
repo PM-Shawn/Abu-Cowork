@@ -87,6 +87,16 @@ function getMaxScreenshots(usagePercent?: number): number {
 }
 
 /**
+ * Tell the model, in the text it actually receives, that this tool call's
+ * screenshots were dropped from history. Count comes from the recorded result,
+ * so the same history always renders the same string.
+ */
+function appendScreenshotRemovedNote(result: string | undefined, imageCount: number): string {
+  const note = `[${imageCount} screenshot(s) removed from history to save context]`;
+  return result === undefined || result === '' ? note : `${result}\n\n${note}`;
+}
+
+/**
  * Strip old screenshot images from messages, keeping only the N most recent.
  * This prevents context overflow from accumulated screenshot base64 data.
  * Modifies messages in-place for efficiency (called before LLM send).
@@ -117,31 +127,43 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
     const strippedTcIndices = toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.tcIdx);
     if (strippedTcIndices.length === 0) return msg;
 
-    // Clone message and strip images from old tool calls
+    // Clone message and strip images from old tool calls.
+    //
+    // The note goes on `result`, NOT into resultContent. normalizeMessages
+    // builds the `tool` wire message from the `result` string and reads
+    // resultContent only through extractImages, so a text block placed there
+    // reaches nobody. That mattered here more than anywhere: computer-use
+    // results carry "Examine the screenshot to verify the action result" in
+    // their text, and that instruction survives untouched — so dropping the
+    // image without a reachable note left the model told to inspect a picture
+    // that was no longer in the request.
+    //
+    // Codex does the same thing structurally: its normalize pass swaps
+    // InputImage for InputText **in place**, inside the content items that ARE
+    // the wire, so the notice sits exactly where the picture was. (Where it
+    // instead drops a whole message group, as compaction does, no note is
+    // needed — nothing is left dangling.)
     const newToolCalls = msg.toolCalls!.map((tc, j) => {
       if (!strippedTcIndices.includes(j)) return tc;
-      // Replace image content with text placeholder, keep text parts
       const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
       const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
       return {
         ...tc,
-        resultContent: [
-          ...textParts,
-          { type: 'text' as const, text: `[${imageCount} screenshot(s) removed from history to save context]` },
-        ],
+        result: appendScreenshotRemovedNote(tc.result, imageCount),
+        resultContent: textParts,
       };
     });
 
-    // Also strip from toolCallsForContext if present
+    // Also strip from toolCallsForContext if present — this is the canonical
+    // send representation when set, so it is the one that must carry the note.
     const newToolCallsForContext = msg.toolCallsForContext?.map((tc, j) => {
       if (!strippedTcIndices.includes(j)) return tc;
       const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
+      const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
       return {
         ...tc,
-        resultContent: [
-          ...textParts,
-          { type: 'text' as const, text: `[screenshot removed from history]` },
-        ],
+        result: appendScreenshotRemovedNote(tc.result, imageCount),
+        resultContent: textParts,
       };
     });
 

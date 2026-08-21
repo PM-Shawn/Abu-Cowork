@@ -932,6 +932,10 @@ const zhCN: TranslationDict = {
     fetchModelsFailed: '获取失败',
     filterModelsPlaceholder: '搜索模型…',
     filterModelsNoResults: '没有匹配的模型',
+    modelsSelectedCount: '已选 {selected} / 共 {total}',
+    modelsPickHint: '请勾选要添加的模型',
+    selectAllModels: '全选',
+    clearSelectedModels: '清空',
     enterpriseMode: '企业模式',
   },
 

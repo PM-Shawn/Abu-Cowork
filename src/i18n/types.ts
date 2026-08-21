@@ -1041,6 +1041,12 @@ export interface TranslationDict {
     // Scoped search over a large fetched-models checklist (aggregator/gateway convergence)
     filterModelsPlaceholder: string;
     filterModelsNoResults: string;
+    /** Counter above the fetched-model checklist: '{selected}' of '{total}' picked. */
+    modelsSelectedCount: string;
+    /** Shown in the counter's place while nothing is picked yet. */
+    modelsPickHint: string;
+    selectAllModels: string;
+    clearSelectedModels: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };

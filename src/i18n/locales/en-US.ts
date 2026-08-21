@@ -932,6 +932,10 @@ const enUS: TranslationDict = {
     fetchModelsFailed: 'Fetch failed',
     filterModelsPlaceholder: 'Search models…',
     filterModelsNoResults: 'No matching models',
+    modelsSelectedCount: '{selected} of {total} selected',
+    modelsPickHint: 'Select the models you want to add',
+    selectAllModels: 'Select all',
+    clearSelectedModels: 'Clear',
     enterpriseMode: 'Enterprise',
   },
 

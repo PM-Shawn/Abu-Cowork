@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sortKnownFirst, computeFetchPreselection, SMALL_LIST_MAX } from './fetchModelUtils';
+import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import type { ModelInfo } from '@/types/provider';
 
 function makeModels(ids: string[]): ModelInfo[] {
@@ -41,64 +41,69 @@ describe('fetchModelUtils', () => {
     });
   });
 
-  describe('computeFetchPreselection', () => {
-    it('pre-checks ALL models for a small mixed known/unknown list (<= SMALL_LIST_MAX)', () => {
-      expect(SMALL_LIST_MAX).toBe(25);
-      const models = makeModels(['gpt-4o', 'unknown-a', 'unknown-b']);
-      const isKnown = isKnownFactory(new Set(['gpt-4o']));
-      const result = computeFetchPreselection(models, isKnown, new Set());
-      expect(result).toEqual(new Set(['gpt-4o', 'unknown-a', 'unknown-b']));
+  describe('unionSelectAll', () => {
+    it('selects every model in the list', () => {
+      const models = makeModels(['llama3:8b', 'qwen2.5:14b']);
+      expect(unionSelectAll(models, new Set())).toEqual(new Set(['llama3:8b', 'qwen2.5:14b']));
     });
 
-    it('pre-checks ONLY known ids for a large list (aggregator convergence)', () => {
-      const knownIds = ['gpt-4o', 'claude-opus'];
-      const unknownIds = Array.from({ length: 38 }, (_, i) => `aggregator-model-${i}`);
-      const models = makeModels([...knownIds, ...unknownIds]);
-      expect(models.length).toBeGreaterThan(SMALL_LIST_MAX);
-      const isKnown = isKnownFactory(new Set(knownIds));
-      const result = computeFetchPreselection(models, isKnown, new Set());
-      expect(result).toEqual(new Set(knownIds));
+    it('unions with existingSelected rather than replacing it — a manually added id survives a re-check', () => {
+      const models = makeModels(['llama3:8b']);
+      const result = unionSelectAll(models, new Set(['typed-by-hand']));
+      expect(result).toEqual(new Set(['typed-by-hand', 'llama3:8b']));
     });
 
-    it('pre-checks NOTHING for a large list with zero known ids', () => {
-      const unknownIds = Array.from({ length: 40 }, (_, i) => `aggregator-model-${i}`);
-      const models = makeModels(unknownIds);
-      expect(models.length).toBeGreaterThan(SMALL_LIST_MAX);
-      const isKnown = () => false;
-      const result = computeFetchPreselection(models, isKnown, new Set());
-      expect(result).toEqual(new Set());
+    it('keeps existingSelected intact for an empty catalog', () => {
+      const result = unionSelectAll([], new Set(['saved-model']));
+      expect(result).toEqual(new Set(['saved-model']));
     });
 
-    it('unions with existingSelected — a curated-preset id survives even though it is not "known" and the fetched list is large', () => {
-      const curatedId = 'vendor/curated-preset-model';
-      const unknownIds = Array.from({ length: 40 }, (_, i) => `aggregator-model-${i}`);
-      const models = makeModels(unknownIds);
-      const isKnown = () => false;
-      const result = computeFetchPreselection(models, isKnown, new Set([curatedId]));
-      expect(result.has(curatedId)).toBe(true);
-      expect(result).toEqual(new Set([curatedId]));
+    it('does not mutate the passed-in set', () => {
+      const existing = new Set(['saved-model']);
+      unionSelectAll(makeModels(['new-model']), existing);
+      expect(existing).toEqual(new Set(['saved-model']));
+    });
+  });
+
+  describe('filterModels', () => {
+    const models: ModelInfo[] = [
+      { id: 'openai/gpt-4o', label: 'openai/gpt-4o' },
+      { id: 'anthropic/claude-opus-4', label: 'anthropic/claude-opus-4' },
+      { id: 'llama3:8b', label: 'Llama 3 (8B)' },
+    ];
+
+    it('returns the list unchanged for an empty query', () => {
+      expect(filterModels(models, '')).toEqual(models);
     });
 
-    it('unions with existingSelected on the small-list path too', () => {
-      const curatedId = 'vendor/curated-preset-model';
-      const models = makeModels(['gpt-4o', 'unknown-a']);
-      const isKnown = isKnownFactory(new Set(['gpt-4o']));
-      const result = computeFetchPreselection(models, isKnown, new Set([curatedId]));
-      expect(result).toEqual(new Set([curatedId, 'gpt-4o', 'unknown-a']));
+    it('returns the list unchanged for a whitespace-only query', () => {
+      expect(filterModels(models, '   ')).toEqual(models);
     });
 
-    it('boundary: exactly SMALL_LIST_MAX models pre-checks all (inclusive <=)', () => {
-      const models = makeModels(Array.from({ length: SMALL_LIST_MAX }, (_, i) => `model-${i}`));
-      const isKnown = () => false;
-      const result = computeFetchPreselection(models, isKnown, new Set());
-      expect(result.size).toBe(SMALL_LIST_MAX);
+    it('matches on a substring of the id', () => {
+      expect(filterModels(models, 'claude').map((m) => m.id)).toEqual(['anthropic/claude-opus-4']);
     });
 
-    it('boundary: SMALL_LIST_MAX + 1 models switches to known-only branch', () => {
-      const models = makeModels(Array.from({ length: SMALL_LIST_MAX + 1 }, (_, i) => `model-${i}`));
-      const isKnown = () => false;
-      const result = computeFetchPreselection(models, isKnown, new Set());
-      expect(result.size).toBe(0);
+    it('matches case-insensitively', () => {
+      expect(filterModels(models, 'GPT-4O').map((m) => m.id)).toEqual(['openai/gpt-4o']);
+    });
+
+    it('matches on the label too, not just the id (Ollama labels carry the param size)', () => {
+      expect(filterModels(models, '8B').map((m) => m.id)).toEqual(['llama3:8b']);
+    });
+
+    it('trims the query before matching', () => {
+      expect(filterModels(models, '  opus  ').map((m) => m.id)).toEqual(['anthropic/claude-opus-4']);
+    });
+
+    it('returns an empty list when nothing matches', () => {
+      expect(filterModels(models, 'gemini')).toEqual([]);
+    });
+  });
+
+  describe('MODEL_FILTER_MIN_ITEMS', () => {
+    it('is small enough that an ordinary provider catalog still gets a search box', () => {
+      expect(MODEL_FILTER_MIN_ITEMS).toBe(8);
     });
   });
 });

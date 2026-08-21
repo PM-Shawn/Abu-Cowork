@@ -19,7 +19,7 @@ import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { PROVIDER_GUIDES } from './providerGuides';
 import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './providerCapabilities';
 import { toModelInfo } from './modelInfoUtil';
-import { sortKnownFirst, computeFetchPreselection, SMALL_LIST_MAX } from './fetchModelUtils';
+import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, ModelDeclaredCapabilities, ProviderInstance } from '@/types/provider';
@@ -501,6 +501,25 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     }
   }, [selectedModels, showAdvanced, seedDeclaredDefaults]);
 
+  // Bulk selection over the fetched checklist. Both act on the list the user is
+  // actually looking at (the search-filtered subset), so "select all" after
+  // typing a query means "all matches", not "all 400 fetched models" — the
+  // counter next to the buttons makes the resulting size visible either way.
+  const handleSelectModels = useCallback((ids: string[]) => {
+    setSelectedModels((prev) => new Set([...prev, ...ids]));
+    if (showAdvanced) {
+      seedDeclaredDefaults(ids);
+    }
+  }, [showAdvanced, seedDeclaredDefaults]);
+
+  const handleDeselectModels = useCallback((ids: string[]) => {
+    setSelectedModels((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) next.delete(id);
+      return next;
+    });
+  }, []);
+
   const handleAddManualModel = useCallback(() => {
     const id = manualModelInput.trim();
     if (!id) return;
@@ -648,15 +667,18 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     );
 
     if (result.success && result.models.length > 0) {
-      // Known-first ordering + convergence: for a large (aggregator-style)
-      // result, pre-check only ids the local capability table recognizes,
-      // union'd with whatever was already selected (e.g. a plan's curated
-      // preset, or — in edit mode — the provider's existing models) so
-      // Fetch never silently wipes it. Small direct-provider results still
-      // pre-check everything (see fetchModelUtils.ts).
+      // Fetch shows, the user picks: for a cloud endpoint the selection is
+      // deliberately left untouched — nothing gets pre-checked, and nothing
+      // already selected (a plan's curated preset, or the provider's saved
+      // models in edit mode) gets dropped. Ordering is known-first so
+      // recognizable ids sit at the top; the search box narrows the rest.
+      // LM Studio is the exception, for the same reason as Ollama: it lists
+      // the models already loaded on this machine, so check them all.
       const sorted = sortKnownFirst(result.models, isKnownModel);
       setFetchedModels(sorted);
-      setSelectedModels((prev) => computeFetchPreselection(sorted, isKnownModel, prev));
+      if (isLMStudio) {
+        setSelectedModels((prev) => unionSelectAll(sorted, prev));
+      }
       if (showAdvanced) {
         seedDeclaredDefaults(sorted.map((m) => m.id));
       }
@@ -668,7 +690,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       setFetchModelsStatus('error');
       setFetchModelsError(result.error ?? t.settings.fetchModelsFailed);
     }
-  }, [baseUrl, apiKey, effectiveFormat, t, showAdvanced, seedDeclaredDefaults]);
+  }, [baseUrl, apiKey, effectiveFormat, isLMStudio, t, showAdvanced, seedDeclaredDefaults]);
 
   // ── Ollama handlers ──
 
@@ -695,12 +717,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       }));
       setOllamaModels(modelInfos);
 
-      // Auto-select fetched models — Ollama catalogs are local pulls, always
-      // well under SMALL_LIST_MAX, so this stays "select everything" in
-      // practice; still union'd with whatever was already selected (e.g. a
-      // manually-added id, or the provider's existing models in edit mode)
-      // so re-checking Ollama can't silently drop it.
-      setSelectedModels((prev) => computeFetchPreselection(modelInfos, isKnownModel, prev));
+      // Auto-select every detected model — unlike a cloud catalog, these are
+      // models the user already deliberately pulled onto this machine, and
+      // there are only ever a handful. Union'd with whatever was already
+      // selected (e.g. a manually-added id, or the provider's existing models
+      // in edit mode) so re-checking Ollama can't silently drop it.
+      setSelectedModels((prev) => unionSelectAll(modelInfos, prev));
       if (showAdvanced) {
         seedDeclaredDefaults(modelInfos.map((m) => m.id));
       }
@@ -1508,13 +1530,16 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
 
                   if (!showAddModelInput && displayList.length === 0) return null;
 
-                  // Only surface the scoped search once the checklist is large enough
-                  // that scrolling through it to find one model is actually annoying
-                  // (aggregator/gateway fetches) — a handful of models doesn't need it.
-                  const showModelListFilter = displayList.length > SMALL_LIST_MAX;
-                  const filteredList = showModelListFilter && modelListFilter.trim()
-                    ? displayList.filter((m) => m.id.toLowerCase().includes(modelListFilter.trim().toLowerCase()))
+                  // Surface the scoped search once the checklist is long enough that
+                  // scrolling to find one model is annoying — which, now that a fetch
+                  // pre-checks nothing, is the normal way to work through an
+                  // aggregator/gateway catalog rather than a rare escape hatch.
+                  const showModelListFilter = displayList.length >= MODEL_FILTER_MIN_ITEMS;
+                  const filteredList = showModelListFilter
+                    ? filterModels(displayList, modelListFilter)
                     : displayList;
+                  const visibleIds = filteredList.map((m) => m.id);
+                  const visibleSelectedCount = visibleIds.filter((id) => selectedModels.has(id)).length;
 
                   return (
                     <div className="space-y-2">
@@ -1529,7 +1554,39 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                           />
                         </div>
                       )}
-                      <div className="max-h-48 overflow-y-auto space-y-2">
+                      {/* Selection counter + bulk actions — only meaningful for a
+                          fetched checklist (a manual-only list is all-selected by
+                          construction, with per-row X to remove). */}
+                      {hasFetched && (
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-minor text-[var(--abu-text-tertiary)] truncate">
+                            {selectedModels.size === 0
+                              ? t.settings.modelsPickHint
+                              : t.settings.modelsSelectedCount
+                                  .replace('{selected}', String(selectedModels.size))
+                                  .replace('{total}', String(displayList.length))}
+                          </span>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectModels(visibleIds)}
+                              disabled={visibleIds.length === 0 || visibleSelectedCount === visibleIds.length}
+                              className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                            >
+                              {t.settings.selectAllModels}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeselectModels(visibleIds)}
+                              disabled={visibleSelectedCount === 0}
+                              className="text-minor text-[var(--abu-clay)] hover:underline disabled:opacity-40 disabled:no-underline"
+                            >
+                              {t.settings.clearSelectedModels}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                      <div className="max-h-72 overflow-y-auto space-y-2">
                       {/* Inline add-model input, revealed at the top of the model list */}
                       {showAddModelInput && (
                         <div className="flex items-center gap-1.5">

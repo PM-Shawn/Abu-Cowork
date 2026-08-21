@@ -15,12 +15,17 @@
  *     see docs/2026-07-11-modal-unify-design.md §7.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
 import AddProviderModal from './AddProviderModal';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setLanguage } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
+
+// The fetched-model checklist tests drive the real component against a stubbed
+// GET /models — no other test in this file clicks Fetch, so a file-wide mock is safe.
+vi.mock('@/core/llm/modelFetcher', () => ({ fetchProviderModels: vi.fn() }));
+import { fetchProviderModels } from '@/core/llm/modelFetcher';
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -559,5 +564,123 @@ describe('AddProviderModal — curated "use another model" row', () => {
     expect(screen.getAllByText('deepseek-custom-x').length).toBeGreaterThan(0);
     expect(screen.queryByPlaceholderText('Enter model ID')).not.toBeInTheDocument();
     expect(screen.getByText('Use another model')).toBeInTheDocument();
+  });
+});
+
+describe('AddProviderModal — fetched model checklist', () => {
+  // 12 models: enough to cross MODEL_FILTER_MIN_ITEMS so the search box renders.
+  const FETCHED_IDS = [
+    'openai/gpt-4o',
+    'anthropic/claude-opus-4',
+    ...Array.from({ length: 10 }, (_, i) => `vendor/aggregator-model-${i}`),
+  ];
+
+  const savedProvider: ProviderInstance = {
+    id: 'custom-fetch-test',
+    source: 'custom',
+    name: 'My Gateway',
+    enabled: true,
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://gateway.example.com/v1',
+    apiKey: 'sk-gateway',
+    models: [{ id: 'already-saved-model', label: 'already-saved-model' }],
+    status: 'unchecked',
+    sortOrder: 0,
+    userAdded: true,
+  };
+
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({
+      providers: [savedProvider],
+      activeModel: { providerId: 'custom-fetch-test', modelId: 'already-saved-model' },
+      failedSecretKeys: [],
+    });
+    vi.mocked(fetchProviderModels).mockResolvedValue({
+      success: true,
+      models: FETCHED_IDS.map((id) => ({ id, label: id })),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchProviderModels).mockReset();
+  });
+
+  /** Render in edit mode (prefills provider + baseUrl, skipping the portal
+   *  dropdown) and click Fetch Models; resolves once the list has rendered. */
+  async function renderAndFetch() {
+    render(<AddProviderModal open={true} editProvider={savedProvider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED_IDS.length} models`);
+  }
+
+  it('pre-checks NOTHING it fetched — the saved model stays selected, the 12 new ones do not', async () => {
+    await renderAndFetch();
+
+    // 1 selected (the provider's saved model) out of 13 listed (12 fetched + 1 saved).
+    expect(screen.getByText(`1 of ${FETCHED_IDS.length + 1} selected`)).toBeInTheDocument();
+    // Every fetched id is listed — nothing is hidden, it just isn't checked.
+    for (const id of FETCHED_IDS) {
+      expect(screen.getByText(id)).toBeInTheDocument();
+    }
+  });
+
+  it('renders the search box for a list this size and filters it by substring', async () => {
+    await renderAndFetch();
+
+    const search = screen.getByPlaceholderText('Search models…');
+    fireEvent.change(search, { target: { value: 'claude' } });
+
+    await waitFor(() => expect(screen.queryByText('openai/gpt-4o')).not.toBeInTheDocument());
+    expect(screen.getByText('anthropic/claude-opus-4')).toBeInTheDocument();
+    expect(screen.queryByText('vendor/aggregator-model-0')).not.toBeInTheDocument();
+  });
+
+  it('"Select all" applies to the current search results only, not the whole fetched list', async () => {
+    await renderAndFetch();
+
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'aggregator' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+
+    // 10 aggregator matches + the saved model = 11; gpt-4o/claude were filtered
+    // out at the time of the click and stay unselected.
+    await screen.findByText(`11 of ${FETCHED_IDS.length + 1} selected`);
+  });
+
+  it('LM Studio is the exception — its local catalog stays auto-selected', async () => {
+    // Same fetch path as a cloud provider, but the models it lists are already
+    // loaded on this machine, so "check them all" is still what the user meant.
+    const lmstudio: ProviderInstance = {
+      id: 'lmstudio',
+      source: 'builtin',
+      name: 'LM Studio',
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      apiKey: '',
+      models: [],
+      status: 'unchecked',
+      sortOrder: 0,
+      userAdded: true,
+    };
+    useSettingsStore.setState({ providers: [lmstudio], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={lmstudio} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED_IDS.length} models`);
+
+    await screen.findByText(`${FETCHED_IDS.length} of ${FETCHED_IDS.length} selected`);
+  });
+
+  it('"Clear" deselects the visible rows, including the provider\'s saved model', async () => {
+    await renderAndFetch();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    await screen.findByText(`${FETCHED_IDS.length + 1} of ${FETCHED_IDS.length + 1} selected`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    // Empty selection swaps the counter for the pick-something hint.
+    await screen.findByText('Select the models you want to add');
   });
 });

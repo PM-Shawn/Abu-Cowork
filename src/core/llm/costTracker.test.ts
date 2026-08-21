@@ -88,6 +88,18 @@ describe('costTracker', () => {
       expect(cost).toBeCloseTo(0.0028, 4);
     });
 
+    // overlay/deepseek.json deliberately omits `pricing` for the vision route so it
+    // inherits deepseek-v4-flash's numbers by id prefix (official docs price the two
+    // identically). Pin that: if findPricing's prefix scan ever changes, the vision
+    // model would silently fall through to $0 and every turn would report free.
+    it('deepseek-v4-flash-vision-exp inherits deepseek-v4-flash pricing by id prefix', () => {
+      const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+      const vision = calculateTurnCost('deepseek-v4-flash-vision-exp', usage);
+      const flash = calculateTurnCost('deepseek-v4-flash', usage);
+      expect(flash).toBeGreaterThan(0);
+      expect(vision).toBeCloseTo(flash, 6);
+    });
+
     it('handles zero uncached input with cache tokens', () => {
       // All input from cache — inputTokens = 0 (uncached), cache fields populated
       const cost = calculateTurnCost('claude-sonnet-4', {

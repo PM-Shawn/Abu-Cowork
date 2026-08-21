@@ -40,6 +40,7 @@ interface ActionResult {
   message: string;
   elementText?: string;
   previousValue?: string;
+  target?: { ref: string; tag: string; id?: string; role?: string; text?: string };
 }
 interface WaitResult extends ActionResult {
   timedOut: boolean;
@@ -56,9 +57,20 @@ const fill = (locator: Record<string, unknown>, value: string) =>
   handleAction('fill', { locator, value }) as Promise<ActionResult>;
 const waitFor = (condition: Record<string, unknown>, timeout: number) =>
   handleAction('wait_for', { condition, timeout }) as Promise<WaitResult>;
+const select = (locator: Record<string, unknown>, value: string) =>
+  handleAction('select', { locator, value }) as Promise<ActionResult>;
 
 /** Size used for every "laid out" element — see the stub below. */
 const LAID_OUT = { width: 100, height: 20 };
+
+/** Fixture rule for "this element has no box" — see the stub's comment. */
+function isHiddenInFixture(el: Element): boolean {
+  if (el.closest?.('[data-hidden]') !== null) return true;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if ((node as HTMLElement).style?.display === 'none') return true;
+  }
+  return false;
+}
 
 beforeAll(async () => {
   // happy-dom performs no layout, so getBoundingClientRect() is all zeros and
@@ -69,7 +81,13 @@ beforeAll(async () => {
   Object.defineProperty(Element.prototype, 'getBoundingClientRect', {
     configurable: true,
     value(this: Element) {
-      const hidden = this.hasAttribute?.('data-hidden');
+      // Two ways to have no box, and the runtime must tell them apart:
+      //  - `data-hidden` = laid out at zero size but still displayed (an antd
+      //    combobox input, a popup mid-animation)
+      //  - `display: none` anywhere up the chain = not rendered at all
+      // Marking only the element itself would let a hidden container keep
+      // reporting laid-out children, which is not a state a browser can be in.
+      const hidden = isHiddenInFixture(this);
       const w = hidden ? 0 : LAID_OUT.width;
       const h = hidden ? 0 : LAID_OUT.height;
       return { x: 0, y: 0, top: 0, left: 0, right: w, bottom: h, width: w, height: h, toJSON: () => ({}) };
@@ -202,10 +220,31 @@ describe('snapshot contract (pinned — must not change)', () => {
     expect(snap.elements.map((e) => e.text)).toEqual(['内']);
   });
 
-  it('skips elements with no layout box', async () => {
-    document.body.innerHTML = '<button>可见</button><button data-hidden>隐藏</button>';
+  it('skips elements the page has actually hidden', async () => {
+    document.body.innerHTML =
+      '<button>可见</button><div style="display:none"><button>隐藏</button></div>';
     const snap = await snapshot();
     expect(snap.elements.map((e) => e.text)).toEqual(['可见']);
+  });
+
+  it('keeps a control that collapsed its own box but is still on the page', async () => {
+    // antd's combobox is a width:0 / opacity:0 <input> next to the span the
+    // user sees. Requiring a layout box dropped every dropdown on the page out
+    // of the snapshot, so an agent concluded the form had no selects at all.
+    document.body.innerHTML =
+      '<div class="ant-select"><span class="shown">请选择设备类型</span>' +
+      '<input data-hidden id="form_item_typeId" role="combobox" /></div>';
+
+    const snap = await snapshot();
+
+    expect(snap.elements.some((e) => e.id === 'form_item_typeId')).toBe(true);
+  });
+
+  it('still leaves out a collapsed control inside a closed menu', async () => {
+    document.body.innerHTML =
+      '<div class="menu" style="display:none"><input data-hidden id="inMenu" role="combobox" /></div>';
+    const snap = await snapshot();
+    expect(snap.elements.some((e) => e.id === 'inMenu')).toBe(false);
   });
 
   it('caps the element list and says how to narrow the scope', async () => {
@@ -228,56 +267,577 @@ describe('snapshot contract (pinned — must not change)', () => {
   });
 });
 
+describe('snapshot stays usable when it cannot show everything', () => {
+  it('cuts at an element boundary and says how to see the rest', async () => {
+    document.body.innerHTML = Array.from(
+      { length: 60 },
+      (_, i) => `<input id="field_${i}" placeholder="请输入第${i}项内容用于撑大这个快照" />`,
+    ).join('');
+
+    const snap = await snapshot({ maxChars: 2000 });
+
+    // Whatever survives is complete and parseable — never a sliced object.
+    expect(snap.elements.length).toBeGreaterThan(0);
+    expect(snap.elements.length).toBeLessThan(60);
+    expect(() => JSON.parse(JSON.stringify(snap.elements))).not.toThrow();
+    expect(snap.truncated).toBe(true);
+    expect(snap.message).toMatch(/selector/);
+    expect(snap.message).toMatch(/maxChars/);
+    expect(snap.message).toMatch(/refs are valid/);
+  });
+
+  it('reports ids and names so a caller can build a durable css locator', async () => {
+    document.body.innerHTML = '<input id="form_item_equipmentCode" name="equipmentCode" />';
+    const snap = await snapshot();
+    expect(snap.elements[0]).toMatchObject({ id: 'form_item_equipmentCode', name: 'equipmentCode' });
+  });
+
+  it('tells the caller what to do when the scope selector matches nothing', async () => {
+    document.body.innerHTML = '<button>提交</button>';
+    await expect(handleAction('snapshot', { selector: '#nope' })).rejects.toThrow(/without a selector/);
+  });
+});
+
+describe('wait_for reports what it actually saw', () => {
+  it('names the reason on timeout instead of only the elapsed time', async () => {
+    document.body.innerHTML = '<button data-hidden id="go">提交</button>';
+
+    const result = await waitFor({ type: 'appear', locator: { css: '#go' } }, 60);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.observed).toMatch(/no layout box/);
+    expect(result.message).toMatch(/button/);
+  });
+
+  it('says so when nothing matches at all', async () => {
+    document.body.innerHTML = '<div>空页面</div>';
+    const result = await waitFor({ type: 'appear', locator: { css: '#missing' } }, 60);
+    expect(result.observed).toMatch(/no element matches/);
+  });
+
+  it('fails a wait on a dead ref immediately instead of burning the whole timeout', async () => {
+    document.body.innerHTML = '<button>提交</button>';
+    const ref = (await snapshot()).elements[0].ref;
+    document.body.innerHTML = '<div>页面换了</div>';
+
+    // Waiting 30s for an element that can never come back is pure waste, and
+    // the caller needs to know it should re-snapshot, not wait longer.
+    await expect(waitFor({ type: 'appear', locator: { ref } }, 30_000)).rejects.toThrow(
+      /no longer exists/,
+    );
+  });
+
+  it('reports the current url for a urlContains timeout', async () => {
+    const result = await waitFor({ type: 'urlContains', pattern: '/success' }, 60);
+    expect(result.observed).toMatch(/current url is/);
+  });
+});
+
 describe('known defects — pinned so the fix shows up as a deliberate diff', () => {
-  it('DEFECT: a text locator matches the outermost ancestor, not the option', async () => {
+  it('a text locator hits the option, not the ancestor that contains it', async () => {
     renderAntdLikeForm();
 
     const result = await click({ text: '动设备' });
 
-    // What the caller wanted was the `.ant-select-item-option`. What it gets
-    // is an ancestor whose text merely *contains* the string — in the field
-    // report this was <body>, i.e. the whole page shell, reported as success.
-    expect(result.success).toBe(true);
-    expect(result.elementText).toContain('静设备');
+    // Was a defect: the first element in document order whose subtree text
+    // contained the string won — in the field report that was <body>, the
+    // whole page shell, clicked and reported as a success.
+    expect(result.elementText).toBe('动设备');
+    expect(result.target).toMatchObject({ tag: 'div', role: 'option' });
   });
 
-  it('DEFECT: wait_for inherits the same match, so "appear" is true immediately', async () => {
+  it('refuses an ambiguous text match instead of picking one', async () => {
+    document.body.innerHTML = `
+      <div><button>删除</button></div>
+      <div><button>删除</button></div>`;
+
+    await expect(click({ text: '删除' })).rejects.toThrow(/matches 2 different elements[\s\S]*Pick one by ref/);
+  });
+
+  it('narrows an ambiguous text match with an exact match', async () => {
+    document.body.innerHTML = `
+      <div role="option">动设备</div>
+      <div role="option">动设备（备用）</div>`;
+
+    const result = await click({ text: '动设备' });
+    expect(result.elementText).toBe('动设备');
+  });
+
+  it('prefers a real control over the wrapper holding the same text', async () => {
+    document.body.innerHTML = '<label>提交<button>提交</button></label>';
+    const result = await click({ text: '提交' });
+    expect(result.target!.tag).toBe('button');
+  });
+
+  it('matches a label whose spacing the framework changed', async () => {
+    // antd puts a space between the two characters of a two-character Chinese
+    // button, so the DOM says "提 交" while every human says "提交".
+    document.body.innerHTML = '<button class="ant-btn"><span>提 交</span></button>';
+    const result = await click({ text: '提交' });
+    expect(result.success).toBe(true);
+  });
+
+  it('still honours a tag filter alongside the text', async () => {
+    document.body.innerHTML = '<div><span>提交</span></div><button><span>提交</span></button>';
+    const result = await click({ tag: 'button', text: '提交' });
+    expect(result.target!.tag).toBe('button');
+  });
+
+  it('wait_for no longer resolves through an ancestor match', async () => {
     renderAntdLikeForm();
 
-    const result = await waitFor({ type: 'appear', locator: { text: '还没有出现的文字' } }, 50);
-    expect(result.success).toBe(false);
+    const missing = await waitFor({ type: 'appear', locator: { text: '还没有出现的文字' } }, 50);
+    expect(missing.success).toBe(false);
 
-    // But any string already present anywhere on the page resolves instantly
-    // through an ancestor match — including while the real target is hidden.
+    // Was a defect: any string present anywhere on the page resolved instantly
+    // via <body>, including while the real target was hidden — which made the
+    // wait primitive a no-op.
     document.querySelector('.ant-select-dropdown')!.setAttribute('data-hidden', '');
-    const stillTrue = await waitFor({ type: 'appear', locator: { text: '动设备' } }, 50);
-    expect(stillTrue.success).toBe(true);
-    expect(stillTrue.elapsed).toBe(0);
+    const hidden = await waitFor({ type: 'appear', locator: { text: '动设备' } }, 50);
+    expect(hidden.success).toBe(false);
+    expect(hidden.observed).toMatch(/no element matches|no layout box/);
   });
 
-  it('DEFECT: a ref silently retargets when the page changes between snapshots', async () => {
-    // Every snapshot clears the map and restarts numbering from e1, so a ref
-    // is only an index into "whatever the last snapshot walked". This is worse
-    // than a dangling ref: it does not fail, it points somewhere else.
+  it('a ref keeps pointing at the same element when the page changes', async () => {
+    // Was a defect: snapshots restarted the numbering, so a held ref became an
+    // index into the latest walk and silently retargeted.
     document.body.innerHTML = '<button>提交</button>';
     const first = await snapshot();
     const submitRef = first.elements[0].ref;
 
-    // The page changes the way an SPA does — a dropdown opens above the form.
+    // The page changes the way an SPA does — a control appears above the form.
     document.body.insertAdjacentHTML('afterbegin', '<button>取消</button>');
-    await snapshot();
+    const second = await snapshot();
 
     const result = await click({ ref: submitRef });
-
-    expect(result.success).toBe(true);
-    expect(result.elementText).toBe('取消'); // caller asked for 提交
+    expect(result.elementText).toBe('提交');
+    // The pre-existing element keeps its identity; only the new one is new.
+    expect(second.elements.find((e) => e.text === '提交')!.ref).toBe(submitRef);
   });
 
-  it('DEFECT: select refuses an ARIA combobox, with no pointer to what would work', async () => {
+  it('says a ref is gone instead of quietly acting on something else', async () => {
+    document.body.innerHTML = '<button>提交</button>';
+    const ref = (await snapshot()).elements[0].ref;
+
+    document.body.innerHTML = '<button>取消</button>';
+
+    await expect(click({ ref })).rejects.toThrow(/no longer exists.*fresh snapshot/s);
+  });
+
+  it('does not fall back to another strategy when a named ref is dead', async () => {
+    document.body.innerHTML = '<button id="a">提交</button>';
+    const ref = (await snapshot()).elements[0].ref;
+    document.body.innerHTML = '<button id="a">别的按钮</button>';
+
+    // A stale ref plus a css selector must not quietly click the css match:
+    // the caller named a specific element.
+    await expect(click({ ref, css: '#a' })).rejects.toThrow(/no longer exists/);
+  });
+
+  it('selects from an ARIA combobox whose options live in a portal', async () => {
+    // Was a defect: `select` required an HTMLSelectElement, so every antd /
+    // Element Plus dropdown — i.e. most Chinese enterprise back-office forms —
+    // was unreachable, which is what pushed the model to scripting.
+    renderAntdLikeForm();
+    const dropdown = document.querySelector('.ant-select-dropdown') as HTMLElement;
+    dropdown.setAttribute('data-hidden', '');
+    dropdown.style.display = 'none';
+    const option = document.querySelector('[data-testid="opt-dong"]')!;
+    let clicked = '';
+    document.addEventListener('click', (e) => {
+      const t = e.target as Element;
+      if (t.getAttribute?.('role') === 'option') clicked = t.textContent ?? '';
+    });
+    // The trigger opens the portal, the way rc-select does on mousedown.
+    document
+      .querySelector('#form_item_equipmentTypeId')!
+      .addEventListener('mousedown', () => {
+        dropdown.removeAttribute('data-hidden');
+        dropdown.style.display = '';
+      });
+
+    const result = await select({ css: '#form_item_equipmentTypeId' }, '动设备');
+
+    expect(result.success).toBe(true);
+    expect(clicked).toBe('动设备');
+    expect(result.target).toMatchObject({ role: 'option', text: '动设备' });
+    expect(option.isConnected).toBe(true);
+  });
+
+  it('lists the real options when the requested one is not there', async () => {
     renderAntdLikeForm();
 
-    await expect(
-      handleAction('select', { locator: { css: '#form_item_equipmentTypeId' }, value: '动设备' }),
-    ).rejects.toThrow(/not a <select>/);
+    await expect(select({ css: '#form_item_equipmentTypeId' }, '飞行设备')).rejects.toThrow(
+      /Options available: "动设备", "静设备"/,
+    );
+  });
+
+  it('lists the options of a native select too', async () => {
+    document.body.innerHTML = '<select id="s"><option value="1">动设备</option><option value="2">静设备</option></select>';
+    await expect(select({ css: '#s' }, '飞行设备')).rejects.toThrow(/Available options: "动设备", "静设备"/);
+  });
+
+  it('still drives a native select, firing input and change', async () => {
+    document.body.innerHTML = '<select id="s"><option value="1">动设备</option><option value="2">静设备</option></select>';
+    const el = document.getElementById('s') as HTMLSelectElement;
+    const seen: string[] = [];
+    for (const type of ['input', 'change']) el.addEventListener(type, () => seen.push(type));
+
+    const result = await select({ css: '#s' }, '静设备');
+
+    expect(el.value).toBe('2');
+    expect(seen).toEqual(['input', 'change']);
+    expect(result.success).toBe(true);
+  });
+
+  it('explains what to do when the target is not a dropdown at all', async () => {
+    document.body.innerHTML = '<input id="t" type="text" />';
+    await expect(select({ css: '#t' }, '动设备')).rejects.toThrow(/is not a dropdown[\s\S]*use fill/);
+  });
+
+  it('says so when the dropdown opens but renders nothing', async () => {
+    document.body.innerHTML = '<div id="c" role="combobox">请选择</div>';
+    await expect(select({ css: '#c' }, '动设备')).rejects.toThrow(/no options appeared within/);
+  }, 10_000);
+});
+
+describe('snapshot budget accounting', () => {
+  it('keeps the serialized payload inside the requested budget', async () => {
+    document.body.innerHTML = Array.from(
+      { length: 80 },
+      (_, i) => `<input id="field_${i}" name="f${i}" placeholder="第${i}项，需要一些长度来撑大序列化后的体积" />`,
+    ).join('');
+
+    for (const maxChars of [1500, 4000, 12000]) {
+      const snap = await snapshot({ maxChars });
+      const wireSize = JSON.stringify(snap.elements, null, 2).length;
+      expect(wireSize).toBeLessThanOrEqual(maxChars);
+      expect(snap.elements.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('returns everything, and no truncation note, when it all fits', async () => {
+    document.body.innerHTML = '<button>提交</button><button>取消</button>';
+    const snap = await snapshot();
+    expect(snap.elements).toHaveLength(2);
+    expect(snap.truncated).toBeUndefined();
+    expect(snap.message).toBeUndefined();
+  });
+});
+
+/**
+ * End-to-end shape of the failure this work came from: the "新增设备" form in
+ * the field diagnostic (jeecg + antd), where the agent burned 10 script
+ * executions — one approval prompt each — and still did not finish the form.
+ *
+ * The assertion that matters is the last one: the whole form is completable
+ * through the ordinary tools, so the scripting fallback is never reached.
+ */
+describe('field case: an antd enterprise form can be completed with ordinary tools', () => {
+  const TEXT_FIELDS: Array<[string, string]> = [
+    ['equipmentCode', 'EQ-2026-001'],
+    ['equipmentName', '卧式离心泵'],
+    ['equipmentPosition', 'P-101'],
+    ['specModel', 'IS65-50-160'],
+    ['manufacturer', '上海凯泉泵业（集团）有限公司'],
+    ['totalRunHour', '3560'],
+    ['material', '铸铁'],
+  ];
+  const DROPDOWNS: Array<[string, string[], string]> = [
+    ['equipmentTypeId', ['动设备', '静设备', '电气设备', '仪表', '特种设备', '其他'], '动设备'],
+    ['importantLevelId', ['关键', '重要', '一般'], '关键'],
+    ['statusId', ['在用', '备用', '闲置', '维修', '停机', '报废'], '在用'],
+  ];
+
+  /** A stand-in for rc-select: options live in a body portal, opened on mousedown. */
+  function renderForm(): void {
+    const inputs = TEXT_FIELDS.map(
+      ([id]) => `<input id="form_item_${id}" name="${id}" type="text" placeholder="请输入${id}" />`,
+    ).join('');
+    const triggers = DROPDOWNS.map(
+      ([id]) =>
+        `<div class="ant-select"><input id="form_item_${id}" role="combobox" aria-controls="list_${id}"
+           aria-expanded="false" readonly placeholder="请选择" /></div>`,
+    ).join('');
+    const portals = DROPDOWNS.map(
+      ([id, options]) =>
+        `<div class="ant-select-dropdown" data-hidden style="display:none"><div id="list_${id}" role="listbox">${options
+          .map((o) => `<div class="ant-select-item-option" role="option">${o}</div>`)
+          .join('')}</div></div>`,
+    ).join('');
+    document.body.innerHTML = `
+      <nav>${Array.from({ length: 18 }, (_, i) => `<a href="/m${i}">菜单${i}</a>`).join('')}</nav>
+      <form>${inputs}${triggers}<button id="submit">提交</button></form>
+      ${portals}`;
+
+    for (const [id] of DROPDOWNS) {
+      const trigger = document.getElementById(`form_item_${id}`)!;
+      const portal = document.getElementById(`list_${id}`)!.parentElement!;
+      trigger.addEventListener('mousedown', () => {
+        portal.removeAttribute('data-hidden');
+        (portal as HTMLElement).style.display = '';
+        trigger.setAttribute('aria-expanded', 'true');
+      });
+      portal.addEventListener('click', (e) => {
+        const option = (e.target as Element).closest('[role="option"]');
+        if (!option) return;
+        (trigger as HTMLInputElement).value = option.textContent ?? '';
+        portal.setAttribute('data-hidden', '');
+        (portal as HTMLElement).style.display = 'none';
+        trigger.setAttribute('aria-expanded', 'false');
+      });
+    }
+  }
+
+  it('reads the whole form in one snapshot and fills every field', async () => {
+    renderForm();
+
+    // 1. One read. Not truncated, and every field carries the id a caller needs.
+    const snap = await snapshot();
+    expect(snap.truncated).toBeUndefined();
+    for (const [id] of [...TEXT_FIELDS, ...DROPDOWNS]) {
+      expect(snap.elements.some((e) => e.id === `form_item_${id}`)).toBe(true);
+    }
+
+    // 2. Text fields.
+    for (const [id, value] of TEXT_FIELDS) {
+      const result = await fill({ css: `#form_item_${id}` }, value);
+      expect(result.success).toBe(true);
+      expect((document.getElementById(`form_item_${id}`) as HTMLInputElement).value).toBe(value);
+    }
+
+    // 3. Dropdowns — one call each, no click-then-hunt, no script.
+    for (const [id, , choice] of DROPDOWNS) {
+      const result = await select({ css: `#form_item_${id}` }, choice);
+      expect(result.success).toBe(true);
+      expect((document.getElementById(`form_item_${id}`) as HTMLInputElement).value).toBe(choice);
+    }
+
+    // 4. Refs taken before all that mutation still address the same elements.
+    const submitRef = snap.elements.find((e) => e.id === 'submit')!.ref;
+    expect((await click({ ref: submitRef })).target).toMatchObject({ id: 'submit' });
+  });
+});
+
+/**
+ * Shapes taken from a real antd 5.21.6 page, not invented.
+ *
+ * rc-select renders the dropdown twice: a `role="listbox"` sized
+ * `height:0; width:0; overflow:hidden` for screen readers, and a separate,
+ * completely un-roled list that takes the mouse. An ARIA-only implementation
+ * finds the mirror, clicks a 0×0 node, and closes the dropdown having selected
+ * nothing — which is what the first version of this code did.
+ */
+describe('real rc-select shape', () => {
+  function renderRealShape(options: string[], mirrored: number): void {
+    document.body.innerHTML = `
+      <div class="ant-select">
+        <div class="ant-select-selector">
+          <span class="ant-select-selection-placeholder">请选择</span>
+          <span class="ant-select-selection-search">
+            <input data-hidden id="trigger" role="combobox" aria-controls="trigger_list"
+                   aria-expanded="false" readonly />
+          </span>
+        </div>
+      </div>
+      <div class="ant-select-dropdown" style="display:none">
+        <div role="listbox" id="trigger_list" data-hidden>
+          ${options.slice(0, mirrored).map((o, i) =>
+            `<div aria-label="${o}" role="option" id="trigger_list_${i}" aria-selected="false">${o}</div>`).join('')}
+        </div>
+        <div class="rc-virtual-list"><div class="rc-virtual-list-holder-inner">
+          ${options.map((o) =>
+            `<div class="ant-select-item ant-select-item-option" title="${o}">
+               <div class="ant-select-item-option-content">${o}</div></div>`).join('')}
+        </div></div>
+      </div>`;
+
+    const trigger = document.getElementById('trigger')!;
+    const popup = document.querySelector('.ant-select-dropdown') as HTMLElement;
+    const placeholder = document.querySelector('.ant-select-selection-placeholder')!;
+    trigger.addEventListener('mousedown', () => {
+      popup.style.display = '';
+      trigger.setAttribute('aria-expanded', 'true');
+    });
+    // Only the real row reacts — clicking the a11y mirror does nothing, as on
+    // the real page.
+    for (const row of document.querySelectorAll('.ant-select-item-option')) {
+      row.addEventListener('click', () => {
+        placeholder.className = 'ant-select-selection-item';
+        placeholder.textContent = row.getAttribute('title');
+        popup.style.display = 'none';
+        trigger.setAttribute('aria-expanded', 'false');
+      });
+    }
+  }
+
+  const selected = () => document.querySelector('.ant-select-selection-item')?.textContent ?? '(空)';
+
+  it('clicks the rendered row, not the zero-sized accessibility mirror', async () => {
+    renderRealShape(['动设备', '静设备', '电气设备'], 3);
+
+    const result = await select({ css: '#trigger' }, '静设备');
+
+    expect(result.success).toBe(true);
+    expect(selected()).toBe('静设备');
+  });
+
+  it('finds an option the accessibility mirror never advertised', async () => {
+    // The mirror is virtualized: six options, two announced. The requested one
+    // is only present in the list the mouse sees.
+    renderRealShape(['在用', '备用', '闲置', '维修', '停机', '报废'], 2);
+
+    const result = await select({ css: '#trigger' }, '报废');
+
+    expect(result.success).toBe(true);
+    expect(selected()).toBe('报废');
+  });
+
+  it('lists what it saw, across both lists, when the option is absent', async () => {
+    renderRealShape(['在用', '备用', '闲置'], 1);
+    await expect(select({ css: '#trigger' }, '飞行中')).rejects.toThrow(/"在用"[\s\S]*"闲置"/);
+  });
+
+  it('reaches the collapsed combobox from a snapshot', async () => {
+    renderRealShape(['动设备', '静设备'], 2);
+    const snap = await snapshot();
+    const ref = snap.elements.find((e) => e.id === 'trigger')?.ref;
+    expect(ref).toBeDefined();
+
+    const result = await select({ ref: ref! }, '静设备');
+    expect(result.success).toBe(true);
+    expect(selected()).toBe('静设备');
+  });
+});
+
+describe('an open popup is legible in a snapshot', () => {
+  it('lists the rows the user can click, not the zero-sized mirror', async () => {
+    // Straight from a field trace: a snapshot of an open antd dropdown listed
+    // the two rows of the screen-reader mirror (of six real options), so the
+    // model reasoned about an incomplete, un-clickable list and went back to
+    // scripting the page to find `.ant-select-item-option`.
+    document.body.innerHTML = `
+      <div class="ant-select-dropdown">
+        <div role="listbox" id="t_list" data-hidden>
+          <div role="option" aria-label="动设备" id="t_list_0">动设备</div>
+          <div role="option" aria-label="静设备" id="t_list_1">静设备</div>
+        </div>
+        <div class="rc-virtual-list-holder-inner">
+          ${['动设备', '静设备', '电气设备', '仪表', '特种设备', '其他']
+            .map((o) => `<div class="ant-select-item-option" title="${o}">
+                           <div class="ant-select-item-option-content">${o}</div></div>`).join('')}
+        </div>
+      </div>`;
+
+    const snap = await snapshot();
+    const texts = snap.elements.map((e) => e.text);
+
+    // All six real rows, and none of the mirror's ids.
+    expect(texts).toEqual(expect.arrayContaining(['动设备', '静设备', '电气设备', '仪表', '特种设备', '其他']));
+    expect(snap.elements.some((e) => e.id?.startsWith('t_list'))).toBe(false);
+  });
+
+  it('does not turn ordinary page text into rows when nothing is open', async () => {
+    document.body.innerHTML = '<div><p>一段说明文字</p><span>另一段</span></div><button>提交</button>';
+    const snap = await snapshot();
+    expect(snap.elements.map((e) => e.text)).toEqual(['提交']);
+  });
+});
+
+describe('a dropdown that is slow to lay out', () => {
+  it('waits for a clickable row instead of reporting the option missing', async () => {
+    // Straight from a field trace: `select` said `Option "在用" not found` and
+    // then listed "在用" among the options it had seen. The accessibility
+    // mirror mounts the instant the dropdown opens; the list the mouse can
+    // reach is laid out a frame or two later. Resolving on the first pass
+    // found labels and no click target.
+    document.body.innerHTML = `
+      <input id="trigger" role="combobox" aria-controls="trigger_list" aria-expanded="false" readonly />
+      <div class="popup" style="display:none">
+        <div role="listbox" id="trigger_list" data-hidden>
+          <div role="option" aria-label="在用">在用</div>
+        </div>
+        <div class="rows" data-hidden><div class="row">在用</div></div>
+      </div>`;
+    const popup = document.querySelector('.popup') as HTMLElement;
+    const rows = document.querySelector('.rows') as HTMLElement;
+    const row = document.querySelector('.row')!;
+    let clicked = false;
+    row.addEventListener('click', () => { clicked = true; });
+
+    document.getElementById('trigger')!.addEventListener('mousedown', () => {
+      // The popup mounts immediately — mirror included — but the rows only
+      // acquire a box on a later frame.
+      popup.style.display = '';
+      setTimeout(() => rows.removeAttribute('data-hidden'), 250);
+    });
+
+    const result = await select({ css: '#trigger' }, '在用');
+
+    expect(result.success).toBe(true);
+    expect(clicked).toBe(true);
+  });
+
+  it('says the row never became clickable rather than claiming it is absent', async () => {
+    document.body.innerHTML = `
+      <input id="trigger" role="combobox" aria-controls="trigger_list" aria-expanded="true" readonly />
+      <div class="popup">
+        <div role="listbox" id="trigger_list" data-hidden>
+          <div role="option" aria-label="在用">在用</div>
+        </div>
+      </div>`;
+
+    await expect(select({ css: '#trigger' }, '在用')).rejects.toThrow(
+      /never finished opening[\s\S]*Take a snapshot/,
+    );
+  }, 10_000);
+});
+
+describe('a scope selector that matches more than one element', () => {
+  /** Three dropdown popups on the page, only the middle one open — the field shape. */
+  function renderThreePopups(openIndex: number): void {
+    document.body.innerHTML = [0, 1, 2]
+      .map((i) => `
+        <div class="ant-select-dropdown"${i === openIndex ? '' : ' style="display:none"'}>
+          <div role="listbox" id="list_${i}" data-hidden>
+            <div role="option" aria-label="选项${i}">选项${i}</div>
+          </div>
+          <div class="rows"><div class="row">选项${i}</div></div>
+        </div>`)
+      .join('');
+  }
+
+  it('scopes to every match, not just the first one', async () => {
+    // Was a defect: `querySelector` took the first `.ant-select-dropdown`,
+    // which was closed, so the snapshot came back empty and the caller went
+    // off to script the page.
+    renderThreePopups(1);
+
+    const snap = await snapshot({ selector: '.ant-select-dropdown' });
+
+    expect(snap.elements.map((e) => e.text)).toEqual(['选项1']);
+    expect(snap.message).toBeUndefined();
+  });
+
+  it('lists an element once even when the scopes overlap', async () => {
+    document.body.innerHTML = '<div class="a b"><button>提交</button></div>';
+    const snap = await snapshot({ selector: '.a, .b' });
+    expect(snap.elements).toHaveLength(1);
+  });
+
+  it('explains an empty scope instead of looking like an empty page', async () => {
+    renderThreePopups(-1); // nothing open
+
+    const snap = await snapshot({ selector: '.ant-select-dropdown' });
+
+    expect(snap.elements).toHaveLength(0);
+    expect(snap.message).toMatch(/matched 3 elements/);
+    expect(snap.message).toMatch(/popup that is closed/);
+    expect(snap.message).toMatch(/without a selector/);
+  });
+
+  it('still throws when the selector matches nothing at all', async () => {
+    document.body.innerHTML = '<button>提交</button>';
+    await expect(handleAction('snapshot', { selector: '#nope' })).rejects.toThrow(/without a selector/);
   });
 });

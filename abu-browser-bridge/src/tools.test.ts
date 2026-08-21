@@ -92,6 +92,51 @@ describe('tool surface', () => {
     const { registered } = collectTools();
     const snapshot = registered.find((t) => t.name === 'snapshot')!;
     expect(snapshot.description).toMatch(/primary way to understand/i);
+    // The recovery path out of a truncated snapshot has to be in the tool
+    // description, not only in the runtime message: falling back to a script
+    // is what the truncation used to cause.
+    expect(snapshot.description).toMatch(/execute_js/);
+    expect(Object.keys(snapshot.schema!)).toEqual(expect.arrayContaining(['selector', 'maxChars']));
+  });
+
+  it('tells the model select is one call, not click-then-hunt', () => {
+    // A field trace showed the model clicking the dropdown open, snapshotting,
+    // then scripting the page — it only reached for `select` once, and that
+    // one call worked. The instruction has to be in the description.
+    const select = collectTools().registered.find((t) => t.name === 'select')!;
+    expect(select.description).toMatch(/ONE call/);
+    expect(select.description).toMatch(/Do NOT click the control open first/);
+    expect(select.description).toMatch(/execute_js/);
+  });
+
+  it('points click at select for dropdowns and reports the real target', () => {
+    const click = collectTools().registered.find((t) => t.name === 'click')!;
+    expect(click.description).toMatch(/use `select`/);
+    expect(click.description).toMatch(/actually hit/);
+  });
+
+  it('sends the model back to the read tools before it scripts the page', () => {
+    // A field trace spent four script executions — four approval prompts —
+    // answering "did the submit work". Every one of them was a job for
+    // wait_for + extract_text.
+    const js = collectTools().registered.find((t) => t.name === 'execute_js')!;
+    expect(js.description).toMatch(/LAST RESORT/);
+    expect(js.description).toMatch(/interrupts the user/);
+    expect(js.description).toMatch(/extract_text/);
+    expect(js.description).toMatch(/select/);
+  });
+
+  it('forwards the snapshot scoping options to the page', async () => {
+    const { registered, transport } = collectTools();
+    const snapshot = registered.find((t) => t.name === 'snapshot')!;
+
+    await snapshot.handler({ tabId: 7, selector: '.ant-form', maxChars: 5000 });
+
+    expect(transport.send).toHaveBeenCalledWith('snapshot', {
+      tabId: 7,
+      selector: '.ant-form',
+      maxChars: 5000,
+    });
   });
 });
 

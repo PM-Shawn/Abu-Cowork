@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { type LanguageSetting, useI18n } from '@/i18n';
+import { type LanguageSetting, format, useI18n } from '@/i18n';
+import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
+import { isMacOS } from '@/utils/platform';
 import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
 import { clearBehaviorData, testWindowPermission } from '@/core/agent/behaviorSensor';
 import { useToastStore } from '@/stores/toastStore';
@@ -20,6 +22,8 @@ export default function GeneralSection() {
   const setPreventSleep = useSettingsStore(s => s.setPreventSleep);
   const [sensorTesting, setSensorTesting] = useState(false);
   const { t } = useI18n();
+  const composerEnterBehavior = useSettingsStore(s => s.composerEnterBehavior);
+  const setComposerEnterBehavior = useSettingsStore(s => s.setComposerEnterBehavior);
   const theme = useSettingsStore(s => s.theme);
   const setTheme = useSettingsStore(s => s.setTheme);
 
@@ -56,6 +60,16 @@ export default function GeneralSection() {
     { value: 'ask', label: t.settings.closeWindowAsk },
     { value: 'minimize', label: t.settings.closeWindowMinimize },
     { value: 'quit', label: t.settings.closeWindowQuit },
+  ];
+
+  // Spelled out per platform: the send modifier is ⌘ on macOS, Ctrl elsewhere,
+  // and the whole point of this setting is knowing which key does what.
+  const enterBehaviorOptions = [
+    { value: 'enter', label: t.settings.composerEnterSends },
+    {
+      value: 'newline',
+      label: format(t.settings.composerEnterNewline, { modifier: isMacOS() ? '⌘' : 'Ctrl' }),
+    },
   ];
 
   const languageOptions = [
@@ -114,6 +128,20 @@ export default function GeneralSection() {
           value={closeAction}
           options={closeOptions}
           onChange={(v) => setCloseAction(v as 'ask' | 'minimize' | 'quit')}
+        />
+      </div>
+
+      {/* Composer send shortcut */}
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <div className="flex-1 mr-4">
+          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.composerEnterBehavior}</p>
+          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.composerEnterBehaviorDesc}</p>
+        </div>
+        <Select
+          variant="inline"
+          value={composerEnterBehavior}
+          options={enterBehaviorOptions}
+          onChange={(v) => setComposerEnterBehavior(v as ComposerEnterBehavior)}
         />
       </div>
 

@@ -10,7 +10,8 @@ import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
-import { isImeComposing, insertNewlineAtCursor } from '@/components/chat/composerKeys';
+import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
+import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
@@ -218,6 +219,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
+  const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
@@ -801,19 +803,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
     }
-    // Option/Alt + Enter → insert newline at cursor position (Mac: Option+Enter, Win: Alt+Enter).
-    // Shift+Enter needs no branch here: we simply don't preventDefault, and the
-    // textarea inserts the newline itself. Alt+Enter is not a native editing
-    // command, so it does need this one.
-    if (e.key === 'Enter' && e.altKey && !isImeComposing(e, composingRef.current)) {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (textarea) setText(insertNewlineAtCursor(textarea));
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isImeComposing(e, composingRef.current)) {
-      e.preventDefault();
-      handleSend();
+    if (e.key === 'Enter' && !isImeComposing(e, composingRef.current)) {
+      const action = resolveEnterAction(e, { behavior: enterBehavior, isMac: isMacOS() });
+      // 'native' means the textarea inserts the newline itself — leaving the
+      // default action alone preserves the browser's caret handling and undo
+      // stack, so it is deliberately the do-nothing branch.
+      if (action === 'send') {
+        e.preventDefault();
+        handleSend();
+      } else if (action === 'insert') {
+        e.preventDefault();
+        const textarea = textareaRef.current;
+        if (textarea) setText(insertNewlineAtCursor(textarea));
+      }
     }
   };
 
@@ -832,6 +834,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
+
+  // Send-button tooltip. With no standing hint in the composer, this is the
+  // only place the shortcuts are written down, so it has to track both the
+  // chosen behavior and the platform's send modifier.
+  const sendTooltip = enterBehavior === 'enter'
+    ? t.chat.sendTooltipEnterSends
+    : format(t.chat.sendTooltipModifierSends, { modifier: isMacOS() ? '⌘' : 'Ctrl' });
 
   // Determine placeholder based on selected command or scenario
   const placeholder = disabled
@@ -1074,8 +1083,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleSend}
                   disabled={!hasContent}
-                  title={t.chat.sendTooltip}
-                  aria-label={t.chat.sendTooltip}
+                  title={sendTooltip}
+                  aria-label={sendTooltip}
                   className={cn(
                     'h-7 w-7 shrink-0 rounded-lg transition-colors',
                     hasContent
@@ -1158,8 +1167,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     size="icon"
                     onClick={handleSend}
                     disabled={!hasContent || disabled}
-                    title={t.chat.sendTooltip}
-                    aria-label={t.chat.sendTooltip}
+                    title={sendTooltip}
+                    aria-label={sendTooltip}
                     className={cn(
                       'h-7 w-7 rounded-lg transition-colors',
                       hasContent && !disabled

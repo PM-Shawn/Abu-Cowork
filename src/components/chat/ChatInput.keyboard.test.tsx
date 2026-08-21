@@ -18,6 +18,7 @@ import ChatInput from './ChatInput';
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 const typeInto = (textarea: HTMLTextAreaElement, value: string) => {
   fireEvent.change(textarea, { target: { value } });
@@ -36,6 +37,7 @@ describe('ChatInput keyboard contract', () => {
       pendingReferences: [],
       pendingAttachmentPaths: [],
     });
+    useSettingsStore.setState({ composerEnterBehavior: 'enter' });
     useChatStore.getState().createConversation();
   });
 
@@ -74,6 +76,34 @@ describe('ChatInput keyboard contract', () => {
     expect(onSend).not.toHaveBeenCalled();
     expect(textarea.value).toBe('he\nllo');
     expect(textarea.selectionStart).toBe(3);
+  });
+
+  describe("behavior 'newline' — Enter starts a line instead of sending", () => {
+    beforeEach(() => {
+      useSettingsStore.setState({ composerEnterBehavior: 'newline' });
+    });
+
+    it('does not send on a bare Enter, and leaves the newline to the textarea', () => {
+      const { onSend, textarea } = setup();
+      const notPrevented = fireEvent.keyDown(textarea, { key: 'Enter' });
+      expect(onSend).not.toHaveBeenCalled();
+      expect(notPrevented).toBe(true);
+    });
+
+    it('sends on the platform send modifier instead', () => {
+      const { onSend, textarea } = setup();
+      // jsdom has no platform, so isMacOS() is false here and Ctrl is the
+      // send modifier. The Mac/Windows split itself is covered exhaustively
+      // in composerKeys.test.ts, where the platform is an explicit argument.
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      expect(onSend).toHaveBeenCalledTimes(1);
+    });
+
+    it('still refuses to send while an IME is composing', () => {
+      const { onSend, textarea } = setup();
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true, keyCode: 229 });
+      expect(onSend).not.toHaveBeenCalled();
+    });
   });
 
   describe('IME composition suppresses Enter', () => {

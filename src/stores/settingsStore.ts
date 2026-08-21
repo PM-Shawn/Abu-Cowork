@@ -1,3 +1,4 @@
+import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
@@ -219,6 +220,15 @@ export interface SettingsState {
   networkWhitelist: string[];
   allowPrivateNetworks: boolean;
   closeAction: 'ask' | 'minimize' | 'quit';
+  /**
+   * What a bare Enter does in the chat composer.
+   *  - 'enter'   — Enter sends; Shift/Alt+Enter insert a newline (default,
+   *                and what the app has always done).
+   *  - 'newline' — Enter inserts a newline; ⌘/Ctrl+Enter sends. Added for
+   *                users whose IME swallows Shift+Enter (common with Chinese
+   *                IMEs on Windows, where Shift toggles 中/英).
+   */
+  composerEnterBehavior: ComposerEnterBehavior;
   updateInfo: UpdateInfo | null;
   updateChecking: boolean;
   lastUpdateCheck: number;
@@ -395,6 +405,7 @@ interface SettingsActions {
   setNetworkWhitelist: (whitelist: string[]) => void;
   setAllowPrivateNetworks: (allow: boolean) => void;
   setCloseAction: (action: 'ask' | 'minimize' | 'quit') => void;
+  setComposerEnterBehavior: (behavior: ComposerEnterBehavior) => void;
   setUpdateInfo: (info: UpdateInfo | null) => void;
   setUpdateChecking: (checking: boolean) => void;
   setLastUpdateCheck: (time: number) => void;
@@ -633,6 +644,7 @@ export const useSettingsStore = create<SettingsStore>()(
       networkWhitelist: [],
       allowPrivateNetworks: true,
       closeAction: 'ask' as 'ask' | 'minimize' | 'quit',
+      composerEnterBehavior: 'enter' as ComposerEnterBehavior,
       updateInfo: null,
       updateChecking: false,
       lastUpdateCheck: 0,
@@ -979,6 +991,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setNetworkWhitelist: (networkWhitelist) => set({ networkWhitelist }),
       setAllowPrivateNetworks: (allowPrivateNetworks) => set({ allowPrivateNetworks }),
       setCloseAction: (closeAction) => set({ closeAction }),
+      setComposerEnterBehavior: (composerEnterBehavior) => set({ composerEnterBehavior }),
       setUpdateInfo: (updateInfo) => set({ updateInfo }),
       setUpdateChecking: (updateChecking) => set({ updateChecking }),
       setLastUpdateCheck: (lastUpdateCheck) => set({ lastUpdateCheck }),
@@ -1059,7 +1072,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 44,
+      version: 45,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -1067,6 +1080,15 @@ export const useSettingsStore = create<SettingsStore>()(
           // Browser site permissions start empty: every site keeps asking until
           // the user explicitly settles it from the confirmation dialog.
           if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
+
+        // ════════════════════════════════════════════════
+        // V45: Composer Enter behavior. Existing users keep the behavior they
+        // already have muscle memory for — Enter sends — so this defaults to
+        // 'enter' rather than to the new option.
+        // ════════════════════════════════════════════════
+        if (version < 45) {
+          if (state.composerEnterBehavior === undefined) state.composerEnterBehavior = 'enter';
         }
 
         // ════════════════════════════════════════════════
@@ -1886,6 +1908,7 @@ export const useSettingsStore = create<SettingsStore>()(
         networkWhitelist: state.networkWhitelist,
         allowPrivateNetworks: state.allowPrivateNetworks,
         closeAction: state.closeAction,
+        composerEnterBehavior: state.composerEnterBehavior,
         lastUpdateCheck: state.lastUpdateCheck,
         userNickname: state.userNickname,
         userAvatar: state.userAvatar,

@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
-import { FolderClosed, FolderOpen, Plus, Pin, PinOff, Settings, Archive, Trash2, Pencil, Download, FolderMinus, ListTree } from 'lucide-react';
+import { FolderClosed, FolderOpen, Plus, Pin, PinOff, Settings, Archive, Trash2, Pencil, Download, FolderMinus, ListTree, MoreHorizontal } from 'lucide-react';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { cn } from '@/lib/utils';
@@ -86,6 +86,19 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
   const handleConvClick = (convId: string) => {
     switchConversation(convId);
     setViewMode('chat');
+  };
+
+  // Claude-style "⋯" trigger: same menu as right-click, anchored under the button.
+  const handleConvMenuButton = (e: React.MouseEvent<HTMLButtonElement>, convId: string) => {
+    e.stopPropagation();
+    if (convMenu?.convId === convId) {
+      setConvMenu(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(rect.left, window.innerWidth - 180);
+    const y = Math.min(rect.bottom + 4, window.innerHeight - 100);
+    setConvMenu({ x, y, convId });
   };
 
   const hasMore = conversations.length > MAX_VISIBLE_CONVERSATIONS;
@@ -201,10 +214,17 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   </button>
                 )}
                 <button
-                  onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
-                  className="h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] shrink-0"
+                  onClick={(e) => handleConvMenuButton(e, conv.id)}
+                  className={cn(
+                    'h-4 w-4 flex items-center justify-center opacity-0 group-hover/conv:opacity-100 focus-visible:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] shrink-0',
+                    convMenu?.convId === conv.id && 'opacity-100 text-[var(--abu-text-primary)]'
+                  )}
+                  title={t.sidebar.moreActions}
+                  aria-label={t.sidebar.moreActions}
+                  aria-haspopup="menu"
+                  aria-expanded={convMenu?.convId === conv.id}
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <MoreHorizontal className="h-3 w-3" />
                 </button>
               </div>
             );

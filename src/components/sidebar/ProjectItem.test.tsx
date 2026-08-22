@@ -38,6 +38,7 @@ vi.mock('@/i18n', () => ({
         renameConversation: '重命名',
         exportConversation: '导出',
         deleteConversation: '删除',
+        moreActions: '更多操作',
       },
     },
   }),

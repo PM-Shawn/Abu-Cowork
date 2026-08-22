@@ -38,6 +38,13 @@ const enterpriseConfig = mergeConfig(
       },
     },
     test: {
+      // The enterprise suite is a thin umbrella over the private repository's
+      // tests, many of which render React components. 0b68c42b flipped the
+      // base default to `node`, which this config inherits through mergeConfig
+      // — but the private files can't carry per-file `@vitest-environment`
+      // docblocks from here, so restore the DOM default suite-wide. At ~200
+      // tests the node-env startup win is noise.
+      environment: 'happy-dom',
       // Replaced below because mergeConfig concatenates array values.
       include: [],
     },

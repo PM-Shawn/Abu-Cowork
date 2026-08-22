@@ -23,11 +23,11 @@ test('Windows overlays native caption buttons and removes the second menu-bar ro
     titleBarOverlay: {
       color: WINDOWS_OVERLAY_BACKGROUND,
       symbolColor: LIGHT_CHROME.symbolColor,
-      height: 36,
+      height: 30,
     },
     autoHideMenuBar: true,
   });
-  assert.equal(WINDOWS_TOOLBAR_HEIGHT, 36);
+  assert.equal(WINDOWS_TOOLBAR_HEIGHT, 30);
   const templates = [];
   const calls = { menu: [], autoHide: [], visible: [], maximize: [], unmaximize: [] };
   let maximized = false;

@@ -6,6 +6,7 @@ const mockFetch = vi.fn();
 vi.mock('./tauriFetch', () => ({ getTauriFetch: () => Promise.resolve(mockFetch) }));
 
 import { OpenAICompatibleAdapter } from './openai-compatible';
+import { resolveCapabilities } from './modelCapabilities';
 
 function makeSSEResponse(chunks: unknown[]): Response {
   const lines = chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`);
@@ -82,5 +83,69 @@ describe('OpenAICompatibleAdapter — stripped image (empty base64) must not rea
     expect(wire).not.toContain('image_url');
     expect(wire).toContain('看看这张图'); // text still delivered
     expect(wire).toContain('could not be loaded'); // placeholder, not silent drop
+  });
+});
+
+// The two tests above prove the serializer honours the `supportsVision` flag it is
+// handed. This one closes the remaining link: that the *model id* Abu ships resolves
+// to that flag, so declaring a route vision-capable actually changes the bytes on the
+// wire. Without it, overlay/deepseek.json could say vision:true while images still
+// got stripped, and every unit test above would stay green.
+describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end to end', () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  const userImage: Message[] = [
+    {
+      id: 'u1', role: 'user', timestamp: 1,
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BASE64PNG' } },
+        { type: 'text', text: '这张图里是什么' },
+      ],
+    } as unknown as Message,
+  ];
+
+  type WirePart = { type: string; text?: string };
+
+  // The serializer collapses an all-text user message to a bare string and only
+  // emits a parts array when a non-text part (i.e. an image) survives, so read
+  // both shapes rather than assuming one.
+  async function sendAs(modelId: string): Promise<{ wire: string; userText: string }> {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat(
+      userImage,
+      opts({ model: modelId, supportsVision: resolveCapabilities(modelId).vision }),
+      () => {},
+    );
+    const sent = JSON.parse(mockFetch.mock.calls[0][1].body as string).messages as
+      { role: string; content: string | WirePart[] }[];
+    const content = sent.find((m) => m.role === 'user')?.content ?? '';
+    return {
+      wire: JSON.stringify(sent),
+      userText: typeof content === 'string'
+        ? content
+        : content.filter((part) => part.type === 'text').map((part) => part.text ?? '').join(''),
+    };
+  }
+
+  it('deepseek-v4-flash-vision-exp receives the image as an image_url data URL', async () => {
+    const { wire } = await sendAs('deepseek-v4-flash-vision-exp');
+    expect(wire).toContain('image_url');
+    expect(wire).toContain('data:image/png;base64,BASE64PNG');
+    expect(wire).toContain('这张图里是什么');
+  });
+
+  it('deepseek-v4-flash gets the text plus an explicit no-vision note, never the image', async () => {
+    const prompt = '这张图里是什么';
+    const { wire, userText } = await sendAs('deepseek-v4-flash');
+    expect(wire).not.toContain('image_url');
+    expect(wire).not.toContain('BASE64PNG');
+    expect(userText).toContain(prompt);
+
+    // Degrades loudly: a note rides along so the model knows an image was dropped,
+    // rather than silently seeing a picture-less prompt and inventing a description.
+    // Asserted as "carries more than the user's own words" rather than by matching
+    // the note's text, because its wording — and its language — is owned by
+    // messageNormalizer and may be rewritten without changing this contract.
+    expect(userText.replace(prompt, '').trim().length).toBeGreaterThan(0);
   });
 });

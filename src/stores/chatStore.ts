@@ -550,7 +550,13 @@ interface ChatActions {
    * action's own doc for the full branching rationale.
    */
   cancelStreaming: (convId: string, opts?: { fromSidecarFrame?: boolean }) => void;
-  clearAbortController: (convId: string) => void;
+  /**
+   * Drop the conversation's registered controller. Pass `owned` to make the
+   * clear ownership-checked: a run tearing down asynchronously must not
+   * delete a controller that a NEWER run has since registered for the same
+   * conversation, which would leave that run's Stop button inert.
+   */
+  clearAbortController: (convId: string, owned?: AbortController) => void;
   /**
    * Clear a conversation's single-turn-lifecycle skill activation state
    * (`activeSkills`/`activeSkillArgs`). Extracted from an agentLoop.ts
@@ -1673,7 +1679,8 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
-      clearAbortController: (convId) => {
+      clearAbortController: (convId, owned) => {
+        if (owned && abortControllers.get(convId) !== owned) return;
         abortControllers.delete(convId);
       },
 

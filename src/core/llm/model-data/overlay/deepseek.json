@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "DeepSeek models the pinned models.dev snapshot does not carry yet.",
+    "Fields mirror deepseek-v4-flash (the vision route is that model plus image input,",
+    "and official pricing lists both identically) except vision + toolResultImages.",
+    "pricing is omitted on purpose so findPricing's id-prefix match inherits flash's.",
+    "See ../README.md 'Add a model models.dev doesn't have' for the full rationale."
+  ],
+  "models": [
+    {
+      "id": "deepseek-v4-flash-vision-exp",
+      "label": "DeepSeek V4 Flash Vision (Exp)",
+      "family": "deepseek-flash",
+      "providers": ["deepseek"],
+      "vision": true,
+      "thinking": "uncontrollable",
+      "toolResultImages": "workaround",
+      "documentBlock": false,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 32768,
+      "outputCeiling": 384000,
+      "reasoning": true,
+      "pdfInput": false
+    }
+  ]
+}

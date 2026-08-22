@@ -380,7 +380,7 @@ describe('messageNormalizer', () => {
         if (turns[0].kind === 'user') {
           expect(turns[0].content).toHaveLength(2);
           expect(turns[0].content[0]).toEqual({ type: 'text', text: 'Check this' });
-          expect(turns[0].content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('不支持图片理解') });
+          expect(turns[0].content[1]).toMatchObject({ type: 'text', text: expect.stringContaining('does not support image understanding') });
         }
       });
     });
@@ -517,5 +517,49 @@ describe('messageNormalizer', () => {
         }
       });
     });
+  });
+});
+
+describe('convertUserContent — resize notice', () => {
+  const resized = { fromWidth: 2940, fromHeight: 1846, toWidth: 2000, toHeight: 1256 };
+
+  function userWithResizedImage(): Message[] {
+    return [{
+      id: 'u1', role: 'user', timestamp: 1,
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'B64' }, resized },
+        { type: 'text', text: '这张图是什么' },
+      ],
+    } as unknown as Message];
+  }
+
+  // The notice is produced here, not stored, so the chat UI never renders it —
+  // but the model still has to learn it is not looking at original resolution,
+  // or it reports pixel coordinates and fine print as if it were.
+  it('emits the notice right after the image it describes', () => {
+    const turns = normalizeMessages(userWithResizedImage(), { supportsVision: true });
+    const blocks = turns[0].content as { type: string; text?: string }[];
+
+    expect(blocks[0].type).toBe('image');
+    expect(blocks[1].type).toBe('text');
+    expect(blocks[1].text).toContain('<image_resize_notice>');
+    expect(blocks[1].text).toContain('2940x1846');
+    expect(blocks[1].text).toContain('2000x1256');
+  });
+
+  it('emits nothing for an image that was never resized', () => {
+    const messages: Message[] = [{
+      id: 'u1', role: 'user', timestamp: 1,
+      content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'B64' } }],
+    } as unknown as Message];
+    const turns = normalizeMessages(messages, { supportsVision: true });
+    expect(JSON.stringify(turns)).not.toContain('image_resize_notice');
+  });
+
+  // A text-only route never receives the image, so telling it how the image was
+  // resized is noise the user pays tokens for.
+  it('stays silent on a non-vision route, where the image is dropped anyway', () => {
+    const turns = normalizeMessages(userWithResizedImage(), { supportsVision: false });
+    expect(JSON.stringify(turns)).not.toContain('image_resize_notice');
   });
 });

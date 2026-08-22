@@ -20,6 +20,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ### 🐛 Fixes
 
+- **The context meter told the truth about a compacted conversation** — A long conversation could read "108% used · 138.4k / 128.0k tokens" while the request being sent fit the window comfortably. The indicator was re-counting the full raw history kept for the UI, which silently undid every reduction the send path had applied. It now builds on the agent loop's own post-compression measurement and estimates only the reply still streaming. Displayed percentages are also clamped, since a reading above 100% is always a measurement artifact.
 - **Overlay dialogs are clickable again over window drag lanes** — `-webkit-app-region` is an OS-level geometry union that ignores z-index, so a dialog overlapping a drag lane had its buttons silently swallowed; ~30 dialogs now opt out explicitly and a source-scan test guards new ones. macOS header rows drag the window again.
 - **Copying an image inside the app pastes an image again** — not a useless file badge.
 - **Two agent-loop teardown races closed** — A follow-up can no longer be staged into a run that already ended, and a run's late cleanup can no longer delete the next turn's crash-recovery checkpoint (the in-process path now uses the same loop-guarded clear as the sidecar path).

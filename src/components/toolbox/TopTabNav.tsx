@@ -1,6 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { windowDragRowProps } from '@/utils/windowDrag';
 
 export interface TopTabNavItem<T extends string = string> {
   id: T;
@@ -75,7 +76,7 @@ export default function TopTabNav<T extends string>({
   // the cards below.
   if (belowChrome) {
     return (
-      <nav className="shrink-0 pt-12 pb-3 px-8">
+      <nav {...windowDragRowProps()} className="shrink-0 pt-12 pb-3 px-8">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           {content}
         </div>
@@ -85,6 +86,7 @@ export default function TopTabNav<T extends string>({
 
   return (
     <nav
+      {...windowDragRowProps()}
       className={cn(
         'shrink-0 flex items-center justify-between gap-3 pt-3 pb-2 pr-4',
         sidebarCollapsed ? 'pl-[184px]' : 'pl-4'

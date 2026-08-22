@@ -155,6 +155,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         </div>
         {imageFullscreen && (
           <div
+            data-electron-no-drag
             className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
             onClick={() => setImageFullscreen(false)}
           >

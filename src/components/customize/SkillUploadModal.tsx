@@ -202,6 +202,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
     <>
       {/* Modal backdrop + container */}
       <div
+        data-electron-no-drag
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
         onClick={() => { if (!importInProgress) onClose(); }}
       >

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
 import { cleanup, render, screen } from '@testing-library/react';

@@ -82,7 +82,7 @@ function ChipMultiSelect({ selected, options, onChange, placeholder }: {
 
       {open && createPortal(
         <>
-          <div className="fixed inset-0 z-[10000]" onClick={() => setOpen(false)} />
+          <div data-electron-no-drag className="fixed inset-0 z-[10000]" onClick={() => setOpen(false)} />
           <div
             className="fixed z-[10001] py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto"
             style={dropdownStyle}
@@ -207,6 +207,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
   return (
     <>
       <div
+        data-electron-no-drag
         className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
         onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       >
@@ -247,7 +248,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
                     </button>
                     {showEmojiPicker && (
                       <>
-                        <div className="fixed inset-0 z-10" onClick={() => setShowEmojiPicker(false)} />
+                        <div data-electron-no-drag className="fixed inset-0 z-10" onClick={() => setShowEmojiPicker(false)} />
                         <div className="absolute z-20 mt-1 left-0 grid grid-cols-8 gap-1 p-2 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-primary)] shadow-lg">
                           {EMOJI_PALETTE.map((emoji) => (
                             <button
@@ -383,6 +384,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
       {/* Archive confirmation dialog */}
       {showArchiveConfirm && (
         <div
+          data-electron-no-drag
           className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onMouseDown={(e) => { if (e.target === e.currentTarget) setShowArchiveConfirm(false); }}
         >

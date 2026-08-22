@@ -179,3 +179,13 @@ test('Electron maps both historical and current Tauri drag attributes', () => {
   assert.match(WINDOW_DRAG_REGION_CSS, /data-electron-no-drag/);
   assert.match(WINDOW_DRAG_REGION_CSS, /no-drag/);
 });
+
+test('portaled popper layers subtract themselves from the drag lanes', () => {
+  // Radix renders poppers straight into document.body, so no ancestor of ours
+  // can hand them the no-drag marker. Without this selector a dropdown opened
+  // over the 72px Windows chrome band has every click eaten by the drag lane.
+  assert.match(
+    WINDOW_DRAG_REGION_CSS,
+    /\[data-radix-popper-content-wrapper\],\[data-radix-popper-content-wrapper\] \*\{-webkit-app-region:no-drag\}/,
+  );
+});

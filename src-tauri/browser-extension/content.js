@@ -3,6 +3,7 @@
   // src/content/index.ts
   var MAX_EXTRACT_TEXT_SIZE = 5e4;
   var MAX_SNAPSHOT_ELEMENTS = 200;
+  var MAX_SNAPSHOT_CHARS = 3e4;
   var electronBrowserRuntime = globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__;
   if (electronBrowserRuntime) {
     electronBrowserRuntime.handleAction = handleAction;
@@ -21,12 +22,38 @@
       return true;
     });
   }
-  var refMap = /* @__PURE__ */ new Map();
+  var refByElement = /* @__PURE__ */ new WeakMap();
+  var elementByRef = /* @__PURE__ */ new Map();
   var refCounter = 0;
+  function refFor(el) {
+    const existing = refByElement.get(el);
+    if (existing && elementByRef.get(existing)?.deref() === el) return existing;
+    const ref = `e${++refCounter}`;
+    refByElement.set(el, ref);
+    elementByRef.set(ref, new WeakRef(el));
+    return ref;
+  }
+  function resolveRef(ref) {
+    const el = elementByRef.get(ref)?.deref();
+    if (!el || !el.isConnected) {
+      elementByRef.delete(ref);
+      return null;
+    }
+    return el;
+  }
+  function sweepRefs() {
+    for (const [ref, weak] of elementByRef) {
+      const el = weak.deref();
+      if (!el || !el.isConnected) elementByRef.delete(ref);
+    }
+  }
   async function handleAction(action, payload) {
     switch (action) {
       case "snapshot":
-        return takeSnapshot(payload.selector);
+        return takeSnapshot(
+          payload.selector,
+          typeof payload.maxChars === "number" ? payload.maxChars : void 0
+        );
       case "click":
         return clickElement(payload.locator);
       case "fill":
@@ -57,11 +84,14 @@
         throw new Error(`Unknown content action: ${action}`);
     }
   }
-  function takeSnapshot(scopeSelector) {
-    const root = scopeSelector ? document.querySelector(scopeSelector) : document.body;
-    if (!root) throw new Error(`Scope element not found: ${scopeSelector}`);
-    refMap.clear();
-    refCounter = 0;
+  function takeSnapshot(scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
+    const roots = scopeSelector ? [...document.querySelectorAll(scopeSelector)] : document.body ? [document.body] : [];
+    if (roots.length === 0) {
+      throw new Error(
+        `Scope element not found: ${scopeSelector}. Take a snapshot without a selector to see what the page actually contains.`
+      );
+    }
+    sweepRefs();
     const interactiveTags = /* @__PURE__ */ new Set([
       "a",
       "button",
@@ -85,61 +115,113 @@
       "switch",
       "slider"
     ]);
+    const openPopups = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="grid"]')].map((list) => popupRootFor(list)).filter((popup) => hasBox(popup));
+    const isPopupRow = (el) => {
+      if (openPopups.length === 0) return false;
+      if (!hasBox(el)) return false;
+      if (!openPopups.some((popup) => popup !== el && popup.contains(el))) return false;
+      if ([...el.children].some((child) => hasBox(child))) return false;
+      const text = normalizedText(el);
+      return text.length > 0 && text.length <= 100;
+    };
     const elements = [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    let node = walker.currentNode;
-    while (node) {
-      const el = node;
-      const tag = el.tagName?.toLowerCase();
-      const isInteractive = interactiveTags.has(tag) || el.hasAttribute("onclick") || el.hasAttribute("tabindex") || el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role")) || el.contentEditable === "true" || tag === "div" && el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role"));
-      if (isInteractive && isVisible(el)) {
-        const ref = `e${++refCounter}`;
-        refMap.set(ref, el);
-        const info = {
-          ref,
-          tag,
-          enabled: !el.disabled,
-          visible: true
-        };
-        const text = getVisibleText(el);
-        if (text) info.text = text.slice(0, 100);
-        if (tag === "input") {
-          const input = el;
-          info.type = input.type;
-          if (input.placeholder) info.placeholder = input.placeholder;
-          if (input.value) info.value = input.value.slice(0, 100);
-          if (input.type === "checkbox" || input.type === "radio") {
-            info.checked = input.checked;
+    const seenElements = /* @__PURE__ */ new WeakSet();
+    let hitCap = false;
+    for (const root of roots) {
+      if (hitCap) break;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let node = walker.currentNode;
+      while (node) {
+        const el = node;
+        const tag = el.tagName?.toLowerCase();
+        const isInteractive = interactiveTags.has(tag) || el.hasAttribute("onclick") || el.hasAttribute("tabindex") || el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role")) || el.contentEditable === "true" || tag === "div" && el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role")) || isPopupRow(el);
+        if (isInteractive && !seenElements.has(el) && isSnapshotVisible(el)) {
+          seenElements.add(el);
+          const info = {
+            ref: refFor(el),
+            tag,
+            enabled: !el.disabled,
+            visible: true
+          };
+          const text = getVisibleText(el);
+          if (text) info.text = text.slice(0, 100);
+          if (el.id) info.id = el.id;
+          const nameAttr = el.getAttribute("name");
+          if (nameAttr) info.name = nameAttr;
+          if (tag === "input") {
+            const input = el;
+            info.type = input.type;
+            if (input.placeholder) info.placeholder = input.placeholder;
+            if (input.value) info.value = input.value.slice(0, 100);
+            if (input.type === "checkbox" || input.type === "radio") {
+              info.checked = input.checked;
+            }
+          }
+          if (tag === "textarea") {
+            const ta = el;
+            if (ta.placeholder) info.placeholder = ta.placeholder;
+            if (ta.value) info.value = ta.value.slice(0, 200);
+          }
+          if (tag === "select") {
+            const select = el;
+            info.options = [...select.options].map((o) => ({ value: o.value, text: o.text }));
+            info.value = select.value;
+          }
+          if (tag === "a") {
+            info.href = el.href;
+          }
+          const role = el.getAttribute("role");
+          if (role) info.role = role;
+          const ariaLabel = el.getAttribute("aria-label");
+          if (ariaLabel) info.ariaLabel = ariaLabel;
+          elements.push(info);
+          if (elements.length >= MAX_SNAPSHOT_ELEMENTS) {
+            hitCap = true;
+            break;
           }
         }
-        if (tag === "textarea") {
-          const ta = el;
-          if (ta.placeholder) info.placeholder = ta.placeholder;
-          if (ta.value) info.value = ta.value.slice(0, 200);
-        }
-        if (tag === "select") {
-          const select = el;
-          info.options = [...select.options].map((o) => ({ value: o.value, text: o.text }));
-          info.value = select.value;
-        }
-        if (tag === "a") {
-          info.href = el.href;
-        }
-        const role = el.getAttribute("role");
-        if (role) info.role = role;
-        const ariaLabel = el.getAttribute("aria-label");
-        if (ariaLabel) info.ariaLabel = ariaLabel;
-        elements.push(info);
-        if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
+        node = walker.nextNode();
       }
-      node = walker.nextNode();
     }
-    const truncated = elements.length >= MAX_SNAPSHOT_ELEMENTS;
+    const hitElementCap = elements.length >= MAX_SNAPSHOT_ELEMENTS;
+    const total = elements.length;
+    const serializedLength = (count) => JSON.stringify(elements.slice(0, count), null, 2).length;
+    let kept = total;
+    if (serializedLength(total) > maxChars) {
+      let low = 1;
+      let high = total;
+      kept = 1;
+      while (low <= high) {
+        const mid = low + high >> 1;
+        if (serializedLength(mid) <= maxChars) {
+          kept = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      elements.length = kept;
+    }
+    const overBudget = kept < total;
+    if (elements.length === 0 && scopeSelector) {
+      return {
+        url: location.href,
+        title: document.title,
+        elements,
+        message: `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? "" : "s"}, none of which contain anything interactive right now \u2014 a popup that is closed looks like this. Take a snapshot without a selector to see the whole page, or open the control first.`
+      };
+    }
+    const reasons = [];
+    if (hitElementCap) reasons.push(`the ${MAX_SNAPSHOT_ELEMENTS}-element cap`);
+    if (overBudget) reasons.push(`the ${maxChars}-character budget`);
     return {
       url: location.href,
       title: document.title,
       elements,
-      ...truncated ? { truncated: true, message: `Showing first ${MAX_SNAPSHOT_ELEMENTS} elements. Use selector parameter to scope.` } : {}
+      ...reasons.length ? {
+        truncated: true,
+        message: `Showing ${elements.length} of ${total}+ interactive elements \u2014 hit ${reasons.join(" and ")}. To see the rest: pass \`selector\` to scope the snapshot to one region (e.g. the form you are filling), or raise \`maxChars\`. The elements listed above are complete and their refs are valid.`
+      } : {}
     };
   }
   function escapeCSS(value) {
@@ -148,24 +230,61 @@
     }
     return value.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
   }
+  var NEVER_A_TARGET = /* @__PURE__ */ new Set(["html", "body", "head", "script", "style", "noscript", "title"]);
+  function describeElement(el) {
+    const tag = el.tagName.toLowerCase();
+    const id = el.id ? `#${el.id}` : "";
+    const cls = el.classList.length ? `.${[...el.classList].slice(0, 2).join(".")}` : "";
+    const text = (getVisibleText(el) ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+    return `[${refFor(el)}] <${tag}${id}${cls}>${text ? ` "${text}"` : ""}`;
+  }
+  function isClickable(el) {
+    const tag = el.tagName.toLowerCase();
+    if (["a", "button", "input", "select", "textarea", "summary", "label", "option"].includes(tag)) return true;
+    if (el.hasAttribute("onclick") || el.hasAttribute("tabindex")) return true;
+    const role = el.getAttribute("role");
+    return role !== null && ["button", "link", "option", "menuitem", "tab", "checkbox", "radio", "switch"].includes(role);
+  }
+  function findByText(text, tag) {
+    const scope = tag ?? "*";
+    const wanted = text.trim();
+    const squashed = wanted.replace(/\s+/g, "");
+    const candidates = [...document.querySelectorAll(scope)].filter((el) => {
+      if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
+      if (!isSnapshotVisible(el)) return false;
+      const own = normalizedText(el);
+      return own.includes(wanted) || squashed !== "" && own.replace(/\s+/g, "").includes(squashed);
+    });
+    const laidOut = candidates.filter(hasBox);
+    const matches = laidOut.length > 0 ? laidOut : candidates;
+    if (matches.length === 0) return null;
+    let deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+    const exact = deepest.filter(
+      (el) => normalizedText(el) === wanted || normalizedText(el).replace(/\s+/g, "") === squashed
+    );
+    if (exact.length > 0) deepest = exact;
+    const clickable = deepest.filter(isClickable);
+    if (clickable.length > 0) deepest = clickable;
+    if (deepest.length === 1) return deepest[0];
+    throw new Error(
+      `Text "${text}" matches ${deepest.length} different elements, so it does not identify one. Pick one by ref:
+${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (deepest.length > 8 ? `
+  ...and ${deepest.length - 8} more` : "")
+    );
+  }
   function findElement(locator) {
     if (locator.ref) {
-      const el = refMap.get(locator.ref);
-      if (el && el.isConnected) return el;
+      const el = resolveRef(locator.ref);
+      if (el) return el;
+      throw new Error(
+        `Ref "${locator.ref}" no longer exists on this page (the element was removed or replaced). Take a fresh snapshot and use a ref from it.`
+      );
     }
     if (locator.css) {
       return document.querySelector(locator.css);
     }
     if (locator.text) {
-      const tag = locator.tag ?? "*";
-      const candidates = document.querySelectorAll(tag);
-      for (const el of candidates) {
-        const text = getVisibleText(el);
-        if (text && text.includes(locator.text) && isVisible(el)) {
-          return el;
-        }
-      }
-      return null;
+      return findByText(locator.text, locator.tag);
     }
     if (locator.role) {
       const escapedRole = escapeCSS(locator.role);
@@ -186,20 +305,42 @@
     if (!el) throw new Error(`Element not found: ${JSON.stringify(locator)}`);
     return el;
   }
+  function targetInfo(el) {
+    const text = getVisibleText(el)?.replace(/\s+/g, " ").trim().slice(0, 50);
+    return {
+      ref: refFor(el),
+      tag: el.tagName.toLowerCase(),
+      ...el.id ? { id: el.id } : {},
+      ...el.getAttribute("role") ? { role: el.getAttribute("role") } : {},
+      ...text ? { text } : {}
+    };
+  }
+  function dispatchClickSequence(el) {
+    const opts = { bubbles: true, cancelable: true, composed: true };
+    if (typeof PointerEvent === "function") {
+      el.dispatchEvent(new PointerEvent("pointerdown", opts));
+    }
+    el.dispatchEvent(new MouseEvent("mousedown", opts));
+    if (typeof PointerEvent === "function") {
+      el.dispatchEvent(new PointerEvent("pointerup", opts));
+    }
+    el.dispatchEvent(new MouseEvent("mouseup", opts));
+    el.click();
+  }
   function clickElement(locator) {
     const el = findElementOrThrow(locator);
-    const text = getVisibleText(el)?.slice(0, 50);
+    const target = targetInfo(el);
     el.scrollIntoView({ behavior: "instant", block: "center" });
     highlightElement(el);
-    showStatus(`Click: ${text ?? "element"}`, "info");
-    const htmlEl = el;
-    htmlEl.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-    htmlEl.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    htmlEl.click();
+    showStatus(`Click: ${target.text ?? "element"}`, "info");
+    dispatchClickSequence(el);
     return {
       success: true,
-      message: `Clicked element${text ? `: "${text}"` : ""}`,
-      elementText: text ?? void 0
+      // Naming the element that was actually hit — not just the text that was
+      // asked for — is what lets a caller notice it landed on the wrong thing.
+      message: `Clicked ${describeElement(el)}`,
+      elementText: target.text,
+      target
     };
   }
   function fillElement(locator, value) {
@@ -225,26 +366,211 @@
       previousValue: previousValue || void 0
     };
   }
-  function selectOption(locator, value) {
-    const el = findElementOrThrow(locator);
-    if (el.tagName.toLowerCase() !== "select") {
-      throw new Error(`Element is not a <select>: ${el.tagName}`);
+  var DROPDOWN_OPEN_TIMEOUT_MS = 1500;
+  function isRendered(el) {
+    if (!el.isConnected) return false;
+    const target = el;
+    if (typeof target.checkVisibility === "function") {
+      return target.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
     }
-    let found = false;
-    for (const option of el.options) {
-      if (option.value === value || option.text === value) {
-        el.value = option.value;
-        found = true;
-        break;
+    for (let node = el; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+    }
+    return true;
+  }
+  function isSnapshotVisible(el) {
+    if (isVisible(el)) return true;
+    const tag = el.tagName.toLowerCase();
+    const isFormControl = ["input", "textarea", "select", "button"].includes(tag) || el.contentEditable === "true";
+    if (!isFormControl) return false;
+    if (!isRendered(el)) return false;
+    let depth = 0;
+    for (let node = el.parentElement; node && depth < 4; node = node.parentElement, depth++) {
+      if (hasBox(node)) return true;
+    }
+    return false;
+  }
+  function hasBox(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function optionLabelOf(el) {
+    const aria = el.getAttribute("aria-label");
+    if (aria && aria.trim()) return aria.trim();
+    return (el.textContent ?? "").replace(/\s+/g, " ").trim();
+  }
+  function clickTargetForOption(ariaOption, popup) {
+    if (hasBox(ariaOption)) return ariaOption;
+    const label = optionLabelOf(ariaOption);
+    if (!label) return null;
+    const rendered = [...popup.querySelectorAll("*")].filter(
+      (el) => hasBox(el) && (el.textContent ?? "").replace(/\s+/g, " ").trim() === label
+    );
+    const deepest = rendered.filter((el) => !rendered.some((other) => other !== el && el.contains(other)));
+    return deepest[0] ?? null;
+  }
+  function popupRootFor(container) {
+    let node = container;
+    while (node && node !== document.body) {
+      if (hasBox(node)) return node;
+      node = node.parentElement;
+    }
+    return container;
+  }
+  function optionsFor(trigger) {
+    const owned = (trigger.getAttribute("aria-controls") ?? trigger.getAttribute("aria-owns") ?? "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter((el) => el !== null);
+    if (owned.length > 0) {
+      return owned.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]).filter(isRendered);
+    }
+    const containers = [...document.querySelectorAll('[role="listbox"], [role="menu"]')].filter(isVisible);
+    const fromContainers = containers.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]);
+    const options = fromContainers.length > 0 ? fromContainers : [...document.querySelectorAll('[role="option"], [role="menuitem"]')];
+    return options.filter(isVisible);
+  }
+  function scrollerWithin(popup) {
+    const scrolls = (el) => el.scrollHeight > el.clientHeight + 1;
+    if (scrolls(popup)) return popup;
+    for (const node of popup.querySelectorAll("*")) {
+      if (scrolls(node)) return node;
+    }
+    return null;
+  }
+  function normalizedText(el) {
+    return (el.textContent ?? "").replace(/\s+/g, " ").trim();
+  }
+  function renderedRowFor(popup, label) {
+    const matches = [...popup.querySelectorAll("*")].filter(
+      (el) => hasBox(el) && normalizedText(el) === label
+    );
+    const deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+    return deepest[0] ?? null;
+  }
+  function renderedRowLabels(popup) {
+    const labels = [];
+    for (const el of popup.querySelectorAll("*")) {
+      if (!hasBox(el)) continue;
+      if ([...el.children].some((child) => hasBox(child))) continue;
+      const text = normalizedText(el);
+      if (text && text.length <= 80) labels.push(text);
+    }
+    return labels;
+  }
+  async function findOption(trigger, value) {
+    const wanted = value.trim();
+    const squashed = wanted.replace(/\s+/g, "");
+    const seen = /* @__PURE__ */ new Set();
+    const attempt = () => {
+      const ariaOptions2 = optionsFor(trigger);
+      if (ariaOptions2.length === 0) return null;
+      const popup2 = popupRootFor(ariaOptions2[0].parentElement ?? ariaOptions2[0]);
+      const labelled = ariaOptions2.map((el) => ({ el, label: optionLabelOf(el) }));
+      labelled.forEach(({ label }) => label && seen.add(label));
+      renderedRowLabels(popup2).forEach((label) => seen.add(label));
+      const hit = labelled.find(({ label }) => label === wanted) ?? labelled.find(({ label }) => label.replace(/\s+/g, "") === squashed) ?? labelled.find(({ label }) => label.includes(wanted));
+      if (hit) {
+        const target = clickTargetForOption(hit.el, popup2);
+        if (target) return { option: target, label: hit.label };
       }
+      const rendered = renderedRowFor(popup2, wanted) ?? renderedRowFor(popup2, [...seen].find((label) => label.replace(/\s+/g, "") === squashed) ?? wanted);
+      if (rendered) return { option: rendered, label: normalizedText(rendered) };
+      return null;
+    };
+    const deadline = Date.now() + DROPDOWN_OPEN_TIMEOUT_MS;
+    for (; ; ) {
+      const hit = attempt();
+      if (hit) return { ...hit, seen: [...seen] };
+      if (Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    if (!found) throw new Error(`Option not found: "${value}"`);
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    return { success: true, message: `Selected option: "${value}"` };
+    const ariaOptions = optionsFor(trigger);
+    const popup = ariaOptions.length > 0 ? popupRootFor(ariaOptions[0].parentElement ?? ariaOptions[0]) : null;
+    const scroller = popup ? scrollerWithin(popup) : null;
+    if (!scroller) return { option: null, label: "", seen: [...seen] };
+    let previousTop = -1;
+    for (let guard = 0; guard < 40 && scroller.scrollTop !== previousTop; guard++) {
+      previousTop = scroller.scrollTop;
+      scroller.scrollTop += Math.max(1, scroller.clientHeight - 8);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const hit = attempt();
+      if (hit) return { ...hit, seen: [...seen] };
+    }
+    return { option: null, label: "", seen: [...seen] };
+  }
+  async function selectOption(locator, value) {
+    const el = findElementOrThrow(locator);
+    if (el.tagName.toLowerCase() === "select") {
+      const select = el;
+      const options = [...select.options];
+      const match = options.find((o) => o.value === value || o.text === value);
+      if (!match) {
+        throw new Error(
+          `Option "${value}" not found. Available options: ${options.map((o) => `"${o.text}"`).join(", ") || "(none)"}`
+        );
+      }
+      select.value = match.value;
+      select.focus();
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return { success: true, message: `Selected option: "${match.text}"`, target: targetInfo(select) };
+    }
+    const role = el.getAttribute("role");
+    const isCustomDropdown = role === "combobox" || role === "listbox" || el.getAttribute("aria-haspopup") === "listbox" || optionsFor(el).length > 0;
+    if (!isCustomDropdown) {
+      throw new Error(
+        `${describeElement(el)} is not a dropdown: it is not a <select>, has no combobox/listbox role, and owns no options. If this is a text field use fill; if the control opens a menu, click it and take a snapshot to see what appeared.`
+      );
+    }
+    showStatus(`Select: "${value}"`, "info");
+    el.scrollIntoView({ behavior: "instant", block: "center" });
+    if (el.getAttribute("aria-expanded") !== "true" && optionsFor(el).length === 0) {
+      dispatchClickSequence(el);
+    }
+    const { option: chosen, label: chosenLabel, seen } = await findOption(el, value);
+    if (seen.length === 0) {
+      throw new Error(
+        `Opened ${describeElement(el)} but no options appeared within ${DROPDOWN_OPEN_TIMEOUT_MS}ms. Take a snapshot to see the current state of the page.`
+      );
+    }
+    if (!chosen) {
+      const wasListed = seen.some(
+        (label) => label === value.trim() || label.replace(/\s+/g, "") === value.trim().replace(/\s+/g, "")
+      );
+      throw new Error(
+        wasListed ? `Option "${value}" is in ${describeElement(el)} but the dropdown never finished opening, so there was nothing to click. Take a snapshot to see the page's current state, then retry select.` : `Option "${value}" not found in ${describeElement(el)}. Options available: ${seen.map((label) => `"${label}"`).join(", ")}`
+      );
+    }
+    highlightElement(chosen);
+    chosen.scrollIntoView({ behavior: "instant", block: "nearest" });
+    dispatchClickSequence(chosen);
+    return {
+      success: true,
+      message: `Selected "${chosenLabel}" in ${describeElement(el)}`,
+      target: targetInfo(chosen)
+    };
   }
   async function waitFor(condition, timeout = 3e4) {
     const start = Date.now();
     const condType = condition.type;
+    const describeCurrentState = () => {
+      if (condType === "urlContains") return `current url is ${location.href}`;
+      let el;
+      try {
+        el = findElement(condition.locator);
+      } catch {
+        return "the locator no longer resolves (its ref is stale) \u2014 take a fresh snapshot";
+      }
+      if (!el) return "no element matches that locator";
+      if (!isVisible(el)) return `matched <${el.tagName.toLowerCase()}> but it has no layout box (hidden or zero-sized)`;
+      if (condType === "enabled" && el.disabled) {
+        return `matched <${el.tagName.toLowerCase()}> but it is still disabled`;
+      }
+      if (condType === "textContains") {
+        return `matched <${el.tagName.toLowerCase()}> whose text is ${JSON.stringify((getVisibleText(el) ?? "").slice(0, 80))}`;
+      }
+      return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
+    };
     const check = () => {
       switch (condType) {
         case "appear": {
@@ -287,9 +613,10 @@
         const elapsed = Date.now() - start;
         resolve({
           success: !timedOut,
-          message: timedOut ? `Timed out after ${timeout}ms` : `Condition met after ${elapsed}ms`,
+          message: timedOut ? `Timed out after ${timeout}ms waiting for "${condType}" \u2014 ${describeCurrentState()}.` : `Condition met after ${elapsed}ms`,
           timedOut,
-          elapsed
+          elapsed,
+          ...timedOut ? { observed: describeCurrentState() } : {}
         });
       };
       const tryCheck = () => {

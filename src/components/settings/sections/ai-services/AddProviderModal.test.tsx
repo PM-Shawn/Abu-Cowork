@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
  * Unit tests for AddProviderModal.
@@ -15,12 +16,17 @@
  *     see docs/2026-07-11-modal-unify-design.md §7.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
 import AddProviderModal from './AddProviderModal';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { setLanguage } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
+
+// The fetched-model checklist tests drive the real component against a stubbed
+// GET /models — no other test in this file clicks Fetch, so a file-wide mock is safe.
+vi.mock('@/core/llm/modelFetcher', () => ({ fetchProviderModels: vi.fn() }));
+import { fetchProviderModels } from '@/core/llm/modelFetcher';
 
 // ── Tests ──────────────────────────────────────────────────────────
 
@@ -559,5 +565,270 @@ describe('AddProviderModal — curated "use another model" row', () => {
     expect(screen.getAllByText('deepseek-custom-x').length).toBeGreaterThan(0);
     expect(screen.queryByPlaceholderText('Enter model ID')).not.toBeInTheDocument();
     expect(screen.getByText('Use another model')).toBeInTheDocument();
+  });
+});
+
+describe('AddProviderModal — fetched model checklist', () => {
+  // 12 models: enough to cross MODEL_FILTER_MIN_ITEMS so the search box renders.
+  const FETCHED_IDS = [
+    'openai/gpt-4o',
+    'anthropic/claude-opus-4',
+    ...Array.from({ length: 10 }, (_, i) => `vendor/aggregator-model-${i}`),
+  ];
+
+  const savedProvider: ProviderInstance = {
+    id: 'custom-fetch-test',
+    source: 'custom',
+    name: 'My Gateway',
+    enabled: true,
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://gateway.example.com/v1',
+    apiKey: 'sk-gateway',
+    models: [{ id: 'already-saved-model', label: 'already-saved-model' }],
+    status: 'unchecked',
+    sortOrder: 0,
+    userAdded: true,
+  };
+
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({
+      providers: [savedProvider],
+      activeModel: { providerId: 'custom-fetch-test', modelId: 'already-saved-model' },
+      failedSecretKeys: [],
+    });
+    vi.mocked(fetchProviderModels).mockResolvedValue({
+      success: true,
+      models: FETCHED_IDS.map((id) => ({ id, label: id })),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchProviderModels).mockReset();
+  });
+
+  /** Render in edit mode (prefills provider + baseUrl, skipping the portal
+   *  dropdown) and click Fetch Models; resolves once the list has rendered. */
+  async function renderAndFetch() {
+    render(<AddProviderModal open={true} editProvider={savedProvider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED_IDS.length} models`);
+  }
+
+  it('pre-checks NOTHING it fetched — the saved model stays selected, the 12 new ones do not', async () => {
+    await renderAndFetch();
+
+    // 1 selected (the provider's saved model) out of 13 listed (12 fetched + 1 saved).
+    expect(screen.getByText(`1 of ${FETCHED_IDS.length + 1} selected`)).toBeInTheDocument();
+    // Every fetched id is listed — nothing is hidden, it just isn't checked.
+    for (const id of FETCHED_IDS) {
+      expect(screen.getByText(id)).toBeInTheDocument();
+    }
+  });
+
+  it('renders the search box for a list this size and filters it by substring', async () => {
+    await renderAndFetch();
+
+    const search = screen.getByPlaceholderText('Search models…');
+    fireEvent.change(search, { target: { value: 'claude' } });
+
+    await waitFor(() => expect(screen.queryByText('openai/gpt-4o')).not.toBeInTheDocument());
+    expect(screen.getByText('anthropic/claude-opus-4')).toBeInTheDocument();
+    expect(screen.queryByText('vendor/aggregator-model-0')).not.toBeInTheDocument();
+  });
+
+  it('"Select all" applies to the current search results only, not the whole fetched list', async () => {
+    await renderAndFetch();
+
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'aggregator' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+
+    // 10 aggregator matches + the saved model = 11; gpt-4o/claude were filtered
+    // out at the time of the click and stay unselected.
+    await screen.findByText(`11 of ${FETCHED_IDS.length + 1} selected`);
+  });
+
+  it('LM Studio is the exception — its local catalog stays auto-selected', async () => {
+    // Same fetch path as a cloud provider, but the models it lists are already
+    // loaded on this machine, so "check them all" is still what the user meant.
+    const lmstudio: ProviderInstance = {
+      id: 'lmstudio',
+      source: 'builtin',
+      name: 'LM Studio',
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      apiKey: '',
+      models: [],
+      status: 'unchecked',
+      sortOrder: 0,
+      userAdded: true,
+    };
+    useSettingsStore.setState({ providers: [lmstudio], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={lmstudio} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED_IDS.length} models`);
+
+    await screen.findByText(`${FETCHED_IDS.length} of ${FETCHED_IDS.length} selected`);
+  });
+
+  it('"Clear" deselects the visible rows, including the provider\'s saved model', async () => {
+    await renderAndFetch();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+    await screen.findByText(`${FETCHED_IDS.length + 1} of ${FETCHED_IDS.length + 1} selected`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+    // Empty selection swaps the counter for the pick-something hint.
+    await screen.findByText('Select the models you want to add');
+  });
+});
+
+describe('AddProviderModal — curated provider fetch', () => {
+  // DeepSeek ships a curated list of exactly these two.
+  // Read the shipped list rather than restating it: hardcoding the ids made
+  // this suite fail the moment DeepSeek's curated list gained a model, which is
+  // a config change, not a regression in what these tests are about.
+  const CURATED = PROVIDER_CONFIGS.deepseek.models.map((m) => m.id);
+  // What a live fetch returns: the curated pair plus 8 ids we never shipped —
+  // enough rows to cross MODEL_FILTER_MIN_ITEMS so the dropdown grows its
+  // search + counter header.
+  const FETCHED_ONLY = [
+    'deepseek-v5-preview', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder',
+    'deepseek-v4-pro-thinking', 'deepseek-v4-lite', 'deepseek-math', 'deepseek-vl',
+  ];
+  const FETCHED = [...CURATED, ...FETCHED_ONLY];
+  const TOTAL_ROWS = CURATED.length + FETCHED_ONLY.length;
+
+  const curatedProvider: ProviderInstance = {
+    id: 'deepseek',
+    source: 'builtin',
+    name: 'DeepSeek',
+    enabled: true,
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://api.deepseek.com',
+    apiKey: 'sk-ds',
+    models: [{ id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }],
+    status: 'unchecked',
+    sortOrder: 0,
+    userAdded: true,
+  };
+
+  const anthropicProvider: ProviderInstance = {
+    ...curatedProvider,
+    id: 'anthropic',
+    name: 'Anthropic',
+    apiFormat: 'anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    models: [],
+  };
+
+  beforeEach(() => {
+    setLanguage('en-US');
+    useSettingsStore.setState({ providers: [curatedProvider], failedSecretKeys: [] });
+    vi.mocked(fetchProviderModels).mockResolvedValue({
+      success: true,
+      models: FETCHED.map((id) => ({ id, label: id })),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchProviderModels).mockReset();
+  });
+
+  async function renderAndFetch(provider: ProviderInstance = curatedProvider) {
+    render(<AddProviderModal open={true} editProvider={provider} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /fetch models/i }));
+    await screen.findByText(`Found ${FETCHED.length} models`);
+  }
+
+  it('offers a fetch button on a curated built-in (it used to be hidden — static list only)', () => {
+    render(<AddProviderModal open={true} editProvider={curatedProvider} onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
+  });
+
+  it('offers it on an anthropic-format provider too (previously excluded outright)', () => {
+    useSettingsStore.setState({ providers: [anthropicProvider], failedSecretKeys: [] });
+    render(<AddProviderModal open={true} editProvider={anthropicProvider} onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
+  });
+
+  it('merges fetched-only ids into the curated dropdown', async () => {
+    await renderAndFetch();
+
+    // The dropdown opens itself on success — no second click needed.
+    expect(await screen.findByText('deepseek-v5-preview')).toBeInTheDocument();
+    for (const id of FETCHED_ONLY) {
+      expect(screen.getByText(id)).toBeInTheDocument();
+    }
+  });
+
+  it('does not label where a row came from — provenance is plumbing, not UI', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    expect(screen.queryByText('from API')).not.toBeInTheDocument();
+    expect(screen.queryByText('来自接口')).not.toBeInTheDocument();
+  });
+
+  /** A saved provider on one of Volcengine's three tiers (matched by baseUrl). */
+  function arkOnTier(baseUrl: string): ProviderInstance {
+    return { ...curatedProvider, id: 'volcengine', name: '火山引擎', baseUrl, models: [] };
+  }
+
+  it.each([
+    ['Agent Plan (measured: empty-bodied 404)', 'https://ark.cn-beijing.volces.com/api/plan/v3'],
+    ['Coding Plan (same subscription host family)', 'https://ark.cn-beijing.volces.com/api/coding/v3'],
+  ])('hides the fetch button on Volcengine %s', (_label, baseUrl) => {
+    const ark = arkOnTier(baseUrl);
+    useSettingsStore.setState({ providers: [ark], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={ark} onClose={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /fetch models/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the fetch button on Volcengine pay-as-you-go — a different, unmeasured host', () => {
+    // The per-tier flag exists precisely so one measured tier does not silently
+    // disable a sibling that was never tested.
+    const ark = arkOnTier('https://ark.cn-beijing.volces.com/api/v3');
+    useSettingsStore.setState({ providers: [ark], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={ark} onClose={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
+  });
+
+  it('pre-checks nothing it fetched — only the provider\'s saved model stays selected', async () => {
+    await renderAndFetch();
+
+    expect(await screen.findByText(`1 of ${TOTAL_ROWS} selected`)).toBeInTheDocument();
+  });
+
+  it('searching inside the dropdown narrows the merged list', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'reasoner' } });
+
+    await waitFor(() => expect(screen.queryByText('deepseek-v5-preview')).not.toBeInTheDocument());
+    expect(screen.getByText('deepseek-reasoner')).toBeInTheDocument();
+  });
+
+  it('"Select all" in the dropdown applies to the search results only', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    const query = 'deepseek-v4';
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: query } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
+
+    // Everything matching the query ends up selected — and nothing else. The
+    // expected count is derived, not restated, so it tracks the shipped list.
+    const matching = [...CURATED, ...FETCHED_ONLY].filter((id) => id.includes(query));
+    await screen.findByText(`${matching.length} of ${TOTAL_ROWS} selected`);
   });
 });

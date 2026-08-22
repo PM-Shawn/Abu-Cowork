@@ -292,7 +292,7 @@ export default function TabStrip() {
       {(newTabMenuPos || contextMenu) &&
         createPortal(
           <>
-            <div className="fixed inset-0 z-[55]" onClick={closeMenus} onContextMenu={(e) => { e.preventDefault(); closeMenus(); }} />
+            <div data-electron-no-drag className="fixed inset-0 z-[55]" onClick={closeMenus} onContextMenu={(e) => { e.preventDefault(); closeMenus(); }} />
             {newTabMenuPos && (
               <div
                 className="fixed z-[60] min-w-[150px] rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-md py-1"

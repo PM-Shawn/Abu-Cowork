@@ -31,14 +31,29 @@ export default defineConfig({
     'import.meta.env.VITE_CONSOLE_URL': JSON.stringify('https://console-test.local'),
   },
   test: {
-    environment: 'happy-dom',
+    // Default to `node`: only ~66 of ~386 test files actually need a DOM, and
+    // building a happy-dom per file cost more than running the tests. Measured
+    // over the 340 non-.tsx files: 74.86s -> 27.79s wall, of which the
+    // `environment` phase alone went 187.80s -> 0.44s (the `tests` phase was
+    // unchanged at ~29s — it was all setup overhead).
+    // Files that DO need a DOM opt back in with a
+    // `// @vitest-environment happy-dom` docblock on their first line — every
+    // *.test.tsx plus the 20 *.test.ts that touch DOM/Storage/selection APIs.
+    // A new component test without that line fails on `document is not
+    // defined`; add the docblock rather than changing this default back.
+    environment: 'node',
     setupFiles: ['./src/test/setup.ts'],
     // v8 coverage instrumentation adds overhead to setup/beforeAll hooks on cold
     // CI runners. Give hooks extra headroom so they don't time out spuriously.
     // testTimeout is deliberately NOT set here — test bodies keep the default 5 s
     // so hung tests fail fast rather than masking hangs with a generous ceiling.
     hookTimeout: 30000,
-    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts'],
+    // `abu-chrome-extension` and `abu-browser-bridge` are the DOM executor and
+    // the MCP tool contract for both browser surfaces (the extension bridge and
+    // the built-in Electron browser, which injects the same content bundle).
+    // They were outside the gate entirely; anything shipped from them was
+    // unverified. Keep them in.
+    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts'],
     exclude: [...configDefaults.exclude, 'src/__tests__/quarantine/**'],
     // NOTE: the existing *.integration.test.ts files here are fast, in-process
     // (Tauri/SDKs mocked — no real DB or network), so they stay in the default

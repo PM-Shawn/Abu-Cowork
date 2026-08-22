@@ -30,6 +30,7 @@ export default function GuideModal({ open, onClose, onNavigateToAIServices }: Gu
 
   return (
     <div
+      data-electron-no-drag
       data-abu-guide-modal="true"
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
       onMouseDown={(e) => {

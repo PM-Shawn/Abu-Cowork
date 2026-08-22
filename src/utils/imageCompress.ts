@@ -112,6 +112,19 @@ export interface FitImageResult {
 const ENCODABLE = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 /**
+ * The only media types a provider route accepts, and the only ones
+ * `ImageAttachment.mediaType` can legally hold.
+ *
+ * Admission must normalise to this set, not just to a pixel bound. `.bmp` is a
+ * live example: it is in the composer's IMAGE_EXTENSIONS and pathUtils maps it
+ * to `image/bmp`, so a dropped bitmap arrives here fully legitimate-looking —
+ * and a `data:image/bmp;base64,...` part is a 400 from Anthropic and OpenAI
+ * alike. That image is durable by then, rehydrated into every later request:
+ * the permanent session poisoning this whole seam exists to prevent.
+ */
+const PROVIDER_SAFE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+/**
  * Scale an image down so neither side exceeds `maxDimension`, preserving aspect
  * ratio and never upscaling.
  *
@@ -139,9 +152,16 @@ export async function fitImageToDimension(
     const bitmap = await createImageBitmap(blob);
     try {
       const { width, height } = bitmap;
-      if (Math.max(width, height) <= maxDimension) return input;
+      // Re-encode when the image is too big for the route OR when its type is
+      // one no route accepts. Checking only the dimension produced a trap the
+      // wrong way round: an oversized .bmp came out fixed (ENCODABLE excludes
+      // bmp, so the resize path re-encoded it to PNG) while a small one sailed
+      // through still labelled image/bmp — the same file poisoning the session
+      // precisely because it was NOT big enough to trigger a resize.
+      const fitsDimension = Math.max(width, height) <= maxDimension;
+      if (fitsDimension && PROVIDER_SAFE.has(input.mediaType)) return input;
 
-      const scale = maxDimension / Math.max(width, height);
+      const scale = fitsDimension ? 1 : maxDimension / Math.max(width, height);
       const toWidth = Math.max(1, Math.round(width * scale));
       const toHeight = Math.max(1, Math.round(height * scale));
 
@@ -161,7 +181,9 @@ export async function fitImageToDimension(
       return {
         bytes: new Uint8Array(await outBlob.arrayBuffer()),
         mediaType: outType,
-        resized: { fromWidth: width, fromHeight: height, toWidth, toHeight },
+        // A pure format conversion keeps every pixel, so it is not a resize and
+        // must not produce an <image_resize_notice> claiming otherwise.
+        ...(fitsDimension ? {} : { resized: { fromWidth: width, fromHeight: height, toWidth, toHeight } }),
       };
     } finally {
       bitmap.close();

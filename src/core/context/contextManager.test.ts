@@ -326,4 +326,22 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(wire).toContain('"z"');
     expect(wire).not.toContain('screenshot(s) removed from history');
   });
+
+  // The strip indices come from msg.toolCalls but are reused against
+  // toolCallsForContext at the same position, and the two are built by different
+  // producers (request order vs eventRouter's completion order under
+  // Promise.allSettled). If they ever disagree, the note must stay quiet rather
+  // than tell the model "[0 screenshot(s) removed…]".
+  it('says nothing when the targeted call had no images', () => {
+    const call = { id: 'tc-x', name: 'read_file', input: {}, result: 'file contents', resultContent: [] };
+    const withImage = screenshotTurn('img', 'q');
+    const mismatched = {
+      ...withImage,
+      toolCallsForContext: [{ name: 'read_file', input: {}, result: 'file contents', resultContent: [] }],
+      toolCalls: [...(withImage.toolCalls ?? []), call],
+    } as Message;
+
+    const out = trimOldScreenshots([mismatched, ...many], 90);
+    expect(JSON.stringify(out)).not.toContain('[0 screenshot(s) removed');
+  });
 });

@@ -552,6 +552,11 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
           id: `retry-${i}`,
           data: img.source.data,
           mediaType: img.source.media_type,
+          // Carry the admission resize record. Dropping it re-sent the
+          // downscaled image with no <image_resize_notice>, so a retried turn —
+          // often the one asking about coordinates or fine print — had the model
+          // reading a shrunken picture believing it was full size.
+          ...(img.resized ? { resized: img.resized } : {}),
         }));
       }
     }

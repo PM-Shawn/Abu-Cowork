@@ -21,7 +21,7 @@ import { Check, Loader2, X, FolderOpen, Code, Eye, SquareArrowOutUpRight, Histor
 import { Button } from '@/components/ui/button';
 import { DocSelectionLayer } from '@/features/reference/DocSelectionLayer';
 import { cn } from '@/lib/utils';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
 import { getToolbarButtons } from './previewToolbarConfig';
 import { openWithDefaultApp } from '@/utils/openWithDefaultApp';
 import { createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
@@ -664,10 +664,21 @@ export default function PreviewPanel({
   if (!previewFilePath) return null;
 
   return (
-    <div data-electron-no-drag className={cn(
-      'flex flex-col',
-      isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
-    )}>
+    <div
+      data-electron-no-drag
+      style={isFullscreen && isWindows() ? {
+        // Window Controls Overlay stays native and always paints above the
+        // renderer. Keep "fullscreen" as a content-area maximize on Windows,
+        // matching the shell layout and leaving caption controls unobstructed.
+        // The 36px fallback matches WindowTitleBar's legacy Windows toolbar;
+        // WCO-capable builds resolve the real 30px height from the env value.
+        top: 'calc(env(titlebar-area-y, 0px) + env(titlebar-area-height, 36px))',
+      } : undefined}
+      className={cn(
+        'flex flex-col',
+        isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
+      )}
+    >
       {/* Content-first preview toolbar: identity stays anchored on the left,
           common reading/AI actions on the right, filesystem actions in More. */}
       <div className={cn(

@@ -47,6 +47,7 @@ const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
 const {
   WINDOW_DRAG_REGION_CSS,
+  attachEditContextMenu,
   configureApplicationMenu,
   mainWindowPlatformOptions,
 } = require('./windowChrome.cjs');
@@ -191,6 +192,9 @@ function createWindow(transitionWindow = null) {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+  attachEditContextMenu(win, Menu, {
+    isZh: app.getLocale().toLowerCase().startsWith('zh'),
   });
   configureApplicationMenu(win, Menu, {
     platform: process.platform,

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { current } from 'immer';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
@@ -36,8 +37,16 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'interrupted',
 ]);
 
-function recoverInterruptedUserRun(msg: Message): Message {
+function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
+  // A stale-active row whose loop demonstrably produced a substantive reply
+  // did complete — only its terminal runState revision was lost (the immer
+  // draft-leak fixed alongside this shipped every image-carrying row that
+  // way, including all of v0.40.0's). Branding those rows "发送失败" invites
+  // a retry of a turn that already succeeded.
+  if (msg.loopId && answeredLoopIds?.has(msg.loopId)) {
+    return { ...msg, runState: 'completed' };
+  }
   return {
     ...msg,
     runState: 'failed',
@@ -62,10 +71,27 @@ export function sanitizeImportedMessage(msg: Message): Message {
   });
 }
 
+/** A non-ghost assistant row: real text, tool activity, or thinking. Shared
+ * by the ghost filter below and the completed-run inference above it. */
+function isSubstantiveAssistant(msg: Message): boolean {
+  if (msg.role !== 'assistant') return false;
+  const text = typeof msg.content === 'string'
+    ? msg.content
+    : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
+  return text.trim().length > 0
+    || (msg.toolCalls?.length ?? 0) > 0
+    || (msg.toolCallsForContext?.length ?? 0) > 0
+    || !!msg.thinking;
+}
+
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
  * Ghost messages are empty assistant placeholders written before content arrived
  * (crash / network failure before streaming started). They must not reach the LLM. */
 export function sanitizeLoadedMessages(messages: Message[]): Message[] {
+  const answeredLoopIds = new Set<string>();
+  for (const msg of messages) {
+    if (msg.loopId && isSubstantiveAssistant(msg)) answeredLoopIds.add(msg.loopId);
+  }
   return messages
     .map((msg) => {
       const toolCalls = msg.toolCalls?.map((tc) => {
@@ -86,18 +112,9 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
         ...msg,
         isStreaming: false,
         toolCalls,
-      });
+      }, answeredLoopIds);
     })
-    .filter(msg => {
-      if (msg.role !== 'assistant') return true;
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
-      return text.trim().length > 0
-        || (msg.toolCalls?.length ?? 0) > 0
-        || (msg.toolCallsForContext?.length ?? 0) > 0
-        || !!msg.thinking;
-    });
+    .filter(msg => msg.role !== 'assistant' || isSubstantiveAssistant(msg));
 }
 
 /** Build an in-memory Conversation + Meta from a validated ShareBundle.
@@ -1275,7 +1292,14 @@ export const useChatStore = create<ChatStore>()(
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
           conv.updatedAt = Date.now();
           conv.contextCache = undefined;
-          updatedMessage = { ...message };
+          // `current`, not a spread: `message` is an immer draft, and a shallow
+          // copy keeps nested values (a multimodal `content` ARRAY) as draft
+          // proxies that are revoked the moment this producer returns. The
+          // tracked persistence below then serializes a revoked proxy —
+          // "Cannot perform 'IsArray' on a proxy that has been revoked" — so
+          // every runState revision for an image-carrying row failed to
+          // persist and the ledger showed the run stuck at `pending`.
+          updatedMessage = current(message);
         });
 
         if (!updatedMessage) return;
@@ -1330,7 +1354,11 @@ export const useChatStore = create<ChatStore>()(
               if (meta) {
                 meta.messageCount = conv.messages.length;
                 meta.updatedAt = conv.updatedAt;
-                metaToPersist = { ...meta };
+                // `current`, not a spread: same revoked-draft hazard as
+                // updateUserMessageRun above — `meta.model` is a nested object,
+                // so a shallow copy of the draft hands the async persistence a
+                // child proxy that is revoked when this producer returns.
+                metaToPersist = current(meta);
               }
             }
           }

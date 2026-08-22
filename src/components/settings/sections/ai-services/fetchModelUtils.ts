@@ -61,8 +61,8 @@ export function unionSelectAll(
  * its display label (an Ollama label carries the parameter size, a curated
  * label can differ from the raw id) — case-insensitive, whitespace-trimmed.
  * An empty/whitespace query returns the list unchanged. Generic over the
- * row shape so a curated row's extra fields (e.g. `fromFetch`) survive the
- * filter instead of being widened away to ModelInfo.
+ * row shape so a caller's own row type survives the filter instead of being
+ * widened to ModelInfo (the curated dropdown passes plain {id,label} rows).
  */
 export function filterModels<T extends { id: string; label: string }>(
   models: T[],

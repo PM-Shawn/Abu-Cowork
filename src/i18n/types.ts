@@ -1038,6 +1038,12 @@ export interface TranslationDict {
     // Model fetch status messages (ProviderCard + AddProviderModal)
     fetchModelsEmpty: string;
     fetchModelsFailed: string;
+    /** 404 — the address genuinely has no model-list endpoint. */
+    fetchModelsUnsupported: string;
+    /** 403 — endpoint exists; this key is not allowed to list models. */
+    fetchModelsForbidden: string;
+    /** 401 — key missing, invalid, or expired. */
+    fetchModelsUnauthorized: string;
     // Scoped search over a large fetched-models checklist (aggregator/gateway convergence)
     filterModelsPlaceholder: string;
     filterModelsNoResults: string;
@@ -1047,8 +1053,6 @@ export interface TranslationDict {
     modelsPickHint: string;
     selectAllModels: string;
     clearSelectedModels: string;
-    /** Tag on a curated-dropdown row that came from a live fetch, not the shipped list. */
-    modelFromFetch: string;
     // Enterprise tab label in SystemSettingsModal
     enterpriseMode: string;
   };

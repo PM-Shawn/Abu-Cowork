@@ -90,21 +90,37 @@ describe('modelFetcher', () => {
       expect(result.models.map((m) => m.id)).toEqual(['gpt-5.6-sol']);
     });
 
-    it('maps 403/404 to the "not supported, add manually" hint', async () => {
-      stubFetch(() => jsonResponse({}, false, 404));
+    it.each([
+      [404, 'unsupported'],
+      [403, 'forbidden'],
+      [401, 'unauthorized'],
+      [500, 'http'],
+    ] as const)('maps HTTP %i to errorCode %s', async (status, code) => {
+      stubFetch(() => jsonResponse({}, false, status));
 
       const result = await fetchProviderModels('https://example.com/v1', 'k', 'openai-compatible');
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('不支持自动获取');
+      expect(result.errorCode).toBe(code);
+      expect(result.status).toBe(status);
+      expect(result.error).toBe(`HTTP ${status}`);
     });
 
-    it('surfaces any other status verbatim', async () => {
-      stubFetch(() => jsonResponse({}, false, 500));
+    it('keeps 403 distinct from 404 — "key may not list" is not "endpoint absent"', async () => {
+      stubFetch(() => jsonResponse({}, false, 403));
+      const forbidden = await fetchProviderModels('https://x/v1', 'k', 'openai-compatible');
+      stubFetch(() => jsonResponse({}, false, 404));
+      const missing = await fetchProviderModels('https://x/v1', 'k', 'openai-compatible');
+
+      expect(forbidden.errorCode).not.toBe(missing.errorCode);
+    });
+
+    it('carries no user-facing prose — core returns codes, the UI translates', async () => {
+      stubFetch(() => jsonResponse({}, false, 404));
 
       const result = await fetchProviderModels('https://example.com/v1', 'k', 'openai-compatible');
 
-      expect(result.error).toBe('HTTP 500');
+      expect(result.error).not.toMatch(/[\u4e00-\u9fa5]/);
     });
 
     it('reports a thrown transport error instead of rejecting', async () => {
@@ -116,6 +132,7 @@ describe('modelFetcher', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toBe('TypeError: Failed to fetch');
+      expect(result.errorCode).toBe('transport');
     });
 
     it('treats a missing data array as an empty catalog, not a crash', async () => {

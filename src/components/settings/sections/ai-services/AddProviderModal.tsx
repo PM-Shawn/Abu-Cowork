@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-shell';
 import { useI18n } from '@/i18n';
+import type { TranslationDict } from '@/i18n/types';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,8 +29,28 @@ import {
   fetchOllamaModels,
   formatOllamaModelLabel,
 } from '@/core/llm/ollama';
-import { fetchProviderModels } from '@/core/llm/modelFetcher';
+import { fetchProviderModels, type FetchModelsResult } from '@/core/llm/modelFetcher';
 import { SECRET_KEYS } from '@/utils/secretStore';
+
+/**
+ * Turn a failed fetch into something the user can act on.
+ *
+ * These used to collapse into one line claiming the provider "doesn't support
+ * model listing", which is only true for 404. A 403 means the endpoint is
+ * there and this key just isn't allowed to list — telling that user to give
+ * up and type ids by hand hides the fact that another config method (or
+ * another key) would work. The status is appended so a screenshot is enough
+ * to diagnose a report.
+ */
+function describeFetchFailure(result: FetchModelsResult, t: TranslationDict): string {
+  const suffix = result.status ? `（HTTP ${result.status}）` : '';
+  switch (result.errorCode) {
+    case 'unsupported': return t.settings.fetchModelsUnsupported + suffix;
+    case 'forbidden': return t.settings.fetchModelsForbidden + suffix;
+    case 'unauthorized': return t.settings.fetchModelsUnauthorized + suffix;
+    default: return result.error ?? t.settings.fetchModelsFailed;
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -219,22 +240,34 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const modelPanelRef = useRef<HTMLDivElement>(null);
   const [modelPanelStyle, setModelPanelStyle] = useState<CSSProperties | null>(null);
-  // Position the fixed panel under the trigger. Unlike the provider dropdown
-  // above, the model panel ALWAYS opens downward (never flips up): the model
-  // field is the last field in the modal, and a flip-up panel covered the
-  // whole modal, which looked wrong. Instead we cap the height to the space
-  // below the trigger and let the panel scroll internally, so it drops down
-  // over the footer / toward the viewport bottom without overflowing off-screen.
+  // Position the fixed panel relative to the trigger. This panel prefers to
+  // open DOWNWARD even when the space is tight — the model field is the last
+  // field in the modal, and an unbounded flip-up panel covered the whole modal,
+  // which looked wrong.
+  //
+  // It flips up only when downward space cannot host a usable list, and even
+  // then it is capped so it still cannot blanket the modal. The narrow escape
+  // hatch exists because the panel is no longer just a list: it grew a
+  // search + selection-count header, and "cap to whatever is below" then left
+  // roughly one visible row when the trigger sat low in the modal.
   const computeModelPanel = useCallback(() => {
     const el = modelDropdownRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     const gap = 4, margin = 12;
+    // Header + one row + the add-model row: below this the panel is unusable.
+    const MIN_USABLE = 240;
+    // Bounded so a flipped panel never covers the modal top-to-bottom.
+    const FLIP_MAX = 320;
     const spaceBelow = window.innerHeight - r.bottom - margin;
-    const maxHeight = Math.max(120, Math.floor(spaceBelow));
+    const spaceAbove = r.top - margin;
+    const openUp = spaceBelow < MIN_USABLE && spaceAbove > spaceBelow;
+    const maxHeight = openUp
+      ? Math.min(FLIP_MAX, Math.floor(spaceAbove))
+      : Math.max(120, Math.floor(spaceBelow));
     setModelPanelStyle({
       position: 'fixed', left: r.left, width: r.width, maxHeight, zIndex: 10000,
-      top: r.bottom + gap,
+      ...(openUp ? { bottom: window.innerHeight - r.top + gap } : { top: r.bottom + gap }),
     });
   }, []);
   const toggleModelDropdown = useCallback(() => {
@@ -300,6 +333,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     [providerPlans, selectedPlanId],
   );
   const effectiveFormat: ApiFormat = activePlan?.format ?? selectedOption?.format ?? 'openai-compatible';
+  const supportsModelListForSelection = (() => {
+    if (!selectedOption) return true;
+    if (activePlan?.supportsModelList !== undefined) return activePlan.supportsModelList;
+    return PROVIDER_CONFIGS[selectedOption.provider]?.supportsModelList !== false;
+  })();
   // Built-in cloud providers ship a curated model list and a fixed endpoint, so
   // their API-address field is shown read-only (§4.3) and they skip the
   // fetch/add-model affordances (those are only for custom endpoints and local
@@ -310,6 +348,12 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // custom endpoint (fetch from /models + manual add), so they use the checklist
   // flow, not the curated multi-select dropdown.
   const usesFetchedModels = selectedOption?.provider === 'openrouter' || selectedOption?.provider === 'siliconflow';
+  // Some endpoints simply have no /models route (Volcengine Ark's subscription
+  // hosts answer 404 — its model listing lives on a separate AK/SK-signed
+  // control-plane API). Offering a fetch button there is a guaranteed dead end,
+  // so the config declares it and the button disappears. Declared per BILLING
+  // TIER first: a vendor's tiers are separate hosts with separate credentials,
+  // so one can serve the endpoint while another doesn't.
   const isBuiltinCurated = isBuiltinCloud && !usesFetchedModels;
   const hasPlanRow = !!(providerPlans && providerPlans.length > 1);
 
@@ -326,13 +370,15 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   //   1. the curated options (hand-maintained: real labels + vendor ordering),
   //   2. anything a live fetch returned that the curated list doesn't have —
   //      this is what keeps a shipped-static list from going stale between
-  //      releases; flagged so the row can say where it came from,
+  //      releases. Ordered after the curated rows but NOT visually marked:
+  //      where a model id came from is our plumbing, not something the user
+  //      picking a model has any use for,
   //   3. ids the user typed via "使用其他模型" that neither tier covers.
-  const builtinModelList = useMemo<{ id: string; label: string; fromFetch?: boolean }[]>(() => {
+  const builtinModelList = useMemo<{ id: string; label: string }[]>(() => {
     const curatedIds = new Set(builtinModelOptions.map((m) => m.id));
     const fetchedExtra = fetchedModels
       .filter((m) => !curatedIds.has(m.id))
-      .map((m) => ({ id: m.id, label: m.label, fromFetch: true }));
+      .map((m) => ({ id: m.id, label: m.label }));
     const listed = new Set([...curatedIds, ...fetchedExtra.map((m) => m.id)]);
     const manualExtra = [...selectedModels]
       .filter((id) => !listed.has(id))
@@ -703,7 +749,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       setFetchModelsError(t.settings.fetchModelsEmpty);
     } else {
       setFetchModelsStatus('error');
-      setFetchModelsError(result.error ?? t.settings.fetchModelsFailed);
+      setFetchModelsError(describeFetchFailure(result, t));
     }
   }, [baseUrl, apiKey, effectiveFormat, isLMStudio, isBuiltinCurated, computeModelPanel, t, showAdvanced, seedDeclaredDefaults]);
 
@@ -1372,7 +1418,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                     user reaches a model we haven't shipped yet. The anthropic
                     format is no longer excluded — modelFetcher routes it
                     through the Anthropic Models API. */}
-                {!isOllama && baseUrl.trim() && (
+                {!isOllama && supportsModelListForSelection && baseUrl.trim() && (
                   <button
                     type="button"
                     onClick={handleFetchModels}
@@ -1525,11 +1571,6 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                                       className="w-full px-3 py-2 flex items-center gap-2.5 text-body hover:bg-[var(--abu-bg-hover)] transition-colors"
                                     >
                                       <span className={cn('flex-1 text-left truncate', checked ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-primary)]')}>{model.label}</span>
-                                      {model.fromFetch && (
-                                        <span className="shrink-0 text-caption text-[var(--abu-text-tertiary)]">
-                                          {t.settings.modelFromFetch}
-                                        </span>
-                                      )}
                                       {checked && <Check className="h-4 w-4 text-[var(--abu-clay)] shrink-0" />}
                                     </button>
                                   );
@@ -1540,7 +1581,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                         })()}
                         {/* Add a model id the curated list doesn't have — a
                             "使用其他模型" menu row by default that reveals the
-                            model-id input on click, collapsing back after add. */}
+                            model-id input on click, collapsing back after add.
+                            Stays pinned: in a long merged list an escape hatch
+                            parked after the last row is unfindable. The panel
+                            earns the room by flipping up when space is short
+                            (see computeModelPanel), not by unpinning this. */}
                         <div className="shrink-0 border-t border-[var(--abu-border)]">
                           {showCuratedAddInput ? (
                             <div className="flex items-center gap-1.5 p-2">

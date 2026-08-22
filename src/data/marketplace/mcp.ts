@@ -275,11 +275,13 @@ export const modelPresets: ModelPreset[] = [
   },
   {
     id: 'volcengine-doubao-seed',
-    name: 'Doubao Seed 2.0 Pro',
+    name: 'Doubao Seed 2.1 Turbo',
     provider: 'volcengine',
     // Agent Plan is the default multi-endpoint config for volcengine, OpenAI-compatible (see PROVIDER_CONFIGS).
     apiFormat: 'openai-compatible',
-    model: 'doubao-seed-2.0-pro',
+    // Seed 2.0 Pro is retired and no longer served on this tier; this is the
+    // current Doubao entry on the plan's published model list.
+    model: 'doubao-seed-2.1-turbo',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
     description: '豆包旗舰模型，字节跳动出品',
     descriptionEn: 'Doubao flagship model by ByteDance',

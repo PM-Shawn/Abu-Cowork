@@ -752,13 +752,50 @@ describe('AddProviderModal — curated provider fetch', () => {
     expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
   });
 
-  it('merges fetched-only ids into the curated dropdown, tagged as coming from the API', async () => {
+  it('merges fetched-only ids into the curated dropdown', async () => {
     await renderAndFetch();
 
     // The dropdown opens itself on success — no second click needed.
     expect(await screen.findByText('deepseek-v5-preview')).toBeInTheDocument();
-    // Exactly the ids the shipped list lacks carry the tag; curated rows don't.
-    expect(screen.getAllByText('from API')).toHaveLength(FETCHED_ONLY.length);
+    for (const id of FETCHED_ONLY) {
+      expect(screen.getByText(id)).toBeInTheDocument();
+    }
+  });
+
+  it('does not label where a row came from — provenance is plumbing, not UI', async () => {
+    await renderAndFetch();
+    await screen.findByText('deepseek-v5-preview');
+
+    expect(screen.queryByText('from API')).not.toBeInTheDocument();
+    expect(screen.queryByText('来自接口')).not.toBeInTheDocument();
+  });
+
+  /** A saved provider on one of Volcengine's three tiers (matched by baseUrl). */
+  function arkOnTier(baseUrl: string): ProviderInstance {
+    return { ...curatedProvider, id: 'volcengine', name: '火山引擎', baseUrl, models: [] };
+  }
+
+  it.each([
+    ['Agent Plan (measured: empty-bodied 404)', 'https://ark.cn-beijing.volces.com/api/plan/v3'],
+    ['Coding Plan (same subscription host family)', 'https://ark.cn-beijing.volces.com/api/coding/v3'],
+  ])('hides the fetch button on Volcengine %s', (_label, baseUrl) => {
+    const ark = arkOnTier(baseUrl);
+    useSettingsStore.setState({ providers: [ark], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={ark} onClose={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: /fetch models/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the fetch button on Volcengine pay-as-you-go — a different, unmeasured host', () => {
+    // The per-tier flag exists precisely so one measured tier does not silently
+    // disable a sibling that was never tested.
+    const ark = arkOnTier('https://ark.cn-beijing.volces.com/api/v3');
+    useSettingsStore.setState({ providers: [ark], failedSecretKeys: [] });
+
+    render(<AddProviderModal open={true} editProvider={ark} onClose={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: /fetch models/i })).toBeInTheDocument();
   });
 
   it('pre-checks nothing it fetched — only the provider\'s saved model stays selected', async () => {

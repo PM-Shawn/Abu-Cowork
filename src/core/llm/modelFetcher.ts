@@ -4,10 +4,28 @@ import { getTauriFetch } from './tauriFetch';
 import { normalizeBaseUrl, resolveOpenAIBaseUrl } from './urlUtils';
 import { deriveUiCaps } from './modelCapabilities';
 
+/**
+ * Why a fetch failed, in terms the UI can translate. Kept as a code rather
+ * than prose because the distinction matters to the user: these three used to
+ * collapse into one "this provider doesn't support model listing", which is
+ * only true for 404. A 403 means the endpoint is there and this key simply
+ * isn't allowed to list — telling that user to give up and type ids by hand
+ * hides the fact that another key or config method would work.
+ */
+export type FetchModelsErrorCode =
+  | 'unsupported'    // 404 — no model-list endpoint at this address
+  | 'forbidden'      // 403 — endpoint exists, this key may not list models
+  | 'unauthorized'   // 401 — key missing / invalid / expired
+  | 'http'           // any other non-OK status
+  | 'transport';     // request never completed
+
 export interface FetchModelsResult {
   success: boolean;
   models: ModelInfo[];
+  /** Diagnostic detail (status line or raw error). Not user-facing prose. */
   error?: string;
+  errorCode?: FetchModelsErrorCode;
+  status?: number;
 }
 
 /** Everything a fetcher needs to build its request. */
@@ -54,11 +72,14 @@ export function isChatModelId(id: string): boolean {
   return !EXCLUDE_PATTERNS.some((p) => lower.includes(p));
 }
 
-/** Shared HTTP-status → user-facing message mapping. */
-function messageForStatus(status: number): string {
-  return status === 403 || status === 404
-    ? '该供应商不支持自动获取模型列表，请手动填写模型 ID'
-    : `HTTP ${status}`;
+/** Shared non-OK-status → typed failure mapping. */
+function failureForStatus(status: number): FetchModelsResult {
+  const errorCode: FetchModelsErrorCode =
+    status === 404 ? 'unsupported'
+    : status === 403 ? 'forbidden'
+    : status === 401 ? 'unauthorized'
+    : 'http';
+  return { success: false, models: [], error: `HTTP ${status}`, errorCode, status };
 }
 
 function toModelInfos(ids: { id: string; label?: string }[]): ModelInfo[] {
@@ -88,9 +109,7 @@ const anthropicFetcher: ModelFetcher = {
     if (ctx.apiKey) headers['x-api-key'] = ctx.apiKey;
 
     const resp = await fetchFn(`${base}/v1/models?limit=1000`, { method: 'GET', headers });
-    if (!resp.ok) {
-      return { success: false, models: [], error: messageForStatus(resp.status) };
-    }
+    if (!resp.ok) return failureForStatus(resp.status);
 
     const data = await resp.json() as { data?: { id: string; display_name?: string }[] };
     const models = toModelInfos(
@@ -115,9 +134,7 @@ const openAICompatibleFetcher: ModelFetcher = {
     if (ctx.apiKey) headers['Authorization'] = `Bearer ${ctx.apiKey}`;
 
     const resp = await fetchFn(`${resolvedBase}/models`, { method: 'GET', headers });
-    if (!resp.ok) {
-      return { success: false, models: [], error: messageForStatus(resp.status) };
-    }
+    if (!resp.ok) return failureForStatus(resp.status);
 
     const data = await resp.json() as { data?: { id: string }[] };
     const models = toModelInfos(data.data ?? []);
@@ -144,6 +161,6 @@ export async function fetchProviderModels(
     return await fetcher.fetch(ctx, fetchFn);
   } catch (e) {
     const raw = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    return { success: false, models: [], error: raw };
+    return { success: false, models: [], error: raw, errorCode: 'transport' };
   }
 }

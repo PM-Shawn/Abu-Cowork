@@ -1012,6 +1012,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
 
   return createPortal(
     <div
+      data-electron-no-drag
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50"
       onMouseDown={(e) => { e.stopPropagation(); }}
     >

@@ -143,7 +143,7 @@ export default function SensitiveAuditDialog() {
     // accidentally clicking outside would silently skip the audit and the
     // user wouldn't see the dialog again. Force them to read and click a
     // button. Same reasoning for not handling ESC.
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150">
+    <div data-electron-no-drag className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150">
       <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-[480px] max-h-[80vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="px-6 pt-6 pb-3 border-b border-[var(--abu-bg-muted)]">
           <div className="flex items-center gap-2 mb-2">

@@ -26,6 +26,18 @@
   -webkit-app-region: no-drag !important;
 }
 
+/* Every layer that paints ABOVE the window chrome must carve itself out of the
+   drag lanes. `-webkit-app-region` is an OS-level geometry union that ignores
+   z-index: a drag lane underneath an overlay keeps swallowing its clicks
+   (Windows turns them into window moves), so a modal whose close button lands
+   in the top chrome band is simply dead. Overlays we author declare
+   `data-electron-no-drag` on their root; these selectors cover the layers that
+   escape the React tree into `document.body`, where no ancestor can mark them. */
+[data-radix-popper-content-wrapper],
+[data-radix-popper-content-wrapper] * {
+  -webkit-app-region: no-drag !important;
+}
+
 @layer base {
   html, body, #root {
     height: 100%;

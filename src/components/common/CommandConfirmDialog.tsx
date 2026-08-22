@@ -111,7 +111,7 @@ export default function CommandConfirmDialog({
   }, [handleKeyDown]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="w-full max-w-md mx-4 bg-[var(--abu-bg-base)] rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
         {/* Header */}
         <div className="relative px-6 pt-6 pb-4 shrink-0">

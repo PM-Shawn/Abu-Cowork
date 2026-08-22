@@ -112,7 +112,15 @@ const virtuosoComponents: Components<Message[], MessageListContext> = {
   Footer: VirtuosoTypingFooter,
 };
 
-export default function ChatView() {
+interface ChatViewProps {
+  windowsWorkspaceHeader?: boolean;
+  rightPanelToggleVisible?: boolean;
+}
+
+export default function ChatView({
+  windowsWorkspaceHeader = false,
+  rightPanelToggleVisible = false,
+}: ChatViewProps) {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
@@ -575,12 +583,16 @@ export default function ChatView() {
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
       {/* Conversation title header — flush at card top (TRAE-style header row).
-          Extra left padding clears the traffic lights when the sidebar is collapsed on macOS. */}
+          The divider separates navigation context from the conversation body;
+          platform overlays receive only the padding needed by existing controls. */}
       <div {...windowDragRowProps()} className={cn(
         'shrink-0 flex items-center h-11 px-4',
-        // When the sidebar is collapsed the title-bar toolbar (sidebar toggle + search +
-        // new task) floats over the top-left of this card — indent the title to clear them.
+        windowsWorkspaceHeader && 'border-b border-[var(--abu-border)]',
+        // Collapsed platform controls float over the card's top-left; indent
+        // the title to clear the controls present on that platform.
         sidebarCollapsed && isMacOS() && 'pl-48',
+        sidebarCollapsed && windowsWorkspaceHeader && 'pl-20',
+        rightPanelToggleVisible && windowsWorkspaceHeader && 'pr-12',
       )}>
         {isRenamingTitle ? (
           <Input

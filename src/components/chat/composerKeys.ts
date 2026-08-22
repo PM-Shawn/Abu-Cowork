@@ -56,3 +56,57 @@ export function insertNewlineAtCursor(textarea: HTMLTextAreaElement): string {
   textarea.selectionEnd = start + 1;
   return textarea.value;
 }
+
+/**
+ * What a bare Enter does in the composer. Persisted in settingsStore.
+ *
+ *  - 'enter'   — Enter sends. Shift/Alt+Enter insert a newline. The app's
+ *                original and default behavior.
+ *  - 'newline' — Enter inserts a newline; ⌘ (Mac) / Ctrl (Windows) + Enter
+ *                sends. For users whose IME eats Shift+Enter — notably
+ *                Chinese IMEs on Windows, where Shift toggles 中/英 and the
+ *                app may never see the modifier at all.
+ */
+export type ComposerEnterBehavior = 'enter' | 'newline';
+
+/**
+ * How ChatInput should treat an Enter keydown.
+ *
+ *  - 'send'    — take the message; the caller must preventDefault.
+ *  - 'insert'  — we insert the newline ourselves (Alt+Enter is not a native
+ *                editing command); the caller must preventDefault.
+ *  - 'native'  — do nothing at all. A textarea already inserts a newline for
+ *                Enter and Shift+Enter, and letting it do so keeps the
+ *                browser's own caret handling and undo stack intact.
+ */
+export type EnterAction = 'send' | 'insert' | 'native';
+
+/**
+ * Resolve one Enter keydown against the user's chosen behavior.
+ *
+ * Kept pure — no refs, no platform lookup, no store — so every combination of
+ * modifier × behavior × platform is unit-testable without mounting anything.
+ * The caller supplies `isMac` because `platform.ts` needs async init and
+ * returns false before it completes.
+ *
+ * Note both modes send on ⌘/Ctrl+Enter. Under 'enter' that preserves what the
+ * composer already did (the old guard excluded only Shift and Alt), and under
+ * 'newline' it is the only way to send.
+ *
+ * The send modifier only counts when held ALONE. Without that, ⌘+⌥+Enter and
+ * ⌘+Shift+Enter — combinations a user reaches while breaking a line, often
+ * still holding ⌘ out of habit — would fire a half-written message instead of
+ * inserting the newline they did before this function existed. ChatGPT's
+ * desktop composer guards the same case the same way.
+ */
+export function resolveEnterAction(
+  e: Pick<React.KeyboardEvent, 'shiftKey' | 'altKey' | 'metaKey' | 'ctrlKey'>,
+  opts: { behavior: ComposerEnterBehavior; isMac: boolean },
+): EnterAction {
+  const sendModifier = opts.isMac ? e.metaKey : e.ctrlKey;
+  const otherModifier = e.altKey || e.shiftKey || (opts.isMac ? e.ctrlKey : e.metaKey);
+  if (sendModifier && !otherModifier) return 'send';
+  if (e.altKey) return 'insert';
+  if (e.shiftKey) return 'native';
+  return opts.behavior === 'enter' ? 'send' : 'native';
+}

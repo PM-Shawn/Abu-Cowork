@@ -153,6 +153,7 @@ export interface TranslationDict {
     undo: string;
     importSession: string;
     renameConversation: string;
+    moreActions: string;
     viewScheduledTask: string;
     archiveRun: string;
     triggered: string;

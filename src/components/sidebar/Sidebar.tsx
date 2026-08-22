@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft } from 'lucide-react';
+import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -245,6 +245,19 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
     e.stopPropagation();
     // Initial position — useLayoutEffect below fine-tunes after measuring real size.
     setContextMenu({ x: e.clientX, y: e.clientY, convId });
+  };
+
+  // Claude-style "⋯" trigger: same menu as right-click, anchored under the button.
+  const handleMenuButton = (e: React.MouseEvent<HTMLButtonElement>, convId: string) => {
+    e.stopPropagation();
+    if (contextMenu?.convId === convId) {
+      setContextMenu(null);
+      setShowMoveSubmenu(false);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    setShowMoveSubmenu(false);
+    setContextMenu({ x: rect.left, y: rect.bottom + 4, convId });
   };
 
   const handleExport = async (convId: string) => {
@@ -503,10 +516,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 <Button
                   variant="ghost"
                   size="icon"
-                  onClick={(e) => handleDeleteConversation(e, conv.id)}
-                  className="h-5 w-5 opacity-0 group-hover:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-danger)] hover:bg-transparent shrink-0"
+                  onClick={(e) => handleMenuButton(e, conv.id)}
+                  className={cn(
+                    'h-5 w-5 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-transparent shrink-0',
+                    contextMenu?.convId === conv.id && 'opacity-100 text-[var(--abu-text-primary)]'
+                  )}
+                  title={t.sidebar.moreActions}
+                  aria-label={t.sidebar.moreActions}
+                  aria-haspopup="menu"
+                  aria-expanded={contextMenu?.convId === conv.id}
                 >
-                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  <MoreHorizontal className="h-3.5 w-3.5" strokeWidth={1.5} />
                 </Button>
               </div>
               );

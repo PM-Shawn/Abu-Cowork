@@ -16,6 +16,7 @@ import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
 import { computeRewindImpact } from '@/utils/rewindImpact';
+import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import abuAvatar from '@/assets/abu-avatar.png';
 
@@ -460,7 +461,7 @@ export default function MessageBubble({
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
     // Preserve image blocks from original message content
-    const originalImages = getImageBlocks(message.content);
+    const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
     const proceed = async () => {
@@ -470,13 +471,7 @@ export default function MessageBubble({
       // edited resend stays on the same agent / skill — otherwise the message
       // falls back to the default `general` route and the expert is lost.
       const routedContent = reattachRoutingPrefix(newContent, message);
-      // Regenerate response, passing original images if any
-      const imageAttachments = originalImages.map((img, i) => ({
-        id: `edit-${Date.now()}-${i}`,
-        data: img.source.data,
-        mediaType: img.source.media_type,
-      }));
-      await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+      await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
     };
 
     // `message` is a user message and, per the invariant documented on
@@ -494,12 +489,7 @@ export default function MessageBubble({
 
   const handleRunRetry = async () => {
     if (!convId || !activeConv || message.role !== 'user') return;
-    const originalImages = getImageBlocks(message.content);
-    const imageAttachments = originalImages.map((img, i) => ({
-      id: `run-retry-${Date.now()}-${i}`,
-      data: img.source.data,
-      mediaType: img.source.media_type,
-    }));
+    const imageAttachments = rebuildImageAttachments(message.content, `run-retry-${Date.now()}`);
     const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
     // Rewind semantics (plan stage 3): truncate from the retried turn's FIRST
     // message. `message` is itself that first message when it belongs to a
@@ -517,7 +507,7 @@ export default function MessageBubble({
       await runAgentLoopDispatched(
         convId,
         routedContent,
-        imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+        imageAttachments ? { images: imageAttachments } : undefined,
       );
     };
 
@@ -567,17 +557,12 @@ export default function MessageBubble({
       // post-routing cleanInput, so the prefix is otherwise lost.
       const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
       // Preserve image blocks from original user message
-      const originalImages = getImageBlocks(targetUserMsg.content);
-      const imageAttachments = originalImages.map((img, i) => ({
-        id: `regen-${Date.now()}-${i}`,
-        data: img.source.data,
-        mediaType: img.source.media_type,
-      }));
+      const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
-        await runAgentLoopDispatched(convId, routedContent, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+        await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);

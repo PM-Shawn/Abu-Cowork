@@ -8,7 +8,7 @@ const DARK_CHROME = {
   backgroundColor: '#121110',
   symbolColor: '#f0ede8',
 };
-const WINDOWS_TOOLBAR_HEIGHT = 36;
+const WINDOWS_TOOLBAR_HEIGHT = 30;
 // The renderer owns the complete visual title-bar plane. Keeping Electron's
 // Window Controls Overlay background transparent lets theme colors and every
 // full-window scrim flow underneath the native caption buttons automatically.

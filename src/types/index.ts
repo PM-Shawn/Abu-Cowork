@@ -374,18 +374,20 @@ export interface Conversation {
   projectId?: string;  // If set, this conversation belongs to a project
   contextCache?: ContextCache;  // Ephemeral compression cache (not persisted)
   // Ephemeral context usage state — NOT persisted (excluded by JSONL writer + chatStore partialize).
-  // Published by agentLoop each turn from post-compression tokens. ContextIndicator
-  // derives the live water-level from this baseline + estimateMessageTokens(messages),
-  // so streaming output and post-restart history view both stay accurate without
-  // waiting for the next agent-loop iteration.
+  // Published by agentLoop each turn from POST-compression tokens: the size of the
+  // payload actually sent, not of the raw history kept for the UI. This is the single
+  // source of truth for the water level — ContextIndicator only adds an incremental
+  // estimate for messages appended AFTER `messageCountAtPublish`, so streaming output
+  // stays live without re-counting (and thus un-compressing) the whole conversation.
   contextUsage?: {
-    percent: number;      // 0–100+; round(tokensUsed / contextWindow * 100)
-    tokensUsed: number;   // post-compression input tokens (system + tools + messages snapshot)
+    percent: number;      // 0–100, clamped; round(tokensUsed / contextWindow * 100)
+    tokensUsed: number;   // post-compression input tokens (system + tools + compressed message payload)
     tokensMax: number;    // contextWindow (NOT contextWindow - reservedOutput — users expect the published model window)
-    // System prompt + tool schema overhead. Stored so the indicator can compute
-    // live = overhead + estimateMessageTokens(messagesNow) without a second
-    // agent-loop pass. Empirically ~7-8k for Abu; absent on first-open (use fallback).
-    overhead?: number;
+    // How many of the conversation's messages `tokensUsed` accounts for. The
+    // indicator estimates only `messages.slice(messageCountAtPublish)` on top,
+    // which is what keeps a compacted conversation from being double-counted.
+    // Absent only on a payload from an older publish — treated as "no tail".
+    messageCountAtPublish?: number;
   };
   isCompressing?: boolean;  // True while compressContextIfNeeded is awaiting LLM
   /**

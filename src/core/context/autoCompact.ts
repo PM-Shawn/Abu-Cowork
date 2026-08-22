@@ -41,11 +41,22 @@ export function calculateWarningLevel(currentTokens: number, maxInputTokens: num
 }
 
 /**
- * Get the usage percentage for display purposes.
+ * Get the raw usage percentage. Unclamped on purpose — the compaction and
+ * truncation paths need to see how far PAST the budget a payload is.
  */
 export function getUsagePercent(currentTokens: number, maxInputTokens: number): number {
   if (maxInputTokens <= 0) return 0;
   return Math.round((currentTokens / maxInputTokens) * 100);
+}
+
+/**
+ * Usage percentage for anything a user reads. Clamped to 0–100 so an estimate
+ * that runs over the window can never surface as "108% used": the request the
+ * agent loop actually sends is guaranteed to fit by `enforceContextBudget`, so
+ * a >100% reading is always a measurement artifact, never a real overflow.
+ */
+export function getDisplayPercent(currentTokens: number, maxInputTokens: number): number {
+  return Math.min(100, Math.max(0, getUsagePercent(currentTokens, maxInputTokens)));
 }
 
 /**

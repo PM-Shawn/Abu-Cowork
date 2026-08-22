@@ -43,7 +43,7 @@ import {
   createCompactBoundaryMarker,
 } from '../context/compactBoundary';
 import { applyMicroCompaction } from '../context/microCompactor';
-import { AutoCompactTracker, getUsagePercent } from '../context/autoCompact';
+import { AutoCompactTracker, getUsagePercent, getDisplayPercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
@@ -1599,15 +1599,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // window (e.g. 200k for Claude / mimo-v2.5-pro), which is the mental
       // model users have. The maxInputTokens budget (contextWindow - output
       // reservation) is an internal compression-trigger detail.
-      // overhead = system prompt + tool schema tokens. Published so the indicator
-      // can compute live = overhead + estimateMessageTokens(messagesNow) without
-      // waiting for the next loop iteration (fixes streaming + post-restart UX).
-      const systemAndToolsOverhead = estimateTokens(effectiveSystemPrompt) + toolTokens;
+      // messageCountAtPublish anchors this snapshot to a position in the
+      // conversation: `tokensUsed` accounts for messages[0 .. historyMessages.length-1]
+      // AS COMPRESSED. The indicator estimates only the messages after that index
+      // (the assistant reply currently streaming), so it stays live without
+      // re-counting — and thereby un-compressing — the history behind the anchor.
       chatDelta.setContextUsage(conversationId, {
-        percent: getUsagePercent(postCompressionTokens, contextWindowSize),
+        percent: getDisplayPercent(postCompressionTokens, contextWindowSize),
         tokensUsed: postCompressionTokens,
         tokensMax: contextWindowSize,
-        overhead: systemAndToolsOverhead,
+        messageCountAtPublish: historyMessages.length,
       });
 
       // Step 2.1: Persistent compaction (long-conversation Part A). When the

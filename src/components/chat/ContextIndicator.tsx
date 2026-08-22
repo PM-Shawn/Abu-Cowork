@@ -4,7 +4,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore, getEffectiveModel } from '@/stores/settingsStore';
-import { calculateWarningLevel } from '@/core/context/autoCompact';
+import { calculateWarningLevel, getDisplayPercent } from '@/core/context/autoCompact';
 import { estimateMessageTokens } from '@/core/context/tokenEstimator';
 import { resolveEffectiveContextWindow } from '@/core/llm/modelCapabilities';
 import { cn } from '@/lib/utils';
@@ -15,10 +15,10 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const VIEWBOX = '0 0 22 22';
 const CENTER = 11;
 
-// Fallback when agentLoop hasn't published `overhead` yet (first turn of a fresh
-// conversation, or right after app restart for a history conversation). Picked to
-// underestimate rather than overestimate — better to slightly understate the water
-// level than to scare the user with a false-positive warning.
+// Fallback overhead for the only case with no published usage at all: a
+// conversation reopened from history that hasn't run a turn since app start.
+// Picked to underestimate rather than overestimate — better to slightly
+// understate the water level than to scare the user with a false positive.
 const FALLBACK_OVERHEAD_TOKENS = 5000;
 
 function formatK(n: number): string {
@@ -43,31 +43,46 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const userContextWindow = useSettingsStore((s) => s.contextWindowSize);
   const activeModelId = useSettingsStore(getEffectiveModel);
 
-  // Live derive: overhead (from agentLoop's last publish, or fallback) + current
-  // message-tokens. This keeps the ring in sync with streaming output and with
-  // history-conversation reopens, where the published `contextUsage` is stale or
-  // absent but `messages` is authoritative.
-  // For the denominator we trust the published `tokensMax` first (agentLoop already
-  // clamps to the model's real cap); otherwise resolve it locally so the indicator
-  // never overstates capacity (e.g. 200k user-setting on a 128k mimo model).
-  const derivedUsage = useMemo(() => {
-    if (!messages || messages.length === 0) return null;
-    const overhead = publishedUsage?.overhead ?? FALLBACK_OVERHEAD_TOKENS;
-    const tokensUsed = overhead + estimateMessageTokens(messages);
-    const tokensMax = publishedUsage?.tokensMax
-      ?? resolveEffectiveContextWindow(activeModelId, userContextWindow);
-    const percent = tokensMax > 0 ? Math.round((tokensUsed / tokensMax) * 100) : 0;
-    return { percent, tokensUsed, tokensMax };
-  }, [messages, publishedUsage?.overhead, publishedUsage?.tokensMax, userContextWindow, activeModelId]);
-
-  const usage = derivedUsage ?? publishedUsage;
+  // agentLoop's published snapshot is the truth: it measures the payload actually
+  // sent, so it already reflects compaction, micro-compaction and the hard budget
+  // gate. On top of it we estimate ONLY the messages appended since the publish
+  // anchor — the assistant reply currently streaming — which keeps the ring live.
+  //
+  // Re-counting `messages` wholesale (the previous behaviour) silently undid every
+  // compression the loop had applied, so a long conversation climbed past its own
+  // window and rendered "108% 已用" while the real request fit comfortably.
+  //
+  // Only when nothing has been published at all — a history conversation reopened
+  // after restart — do we fall back to counting the raw history, since there is no
+  // better number available and a blank ring is worse than a rough one.
+  const usage = useMemo(() => {
+    if (publishedUsage) {
+      const anchor = publishedUsage.messageCountAtPublish;
+      // `messages.length < anchor` means history shrank under us (revert / delete).
+      // Add nothing rather than guess; the next turn republishes an exact anchor.
+      const tail = typeof anchor === 'number' && messages && messages.length > anchor
+        ? messages.slice(anchor)
+        : [];
+      const tokensUsed = publishedUsage.tokensUsed
+        + (tail.length > 0 ? estimateMessageTokens(tail) : 0);
+      const tokensMax = publishedUsage.tokensMax;
+      return { percent: getDisplayPercent(tokensUsed, tokensMax), tokensUsed, tokensMax };
+    }
+    if (!messages || messages.length === 0) return undefined;
+    // Resolve the denominator locally so the indicator never overstates capacity
+    // (e.g. a 200k user setting on a 128k mimo model).
+    const tokensUsed = FALLBACK_OVERHEAD_TOKENS + estimateMessageTokens(messages);
+    const tokensMax = resolveEffectiveContextWindow(activeModelId, userContextWindow);
+    return { percent: getDisplayPercent(tokensUsed, tokensMax), tokensUsed, tokensMax };
+  }, [messages, publishedUsage, userContextWindow, activeModelId]);
 
   const level: 0 | 1 | 2 | 3 = usage
     ? calculateWarningLevel(usage.tokensUsed, usage.tokensMax)
     : 0;
 
+  // `usage.percent` is already clamped to 0–100 by getDisplayPercent.
   const dashOffset = usage
-    ? RING_CIRCUMFERENCE * (1 - Math.min(usage.percent, 100) / 100)
+    ? RING_CIRCUMFERENCE * (1 - usage.percent / 100)
     : RING_CIRCUMFERENCE;
 
   const tooltipText = isCompressing

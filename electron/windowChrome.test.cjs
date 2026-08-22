@@ -14,7 +14,29 @@ const {
   mainWindowPlatformOptions,
   popupWindowsMenu,
   syncMainWindowChromeTheme,
+  attachEditContextMenu,
 } = require('./windowChrome.cjs');
+
+/** Fake win/Menu pair capturing the context-menu handler and built templates. */
+function contextMenuHarness() {
+  const handlers = {};
+  const built = [];
+  const popups = [];
+  const win = {
+    webContents: {
+      on: (event, handler) => {
+        handlers[event] = handler;
+      },
+    },
+  };
+  const Menu = {
+    buildFromTemplate: (template) => {
+      built.push(template);
+      return { popup: (opts) => popups.push(opts) };
+    },
+  };
+  return { win, Menu, handlers, built, popups };
+}
 
 test('Windows overlays native caption buttons and removes the second menu-bar row', () => {
   assert.deepEqual(mainWindowPlatformOptions('win32', false), {
@@ -188,4 +210,47 @@ test('portaled popper layers subtract themselves from the drag lanes', () => {
     WINDOW_DRAG_REGION_CSS,
     /\[data-radix-popper-content-wrapper\],\[data-radix-popper-content-wrapper\] \*\{-webkit-app-region:no-drag\}/,
   );
+});
+
+test('edit context menu: editable fields get cut/copy/paste/select-all with editFlags-driven enabling', () => {
+  const { win, Menu, handlers, built, popups } = contextMenuHarness();
+  attachEditContextMenu(win, Menu, { isZh: true });
+  handlers['context-menu'](null, {
+    isEditable: true,
+    selectionText: '',
+    editFlags: { canCut: false, canCopy: false, canPaste: true, canSelectAll: true },
+  });
+  assert.equal(built.length, 1);
+  assert.deepEqual(
+    built[0].map((item) => item.role ?? item.type),
+    ['cut', 'copy', 'paste', 'separator', 'selectAll'],
+  );
+  assert.deepEqual(
+    built[0].filter((item) => item.role).map((item) => item.enabled),
+    [false, false, true, true],
+  );
+  assert.equal(built[0][0].label, '剪切');
+  assert.equal(popups.length, 1);
+});
+
+test('edit context menu: selected non-editable text gets a copy-only menu', () => {
+  const { win, Menu, handlers, built, popups } = contextMenuHarness();
+  attachEditContextMenu(win, Menu, { isZh: false });
+  handlers['context-menu'](null, {
+    isEditable: false,
+    selectionText: 'quoted reply',
+    editFlags: { canCopy: true },
+  });
+  assert.equal(built.length, 1);
+  assert.deepEqual(built[0].map((item) => item.role), ['copy']);
+  assert.equal(built[0][0].label, 'Copy');
+  assert.equal(popups.length, 1);
+});
+
+test('edit context menu: non-actionable right-clicks (no selection, not editable) show nothing', () => {
+  const { win, Menu, handlers, built, popups } = contextMenuHarness();
+  attachEditContextMenu(win, Menu, {});
+  handlers['context-menu'](null, { isEditable: false, selectionText: '  ', editFlags: {} });
+  assert.equal(built.length, 0);
+  assert.equal(popups.length, 0);
 });

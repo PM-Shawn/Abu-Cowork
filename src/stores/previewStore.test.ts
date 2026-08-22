@@ -303,4 +303,35 @@ describe('previewStore', () => {
       expect(usePreviewStore.getState().tabs[0]).toMatchObject({ filePath: '/proj/a.md' });
     });
   });
+
+  describe('right-panel expansion on open intent', () => {
+    // Regression: with the panel collapsed but the tab still open, re-clicking
+    // a chat file card changed no previewStore state, so RightPanel's
+    // hasWideContent effect never re-fired and the panel stayed hidden.
+    it('openPreview un-collapses the right panel even when the tab already exists and is active', async () => {
+      const { useSettingsStore } = await import('./settingsStore');
+      usePreviewStore.getState().openPreview('/proj/report.html');
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+      usePreviewStore.getState().openPreview('/proj/report.html');
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('openTerminal and user-invoked openBrowser un-collapse the right panel', async () => {
+      const { useSettingsStore } = await import('./settingsStore');
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+      usePreviewStore.getState().openTerminal();
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+      usePreviewStore.getState().openBrowser('https://example.com');
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    });
+
+    it('agent browser-view adoption (openBrowser with requestedId) keeps the collapse state', async () => {
+      const { useSettingsStore } = await import('./settingsStore');
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+      usePreviewStore.getState().openBrowser('about:blank', '__abu-browser-automation__x');
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+    });
+  });
 });

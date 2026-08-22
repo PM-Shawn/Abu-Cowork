@@ -118,3 +118,42 @@ describe('truncation', () => {
     });
   });
 });
+
+describe('MCP tool results', () => {
+  const bigJson = (chars: number) => JSON.stringify({ elements: 'x'.repeat(chars) }, null, 2);
+
+  it('does not blind-cut a browser snapshot at the generic 3500-char default', () => {
+    const result = truncateToolResult('abu-browser-bridge__snapshot', bigJson(20000));
+    expect(result.length).toBeGreaterThan(20000);
+    expect(result).not.toContain('characters omitted');
+  });
+
+  it('applies the same rule to the built-in browser server', () => {
+    const result = truncateToolResult('abu-browser__snapshot', bigJson(20000));
+    expect(result).not.toContain('characters omitted');
+  });
+
+  it('still bounds a snapshot that blew past its own in-page budget', () => {
+    const result = truncateToolResult('abu-browser-bridge__snapshot', bigJson(80000));
+    expect(result.length).toBeLessThan(80000);
+    expect(result).toContain('characters omitted');
+  });
+
+  it('leaves unrelated MCP servers on the conservative default', () => {
+    // Widening the browser budget must not silently widen every MCP tool:
+    // an unknown server can return anything, and context is shared.
+    const result = truncateToolResult('some-other-server__snapshot', bigJson(20000));
+    expect(result).toContain('characters omitted');
+  });
+
+  it('leaves un-ruled browser tools on the default', () => {
+    const result = truncateToolResult('abu-browser-bridge__execute_js', bigJson(20000));
+    expect(result).toContain('characters omitted');
+  });
+
+  it('still scales the browser budget down under context pressure', () => {
+    const roomy = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 10);
+    const squeezed = truncateToolResult('abu-browser-bridge__snapshot', bigJson(40000), 95);
+    expect(squeezed.length).toBeLessThan(roomy.length);
+  });
+});

@@ -3,6 +3,7 @@
 import { build } from 'esbuild';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { recordSourceDigest } from './check-browser-artifacts.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -24,6 +25,7 @@ async function main() {
         'const require = __abuCreateRequire(import.meta.url);\n',
     },
   });
+  recordSourceDigest('electron/browser-runtime/dist/server.mjs');
   console.log('[build-electron-browser-runtime] electron/browser-runtime/dist/server.mjs built');
 }
 

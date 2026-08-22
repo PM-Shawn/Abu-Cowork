@@ -127,14 +127,15 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 2. browser_snapshot
   server.tool(
     'snapshot',
-    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions. This is the primary way to understand what's on a page before taking action.`,
+    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions, plus its \`id\`/\`name\` when the page provides them. Refs stay valid across snapshots for as long as the element stays on the page, so you can snapshot, act, and re-snapshot without re-reading refs you already hold. This is the primary way to understand what's on a page before taking action — prefer it over running scripts against the DOM. If a result says it was truncated, follow the instruction in its message (scope with \`selector\`, or raise \`maxChars\`) rather than switching to execute_js.`,
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
-      selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page'),
+      selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page (e.g. the form you are filling). Use this first when a snapshot comes back truncated.'),
+      maxChars: z.coerce.number().optional().describe('Maximum serialized size of the element list (default 30000). Raise it if the snapshot is truncated and you cannot scope it with a selector.'),
     },
-    async ({ tabId, selector }) => {
+    async ({ tabId, selector, maxChars }) => {
       await ensureConnected(transport);
-      const res = await transport.send('snapshot', { tabId, selector });
+      const res = await transport.send('snapshot', { tabId, selector, maxChars });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -142,7 +143,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 3. browser_click
   server.tool(
     'click',
-    'Click an element on the page. Returns the result of the click action.',
+    'Click an element on the page. Returns which element was actually hit (ref, tag, id, role, text) — check it is the one you meant before relying on the click. A `text` locator resolves to the innermost matching element, and if several match equally the call fails and lists them so you can pick one by ref. To choose a value from a dropdown use `select` instead — a click only opens it.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
@@ -175,7 +176,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 5. browser_select
   server.tool(
     'select',
-    'Select an option from a <select> dropdown element.',
+    'Choose a value from a dropdown, in ONE call. Point the locator at the dropdown control itself and pass the option text as `value`. Do NOT click the control open first, and do NOT try to click the option yourself: this tool opens the dropdown, finds the row (scrolling a long list if it has to), clicks it and lets it close. Works with a native <select> and with the custom dropdowns of antd, Element Plus, Arco and similar libraries. If the value is not among the options, the error lists what is actually there — re-issue the call with one of those. Never fall back to execute_js for a dropdown.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
@@ -295,7 +296,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 12. browser_execute_js
   server.tool(
     'execute_js',
-    'Execute arbitrary JavaScript code in the context of the page. Use this as a fallback when other tools cannot achieve the desired result. Returns the result of the expression.',
+    'Execute arbitrary JavaScript in the page. LAST RESORT: it holds the page\'s full authority, so every single run interrupts the user for its own approval — a task that reaches for it repeatedly is a task the user experiences as broken. Before using it, check the tool that already covers what you want: read the page with `snapshot` (interactive elements, including the rows of an open dropdown) or `extract_text` / `extract_table`; wait for something with `wait_for`, whose timeout reports what the page actually looks like; choose from a dropdown with `select`. To confirm an action worked — a toast, a validation error, a redirect — use `wait_for` then `extract_text`, not a script. Read the error a tool returns before switching away from it: it usually names the next step.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       code: z.string().describe('JavaScript code to execute. The last expression value is returned.'),

@@ -438,6 +438,13 @@ export interface TranslationDict {
     /** Hint appended to not_found errors: check endpoint URL / model capabilities. */
     errorNotFoundHint: string;
     // Compact boundary divider
+    // Conversation chapter rail (left-hand tick scale)
+    chapters: {
+      railLabel: string;
+      openList: string;
+      sessionStart: string;
+      jumpTo: string;
+    };
     compactDivider: {
       compacted: string;
       compactedManual: string;

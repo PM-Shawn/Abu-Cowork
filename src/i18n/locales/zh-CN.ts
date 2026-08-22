@@ -419,6 +419,12 @@ const zhCN: TranslationDict = {
     usageChipSubtitle: '累计调用 · 模型上报',
     errorEmptyBody: '请求失败，但服务未返回错误详情。',
     errorNotFoundHint: '未找到该模型或接口地址，或该接口不支持本次请求携带的参数（如思考 / 工具调用）。请到「设置 → 模型」检查服务地址与该模型的能力设置，或更换模型。',
+    chapters: {
+      railLabel: '会话章节',
+      openList: '会话章节',
+      sessionStart: '会话开始',
+      jumpTo: '跳到：{title}',
+    },
     compactDivider: {
       compacted: '上下文已压缩',
       compactedManual: '上下文已压缩（手动）',

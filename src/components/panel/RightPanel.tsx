@@ -217,7 +217,7 @@ export default function RightPanel() {
     >
       {/* Full-screen overlay during drag — blocks iframe/webview from stealing mouse events */}
       {isDragging && (
-        <div className="fixed inset-0 z-50 cursor-col-resize select-none" />
+        <div data-electron-no-drag className="fixed inset-0 z-50 cursor-col-resize select-none" />
       )}
       {/* Drag handle on left edge */}
       <div

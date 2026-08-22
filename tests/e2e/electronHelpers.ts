@@ -183,3 +183,29 @@ function waitForChildExit(
     child.once('exit', onExit);
   });
 }
+
+/**
+ * Resolve the OS drag region at a viewport point, the way Chromium actually
+ * builds it: walk the layout tree in DOCUMENT order, unioning `drag` rects and
+ * subtracting `no-drag` ones. The LAST writer covering the point wins —
+ * stacking order (`z-index`, `elementsFromPoint`) does NOT decide it.
+ *
+ * Modelling this with `elementsFromPoint` instead shipped a real regression:
+ * the floating macOS window controls sit earlier in the DOM than the cards, so
+ * a card's own drag row unioned straight back over them and killed their
+ * clicks, while a stacking-order test reported them healthy.
+ */
+export async function appRegionAt(page: Page, x: number, y: number): Promise<string> {
+  return page.evaluate(({ px, py }) => {
+    let state = 'none';
+    for (const element of document.querySelectorAll('*')) {
+      const region = getComputedStyle(element).webkitAppRegion;
+      if (region !== 'drag' && region !== 'no-drag') continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (px < rect.left || px > rect.right || py < rect.top || py > rect.bottom) continue;
+      state = region;
+    }
+    return state;
+  }, { px: x, py: y });
+}

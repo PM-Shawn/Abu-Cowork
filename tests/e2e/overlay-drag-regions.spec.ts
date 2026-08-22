@@ -27,6 +27,7 @@
 import { expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 import {
+  appRegionAt,
   closeAbuElectron,
   createElectronDataRoot,
   launchAbuElectron,
@@ -113,31 +114,27 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
         .filter((element) => getComputedStyle(element).webkitAppRegion === 'drag')
         .map((element) => element.getBoundingClientRect())
         .filter((lane) => lane.width > 0 && lane.height > 0);
-      const layers = [...document.elementsFromPoint(x, y)];
-      const buttonIndex = layers.findIndex((layer) => layer === close || close.contains(layer));
       const hit = document.elementFromPoint(x, y);
       return {
         closeAppRegion: getComputedStyle(close).webkitAppRegion,
         scrimAppRegion: getComputedStyle(scrim).webkitAppRegion,
-        // Only layers painted ABOVE the button can steal its clicks: the OS
-        // subtracts the overlay's no-drag rect from every lane beneath it, and
-        // elementsFromPoint is ordered topmost-first.
-        dragLayerAbove: (buttonIndex === -1 ? layers : layers.slice(0, buttonIndex))
-          .some((layer) => getComputedStyle(layer).webkitAppRegion === 'drag'),
         receivesHit: Boolean(hit && (hit === close || close.contains(hit))),
         // Proof the scenario is real at this viewport rather than hypothetical.
         overlapsDragLane: dragLanes.some((lane) => (
           lane.left < rect.right && lane.right > rect.left
           && lane.top < rect.bottom && lane.bottom > rect.top
         )),
+        centre: { x, y },
       };
     });
 
     // The marker plus its descendant rule is what hands the clicks back.
     expect(hitTest.scrimAppRegion).toBe('no-drag');
     expect(hitTest.closeAppRegion).toBe('no-drag');
-    expect(hitTest.dragLayerAbove).toBe(false);
     expect(hitTest.receivesHit).toBe(true);
+    // The authoritative check: Chromium unions/subtracts in DOCUMENT order, so
+    // ask the resolver that models that, not the stacking order.
+    expect(await appRegionAt(page, hitTest.centre.x, hitTest.centre.y)).toBe('no-drag');
     if (process.platform === 'win32') {
       // Windows is the only platform that draws the two-row band; elsewhere the
       // lanes are the 8px macOS strip and the canvas gutters, which the dialog's

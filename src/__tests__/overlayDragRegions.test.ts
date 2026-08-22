@@ -182,10 +182,26 @@ describe('the stylesheet turns the marker into a no-drag region', () => {
     // The descendant selector is what makes a single marker on the scrim enough
     // to hand every button inside the dialog back to the renderer.
     expect(css).toMatch(
-      /\[data-electron-no-drag\],\s*\[data-electron-no-drag\] \*\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
+      /\[data-electron-no-drag\],\s*\[data-electron-no-drag\] \*:not\(\[data-electron-drag\]\)\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
     );
   });
 
+  it('keeps the drag-row escape valve immune to source order', () => {
+    // `[data-electron-drag]` and `[data-electron-no-drag] *` both weigh (0,1,0)
+    // with !important, so without the `:not()` the winner would come down to
+    // which rule appears last in the file — and a macOS title row inside a card
+    // would silently stop being draggable the next time this file is reordered.
+    expect(css).toContain('[data-electron-no-drag] *:not([data-electron-drag])');
+    expect(css).toMatch(/\[data-electron-drag\]\s*\{[^}]*-webkit-app-region:\s*drag !important/);
+  });
+
+  it('never lets an interactive element inside a drag region become draggable', () => {
+    // Backstop for drag rows that sit outside a no-drag card, where the
+    // descendant rule above does not reach.
+    expect(css).toMatch(
+      /\[data-electron-drag\] :where\(button, a, input, textarea, select, \[role="button"\], \[contenteditable\]\)/,
+    );
+  });
 
   it('covers portaled popper layers that have no ancestor to inherit from', () => {
     expect(css).toMatch(

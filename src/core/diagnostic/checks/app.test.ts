@@ -24,7 +24,7 @@ function fakeUpdateInfo(version: string): UpdateInfo {
 describe('runAppChecks', () => {
   beforeEach(() => {
     mockCheckForUpdate.mockReset();
-    useSettingsStore.setState({ lastUpdateCheck: 1_000, updateInfo: null });
+    useSettingsStore.setState({ lastUpdateCheck: 1_000, updateInfo: null, updaterUnsupported: null });
   });
 
   it('always renders the live APP_VERSION, never a cached snapshot value', async () => {
@@ -66,6 +66,22 @@ describe('runAppChecks', () => {
     expect(row.metric).toContain('0.36.0');
     expect(row.metric).toContain(`v${APP_VERSION}`);
     expect(row.suggestedAction).toMatchObject({ type: 'open-settings', target: 'about' });
+  });
+
+  it('reports "updater unsupported", not "up to date", when the updater never armed', async () => {
+    // Non-official package / dev shell: checkForUpdate surfaces the host's
+    // disabled marker by setting the flag and leaving lastUpdateCheck alone.
+    mockCheckForUpdate.mockImplementation(async () => {
+      useSettingsStore.setState({ updaterUnsupported: true });
+      return null;
+    });
+
+    const [row] = await runAppChecks();
+
+    expect(row.status).toBe('warning');
+    expect(row.metric).toContain(t.appUpdaterUnsupported);
+    expect(row.metric).not.toContain(t.appLatest);
+    expect(row.metric).not.toContain(t.appCheckFailed);
   });
 
   it('does NOT claim "up to date" when the feed was never reached (offline)', async () => {

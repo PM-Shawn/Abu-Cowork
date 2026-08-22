@@ -9,13 +9,35 @@ vi.mock('@/i18n', async (importActual) => {
   return { ...actual, getLocale: () => mockLocale };
 });
 
-// electron-updater: check() returns our fake Update. The Electron feed carries
-// NO release notes, so `update.body` is typically empty in production; tests
-// give it a value so the "fall back to the updater body" path is observable.
+// checker.ts invokes `plugin:updater|check` directly (the plugin's check()
+// wrapper cannot carry the Electron host's `{ status: 'disabled' }` marker)
+// and wraps genuine metadata in the plugin's Update class itself. mockCheck
+// therefore stands in for the raw invoke result: metadata, null, or the
+// marker. The Electron feed carries NO release notes, so `body` is typically
+// empty in production; tests give it a value so the "fall back to the updater
+// body" path is observable.
 const mockCheck = vi.fn();
 const mockDownloadAndInstall = vi.fn();
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (cmd: string) => {
+    if (cmd === 'plugin:updater|check') return mockCheck();
+    return Promise.resolve(undefined);
+  },
+}));
 vi.mock('@tauri-apps/plugin-updater', () => ({
-  check: () => mockCheck(),
+  Update: class {
+    version: string;
+    date?: string;
+    body?: string;
+    constructor(metadata: { version: string; date?: string; body?: string }) {
+      this.version = metadata.version;
+      this.date = metadata.date;
+      this.body = metadata.body;
+    }
+    downloadAndInstall(onEvent?: (event: DownloadEvent) => void) {
+      return mockDownloadAndInstall(onEvent);
+    }
+  },
 }));
 
 // Silence the notice bus (irrelevant to notes-language behavior).
@@ -30,12 +52,15 @@ const EN_BODY = 'Updater body fallback for v0.32.0 — shown only if the feed is
 const EN_META = 'English release notes for v0.32.0 from the metadata feed — long enough to render.';
 const ZH_NOTES = '中文更新说明：多页签工作区、卡片化改版等，内容足够长以通过丰富度判断。';
 
+// Raw `plugin:updater|check` metadata as updaterHost returns it.
 function fakeUpdate() {
   return {
+    rid: 90001,
+    currentVersion: '0.31.0',
     version: 'v0.32.0',
     date: '2026-07-19T00:00:00Z',
     body: EN_BODY,
-    downloadAndInstall: mockDownloadAndInstall,
+    rawJson: {},
   };
 }
 
@@ -214,6 +239,77 @@ describe('checkForUpdate — silent option (background/observer callers)', () =>
     expect(publish).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith(true);
     expect(spy).toHaveBeenCalledWith(false);
+  });
+});
+
+describe('checkForUpdate — disabled marker (updater never armed in this build)', () => {
+  // Regression anchor (2026-08-22): a non-official Windows package returned
+  // bare null from check() and the UI claimed "已是最新版本" while the updater
+  // was silently disabled. The host now answers `{ status: 'disabled' }`.
+  beforeEach(() => {
+    mockCheck.mockReset();
+    (publish as unknown as ReturnType<typeof vi.fn>).mockClear();
+    useSettingsStore.setState({
+      lastUpdateCheck: 0,
+      updateInfo: null,
+      updateChecking: false,
+      updaterUnsupported: null,
+    });
+    mockLocale = 'zh-CN';
+    mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES } });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('marker → null result, updaterUnsupported=true, and NOT "up to date"', async () => {
+    mockCheck.mockResolvedValue({ status: 'disabled', reason: 'unofficial-build' });
+
+    const info = await checkForUpdate(true);
+
+    expect(info).toBeNull();
+    const state = useSettingsStore.getState();
+    expect(state.updaterUnsupported).toBe(true);
+    expect(state.updateInfo).toBeNull();
+    // No feed was contacted: the throttle timestamp must stay untouched so the
+    // diagnostic app-check does not read this as a confirmed comparison, and
+    // the next startup check re-learns the flag.
+    expect(state.lastUpdateCheck).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('a real feed answer of null marks the updater supported and up to date', async () => {
+    mockCheck.mockResolvedValue(null);
+
+    const info = await checkForUpdate(true);
+
+    expect(info).toBeNull();
+    const state = useSettingsStore.getState();
+    expect(state.updaterUnsupported).toBe(false);
+    expect(state.lastUpdateCheck).toBeGreaterThan(0);
+  });
+
+  it('an offered update also marks the updater supported', async () => {
+    mockCheck.mockResolvedValue(fakeUpdate());
+
+    const info = await checkForUpdate(true);
+
+    expect(info?.version).toBe('0.32.0');
+    expect(useSettingsStore.getState().updaterUnsupported).toBe(false);
+  });
+
+  it('a thrown check leaves the unsupported flag unknown (not false)', async () => {
+    mockCheck.mockRejectedValue(new Error('feed unreachable'));
+
+    const info = await checkForUpdate(true);
+
+    expect(info).toBeNull();
+    // Offline ≠ unsupported: the flag must stay null so the UI keeps the
+    // ordinary "check failed" presentation instead of the unsupported caption.
+    expect(useSettingsStore.getState().updaterUnsupported).toBeNull();
+    expect(useSettingsStore.getState().lastUpdateCheck).toBe(0);
   });
 });
 

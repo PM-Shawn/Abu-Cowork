@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
-import { getHelpDocsUrl } from '@/utils/helpDocs';
+import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 
 /**
  * Account / preferences popover anchored to the sidebar's bottom user row.
@@ -49,6 +49,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
+  const updaterUnsupported = useSettingsStore((s) => s.updaterUnsupported);
 
   const [open, setOpen] = useState(false);
   const [checkedResult, setCheckedResult] = useState<'idle' | 'up-to-date'>('idle');
@@ -82,7 +83,11 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     setCheckedResult('idle');
     try {
       const result = await checkForUpdate(true);
-      if (!result) {
+      // 'up-to-date' means a real feed comparison happened. The disabled
+      // marker also resolves null, so guard at the assignment — not only via
+      // updateRow's branch order — reading the store directly (empty-deps
+      // callback, the hook value would be a stale closure).
+      if (!result && !useSettingsStore.getState().updaterUnsupported) {
         setCheckedResult('up-to-date');
         setTimeout(() => setCheckedResult('idle'), 3000);
       }
@@ -161,14 +166,23 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           }
         : updateChecking
           ? { icon: RefreshCw, label: t.updates.checking, disabled: true, spin: true }
-          : checkedResult === 'up-to-date'
-            ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
-            : {
-                icon: RefreshCw,
-                label: t.updates.update,
-                onClick: handleCheck,
-                trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
-              };
+          : updaterUnsupported
+            // Never claim "up to date" when the updater is disabled in this
+            // build (non-official package / dev shell) — offer the official
+            // download site instead.
+            ? {
+                icon: ExternalLink,
+                label: t.updates.unsupportedBuildShort,
+                onClick: () => void openUrl(OFFICIAL_WEBSITE_URL).catch(() => {}),
+              }
+            : checkedResult === 'up-to-date'
+              ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
+              : {
+                  icon: RefreshCw,
+                  label: t.updates.update,
+                  onClick: handleCheck,
+                  trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
+                };
   const UpdateIcon = updateRow.icon;
 
   return (

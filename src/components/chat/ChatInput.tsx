@@ -26,7 +26,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
-import { generateAttachmentId, SUPPORTED_IMAGE_TYPES } from '@/utils/imageUtils';
+import { generateAttachmentId, SUPPORTED_IMAGE_TYPES, sniffImageMediaType, IMAGE_MAGIC_PREFIX_BYTES } from '@/utils/imageUtils';
 import { fitImageToDimension } from '@/utils/imageCompress';
 import { admissionMaxDimension } from '@/core/llm/imagePolicy';
 import PermissionDialog from '@/components/common/PermissionDialog';
@@ -140,6 +140,34 @@ async function admitImage(
     mediaType: fitted.mediaType as ImageAttachment['mediaType'],
     ...(fitted.resized ? { resized: fitted.resized } : {}),
   };
+}
+
+/**
+ * Admit a pasted file as an image when its BYTES say it is one.
+ *
+ * Returns null for anything that is not a sendable image, so the caller can
+ * keep treating it as a plain file. Only the leading bytes are read for the
+ * check — a 200MB video must not be pulled into memory just to be rejected.
+ *
+ * The declared `type` is still honoured as a fallback: it is the only signal
+ * for a source that hands over correctly-labelled bytes we have no signature
+ * for, and trusting it here keeps every case that worked before working.
+ */
+async function admitPastedImage(file: File): Promise<ImageAttachment | null> {
+  // A pasted directory also arrives as a `File`, and reading it throws. Any
+  // read failure just means "not an image we can show" — it must never take
+  // the whole paste down with it, since the path branch can still badge it.
+  try {
+    if (file.size === 0) return null;
+    const head = new Uint8Array(await file.slice(0, IMAGE_MAGIC_PREFIX_BYTES).arrayBuffer());
+    const sniffed = sniffImageMediaType(head);
+    const declared = SUPPORTED_IMAGE_TYPES.includes(file.type) ? file.type : null;
+    const mediaType = sniffed ?? declared;
+    if (!mediaType) return null;
+    return await admitImage(new Uint8Array(await file.arrayBuffer()), mediaType as ImageAttachment['mediaType']);
+  } catch {
+    return null;
+  }
 }
 
 /** Read a local image file path into an ImageAttachment via Tauri fs */
@@ -322,38 +350,59 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // Pre-extract File objects synchronously before the first await.
     // getAsFile() returns null on any DataTransferItem touched after an await.
-    const bitmapFiles: File[] = Array.from(items)
-      .filter((it) => SUPPORTED_IMAGE_TYPES.includes(it.type))
+    //
+    // EVERY file item is captured, not just ones already labelled with a
+    // supported image type: when an app copies an image, macOS puts a
+    // pasteboard temp item on the clipboard whose name carries no usable
+    // extension (`…/id=6571367.107158211`), and Chromium hands that to the
+    // renderer as a File with an EMPTY `type`. Filtering on `type` here threw
+    // the real image bytes away before anything could look at them.
+    const pastedFiles: File[] = Array.from(items)
+      .filter((it) => it.kind === 'file')
       .map((it) => it.getAsFile())
       .filter((f): f is File => f !== null);
 
-    // (a) Try OS pasteboard for real file paths — full parity with drag-drop.
+    // (a) The bytes the event handed us decide what is an image — names and
+    // mime labels both lie for pasteboard temp items. This also pins down the
+    // media type exactly, instead of guessing it from a file extension.
+    const admitted: ImageAttachment[] = [];
+    const admittedNames = new Set<string>();
+    const nonImageFiles: File[] = [];
+    for (const file of pastedFiles) {
+      const image = await admitPastedImage(file);
+      if (image) {
+        admitted.push(image);
+        admittedNames.add(file.name);
+      } else {
+        nonImageFiles.push(file);
+      }
+    }
+    if (admitted.length > 0) setImages((prev) => [...prev, ...admitted]);
+
+    // (b) Whatever was NOT an image still wants its real absolute path so the
+    // badge can open/reference the actual file — that is what the OS pasteboard
+    // lookup is for, and it keeps full parity with drag-drop.
+    if (nonImageFiles.length === 0) return;
+
     let paths: string[] = [];
     try {
       paths = await invoke<string[]>('read_clipboard_file_paths');
     } catch {
-      // Native command unavailable or failed — fall through to bitmap branch.
+      // Native command unavailable or failed — nothing more we can do here.
     }
+    // An image already admitted from its bytes must not come back as a badge.
+    const badgePaths = paths.filter((p) => !admittedNames.has(getBaseName(p)));
+    if (badgePaths.length === 0) return;
 
-    if (paths.length > 0) {
-      await processFilePaths(
-        paths,
-        (imgs) => setImages((prev) => [...prev, ...imgs]),
-        (newFiles) => setFiles((prev) => {
-          const existing = new Set(prev.map((f) => f.path));
-          const deduped = newFiles.filter((f) => !existing.has(f.path));
-          return deduped.length > 0 ? [...prev, ...deduped] : prev;
-        }),
-      );
-      return;
-    }
-
-    // (b) Bitmap-only fallback (screenshots etc.) — use pre-captured File objects.
-    for (const file of bitmapFiles) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const image = await admitImage(bytes, file.type as ImageAttachment['mediaType']);
-      setImages((prev) => [...prev, image]);
-    }
+    await processFilePaths(
+      badgePaths,
+      (imgs) => setImages((prev) => [...prev, ...imgs]),
+      (newFiles) => setFiles((prev) => {
+        const existing = new Set(prev.map((f) => f.path));
+        const deduped = newFiles.filter((f) => !existing.has(f.path));
+        return deduped.length > 0 ? [...prev, ...deduped] : prev;
+      }),
+    );
   }, []);
 
   const removeImage = useCallback((id: string) => {

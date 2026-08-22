@@ -7,12 +7,16 @@
  * gives the best size/quality tradeoff for screenshots pasted from the OS
  * clipboard or picked via file dialog.
  *
- * Not unit-tested: happy-dom (the Vitest environment for this repo) has no
- * canvas/`toBlob` implementation, so exercising this file requires a real
- * browser. Logic is kept small and linear so it's reviewable by inspection;
- * any failure (unsupported API, decode error) falls back to returning the
- * original bytes rather than throwing, so a compression bug can never block
- * the user from attaching a screenshot.
+ * happy-dom (the Vitest environment for this repo) has no canvas/`toBlob`, so
+ * pixels can only be judged in a real browser. `imageCompress.test.ts` stands
+ * up the small browser surface these functions touch and covers what does not
+ * need pixels — which media type comes out, and whether a resize was recorded.
+ * That is the half where the `.bmp` admission gap lived, so it is worth having
+ * under test even though the visual result is not. Logic is kept small and
+ * linear so the rest stays reviewable by inspection; any failure (unsupported
+ * API, decode error) falls back to returning the original bytes rather than
+ * throwing, so a compression bug can never block the user from attaching a
+ * screenshot.
  */
 
 export interface CompressImageInput {

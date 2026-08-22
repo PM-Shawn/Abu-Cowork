@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
-import type { Message, MessageContent, ToolCall, ImageAttachment } from '@/types';
+import type { Message, MessageContent, ToolCall } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
@@ -32,6 +32,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
+import { rebuildImageAttachments } from './imageAttachmentRebuild';
 
 interface MessageGroupProps {
   messages: Message[];
@@ -544,22 +545,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     const convId = activeConv.id;
     const userContent = getTextContent(userMsg.content);
 
-    let retryImages: ImageAttachment[] | undefined;
-    if (Array.isArray(userMsg.content)) {
-      const imgBlocks = userMsg.content.filter((c): c is Extract<MessageContent, { type: 'image' }> => c.type === 'image');
-      if (imgBlocks.length > 0) {
-        retryImages = imgBlocks.map((img, i) => ({
-          id: `retry-${i}`,
-          data: img.source.data,
-          mediaType: img.source.media_type,
-          // Carry the admission resize record. Dropping it re-sent the
-          // downscaled image with no <image_resize_notice>, so a retried turn —
-          // often the one asking about coordinates or fine print — had the model
-          // reading a shrunken picture believing it was full size.
-          ...(img.resized ? { resized: img.resized } : {}),
-        }));
-      }
-    }
+    const retryImages = rebuildImageAttachments(userMsg.content, 'retry');
 
     const firstAssistantInLoop = assistantMsgs[0];
 

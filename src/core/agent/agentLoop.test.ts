@@ -592,3 +592,28 @@ describe('buildUserMessageContent — resize record', () => {
     expect(content[0].resized).toBeUndefined();
   });
 });
+
+describe('buildUserMessageContent — snapshot filePath reuse (retry)', () => {
+  // Regression: a retried attachment rebuilt from a persisted message carries
+  // its outputs/images/ snapshot in filePath, and post-restart its data is ''.
+  // The block must keep that path — re-deriving it from the (empty) base64
+  // wrote an empty file, and the no-disk degradation path dropped it entirely,
+  // stranding the image with neither pixels nor a way to rehydrate them.
+  it('keeps the attachment filePath on the image block even when data is stripped', async () => {
+    const content = await buildUserMessageContent('c1', 'look', [
+      { id: 'i1', data: '', mediaType: 'image/png' as const, filePath: '/outputs/images/snap.png' },
+    ]) as { type: string; filePath?: string; source: { data: string } }[];
+
+    expect(content[0].type).toBe('image');
+    expect(content[0].filePath).toBe('/outputs/images/snap.png');
+    expect(content[0].source.data).toBe('');
+  });
+
+  it('prefers the existing snapshot path over re-saving for a same-session retry', async () => {
+    const content = await buildUserMessageContent('c1', 'look', [
+      { id: 'i1', data: 'BASE64', mediaType: 'image/png' as const, filePath: '/outputs/images/snap.png' },
+    ]) as { filePath?: string }[];
+
+    expect(content[0].filePath).toBe('/outputs/images/snap.png');
+  });
+});

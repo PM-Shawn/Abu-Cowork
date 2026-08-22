@@ -165,6 +165,11 @@ async function saveUserImagesToDisk(
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     return await Promise.all(
       images.map(async (img, index) => {
+        // Retry of a persisted message: the attachment already points at its
+        // outputs/images/ snapshot. Reuse it — re-encoding from `data` would
+        // write a duplicate copy, or an EMPTY file when the base64 was
+        // stripped on persist (post-restart retry).
+        if (img.filePath) return img.filePath;
         try {
           const ext = MIME_TO_EXT[img.mediaType] || 'png';
           const fileName = `${timestamp}_${index}.${ext}`;
@@ -210,7 +215,10 @@ export async function buildUserMessageContent(
       media_type: img.mediaType,
       data: img.data,
     },
-    filePath: savedPaths[i],
+    // Prefer the attachment's own snapshot path (retry rebuild) — savedPaths
+    // degrades to undefined on the no-disk / write-failure paths, and losing
+    // an existing filePath there would strand a stripped image for good.
+    filePath: img.filePath ?? savedPaths[i],
     ...(img.resized ? { resized: img.resized } : {}),
   }));
   if (text) {

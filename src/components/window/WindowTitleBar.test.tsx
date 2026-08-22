@@ -34,7 +34,7 @@ function props(overrides: Record<string, unknown> = {}) {
 }
 
 describe('WindowTitleBar', () => {
-  it('keeps native menus and every Windows business control clickable', async () => {
+  it('embeds the existing Windows controls in the workspace header plane', async () => {
     const user = userEvent.setup();
     const callbacks = props();
     const { container } = render(<WindowTitleBar {...callbacks} />);
@@ -44,12 +44,14 @@ describe('WindowTitleBar', () => {
     const dragRegions = [...container.querySelectorAll('[data-abu-windows-drag-region]')];
     const menus = [...container.querySelectorAll('[data-window-menu]')];
     const controls = [...container.querySelectorAll('[data-window-control]')];
-    expect(toolbar).not.toBeNull();
+    const workspaceControls = container.querySelector('[data-abu-windows-workspace-controls]');
+    expect(toolbar).toBeNull();
+    expect(workspaceControls).not.toBeNull();
+    expect(nativeTitlebar).toHaveClass('h-[30px]');
     expect(nativeTitlebar).not.toHaveAttribute('data-tauri-drag-region');
-    expect(toolbar).not.toHaveAttribute('data-tauri-drag-region');
-    expect(dragRegions).toHaveLength(2);
+    expect(dragRegions).toHaveLength(1);
     expect(dragRegions.map((region) => region.getAttribute('data-abu-windows-drag-region')))
-      .toEqual(['titlebar', 'toolbar']);
+      .toEqual(['titlebar']);
     dragRegions.forEach((region) => {
       expect(region).toHaveAttribute('data-tauri-drag-region');
       expect(region).not.toHaveAttribute('data-electron-no-drag');
@@ -59,19 +61,18 @@ describe('WindowTitleBar', () => {
       expect(menu).toHaveAttribute('data-electron-no-drag');
       expect(menu).toHaveAttribute('aria-haspopup', 'menu');
     });
-    expect(controls).toHaveLength(4);
+    expect(controls).toHaveLength(3);
     controls.forEach((control) => {
       expect(control).toHaveAttribute('data-electron-no-drag');
     });
 
     await user.click(screen.getByRole('button', { name: 'Show sidebar' }));
     await user.click(screen.getByRole('button', { name: 'Search' }));
-    await user.click(screen.getByRole('button', { name: 'New task' }));
     await user.click(screen.getByRole('button', { name: 'Show panel' }));
     await user.click(screen.getByRole('button', { name: 'Edit' }));
     expect(callbacks.onToggleSidebar).toHaveBeenCalledOnce();
     expect(callbacks.onOpenSearch).toHaveBeenCalledOnce();
-    expect(callbacks.onNewTask).toHaveBeenCalledOnce();
+    expect(callbacks.onNewTask).not.toHaveBeenCalled();
     expect(callbacks.onToggleRightPanel).toHaveBeenCalledOnce();
     expect(callbacks.onOpenWindowMenu).toHaveBeenCalledWith('edit', { x: 0, y: 0 });
 
@@ -79,6 +80,19 @@ describe('WindowTitleBar', () => {
     await waitFor(() => {
       expect(callbacks.onOpenWindowMenu).toHaveBeenCalledWith('window', { x: 0, y: 0 });
     });
+  });
+
+  it('moves only the existing left controls when the Windows sidebar changes state', () => {
+    const { container, rerender } = render(
+      <WindowTitleBar {...props({ sidebarCollapsed: false })} />,
+    );
+    const expandedGroup = container.querySelector('[data-abu-titlebar-control-group="left"]');
+    expect(expandedGroup).toHaveStyle({ top: '49px', left: '194px' });
+
+    rerender(<WindowTitleBar {...props({ sidebarCollapsed: true })} />);
+    const collapsedGroup = container.querySelector('[data-abu-titlebar-control-group="left"]');
+    expect(collapsedGroup).toHaveStyle({ top: '49px', left: '20px' });
+    expect(screen.queryByRole('button', { name: 'New task' })).toBeNull();
   });
 
   it('keeps the legacy Windows business toolbar when Window Controls Overlay is unavailable', () => {

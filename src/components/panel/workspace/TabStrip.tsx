@@ -8,6 +8,8 @@ import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { isWindows } from '@/utils/platform';
+import { hasElectronCommandHost } from '@/utils/electronHost';
 
 const MENU_WIDTH = 150; // px — used to right-align / clamp popover menus
 
@@ -49,6 +51,7 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
  */
 export default function TabStrip() {
   const { t } = useI18n();
+  const windowsWorkspaceHeader = isWindows() && hasElectronCommandHost();
   const tabs = usePreviewStore((s) => s.tabs);
   const activeTabId = usePreviewStore((s) => s.activeTabId);
   const activateTab = usePreviewStore((s) => s.activateTab);
@@ -191,7 +194,10 @@ export default function TabStrip() {
   return (
     <div
       data-abu-workspace-tabs
-      className="relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto"
+      className={cn(
+        'relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto',
+        windowsWorkspaceHeader && 'h-11',
+      )}
     >
       {tabs.map((tab) => {
         const Icon = tabIcon(tab);
@@ -217,7 +223,8 @@ export default function TabStrip() {
               openContextMenu(tab.id, e.clientX, e.clientY);
             }}
             className={cn(
-              'group flex items-center gap-1.5 h-8 px-2.5 max-w-[160px] shrink-0 select-none',
+              'group flex items-center gap-1.5 px-2.5 max-w-[160px] shrink-0 select-none',
+              windowsWorkspaceHeader ? 'h-full' : 'h-8',
               'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
               draggingId === tab.id && 'cursor-grabbing',
               active

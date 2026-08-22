@@ -24,6 +24,7 @@ import { readTextFile } from '@tauri-apps/plugin-fs';
 import ShareExportDialog from '@/components/share/ShareExportDialog';
 import ImportedBadge from './ImportedBadge';
 import { isMacOS, isWindows } from '@/utils/platform';
+import { APP_VERSION } from '@/utils/version';
 
 interface StatusIndicatorProps {
   status: ConversationStatus;
@@ -66,7 +67,11 @@ function IMPlatformDot({ platform }: { platform: string }) {
   );
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  windowsWorkspaceHeader?: boolean;
+}
+
+export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps) {
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const conversations = useChatStore((s) => s.conversations);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
@@ -269,18 +274,35 @@ export default function Sidebar() {
 
   return (
     <div className="flex flex-col h-full w-[260px] bg-[var(--abu-bg-canvas)]">
-      {/* macOS controls are an overlay, so the expanded sidebar keeps its
-          original 56px content clearance. Windows reserves toolbar space in
-          App's normal flow; Linux keeps its compact native-titlebar spacer. */}
-      <div
-        className={
-          isMacOS()
-            ? 'h-14 shrink-0'
-            : isWindows()
-              ? 'h-0 shrink-0'
-              : 'h-8 shrink-0'
-        }
-      />
+      {/* Electron Windows aligns this brand row with the raised center/right
+          headers: 8px canvas gutter + 44px header. The canvas background stays
+          unchanged, without a card edge or divider. Other hosts retain their
+          existing platform-specific clearance. */}
+      {windowsWorkspaceHeader ? (
+        <div
+          data-abu-windows-sidebar-header
+          className="flex h-[52px] shrink-0 items-center px-6 pt-2 pr-[76px]"
+        >
+          <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap">
+            <span className="truncate text-h-xs font-semibold text-[var(--abu-text-primary)]">
+              {t.common.appName}
+            </span>
+            <span className="text-caption text-[var(--abu-text-tertiary)]">
+              v{APP_VERSION}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div
+          className={
+            isMacOS()
+              ? 'h-14 shrink-0'
+              : isWindows()
+                ? 'h-0 shrink-0'
+                : 'h-8 shrink-0'
+          }
+        />
+      )}
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
         <button

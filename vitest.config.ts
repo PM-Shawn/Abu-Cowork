@@ -31,7 +31,17 @@ export default defineConfig({
     'import.meta.env.VITE_CONSOLE_URL': JSON.stringify('https://console-test.local'),
   },
   test: {
-    environment: 'happy-dom',
+    // Default to `node`: only ~66 of ~386 test files actually need a DOM, and
+    // building a happy-dom per file cost more than running the tests. Measured
+    // over the 340 non-.tsx files: 74.86s -> 27.79s wall, of which the
+    // `environment` phase alone went 187.80s -> 0.44s (the `tests` phase was
+    // unchanged at ~29s — it was all setup overhead).
+    // Files that DO need a DOM opt back in with a
+    // `// @vitest-environment happy-dom` docblock on their first line — every
+    // *.test.tsx plus the 20 *.test.ts that touch DOM/Storage/selection APIs.
+    // A new component test without that line fails on `document is not
+    // defined`; add the docblock rather than changing this default back.
+    environment: 'node',
     setupFiles: ['./src/test/setup.ts'],
     // v8 coverage instrumentation adds overhead to setup/beforeAll hooks on cold
     // CI runners. Give hooks extra headroom so they don't time out spuriously.

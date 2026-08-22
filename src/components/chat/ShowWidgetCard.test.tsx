@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
  * State-dispatch tests for the inline show_widget card.

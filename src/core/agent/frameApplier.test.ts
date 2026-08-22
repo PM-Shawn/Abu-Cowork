@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';

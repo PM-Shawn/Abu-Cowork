@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // src/features/reference/DocSelectionLayer.test.tsx
 //
 // Integration test: selection → toolbar → reference lands in chatStore.pendingReferences

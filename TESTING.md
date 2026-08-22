@@ -159,6 +159,29 @@ See `vitest.config.ts → test.coverage.thresholds` for current values.
 
 ## 6. Writing Tests — Conventions
 
+### Test environment — `node` by default, DOM is opt-in
+
+`vitest.config.ts` sets `environment: 'node'`. Only ~66 of ~386 test files actually need a DOM, and
+building a happy-dom per file cost more than running the tests: over the 340 non-`.tsx` files the
+`environment` phase alone was **187.80 s → 0.44 s**, and full-suite wall time went **~71-75 s →
+~42-55 s** (the `tests` phase itself was unchanged — it was all per-file setup overhead).
+
+**A test that touches the DOM must opt back in** with a docblock on its *first line*:
+
+```ts
+// @vitest-environment happy-dom
+import { render } from '@testing-library/react'
+```
+
+Required for every `*.test.tsx`, and for any `*.test.ts` that touches `document`/`window`,
+Storage, selection, or DOM events (currently 20 files — stores with persist, `hooks/`,
+`features/reference/`, `core/notice/`, `sidecarManager`, `frameApplier`, `chatDelta`,
+`tauriFetch`, `petStatusBridge`, `PptxPreview`).
+
+🔴 A new component test **without** that line fails on `document is not defined`. Add the docblock —
+do **not** flip the global default back; that re-imposes the happy-dom cost on all ~320 DOM-free
+files. `src/test/setup.ts` already polyfills `localStorage`, so Zustand `persist` works under `node`.
+
 ### Store tests
 
 ```ts

@@ -1338,7 +1338,11 @@ export const useChatStore = create<ChatStore>()(
               if (meta) {
                 meta.messageCount = conv.messages.length;
                 meta.updatedAt = conv.updatedAt;
-                metaToPersist = { ...meta };
+                // `current`, not a spread: same revoked-draft hazard as
+                // updateUserMessageRun above — `meta.model` is a nested object,
+                // so a shallow copy of the draft hands the async persistence a
+                // child proxy that is revoked when this producer returns.
+                metaToPersist = current(meta);
               }
             }
           }

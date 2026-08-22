@@ -4,6 +4,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { windowDragRowProps } from '@/utils/windowDrag';
 import InboxItemRow from './InboxItem';
 
 type Tab = 'pending' | 'all';
@@ -57,7 +58,7 @@ export default function InboxView() {
 
   return (
     <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
+      <div {...windowDragRowProps()} className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
         <h1 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{t.inbox.title}</h1>
         <div className="flex items-center gap-2">
           <div className="flex gap-1 text-body">

@@ -115,3 +115,6 @@ release-electron-e2e/
 # Internal release-readiness audits — working notes that describe unfixed
 # issues in detail. This is a public repo; keep them out of it.
 *-RELEASE-READINESS-AUDIT.md
+
+# Build bookkeeping for scripts/check-browser-artifacts.mjs
+.artifact-digests/

@@ -311,6 +311,7 @@ function ScreenshotThumbnail({ resultContent }: { resultContent: ToolResultConte
       </div>
       {expanded && (
         <div
+          data-electron-no-drag
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
           onClick={() => setExpanded(false)}
         >
@@ -345,6 +346,7 @@ function InlineImage({ src }: { src: string }) {
       </div>
       {expanded && (
         <div
+          data-electron-no-drag
           className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
           onClick={() => setExpanded(false)}
         >

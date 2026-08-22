@@ -5,12 +5,19 @@
  * Communicates with Background script via chrome.runtime.onMessage.
  */
 
-import type { ElementInfo, ElementLocator } from '../shared/types.js';
+import type { ElementInfo, ElementLocator, PageSnapshot } from '../shared/types.js';
 
 // Max text size returned by extractText (50KB)
 const MAX_EXTRACT_TEXT_SIZE = 50_000;
 // Max interactive elements returned by snapshot
 const MAX_SNAPSHOT_ELEMENTS = 200;
+// Max serialized size of a snapshot, measured the way the bridge serializes it
+// (pretty-printed JSON — see `formatResult`), so the budget means the same
+// thing here as it does on the wire. Chosen so a full enterprise form fits in
+// one call: the page in the field report was ~8.5KB for 52 elements.
+// The caller can raise it; what matters is that the cut happens here, with a
+// message, rather than as a blind character slice further up the stack.
+const MAX_SNAPSHOT_CHARS = 30_000;
 
 interface ElectronBrowserRuntime {
   handleAction?: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
@@ -51,13 +58,56 @@ if (electronBrowserRuntime) {
   });
 }
 
-// --- Element Reference Map (populated by snapshot) ---
-const refMap = new Map<string, Element>();
+// --- Element Reference Registry (populated by snapshot) ---
+//
+// Refs must survive across snapshots. The agent's loop is snapshot → act →
+// snapshot → act, and it keeps using refs it already holds. Clearing the map
+// and restarting the counter on every snapshot made `e1` mean "first element
+// of the most recent walk", so a ref silently retargeted whenever the DOM
+// shifted — clicking a different control while reporting success. Identity has
+// to be per-element, not per-walk.
+//
+// WeakRef/WeakMap because the page owns these elements, not us: on a
+// single-page app one document outlives thousands of snapshots, and our
+// bookkeeping must not be the thing that keeps detached nodes alive.
+const refByElement = new WeakMap<Element, string>();
+const elementByRef = new Map<string, WeakRef<Element>>();
 let refCounter = 0;
+
+/** Stable ref for an element — same element, same ref, for as long as it lives. */
+function refFor(el: Element): string {
+  const existing = refByElement.get(el);
+  if (existing && elementByRef.get(existing)?.deref() === el) return existing;
+  const ref = `e${++refCounter}`;
+  refByElement.set(el, ref);
+  elementByRef.set(ref, new WeakRef(el));
+  return ref;
+}
+
+/** Resolve a ref, dropping it if the element is gone or detached. */
+function resolveRef(ref: string): Element | null {
+  const el = elementByRef.get(ref)?.deref();
+  if (!el || !el.isConnected) {
+    elementByRef.delete(ref);
+    return null;
+  }
+  return el;
+}
+
+/** Drop refs whose elements have been collected or removed from the document. */
+function sweepRefs(): void {
+  for (const [ref, weak] of elementByRef) {
+    const el = weak.deref();
+    if (!el || !el.isConnected) elementByRef.delete(ref);
+  }
+}
 
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
   switch (action) {
-    case 'snapshot': return takeSnapshot(payload.selector as string | undefined);
+    case 'snapshot': return takeSnapshot(
+      payload.selector as string | undefined,
+      typeof payload.maxChars === 'number' ? payload.maxChars : undefined,
+    );
     case 'click': return clickElement(payload.locator as ElementLocator);
     case 'fill': return fillElement(payload.locator as ElementLocator, payload.value as string);
     case 'select': return selectOption(payload.locator as ElementLocator, payload.value as string);
@@ -79,12 +129,29 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
 // 1. SNAPSHOT — Structured page element extraction
 // =============================================================================
 
-function takeSnapshot(scopeSelector?: string): { url: string; title: string; elements: ElementInfo[] } {
-  const root = scopeSelector ? document.querySelector(scopeSelector) : document.body;
-  if (!root) throw new Error(`Scope element not found: ${scopeSelector}`);
+function takeSnapshot(
+  scopeSelector?: string,
+  maxChars: number = MAX_SNAPSHOT_CHARS,
+): PageSnapshot {
+  // `selector` means "narrow to this region". When several elements match,
+  // all of them are the region — taking `querySelector`'s first match silently
+  // picked one of three dropdown popups (the closed one) and returned an empty
+  // snapshot, which reads as "nothing here" and sends the caller off to script
+  // the page. Same defect as a text locator resolving to the first ancestor:
+  // never resolve an ambiguous target by position.
+  const roots: Element[] = scopeSelector
+    ? [...document.querySelectorAll(scopeSelector)]
+    : (document.body ? [document.body] : []);
+  if (roots.length === 0) {
+    throw new Error(
+      `Scope element not found: ${scopeSelector}. ` +
+      `Take a snapshot without a selector to see what the page actually contains.`
+    );
+  }
 
-  refMap.clear();
-  refCounter = 0;
+  // Refs deliberately survive across snapshots — see the registry above.
+  // Sweeping first keeps the map from growing without bound on long-lived SPAs.
+  sweepRefs();
 
   const interactiveTags = new Set([
     'a', 'button', 'input', 'textarea', 'select', 'details', 'summary',
@@ -95,11 +162,33 @@ function takeSnapshot(scopeSelector?: string): { url: string; title: string; ele
     'listbox', 'option', 'menuitem', 'tab', 'switch', 'slider',
   ]);
 
-  const elements: ElementInfo[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  // Popups that are open right now. Their rows are what a user would click,
+  // and on antd they carry no ARIA role at all — the roles live on a separate
+  // zero-sized mirror — so nothing above would classify them as interactive
+  // and an open dropdown looked empty. Anchoring on the listbox/menu that IS
+  // roled keeps this generic instead of a per-library selector list.
+  const openPopups = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="grid"]')]
+    .map((list) => popupRootFor(list))
+    .filter((popup) => hasBox(popup));
+  const isPopupRow = (el: Element): boolean => {
+    if (openPopups.length === 0) return false;
+    if (!hasBox(el)) return false;
+    if (!openPopups.some((popup) => popup !== el && popup.contains(el))) return false;
+    // A row is a leaf as far as laid-out content goes.
+    if ([...el.children].some((child) => hasBox(child))) return false;
+    const text = normalizedText(el);
+    return text.length > 0 && text.length <= 100;
+  };
 
-  let node: Node | null = walker.currentNode;
-  while (node) {
+  const elements: ElementInfo[] = [];
+  const seenElements = new WeakSet<Element>();
+  let hitCap = false;
+
+  for (const root of roots) {
+    if (hitCap) break;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+    let node: Node | null = walker.currentNode;
+    while (node) {
     const el = node as Element;
     const tag = el.tagName?.toLowerCase();
 
@@ -109,14 +198,14 @@ function takeSnapshot(scopeSelector?: string): { url: string; title: string; ele
       el.hasAttribute('tabindex') ||
       (el.getAttribute('role') && interactiveRoles.has(el.getAttribute('role')!)) ||
       (el as HTMLElement).contentEditable === 'true' ||
-      (tag === 'div' && el.getAttribute('role') && interactiveRoles.has(el.getAttribute('role')!));
+      (tag === 'div' && el.getAttribute('role') && interactiveRoles.has(el.getAttribute('role')!)) ||
+      isPopupRow(el);
 
-    if (isInteractive && isVisible(el)) {
-      const ref = `e${++refCounter}`;
-      refMap.set(ref, el);
-
+    if (isInteractive && !seenElements.has(el) && isSnapshotVisible(el)) {
+      // Scopes can nest or overlap; an element must be listed once.
+      seenElements.add(el);
       const info: ElementInfo = {
-        ref,
+        ref: refFor(el),
         tag,
         enabled: !(el as HTMLButtonElement).disabled,
         visible: true,
@@ -125,6 +214,14 @@ function takeSnapshot(scopeSelector?: string): { url: string; title: string; ele
       // Text content (truncated)
       const text = getVisibleText(el);
       if (text) info.text = text.slice(0, 100);
+
+      // `id` / `name` cost a few characters and save a round trip: they are
+      // what a caller needs to build a css locator that outlives a reload,
+      // and without them the only way to learn a field's selector was to run
+      // a script against the DOM.
+      if (el.id) info.id = el.id;
+      const nameAttr = el.getAttribute('name');
+      if (nameAttr) info.name = nameAttr;
 
       // Input-specific
       if (tag === 'input') {
@@ -160,18 +257,76 @@ function takeSnapshot(scopeSelector?: string): { url: string; title: string; ele
       if (ariaLabel) info.ariaLabel = ariaLabel;
 
       elements.push(info);
-      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
+      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) { hitCap = true; break; }
     }
 
-    node = walker.nextNode();
+      node = walker.nextNode();
+    }
   }
 
-  const truncated = elements.length >= MAX_SNAPSHOT_ELEMENTS;
+  // Bound the payload here, at the only place that still knows what an element
+  // is. Anything downstream can only cut characters, which turns a snapshot
+  // into invalid JSON and drops refs without saying which ones went missing.
+  const hitElementCap = elements.length >= MAX_SNAPSHOT_ELEMENTS;
+  const total = elements.length;
+
+  // Longest prefix that fits, found by binary search on the real serialized
+  // size. Measuring exactly matters — an estimate that runs a little over
+  // hands the payload to the upstream character-slicer, which is the failure
+  // this budget exists to prevent. Binary search keeps it to ~8 passes instead
+  // of the quadratic pop-and-re-serialize.
+  const serializedLength = (count: number) => JSON.stringify(elements.slice(0, count), null, 2).length;
+  let kept = total;
+  if (serializedLength(total) > maxChars) {
+    let low = 1;      // always return at least one element: a single oversized
+    let high = total; // element is more useful than an empty list
+    kept = 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (serializedLength(mid) <= maxChars) {
+        kept = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    elements.length = kept;
+  }
+  const overBudget = kept < total;
+
+  // A scope that matched something but holds nothing actionable is not the
+  // same as an empty page, and saying so is what keeps the caller from
+  // concluding the tools are broken and scripting the page instead.
+  if (elements.length === 0 && scopeSelector) {
+    return {
+      url: location.href,
+      title: document.title,
+      elements,
+      message:
+        `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? '' : 's'}, ` +
+        `none of which contain anything interactive right now — a popup that is closed looks like this. ` +
+        `Take a snapshot without a selector to see the whole page, or open the control first.`,
+    };
+  }
+
+  const reasons: string[] = [];
+  if (hitElementCap) reasons.push(`the ${MAX_SNAPSHOT_ELEMENTS}-element cap`);
+  if (overBudget) reasons.push(`the ${maxChars}-character budget`);
+
   return {
     url: location.href,
     title: document.title,
     elements,
-    ...(truncated ? { truncated: true, message: `Showing first ${MAX_SNAPSHOT_ELEMENTS} elements. Use selector parameter to scope.` } : {}),
+    ...(reasons.length
+      ? {
+        truncated: true,
+        message:
+            `Showing ${elements.length} of ${total}+ interactive elements — hit ${reasons.join(' and ')}. ` +
+            `To see the rest: pass \`selector\` to scope the snapshot to one region ` +
+            `(e.g. the form you are filling), or raise \`maxChars\`. ` +
+            `The elements listed above are complete and their refs are valid.`,
+      }
+      : {}),
   };
 }
 
@@ -191,12 +346,93 @@ function escapeCSS(value: string): string {
   return value.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, '\\$1');
 }
 
+/** Elements that contain everything and are never a meaningful target. */
+const NEVER_A_TARGET = new Set(['html', 'body', 'head', 'script', 'style', 'noscript', 'title']);
+
+/** Short, human-readable handle for an element, used in error messages. */
+function describeElement(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : '';
+  const cls = el.classList.length ? `.${[...el.classList].slice(0, 2).join('.')}` : '';
+  const text = (getVisibleText(el) ?? '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  return `[${refFor(el)}] <${tag}${id}${cls}>${text ? ` "${text}"` : ''}`;
+}
+
+function isClickable(el: Element): boolean {
+  const tag = el.tagName.toLowerCase();
+  if (['a', 'button', 'input', 'select', 'textarea', 'summary', 'label', 'option'].includes(tag)) return true;
+  if (el.hasAttribute('onclick') || el.hasAttribute('tabindex')) return true;
+  const role = el.getAttribute('role');
+  return role !== null && ['button', 'link', 'option', 'menuitem', 'tab', 'checkbox', 'radio', 'switch'].includes(role);
+}
+
+/**
+ * Find an element by its text.
+ *
+ * The rule that matters here is "deepest wins". Matching the first element in
+ * document order whose subtree text merely *contains* the string always
+ * matched an ancestor first — in practice `<body>`, i.e. the whole page shell,
+ * which was then clicked and reported as a success. An ancestor is only the
+ * answer when nothing inside it is.
+ *
+ * Ambiguity is reported, not resolved by guessing: two equally-deep matches
+ * mean the caller's locator does not identify one element, and picking either
+ * is a coin flip performed on the user's live session.
+ */
+function findByText(text: string, tag?: string): Element | null {
+  const scope = tag ?? '*';
+  const wanted = text.trim();
+  // antd inserts a space between the two characters of a two-character Chinese
+  // button, so the DOM holds "提 交" while the user — and anyone describing the
+  // page — says "提交". Whitespace is presentation here, not identity.
+  const squashed = wanted.replace(/\s+/g, '');
+  const candidates = [...document.querySelectorAll(scope)].filter((el) => {
+    if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
+    if (!isSnapshotVisible(el)) return false;
+    const own = normalizedText(el);
+    return own.includes(wanted) || (squashed !== '' && own.replace(/\s+/g, '').includes(squashed));
+  });
+  // In a painted page the real control has a box and the offscreen mirrors do
+  // not, so prefer boxes when there are any. In a background tab nothing has
+  // one and the relaxed set is all there is.
+  const laidOut = candidates.filter(hasBox);
+  const matches = laidOut.length > 0 ? laidOut : candidates;
+  if (matches.length === 0) return null;
+
+  // Keep only the innermost matches: drop any candidate that contains another.
+  let deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+
+  // An exact match beats a containing one ("动设备" over "动设备静设备电气设备").
+  const exact = deepest.filter(
+    (el) => normalizedText(el) === wanted || normalizedText(el).replace(/\s+/g, '') === squashed,
+  );
+  if (exact.length > 0) deepest = exact;
+
+  // A real control beats the wrapper that happens to hold the same text.
+  const clickable = deepest.filter(isClickable);
+  if (clickable.length > 0) deepest = clickable;
+
+  if (deepest.length === 1) return deepest[0];
+
+  throw new Error(
+    `Text "${text}" matches ${deepest.length} different elements, so it does not identify one. ` +
+    `Pick one by ref:\n${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join('\n')}` +
+    (deepest.length > 8 ? `\n  ...and ${deepest.length - 8} more` : '')
+  );
+}
+
 function findElement(locator: ElementLocator): Element | null {
   // ref — from snapshot
   if (locator.ref) {
-    const el = refMap.get(locator.ref);
-    if (el && el.isConnected) return el;
-    // Ref may be stale — fall through
+    const el = resolveRef(locator.ref);
+    if (el) return el;
+    // Naming a ref that no longer resolves is not the same as naming nothing.
+    // Falling through to another strategy here would act on a *different*
+    // element than the caller asked for, and report success.
+    throw new Error(
+      `Ref "${locator.ref}" no longer exists on this page (the element was removed or replaced). ` +
+      `Take a fresh snapshot and use a ref from it.`
+    );
   }
 
   // CSS selector
@@ -206,15 +442,7 @@ function findElement(locator: ElementLocator): Element | null {
 
   // Text content
   if (locator.text) {
-    const tag = locator.tag ?? '*';
-    const candidates = document.querySelectorAll(tag);
-    for (const el of candidates) {
-      const text = getVisibleText(el);
-      if (text && text.includes(locator.text) && isVisible(el)) {
-        return el;
-      }
-    }
-    return null;
+    return findByText(locator.text, locator.tag);
   }
 
   // ARIA role + name — use CSS.escape to prevent selector injection
@@ -250,27 +478,65 @@ function findElementOrThrow(locator: ElementLocator): Element {
 // 3. CLICK
 // =============================================================================
 
-function clickElement(locator: ElementLocator): { success: boolean; message: string; elementText?: string } {
+/** Identify what an action actually acted on, so a wrong target is visible. */
+function targetInfo(el: Element): { ref: string; tag: string; id?: string; role?: string; text?: string } {
+  const text = getVisibleText(el)?.replace(/\s+/g, ' ').trim().slice(0, 50);
+  return {
+    ref: refFor(el),
+    tag: el.tagName.toLowerCase(),
+    ...(el.id ? { id: el.id } : {}),
+    ...(el.getAttribute('role') ? { role: el.getAttribute('role')! } : {}),
+    ...(text ? { text } : {}),
+  };
+}
+
+/**
+ * Dispatch a click the way a component library expects to receive one.
+ *
+ * Pointer events come first because several widget libraries (rc-select, which
+ * backs every antd dropdown, among them) open on `mousedown`/`pointerdown` and
+ * never see a bare `.click()`. These are still synthetic (`isTrusted: false`);
+ * driving real input events needs the debugger/CDP transport, which is a
+ * separate change.
+ */
+function dispatchClickSequence(el: HTMLElement): void {
+  const opts = { bubbles: true, cancelable: true, composed: true };
+  if (typeof PointerEvent === 'function') {
+    el.dispatchEvent(new PointerEvent('pointerdown', opts));
+  }
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  if (typeof PointerEvent === 'function') {
+    el.dispatchEvent(new PointerEvent('pointerup', opts));
+  }
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.click();
+}
+
+function clickElement(locator: ElementLocator): {
+  success: boolean;
+  message: string;
+  elementText?: string;
+  target: ReturnType<typeof targetInfo>;
+} {
   const el = findElementOrThrow(locator);
-  const text = getVisibleText(el)?.slice(0, 50);
+  const target = targetInfo(el);
 
   // Scroll into view if needed
   el.scrollIntoView({ behavior: 'instant', block: 'center' });
 
   // Visual feedback
   highlightElement(el);
-  showStatus(`Click: ${text ?? 'element'}`, 'info');
+  showStatus(`Click: ${target.text ?? 'element'}`, 'info');
 
-  // Dispatch full click sequence
-  const htmlEl = el as HTMLElement;
-  htmlEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-  htmlEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-  htmlEl.click();
+  dispatchClickSequence(el as HTMLElement);
 
   return {
     success: true,
-    message: `Clicked element${text ? `: "${text}"` : ''}`,
-    elementText: text ?? undefined,
+    // Naming the element that was actually hit — not just the text that was
+    // asked for — is what lets a caller notice it landed on the wrong thing.
+    message: `Clicked ${describeElement(el)}`,
+    elementText: target.text,
+    target,
   };
 }
 
@@ -313,25 +579,359 @@ function fillElement(locator: ElementLocator, value: string): { success: boolean
 // 5. SELECT
 // =============================================================================
 
-function selectOption(locator: ElementLocator, value: string): { success: boolean; message: string } {
-  const el = findElementOrThrow(locator) as HTMLSelectElement;
-  if (el.tagName.toLowerCase() !== 'select') {
-    throw new Error(`Element is not a <select>: ${el.tagName}`);
+/** How long to wait for a custom dropdown's options to render after opening it. */
+const DROPDOWN_OPEN_TIMEOUT_MS = 1500;
+
+/**
+ * Not `display:none` / `visibility:hidden`, regardless of its box.
+ *
+ * Deliberately weaker than `isVisible`. A popup that has just opened spends
+ * its entrance animation at `opacity: 0` with a collapsed box, and a page in a
+ * background tab never gets the animation frames to leave that state at all —
+ * Abu drives tabs the user is not looking at, so "has a layout box" is not a
+ * usable test for options inside a dropdown we know is open.
+ */
+function isRendered(el: Element): boolean {
+  if (!el.isConnected) return false;
+  // `checkVisibility` is the only single call that accounts for a hidden
+  // *ancestor*: a child of `display:none` still reports `display: block` as
+  // its own computed style, so checking the element alone answers the wrong
+  // question. `checkOpacity: false` is the point of using it here — a popup
+  // mid-entrance-animation sits at opacity 0, and in a background tab it never
+  // leaves that state, but it is mounted and clickable.
+  const target = el as Element & { checkVisibility?: (options?: Record<string, boolean>) => boolean };
+  if (typeof target.checkVisibility === 'function') {
+    return target.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
+  }
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const style = getComputedStyle(node as HTMLElement);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+  }
+  return true;
+}
+
+/**
+ * Whether an interactive element belongs in the snapshot.
+ *
+ * Stricter `isVisible` asks "does this have a layout box", which component
+ * libraries routinely answer no for the element that carries the semantics:
+ * antd's `role="combobox"` sits on a `width: 0; opacity: 0` <input> beside the
+ * span the user actually sees. Requiring a box dropped **every dropdown on the
+ * page** out of the snapshot — verified against antd 5.21.6 — leaving an agent
+ * to conclude the form had no selects at all.
+ *
+ * So for controls the question becomes: is it mounted, not hidden by CSS, and
+ * does something it sits inside actually occupy space? A control inside a
+ * closed menu fails the second test, which is what keeps this from listing
+ * things the user cannot reach.
+ */
+function isSnapshotVisible(el: Element): boolean {
+  if (isVisible(el)) return true;
+  // Only real form controls get the exemption. Widening it to anything with an
+  // ARIA role surfaced antd's zero-sized screen-reader mirror as if those were
+  // the options — an agent then reasoned about two un-clickable rows out of
+  // six and went back to scripting the page. A collapsed <input> is a control
+  // the page is hiding on purpose; a collapsed `role="option"` is a mirror.
+  const tag = el.tagName.toLowerCase();
+  const isFormControl = ['input', 'textarea', 'select', 'button'].includes(tag)
+    || (el as HTMLElement).contentEditable === 'true';
+  if (!isFormControl) return false;
+  if (!isRendered(el)) return false;
+  let depth = 0;
+  for (let node = el.parentElement; node && depth < 4; node = node.parentElement, depth++) {
+    if (hasBox(node)) return true;
+  }
+  return false;
+}
+
+/** Has a real layout box — i.e. it is something a user could point at. */
+function hasBox(el: Element): boolean {
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * Where an option's label lives. `aria-label` wins: a virtualized row can be
+ * an empty div with only the label on the attribute.
+ */
+function optionLabelOf(el: Element): string {
+  const aria = el.getAttribute('aria-label');
+  if (aria && aria.trim()) return aria.trim();
+  return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The element a user would actually click for this option.
+ *
+ * antd (rc-select) renders the dropdown **twice**: a `role="listbox"` at
+ * `height:0; width:0; overflow:hidden` that exists only for screen readers,
+ * and a separate, completely un-roled list (`.ant-select-item-option`) that
+ * takes the mouse. Clicking the ARIA node closes the dropdown and selects
+ * nothing — verified against antd 5.21.6. Element Plus and friends put the
+ * role on the real row instead, so both shapes have to work.
+ *
+ * The distinction that separates them is not a class name: it is whether the
+ * node has a layout box at all.
+ */
+function clickTargetForOption(ariaOption: Element, popup: Element): Element | null {
+  if (hasBox(ariaOption)) return ariaOption;
+
+  const label = optionLabelOf(ariaOption);
+  if (!label) return null;
+  const rendered = [...popup.querySelectorAll('*')].filter(
+    (el) => hasBox(el) && (el.textContent ?? '').replace(/\s+/g, ' ').trim() === label,
+  );
+  // Innermost wins, same rule as the text locator: an ancestor is only the
+  // answer when nothing inside it is. The click bubbles up to whichever
+  // element carries the handler.
+  const deepest = rendered.filter((el) => !rendered.some((other) => other !== el && el.contains(other)));
+  return deepest[0] ?? null;
+}
+
+/** Nearest ancestor of the a11y list that is actually laid out — the popup. */
+function popupRootFor(container: Element): Element {
+  let node: Element | null = container;
+  while (node && node !== document.body) {
+    if (hasBox(node)) return node;
+    node = node.parentElement;
+  }
+  return container;
+}
+
+/** The `[role=option]` nodes belonging to this control, portal or not. */
+function optionsFor(trigger: Element): Element[] {
+  // A component library usually names its listbox on the trigger, and that
+  // naming is authoritative: several dropdowns can be mounted at once, only
+  // one of them ours. Verified against antd 5.21 (rc-select), which sets
+  // `aria-controls="<id>_list"` on the combobox.
+  const owned = (trigger.getAttribute('aria-controls') ?? trigger.getAttribute('aria-owns') ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => document.getElementById(id))
+    .filter((el): el is HTMLElement => el !== null);
+
+  if (owned.length > 0) {
+    // Ours by name — no need to guess from what is on screen.
+    return owned
+      .flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')])
+      .filter(isRendered);
   }
 
-  let found = false;
-  for (const option of el.options) {
-    if (option.value === value || option.text === value) {
-      el.value = option.value;
-      found = true;
-      break;
+  // No naming: the options render in a portal on <body>, so the only way to
+  // tell one dropdown from another is that ours is the one on screen. Here
+  // the stricter check earns its keep.
+  const containers = [...document.querySelectorAll('[role="listbox"], [role="menu"]')].filter(isVisible);
+  const fromContainers = containers.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]);
+  const options = fromContainers.length > 0
+    ? fromContainers
+    : [...document.querySelectorAll('[role="option"], [role="menuitem"]')];
+
+  return options.filter(isVisible);
+}
+
+/** The scrolling element of a popup — where a virtual list lives. */
+function scrollerWithin(popup: Element): HTMLElement | null {
+  const scrolls = (el: Element) => (el as HTMLElement).scrollHeight > (el as HTMLElement).clientHeight + 1;
+  if (scrolls(popup)) return popup as HTMLElement;
+  for (const node of popup.querySelectorAll('*')) {
+    if (scrolls(node)) return node as HTMLElement;
+  }
+  return null;
+}
+
+/** Normalized visible text, the form option labels are compared in. */
+function normalizedText(el: Element): string {
+  return (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Find a rendered row in the popup carrying exactly this label.
+ *
+ * The ARIA mirror is not always complete — antd virtualizes it, so a list of
+ * six options can advertise two while all six are mounted in the list the
+ * mouse actually sees. The rendered rows are the ground truth for what can be
+ * clicked, so they get searched too rather than trusting the mirror alone.
+ */
+function renderedRowFor(popup: Element, label: string): Element | null {
+  const matches = [...popup.querySelectorAll('*')].filter(
+    (el) => hasBox(el) && normalizedText(el) === label,
+  );
+  const deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
+  return deepest[0] ?? null;
+}
+
+/** Labels of the rendered rows, for telling the caller what was on offer. */
+function renderedRowLabels(popup: Element): string[] {
+  const labels: string[] = [];
+  for (const el of popup.querySelectorAll('*')) {
+    if (!hasBox(el)) continue;
+    // A row is a leaf as far as laid-out content goes.
+    if ([...el.children].some((child) => hasBox(child))) continue;
+    const text = normalizedText(el);
+    if (text && text.length <= 80) labels.push(text);
+  }
+  return labels;
+}
+
+/**
+ * Locate an option by label, scrolling the list if it is virtualized.
+ *
+ * rc-select — and every other list of any size — renders only the rows in
+ * view. On a real antd dropdown of six options, two were in the DOM. So "not
+ * found" among the rendered rows is not an answer; the list has to be walked.
+ */
+async function findOption(
+  trigger: Element,
+  value: string,
+): Promise<{ option: Element | null; label: string; seen: string[] }> {
+  const wanted = value.trim();
+  const squashed = wanted.replace(/\s+/g, '');
+  const seen = new Set<string>();
+
+  /** One resolution pass over whatever the popup currently holds. */
+  const attempt = (): { option: Element; label: string } | null => {
+    const ariaOptions = optionsFor(trigger);
+    if (ariaOptions.length === 0) return null;
+    const popup = popupRootFor(ariaOptions[0].parentElement ?? ariaOptions[0]);
+
+    const labelled = ariaOptions.map((el) => ({ el, label: optionLabelOf(el) }));
+    labelled.forEach(({ label }) => label && seen.add(label));
+    renderedRowLabels(popup).forEach((label) => seen.add(label));
+
+    const hit = labelled.find(({ label }) => label === wanted)
+      ?? labelled.find(({ label }) => label.replace(/\s+/g, '') === squashed)
+      ?? labelled.find(({ label }) => label.includes(wanted));
+    if (hit) {
+      const target = clickTargetForOption(hit.el, popup);
+      if (target) return { option: target, label: hit.label };
     }
+    // The mirror can be virtualized and incomplete; the rendered rows are the
+    // larger set and the only clickable one.
+    const rendered = renderedRowFor(popup, wanted)
+      ?? renderedRowFor(popup, [...seen].find((label) => label.replace(/\s+/g, '') === squashed) ?? wanted);
+    if (rendered) return { option: rendered, label: normalizedText(rendered) };
+    return null;
+  };
+
+  // Poll rather than resolve once. The accessibility mirror is mounted the
+  // instant the dropdown opens, but the list the mouse can reach is laid out a
+  // frame or two later — resolving on the first pass found the labels and no
+  // click target, and reported "option not found" while listing that very
+  // option as seen.
+  const deadline = Date.now() + DROPDOWN_OPEN_TIMEOUT_MS;
+  for (;;) {
+    const hit = attempt();
+    if (hit) return { ...hit, seen: [...seen] };
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
-  if (!found) throw new Error(`Option not found: "${value}"`);
+  // Still nothing: the row may not be mounted at all. Walk the list.
+  const ariaOptions = optionsFor(trigger);
+  const popup = ariaOptions.length > 0
+    ? popupRootFor(ariaOptions[0].parentElement ?? ariaOptions[0])
+    : null;
+  const scroller = popup ? scrollerWithin(popup) : null;
+  if (!scroller) return { option: null, label: '', seen: [...seen] };
 
-  el.dispatchEvent(new Event('change', { bubbles: true }));
-  return { success: true, message: `Selected option: "${value}"` };
+  let previousTop = -1;
+  for (let guard = 0; guard < 40 && scroller.scrollTop !== previousTop; guard++) {
+    previousTop = scroller.scrollTop;
+    scroller.scrollTop += Math.max(1, scroller.clientHeight - 8);
+    scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const hit = attempt();
+    if (hit) return { ...hit, seen: [...seen] };
+  }
+  return { option: null, label: '', seen: [...seen] };
+}
+
+/**
+ * Choose a value from a dropdown.
+ *
+ * Native `<select>` keeps its original path. Everything else is matched by
+ * ARIA role, not by class name: `role="combobox"` with `role="option"`
+ * children is what antd (rc-select), Element Plus, Arco and the rest all
+ * render, so one implementation covers them instead of a per-library
+ * selector list that rots whenever a library renames a class.
+ */
+async function selectOption(
+  locator: ElementLocator,
+  value: string,
+): Promise<{ success: boolean; message: string; target?: ReturnType<typeof targetInfo> }> {
+  const el = findElementOrThrow(locator);
+
+  if (el.tagName.toLowerCase() === 'select') {
+    const select = el as HTMLSelectElement;
+    const options = [...select.options];
+    const match = options.find((o) => o.value === value || o.text === value);
+    if (!match) {
+      throw new Error(
+        `Option "${value}" not found. Available options: ${options.map((o) => `"${o.text}"`).join(', ') || '(none)'}`
+      );
+    }
+    select.value = match.value;
+    select.focus();
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return { success: true, message: `Selected option: "${match.text}"`, target: targetInfo(select) };
+  }
+
+  const role = el.getAttribute('role');
+  const isCustomDropdown =
+    role === 'combobox' || role === 'listbox' ||
+    el.getAttribute('aria-haspopup') === 'listbox' ||
+    optionsFor(el).length > 0;
+
+  if (!isCustomDropdown) {
+    throw new Error(
+      `${describeElement(el)} is not a dropdown: it is not a <select>, has no combobox/listbox role, ` +
+      `and owns no options. If this is a text field use fill; if the control opens a menu, click it and ` +
+      `take a snapshot to see what appeared.`
+    );
+  }
+
+  showStatus(`Select: "${value}"`, 'info');
+  el.scrollIntoView({ behavior: 'instant', block: 'center' });
+
+  // Open it if it is not already open. `aria-expanded` is the library's own
+  // answer to that question — asking beats clicking twice and toggling it shut.
+  if (el.getAttribute('aria-expanded') !== 'true' && optionsFor(el).length === 0) {
+    // (`aria-expanded` is checked first: clicking an open dropdown closes it.)
+    dispatchClickSequence(el as HTMLElement);
+  }
+
+  const { option: chosen, label: chosenLabel, seen } = await findOption(el, value);
+  if (seen.length === 0) {
+    throw new Error(
+      `Opened ${describeElement(el)} but no options appeared within ${DROPDOWN_OPEN_TIMEOUT_MS}ms. ` +
+      `Take a snapshot to see the current state of the page.`
+    );
+  }
+  if (!chosen) {
+    // Listing what IS available turns a dead end into one more attempt,
+    // instead of a fallback to running a script against the page.
+    const wasListed = seen.some(
+      (label) => label === value.trim() || label.replace(/\s+/g, '') === value.trim().replace(/\s+/g, ''),
+    );
+    throw new Error(
+      wasListed
+        ? `Option "${value}" is in ${describeElement(el)} but the dropdown never finished opening, ` +
+          `so there was nothing to click. Take a snapshot to see the page's current state, then retry select.`
+        : `Option "${value}" not found in ${describeElement(el)}. ` +
+          `Options available: ${seen.map((label) => `"${label}"`).join(', ')}`
+    );
+  }
+
+  highlightElement(chosen);
+  chosen.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+  dispatchClickSequence(chosen as HTMLElement);
+
+  return {
+    success: true,
+    message: `Selected "${chosenLabel}" in ${describeElement(el)}`,
+    target: targetInfo(chosen),
+  };
 }
 
 // =============================================================================
@@ -341,9 +941,34 @@ function selectOption(locator: ElementLocator, value: string): { success: boolea
 async function waitFor(
   condition: Record<string, unknown>,
   timeout: number = 30000
-): Promise<{ success: boolean; message: string; timedOut: boolean; elapsed: number }> {
+): Promise<{ success: boolean; message: string; timedOut: boolean; elapsed: number; observed?: string }> {
   const start = Date.now();
   const condType = condition.type as string;
+
+  /**
+   * What the page actually looks like right now, for the timeout path.
+   * "Timed out after 30000ms" tells the caller nothing it did not already
+   * know, and costs another round trip to find out — which is exactly the
+   * round trip that used to get spent on a script.
+   */
+  const describeCurrentState = (): string => {
+    if (condType === 'urlContains') return `current url is ${location.href}`;
+    let el: Element | null;
+    try {
+      el = findElement(condition.locator as ElementLocator);
+    } catch {
+      return 'the locator no longer resolves (its ref is stale) — take a fresh snapshot';
+    }
+    if (!el) return 'no element matches that locator';
+    if (!isVisible(el)) return `matched <${el.tagName.toLowerCase()}> but it has no layout box (hidden or zero-sized)`;
+    if (condType === 'enabled' && (el as HTMLButtonElement).disabled) {
+      return `matched <${el.tagName.toLowerCase()}> but it is still disabled`;
+    }
+    if (condType === 'textContains') {
+      return `matched <${el.tagName.toLowerCase()}> whose text is ${JSON.stringify((getVisibleText(el) ?? '').slice(0, 80))}`;
+    }
+    return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
+  };
 
   const check = (): boolean => {
     switch (condType) {
@@ -392,9 +1017,12 @@ async function waitFor(
       const elapsed = Date.now() - start;
       resolve({
         success: !timedOut,
-        message: timedOut ? `Timed out after ${timeout}ms` : `Condition met after ${elapsed}ms`,
+        message: timedOut
+          ? `Timed out after ${timeout}ms waiting for "${condType}" — ${describeCurrentState()}.`
+          : `Condition met after ${elapsed}ms`,
         timedOut,
         elapsed,
+        ...(timedOut ? { observed: describeCurrentState() } : {}),
       });
     };
 

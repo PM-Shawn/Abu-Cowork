@@ -664,7 +664,7 @@ export default function PreviewPanel({
   if (!previewFilePath) return null;
 
   return (
-    <div className={cn(
+    <div data-electron-no-drag className={cn(
       'flex flex-col',
       isFullscreen ? 'fixed inset-0 z-50 bg-[var(--abu-bg-base)]' : 'h-full',
     )}>

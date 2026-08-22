@@ -21,8 +21,44 @@
   user-select: none;
 }
 
+/* Escape valve. macOS has no chrome row of its own: the content card starts 8px
+   below the window top, so the band beside the traffic lights IS the card, and
+   the blanket rule below would otherwise make it permanently undraggable. A row
+   marked `data-electron-drag` opts back into the drag lane even inside a
+   no-drag card; its children stay no-drag through the `:not()` below, so
+   titles and buttons in that row keep working without per-element marking.
+   The `:not()` is load-bearing — without it both rules match at (0,1,0) with
+   !important and the winner would depend on source order. */
+[data-electron-drag] {
+  -webkit-app-region: drag !important;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 [data-electron-no-drag],
-[data-electron-no-drag] * {
+[data-electron-no-drag] *:not([data-electron-drag]) {
+  -webkit-app-region: no-drag !important;
+}
+
+/* Interactive descendants of ANY drag region are never draggable. Competitor
+   desktop apps ship the same backstop (ChatGPT: `.draggable button{no-drag}`),
+   and it covers drag rows that sit outside a no-drag card, where the rule above
+   does not reach. */
+[data-tauri-drag] :where(button, a, input, textarea, select, [role="button"], [contenteditable]),
+[data-tauri-drag-region] :where(button, a, input, textarea, select, [role="button"], [contenteditable]),
+[data-electron-drag] :where(button, a, input, textarea, select, [role="button"], [contenteditable]) {
+  -webkit-app-region: no-drag !important;
+}
+
+/* Every layer that paints ABOVE the window chrome must carve itself out of the
+   drag lanes. `-webkit-app-region` is an OS-level geometry union that ignores
+   z-index: a drag lane underneath an overlay keeps swallowing its clicks
+   (Windows turns them into window moves), so a modal whose close button lands
+   in the top chrome band is simply dead. Overlays we author declare
+   `data-electron-no-drag` on their root; these selectors cover the layers that
+   escape the React tree into `document.body`, where no ancestor can mark them. */
+[data-radix-popper-content-wrapper],
+[data-radix-popper-content-wrapper] * {
   -webkit-app-region: no-drag !important;
 }
 

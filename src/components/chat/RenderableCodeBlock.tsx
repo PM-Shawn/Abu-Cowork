@@ -462,6 +462,7 @@ export default function RenderableCodeBlock({
 
   const fullscreenOverlay = fullscreen && config.buildFullscreenHtml && createPortal(
     <div
+      data-electron-no-drag
       className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6"
       onClick={() => setFullscreen(false)}
     >

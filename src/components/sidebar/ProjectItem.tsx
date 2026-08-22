@@ -344,6 +344,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       {/* Archive confirmation dialog */}
       {showArchiveConfirm && (
         <div
+          data-electron-no-drag
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onClick={(e) => { if (e.target === e.currentTarget) setShowArchiveConfirm(false); }}
         >
@@ -378,6 +379,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
       {/* Delete confirmation dialog */}
       {showDeleteConfirm && (
         <div
+          data-electron-no-drag
           className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150"
           onClick={(e) => { if (e.target === e.currentTarget) setShowDeleteConfirm(false); }}
         >

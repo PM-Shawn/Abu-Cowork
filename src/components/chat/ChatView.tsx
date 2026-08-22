@@ -12,6 +12,9 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
+import ChapterRail from './ChapterRail';
+import ChapterMenu from './ChapterMenu';
+import { activeChapterIndex, deriveChapters, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
@@ -281,6 +284,13 @@ export default function ChatView({
   const [isAtBottom, setIsAtBottom] = useState(true);
   // Message id to briefly highlight after a search-hit jump (see effect below).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  // Index of the message group at the top of the viewport — what the chapter
+  // rail highlights. Measured from the DOM (see the scroll-spy effect below).
+  const [firstVisibleGroup, setFirstVisibleGroup] = useState(0);
+  // Whether the transcript column leaves enough gutter to hold the rail.
+  // Measured, not guessed from the viewport: the sidebar and the preview
+  // panel both collapse this container without the window changing size.
+  const [railFits, setRailFits] = useState(true);
 
   // Imperative stick-to-bottom: raw scrollTop assignment on the scroll parent,
   // deferred one frame. scrollToIndex is NOT reliable here — called during
@@ -316,6 +326,66 @@ export default function ChatView({
     setIsAtBottom(true);
     if (pinnedRef.current) stickToBottom(scrollParentEl);
   }, [activeConvId, scrollParentEl, stickToBottom, updatePinned]);
+
+  // The rail lives inside the transcript column's own left padding (40px from
+  // `md:px-10`, which any desktop viewport gets), and is 26px wide at its
+  // furthest. So it fits at essentially every pane width — this gate only
+  // catches a pane squeezed so far that the ticks would crowd the text, and
+  // then the header button takes over as the way into the chapter list.
+  //
+  // An earlier 940px gate came from measuring the gutter between the WINDOW and
+  // the column instead; that was the wrong frame of reference and hid the rail
+  // on ordinary layouts.
+  useEffect(() => {
+    if (!scrollParentEl) return;
+    const measure = () => setRailFits(scrollParentEl.clientWidth >= 640);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(scrollParentEl);
+    return () => observer.disconnect();
+  }, [scrollParentEl]);
+
+  // Scroll-spy for the chapter rail.
+  //
+  // Virtuoso's `rangeChanged` looks like the signal for this and is not: it is
+  // derived from `listState.items`, the RENDERED range, which includes the
+  // 900px of overscan `increaseViewportBy` adds above the viewport. Any
+  // conversation shorter than viewport + 1800px therefore renders every row at
+  // once and reports startIndex 0 forever — the rail would pin to the first
+  // chapter and never move, whatever the user scrolled.
+  //
+  // Real geometry instead. Virtuoso stamps `data-index` on every rendered row,
+  // and the row occupying the top of the viewport is by definition rendered,
+  // so reading the last row whose top has passed the viewport's is exact at
+  // any scroll speed — which an IntersectionObserver on chapter starts would
+  // not be, since those rows unmount once they are far enough away.
+  useEffect(() => {
+    if (!scrollParentEl) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const viewportTop = scrollParentEl.getBoundingClientRect().top;
+      const rows: RowPosition[] = [];
+      for (const row of scrollParentEl.querySelectorAll<HTMLElement>('[data-index]')) {
+        rows.push({ index: Number(row.dataset.index), top: row.getBoundingClientRect().top - viewportTop });
+      }
+      // Resting at the bottom is its own case — see `topVisibleGroup`. Measured
+      // here rather than read off `isAtBottom`, which is React state one render
+      // behind and would leave the rail a frame stale on every scroll.
+      const distanceToBottom =
+        scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
+      setFirstVisibleGroup(topVisibleGroup(rows, { atBottom: distanceToBottom <= 24 }));
+    };
+    const onScroll = () => { if (!frame) frame = requestAnimationFrame(measure); };
+    // Also measure now: mounting lands on the newest message without any
+    // scroll event of its own, and the rail must start on the LAST chapter.
+    frame = requestAnimationFrame(measure);
+    scrollParentEl.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      scrollParentEl.removeEventListener('scroll', onScroll);
+      cancelAnimationFrame(frame);
+    };
+  }, [scrollParentEl, activeConvId, messageCount]);
 
   // Unpin on explicit upward user intent. Content growing under the viewport
   // must NOT unpin (that's the whole point of the lock), so we listen for user
@@ -450,6 +520,37 @@ export default function ChatView({
     setGuideVisible(!hasText);
   }, []);
 
+  // Message projection for the list. Computed above the early returns below
+  // so the hooks that depend on it stay unconditional (rules-of-hooks).
+  // Filter out internal system prompts while retaining explicit crash
+  // recovery notices that explain an interrupted task to the user.
+  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
+  const messageGroups = groupMessagesByLoop(visibleMessages);
+  // Derived from the very array Virtuoso renders, so a chapter's groupIndex is
+  // always a valid scroll target — deriving from `messages` instead would let
+  // the two drift the next time grouping rules change.
+  //
+  // Deliberately not memoized: `messageGroups` is a fresh array on every render
+  // (the filter above already is), so a useMemo keyed on it would recompute
+  // every time anyway while costing an extra dependency array to keep honest.
+  // The walk is O(groups) and sits next to `groupMessagesByLoop`, which is
+  // unmemoized for the same reason.
+  const chapters = deriveChapters(messageGroups, t.chat.chapters.sessionStart);
+  const currentChapter = activeChapterIndex(chapters, firstVisibleGroup);
+
+  // Same landing behaviour as a search hit: release the bottom lock (so a late
+  // height measurement cannot yank the view back down) and flash the target so
+  // the eye finds where it arrived. Unlike a search hit the chapter is aligned
+  // to the top, not centred — a chapter is read forwards from its first
+  // message, and centring would hide the turn that opens it above the fold.
+  const jumpToChapter = useCallback((chapter: Chapter) => {
+    updatePinned(false);
+    setHighlightedMessageId(chapter.messageId);
+    virtuosoRef.current?.scrollToIndex({ index: chapter.groupIndex, align: 'start', behavior: 'auto' });
+    clearTimeout(highlightFadeTimerRef.current);
+    highlightFadeTimerRef.current = setTimeout(() => setHighlightedMessageId(null), 2600);
+  }, [updatePinned]);
+
   // Conversation loading from disk (LRU cache miss) — show skeleton instead of welcome page
   if (activeConvId && !activeConv) {
     return (
@@ -574,12 +675,6 @@ export default function ChatView({
     );
   }
 
-  // Chat view with messages
-  // Filter out internal system prompts while retaining explicit crash
-  // recovery notices that explain an interrupted task to the user.
-  const visibleMessages = messages.filter(m => !m.isSystem || m.isRecoveryNotice);
-  const messageGroups = groupMessagesByLoop(visibleMessages);
-
   return (
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
       {/* Conversation title header — flush at card top (TRAE-style header row).
@@ -618,6 +713,11 @@ export default function ChatView({
           >
             {activeConv.title}
           </span>
+        )}
+        {/* Chapter navigation moves into the header exactly when the gutter can
+            no longer hold the rail, so the two never appear at once. */}
+        {!railFits && (
+          <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
       </div>
 
@@ -676,6 +776,9 @@ export default function ChatView({
           shift the content. Both were lost in the Virtuoso-list merge — do not
           drop them again. */}
       <div className="relative flex-1 min-h-0 overflow-y-scroll overlay-scroll" ref={setScrollParentEl}>
+        {railFits && (
+          <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
+        )}
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
           <Virtuoso
             // Remount per conversation so `initialTopMostItemIndex` re-applies

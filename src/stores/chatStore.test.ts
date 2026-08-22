@@ -2493,3 +2493,55 @@ describe('chatStore', () => {
   });
 
 });
+
+describe('updateUserMessageRun with multimodal content (regression: revoked immer draft)', () => {
+  // `updatedMessage = { ...message }` shallow-copied the immer draft, so a
+  // multimodal content ARRAY stayed a nested draft proxy — revoked the moment
+  // the producer returned. The tracked persistence then serialized a revoked
+  // proxy ("Cannot perform 'IsArray' on a proxy that has been revoked"):
+  // every runState revision for an image-carrying row failed to persist, the
+  // ledger showed the run stuck at `pending`, and the dispatch promise
+  // rejection silently handed the just-sent draft back to the composer.
+  // Found by v0.41.0 release acceptance (conversation mt47q9iznggop0).
+  it('persists state transitions on an image-carrying row instead of rejecting', async () => {
+    const id = useChatStore.getState().createConversation();
+    const message = {
+      id: 'client-msg-img',
+      role: 'user',
+      content: 'placeholder',
+      timestamp: FIXED_TIMESTAMP,
+      runId: 'run-img',
+      clientMessageId: 'client-msg-img',
+      runState: 'pending',
+    } as const;
+    useChatStore.getState().addMessage(id, message);
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+    try {
+      // The image path first upgrades the durable row to multimodal content…
+      useChatStore.getState().updateUserMessageRun(id, 'client-msg-img', {
+        state: 'pending',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
+          { type: 'text', text: '这是啥' },
+        ],
+      });
+      await waitForConversationPersistence(id);
+
+      // …then advances the run state on the now-array-carrying draft row.
+      useChatStore.getState().updateUserMessageRun(id, 'client-msg-img', { state: 'running' });
+      await waitForConversationPersistence(id);
+      useChatStore.getState().updateUserMessageRun(id, 'client-msg-img', { state: 'completed' });
+      await waitForConversationPersistence(id);
+
+      const row = useChatStore.getState().conversations[id].messages[0];
+      expect(row.runState).toBe('completed');
+      expect(Array.isArray(row.content)).toBe(true);
+    } finally {
+      vi.mocked(exists).mockReset();
+      vi.mocked(exists).mockResolvedValue(false);
+      vi.mocked(readTextFile).mockReset();
+    }
+  });
+});

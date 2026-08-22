@@ -1274,8 +1274,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
         closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
-      import('../session/checkpoint').then(({ clearCheckpoint }) => {
-        clearCheckpoint(conversationId);
+      import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
+        clearCheckpointForLoop(conversationId, loopId);
       }).catch(() => {});
       break;
     }
@@ -2416,8 +2416,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           closeAxSession(conversationId, loopId).catch(() => {});
         }).catch(() => {});
         // Clear crash recovery checkpoint — loop completed normally
-        import('../session/checkpoint').then(({ clearCheckpoint }) => {
-          clearCheckpoint(conversationId);
+        import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
+          clearCheckpointForLoop(conversationId, loopId);
         }).catch(() => {});
         // Mark conversation status — error if recovery exhausted, otherwise completed.
         // no_progress is a soft stop (visible marker, status completed) like maxTurns.
@@ -2575,8 +2575,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Auto-deactivate skills on abort
         deactivateAllSkills(conversationId);
         // Clear crash recovery checkpoint — loop aborted by user
-        import('../session/checkpoint').then(({ clearCheckpoint }) => {
-          clearCheckpoint(conversationId);
+        import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
+          clearCheckpointForLoop(conversationId, loopId);
         }).catch(() => {});
         // Close any open AX session (releases CFRetain'd element refs)
         import('../tools/definitions/computerTools').then(({ closeAxSession }) => {
@@ -2674,8 +2674,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         closeAxSession(conversationId, loopId).catch(() => {});
       }).catch(() => {});
       // Clear crash recovery checkpoint — loop ended with error
-      import('../session/checkpoint').then(({ clearCheckpoint }) => {
-        clearCheckpoint(conversationId);
+      import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
+        clearCheckpointForLoop(conversationId, loopId);
       }).catch(() => {});
       // Mark conversation as error and send notification
       chatDelta.setConversationStatus(conversationId, 'error');

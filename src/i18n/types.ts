@@ -243,6 +243,8 @@ export interface TranslationDict {
     inputPlaceholderWithSkill: string;
     inputPlaceholderWithAgent: string;
     inputPlaceholderMidTask: string;
+    /** Send button tooltip, spells out both shortcuts. */
+    sendTooltip: string;
     start: string;
     stop: string;
     welcomeTitle: string;

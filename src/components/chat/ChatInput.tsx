@@ -10,6 +10,7 @@ import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
+import { isImeComposing, insertNewlineAtCursor } from '@/components/chat/composerKeys';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
@@ -802,7 +803,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         setSelectedIndex((prev) => (prev + 1) % suggestions.length);
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey && !composingRef.current)) {
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isImeComposing(e, composingRef.current))) {
         e.preventDefault();
         applySuggestion(suggestions[selectedIndex]);
         return;
@@ -826,25 +827,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
     }
-    // Option/Alt + Enter → insert newline at cursor position (Mac: Option+Enter, Win: Alt+Enter)
-    if (e.key === 'Enter' && e.altKey && !composingRef.current) {
+    // Option/Alt + Enter → insert newline at cursor position (Mac: Option+Enter, Win: Alt+Enter).
+    // Shift+Enter needs no branch here: we simply don't preventDefault, and the
+    // textarea inserts the newline itself. Alt+Enter is not a native editing
+    // command, so it does need this one.
+    if (e.key === 'Enter' && e.altKey && !isImeComposing(e, composingRef.current)) {
       e.preventDefault();
       const textarea = textareaRef.current;
-      if (textarea) {
-        const start = textarea.selectionStart ?? text.length;
-        const end = textarea.selectionEnd ?? text.length;
-        const newVal = text.substring(0, start) + '\n' + text.substring(end);
-        setText(newVal);
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.selectionStart = start + 1;
-            textareaRef.current.selectionEnd = start + 1;
-          }
-        });
-      }
+      if (textarea) setText(insertNewlineAtCursor(textarea));
       return;
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !composingRef.current) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isImeComposing(e, composingRef.current)) {
       e.preventDefault();
       handleSend();
     }
@@ -1107,6 +1100,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleSend}
                   disabled={!hasContent}
+                  title={t.chat.sendTooltip}
+                  aria-label={t.chat.sendTooltip}
                   className={cn(
                     'h-7 w-7 shrink-0 rounded-lg transition-colors',
                     hasContent
@@ -1189,6 +1184,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     size="icon"
                     onClick={handleSend}
                     disabled={!hasContent || disabled}
+                    title={t.chat.sendTooltip}
+                    aria-label={t.chat.sendTooltip}
                     className={cn(
                       'h-7 w-7 rounded-lg transition-colors',
                       hasContent && !disabled

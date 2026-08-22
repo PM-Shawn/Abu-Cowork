@@ -15,7 +15,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **One oversized picture can no longer wedge a session** — Every provider route now budgets attached-image size and count at admission. Formats no route accepts are re-encoded even when their pixel dimensions are fine — previously a small `.bmp` walked straight through, entered durable history, and 400'ed every later request in the conversation. The downscale notice also survives retries, so a retried turn asking about coordinates or fine print no longer reads a shrunken screenshot believing it is full size.
 - **Enter is now your choice** — Pick whether Enter sends or starts a new line. IME composition is double-guarded, so confirming a Chinese/Japanese candidate never fires a send, and Alt+Enter no longer reorders what you typed.
 - **Browser tools drive enterprise admin forms directly** — Readonly comboboxes and antd-style custom dropdowns are now first-class: snapshots see them and click/select/fill operate them, instead of degrading to page scripts. Waiting for an element to disappear returns in milliseconds instead of burning the full 30-second timeout (a ref that stops resolving *is* the disappearance), and a popup hidden via `visibility:hidden` is no longer treated as live — the agent can no longer pick an option from a closed dropdown.
-- **Model fetching without surprises** — Fetched model lists arrive unchecked instead of pre-selecting everything, built-in providers can fetch too, and the curated lists are refreshed to the current model generation.
+- **Model fetching without surprises** — Fetched model lists arrive unchecked instead of pre-selecting everything, built-in providers can fetch too, and the curated lists are refreshed to the current model generation. Fetch failures now tell the truth: a rejected key (401/403) is no longer shown as "this provider cannot list models" — errors are typed and carry the HTTP status — and Volcengine's fetch button appears only on plan tiers that actually support listing.
 - **Windows workspace header reworked; macOS app name localizes** — The workspace header lays out properly on Windows, and on Chinese macOS locales the app now displays its Chinese name instead of the romanized one.
 
 ### 🐛 Fixes
@@ -23,7 +23,6 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **Overlay dialogs are clickable again over window drag lanes** — `-webkit-app-region` is an OS-level geometry union that ignores z-index, so a dialog overlapping a drag lane had its buttons silently swallowed; ~30 dialogs now opt out explicitly and a source-scan test guards new ones. macOS header rows drag the window again.
 - **Copying an image inside the app pastes an image again** — not a useless file badge.
 - **Two agent-loop teardown races closed** — A follow-up can no longer be staged into a run that already ended, and a run's late cleanup can no longer delete the next turn's crash-recovery checkpoint (the in-process path now uses the same loop-guarded clear as the sidecar path).
-- **Runtime downloads work behind a proxy** — and the stale browser-automation runtime fallback was removed.
 
 **Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.40.0...v0.41.0
 

@@ -607,7 +607,11 @@ export const useSettingsStore = create<SettingsStore>()(
     (set) => ({
       // ── Provider & Model defaults ──
       providers: defaultProviders,
-      activeModel: { providerId: 'anthropic', modelId: 'claude-sonnet-4-6' },
+      // Must name a model that exists in PROVIDER_CONFIGS.anthropic.models —
+      // nothing downstream validates membership (reconcileActiveProvider only
+      // checks the provider), so a stale id here rides every fresh install's
+      // first request. Pinned by settingsStore.test.ts.
+      activeModel: { providerId: 'anthropic', modelId: 'claude-sonnet-5' },
       recentModels: [],
       favoriteModels: [],
       auxiliaryServices: {},

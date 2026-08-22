@@ -52,6 +52,20 @@ export default defineConfig([
       // `// eslint-disable-next-line @typescript-eslint/no-explicit-any`
       // only when a third-party type is genuinely untypable.
       '@typescript-eslint/no-explicit-any': 'error',
+      // The Electron host's `plugin:updater|check` is three-state: metadata /
+      // null / `{ status: 'disabled' }` marker (updaterHost.cjs header). The
+      // plugin's stock check() wrapper predates the marker and blindly wraps
+      // any truthy result in `new Update(...)` — a caller using it would turn
+      // the marker into a bogus "update available" (the v0.41.0 misleading-
+      // update incident, reintroduced). All checks must go through
+      // src/core/updates/checker.ts, which invokes the command directly.
+      'no-restricted-imports': ['error', {
+        paths: [{
+          name: '@tauri-apps/plugin-updater',
+          importNames: ['check'],
+          message: 'The Electron host returns a three-state result the plugin\'s check() cannot represent. Use checkForUpdate from @/core/updates/checker instead.',
+        }],
+      }],
       // These rules from React hooks recommended are too strict for legitimate patterns
       // like form initialization, syncing derived state, and dynamic icon components
       'react-hooks/set-state-in-effect': 'off',

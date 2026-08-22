@@ -43,6 +43,19 @@ export default function AboutSection() {
     }
     void refreshUpdateNotes();
   }, [locale]);
+
+  // While updaterUnsupported is null no check has answered this session, so the
+  // caption must not claim anything (see captionState below). Resolve the
+  // unknown as soon as the panel opens: a forced silent check answers instantly
+  // and offline on unsupported builds, and on official builds it is the same
+  // feed query the panel's button would run. Without this, a persisted
+  // lastUpdateCheck (<6h) keeps the throttled startup check from ever setting
+  // the flag, leaving the caption blank for the whole session.
+  useEffect(() => {
+    if (useSettingsStore.getState().updaterUnsupported === null) {
+      void checkForUpdate(true, { silent: true }).catch(() => {});
+    }
+  }, []);
   const deviceId = getDeviceId();
 
   const handleCopyDeviceId = useCallback(() => {
@@ -64,7 +77,11 @@ export default function AboutSection() {
     setCheckResult('idle');
     try {
       const result = await checkForUpdate(true);
-      if (!result) {
+      // "just-checked" means a real feed comparison happened. The disabled
+      // marker also resolves null, so guard here at the assignment — not only
+      // in render order — reading the store directly (empty-deps callback, the
+      // hook value would be a stale closure).
+      if (!result && !useSettingsStore.getState().updaterUnsupported) {
         setCheckResult('just-checked');
         setTimeout(() => setCheckResult('idle'), 3000);
       }
@@ -90,6 +107,20 @@ export default function AboutSection() {
       console.error('Failed to restart:', err);
     }
   }, []);
+
+  // What the status caption under the check button may claim, resolved up
+  // front so the JSX stays a flat lookup. 'unknown' (updaterUnsupported still
+  // null — no check has answered this session) renders NOTHING: absence of a
+  // check must never read as "up to date" — a non-official package with the
+  // updater silently disabled misled users into thinking no newer version
+  // existed (v0.41.0 post-release incident).
+  let captionState: 'unsupported' | 'error' | 'unknown' | 'up-to-date' | null = null;
+  if (!updateInfo && !updateChecking) {
+    if (updaterUnsupported) captionState = 'unsupported';
+    else if (checkResult === 'error') captionState = 'error';
+    else if (updaterUnsupported === null) captionState = 'unknown';
+    else captionState = 'up-to-date';
+  }
 
   const progressPresentation = downloadProgress
     ? getUpdateProgressPresentation(downloadProgress)
@@ -264,49 +295,37 @@ export default function AboutSection() {
           {updateChecking ? t.updates.checking : t.updates.checkForUpdates}
         </button>
 
-        {/* Status caption under the button — three-state: updater unsupported
-            in this build / check failed / confirmed up to date. "Unsupported"
-            must never render as "up to date": a non-official package with the
-            updater silently disabled misled users into thinking no newer
-            version existed. */}
-        {!updateInfo && !updateChecking && (
-          updaterUnsupported ? (
-            <div className="flex flex-col items-center gap-1 text-minor text-[var(--abu-text-muted)]">
-              <div className="flex items-center justify-center gap-1.5">
-                <CircleAlert className="h-3.5 w-3.5 shrink-0" />
-                <span className="text-center">{t.updates.unsupportedBuild}</span>
-              </div>
-              <button
-                onClick={() => void handleOpenLink(OFFICIAL_WEBSITE_URL)}
-                className="flex items-center gap-1 text-[var(--abu-clay)] hover:underline"
-              >
-                <ExternalLink className="h-3 w-3" />
-                {t.updates.getFromWebsite}
-              </button>
+        {/* Status caption under the button — flat lookup on captionState (see
+            its derivation above; 'unknown' deliberately renders nothing). */}
+        {captionState === 'unsupported' && (
+          <div className="flex flex-col items-center gap-1 text-minor text-[var(--abu-text-muted)]">
+            <div className="flex items-center justify-center gap-1.5">
+              <CircleAlert className="h-3.5 w-3.5 shrink-0" />
+              <span className="text-center">{t.updates.unsupportedBuild}</span>
             </div>
-          ) : (
-            <div
-              className={cn(
-                'flex items-center justify-center gap-1.5 text-minor transition-all duration-300',
-                checkResult === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
-              )}
+            <button
+              onClick={() => void handleOpenLink(OFFICIAL_WEBSITE_URL)}
+              className="flex items-center gap-1 text-[var(--abu-clay)] hover:underline"
             >
-              {checkResult === 'error' ? (
-                <>
-                  <CircleAlert className="h-3.5 w-3.5" />
-                  <span>{t.updates.checkFailed}</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-                  <span>{t.updates.upToDate}</span>
-                  {checkResult === 'just-checked' && (
-                    <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
-                  )}
-                </>
-              )}
-            </div>
-          )
+              <ExternalLink className="h-3 w-3" />
+              {t.updates.getFromWebsite}
+            </button>
+          </div>
+        )}
+        {captionState === 'error' && (
+          <div className="flex items-center justify-center gap-1.5 text-minor transition-all duration-300 text-[var(--abu-danger)]">
+            <CircleAlert className="h-3.5 w-3.5" />
+            <span>{t.updates.checkFailed}</span>
+          </div>
+        )}
+        {captionState === 'up-to-date' && (
+          <div className="flex items-center justify-center gap-1.5 text-minor transition-all duration-300 text-[var(--abu-text-muted)]">
+            <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
+            <span>{t.updates.upToDate}</span>
+            {checkResult === 'just-checked' && (
+              <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
+            )}
+          </div>
         )}
       </div>
 

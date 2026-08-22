@@ -83,7 +83,11 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     setCheckedResult('idle');
     try {
       const result = await checkForUpdate(true);
-      if (!result) {
+      // 'up-to-date' means a real feed comparison happened. The disabled
+      // marker also resolves null, so guard at the assignment — not only via
+      // updateRow's branch order — reading the store directly (empty-deps
+      // callback, the hook value would be a stale closure).
+      if (!result && !useSettingsStore.getState().updaterUnsupported) {
         setCheckedResult('up-to-date');
         setTimeout(() => setCheckedResult('idle'), 3000);
       }
@@ -171,14 +175,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
                 label: t.updates.unsupportedBuildShort,
                 onClick: () => void openUrl(OFFICIAL_WEBSITE_URL).catch(() => {}),
               }
-          : checkedResult === 'up-to-date'
-            ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
-            : {
-                icon: RefreshCw,
-                label: t.updates.update,
-                onClick: handleCheck,
-                trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
-              };
+            : checkedResult === 'up-to-date'
+              ? { icon: RefreshCw, label: t.updates.upToDate, onClick: handleCheck }
+              : {
+                  icon: RefreshCw,
+                  label: t.updates.update,
+                  onClick: handleCheck,
+                  trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
+                };
   const UpdateIcon = updateRow.icon;
 
   return (

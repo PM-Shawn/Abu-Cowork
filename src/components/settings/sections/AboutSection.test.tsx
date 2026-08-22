@@ -108,26 +108,61 @@ describe('AboutSection — update status caption (three-state)', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('incident journey: clicking 检查更新 on a disabled-updater build flips the caption', async () => {
-    // Regression anchor (2026-08-22): a non-official Windows install clicked
-    // "检查更新" and read "已是最新版本" while the updater was silently
-    // disabled. The check must surface the unsupported state instead.
+  it('unknown state (no check answered yet) claims nothing — neither up-to-date nor unsupported', () => {
+    // Absence of a check must never read as "up to date": with a persisted
+    // recent lastUpdateCheck the throttled startup check can leave the flag
+    // null, and the old code rendered the green claim in that window.
+    resetUpdateState(null);
+    // Mount probe stays pending → the flag remains null for this render.
+    vi.mocked(checkForUpdate).mockReturnValue(new Promise(() => {}));
+    render(<AboutSection />);
+
+    expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('此安装包不支持自动更新，请前往官网下载最新版本'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('incident journey: opening About on a disabled-updater build resolves the unknown state', async () => {
+    // Regression anchor (2026-08-22): a non-official Windows install read
+    // "已是最新版本" while the updater was silently disabled. Opening the
+    // panel now probes (silent, forced) and surfaces the unsupported state
+    // without any click.
     resetUpdateState(null);
     vi.mocked(checkForUpdate).mockImplementation(async () => {
       useSettingsStore.getState().setUpdaterUnsupported(true);
       return null;
     });
-    const user = userEvent.setup();
     render(<AboutSection />);
 
-    // Before the check the flag is unknown → legacy caption is acceptable.
-    expect(screen.getByText('已是最新版本')).toBeInTheDocument();
+    expect(
+      await screen.findByText('此安装包不支持自动更新，请前往官网下载最新版本'),
+    ).toBeInTheDocument();
+    expect(vi.mocked(checkForUpdate)).toHaveBeenCalledWith(true, { silent: true });
+    expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+  });
+
+  it('clicking 检查更新 on a disabled build never marks "just checked"', async () => {
+    // The disabled marker resolves null just like "confirmed current"; the
+    // just-checked state must stay reserved for real feed comparisons.
+    resetUpdateState(true);
+    vi.mocked(checkForUpdate).mockResolvedValue(null);
+    const user = userEvent.setup();
+    render(<AboutSection />);
 
     await user.click(screen.getByText('检查更新'));
 
     expect(
       await screen.findByText('此安装包不支持自动更新，请前往官网下载最新版本'),
     ).toBeInTheDocument();
+    expect(screen.queryByText('刚刚已检查')).not.toBeInTheDocument();
     expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+  });
+
+  it('does not probe on mount when the support state is already known', () => {
+    resetUpdateState(false);
+    render(<AboutSection />);
+
+    expect(vi.mocked(checkForUpdate)).not.toHaveBeenCalled();
   });
 });

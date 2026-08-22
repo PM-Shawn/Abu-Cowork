@@ -752,9 +752,11 @@ function App() {
     getCurrentWindow().setTitle(desktopPlatform === 'macos' ? '' : 'Abu');
   }, [desktopPlatform]);
 
-  // macOS keeps its compact controls in a fixed overlay. Windows keeps the
-  // native frame/menu and reserves a renderer toolbar for business actions.
+  // macOS keeps its compact controls in a fixed overlay. Electron Windows uses
+  // the native caption row plus controls embedded into the workspace headers.
   const mac = desktopPlatform === 'macos';
+  const windowsWorkspaceHeader =
+    desktopPlatform === 'windows' && hasElectronCommandHost();
 
   // Preview split is active only when a preview is open in the chat view AND the
   // right panel is showing — then the chat holds a stable width and preview flex-fills.
@@ -772,7 +774,7 @@ function App() {
 
   const windowTitleBarProps = {
     platform: desktopPlatform,
-    windowsTitleBarOverlay: desktopPlatform === 'windows' && hasElectronCommandHost(),
+    windowsTitleBarOverlay: windowsWorkspaceHeader,
     sidebarCollapsed,
     showSearch: viewMode !== 'settings',
     showNewTask: sidebarCollapsed && viewMode !== 'settings',
@@ -833,7 +835,7 @@ function App() {
             }}
           >
             <div className="min-h-0 flex-1">
-              <Sidebar />
+              <Sidebar windowsWorkspaceHeader={windowsWorkspaceHeader} />
             </div>
           </div>
 
@@ -860,7 +862,12 @@ function App() {
                 {viewMode === 'toolbox' && <ToolboxView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
-                {(viewMode === 'chat' || !viewMode) && <ChatView />}
+                {(viewMode === 'chat' || !viewMode) && (
+                  <ChatView
+                    windowsWorkspaceHeader={windowsWorkspaceHeader}
+                    rightPanelToggleVisible={showRightPanelToggle}
+                  />
+                )}
               </main>
 
               {/* Right panel */}

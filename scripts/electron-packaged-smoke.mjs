@@ -3027,15 +3027,18 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         }
         await rightPanel.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
         const rightPanelLayout = await window.evaluate(() => {
+          const titlebar = document.querySelector('[data-abu-windows-native-titlebar]');
           const toolbar = document.querySelector('[data-abu-windows-toolbar]');
+          const workspaceControls = document.querySelector('[data-abu-windows-workspace-controls]');
           const panel = document.querySelector('[data-abu-right-panel]');
           const tabs = document.querySelector('[data-abu-workspace-tabs]');
-          if (!toolbar || !panel || !tabs) return null;
-          const toolbarRect = toolbar.getBoundingClientRect();
+          if (!titlebar || !workspaceControls || !panel || !tabs) return null;
+          const titlebarRect = titlebar.getBoundingClientRect();
           const panelRect = panel.getBoundingClientRect();
           const tabsRect = tabs.getBoundingClientRect();
           return {
-            toolbarBottom: toolbarRect.bottom,
+            toolbarPresent: Boolean(toolbar),
+            titlebarBottom: titlebarRect.bottom,
             panelTop: panelRect.top,
             tabsTop: tabsRect.top,
             panelRight: panelRect.right,
@@ -3044,8 +3047,10 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
         });
         checks.packagedWindowsRightPanelClearsToolbar =
           rightPanelLayout !== null &&
-          rightPanelLayout.panelTop >= rightPanelLayout.toolbarBottom + 7 &&
-          rightPanelLayout.tabsTop >= rightPanelLayout.toolbarBottom + 7 &&
+          rightPanelLayout.toolbarPresent === false &&
+          rightPanelLayout.panelTop >= rightPanelLayout.titlebarBottom + 7 &&
+          rightPanelLayout.tabsTop >= rightPanelLayout.titlebarBottom + 7 &&
+          Math.abs(rightPanelLayout.panelTop - rightPanelLayout.tabsTop) <= 1 &&
           rightPanelLayout.panelRight <= rightPanelLayout.viewportWidth + 1;
       } else {
         checks.packagedWindowsRightPanelClearsToolbar = true;

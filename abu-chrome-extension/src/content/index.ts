@@ -429,10 +429,15 @@ function findElement(locator: ElementLocator): Element | null {
     // Naming a ref that no longer resolves is not the same as naming nothing.
     // Falling through to another strategy here would act on a *different*
     // element than the caller asked for, and report success.
-    throw new Error(
+    const err = new Error(
       `Ref "${locator.ref}" no longer exists on this page (the element was removed or replaced). ` +
       `Take a fresh snapshot and use a ref from it.`
     );
+    // `waitFor` discriminates on the name: a stale ref *satisfies* `disappear`
+    // and can never satisfy any other condition, so polling on is pure
+    // timeout burn.
+    err.name = 'StaleRefError';
+    throw err;
   }
 
   // CSS selector
@@ -977,7 +982,16 @@ async function waitFor(
         return el !== null && isVisible(el);
       }
       case 'disappear': {
-        const el = findElement(condition.locator as ElementLocator);
+        let el: Element | null;
+        try {
+          el = findElement(condition.locator as ElementLocator);
+        } catch (err) {
+          // A ref that no longer resolves IS the disappearance being waited
+          // on — the node was removed. Before this branch, the throw was
+          // swallowed as "not yet" and the wait always ran to full timeout.
+          if (err instanceof Error && err.name === 'StaleRefError') return true;
+          throw err;
+        }
         return el === null || !isVisible(el);
       }
       case 'enabled': {
@@ -998,9 +1012,20 @@ async function waitFor(
     }
   };
 
+  const staleRefMessage = (err: unknown): string | null =>
+    err instanceof Error && err.name === 'StaleRefError' ? err.message : null;
+
   // Fast check first
-  if (check()) {
-    return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
+  try {
+    if (check()) {
+      return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
+    }
+  } catch (err) {
+    const stale = staleRefMessage(err);
+    if (stale === null) throw err;
+    // appear/enabled/textContains on a dead node can never come true — fail
+    // now with the re-snapshot guidance instead of burning the whole timeout.
+    return { success: false, message: stale, timedOut: false, elapsed: Date.now() - start };
   }
 
   // Poll with MutationObserver + throttled interval fallback
@@ -1008,7 +1033,7 @@ async function waitFor(
     let resolved = false;
     let checkScheduled = false;
 
-    const complete = (timedOut: boolean) => {
+    const complete = (timedOut: boolean, failure?: string) => {
       if (resolved) return;
       resolved = true;
       observer.disconnect();
@@ -1016,10 +1041,10 @@ async function waitFor(
       clearTimeout(timeoutTimer);
       const elapsed = Date.now() - start;
       resolve({
-        success: !timedOut,
-        message: timedOut
+        success: !timedOut && failure === undefined,
+        message: failure ?? (timedOut
           ? `Timed out after ${timeout}ms waiting for "${condType}" — ${describeCurrentState()}.`
-          : `Condition met after ${elapsed}ms`,
+          : `Condition met after ${elapsed}ms`),
         timedOut,
         elapsed,
         ...(timedOut ? { observed: describeCurrentState() } : {}),
@@ -1030,7 +1055,17 @@ async function waitFor(
       if (resolved) return;
       try {
         if (check()) complete(false);
-      } catch {
+      } catch (err) {
+        const stale = staleRefMessage(err);
+        if (stale !== null) {
+          // The ref went stale mid-poll (the framework replaced the node).
+          // For every condition except `disappear` — which check() already
+          // translated to success — the wait can never be satisfied, so
+          // surface the re-snapshot guidance now instead of swallowing the
+          // throw on every poll until the timeout fires.
+          complete(false, stale);
+          return;
+        }
         // Ignore transient DOM errors during check
       }
     };
@@ -1476,9 +1511,16 @@ function showStatus(text: string, type: 'info' | 'success' | 'error' = 'info'): 
 
 function isVisible(el: Element): boolean {
   const htmlEl = el as HTMLElement;
+  const style = getComputedStyle(htmlEl);
+  // Checked unconditionally: `visibility: hidden` keeps the layout box, so
+  // `offsetParent` stays non-null and the branch below never sees it — a
+  // closed dropdown a library hides this way would otherwise count as the
+  // live popup and its options as clickable. The computed value is per
+  // element, so a `visibility: visible` child inside a hidden ancestor still
+  // correctly reports visible.
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
   if (htmlEl.offsetParent === null && htmlEl.style?.position !== 'fixed' && htmlEl.style?.position !== 'sticky') {
-    const style = getComputedStyle(htmlEl);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    if (style.display === 'none') return false;
   }
   const rect = el.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;

@@ -276,9 +276,11 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     if (locator.ref) {
       const el = resolveRef(locator.ref);
       if (el) return el;
-      throw new Error(
+      const err = new Error(
         `Ref "${locator.ref}" no longer exists on this page (the element was removed or replaced). Take a fresh snapshot and use a ref from it.`
       );
+      err.name = "StaleRefError";
+      throw err;
     }
     if (locator.css) {
       return document.querySelector(locator.css);
@@ -578,7 +580,13 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
           return el !== null && isVisible(el);
         }
         case "disappear": {
-          const el = findElement(condition.locator);
+          let el;
+          try {
+            el = findElement(condition.locator);
+          } catch (err) {
+            if (err instanceof Error && err.name === "StaleRefError") return true;
+            throw err;
+          }
           return el === null || !isVisible(el);
         }
         case "enabled": {
@@ -598,13 +606,20 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
           throw new Error(`Unknown wait condition: ${condType}`);
       }
     };
-    if (check()) {
-      return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
+    const staleRefMessage = (err) => err instanceof Error && err.name === "StaleRefError" ? err.message : null;
+    try {
+      if (check()) {
+        return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
+      }
+    } catch (err) {
+      const stale = staleRefMessage(err);
+      if (stale === null) throw err;
+      return { success: false, message: stale, timedOut: false, elapsed: Date.now() - start };
     }
     return new Promise((resolve) => {
       let resolved = false;
       let checkScheduled = false;
-      const complete = (timedOut) => {
+      const complete = (timedOut, failure) => {
         if (resolved) return;
         resolved = true;
         observer.disconnect();
@@ -612,8 +627,8 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
         clearTimeout(timeoutTimer);
         const elapsed = Date.now() - start;
         resolve({
-          success: !timedOut,
-          message: timedOut ? `Timed out after ${timeout}ms waiting for "${condType}" \u2014 ${describeCurrentState()}.` : `Condition met after ${elapsed}ms`,
+          success: !timedOut && failure === void 0,
+          message: failure ?? (timedOut ? `Timed out after ${timeout}ms waiting for "${condType}" \u2014 ${describeCurrentState()}.` : `Condition met after ${elapsed}ms`),
           timedOut,
           elapsed,
           ...timedOut ? { observed: describeCurrentState() } : {}
@@ -623,7 +638,12 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
         if (resolved) return;
         try {
           if (check()) complete(false);
-        } catch {
+        } catch (err) {
+          const stale = staleRefMessage(err);
+          if (stale !== null) {
+            complete(false, stale);
+            return;
+          }
         }
       };
       const observer = new MutationObserver(() => {
@@ -946,9 +966,10 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   }
   function isVisible(el) {
     const htmlEl = el;
+    const style = getComputedStyle(htmlEl);
+    if (style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (htmlEl.offsetParent === null && htmlEl.style?.position !== "fixed" && htmlEl.style?.position !== "sticky") {
-      const style = getComputedStyle(htmlEl);
-      if (style.display === "none" || style.visibility === "hidden") return false;
+      if (style.display === "none") return false;
     }
     const rect = el.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;

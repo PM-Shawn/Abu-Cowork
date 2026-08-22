@@ -126,6 +126,7 @@ const zhCN: TranslationDict = {
     undo: '撤销',
     importSession: '导入会话',
     renameConversation: '重命名',
+    moreActions: '更多操作',
     viewScheduledTask: '查看定时任务',
     archiveRun: '删除记录',
     triggered: '监听事件',

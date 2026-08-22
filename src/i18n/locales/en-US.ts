@@ -126,6 +126,7 @@ const enUS: TranslationDict = {
     undo: 'Undo',
     importSession: 'Import session',
     renameConversation: 'Rename',
+    moreActions: 'More actions',
     viewScheduledTask: 'View scheduled task',
     archiveRun: 'Archive',
     triggered: 'Triggered',

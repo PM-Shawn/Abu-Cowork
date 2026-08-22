@@ -239,6 +239,11 @@ export interface ImageAttachment {
    *  original resolution — otherwise it reads coordinates and fine print off a
    *  shrunken picture believing it is full size. */
   resized?: { fromWidth: number; fromHeight: number; toWidth: number; toHeight: number };
+  /** Disk snapshot under outputs/images/, set when the attachment is rebuilt
+   *  from a persisted image block (retry). After an app restart `data` is empty
+   *  (stripped on persist) — this path is the only way the send-path
+   *  rehydration and the thumbnail can recover the pixels. */
+  filePath?: string;
 }
 
 // Thinking block for extended thinking

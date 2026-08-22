@@ -2545,3 +2545,47 @@ describe('updateUserMessageRun with multimodal content (regression: revoked imme
     }
   });
 });
+
+describe('sanitizeLoadedMessages — stale pending rows whose loop actually replied', () => {
+  // The immer draft-leak (fixed alongside) left every image-carrying user row
+  // permanently 'pending' in the ledger — including all of v0.40.0's. On load
+  // those rows were branded runState 'failed' ("发送失败" + retry) even though
+  // the substantive assistant reply sits right below them, and retrying such
+  // a row re-sends a stripped (empty-data) image. A stale-active row whose
+  // loopId has a substantive assistant reply is now inferred completed.
+  it('marks a pending user row completed when its loop has a real reply', () => {
+    const sanitized = sanitizeLoadedMessages([
+      {
+        id: 'u1', role: 'user', content: [{ type: 'text', text: '这是啥' }],
+        timestamp: 1, runState: 'pending', loopId: 'loop-a',
+      },
+      {
+        id: 'a1', role: 'assistant', content: '这是一张渐变图。',
+        timestamp: 2, loopId: 'loop-a',
+      },
+    ] as never);
+    expect(sanitized[0].runState).toBe('completed');
+    expect(sanitized[0].runError).toBeUndefined();
+  });
+
+  it('still fails a pending row whose loop never produced a reply', () => {
+    const sanitized = sanitizeLoadedMessages([
+      {
+        id: 'u1', role: 'user', content: 'hello',
+        timestamp: 1, runState: 'pending', loopId: 'loop-b',
+      },
+      // Ghost placeholder — empty assistant row, filtered out and NOT a reply.
+      { id: 'a1', role: 'assistant', content: '', timestamp: 2, loopId: 'loop-b' },
+    ] as never);
+    expect(sanitized[0].runState).toBe('failed');
+    expect(sanitized).toHaveLength(1);
+  });
+
+  it('does not touch terminal rows', () => {
+    const sanitized = sanitizeLoadedMessages([
+      { id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'completed', loopId: 'loop-c' },
+      { id: 'a1', role: 'assistant', content: 'y', timestamp: 2, loopId: 'loop-c' },
+    ] as never);
+    expect(sanitized[0].runState).toBe('completed');
+  });
+});

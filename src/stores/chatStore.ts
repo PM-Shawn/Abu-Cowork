@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { current } from 'immer';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
@@ -1275,7 +1276,14 @@ export const useChatStore = create<ChatStore>()(
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
           conv.updatedAt = Date.now();
           conv.contextCache = undefined;
-          updatedMessage = { ...message };
+          // `current`, not a spread: `message` is an immer draft, and a shallow
+          // copy keeps nested values (a multimodal `content` ARRAY) as draft
+          // proxies that are revoked the moment this producer returns. The
+          // tracked persistence below then serializes a revoked proxy —
+          // "Cannot perform 'IsArray' on a proxy that has been revoked" — so
+          // every runState revision for an image-carrying row failed to
+          // persist and the ledger showed the run stuck at `pending`.
+          updatedMessage = current(message);
         });
 
         if (!updatedMessage) return;
@@ -1330,7 +1338,11 @@ export const useChatStore = create<ChatStore>()(
               if (meta) {
                 meta.messageCount = conv.messages.length;
                 meta.updatedAt = conv.updatedAt;
-                metaToPersist = { ...meta };
+                // `current`, not a spread: same revoked-draft hazard as
+                // updateUserMessageRun above — `meta.model` is a nested object,
+                // so a shallow copy of the draft hands the async persistence a
+                // child proxy that is revoked when this producer returns.
+                metaToPersist = current(meta);
               }
             }
           }

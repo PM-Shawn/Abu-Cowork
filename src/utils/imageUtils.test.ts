@@ -37,11 +37,13 @@ describe('sniffImageMediaType', () => {
       expect(sniffImageMediaType(head(0x25, 0x50, 0x44, 0x46, 0x2d))).toBeNull();
     });
 
-    it('rejects TIFF and BMP — real images, but not types the composer can send', () => {
+    it('rejects TIFF — Chromium cannot decode it, so admission could not re-encode it', () => {
       expect(sniffImageMediaType(head(0x49, 0x49, 0x2a, 0x00))).toBeNull(); // TIFF little-endian
       expect(sniffImageMediaType(head(0x4d, 0x4d, 0x00, 0x2a))).toBeNull(); // TIFF big-endian
-      expect(sniffImageMediaType(head(0x42, 0x4d))).toBeNull(); // BMP
     });
+    // BMP moved out of this list deliberately: the admission gate re-encodes
+    // wire-illegal-but-decodable types now, and drag-drop already admitted
+    // `.bmp` by extension — see the BMP describe block below.
 
     it('rejects RIFF containers that are not WebP (e.g. WAV)', () => {
       const wav = head(0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45);
@@ -72,5 +74,20 @@ describe('sniffImageMediaType', () => {
       // `…/id=6571367.107158211` — the name says ".107158211", the bytes say PNG.
       expect(sniffImageMediaType(PNG)).toBe('image/png');
     });
+  });
+});
+
+describe('sniffImageMediaType — BMP', () => {
+  // Pasting a copied .bmp file used to fall through to the file-badge path:
+  // the sniffer knew only the four wire-safe signatures, and on macOS the
+  // pasteboard temp item carries no usable name or type — so the picture
+  // became an unreadable `id=…` badge. Drag-drop admitted the same file by
+  // extension, so the two entrances disagreed. BMP bytes are now recognised;
+  // the admission gate re-encodes them to a wire-safe format downstream.
+  it('recognises BMP bytes so paste matches the drag path', () => {
+    const bmp = new Uint8Array(16);
+    bmp[0] = 0x42; // 'B'
+    bmp[1] = 0x4d; // 'M'
+    expect(sniffImageMediaType(bmp)).toBe('image/bmp');
   });
 });

@@ -164,6 +164,11 @@ publish: null
 mac:
   category: public.app-category.productivity
   icon: src-tauri/icons/icon.icns
+  # Let macOS pick the localized app name ("阿布") from
+  # <locale>.lproj/InfoPlist.strings, written by the afterPack hook
+  # (scripts/electron-localize-app-name.cjs) so Spotlight matches Chinese.
+  extendInfo:
+    LSHasLocalizedDisplayName: true
   artifactName: "${productName}-${version}-mac-${arch}.${ext}"
   # `npm run pack:electron` (--dir) still produces just the unpacked .app for
   # fast iteration + the packaged smoke. `npm run dist:electron` builds:

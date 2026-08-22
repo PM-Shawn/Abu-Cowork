@@ -24,6 +24,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { localizeMacAppName } = require('./electron-localize-app-name.cjs');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
 const NESTED_BINARY_DIRS = ['native-helper', 'sandbox-launcher', 'python-runtime', 'node-runtime'];
@@ -168,6 +169,8 @@ function copyDirectory(source, destination, platform) {
 
 /** @param {import('app-builder-lib').AfterPackContext} context */
 module.exports = async function afterPack(context) {
+  // Localized name files must land before any signing seals Contents/Resources.
+  localizeMacAppName(context);
   signNestedMacBinaries(context);
 
   // Playwright's Electron driver needs the Node inspector, which the release

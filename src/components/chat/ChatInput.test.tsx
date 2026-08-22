@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import ChatInput, { mergeComposerAppend, referenceDedupeKey, referenceChipLabel } from './ChatInput';

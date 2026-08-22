@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
 import { describe, it, expect, afterEach, vi } from 'vitest';

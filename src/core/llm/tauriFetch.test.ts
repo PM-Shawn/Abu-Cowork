@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from 'vitest';
 
 // Note: @tauri-apps/plugin-http is globally mocked in src/test/setup.ts.

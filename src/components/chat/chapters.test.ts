@@ -52,6 +52,16 @@ describe('deriveChapters', () => {
     expect(deriveChapters(groups, FALLBACK)[0].summary).toBe('第一句回复');
   });
 
+  it('summarises a many-line reply from its first line only', () => {
+    // Guards the hand-rolled first-line scan in `toLabel`: it must stop at the
+    // first line with content instead of materialising the whole reply, and the
+    // result must not change because the reply is long.
+    const reply = ['', '  ', '结论：不是 flake。', ...Array.from({ length: 60 }, (_, i) => `细节第 ${i} 行`)].join('\n');
+    const groups = [[message('u1', 'user', '为什么挂了'), message('a1', 'assistant', reply)]];
+
+    expect(deriveChapters(groups, FALLBACK)[0].summary).toBe('结论：不是 flake。');
+  });
+
   it('leaves the summary empty while a turn has no reply yet', () => {
     const groups = [[message('u1', 'user', '刚发出去还没回')]];
 

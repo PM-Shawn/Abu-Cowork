@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { emitTo } from '@tauri-apps/api/event'
 import { startPetStatusBridge, stopPetStatusBridge } from './petStatusBridge'

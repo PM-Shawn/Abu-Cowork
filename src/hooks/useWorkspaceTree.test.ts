@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { readDir, watch, exists, type DirEntry, type UnwatchFn } from '@tauri-apps/plugin-fs';

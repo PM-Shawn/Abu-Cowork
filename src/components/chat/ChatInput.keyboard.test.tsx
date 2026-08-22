@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /**
  * Keyboard contract for the composer.
  *

@@ -811,7 +811,15 @@ function App() {
         data-abu-app-shell
         className="relative flex h-full w-full flex-col overflow-hidden bg-[var(--abu-bg-canvas)]"
       >
-        <WindowTitleBar {...windowTitleBarProps} />
+        {/* Chromium builds the OS drag region by walking the layout tree in
+            DOCUMENT order, unioning `drag` rects and subtracting `no-drag`
+            ones — stacking order does not decide the winner, the LAST writer
+            does. macOS renders its chrome as `fixed` overlays, so the controls
+            must come after the cards or a card's own drag row (see
+            `windowDragRowProps`) unions straight back over them and the
+            buttons stop responding. Windows/Linux keep their chrome rows in
+            normal flow, where moving them would move them visually. */}
+        {!mac && <WindowTitleBar {...windowTitleBarProps} />}
 
         <div
           data-abu-app-layout
@@ -860,6 +868,8 @@ function App() {
             </div>
           </div>
         </div>
+
+        {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
         <ToastContainer />
 

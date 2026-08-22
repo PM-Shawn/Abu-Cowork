@@ -32,6 +32,7 @@ import ComputerUseStatusBar from './ComputerUseStatusBar';
 import ConvIdBadge from './ConvIdBadge';
 import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
+import { windowDragRowProps } from '@/utils/windowDrag';
 import { Input } from '@/components/ui/input';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
@@ -477,6 +478,10 @@ export default function ChatView() {
   if (!activeConv || activeConv.messages.length === 0) {
     return (
       <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
+        {/* The welcome screen has no header row, so it gets the same 44px drag
+            band the conversation view's title row provides. In flow, never
+            overlaying, so it cannot cover the scroller underneath. */}
+        <div {...windowDragRowProps()} className="shrink-0 h-11" />
         <div className="flex-1 flex flex-col items-center justify-start overflow-y-auto px-8 pt-[12vh] pb-12">
           <div className="w-full max-w-2xl">
             {/* Title */}
@@ -571,7 +576,7 @@ export default function ChatView() {
     <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
       {/* Conversation title header — flush at card top (TRAE-style header row).
           Extra left padding clears the traffic lights when the sidebar is collapsed on macOS. */}
-      <div className={cn(
+      <div {...windowDragRowProps()} className={cn(
         'shrink-0 flex items-center h-11 px-4',
         // When the sidebar is collapsed the title-bar toolbar (sidebar toggle + search +
         // new task) floats over the top-left of this card — indent the title to clear them.

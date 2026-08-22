@@ -135,6 +135,7 @@ export default function ConversationSearchModal({ open, onClose }: { open: boole
 
   return (
     <div
+      data-electron-no-drag
       className="fixed inset-0 z-[60] bg-black/20 flex items-start justify-center"
       onMouseDown={onClose}
     >

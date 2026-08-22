@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useTodosStore } from '@/stores/todosStore';
 import { useI18n } from '@/i18n';
+import { windowDragRowProps } from '@/utils/windowDrag';
 import { cn } from '@/lib/utils';
 import TodoItem from './TodoItem';
 
@@ -99,7 +100,7 @@ export default function TodoView() {
 
   return (
     <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
+      <div {...windowDragRowProps()} className="flex items-center justify-between px-6 py-4 border-b border-[var(--abu-border)]">
         <h1 className="text-h-md font-semibold text-[var(--abu-text-primary)]">{t.todos.title}</h1>
         <div className="flex items-center gap-2">
           <div className="flex gap-1 text-body">

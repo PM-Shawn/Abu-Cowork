@@ -112,6 +112,7 @@ export default function CapabilitySetupDialog() {
 
   return (
     <div
+      data-electron-no-drag
       className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/32 p-6 backdrop-blur-[2px]"
       onClick={(event) => {
         if (event.target === event.currentTarget) cancel();

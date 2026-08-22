@@ -27,6 +27,8 @@ export default function SystemSettingsDialog() {
 
   return (
     <div
+      data-abu-settings-dialog
+      data-electron-no-drag
       className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/32 backdrop-blur-[2px]"
       onClick={(e) => {
         if (e.target === e.currentTarget) closeSystemSettings();
@@ -34,6 +36,7 @@ export default function SystemSettingsDialog() {
     >
       <div className="relative w-[min(1180px,92vw)] h-[min(840px,90vh)] rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-2xl overflow-hidden">
         <button
+          data-abu-settings-close
           onClick={closeSystemSettings}
           aria-label={t.common.close}
           className="absolute top-3 right-3 z-10 w-8 h-8 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"

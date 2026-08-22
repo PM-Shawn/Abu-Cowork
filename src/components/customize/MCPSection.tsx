@@ -635,7 +635,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
       {/* Add / Edit Server Modal */}
       {showAddForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) handleCloseAddForm(); }}>
+        <div data-electron-no-drag className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onMouseDown={(e) => { if (e.target === e.currentTarget) handleCloseAddForm(); }}>
           <div className="bg-[var(--abu-bg-base)] rounded-2xl shadow-xl w-full max-w-md flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--abu-border)]">
               <div className="flex items-center gap-2">

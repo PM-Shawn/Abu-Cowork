@@ -53,12 +53,13 @@ export default function CustomizePanel() {
     <>
       {/* Backdrop */}
       <div
+        data-electron-no-drag
         className="fixed inset-0 bg-black/20 z-40 backdrop-blur-sm"
         onClick={closeCustomize}
       />
 
       {/* Panel */}
-      <div className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--abu-bg-muted)] shadow-2xl z-50 flex flex-col animate-slide-in-right">
+      <div data-electron-no-drag className="fixed right-0 top-0 bottom-0 w-[420px] bg-[var(--abu-bg-muted)] shadow-2xl z-50 flex flex-col animate-slide-in-right">
         {/* Header */}
         <div className="shrink-0 px-5 pt-5 pb-4 border-b border-[var(--abu-border)]">
           <div className="flex items-center justify-between mb-4">

@@ -8,8 +8,12 @@
  * Lifecycle:
  *   agentLoop turn start  → writeCheckpoint({ status: 'llm_calling' })
  *   tool execution start  → writeCheckpoint({ status: 'tool_executing' })
- *   loop normal end       → clearCheckpoint()
- *   loop abort / error    → clearCheckpoint()
+ *   loop normal end       → clearCheckpointForLoop()
+ *   loop abort / error    → clearCheckpointForLoop()
+ *   (the unguarded clearCheckpoint() is for callers that own no loopId,
+ *    e.g. discarding recovery for a conversation from the startup UI —
+ *    loop teardown must use the guarded variant, because teardown can
+ *    outlive the turn and the next turn may already own the conversation)
  *   app startup           → findOrphanedCheckpoints() → show recovery UI
  */
 

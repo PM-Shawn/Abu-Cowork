@@ -90,8 +90,18 @@ function getMaxScreenshots(usagePercent?: number): number {
  * Tell the model, in the text it actually receives, that this tool call's
  * screenshots were dropped from history. Count comes from the recorded result,
  * so the same history always renders the same string.
+ *
+ * Silent when the call had no images. The strip indices are derived from
+ * `msg.toolCalls` and reused against `msg.toolCallsForContext` at the same
+ * position, but the two are built by different producers — toolCalls follows the
+ * order the model requested, while toolCallsForContext is appended by
+ * eventRouter as each tool *finishes*, and tools run through Promise.allSettled.
+ * Nothing guarantees position j means the same call in both. That index sharing
+ * predates this note and is not addressed here; the guard just keeps a
+ * misalignment from putting "[0 screenshot(s) removed…]" in front of the model.
  */
 function appendScreenshotRemovedNote(result: string | undefined, imageCount: number): string {
+  if (imageCount <= 0) return result ?? '';
   const note = `[${imageCount} screenshot(s) removed from history to save context]`;
   return result === undefined || result === '' ? note : `${result}\n\n${note}`;
 }

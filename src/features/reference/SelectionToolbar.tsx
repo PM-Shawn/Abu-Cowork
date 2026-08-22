@@ -15,14 +15,18 @@ interface Props {
   onAdd: () => void;
   onComment: (comment: string) => void;
   onDismiss: () => void;
+  /** Document-level ⌘J/Enter shortcuts. Hosts where those keys are live input
+   *  (the terminal: Enter runs the shell command) must opt out — otherwise the
+   *  toolbar would hijack a keystroke the user aimed at the host. */
+  enableKeyboard?: boolean;
 }
 
-export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComment, onDismiss }: Props) {
+export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComment, onDismiss, enableKeyboard = true }: Props) {
   const { t } = useI18n();
 
   // Keyboard: ⌘/Ctrl+J → open comment editor; Enter → add (only when not in editor)
   useEffect(() => {
-    if (editing) return;
+    if (editing || !enableKeyboard) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'j' || e.key === 'J')) {
         e.preventDefault();
@@ -34,7 +38,7 @@ export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComm
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [editing, onAdd, onEditingChange]);
+  }, [editing, enableKeyboard, onAdd, onEditingChange]);
 
   // Estimated size of the toolbar buttons row; used for edge-clamping without
   // a ResizeObserver (acceptable V1 approximation — real size is within ~10 px).
@@ -68,7 +72,7 @@ export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComm
           >
             <MessageSquarePlus className="h-3.5 w-3.5" />
             {t.reference.commentToChat}
-            <span className="text-caption text-[var(--abu-text-tertiary)]">{mod} J</span>
+            {enableKeyboard && <span className="text-caption text-[var(--abu-text-tertiary)]">{mod} J</span>}
           </button>
           <div className="h-4 w-px bg-[var(--abu-border-subtle)]" />
           <button
@@ -78,7 +82,7 @@ export function SelectionToolbar({ rect, editing, onEditingChange, onAdd, onComm
           >
             <MessageSquare className="h-3.5 w-3.5" />
             {t.reference.addToChat}
-            <span className="text-caption text-[var(--abu-text-tertiary)]">↵</span>
+            {enableKeyboard && <span className="text-caption text-[var(--abu-text-tertiary)]">↵</span>}
           </button>
         </div>
       )}

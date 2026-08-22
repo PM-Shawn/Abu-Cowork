@@ -1740,6 +1740,9 @@ const enUS: TranslationDict = {
     startHere: 'Start from here',
     terminalProcessExited: '[process exited]',
     terminalStartFailed: 'Failed to start terminal: {error}',
+    terminalCopy: 'Copy',
+    terminalPaste: 'Paste',
+    terminalSelectAll: 'Select All',
     browser: {
       back: 'Back',
       forward: 'Forward',

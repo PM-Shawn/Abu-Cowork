@@ -37,8 +37,16 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'interrupted',
 ]);
 
-function recoverInterruptedUserRun(msg: Message): Message {
+function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
+  // A stale-active row whose loop demonstrably produced a substantive reply
+  // did complete — only its terminal runState revision was lost (the immer
+  // draft-leak fixed alongside this shipped every image-carrying row that
+  // way, including all of v0.40.0's). Branding those rows "发送失败" invites
+  // a retry of a turn that already succeeded.
+  if (msg.loopId && answeredLoopIds?.has(msg.loopId)) {
+    return { ...msg, runState: 'completed' };
+  }
   return {
     ...msg,
     runState: 'failed',
@@ -63,10 +71,27 @@ export function sanitizeImportedMessage(msg: Message): Message {
   });
 }
 
+/** A non-ghost assistant row: real text, tool activity, or thinking. Shared
+ * by the ghost filter below and the completed-run inference above it. */
+function isSubstantiveAssistant(msg: Message): boolean {
+  if (msg.role !== 'assistant') return false;
+  const text = typeof msg.content === 'string'
+    ? msg.content
+    : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
+  return text.trim().length > 0
+    || (msg.toolCalls?.length ?? 0) > 0
+    || (msg.toolCallsForContext?.length ?? 0) > 0
+    || !!msg.thinking;
+}
+
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
  * Ghost messages are empty assistant placeholders written before content arrived
  * (crash / network failure before streaming started). They must not reach the LLM. */
 export function sanitizeLoadedMessages(messages: Message[]): Message[] {
+  const answeredLoopIds = new Set<string>();
+  for (const msg of messages) {
+    if (msg.loopId && isSubstantiveAssistant(msg)) answeredLoopIds.add(msg.loopId);
+  }
   return messages
     .map((msg) => {
       const toolCalls = msg.toolCalls?.map((tc) => {
@@ -87,18 +112,9 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
         ...msg,
         isStreaming: false,
         toolCalls,
-      });
+      }, answeredLoopIds);
     })
-    .filter(msg => {
-      if (msg.role !== 'assistant') return true;
-      const text = typeof msg.content === 'string'
-        ? msg.content
-        : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
-      return text.trim().length > 0
-        || (msg.toolCalls?.length ?? 0) > 0
-        || (msg.toolCallsForContext?.length ?? 0) > 0
-        || !!msg.thinking;
-    });
+    .filter(msg => msg.role !== 'assistant' || isSubstantiveAssistant(msg));
 }
 
 /** Build an in-memory Conversation + Meta from a validated ShareBundle.

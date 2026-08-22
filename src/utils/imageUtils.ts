@@ -12,6 +12,7 @@ const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
 const GIF_SIGNATURE = [0x47, 0x49, 0x46, 0x38]; // "GIF8" — covers 87a and 89a
 const RIFF_SIGNATURE = [0x52, 0x49, 0x46, 0x46]; // "RIFF"
 const WEBP_SIGNATURE = [0x57, 0x45, 0x42, 0x50]; // "WEBP", at offset 8
+const BMP_SIGNATURE = [0x42, 0x4d]; // "BM"
 
 function startsWith(bytes: Uint8Array, signature: number[], offset = 0): boolean {
   if (bytes.length < offset + signature.length) return false;
@@ -27,8 +28,11 @@ function startsWith(bytes: Uint8Array, signature: number[], offset = 0): boolean
  * Extension- and mime-based routing both misfile that as a plain document, so
  * the picture is lost. The bytes are the only honest signal.
  *
- * Only the four types the composer can actually send are recognised
- * (`SUPPORTED_IMAGE_TYPES`); anything else stays a file attachment, which is
+ * Recognised types are the four the composer can send as-is
+ * (`SUPPORTED_IMAGE_TYPES`) plus BMP, which the admission gate re-encodes to a
+ * wire-safe format (`fitImageToDimension`) — the drag path already admits
+ * `.bmp` by extension, so the paste path recognising the same bytes keeps the
+ * two entrances consistent. Anything else stays a file attachment, which is
  * what it was before. Pass at least `IMAGE_MAGIC_PREFIX_BYTES` bytes.
  */
 export function sniffImageMediaType(bytes: Uint8Array): string | null {
@@ -36,5 +40,6 @@ export function sniffImageMediaType(bytes: Uint8Array): string | null {
   if (startsWith(bytes, JPEG_SIGNATURE)) return 'image/jpeg';
   if (startsWith(bytes, GIF_SIGNATURE)) return 'image/gif';
   if (startsWith(bytes, RIFF_SIGNATURE) && startsWith(bytes, WEBP_SIGNATURE, 8)) return 'image/webp';
+  if (startsWith(bytes, BMP_SIGNATURE)) return 'image/bmp';
   return null;
 }

@@ -1891,6 +1891,9 @@ export interface TranslationDict {
     startHere: string;
     terminalProcessExited: string;
     terminalStartFailed: string;
+    terminalCopy: string;
+    terminalPaste: string;
+    terminalSelectAll: string;
     browser: {
       back: string;
       forward: string;

@@ -1741,6 +1741,9 @@ const zhCN: TranslationDict = {
     startHere: '从这里开始',
     terminalProcessExited: '[进程已退出]',
     terminalStartFailed: '终端启动失败：{error}',
+    terminalCopy: '复制',
+    terminalPaste: '粘贴',
+    terminalSelectAll: '全选',
     browser: {
       back: '后退',
       forward: '前进',

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
  * Regression tests for the Checkbox primitive.

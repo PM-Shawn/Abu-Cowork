@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
  * Regression: the panel used to bind to the conversation's LATEST execution —

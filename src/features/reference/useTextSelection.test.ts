@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // src/features/reference/useTextSelection.test.ts
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';

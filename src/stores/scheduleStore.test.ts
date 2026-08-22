@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useScheduleStore, computeNextRunAt, applyCatchupOnRehydrate } from './scheduleStore';
 import type { ScheduleConfig, ScheduledTask } from '../types/schedule';

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /**
  * Characterization tests for the content-script DOM runtime.
  *

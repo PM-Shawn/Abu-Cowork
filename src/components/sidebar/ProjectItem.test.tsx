@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 /**
  * Tests for the per-project conversation list in the sidebar.

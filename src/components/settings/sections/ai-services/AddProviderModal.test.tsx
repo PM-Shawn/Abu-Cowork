@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { computeShowAdvanced, toggleEffort } from './providerCapabilities';
 import AddProviderModal from './AddProviderModal';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { setLanguage } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
 
@@ -687,7 +687,10 @@ describe('AddProviderModal — fetched model checklist', () => {
 
 describe('AddProviderModal — curated provider fetch', () => {
   // DeepSeek ships a curated list of exactly these two.
-  const CURATED = ['deepseek-v4-pro', 'deepseek-v4-flash'];
+  // Read the shipped list rather than restating it: hardcoding the ids made
+  // this suite fail the moment DeepSeek's curated list gained a model, which is
+  // a config change, not a regression in what these tests are about.
+  const CURATED = PROVIDER_CONFIGS.deepseek.models.map((m) => m.id);
   // What a live fetch returns: the curated pair plus 8 ids we never shipped —
   // enough rows to cross MODEL_FILTER_MIN_ITEMS so the dropdown grows its
   // search + counter header.
@@ -818,11 +821,13 @@ describe('AddProviderModal — curated provider fetch', () => {
     await renderAndFetch();
     await screen.findByText('deepseek-v5-preview');
 
-    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: 'deepseek-v4' } });
+    const query = 'deepseek-v4';
+    fireEvent.change(screen.getByPlaceholderText('Search models…'), { target: { value: query } });
     fireEvent.click(screen.getByRole('button', { name: 'Select all' }));
 
-    // deepseek-v4-pro / -flash / -pro-thinking / -lite match; -pro was already
-    // selected, so the count lands at 4 rather than growing by 4.
-    await screen.findByText(`4 of ${TOTAL_ROWS} selected`);
+    // Everything matching the query ends up selected — and nothing else. The
+    // expected count is derived, not restated, so it tracks the shipped list.
+    const matching = [...CURATED, ...FETCHED_ONLY].filter((id) => id.includes(query));
+    await screen.findByText(`${matching.length} of ${TOTAL_ROWS} selected`);
   });
 });

@@ -243,6 +243,10 @@ export interface TranslationDict {
     inputPlaceholderWithSkill: string;
     inputPlaceholderWithAgent: string;
     inputPlaceholderMidTask: string;
+    /** Send button tooltip when Enter sends. */
+    sendTooltipEnterSends: string;
+    /** Send button tooltip when Enter inserts a newline. `{modifier}` = ⌘ / Ctrl. */
+    sendTooltipModifierSends: string;
     start: string;
     stop: string;
     welcomeTitle: string;
@@ -889,6 +893,11 @@ export interface TranslationDict {
     capabilityComputerPlatformHint: string;
     capabilityComputerPrivacy: string;
     closeWindowBehavior: string;
+    composerEnterBehavior: string;
+    composerEnterBehaviorDesc: string;
+    composerEnterSends: string;
+    /** `{modifier}` = ⌘ / Ctrl. */
+    composerEnterNewline: string;
     closeWindowAsk: string;
     closeWindowAskDesc: string;
     closeWindowMinimize: string;

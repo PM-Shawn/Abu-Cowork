@@ -3236,10 +3236,33 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       // launcher wrapper through app.process(), and killing that wrapper does
       // not crash the packaged application.
       await restoredInput.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
+      // Killing the stopped task's command tree happens on the sidecar's fast
+      // path, before the shell finishes finalizing the aborted run and the
+      // conversation leaves 'running'. Anything submitted inside that gap is
+      // staged as a follow-up by ChatInput, and the abort terminal then parks
+      // the queue as paused — so the crash task never starts.
+      //
+      // Do NOT try to gate this on a timing signal. Two attempts failed here:
+      // the Stop button hides on `agentStatus` (flipped by the click itself,
+      // not at the end of finalization), and the durable `runState`
+      // "interrupted" row is written at the START of finalization, so relying
+      // on the write debounce to push it past the end only held on the faster
+      // arm64 runner and lost the race on Intel. Absorb the staging instead:
+      // if this prompt was parked, resume it, which is exactly what a user
+      // would do and leaves nothing to time.
       await restoredInput.fill(crashPrompt);
       await restoredInput.press('Enter');
+      const resumeQueueButton = window
+        .locator('button:has-text("继续队列"), button:has-text("Resume queue")')
+        .last();
       await waitUntil(
-        () => fs.existsSync(crashTree.resultPath),
+        async () => {
+          if (fs.existsSync(crashTree.resultPath)) return true;
+          if (await resumeQueueButton.isVisible().catch(() => false)) {
+            await resumeQueueButton.click().catch(() => {});
+          }
+          return fs.existsSync(crashTree.resultPath);
+        },
         'the hard-crash command tree to start',
       );
       readLiveTaggedTree(crashTree.resultPath, crashTree.marker, 'hard Electron crash');

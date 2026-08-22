@@ -10,6 +10,8 @@ import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { uint8ArrayToBase64 } from '@/utils/base64';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isImageFile } from '@/components/chat/FileAttachment';
+import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
+import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
@@ -24,7 +26,9 @@ import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
-import { generateAttachmentId, readFileAsBase64, SUPPORTED_IMAGE_TYPES } from '@/utils/imageUtils';
+import { generateAttachmentId, SUPPORTED_IMAGE_TYPES } from '@/utils/imageUtils';
+import { fitImageToDimension } from '@/utils/imageCompress';
+import { admissionMaxDimension } from '@/core/llm/imagePolicy';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import FolderSelector from '@/components/common/FolderSelector';
 import PromoteToProjectHint from '@/components/chat/PromoteToProjectHint';
@@ -114,13 +118,36 @@ interface FileAttachmentItem {
   name: string;
 }
 
+/**
+ * The single admission gate for composer images.
+ *
+ * Providers reject an image whose longest side exceeds their limit, and the
+ * rejected image is already in durable history by then — every later request in
+ * that session fails too, including text-only ones. Downscaling here keeps the
+ * picture usable instead of letting one oversized screenshot kill the thread.
+ *
+ * `resized` rides along so the send path can tell the model the image it is
+ * looking at is not at original scale (see `buildUserMessageContent`).
+ */
+async function admitImage(
+  bytes: Uint8Array,
+  mediaType: ImageAttachment['mediaType'],
+): Promise<ImageAttachment> {
+  const fitted = await fitImageToDimension({ bytes, mediaType }, admissionMaxDimension());
+  return {
+    id: generateAttachmentId(),
+    data: uint8ArrayToBase64(fitted.bytes),
+    mediaType: fitted.mediaType as ImageAttachment['mediaType'],
+    ...(fitted.resized ? { resized: fitted.resized } : {}),
+  };
+}
+
 /** Read a local image file path into an ImageAttachment via Tauri fs */
 async function readLocalImage(filePath: string): Promise<ImageAttachment> {
   const bytes = await readFile(filePath);
-  const base64 = uint8ArrayToBase64(bytes);
   const ext = filePath.toLowerCase().split('.').pop() ?? '';
   const mediaType = (IMAGE_MIME_MAP[ext] ?? 'image/jpeg') as ImageAttachment['mediaType'];
-  return { id: generateAttachmentId(), data: base64, mediaType };
+  return admitImage(bytes, mediaType);
 }
 
 /** Process file paths: read images as base64, collect non-image paths as file badges */
@@ -217,6 +244,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
+  const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
@@ -322,8 +350,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // (b) Bitmap-only fallback (screenshots etc.) — use pre-captured File objects.
     for (const file of bitmapFiles) {
-      const { data, mediaType } = await readFileAsBase64(file);
-      setImages((prev) => [...prev, { id: generateAttachmentId(), data, mediaType }]);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const image = await admitImage(bytes, file.type as ImageAttachment['mediaType']);
+      setImages((prev) => [...prev, image]);
     }
   }, []);
 
@@ -776,7 +805,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         setSelectedIndex((prev) => (prev + 1) % suggestions.length);
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey && !composingRef.current)) {
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isImeComposing(e, composingRef.current))) {
         e.preventDefault();
         applySuggestion(suggestions[selectedIndex]);
         return;
@@ -800,27 +829,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
     }
-    // Option/Alt + Enter → insert newline at cursor position (Mac: Option+Enter, Win: Alt+Enter)
-    if (e.key === 'Enter' && e.altKey && !composingRef.current) {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (textarea) {
-        const start = textarea.selectionStart ?? text.length;
-        const end = textarea.selectionEnd ?? text.length;
-        const newVal = text.substring(0, start) + '\n' + text.substring(end);
-        setText(newVal);
-        requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.selectionStart = start + 1;
-            textareaRef.current.selectionEnd = start + 1;
-          }
-        });
+    if (e.key === 'Enter' && !isImeComposing(e, composingRef.current)) {
+      const action = resolveEnterAction(e, { behavior: enterBehavior, isMac: isMacOS() });
+      // 'native' means the textarea inserts the newline itself — leaving the
+      // default action alone preserves the browser's caret handling and undo
+      // stack, so it is deliberately the do-nothing branch.
+      if (action === 'send') {
+        e.preventDefault();
+        handleSend();
+      } else if (action === 'insert') {
+        e.preventDefault();
+        const textarea = textareaRef.current;
+        if (textarea) setText(insertNewlineAtCursor(textarea));
       }
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !composingRef.current) {
-      e.preventDefault();
-      handleSend();
     }
   };
 
@@ -839,6 +860,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
+
+  // Send-button tooltip. With no standing hint in the composer, this is the
+  // only place the shortcuts are written down, so it has to track both the
+  // chosen behavior and the platform's send modifier.
+  const sendTooltip = enterBehavior === 'enter'
+    ? t.chat.sendTooltipEnterSends
+    : format(t.chat.sendTooltipModifierSends, { modifier: isMacOS() ? '⌘' : 'Ctrl' });
 
   // Determine placeholder based on selected command or scenario
   const placeholder = disabled
@@ -1081,6 +1109,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   size="icon"
                   onClick={handleSend}
                   disabled={!hasContent}
+                  title={sendTooltip}
+                  aria-label={sendTooltip}
                   className={cn(
                     'h-7 w-7 shrink-0 rounded-lg transition-colors',
                     hasContent
@@ -1163,6 +1193,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     size="icon"
                     onClick={handleSend}
                     disabled={!hasContent || disabled}
+                    title={sendTooltip}
+                    aria-label={sendTooltip}
                     className={cn(
                       'h-7 w-7 rounded-lg transition-colors',
                       hasContent && !disabled

@@ -8,7 +8,7 @@
  * exactly once" / "capture the ONE registered tool.invoke handler" tests
  * need that isolation.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import type { SubagentDefinition } from '../../types';
 
 // ── Mocked dependencies (thin forwarding factories over stable outer
@@ -124,6 +124,15 @@ async function importFresh() {
 }
 
 describe('subagentRunner', () => {
+  // Same cold-transform hazard as agentLoopRunner.test.ts: left in the first
+  // test body, the first importFresh() here measured 2.7 s against the 5 s
+  // testTimeout — and a timed-out body is not cancelled, so it keeps mutating
+  // the shared mocks after vitest has moved on. Pay it under the 30 s
+  // hookTimeout instead.
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
   beforeEach(() => {
     getSidecarStatus.mockReset();
     sidecarRequestMock.mockReset();

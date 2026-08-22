@@ -32,6 +32,14 @@ export const ARTIFACTS = [
     rebuild: 'npm run build:browser-extension',
   },
   {
+    // Tracked in git and shipped by the Tauri bundle, so it drifts silently:
+    // CI rebuilds the extension and diffs it against this copy, which means a
+    // source edit without `copy-resources` fails there rather than here.
+    artifact: 'src-tauri/browser-extension/content.js',
+    sources: ['abu-chrome-extension/src', 'abu-browser-shared/types.ts'],
+    rebuild: 'npm run build:browser-extension && npm run copy-resources',
+  },
+  {
     artifact: 'electron/browser-runtime/dist/server.mjs',
     sources: ['abu-browser-bridge/src', 'electron/browser-runtime/server.ts'],
     rebuild: 'npm run build:electron-browser-runtime',
@@ -80,15 +88,25 @@ export function sourceDigest(sources) {
   return hash.digest('hex');
 }
 
-/** Path of the digest stamp that sits beside an artifact. */
+/**
+ * Where an artifact's source digest is recorded.
+ *
+ * Deliberately not beside the artifact: `src-tauri/browser-extension/` is
+ * tracked in git and CI diffs it against a fresh build of
+ * `abu-chrome-extension/dist/`, so a stamp inside either directory would
+ * either have to be committed as a generated file or show up as drift.
+ */
+const STAMP_DIR = path.join(ROOT, '.artifact-digests');
+
 export function stampPathFor(artifact) {
-  return path.join(ROOT, path.dirname(artifact), `.${path.basename(artifact)}.sources`);
+  return path.join(STAMP_DIR, `${artifact.replace(/[/\\]/g, '__')}.sources`);
 }
 
 /** Called by the build scripts once they have written an artifact. */
 export function recordSourceDigest(artifact) {
   const entry = ARTIFACTS.find((a) => a.artifact === artifact);
   if (!entry) throw new Error(`no artifact entry for ${artifact}`);
+  fs.mkdirSync(STAMP_DIR, { recursive: true });
   fs.writeFileSync(stampPathFor(artifact), `${sourceDigest(entry.sources)}\n`);
 }
 

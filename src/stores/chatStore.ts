@@ -90,7 +90,15 @@ function isSubstantiveAssistant(msg: Message): boolean {
 export function sanitizeLoadedMessages(messages: Message[]): Message[] {
   const answeredLoopIds = new Set<string>();
   for (const msg of messages) {
-    if (msg.loopId && isSubstantiveAssistant(msg)) answeredLoopIds.add(msg.loopId);
+    // Substantive text alone is not proof the turn finished — a stream that
+    // died mid-sentence leaves non-empty text too, and inferring 'completed'
+    // there would hide the retry affordance behind a half reply. `usage` is
+    // only written at a clean stream end (message_stop), so it separates the
+    // two: every normally-finished turn carries it (verified across the
+    // draft-leak era's ledgers), a crashed stream never does.
+    if (msg.loopId && msg.role === 'assistant' && msg.usage && isSubstantiveAssistant(msg)) {
+      answeredLoopIds.add(msg.loopId);
+    }
   }
   return messages
     .map((msg) => {

@@ -145,6 +145,37 @@ function configureApplicationMenu(
   return true;
 }
 
+/**
+ * Native edit context menu for the whole window: right-click in any editable
+ * field shows cut/copy/paste/select-all, and right-click on selected page text
+ * shows copy. Without this Electron shows NOTHING on right-click (unlike a
+ * browser), which read as "copy/paste is broken" in the chat composer.
+ *
+ * Renderer-owned menus stay in charge: a renderer that calls
+ * `event.preventDefault()` on `contextmenu` (e.g. the workspace terminal's
+ * custom menu) suppresses Chromium's context-menu request, so this handler
+ * never fires there. Non-actionable right-clicks (no selection, not editable)
+ * intentionally show no menu.
+ */
+function attachEditContextMenu(win, Menu, { isZh = false } = {}) {
+  const label = (zh, en) => (isZh ? zh : en);
+  win.webContents.on('context-menu', (_event, params) => {
+    const { isEditable, selectionText, editFlags } = params;
+    const hasSelection = !!selectionText && selectionText.trim().length > 0;
+    if (!isEditable && !hasSelection) return;
+    const template = isEditable
+      ? [
+          { role: 'cut', label: label('剪切', 'Cut'), enabled: !!editFlags.canCut },
+          { role: 'copy', label: label('复制', 'Copy'), enabled: !!editFlags.canCopy },
+          { role: 'paste', label: label('粘贴', 'Paste'), enabled: !!editFlags.canPaste },
+          { type: 'separator' },
+          { role: 'selectAll', label: label('全选', 'Select All'), enabled: !!editFlags.canSelectAll },
+        ]
+      : [{ role: 'copy', label: label('复制', 'Copy'), enabled: !!editFlags.canCopy }];
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+}
+
 function syncMainWindowChromeTheme(win, dark, platform = process.platform) {
   if (!win || win.isDestroyed?.()) return false;
   const colors = chromeColors(dark);
@@ -194,6 +225,7 @@ module.exports = {
   WINDOWS_OVERLAY_BACKGROUND,
   WINDOW_DRAG_REGION_CSS,
   WINDOWS_MENU_IDS,
+  attachEditContextMenu,
   buildWindowsMenuTemplate,
   configureApplicationMenu,
   mainWindowPlatformOptions,

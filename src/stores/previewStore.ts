@@ -1,4 +1,16 @@
 import { create } from 'zustand';
+import { useSettingsStore } from './settingsStore';
+
+/**
+ * Opening workspace content is an explicit "show me this" intent, so it must
+ * also un-collapse the right panel. RightPanel's own auto-expand effect only
+ * fires when `hasWideContent` flips false→true — with the panel collapsed but
+ * tabs still open, re-clicking a file card changed no state at all and the
+ * panel silently stayed hidden.
+ */
+function expandRightPanel(): void {
+  useSettingsStore.getState().setRightPanelCollapsed(false);
+}
 
 /**
  * A single tab in the right-panel workspace. `preview` is today's single
@@ -135,11 +147,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const existing = tabs.find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
       set({ activeTabId: existing.id, previewFilePath: filePath });
+      expandRightPanel();
       return;
     }
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath }];
     set({ tabs: nextTabs, activeTabId: id, previewFilePath: filePath });
+    expandRightPanel();
   },
 
   openBrowser: (url = '', requestedId) => {
@@ -161,11 +175,15 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const existing = tabs.find((t) => t.kind === 'browser' && t.url === url);
     if (existing) {
       set({ activeTabId: existing.id, previewFilePath: null });
+      expandRightPanel();
       return existing.id;
     }
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'browser', url }];
     set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    // User-invoked only: the `requestedId` branch above (agent browser-view
+    // adoption) intentionally keeps the current collapse state.
+    expandRightPanel();
     return id;
   },
 
@@ -174,6 +192,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'terminal' }];
     set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    expandRightPanel();
   },
 
   activateTab: (id) => {

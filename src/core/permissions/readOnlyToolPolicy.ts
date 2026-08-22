@@ -59,6 +59,10 @@ import { TOOL_NAMES } from '../tools/toolNames';
  * - `write_file` / `edit_file` / `delete_file`, `update_memory`,
  *   `update_soul`, `clipboard_write`, `create_todo`,
  *   `log_task_completion`: writes, by definition.
+ * - `send_file`: exfiltration path — it uploads a local file out to the IM
+ *   user. An unattended read-only channel must never send workspace files
+ *   outward, so it stays off this allowlist (fail-closed). Do NOT add it.
+ *   `authGate.test.ts` asserts this exclusion.
  * - `skill_manage` / `save_agent` / `manage_scheduled_task` /
  *   `manage_trigger` / `manage_file_watch` / `manage_mcp_server`:
  *   self-extension. An unattended run must not be able to widen what the

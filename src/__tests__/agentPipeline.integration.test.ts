@@ -258,6 +258,7 @@ vi.mock('../core/tools/toolNames', () => ({
     DELEGATE_TO_AGENT: 'delegate_to_agent',
     SHOW_WIDGET: 'show_widget',
     TOOL_SEARCH: 'tool_search',
+    SEND_FILE: 'send_file',
   },
   // agentLoop calls this on every tool_use event — the real function, not a
   // stub, so hidden-marking semantics stay faithful in the pipeline test.
@@ -312,7 +313,15 @@ vi.mock('../core/skill/preprocessor', () => ({
 }));
 
 vi.mock('../core/skill/toolFilter', () => ({
-  matchesToolName: vi.fn().mockReturnValue(true),
+  // Exact-name match (with a minimal trailing-wildcard case) rather than a blanket
+  // `true`: the loop now passes a non-empty blockedTools (['send_file']) for
+  // non-IM runs, which exercises the deferred-tool filter — a blanket-true mock
+  // would drop every deferred tool instead of just the blocked one.
+  matchesToolName: vi.fn().mockImplementation((name: string, pattern: string) => {
+    if (pattern === '*') return true;
+    if (pattern?.endsWith('*')) return name.startsWith(pattern.slice(0, -1));
+    return name === pattern;
+  }),
   parseToolPatterns: vi.fn().mockReturnValue({ inputValidators: new Map() }),
 }));
 

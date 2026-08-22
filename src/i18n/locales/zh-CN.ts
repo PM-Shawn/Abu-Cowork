@@ -2834,6 +2834,16 @@ const zhCN: TranslationDict = {
       trashFailed: 'Error: 移入废纸篓失败：{error}（未删除，也未永久删除）',
       deleteRefusedCatastrophic: 'Error: 拒绝将 {path} 移入废纸篓 —— 不允许删除文件系统根目录或用户主目录。',
     },
+    im: {
+      sendFileNotInIM: 'Error: send_file 只能在 IM 频道会话中使用，当前会话无法发送文件给外部用户。',
+      sendFileNeedsPath: '参数错误：send_file 需要 path（要发送文件的绝对路径）。',
+      sendFileNotFound: 'Error: 找不到文件 {path}。请使用绝对路径，并确认文件已生成。',
+      sendFileNotAFile: 'Error: {path} 是目录，不是文件，无法发送。',
+      sendFileTooLarge: 'Error: 文件过大（{size}），超过发送上限 {max}。',
+      sendFileUnsupported: 'Error: 当前平台（{platform}）暂不支持发送文件。',
+      sendFileSuccess: '已发送文件「{fileName}」给用户。',
+      sendFileError: '发送文件失败：{error}',
+    },
     widget: {
       errTitleEmpty: '参数错误：title 不能为空。',
       errWidgetCodeEmpty: '参数错误：widget_code 不能为空。',

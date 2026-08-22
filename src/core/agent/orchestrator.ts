@@ -210,6 +210,11 @@ export interface IMContext {
   workspacePath: string | null;
   /** Capability level determines what the AI can/cannot do in this IM session */
   capability?: import('../../types/imChannel').IMCapabilityLevel;
+  /**
+   * The chat/user ID to reply to on this platform. Set by channelRouter so
+   * outbound tools like `send_file` know where to deliver. Absent for non-IM runs.
+   */
+  replyChatId?: string;
 }
 
 function buildIMCapabilityGuide(capability: import('../../types/imChannel').IMCapabilityLevel): string {
@@ -418,6 +423,26 @@ Generated files will be saved to: ${outputDir}` : ''}`, cacheable: true });
     if (imContext.capability) {
       const capabilityGuide = buildIMCapabilityGuide(imContext.capability);
       sections.push({ name: 'im-capability', text: capabilityGuide, cacheable: true });
+    }
+
+    // send_file hint — only when tools are enabled (safe_tools / full; read_tools
+    // has send_file off its allowlist and chat_only disables tools) AND this
+    // platform actually implements outbound media. Dynamic import keeps the
+    // adapter graph out of the orchestrator's static (sidecar) bundle.
+    if (imContext.capability === 'safe_tools' || imContext.capability === 'full') {
+      try {
+        const { getAdapter } = await import('../im/adapters/registry');
+        if (getAdapter(imContext.platform)?.config.supportsMediaOut) {
+          sections.push({
+            name: 'im-media-send',
+            text: `\n## Sending files to the user
+You can send a local file (image or document) to the current user with the \`send_file\` tool — pass an ABSOLUTE path (e.g. /tmp/report.pdf) and an optional caption. Use it to deliver files you generated (charts, exported documents, images). Save such files to the workspace first, then send by absolute path. The user's text reply and any sent files are delivered separately, so still give a short text reply describing what you sent.`,
+            cacheable: true,
+          });
+        }
+      } catch {
+        // Adapter registry unavailable (non-IM bundle) — skip the hint.
+      }
     }
 
     // IM response style guide

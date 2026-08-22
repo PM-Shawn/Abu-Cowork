@@ -2833,6 +2833,16 @@ const enUS: TranslationDict = {
       trashFailed: 'Error: could not move to Trash: {error} (nothing was deleted)',
       deleteRefusedCatastrophic: 'Error: refused to move {path} to Trash — deleting the filesystem root or home directory is not allowed.',
     },
+    im: {
+      sendFileNotInIM: 'Error: send_file can only be used inside an IM channel session; there is no external recipient in this conversation.',
+      sendFileNeedsPath: 'Parameter error: send_file requires "path" (the absolute path of the file to send).',
+      sendFileNotFound: 'Error: file not found at {path}. Use an absolute path and make sure the file has been created.',
+      sendFileNotAFile: 'Error: {path} is a directory, not a file, and cannot be sent.',
+      sendFileTooLarge: 'Error: file too large ({size}), exceeds the send limit of {max}.',
+      sendFileUnsupported: 'Error: the current platform ({platform}) does not support sending files.',
+      sendFileSuccess: 'Sent file "{fileName}" to the user.',
+      sendFileError: 'Failed to send file: {error}',
+    },
     widget: {
       errTitleEmpty: 'Parameter error: title cannot be empty.',
       errWidgetCodeEmpty: 'Parameter error: widget_code cannot be empty.',

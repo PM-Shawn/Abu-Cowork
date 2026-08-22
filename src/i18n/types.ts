@@ -3231,6 +3231,25 @@ export interface TranslationDict {
       /** delete_file hard-refused a catastrophic target (filesystem root / home dir) — fail-closed, nothing was deleted. {path} */
       deleteRefusedCatastrophic: string;
     };
+    // send_file (IM outbound media)
+    im: {
+      /** send_file used outside an IM channel. */
+      sendFileNotInIM: string;
+      /** send_file missing path argument. */
+      sendFileNeedsPath: string;
+      /** send_file target file not found. {path} */
+      sendFileNotFound: string;
+      /** send_file target is a directory, not a file. {path} */
+      sendFileNotAFile: string;
+      /** send_file rejected an oversized file. {size}, {max} */
+      sendFileTooLarge: string;
+      /** send_file: current platform can't deliver files. {platform} */
+      sendFileUnsupported: string;
+      /** send_file succeeded. {fileName} */
+      sendFileSuccess: string;
+      /** send_file failed. {error} */
+      sendFileError: string;
+    };
     // show_widget / read_me — inline visualization tool
     widget: {
       /** Error: title cannot be empty. */

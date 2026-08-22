@@ -124,7 +124,10 @@ describe('getAllowedToolsForLevel', () => {
   it('caps read_tools at a positive roster that excludes every write tool', () => {
     const allowed = getAllowedToolsForLevel('read_tools') ?? [];
     expect(allowed).toContain('read_file');
-    for (const tool of ['run_command', 'write_file', 'edit_file', 'delete_file', 'http_fetch', 'manage_mcp_server']) {
+    // send_file is an outbound exfiltration path: a read-only IM channel must
+    // never be able to send workspace files out. It stays off the allowlist
+    // (fail-closed), so read_tools can't call it.
+    for (const tool of ['run_command', 'write_file', 'edit_file', 'delete_file', 'http_fetch', 'manage_mcp_server', 'send_file']) {
       expect(allowed.some((p) => matchesToolName(tool, p)), tool).toBe(false);
     }
   });

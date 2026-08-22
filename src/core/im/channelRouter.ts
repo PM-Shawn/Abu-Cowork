@@ -255,6 +255,9 @@ class IMChannelRouter {
             platform: message.platform,
             workspacePath: channel.workspacePaths[0] ?? null,
             capability,
+            // Reply target for outbound tools (send_file). The chatId is the
+            // same one sendFinal replies to.
+            replyChatId: message.replyContext.chatId,
           },
         }),
         AGENT_TIMEOUT_MS,

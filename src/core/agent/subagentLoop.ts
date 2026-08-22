@@ -718,7 +718,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
           const toolStart = Date.now();
           try {
-            const subagentToolContext: ToolExecutionContext = { workspacePath, abortSignal: signal };
+            const subagentToolContext: ToolExecutionContext = {
+              workspacePath,
+              abortSignal: signal,
+              // Forward the IM reply target so send_file works from a subagent
+              // delegated inside an IM run (without it the tool would falsely
+              // report "not in an IM channel").
+              imReplyTarget: options.imContext?.replyChatId
+                ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+                : undefined,
+            };
             const rawResult = await toolInvoker.executeAnyTool(
               tc.name,
               effectiveInput,

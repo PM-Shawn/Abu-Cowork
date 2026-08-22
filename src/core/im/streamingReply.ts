@@ -96,6 +96,44 @@ async function trySendViaApi(
 }
 
 /**
+ * Send a local file (image / document) to an IM chat via the platform adapter's
+ * `sendMediaFile`. Mirrors `trySendViaApi`: resolves channel credentials + token,
+ * then delegates to the adapter. Used by the `send_file` tool.
+ *
+ * Returns a discriminated result so the tool can surface a precise reason.
+ */
+export async function sendIMFile(
+  platform: IMPlatform,
+  chatId: string,
+  payload: { filePath: string; fileName?: string; caption?: string },
+): Promise<{ sent: boolean; messageId?: string; error?: string }> {
+  const adapter = getAdapter(platform);
+  if (!adapter) {
+    return { sent: false, error: 'unknown_platform' };
+  }
+  if (!adapter.config.supportsMediaOut || !adapter.sendMediaFile) {
+    return { sent: false, error: 'media_unsupported' };
+  }
+
+  const creds = getChannelCredentials(platform);
+  if (!creds) {
+    return { sent: false, error: 'no_credentials' };
+  }
+
+  try {
+    const token = await tokenManager.getToken(platform, creds.appId, creds.appSecret);
+    const result = await adapter.sendMediaFile(token, { chatId }, payload);
+    return { sent: true, messageId: result.messageId };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    if (errorMsg.includes('401') || errorMsg.includes('token') || errorMsg.includes('auth')) {
+      tokenManager.invalidate(platform, creds.appId);
+    }
+    return { sent: false, error: errorMsg };
+  }
+}
+
+/**
  * Send an acknowledgment / thinking message.
  * Returns a handle for subsequent updates or final send.
  */

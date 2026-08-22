@@ -35,8 +35,15 @@
   user-select: none;
 }
 
+/* A no-drag root's own rectangle is enough to hand its surface back to the
+   renderer. Do NOT stamp no-drag onto every descendant: Chromium includes the
+   descendants' un-clipped layout rectangles in native app-region geometry, so
+   a tall conversation scrolled underneath an overflow-hidden card can reach
+   back into the title bar and turn HTCAPTION into HTCLIENT. macOS drag rows are
+   the narrow exception; their descendants must remain clickable after the row
+   opts back into drag. */
 [data-electron-no-drag],
-[data-electron-no-drag] *:not([data-electron-drag]) {
+[data-electron-drag] *:not([data-electron-drag]) {
   -webkit-app-region: no-drag !important;
 }
 
@@ -57,8 +64,7 @@
    in the top chrome band is simply dead. Overlays we author declare
    `data-electron-no-drag` on their root; these selectors cover the layers that
    escape the React tree into `document.body`, where no ancestor can mark them. */
-[data-radix-popper-content-wrapper],
-[data-radix-popper-content-wrapper] * {
+[data-radix-popper-content-wrapper] {
   -webkit-app-region: no-drag !important;
 }
 

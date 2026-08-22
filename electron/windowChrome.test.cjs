@@ -200,6 +200,7 @@ test('Electron maps both historical and current Tauri drag attributes', () => {
   assert.match(WINDOW_DRAG_REGION_CSS, /data-tauri-drag-region\]/);
   assert.match(WINDOW_DRAG_REGION_CSS, /data-electron-no-drag/);
   assert.match(WINDOW_DRAG_REGION_CSS, /no-drag/);
+  assert.doesNotMatch(WINDOW_DRAG_REGION_CSS, /\[data-electron-no-drag\] \*/);
 });
 
 test('portaled popper layers subtract themselves from the drag lanes', () => {
@@ -208,7 +209,7 @@ test('portaled popper layers subtract themselves from the drag lanes', () => {
   // over the 72px Windows chrome band has every click eaten by the drag lane.
   assert.match(
     WINDOW_DRAG_REGION_CSS,
-    /\[data-radix-popper-content-wrapper\],\[data-radix-popper-content-wrapper\] \*\{-webkit-app-region:no-drag\}/,
+    /\[data-radix-popper-content-wrapper\]\{-webkit-app-region:no-drag\}/,
   );
 });
 

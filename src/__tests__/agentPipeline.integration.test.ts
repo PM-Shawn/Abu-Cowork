@@ -4,7 +4,7 @@
  * Tests the full message → LLM → tool execution → response pipeline.
  * Uses mocked LLM adapter to simulate various response scenarios.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { useChatStore } from '../stores/chatStore';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useTaskExecutionStore } from '../stores/taskExecutionStore';
@@ -335,6 +335,19 @@ import * as contextManagerModule from '../core/context/contextManager';
 import * as toolSearchModule from '../core/tools/toolSearch';
 
 describe('Agent Pipeline Integration', () => {
+  // runAgentLoop lazily `await import()`s these on its hot path, so the FIRST
+  // test in this file paid their cold Vite transform inside its own body
+  // (measured 3.9 s vs 18 ms for the next test) against the default 5 s
+  // testTimeout — and under v8 coverage or a loaded runner it crossed the line.
+  // A timed-out body is not cancelled, so it kept mutating shared state after
+  // vitest moved on. Warm them here instead: hookTimeout is 30 s.
+  beforeAll(async () => {
+    await Promise.all([
+      import('../core/agent/entryOrchestration'),
+      import('../core/memdir/relevance'),
+    ]);
+  });
+
   beforeEach(() => {
     useChatStore.setState({
       conversations: {},

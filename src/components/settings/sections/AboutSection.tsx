@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { APP_VERSION } from '@/utils/version';
+import { OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp, refreshUpdateNotes } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
@@ -21,6 +22,7 @@ export default function AboutSection() {
   const disclaimerRef = useRef<HTMLDivElement>(null);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
+  const updaterUnsupported = useSettingsStore((s) => s.updaterUnsupported);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
   const { t, locale } = useI18n();
@@ -262,29 +264,49 @@ export default function AboutSection() {
           {updateChecking ? t.updates.checking : t.updates.checkForUpdates}
         </button>
 
-        {/* Up-to-date / check-result status — subtle caption under the button */}
+        {/* Status caption under the button — three-state: updater unsupported
+            in this build / check failed / confirmed up to date. "Unsupported"
+            must never render as "up to date": a non-official package with the
+            updater silently disabled misled users into thinking no newer
+            version existed. */}
         {!updateInfo && !updateChecking && (
-          <div
-            className={cn(
-              'flex items-center justify-center gap-1.5 text-minor transition-all duration-300',
-              checkResult === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
-            )}
-          >
-            {checkResult === 'error' ? (
-              <>
-                <CircleAlert className="h-3.5 w-3.5" />
-                <span>{t.updates.checkFailed}</span>
-              </>
-            ) : (
-              <>
-                <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
-                <span>{t.updates.upToDate}</span>
-                {checkResult === 'just-checked' && (
-                  <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
-                )}
-              </>
-            )}
-          </div>
+          updaterUnsupported ? (
+            <div className="flex flex-col items-center gap-1 text-minor text-[var(--abu-text-muted)]">
+              <div className="flex items-center justify-center gap-1.5">
+                <CircleAlert className="h-3.5 w-3.5 shrink-0" />
+                <span className="text-center">{t.updates.unsupportedBuild}</span>
+              </div>
+              <button
+                onClick={() => void handleOpenLink(OFFICIAL_WEBSITE_URL)}
+                className="flex items-center gap-1 text-[var(--abu-clay)] hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {t.updates.getFromWebsite}
+              </button>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                'flex items-center justify-center gap-1.5 text-minor transition-all duration-300',
+                checkResult === 'error' ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
+              )}
+            >
+              {checkResult === 'error' ? (
+                <>
+                  <CircleAlert className="h-3.5 w-3.5" />
+                  <span>{t.updates.checkFailed}</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="h-3.5 w-3.5 text-[var(--abu-success)]" />
+                  <span>{t.updates.upToDate}</span>
+                  {checkResult === 'just-checked' && (
+                    <span className="text-[var(--abu-text-muted)]">· {t.updates.justChecked}</span>
+                  )}
+                </>
+              )}
+            </div>
+          )
         )}
       </div>
 

@@ -43,8 +43,20 @@
  *    Source/fork packages have neither and keep the updater disabled.
  *  - Dev/harness: armed only when ABU_UPDATER_FEED_URL is set (e.g. the mock
  *    feed in electron/spike/updaterVerify.cjs) — forceDevUpdateConfig plus an
- *    explicit generic feed. Without it, check() reports null (updater idle in
- *    dev, matching the pre-slice behavior).
+ *    explicit generic feed.
+ *
+ * ## check() is three-state (Tauri's contract is only two)
+ * A bare null from `plugin:updater|check` is ambiguous: the renderer cannot
+ * tell "feed queried, no newer version" from "updater never armed". That
+ * ambiguity made non-official Windows installs show "已是最新版本" when the
+ * updater was in fact silently disabled (v0.41.0 post-release incident,
+ * 2026-08-22). check() therefore returns:
+ *  - update metadata  → newer version available (unchanged);
+ *  - null             → the feed was actually queried and we are current;
+ *  - `{ status: 'disabled', reason }` → updater not armed in this build
+ *    (non-official package, or dev shell without ABU_UPDATER_FEED_URL).
+ * The marker is safe to introduce because the renderer (checker.ts) invokes
+ * the command directly; real Tauri (legacy builds) never produces it.
  */
 'use strict';
 
@@ -61,6 +73,8 @@ const UPDATER_MISS = Symbol('updater-dispatch-miss');
 /** @type {import('electron-updater').AppUpdater | null} */
 let updater = null;
 let configured = false;
+/** Why the updater stayed unarmed — feeds check()'s disabled marker. */
+let disabledReason = null;
 /** rid handed to the renderer's Update resource; single pending check result. */
 let nextRid = 90001;
 /** Set once download_and_install completed; consumed by processRestart. */
@@ -68,6 +82,31 @@ let pendingInstall = false;
 
 function log(msg) {
   console.log(`[updaterHost] ${msg}`);
+}
+
+/**
+ * Decide whether the updater may arm in this process — pure so the boundary
+ * that produced the "silently disabled but claims up to date" incident is
+ * directly testable. Returns either `{ armed: true, feedOverride? }` or
+ * `{ armed: false, reason }` with a renderer-facing reason:
+ *  - 'unofficial-build': packaged without the official CI marker. A source/
+ *    fork package must never consume Abu's production feed merely because it
+ *    retained the upstream app id or product name — official CI sets the
+ *    immutable package marker and embeds app-update.yml together.
+ *  - 'dev-unarmed': dev shell without ABU_UPDATER_FEED_URL. electron-updater
+ *    would refuse anyway ("application is not packed"), just noisier.
+ * The env override is DEV/HARNESS ONLY. A packaged (production) build must
+ * never honor it: an attacker-controlled environment (wrapper script, shell
+ * profile) could otherwise silently repoint the update feed — packaged
+ * builds read exclusively the embedded app-update.yml.
+ */
+function resolveUpdaterGate(appLike, env, { isOfficial = isOfficialBuild } = {}) {
+  if (appLike.isPackaged) {
+    if (!isOfficial(appLike)) return { armed: false, reason: 'unofficial-build' };
+    return { armed: true, ignoredEnvOverride: Boolean(env.ABU_UPDATER_FEED_URL) };
+  }
+  if (!env.ABU_UPDATER_FEED_URL) return { armed: false, reason: 'dev-unarmed' };
+  return { armed: true, feedOverride: env.ABU_UPDATER_FEED_URL };
 }
 
 /**
@@ -79,30 +118,21 @@ function getUpdater() {
   if (configured) return updater;
   configured = true;
 
-  // A source/fork package must never consume Abu's production feed merely
-  // because it retained the upstream app id or product name. Official CI sets
-  // the immutable package marker and embeds app-update.yml together.
-  if (app.isPackaged && !isOfficialBuild(app)) {
-    log('non-official packaged build — updater disabled');
+  const gate = resolveUpdaterGate(app, process.env);
+  if (!gate.armed) {
+    log(
+      gate.reason === 'unofficial-build'
+        ? 'non-official packaged build — updater disabled'
+        : 'dev shell without ABU_UPDATER_FEED_URL — updater idle, check() reports disabled'
+    );
+    disabledReason = gate.reason;
     updater = null;
     return updater;
   }
-
-  // The env override is DEV/HARNESS ONLY. A packaged (production) build must
-  // never honor it: an attacker-controlled environment (wrapper script, shell
-  // profile) could otherwise silently repoint the update feed — packaged
-  // builds read exclusively the embedded app-update.yml.
-  const feedOverride = app.isPackaged ? undefined : process.env.ABU_UPDATER_FEED_URL;
-  if (app.isPackaged && process.env.ABU_UPDATER_FEED_URL) {
+  if (gate.ignoredEnvOverride) {
     console.warn('[updaterHost] ABU_UPDATER_FEED_URL is ignored in packaged builds (embedded app-update.yml only)');
   }
-  if (!app.isPackaged && !feedOverride) {
-    // Dev without an explicit feed: stay idle. electron-updater would refuse
-    // anyway ("application is not packed"), just noisier.
-    log('dev shell without ABU_UPDATER_FEED_URL — updater idle, check() reports no update');
-    updater = null;
-    return updater;
-  }
+  const feedOverride = gate.feedOverride;
 
   const { autoUpdater } = require('electron-updater');
   autoUpdater.autoDownload = false; // the frontend drives download explicitly
@@ -158,10 +188,15 @@ function notesToBody(releaseNotes) {
   return '';
 }
 
-/** plugin:updater|check → Update metadata or null. */
+/**
+ * plugin:updater|check → three-state (see header): update metadata, null
+ * (feed queried, current), or a `{ status: 'disabled', reason }` marker when
+ * the updater never armed — never a bare null for "disabled", so the renderer
+ * cannot mistake a dead updater for "confirmed up to date".
+ */
 async function check() {
   const au = getUpdater();
-  if (!au) return null;
+  if (!au) return { status: 'disabled', reason: disabledReason };
   const result = await au.checkForUpdates();
   if (!result || !result.isUpdateAvailable) return null;
   const info = result.updateInfo;
@@ -296,4 +331,10 @@ function hasPendingInstall() {
   return pendingInstall;
 }
 
-module.exports = { updaterDispatch, quitAndInstallIfPending, hasPendingInstall, UPDATER_MISS };
+module.exports = {
+  updaterDispatch,
+  quitAndInstallIfPending,
+  hasPendingInstall,
+  resolveUpdaterGate,
+  UPDATER_MISS,
+};

@@ -1217,3 +1217,21 @@ describe('browserSitePermissions persistence', () => {
     expect(persistedSitePermissions()).toEqual({});
   });
 });
+
+describe('default activeModel stays in the curated list', () => {
+  // The curated-list refresh for v0.41.0 retired claude-sonnet-4-6 while the
+  // store's fresh-install default still named it. Nothing validates membership
+  // at runtime (reconcileActiveProvider only checks the provider), and the
+  // AddProviderModal self-heal is skipped when another provider was enabled
+  // first — so a stale default rides a fresh install's first request. This
+  // pins default ∈ curated list so the next refresh cannot recreate the gap.
+  it('names a model that exists in the default provider config', async () => {
+    const { PROVIDER_CONFIGS } = await import('@/utils/providerConfigs');
+    // getInitialState: earlier tests in this file legitimately mutate the
+    // live store; the fresh-install default is what this contract is about.
+    const { activeModel } = useSettingsStore.getInitialState();
+    const provider = PROVIDER_CONFIGS[activeModel.providerId as keyof typeof PROVIDER_CONFIGS];
+    expect(provider).toBeDefined();
+    expect(provider.models.map((m) => m.id)).toContain(activeModel.modelId);
+  });
+});

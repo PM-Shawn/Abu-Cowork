@@ -3,8 +3,10 @@ import { isMacOS } from '@/utils/platform';
 /**
  * Opt a card's own header row into the window drag lane — macOS only.
  *
- * Windows and Linux draw their own chrome rows above the content cards, each
- * with an explicit empty drag lane (see `WindowTitleBar`). macOS has no such
+ * Windows and Linux draw their own chrome row above the content cards with an
+ * explicit drag lane (see `WindowTitleBar`; since the workspace-header rework
+ * that is the single native title strip — the old second "toolbar" lane is
+ * gone). macOS has no such
  * row: `titleBarStyle: 'hidden'` leaves the card starting 8px below the window
  * top, so the band beside the traffic lights *is* the card, and the card is
  * `data-electron-no-drag`. The result was that only the top 8px of the window

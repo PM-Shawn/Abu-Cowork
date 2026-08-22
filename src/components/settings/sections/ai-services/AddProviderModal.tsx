@@ -261,7 +261,10 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     const FLIP_MAX = 320;
     const spaceBelow = window.innerHeight - r.bottom - margin;
     const spaceAbove = r.top - margin;
-    const openUp = spaceBelow < MIN_USABLE && spaceAbove > spaceBelow;
+    // Flip only when the space above can actually host a usable list —
+    // "above > below" alone could flip into a sliver smaller than the 120px
+    // floor the stay-down branch guarantees.
+    const openUp = spaceBelow < MIN_USABLE && spaceAbove >= MIN_USABLE;
     const maxHeight = openUp
       ? Math.min(FLIP_MAX, Math.floor(spaceAbove))
       : Math.max(120, Math.floor(spaceBelow));

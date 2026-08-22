@@ -17,9 +17,9 @@
  * The fix this test guards: every layer that paints above the chrome declares
  * `data-electron-no-drag` on its root, which `src/styles/index.css` (and the
  * identical main-process `insertCSS` in `electron/windowChrome.cjs`) turns into
- * `-webkit-app-region: no-drag !important` for the root AND every descendant.
- * That subtracts the overlay's rectangle from the lane, so the OS hands the
- * clicks back to the page.
+ * `-webkit-app-region: no-drag !important` for the marked surface itself. That
+ * subtracts the overlay's rectangle from the lane, so the OS hands the clicks
+ * back to the page without leaking descendant geometry across scroll clips.
  *
  * Relying on DOM ancestry instead is not safe: `<main>` carries the marker, so
  * overlays rendered inside it inherit no-drag by accident, but anything rendered
@@ -178,26 +178,23 @@ describe('overlay layers opt out of the OS drag lanes', () => {
 describe('the stylesheet turns the marker into a no-drag region', () => {
   const css = fs.readFileSync(path.join(SRC_DIR, 'styles', 'index.css'), 'utf8');
 
-  it('applies no-drag to marked roots and all of their descendants', () => {
-    // The descendant selector is what makes a single marker on the scrim enough
-    // to hand every button inside the dialog back to the renderer.
+  it('applies no-drag to the marked surface without leaking through scroll clips', () => {
     expect(css).toMatch(
-      /\[data-electron-no-drag\],\s*\[data-electron-no-drag\] \*:not\(\[data-electron-drag\]\)\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
+      /\[data-electron-no-drag\],\s*\[data-electron-drag\] \*:not\(\[data-electron-drag\]\)\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
     );
+    expect(css).not.toContain('[data-electron-no-drag] *');
   });
 
   it('keeps the drag-row escape valve immune to source order', () => {
-    // `[data-electron-drag]` and `[data-electron-no-drag] *` both weigh (0,1,0)
-    // with !important, so without the `:not()` the winner would come down to
-    // which rule appears last in the file — and a macOS title row inside a card
-    // would silently stop being draggable the next time this file is reordered.
-    expect(css).toContain('[data-electron-no-drag] *:not([data-electron-drag])');
+    // The row re-opens a macOS drag lane inside a no-drag card while its own
+    // contents stay clickable. Nested drag rows are excluded from subtraction.
+    expect(css).toContain('[data-electron-drag] *:not([data-electron-drag])');
     expect(css).toMatch(/\[data-electron-drag\]\s*\{[^}]*-webkit-app-region:\s*drag !important/);
   });
 
   it('never lets an interactive element inside a drag region become draggable', () => {
-    // Backstop for drag rows that sit outside a no-drag card, where the
-    // descendant rule above does not reach.
+    // Backstop for Tauri drag rows and other drag surfaces without the macOS
+    // data-electron-drag child rule.
     expect(css).toMatch(
       /\[data-electron-drag\] :where\(button, a, input, textarea, select, \[role="button"\], \[contenteditable\]\)/,
     );
@@ -205,7 +202,7 @@ describe('the stylesheet turns the marker into a no-drag region', () => {
 
   it('covers portaled popper layers that have no ancestor to inherit from', () => {
     expect(css).toMatch(
-      /\[data-radix-popper-content-wrapper\],\s*\[data-radix-popper-content-wrapper\] \*\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
+      /\[data-radix-popper-content-wrapper\]\s*\{[^}]*-webkit-app-region:\s*no-drag !important/,
     );
   });
 });

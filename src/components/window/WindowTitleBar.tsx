@@ -251,9 +251,17 @@ export default function WindowTitleBar({
                 width: 'env(titlebar-area-width, calc(100% - 138px))',
               }}
             >
+              {/* Keep the native drag geometry independent of the flex items
+                  above the workspace. Menus subtract their own no-drag island
+                  from this full safe-area plane. */}
               <div
+                data-abu-windows-drag-region="titlebar"
                 data-tauri-drag-region
-                className="pointer-events-none flex h-full items-center gap-1.5 pl-2 pr-1.5"
+                className="pointer-events-none absolute inset-0"
+                aria-hidden="true"
+              />
+              <div
+                className="relative flex h-full items-center gap-1.5 pl-2 pr-1.5"
               >
                 <img src={abuAvatar} alt="" className="h-4 w-4 rounded-[4px]" draggable={false} />
                 <span className="text-minor font-medium text-[var(--abu-text-primary)]">
@@ -263,7 +271,7 @@ export default function WindowTitleBar({
               <div
                 data-electron-no-drag
                 data-abu-window-menu-group
-                className="flex h-full items-center"
+                className="relative flex h-full items-center"
               >
                 {([
                   ['edit', labels.editMenu],
@@ -288,12 +296,6 @@ export default function WindowTitleBar({
                   </button>
                 ))}
               </div>
-              <div
-                data-abu-windows-drag-region="titlebar"
-                data-tauri-drag-region
-                className="h-full min-w-8 flex-1"
-                aria-hidden="true"
-              />
             </div>
           </div>
 

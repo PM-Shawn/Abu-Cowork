@@ -244,11 +244,10 @@ function createWindow(transitionWindow = null) {
   // window is dragged via CSS `-webkit-app-region`. Map them so the top bar
   // moves the window (interactive children stay clickable via no-drag).
   win.webContents.on('did-finish-load', () => {
-    // Only the drag region's OWN empty space moves the window; EVERY descendant
-    // is no-drag so it stays clickable. Tauri's data-tauri-drag-region behaves
-    // this way (interactive children keep working) — the previous version only
-    // excluded button/input/a, so the workspace TABS (plain divs) inherited the
-    // drag region and showed the window-move cursor / were hard to click.
+    // Map the renderer's explicit drag/no-drag surfaces into Chromium's native
+    // app-region geometry. The shared CSS deliberately avoids marking every
+    // descendant of a no-drag card: scrolled conversation descendants can have
+    // un-clipped layout rectangles that cross the Windows title bar.
     void win.webContents.insertCSS(WINDOW_DRAG_REGION_CSS);
   });
   const hasFrontend = fs.existsSync(FRONTEND_INDEX);

@@ -323,9 +323,13 @@ describe('wait_for reports what it actually saw', () => {
 
     // Waiting 30s for an element that can never come back is pure waste, and
     // the caller needs to know it should re-snapshot, not wait longer.
-    await expect(waitFor({ type: 'appear', locator: { ref } }, 30_000)).rejects.toThrow(
-      /no longer exists/,
-    );
+    // (Was a rejection; now the same guidance arrives as a structured
+    // failure, matching how a mid-poll stale ref reports.)
+    const result = await waitFor({ type: 'appear', locator: { ref } }, 30_000);
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.message).toMatch(/no longer exists/);
+    expect(result.elapsed).toBeLessThan(4000);
   });
 
   it('reports the current url for a urlContains timeout', async () => {
@@ -840,5 +844,102 @@ describe('a scope selector that matches more than one element', () => {
   it('still throws when the selector matches nothing at all', async () => {
     document.body.innerHTML = '<button>提交</button>';
     await expect(handleAction('snapshot', { selector: '#nope' })).rejects.toThrow(/without a selector/);
+  });
+});
+
+describe('visibility:hidden elements are not visible (fixed defect)', () => {
+  // visibility:hidden keeps the layout box, so the old offsetParent-gated
+  // check never saw it: a dropdown a library closes this way was treated as
+  // the live popup, and select() could pick an option the user cannot see.
+
+  it('appear does not fire for a visibility:hidden element', async () => {
+    document.body.innerHTML =
+      '<div id="pop" role="listbox" style="visibility: hidden"><div role="option">旧选项</div></div>';
+
+    const result = await waitFor({ type: 'appear', locator: { css: '#pop' } }, 120);
+
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(true);
+  });
+
+  it('snapshot omits options inside a visibility:hidden dropdown but keeps the open one', async () => {
+    document.body.innerHTML = `
+      <div class="ant-select-dropdown" style="visibility: hidden">
+        <div role="listbox"><div role="option">旧选项</div></div>
+      </div>
+      <div class="ant-select-dropdown">
+        <div role="listbox"><div role="option">动设备</div></div>
+      </div>`;
+
+    const snap = await snapshot();
+
+    const texts = snap.elements.map((e) => e.text);
+    expect(texts).toContain('动设备');
+    expect(texts).not.toContain('旧选项');
+  });
+});
+
+describe('wait_for with refs that go stale (fixed defect)', () => {
+  // findElement throws on a stale ref, and tryCheck used to swallow every
+  // throw as "condition not yet met" — so a disappear wait whose element was
+  // ALREADY gone ran the full timeout, and appear/enabled/textContains on a
+  // replaced node hung the same way. Stale refs now satisfy `disappear` and
+  // fail every other condition fast, with the re-snapshot guidance.
+
+  it('disappear by ref succeeds immediately once the element is removed', async () => {
+    document.body.innerHTML = '<div id="modal"><button>关闭</button></div>';
+    const snap = await snapshot();
+    const ref = snap.elements.find((e) => e.text === '关闭')!.ref;
+    document.getElementById('modal')!.remove();
+
+    const result = await waitFor({ type: 'disappear', locator: { ref } }, 5000);
+
+    expect(result.success).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.elapsed).toBeLessThan(4000);
+  });
+
+  it('disappear by ref resolves when the removal happens mid-wait', async () => {
+    document.body.innerHTML = '<div id="modal"><button>关闭</button></div>';
+    const snap = await snapshot();
+    const ref = snap.elements.find((e) => e.text === '关闭')!.ref;
+    setTimeout(() => document.getElementById('modal')!.remove(), 30);
+
+    const result = await waitFor({ type: 'disappear', locator: { ref } }, 5000);
+
+    expect(result.success).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.elapsed).toBeLessThan(4000);
+  });
+
+  it('enabled by ref fails fast with re-snapshot guidance when the node was replaced', async () => {
+    document.body.innerHTML = '<button id="go">提交</button>';
+    const snap = await snapshot();
+    const ref = snap.elements.find((e) => e.text === '提交')!.ref;
+    // Framework-style re-render: same-looking node, different identity.
+    document.body.innerHTML = '<button id="go">提交</button>';
+
+    const result = await waitFor({ type: 'enabled', locator: { ref } }, 5000);
+
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.message).toMatch(/fresh snapshot/);
+    expect(result.elapsed).toBeLessThan(4000);
+  });
+
+  it('textContains by ref fails fast when the node is replaced mid-wait', async () => {
+    document.body.innerHTML = '<button id="status">加载中</button>';
+    const snap = await snapshot();
+    const ref = snap.elements.find((e) => e.text === '加载中')!.ref;
+    setTimeout(() => {
+      document.body.innerHTML = '<button id="status">完成</button>';
+    }, 30);
+
+    const result = await waitFor({ type: 'textContains', locator: { ref }, text: '完成' }, 5000);
+
+    expect(result.success).toBe(false);
+    expect(result.timedOut).toBe(false);
+    expect(result.message).toMatch(/fresh snapshot/);
+    expect(result.elapsed).toBeLessThan(4000);
   });
 });

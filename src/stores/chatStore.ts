@@ -55,8 +55,11 @@ function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<s
 }
 
 /** Extra safety net for messages coming in via import — ensures no streaming
- * flag survives even if the source bundle was built by a broken exporter. */
-export function sanitizeImportedMessage(msg: Message): Message {
+ * flag survives even if the source bundle was built by a broken exporter.
+ * Pass the bundle's `collectAnsweredLoopIds` so a stale-active row whose loop
+ * demonstrably replied is inferred completed here too — without it, the same
+ * ledger that loads clean from disk imports branded "发送失败". */
+export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   return recoverInterruptedUserRun({
     ...msg,
     isStreaming: false,
@@ -68,7 +71,7 @@ export function sanitizeImportedMessage(msg: Message): Message {
       } = tc;
       return { ...safeToolCall, isExecuting: false };
     }),
-  });
+  }, answeredLoopIds);
 }
 
 /** A non-ghost assistant row: real text, tool activity, or thinking. Shared
@@ -87,19 +90,26 @@ function isSubstantiveAssistant(msg: Message): boolean {
 /** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
  * Ghost messages are empty assistant placeholders written before content arrived
  * (crash / network failure before streaming started). They must not reach the LLM. */
-export function sanitizeLoadedMessages(messages: Message[]): Message[] {
+/** loopIds whose turn demonstrably finished: a substantive assistant reply
+ * bearing `usage`. Substantive text alone is not proof — a stream that died
+ * mid-sentence leaves non-empty text too, and inferring 'completed' there
+ * would hide the retry affordance behind a half reply. `usage` is only
+ * written at a clean stream end (message_stop), so it separates the two:
+ * every normally-finished turn carries it (verified across the draft-leak
+ * era's ledgers), a crashed stream never does. Shared by the disk-load and
+ * import paths so the same ledger sanitizes identically through either. */
+export function collectAnsweredLoopIds(messages: readonly Message[]): ReadonlySet<string> {
   const answeredLoopIds = new Set<string>();
   for (const msg of messages) {
-    // Substantive text alone is not proof the turn finished — a stream that
-    // died mid-sentence leaves non-empty text too, and inferring 'completed'
-    // there would hide the retry affordance behind a half reply. `usage` is
-    // only written at a clean stream end (message_stop), so it separates the
-    // two: every normally-finished turn carries it (verified across the
-    // draft-leak era's ledgers), a crashed stream never does.
     if (msg.loopId && msg.role === 'assistant' && msg.usage && isSubstantiveAssistant(msg)) {
       answeredLoopIds.add(msg.loopId);
     }
   }
+  return answeredLoopIds;
+}
+
+export function sanitizeLoadedMessages(messages: Message[]): Message[] {
+  const answeredLoopIds = collectAnsweredLoopIds(messages);
   return messages
     .map((msg) => {
       const toolCalls = msg.toolCalls?.map((tc) => {
@@ -144,7 +154,12 @@ function buildImportedFromShareBundle(bundle: ShareBundle): { conv: Conversation
     title: bundle.conversation.title,
     createdAt: bundle.conversation.createdAt,
     updatedAt: bundle.conversation.updatedAt,
-    messages: bundle.messages.map(sanitizeImportedMessage),
+    // Explicit lambda — bare `.map(sanitizeImportedMessage)` would feed the
+    // array index into the answeredLoopIds parameter.
+    messages: (() => {
+      const answered = collectAnsweredLoopIds(bundle.messages);
+      return bundle.messages.map((m) => sanitizeImportedMessage(m, answered));
+    })(),
     status: 'idle',
     importedFrom,
   };
@@ -2007,7 +2022,10 @@ export const useChatStore = create<ChatStore>()(
             id: newId,
             status: 'idle',
             completedAt: undefined,
-            messages: conv.messages.map(sanitizeImportedMessage),
+            messages: (() => {
+              const answered = collectAnsweredLoopIds(conv.messages);
+              return conv.messages.map((m) => sanitizeImportedMessage(m, answered));
+            })(),
           };
 
           const meta: ConversationMeta = {

@@ -6,6 +6,8 @@ import {
   useChatStore,
   flushTokenBuffer,
   sanitizeLoadedMessages,
+  sanitizeImportedMessage,
+  collectAnsweredLoopIds,
   waitForConversationPersistence,
 } from './chatStore';
 import type { Conversation } from '../types';
@@ -2609,5 +2611,33 @@ describe('sanitizeLoadedMessages — truncated replies are not completion', () =
       },
     ] as never);
     expect(sanitized[0].runState).toBe('failed');
+  });
+});
+
+describe('sanitizeImportedMessage — same completion inference as disk load', () => {
+  // Review finding: the import/undo-delete paths sanitized per-message with
+  // no answeredLoopIds, so a bundle whose ledger carries draft-leak-era rows
+  // imported branded "发送失败" while the identical data loaded clean from disk.
+  it('infers completed for a stale pending row when given the bundle set', () => {
+    const messages = [
+      {
+        id: 'u1', role: 'user', content: 'look at this',
+        timestamp: 1, runState: 'pending', loopId: 'loop-i',
+      },
+      {
+        id: 'a1', role: 'assistant', content: 'A gradient image.',
+        timestamp: 2, loopId: 'loop-i', usage: { inputTokens: 3, outputTokens: 4 },
+      },
+    ] as never[];
+    const answered = collectAnsweredLoopIds(messages as never);
+    const sanitized = (messages as never[]).map((m) => sanitizeImportedMessage(m as never, answered));
+    expect((sanitized[0] as { runState?: string }).runState).toBe('completed');
+  });
+
+  it('still fails a stale row without the set (legacy call shape)', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
+    } as never);
+    expect((sanitized as { runState?: string }).runState).toBe('failed');
   });
 });

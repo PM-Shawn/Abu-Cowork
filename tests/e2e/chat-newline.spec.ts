@@ -48,6 +48,21 @@ async function openComposer(page: Page) {
 const heightOf = (input: ReturnType<Page['getByPlaceholder']>) =>
   input.evaluate((el) => (el as HTMLTextAreaElement).clientHeight);
 
+/**
+ * Flip the persisted composer setting and reload, the same way a user picking
+ * it in Settings would leave the app. Seeding localStorage directly (rather
+ * than driving the settings UI) keeps this test about the composer.
+ */
+async function setEnterBehavior(page: Page, behavior: 'enter' | 'newline') {
+  await page.evaluate((value) => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    persisted.state.composerEnterBehavior = value;
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  }, behavior);
+  await page.reload();
+}
 
 test.describe.serial('Composer newlines — real Electron', () => {
   test.beforeEach(async () => {
@@ -119,5 +134,51 @@ test.describe.serial('Composer newlines — real Electron', () => {
     await expect(
       page.getByLabel('发送（Enter）· 换行（Shift + Enter）'),
     ).toBeVisible();
+  });
+});
+
+test.describe.serial("Composer Enter behavior 'newline' — real Electron", () => {
+  test.beforeEach(async () => {
+    const launched = await launchAbuElectron(createElectronDataRoot());
+    app = launched.app;
+    dataRoot = launched;
+  });
+
+  test.afterEach(async () => {
+    if (app) {
+      await closeAbuElectron(app);
+      app = undefined;
+    }
+    if (dataRoot) {
+      removeElectronDataRoot(dataRoot);
+      dataRoot = undefined;
+    }
+  });
+
+  test('bare-enter-starts-a-new-line-instead-of-sending', async () => {
+    // The escape hatch for users whose IME eats Shift+Enter: with no provider
+    // configured a send would go nowhere anyway, so what this pins is that the
+    // keystroke reaches the textarea as text rather than being swallowed.
+    const page = await app!.firstWindow({ timeout: READY_TIMEOUT });
+    await openComposer(page);
+    await setEnterBehavior(page, 'newline');
+    const input = await openComposer(page);
+
+    await page.keyboard.type('第一行');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('第二行');
+
+    expect(await input.inputValue()).toBe('第一行\n第二行');
+  });
+
+  test('send-button-tooltip-switches-to-the-modifier-shortcut', async () => {
+    const page = await app!.firstWindow({ timeout: READY_TIMEOUT });
+    await openComposer(page);
+    await setEnterBehavior(page, 'newline');
+    await openComposer(page);
+    await page.keyboard.type('你好');
+
+    // macOS runner → ⌘. The platform split itself is unit-tested.
+    await expect(page.getByLabel('发送（⌘ + Enter）· 换行（Enter）')).toBeVisible();
   });
 });

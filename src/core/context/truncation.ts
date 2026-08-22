@@ -25,6 +25,49 @@ const TRUNCATION_RULES: Record<string, TruncationRule> = {
 const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 3500 };
 
 /**
+ * Per-tool overrides for MCP servers, matched on the tool suffix of a
+ * `server__tool` name.
+ *
+ * Why this exists: `TRUNCATION_RULES` is keyed by builtin tool names, so every
+ * MCP tool — browser or otherwise — fell through to `DEFAULT_RULE` and had its
+ * result cut at 3500 characters by character count. For a tool that returns
+ * structured data that is not a size limit, it is corruption: the JSON stops
+ * being parseable and the caller cannot tell what was dropped.
+ *
+ * These tools bound their own output at the source, with a message saying what
+ * was cut and how to ask for less (see `takeSnapshot`'s truncation message).
+ * The budget here only has to be wide enough not to re-cut that already-bounded
+ * payload behind its back. Context pressure still scales it down, so a full
+ * context window is not held open by one page read.
+ */
+const MCP_TOOL_RULES: Record<string, TruncationRule> = {
+  snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
+  extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },
+  extract_table: { headLines: 0, tailLines: 0, maxChars: 20000 },
+  get_tabs: { headLines: 0, tailLines: 0, maxChars: 8000 },
+};
+
+/** Servers whose tools are covered by `MCP_TOOL_RULES`. */
+const BROWSER_MCP_SERVERS = new Set(['abu-browser', 'abu-browser-bridge']);
+
+/**
+ * Resolve the rule for a tool name, which may be a builtin name or a
+ * namespaced `server__tool` MCP name.
+ */
+function resolveRule(toolName: string): TruncationRule {
+  const builtin = TRUNCATION_RULES[toolName];
+  if (builtin) return builtin;
+
+  const separator = toolName.indexOf('__');
+  if (separator !== -1 && BROWSER_MCP_SERVERS.has(toolName.slice(0, separator))) {
+    const rule = MCP_TOOL_RULES[toolName.slice(separator + 2)];
+    if (rule) return rule;
+  }
+
+  return DEFAULT_RULE;
+}
+
+/**
  * Scale factor for truncation limits based on context pressure.
  * Returns a multiplier (0.0–1.0) that shrinks the truncation budget
  * when context is tight.
@@ -51,7 +94,7 @@ export function getContextPressureScale(contextUsagePercent?: number): number {
 export function truncateToolResult(toolName: string, result: string, contextUsagePercent?: number): string {
   if (!result) return result;
 
-  const baseRule = TRUNCATION_RULES[toolName] || DEFAULT_RULE;
+  const baseRule = resolveRule(toolName);
   const scale = getContextPressureScale(contextUsagePercent);
 
   // Apply context pressure scaling

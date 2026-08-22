@@ -34,6 +34,11 @@ type ProviderPlan = {
    *  bailian's coding tier is "Token Plan"). Falls back to the generic
    *  billing label (Coding Plan / Agent Plan / Pay-as-you-go) when absent. */
   label?: string;
+  /** Per-tier override of the provider-level flag — a vendor can serve the
+   *  model-list endpoint on one billing tier and not another, since the tiers
+   *  are separate hosts with separate credentials. Takes precedence over the
+   *  provider-level value; absent falls back to it. */
+  supportsModelList?: boolean;
 };
 
 type ProviderConfig = {
@@ -43,6 +48,11 @@ type ProviderConfig = {
   models: { id: string; label: string }[];
   capabilities?: ProviderCapabilities;
   plans?: ProviderPlan[];
+  /** Set false when the vendor's OpenAI-compatible surface has no `/models`
+   *  endpoint, so the settings UI hides 「获取模型列表」 instead of offering a
+   *  button that can only ever fail. Absent means "assume it works" — a fetch
+   *  degrades to a clear typed error either way. */
+  supportsModelList?: boolean;
 };
 
 export const PROVIDER_CONFIGS = {
@@ -52,20 +62,37 @@ export const PROVIDER_CONFIGS = {
     // and share one curated model list. Multi-config family — see plans[].
     baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3',
     format: 'openai-compatible',
+    // Exactly what the Ark subscription console lists under 「配置 model-name」,
+    // in its order — ids dotted with no date suffix, labels matching one to
+    // one. This is the plan's actual entitlement list, so it is reproduced as
+    // published rather than curated down or re-mapped: the Seed 2.0 pro/code
+    // entries that used to sit here are retired and no longer served.
     models: [
-      { id: 'doubao-seed-2.0-code', label: 'Doubao Seed 2.0 Code' },
-      { id: 'doubao-seed-2.0-pro', label: 'Doubao Seed 2.0 Pro' },
-      { id: 'glm-5.2', label: 'GLM-5.2' },
+      { id: 'doubao-seed-2.0-lite', label: 'Doubao Seed 2.0 Lite' },
+      { id: 'doubao-seed-2.0-mini', label: 'Doubao Seed 2.0 Mini' },
       { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
       { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
-      { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
       { id: 'minimax-m3', label: 'MiniMax M3' },
-      { id: 'minimax-m2.7', label: 'MiniMax M2.7' },
-      { id: 'kimi-k2.6', label: 'Kimi K2.6' },
+      { id: 'doubao-seed-evolving', label: 'Doubao Seed Evolving' },
+      { id: 'kimi-k3', label: 'Kimi K3' },
+      { id: 'doubao-seed-2.1-turbo', label: 'Doubao Seed 2.1 Turbo' },
+      { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+      { id: 'glm-5.3', label: 'GLM-5.3' },
     ],
+    // Model listing is declared per tier, because the three are separate hosts
+    // with separate credentials and only one of them has been measured.
+    // Verified with a live Agent Plan key: GET /api/plan/v3/models answers an
+    // empty-bodied 404 (auth passed — a bad key returns 401 on every path,
+    // including nonexistent ones, since the gateway authenticates before it
+    // routes). Ark's model listing lives on its control-plane API instead
+    // (ListFoundationModels, AK/SK-signed) — a different protocol.
+    // Coding shares the subscription-host family, so it is assumed to match.
+    // Pay-as-you-go is left enabled: it is a different host that has NOT been
+    // measured, and a fetch that fails there now reports an accurate,
+    // status-carrying message rather than a dead button.
     plans: [
-      { id: 'agent', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3', format: 'openai-compatible' },
-      { id: 'coding', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', format: 'openai-compatible' },
+      { id: 'agent', baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3', format: 'openai-compatible', supportsModelList: false },
+      { id: 'coding', baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3', format: 'openai-compatible', supportsModelList: false },
       { id: 'paygo', baseUrl: 'https://ark.cn-beijing.volces.com/api/v3', format: 'openai-compatible' },
     ],
   },
@@ -76,28 +103,22 @@ export const PROVIDER_CONFIGS = {
     baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     format: 'openai-compatible',
     models: [
+      { id: 'qwen3.8-max', label: 'Qwen3.8 Max' },
       { id: 'qwen3.7-max', label: 'Qwen3.7 Max' },
       { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus' },
       { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash' },
       { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
-      { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
       { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
-      { id: 'glm-5.2', label: 'GLM-5.2' },
-      { id: 'glm-5.1', label: 'GLM-5.1' },
-      { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
     ],
     plans: [
       { id: 'tokenplan', baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', format: 'openai-compatible',
         models: [
+          { id: 'qwen3.8-max', label: 'Qwen3.8 Max' },
           { id: 'qwen3.7-max', label: 'Qwen3.7 Max' },
           { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus' },
           { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash' },
           { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
-          { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
           { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
-          { id: 'glm-5.2', label: 'GLM-5.2' },
-          { id: 'glm-5.1', label: 'GLM-5.1' },
-          { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
         ] },
       { id: 'coding', baseUrl: 'https://coding.dashscope.aliyuncs.com/v1', format: 'openai-compatible',
         models: [
@@ -111,15 +132,12 @@ export const PROVIDER_CONFIGS = {
       // workspace-dedicated domains remain available through Custom API.
       { id: 'paygo', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', format: 'openai-compatible',
         models: [
+          { id: 'qwen3.8-max', label: 'Qwen3.8 Max' },
           { id: 'qwen3.7-max', label: 'Qwen3.7 Max' },
           { id: 'qwen3.7-plus', label: 'Qwen3.7 Plus' },
           { id: 'qwen3.6-flash', label: 'Qwen3.6 Flash' },
           { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
-          { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
           { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
-          { id: 'glm-5.2', label: 'GLM-5.2' },
-          { id: 'glm-5.1', label: 'GLM-5.1' },
-          { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
         ] },
     ],
   },
@@ -128,8 +146,9 @@ export const PROVIDER_CONFIGS = {
     baseUrl: 'https://api.anthropic.com',
     format: 'anthropic',
     models: [
-      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-      { id: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+      { id: 'claude-opus-5', label: 'Claude Opus 5' },
+      { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+      { id: 'claude-fable-5', label: 'Claude Fable 5' },
       { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
     ],
     capabilities: {
@@ -141,10 +160,10 @@ export const PROVIDER_CONFIGS = {
     baseUrl: 'https://api.openai.com',
     format: 'openai-compatible',
     models: [
-      { id: 'gpt-4.1', label: 'GPT-4.1' },
-      { id: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-      { id: 'gpt-4o', label: 'GPT-4o' },
-      { id: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+      { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
+      { id: 'gpt-5.5', label: 'GPT-5.5' },
     ],
     capabilities: {
       imageGen: true,
@@ -168,10 +187,10 @@ export const PROVIDER_CONFIGS = {
     baseUrl: 'https://api.moonshot.cn',
     format: 'openai-compatible',
     models: [
+      { id: 'kimi-k3', label: 'Kimi K3' },
       { id: 'kimi-k2.7-code', label: 'Kimi K2.7 Code' },
       { id: 'kimi-k2.7-code-highspeed', label: 'Kimi K2.7 Code Highspeed' },
       { id: 'kimi-k2.6', label: 'Kimi K2.6' },
-      { id: 'kimi-k2.5', label: 'Kimi K2.5' },
     ],
     capabilities: {
       webSearch: { type: 'tool', toolSpec: { type: 'builtin_function', function: { name: '$web_search' } } },
@@ -183,11 +202,9 @@ export const PROVIDER_CONFIGS = {
     baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
     format: 'openai-compatible',
     models: [
+      { id: 'glm-5.3', label: 'GLM-5.3' },
       { id: 'glm-5.2', label: 'GLM-5.2' },
-      { id: 'glm-5.1', label: 'GLM-5.1' },
-      { id: 'glm-5', label: 'GLM-5' },
       { id: 'glm-5-turbo', label: 'GLM-5-Turbo' },
-      { id: 'glm-4.7', label: 'GLM-4.7' },
       { id: 'glm-5v-turbo', label: 'GLM-5V-Turbo' },
     ],
     capabilities: {
@@ -208,8 +225,6 @@ export const PROVIDER_CONFIGS = {
       { id: 'MiniMax-M3', label: 'MiniMax M3' },
       { id: 'MiniMax-M2.7', label: 'MiniMax M2.7' },
       { id: 'MiniMax-M2.7-highspeed', label: 'MiniMax M2.7 Highspeed' },
-      { id: 'MiniMax-M2.5', label: 'MiniMax M2.5' },
-      { id: 'MiniMax-M2.5-highspeed', label: 'MiniMax M2.5 Highspeed' },
     ],
   },
   siliconflow: {

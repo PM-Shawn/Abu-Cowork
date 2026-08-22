@@ -148,6 +148,11 @@ vi.mock('../core/context/autoCompact', () => ({
     });
   },
   getUsagePercent: vi.fn().mockReturnValue(0.3),
+  // Real clamped math rather than a fixed stub: the published `percent` is what
+  // the compression tests read back, so it has to track the actual token counts.
+  getDisplayPercent: vi.fn().mockImplementation((tokens: number, maxTokens: number) => (
+    maxTokens <= 0 ? 0 : Math.min(100, Math.max(0, Math.round((tokens / maxTokens) * 100)))
+  )),
 }));
 
 vi.mock('../core/context/tokenEstimator', () => ({
@@ -1081,6 +1086,17 @@ describe('Agent Pipeline Integration', () => {
       // level was computed on the pre-compression (10+) message history.
       const conv = useChatStore.getState().conversations[convId];
       expect(conv.contextUsage?.percent).toBeLessThan(60);
+
+      // --- Anchor invariant --------------------------------------------------
+      // The published snapshot must ALSO say how much of the conversation its
+      // token count stands for. Here `tokensUsed` measures the compressed
+      // 3-message payload, but the anchor spans the full raw history — that
+      // pairing is what stops ContextIndicator from re-counting (and thereby
+      // un-compressing) the history and rendering a >100% water level.
+      const usage = conv.contextUsage!;
+      expect(usage.messageCountAtPublish).toBeGreaterThanOrEqual(historyMsgs.length);
+      expect(usage.messageCountAtPublish).toBeLessThanOrEqual(conv.messages.length);
+      expect(usage.tokensUsed).toBeLessThan(180_000); // post-compression, not raw history
     });
   });
 });

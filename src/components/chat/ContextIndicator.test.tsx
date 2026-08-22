@@ -92,12 +92,12 @@ describe('ContextIndicator', () => {
     expect(indicator.querySelectorAll('circle').length).toBe(2);
   });
 
-  it('derive uses contextUsage.overhead when published, so live tokens = overhead + estimateMessageTokens(messages)', () => {
-    // Streaming-style scenario: agentLoop published one turn ago with
-    // tokensUsed=8000, overhead=7000 (1000 of messages then). The user's
-    // assistant message has since grown by ~6000 tokens of fresh output.
-    // The indicator should reflect overhead (7000) + current messages tokens,
-    // NOT remain stuck on the stale 8000 published snapshot.
+  it('adds only the messages after messageCountAtPublish, so streaming output moves the ring', () => {
+    // Streaming scenario: agentLoop published at the top of this turn with
+    // tokensUsed=8000 covering the first message (anchor=1). The assistant
+    // reply at index 1 has since streamed in ~6000 tokens of fresh output.
+    // Those tokens are NOT in the published snapshot, so the indicator must
+    // add them — otherwise the ring freezes for the whole turn.
     const heavyContent = 'x'.repeat(24_000); // ~6000 tokens at ~4 chars/token
     setConv({
       messages: [
@@ -108,15 +108,76 @@ describe('ContextIndicator', () => {
         percent: 4,
         tokensUsed: 8000,
         tokensMax: 200_000,
-        overhead: 7000,
+        messageCountAtPublish: 1,
       },
     });
     render(<ContextIndicator conversationId="c1" />);
     const label = screen.getByTestId('context-indicator').getAttribute('aria-label') || '';
-    // Expect a percent meaningfully higher than the stale 4% from the published snapshot.
-    const percentMatch = label.match(/(\d+)%/);
-    expect(percentMatch).not.toBeNull();
-    const shownPercent = Number(percentMatch![1]);
-    expect(shownPercent).toBeGreaterThan(4);
+    expect(label).toMatch(/14\.\dk/); // 8000 published + ~6000 streamed
+  });
+
+  it('does not re-count the history behind the anchor, so a compacted conversation stays under 100%', () => {
+    // The 108% regression: a long conversation whose payload the agent loop had
+    // already compacted down to 60k of a 128k window. The raw history kept for
+    // the UI is far larger than what was actually sent — counting it wholesale
+    // is what previously pushed the reading past the window.
+    const bulk = Array.from({ length: 40 }, (_, i) => ({
+      id: `m${i}`,
+      role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+      content: 'y'.repeat(20_000), // ~5000 tokens each → ~200k of raw history
+      timestamp: 0,
+    }));
+    setConv({
+      messages: bulk,
+      contextUsage: {
+        percent: 47,
+        tokensUsed: 60_000,
+        tokensMax: 128_000,
+        messageCountAtPublish: bulk.length,
+      },
+    });
+    render(<ContextIndicator conversationId="c1" />);
+    const label = screen.getByTestId('context-indicator').getAttribute('aria-label') || '';
+    expect(label).toContain('47');
+    expect(label).toContain('60.0k');
+  });
+
+  it('ignores a stale anchor that overruns the message list (revert / delete)', () => {
+    // History shrank under the snapshot. Adding a negative-length tail or
+    // slicing from a past-the-end index must not throw or inflate the reading.
+    setConv({
+      messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 0 }],
+      contextUsage: {
+        percent: 25,
+        tokensUsed: 500,
+        tokensMax: 2000,
+        messageCountAtPublish: 9,
+      },
+    });
+    render(<ContextIndicator conversationId="c1" />);
+    const label = screen.getByTestId('context-indicator').getAttribute('aria-label') || '';
+    expect(label).toContain('25');
+  });
+
+  it('clamps the displayed percent to 100 instead of rendering an over-budget estimate', () => {
+    // Even with the anchor fix, a long streaming tail can push the estimate past
+    // the window. The request the loop sends is budget-gated, so >100% is always
+    // a measurement artifact — it must never reach the user as "108% 已用".
+    setConv({
+      messages: [
+        { id: 'm1', role: 'user', content: 'go', timestamp: 0 },
+        { id: 'm2', role: 'assistant', content: 'z'.repeat(400_000), timestamp: 0 },
+      ],
+      contextUsage: {
+        percent: 90,
+        tokensUsed: 115_000,
+        tokensMax: 128_000,
+        messageCountAtPublish: 1,
+      },
+    });
+    render(<ContextIndicator conversationId="c1" />);
+    const label = screen.getByTestId('context-indicator').getAttribute('aria-label') || '';
+    const shownPercent = Number((label.match(/(\d+)%/) ?? [])[1]);
+    expect(shownPercent).toBe(100);
   });
 });

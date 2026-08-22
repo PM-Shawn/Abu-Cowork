@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { calculateWarningLevel, getUsagePercent, AutoCompactTracker } from './autoCompact';
+import { calculateWarningLevel, getUsagePercent, getDisplayPercent, AutoCompactTracker } from './autoCompact';
 
 describe('autoCompact', () => {
   describe('calculateWarningLevel', () => {
@@ -40,6 +40,28 @@ describe('autoCompact', () => {
 
     it('returns 0 for zero max', () => {
       expect(getUsagePercent(1000, 0)).toBe(0);
+    });
+
+    it('stays unclamped so compaction can see how far past the budget it is', () => {
+      expect(getUsagePercent(138_400, 128_000)).toBe(108);
+    });
+  });
+
+  describe('getDisplayPercent', () => {
+    it('matches getUsagePercent inside the window', () => {
+      expect(getDisplayPercent(75000, 100000)).toBe(75);
+    });
+
+    it('clamps an over-budget estimate to 100 rather than showing 108%', () => {
+      expect(getDisplayPercent(138_400, 128_000)).toBe(100);
+    });
+
+    it('clamps a negative reading to 0', () => {
+      expect(getDisplayPercent(-500, 100000)).toBe(0);
+    });
+
+    it('returns 0 for zero max', () => {
+      expect(getDisplayPercent(1000, 0)).toBe(0);
     });
   });
 

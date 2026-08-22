@@ -2126,12 +2126,13 @@ async function main() {
         const titlebar = document.querySelector('[data-abu-windows-native-titlebar]');
         const titlebarSafeArea = document.querySelector('[data-abu-windows-titlebar-safe-area]');
         const toolbar = document.querySelector('[data-abu-windows-toolbar]');
+        const workspaceControls = document.querySelector('[data-abu-windows-workspace-controls]');
         const appLayout = document.querySelector('[data-abu-app-layout]');
         const main = document.querySelector('main');
-        if (!titlebar || !titlebarSafeArea || !toolbar || !appLayout || !main) return null;
+        if (!titlebar || !titlebarSafeArea || !workspaceControls || !appLayout || !main) return null;
         const titlebarRect = titlebar.getBoundingClientRect();
         const titlebarSafeAreaRect = titlebarSafeArea.getBoundingClientRect();
-        const toolbarRect = toolbar.getBoundingClientRect();
+        const workspaceControlsRect = workspaceControls.getBoundingClientRect();
         const mainRect = main.getBoundingClientRect();
         const menus = [...document.querySelectorAll('[data-window-menu]')]
           .map((menu) => {
@@ -2189,17 +2190,16 @@ async function main() {
             top: titlebarSafeAreaRect.top,
             bottom: titlebarSafeAreaRect.bottom,
           },
-          toolbar: {
-            left: toolbarRect.left,
-            right: toolbarRect.right,
-            top: toolbarRect.top,
-            bottom: toolbarRect.bottom,
-            height: toolbarRect.height,
-            background: getComputedStyle(toolbar).backgroundColor,
+          toolbarPresent: Boolean(toolbar),
+          workspaceControls: {
+            left: workspaceControlsRect.left,
+            right: workspaceControlsRect.right,
+            top: workspaceControlsRect.top,
+            bottom: workspaceControlsRect.bottom,
+            pointerEvents: getComputedStyle(workspaceControls).pointerEvents,
           },
           appPaddingTop: Number.parseFloat(getComputedStyle(appLayout).paddingTop),
           appBackground: getComputedStyle(appLayout).backgroundColor,
-          toolbarBottom: toolbarRect.bottom,
           mainTop: mainRect.top,
           menus,
           dragRegions,
@@ -2208,7 +2208,7 @@ async function main() {
       });
       checks.packagedWindowsTitlebarLayout =
         toolbarLayout !== null &&
-        Math.abs(toolbarLayout.titlebar.height - 36) <= 1 &&
+        Math.abs(toolbarLayout.titlebar.height - 30) <= 1 &&
         toolbarLayout.titlebar.background === toolbarLayout.appBackground &&
         toolbarLayout.titlebar.left >= -1 &&
         toolbarLayout.titlebar.right <= toolbarLayout.viewportWidth + 1 &&
@@ -2222,28 +2222,28 @@ async function main() {
           menu.top >= toolbarLayout.titlebarSafeArea.top - 1 &&
           menu.bottom <= toolbarLayout.titlebarSafeArea.bottom + 1
         )) &&
-        toolbarLayout.dragRegions.length === 2 &&
-        toolbarLayout.dragRegions.map((region) => region.group).join(',') === 'titlebar,toolbar' &&
+        toolbarLayout.dragRegions.length === 1 &&
+        toolbarLayout.dragRegions[0]?.group === 'titlebar' &&
         toolbarLayout.dragRegions.every((region) => (
           region.appRegion === 'drag' &&
           region.width >= 32 &&
-          Math.abs(region.height - 36) <= 1
+          Math.abs(region.height - 30) <= 1
         ));
       checks.packagedWindowsToolbarLayout =
         toolbarLayout !== null &&
-        Math.abs(toolbarLayout.toolbar.height - 36) <= 1 &&
+        toolbarLayout.toolbarPresent === false &&
         toolbarLayout.appPaddingTop <= 0.5 &&
-        toolbarLayout.mainTop >= toolbarLayout.toolbarBottom + 7 &&
-        toolbarLayout.toolbar.background === toolbarLayout.appBackground &&
-        toolbarLayout.toolbar.left >= -1 &&
-        toolbarLayout.toolbar.right <= toolbarLayout.viewportWidth + 1 &&
+        toolbarLayout.mainTop >= toolbarLayout.titlebar.bottom + 7 &&
+        toolbarLayout.workspaceControls.pointerEvents === 'none' &&
+        toolbarLayout.workspaceControls.left >= -1 &&
+        toolbarLayout.workspaceControls.right <= toolbarLayout.viewportWidth + 1 &&
         toolbarLayout.controls.length >= 2 &&
         toolbarLayout.controls.every((control) => (
           control.pointerEvents !== 'none' &&
-          control.left >= toolbarLayout.toolbar.left - 1 &&
-          control.right <= toolbarLayout.toolbar.right + 1 &&
-          control.top >= toolbarLayout.toolbar.top - 1 &&
-          control.bottom <= toolbarLayout.toolbar.bottom + 1
+          control.left >= -1 &&
+          control.right <= toolbarLayout.viewportWidth + 1 &&
+          control.top >= toolbarLayout.mainTop - 1 &&
+          control.bottom <= toolbarLayout.mainTop + 45
         ));
 
       // CSS app-region checks cannot prove that Windows' native hit testing
@@ -2377,9 +2377,10 @@ async function main() {
       checks.packagedMacToolbarLayout = true;
     }
 
-    // Exercise all three controls on every real packaged desktop platform.
-    // A drag-region regression manifests as Playwright's click being intercepted,
-    // which is exactly the RC25 macOS and early Windows failure mode.
+    // Exercise the platform header controls plus the original New Task entry
+    // in the sidebar on every real packaged desktop platform. A drag-region
+    // regression manifests as Playwright's click being intercepted, which is
+    // exactly the RC25 macOS and early Windows failure mode.
     const sidebarControl = window.locator('[data-window-control="sidebar"]');
     const initialSidebarTitle = await sidebarControl.getAttribute('title');
     if (!initialSidebarTitle) throw new Error('sidebar control label is missing');
@@ -2407,7 +2408,7 @@ async function main() {
         );
       });
     });
-    const newTaskControl = window.locator('[data-window-control="new-task"]');
+    const newTaskControl = window.locator('[data-sidebar-action="new-task"]');
     let sidebarChangedForNewTask = false;
     if (!(await newTaskControl.isVisible())) {
       await sidebarControl.click();

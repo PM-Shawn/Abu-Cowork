@@ -306,6 +306,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
       {/* Top Navigation */}
       <nav className="px-4 pb-2 space-y-0.5" aria-label="Main navigation">
         <button
+          data-sidebar-action="new-task"
           onClick={() => { startNewConversation(); setViewMode('chat'); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body font-medium rounded-lg',

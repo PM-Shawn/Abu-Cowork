@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // src/features/reference/SelectionToolbar.test.tsx
 import { describe, it, expect, vi } from 'vitest';
 import { useState } from 'react';

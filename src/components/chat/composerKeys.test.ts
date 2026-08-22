@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { insertNewlineAtCursor, isImeComposing, resolveEnterAction } from './composerKeys';
 import type { EnterAction } from './composerKeys';

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /**
  * triggerStore tests — v2→v3 migration + CRUD basics
  */

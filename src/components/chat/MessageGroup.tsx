@@ -376,6 +376,16 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     // assistant message while the tool call that produced the image sits on an
     // earlier one, so the lookup must span the whole group, not just
     // msgWithSnapshot.
+    //
+    // `messages` is a fresh array every render (ChatView builds messageGroups
+    // unmemoized on purpose), so this memo does recompute often. That is kept
+    // deliberately: narrowing the dep to the snapshot array alone would miss a
+    // tool result that lands or changes after the snapshot exists, and a missed
+    // recompute brings the placeholder-instead-of-image bug back silently. The
+    // cost it would save is already gone — backfillDetailBlockImages hands back
+    // the SAME imageData object for an unchanged tool call (WeakMap), so the
+    // expensive part downstream (DetailBlockView's data-URL useMemo over a
+    // multi-MB base64) stays cached across these recomputes.
     return backfillDetailBlockImages(
       snapshotToExecutionSteps(msgWithSnapshot.executionSteps),
       messages,

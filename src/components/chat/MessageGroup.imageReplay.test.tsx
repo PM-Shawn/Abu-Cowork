@@ -171,6 +171,29 @@ describe('MessageGroup — finished-task image replay', () => {
     expect(img!.getAttribute('src')).toBe(`data:image/png;base64,${PNG_1X1}`);
   });
 
+  it('keeps the same img src when re-rendered with a rebuilt (equal) messages array', () => {
+    // ChatView rebuilds messageGroups on every render, so MessageGroup gets a
+    // fresh array each streaming tick. The rendered image must not churn.
+    const messages = buildMessages({
+      snapshotToolCallId: TOOL_CALL_ID,
+      resultContent: IMAGE_RESULT_CONTENT,
+    });
+    const { container, rerender } = renderReplayedGroup(messages);
+
+    openImageBlock();
+    const before = container.querySelector('img[src^="data:"]');
+    const srcBefore = before!.getAttribute('src');
+
+    // New array wrapper, same message objects — exactly ChatView's pattern.
+    rerender(<MessageGroup messages={[...messages]} isLastGroup />);
+
+    const after = container.querySelector('img[src^="data:"]');
+    expect(after).not.toBeNull();
+    expect(after!.getAttribute('src')).toBe(srcBefore);
+    // Same DOM node: the image was not torn down and rebuilt.
+    expect(after).toBe(before);
+  });
+
   it('degrades to the placeholder text without crashing when resultContent has no image block', () => {
     const { container } = renderReplayedGroup(
       buildMessages({

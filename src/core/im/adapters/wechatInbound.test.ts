@@ -11,6 +11,7 @@ import * as aesjs from 'aes-js';
 import { WeChatInboundAdapter } from './wechat';
 import type { WeChatCredentials } from './wechat';
 import type { InboundMessage } from './types';
+import { checkReadPath, getAuthorizedDirs } from '../../tools/pathSafety';
 
 // Build a CDN payload the adapter can decrypt: AES-128-ECB + PKCS7 over known bytes.
 const KEY = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
@@ -120,6 +121,43 @@ describe('WeChatInboundAdapter inbound image', () => {
     // No "[图片]" placeholder on success — the image block is the content, and a
     // literal marker beside it reads to the model as a failed attachment.
     expect(msg.message.content).toBe('');
+  }, 10000);
+
+  it('grants read on an inbound file so the agent can actually open it', async () => {
+    // Regression: files land in the system temp dir, which no IM channel has
+    // authorized, so read_file was refused ("拒绝访问") for a document the user
+    // had just sent the bot.
+    getUpdatesCalls = 99;
+    fakeFetch.mockImplementationOnce(async () => ({
+      ok: true, status: 200,
+      json: async () => ({
+        ret: 0,
+        msgs: [{
+          message_id: 777, from_user_id: 'user@im.wechat', message_type: 1, context_token: 'ctx',
+          item_list: [{
+            type: 4,
+            file_item: {
+              file_name: 'report.txt',
+              media: { encrypt_query_param: '/enc?x=1', aes_key: KEY_B64, encrypt_type: 1 },
+            },
+          }],
+        }],
+      }),
+    } as unknown as Response));
+
+    const adapter = new WeChatInboundAdapter();
+    const received = collect(adapter, 1);
+    await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
+    const [msg] = await received;
+    await adapter.disconnect();
+
+    // path handed to the agent…
+    const pathMatch = /路径: (\S+?)\]/.exec(msg.message.content);
+    expect(pathMatch).toBeTruthy();
+    // …and that exact file is readable, while its directory is NOT opened up.
+    const filePath = pathMatch![1];
+    await expect(checkReadPath(filePath)).resolves.toMatchObject({ allowed: true });
+    expect(getAuthorizedDirs()).toContain(filePath);
   }, 10000);
 
   it('attaches a QUOTED photo to the text that quotes it (WeChat 引用)', async () => {

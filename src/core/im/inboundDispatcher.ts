@@ -37,8 +37,9 @@ export function dispatchDirect(
   platform: string,
   payload: Record<string, unknown>,
   images?: ImageAttachment[],
+  text?: string,
 ): void {
-  dispatch(platform, payload, images);
+  dispatch(platform, payload, images, text);
 }
 
 export function stopInboundDispatcher(): void {
@@ -47,7 +48,12 @@ export function stopInboundDispatcher(): void {
   console.log('[InboundDispatcher] Stopped');
 }
 
-function dispatch(platform: string, rawPayload: Record<string, unknown>, images?: ImageAttachment[]) {
+function dispatch(
+  platform: string,
+  rawPayload: Record<string, unknown>,
+  images?: ImageAttachment[],
+  text?: string,
+) {
   // Parse once, share with both paths
   const message = parseInboundMessage(platform, rawPayload);
   if (!message) return;
@@ -55,6 +61,12 @@ function dispatch(platform: string, rawPayload: Record<string, unknown>, images?
   // router can forward them to the agent as real vision content. Trigger matching
   // is text-based and unaffected.
   if (images?.length) message.images = images;
+  // The adapter's own text wins when it provides one. It has already downloaded
+  // the attachments, so its text carries the local paths for files and videos —
+  // `parseInboundMessage` re-parses the raw payload and can only emit a bare
+  // "[文件: name]", which silently dropped the one thing the agent needs to open
+  // the attachment it was just sent.
+  if (text !== undefined) message.text = text;
 
   // Trigger first: check if any IM trigger matches this message
   const matched = triggerEngine.tryMatchIMTriggers(message);

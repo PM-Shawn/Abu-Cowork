@@ -253,6 +253,25 @@ describe('IMChannelRouter', () => {
       expect(getInternal().pendingMedia.size).toBe(0);
     });
 
+    it('coalesces a FILE message with its caption too, keeping the local path', async () => {
+      // A file arrives as text-only ("[文件: x, 路径: /tmp/x]") with no images,
+      // so the image-only check missed it and files still split into two turns.
+      getInternal().dispatchMessage(makeMessage({
+        text: '[文件: 2026-08-22.log, 路径: /tmp/wechat-1.log]',
+        replyContext: { platform: 'dingtalk', messageId: 'f1' },
+      }));
+      expect(mockRunAgentLoop).not.toHaveBeenCalled();
+
+      getInternal().dispatchMessage(makeMessage({
+        text: '这个是啥', replyContext: { platform: 'dingtalk', messageId: 'f2' },
+      }));
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+
+      const sent = mockRunAgentLoop.mock.calls[0][1];
+      expect(sent).toContain('/tmp/wechat-1.log'); // path survives the merge
+      expect(sent).toContain('这个是啥');
+    });
+
     it('dispatches a lone photo once the wait elapses', async () => {
       vi.useFakeTimers();
       try {

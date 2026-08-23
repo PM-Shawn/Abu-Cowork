@@ -40,28 +40,32 @@ const MAX_SESSION_QUEUE = 5;
  *  added latency at all. Tune here if that lone-photo wait feels too long. */
 const MEDIA_COALESCE_MS = 15_000;
 
-/** Placeholder markers the adapters emit for attached media, so a message that
- *  is *only* a photo can be recognised as having no real text of its own. */
+/** Placeholder markers the adapters emit for an attachment, so a message that
+ *  is *only* an attachment can be recognised as having no words of its own.
+ *  Covers files too — a file message's whole text is `[文件: name, 路径: …]`,
+ *  which is payload for the agent but not something the user "said". */
 const MEDIA_PLACEHOLDER_RE = /\[(图片|视频|文件[^\]]*)\]/g;
 
-/** True when the message carries images but no text beyond media placeholders. */
+/** True when the message is nothing but an attachment: an image with no words,
+ *  or a file/video whose text is only its placeholder. These are the messages
+ *  that get a caption in a SEPARATE follow-up message. */
 function isMediaOnly(message: NormalizedIMMessage): boolean {
-  if (!message.images?.length) return false;
-  return message.text.replace(MEDIA_PLACEHOLDER_RE, '').trim() === '';
+  // Fresh regex per call: MEDIA_PLACEHOLDER_RE is /g and would carry lastIndex.
+  const stripped = message.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
+  if (stripped !== '') return false;
+  return Boolean(message.images?.length) || message.text.trim() !== '';
 }
 
-/** Merge a buffered media message with the follow-up that carries its caption.
- *  Text comes from the follow-up (the placeholder adds nothing once the image
- *  itself is attached); reply context is the newest message's. */
+/** Merge a buffered attachment with the follow-up that carries its caption.
+ *  Both texts are kept: an image contributes nothing (its block is the content)
+ *  while a file contributes the local path the agent needs to open it. */
 function mergeInboundMessages(
   buffered: NormalizedIMMessage,
   next: NormalizedIMMessage,
 ): NormalizedIMMessage {
-  const bufferedText = buffered.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
-  const nextText = next.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
   return {
     ...next,
-    text: [bufferedText, nextText].filter(Boolean).join('\n') || next.text,
+    text: [buffered.text.trim(), next.text.trim()].filter(Boolean).join('\n') || next.text,
     images: [...(buffered.images ?? []), ...(next.images ?? [])],
   };
 }

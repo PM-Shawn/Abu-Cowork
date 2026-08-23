@@ -27,7 +27,9 @@ function onMessage(msg: InboundMessage): void {
     return;
   }
 
-  dispatchDirect('wechat', msg.raw as Record<string, unknown>, msg.images);
+  // Pass the adapter's composed text as well as its images: it carries the local
+  // paths of downloaded files/videos, which the router's own re-parse cannot know.
+  dispatchDirect('wechat', msg.raw as Record<string, unknown>, msg.images, msg.message.content);
 }
 
 function findChannelIdByAdapter(): string | undefined {

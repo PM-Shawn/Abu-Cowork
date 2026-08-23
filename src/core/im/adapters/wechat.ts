@@ -15,8 +15,10 @@ import SparkMD5 from 'spark-md5';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { readFile } from '../../tools/fsBridge';
+import { authorizeWorkspace } from '../../tools/pathSafety';
 import { getBaseName } from '../../../utils/pathUtils';
-import { tempDir } from '@tauri-apps/api/path';
+import { homeDir } from '@tauri-apps/api/path';
+import { isWindows } from '../../../utils/platform';
 import type { ImageAttachment } from '../../../types';
 import { createLogger } from '../../logging/logger';
 import { BaseAdapter } from './base';
@@ -64,7 +66,11 @@ interface ILinkMessage {
  *  photo, since a single message can't carry both. The quoted message's item
  *  rides along inside the text item as `ref_msg.message_item`. */
 interface ILinkRefMessage {
-  message_item?: { type?: number; image_item?: { media?: CDNMedia; aeskey?: string } };
+  message_item?: {
+    type?: number;
+    image_item?: { media?: CDNMedia; aeskey?: string };
+    file_item?: { media?: CDNMedia; file_name?: string };
+  };
   title?: string;
 }
 
@@ -95,6 +101,20 @@ export const WECHAT_MAX_OUTBOUND_BYTES = 25 * 1024 * 1024;
 
 const CDN_UPLOAD_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c';
 const CDN_DOWNLOAD_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c';
+
+/**
+ * Where inbound attachments land — somewhere the agent is actually allowed to
+ * read, which the OS temp dir is not: macOS resolves it under `~/Library`, a
+ * hard-blocked sensitive directory that pathSafety rejects BEFORE any per-path
+ * grant, so an attachment saved there could never be opened. `/tmp` is in
+ * ALWAYS_ALLOWED_PATHS; on Windows its counterpart (`%LOCALAPPDATA%\Temp`) sits
+ * under the equally-blocked `AppData`, so downloads go to `~/Downloads` there —
+ * an allowed home path, and a sane place for a file someone sent you.
+ */
+async function resolveInboundMediaDir(): Promise<string> {
+  if (!isWindows()) return '/tmp';
+  return `${await homeDir()}/Downloads`.replace(/\\/g, '/');
+}
 
 // Logs land in the captured app log (renderer console.* does not), so inbound
 // media diagnostics are visible in ~/Library/.../logs/<date>.log.
@@ -347,8 +367,12 @@ async function downloadAndDecryptMedia(
 
   const ext = fileName?.split('.').pop() ?? 'bin';
   const name = `wechat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
-  const tmp = await tempDir();
-  const path = `${tmp}/${name}`;
+  // NOT the OS temp dir: on macOS it resolves under ~/Library, which pathSafety
+  // hard-blocks (a sensitive home dir, checked BEFORE any per-path grant), so a
+  // file saved there could never be opened — `read_file` answered "拒绝访问" for
+  // an attachment the user had just sent. `/tmp` is in ALWAYS_ALLOWED_PATHS, so
+  // the agent can read what arrives without widening anything.
+  const path = `${await resolveInboundMediaDir()}/${name}`;
   await writeFile(path, decrypted);
   return { path, bytes: decrypted };
 }
@@ -618,6 +642,27 @@ export class WeChatInboundAdapter implements InboundAdapter {
               });
             }
           }
+          // A quoted FILE works the same way (the official plugin's ref lookup
+          // covers every media type, not just images): fetch it and hand the
+          // agent its local path alongside the question.
+          if (quoted?.type === 4 && (quoted.file_item?.media?.encrypt_query_param || quoted.file_item?.media?.full_url)) {
+            const quotedName = quoted.file_item.file_name ?? 'file';
+            try {
+              const { path } = await downloadAndDecryptMedia(
+                quoted.file_item.media,
+                undefined,
+                quotedName,
+              );
+              authorizeWorkspace(path, ['read']);
+              parts.push(`[文件: ${quotedName}, 路径: ${path}]`);
+              wechatLog.warn('inbound quoted file downloaded ok', { name: quotedName });
+            } catch (err) {
+              wechatLog.error('inbound quoted file download failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+              parts.push(`[文件: ${quotedName}（加载失败）]`);
+            }
+          }
           break;
         }
         case 2: {
@@ -654,9 +699,15 @@ export class WeChatInboundAdapter implements InboundAdapter {
           break;
         }
         case 3: {
-          // Use server-side ASR transcription when available
+          // Prefer the server's own transcription — the official plugin does the
+          // same, only falling back to downloading audio when there is no text.
+          // We stop at the text: raw SILK needs a transcoder (silk-wasm) AND an
+          // audio-capable model, so a downloaded .silk would be a dead end. When
+          // there's no transcript, say so in a way the agent can act on.
           const voiceText = item.voice_item.text;
-          parts.push(voiceText ? `[语音] ${voiceText}` : '[语音消息]');
+          parts.push(voiceText
+            ? `[语音] ${voiceText}`
+            : '[语音消息（没有转写文字，无法识别内容——请让用户改用文字重发）]');
           break;
         }
         case 4: {
@@ -668,18 +719,47 @@ export class WeChatInboundAdapter implements InboundAdapter {
               undefined, // files use media.aes_key (base64 of hex)
               item.file_item.file_name,
             );
+            // Grant READ on exactly this file. It lands in the system temp dir,
+            // which no IM channel has authorized, so `read_file` was refused
+            // ("拒绝访问") and the agent could never open a document the user had
+            // just deliberately sent it. The grant is per-file and read-only —
+            // not the temp directory, and never write — so it opens nothing
+            // beyond the attachment itself.
+            authorizeWorkspace(path, ['read']);
             // Keep the local path in the text so the agent can read_file it
             // (files aren't vision content; the path is how it reaches them).
             parts.push(`[文件: ${item.file_item.file_name}, 路径: ${path}]`);
           } catch (err) {
-            console.error('[WeChat] inbound file download failed:', err);
+            wechatLog.error('inbound file download failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
             parts.push(`[文件: ${item.file_item.file_name}（加载失败）]`);
           }
           break;
         }
-        case 5:
-          parts.push(`[视频: ${item.video_item.play_length}秒]`);
+        case 5: {
+          // Same treatment as a file: fetch it and hand over the local path.
+          // Without this a video was a dead end — the agent saw only a duration
+          // and had nothing it could open, forward, or process.
+          const media = item.video_item.media;
+          const seconds = item.video_item.play_length;
+          if (!media?.encrypt_query_param && !media?.full_url) {
+            parts.push(`[视频: ${seconds}秒]`);
+            break;
+          }
+          try {
+            const { path } = await downloadAndDecryptMedia(media, undefined, 'video.mp4');
+            authorizeWorkspace(path, ['read']);
+            parts.push(`[视频: ${seconds}秒, 路径: ${path}]`);
+            wechatLog.warn('inbound video downloaded ok', { seconds });
+          } catch (err) {
+            wechatLog.error('inbound video download failed', {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            parts.push(`[视频: ${seconds}秒（加载失败）]`);
+          }
           break;
+        }
       }
     }
 

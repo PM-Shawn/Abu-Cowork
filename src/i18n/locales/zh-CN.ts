@@ -2064,6 +2064,7 @@ const zhCN: TranslationDict = {
     sessionResetConfirm: '好的，已开始新对话。',
     sessionRecovered: '已恢复上次对话上下文（{context}）。请继续。',
     sessionExpiredHint: '上一个话题已结束。回复"继续上次"可恢复上下文，或直接描述新的问题。',
+    sessionRolledOver: '本轮对话已满 {rounds} 条，已自动开启新对话（上下文重新开始）。回复"继续上次"可恢复之前的上下文。',
     sessionQueueFull: '消息过多，请等待当前处理完成后再发送。',
     timeoutHint: '0 = 不超时',
     groupConnection: '连接配置',

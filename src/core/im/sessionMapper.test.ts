@@ -183,14 +183,43 @@ describe('SessionMapper', () => {
     expect(result.isNew).toBe(true);
   });
 
-  it('does not use maxRoundsPerSession for session cutoff', () => {
+  // maxRoundsPerSession used to be configurable but never enforced, so a chat
+  // that never idled long enough to expire piled every turn onto one
+  // conversation — slower, costlier, and polluted by long-stale context.
+  it('rolls the session over once maxRoundsPerSession is reached', () => {
     const msg = makeMessage();
     const channel = makeChannel({ maxRoundsPerSession: 2 });
     mapper.resolve(msg, channel, 'safe_tools');
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { messageCount: number };
-    if (session) session.messageCount = 100;
+    if (session) session.messageCount = 2; // cap reached
+
+    const result = mapper.resolve(msg, channel, 'safe_tools');
+    expect(result.isNew).toBe(true);
+    expect(result.isRolledOver).toBe(true);
+    // archived (not discarded), so "继续上次" can still restore it
+    expect(result.archivedConversationId).toBeDefined();
+  });
+
+  it('keeps the session while it is under the round cap', () => {
+    const msg = makeMessage();
+    const channel = makeChannel({ maxRoundsPerSession: 5 });
+    mapper.resolve(msg, channel, 'safe_tools');
+
+    const result = mapper.resolve(msg, channel, 'safe_tools');
+    expect(result.isNew).toBe(false);
+    expect(result.isRolledOver).toBeFalsy();
+  });
+
+  it('treats maxRoundsPerSession=0 as unlimited', () => {
+    const msg = makeMessage();
+    const channel = makeChannel({ maxRoundsPerSession: 0 });
+    mapper.resolve(msg, channel, 'safe_tools');
+
+    const store = useIMChannelStore.getState();
+    const session = store.sessions['dchat:chat1:u1:window'] as { messageCount: number };
+    if (session) session.messageCount = 999;
 
     const result = mapper.resolve(msg, channel, 'safe_tools');
     expect(result.isNew).toBe(false);

@@ -2063,6 +2063,7 @@ const enUS: TranslationDict = {
     sessionResetConfirm: 'OK, started a new conversation.',
     sessionRecovered: 'Restored previous context ({context}). Please continue.',
     sessionExpiredHint: 'Previous topic ended. Reply "continue" to restore context, or describe a new question.',
+    sessionRolledOver: 'This session reached {rounds} messages, so a new conversation was started (context restarts here). Reply "continue" to restore the previous context.',
     sessionQueueFull: 'Too many messages. Please wait for the current one to finish.',
     timeoutHint: '0 = no timeout',
     groupConnection: 'Connection',

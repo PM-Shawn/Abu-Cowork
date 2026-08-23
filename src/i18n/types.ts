@@ -2227,6 +2227,8 @@ export interface TranslationDict {
     sessionResetConfirm: string;
     sessionRecovered: string;
     sessionExpiredHint: string;
+    /** Session rolled over after hitting the per-session round cap. {rounds} */
+    sessionRolledOver: string;
     sessionQueueFull: string;
     timeoutHint: string;
     groupConnection: string;

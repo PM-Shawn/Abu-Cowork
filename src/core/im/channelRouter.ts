@@ -280,7 +280,20 @@ class IMChannelRouter {
         return; // "继续上次" is not a real question — just confirm and wait for next message
       }
 
-      if (hasRecoverableSession) {
+      if (resolveResult.isRolledOver) {
+        // The round cap rolled the session over. Say so — otherwise the agent
+        // just looks like it forgot everything mid-conversation. (Checked before
+        // the recoverable hint below: the roll-over archived that very session,
+        // so both flags are set, but "expired" would be the wrong story.)
+        const rolledMsg: AbuMessage = {
+          content: format(getI18n().imChannel.sessionRolledOver, {
+            rounds: String(channel.maxRoundsPerSession),
+          }),
+        };
+        sendThinking(message.platform, message.replyContext)
+          .then((h) => sendFinal(h, rolledMsg))
+          .catch(() => {});
+      } else if (hasRecoverableSession) {
         // Hint the user that they can recover
         const hintMsg: AbuMessage = {
           content: getI18n().imChannel.sessionExpiredHint,

@@ -123,6 +123,31 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
   });
 
+  it('applies wildcard matching to agent.tools and warns when an entry matches no known tool', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runSubagentLoop({
+        agent: { ...agent, tools: ['abu-browser__*', 'missing_tool'] },
+        task: 'do the thing',
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('tools entries matched no known tools: missing_tool'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['abu-browser__screenshot']);
+  });
+
   it('fails before the model starts when a declared MCP tool is unavailable', async () => {
     mockGetAllTools.mockReturnValue([
       { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
@@ -169,6 +194,69 @@ describe('subagent max_tokens recovery (integration)', () => {
       expect(mockExecuteAnyTool).not.toHaveBeenCalled();
     },
   );
+
+  it('applies wildcard matching to agent.disallowedTools and warns when an entry matches no known tool', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__click', description: 'click', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runSubagentLoop({
+        agent: { ...agent, disallowedTools: ['abu-browser__*', 'missing_tool'] },
+        task: 'do the thing',
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disallowedTools entries matched no known tools: missing_tool'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file']);
+  });
+
+  it('keeps exact agent.tools names working under the shared matcher', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { ...agent, tools: ['read_file'] },
+      task: 'do the thing',
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file']);
+  });
+
+  it('keeps exact disallowedTools matching narrow', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'read_file_v2', description: 'read v2', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { ...agent, disallowedTools: ['read_file'] },
+      task: 'do the thing',
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file_v2']);
+  });
 
   it('marks adapter failures with structured stopReason=error', async () => {
     mockClaudeChat.mockRejectedValueOnce(new Error('adapter failed'));

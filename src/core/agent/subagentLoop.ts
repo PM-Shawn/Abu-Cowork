@@ -370,6 +370,15 @@ export interface SubagentLoopOptions {
   workspaceReader?: WorkspaceReader;
 }
 
+function warnPatternsWithoutKnownTool(agentName: string, fieldName: 'tools' | 'disallowedTools', patterns: string[], tools: ToolDefinition[]): void {
+  const unknown = patterns.filter((pattern) =>
+    !tools.some((tool) => matchesToolName(tool.name, pattern)),
+  );
+  if (unknown.length > 0) {
+    console.warn(`[subagent:${agentName}] ${fieldName} entries matched no known tools: ${unknown.join(', ')}`);
+  }
+}
+
 export async function runSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   const { agent, task, context, parentConversationSummary, commandConfirmCallback, filePermissionCallback, onProgress } = options;
   const startTime = Date.now();
@@ -472,17 +481,16 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // 3. Get + filter tools
     let tools = allTools;
     if (agent.tools && agent.tools.length > 0) {
-      const available = new Set(tools.map((t) => t.name));
-      const unknown = agent.tools.filter((name) => !available.has(name));
-      if (unknown.length > 0) {
-        console.warn(`[subagent:${agent.name}] unknown tool names dropped: ${unknown.join(', ')}`);
-      }
-      const allowed = new Set(agent.tools);
-      tools = tools.filter((t) => allowed.has(t.name));
+      warnPatternsWithoutKnownTool(agent.name, 'tools', agent.tools, allTools);
+      tools = tools.filter((tool) =>
+        agent.tools!.some((pattern) => matchesToolName(tool.name, pattern)),
+      );
     }
     if (agent.disallowedTools && agent.disallowedTools.length > 0) {
-      const blocked = new Set(agent.disallowedTools);
-      tools = tools.filter((t) => !blocked.has(t.name));
+      warnPatternsWithoutKnownTool(agent.name, 'disallowedTools', agent.disallowedTools, allTools);
+      tools = tools.filter((tool) =>
+        !agent.disallowedTools!.some((pattern) => matchesToolName(tool.name, pattern)),
+      );
     }
     if (options.allowedTools && options.allowedTools.length > 0) {
       tools = tools.filter((tool) =>

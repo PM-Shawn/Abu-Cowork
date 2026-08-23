@@ -42,6 +42,9 @@ vi.mock('../context/contextManager', () => ({
     safetyMarginTokens: 1000,
     strategy: 'unchanged',
   })),
+  // Pass-through — the real screenshot-budget behavior is covered by
+  // contextManager.test.ts; here it must simply not disturb the pipeline.
+  trimOldScreenshots: vi.fn((msgs: unknown[]) => msgs),
 }));
 vi.mock('../context/contextCompressor', () => ({
   compressContextIfNeeded: vi.fn().mockResolvedValue({ compressed: false, messages: [] }),
@@ -299,5 +302,44 @@ describe('subagent max_tokens recovery (integration)', () => {
     const byId = Object.fromEntries(toolEnds.map((e) => [e.id!, e]));
     expect(byId.t1.resultContent).toEqual(imageResult);
     expect(byId.t2.resultContent).toBeUndefined();
+  });
+
+  // The subagent's OWN eyes: a vision-capable model must receive its tool
+  // results' image blocks back in its next-turn context (it used to be sent
+  // text-only with supportsVision hardcoded false — a subagent that took a
+  // screenshot could never look at it).
+  it('feeds tool-result images back into the subagent\'s own next-turn context, with vision resolved per model', async () => {
+    const imageResult = [
+      { type: 'text', text: 'Image: /tmp/shot.png' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
+    ];
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce(imageResult);
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'looks good' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    await runSubagentLoop({ agent, task: 'screenshot and verify' });
+
+    // supportsVision resolved from the model's real capabilities (claude-opus-4-8
+    // per this harness's resolveAgentModel mock), not hardcoded false.
+    const firstOpts = mockClaudeChat.mock.calls[0][1] as { supportsVision?: boolean };
+    expect(firstOpts.supportsVision).toBe(true);
+
+    // The second turn's history carries the image blocks for the adapter's
+    // normalizer to turn into vision content.
+    type CtxMessage = { toolCallsForContext?: Array<{ id?: string; resultContent?: unknown }> };
+    const secondMessages = mockClaudeChat.mock.calls[1][0] as CtxMessage[];
+    const withCtx = secondMessages.find((m) => m.toolCallsForContext?.length);
+    expect(withCtx).toBeDefined();
+    expect(withCtx!.toolCallsForContext![0].id).toBe('t1');
+    expect(withCtx!.toolCallsForContext![0].resultContent).toEqual(imageResult);
   });
 });

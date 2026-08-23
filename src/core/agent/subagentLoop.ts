@@ -31,7 +31,7 @@ import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
 import { resolveModelDeclared } from '../llm/resolveModelDeclared';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
-import { enforceContextBudget } from '../context/contextManager';
+import { enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
 import { estimateToolSchemaTokens } from '../context/tokenEstimator';
 import { compressContextIfNeeded } from '../context/contextCompressor';
 import { getMessageText } from '../context/contextUtils';
@@ -514,6 +514,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         }
       }
 
+      // Screenshot budget — same discipline as the main loop (agentLoop.ts's
+      // pre-send trim): tool results now retain their image blocks so a
+      // vision-capable subagent can SEE its own screenshots, which means the
+      // accumulation problem the main loop solved applies here too. No
+      // usagePercent is tracked for subagents → conservative default retention.
+      messagesForContext = trimOldScreenshots(messagesForContext);
+
       // Step 2: Hard truncation as safety net
       const toolSchemaTokens = estimateToolSchemaTokens(tools);
       const budgetResult = enforceContextBudget(
@@ -550,7 +557,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         thinkingBudget: reasoningParams.thinkingBudget,
         reasoningEffort: reasoningParams.reasoningEffort,
         signal,
-        supportsVision: false, // Subagents don't receive image inputs
+        // Resolved per model (declared caps win), same as the main loop's
+        // `modelCaps.vision` — a vision-capable subagent can now see its own
+        // screenshots/read_file images; a text-only model gets them stripped
+        // by normalizeMessages, with its standard "no vision" hint appended.
+        supportsVision: subagentCaps.vision,
         declaredCapabilities: declared,
       };
 
@@ -778,22 +789,28 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const resultContent = r.status === 'fulfilled' ? r.value.resultContent : undefined;
         const isError = r.status === 'rejected' || result.startsWith('Error:');
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
-        return { id: tc.id, name: tc.name, input: tc.input, result };
+        return { id: tc.id, name: tc.name, input: tc.input, result, resultContent };
       });
 
       onProgress?.({ type: 'turn-complete', turn: turn + 1, totalTurns: maxTurns });
 
-      // Update tool call results on the assistant message (match by id, not name)
+      // Update tool call results on the assistant message (match by id, not name).
+      // resultContent rides along on BOTH toolCalls and toolCallsForContext, in
+      // the same toolResultEntries order — trimOldScreenshots derives its strip
+      // indices from toolCalls and reuses them on toolCallsForContext, and here
+      // (unlike the main loop's two-producer split) the two arrays are built
+      // from the same list, so the indices genuinely align.
       for (const entry of toolResultEntries) {
         const tc = assistantMsg.toolCalls?.find((t) => t.id === entry.id);
         if (tc) {
           tc.result = entry.result;
+          if (entry.resultContent) tc.resultContent = entry.resultContent;
         }
       }
 
       // Append tool results as context (preserve id for API tool_use/tool_result pairing)
       assistantMsg.toolCallsForContext = toolResultEntries.map(
-        ({ id, name, input, result }) => ({ id, name, input, result })
+        ({ id, name, input, result, resultContent }) => ({ id, name, input, result, resultContent })
       );
     }
 

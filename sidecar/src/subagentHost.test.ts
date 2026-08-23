@@ -17,6 +17,13 @@ vi.mock('./rpcClient', () => ({
   sendNotification: (...a: unknown[]) => sendNotificationMock(...a),
 }));
 
+// agentLoopHost drags the whole agentLoop import graph — mock the single
+// lookup subagentHost consumes (image persistence's parent-run resolution).
+const findActiveRunDeltaMock = vi.fn();
+vi.mock('./agentLoopHost', () => ({
+  findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
+}));
+
 import { handleSubagentRun, handleSubagentAbort, __getActiveSubagentRunCount } from './subagentHost';
 
 // Unique default runId per call — `activeRuns` is real module-level state
@@ -72,6 +79,7 @@ describe('subagentHost', () => {
     sendRequestMock.mockReset();
     sendRequestMock.mockResolvedValue('tool output');
     sendNotificationMock.mockReset();
+    findActiveRunDeltaMock.mockReset();
   });
 
   describe('param validation', () => {
@@ -210,6 +218,60 @@ describe('subagentHost', () => {
       const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
       const roundTripped = JSON.parse(JSON.stringify(notifiedParams));
       expect(roundTripped).toEqual({ runId: 'roundtrip-run', event: toolEndEvent });
+    });
+  });
+
+  describe('subagent image persistence (sidecar-authoritative when parent loop is sidecar-run)', () => {
+    const imageContent = [
+      { type: 'text' as const, text: 'Image: /tmp/shot.png' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+    ];
+
+    function emitScreenshotRun(overrides: Record<string, unknown> = {}) {
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({ type: 'tool-start', id: 'sub-t1', toolName: 'computer', toolInput: { action: 'screenshot' } });
+        options.onProgress?.({ type: 'tool-end', id: 'sub-t1', toolName: 'computer', result: 'Image: /tmp/shot.png', error: false, resultContent: imageContent });
+        return resultShape('ok');
+      });
+      return handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', ...overrides }));
+    }
+
+    it('appends the image-bearing tool call through the PARENT run\'s frame ChatDelta (mirror + shell, survives ledger checkpoint)', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+
+      await emitScreenshotRun();
+
+      expect(findActiveRunDeltaMock).toHaveBeenCalledWith('conv-parent');
+      expect(appendMessageToolCall).toHaveBeenCalledTimes(1);
+      expect(appendMessageToolCall).toHaveBeenCalledWith('conv-parent', 'parent-loop-1', {
+        id: 'sub-t1',
+        name: 'computer',
+        input: { action: 'screenshot' },
+        result: 'Image: /tmp/shot.png',
+        resultContent: imageContent,
+        isError: undefined,
+        hidden: true,
+        fromSubagent: true,
+      });
+      // The progress notification still goes out for both events.
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does nothing when the parent loop is not sidecar-run (shell-side append is the authority)', async () => {
+      findActiveRunDeltaMock.mockReturnValue(undefined);
+      await emitScreenshotRun();
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2); // forwarding unaffected
+    });
+
+    it('does not even resolve the parent run for a text-only tool-end', async () => {
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall: vi.fn() }, loopId: 'parent-loop-1' });
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({ type: 'tool-end', id: 't1', toolName: 'read_file', result: 'plain', error: false, resultContent: [{ type: 'text', text: 'plain' }] });
+        return resultShape('ok');
+      });
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent' }));
+      expect(findActiveRunDeltaMock).not.toHaveBeenCalled();
     });
   });
 

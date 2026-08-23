@@ -31,6 +31,7 @@ import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent }
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
+import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 
 interface SerializableToolDefinition {
@@ -210,6 +211,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const toolInvoker = createReverseToolInvoker(runId, params.tools);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();
+  // tool-start inputs, cached so the tool-end image-persistence path below can
+  // record the call with its real input (tool-end events don't carry it).
+  const toolInputById = new Map<string, Record<string, unknown>>();
 
   const runCtx: SubagentRunContext = {
     runId,
@@ -261,7 +265,39 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     // BEFORE that run's final response. Not asserted anywhere (pipe
     // ordering is a platform guarantee, not app logic to test) — documented
     // here per the follow-up card's instruction.
+    //
+    // Image persistence (sidecar-authoritative when the PARENT loop is also
+    // sidecar-run): a tool-end whose resultContent carries an image is
+    // additionally recorded onto the parent message via the parent run's
+    // frame ChatDelta — mirror + shell in frame order — so the entry
+    // survives the parent run's ledger checkpoint. The shell's own
+    // eventRouter append (completeChildStep) still fires when it processes
+    // this same event; both writers are idempotent per tool-call id
+    // (chatStore + conversationRunMirror dedup), so double delivery is
+    // harmless. When the parent loop is NOT sidecar-run there is no active
+    // run here and the shell-side append is the (sufficient) authority.
     onProgress: (event: SubagentProgressEvent) => {
+      if (event.type === 'tool-start') {
+        toolInputById.set(event.id, event.toolInput);
+      } else if (
+        event.type === 'tool-end'
+        && params.parentConversationId
+        && event.resultContent?.some((b) => b.type === 'image')
+      ) {
+        const parentRun = findActiveRunDeltaForConversation(params.parentConversationId);
+        if (parentRun) {
+          parentRun.chatDelta.appendMessageToolCall(params.parentConversationId, parentRun.loopId, {
+            id: event.id,
+            name: event.toolName,
+            input: toolInputById.get(event.id) ?? {},
+            result: event.result,
+            resultContent: event.resultContent,
+            isError: event.error || undefined,
+            hidden: true,
+            fromSubagent: true,
+          });
+        }
+      }
       sendNotification('subagent.progress', { runId, event });
     },
     allowedTools: params.allowedTools,

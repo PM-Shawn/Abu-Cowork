@@ -181,6 +181,41 @@ describe('contextManager', () => {
       expect(compressed?.toolCalls).toBeUndefined();
     });
 
+    it('excludes subagent-recorded tool calls from fallback compression summaries', () => {
+      const messages: Message[] = [];
+      for (let i = 0; i < 7; i++) {
+        messages.push(makeMsg('user', `Question ${i}`));
+        const assistant = makeMsg('assistant', `Answer ${i}: ${'x'.repeat(1_000)}`);
+        if (i === 1) {
+          messages.push({
+            ...assistant,
+            toolCalls: [
+              { id: 'parent-tool', name: 'read_file', input: {}, result: 'parent result' },
+              {
+                id: 'child-tool',
+                name: 'computer_screenshot',
+                input: {},
+                result: 'child result',
+                hidden: true,
+                fromSubagent: true,
+              },
+            ],
+          });
+        } else {
+          messages.push(assistant);
+        }
+      }
+
+      const result = prepareContextMessages(messages, systemPrompt, 2_000, 100);
+      const compressed = result.find((message) => (
+        message.role === 'assistant' && typeof message.content === 'string'
+          && message.content.includes('Answer 1:')
+      ));
+
+      expect(compressed?.content).toContain('[read_file]');
+      expect(compressed?.content).not.toContain('[computer_screenshot]');
+    });
+
     it('truncates a giant latest tool result and preserves the outbound invariant', () => {
       const messages: Message[] = [
         makeMsg('user', 'Inspect the file'),

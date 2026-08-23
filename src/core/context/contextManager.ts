@@ -241,7 +241,9 @@ function compressAssistantMessage(msg: Message): Message {
   // Summarize tool calls
   const toolSummary = msg.toolCallsForContext?.map(
     (tc: ToolCallForContext) => `[${tc.name}]`
-  ).join(', ') || msg.toolCalls?.map(
+  ).join(', ') || msg.toolCalls?.filter(
+    (tc) => !tc.fromSubagent
+  ).map(
     (tc) => `[${tc.name}]`
   ).join(', ') || '';
 

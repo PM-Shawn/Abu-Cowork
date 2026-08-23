@@ -72,7 +72,7 @@ import {
   onSidecarNotification,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
-import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
+import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from './subagentLoop';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
@@ -195,6 +195,7 @@ interface SerializableSubagentResult {
   turnCount: number;
   tokenUsage: { input: number; output: number };
   duration: number;
+  stopReason: SubagentStopReason;
 }
 
 function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResult {
@@ -204,7 +205,13 @@ function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResu
     typeof (v as Record<string, unknown>).text === 'string' &&
     typeof (v as Record<string, unknown>).toolCallCount === 'number' &&
     typeof (v as Record<string, unknown>).turnCount === 'number' &&
-    typeof (v as Record<string, unknown>).duration === 'number'
+    typeof (v as Record<string, unknown>).duration === 'number' &&
+    (
+      (v as Record<string, unknown>).stopReason === 'completed' ||
+      (v as Record<string, unknown>).stopReason === 'aborted' ||
+      (v as Record<string, unknown>).stopReason === 'error' ||
+      (v as Record<string, unknown>).stopReason === 'max_turns'
+    )
   );
 }
 
@@ -402,6 +409,7 @@ function cancelledSubagentResult(): SubagentResult {
     turnCount: 0,
     tokenUsage: { input: 0, output: 0 },
     duration: 0,
+    stopReason: 'aborted',
   });
 }
 
@@ -498,6 +506,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
       turnCount: 0,
       tokenUsage: { input: 0, output: 0 },
       duration: 0,
+      stopReason: 'error',
     });
   } finally {
     sessions.delete(runId);

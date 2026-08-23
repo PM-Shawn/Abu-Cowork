@@ -24,6 +24,7 @@ vi.mock('../../../stores/chatStore', () => ({
   useChatStore: {
     getState: vi.fn().mockReturnValue({
       activeConversationId: 'test',
+      conversations: { test: { messages: [] } },
       getActiveConversation: vi.fn(),
       setAgentStatus: vi.fn(),
       addActiveAgent: vi.fn(),
@@ -76,7 +77,7 @@ describe('delegateToAgentTool', () => {
       signal: new AbortController().signal,
       cleanup: vi.fn(),
     } as never);
-    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done' } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done', stopReason: 'completed' } as never);
     vi.mocked(getCurrentLoopContext).mockReturnValue({
       allowedTools: ['read_file'],
       blockedTools: ['request_workspace', 'abu-browser__*'],
@@ -139,7 +140,7 @@ describe('delegateToAgentTool', () => {
     vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
       options.onProgress?.({ type: 'tool-start', id: 'toolu_sub_1', toolName: 'computer', toolInput: { action: 'screenshot' } });
       options.onProgress?.({ type: 'tool-end', id: 'toolu_sub_1', toolName: 'computer', result: 'shot', error: false, resultContent: imageContent });
-      return { text: 'done' } as never;
+      return { text: 'done', stopReason: 'completed' } as never;
     });
 
     await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'screenshot the page' });
@@ -157,6 +158,40 @@ describe('delegateToAgentTool', () => {
       false,
       imageContent,
     );
+  });
+
+  it('reports structured subagentStopReason through trusted tool metadata', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher', description: 'test', systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate: () => undefined,
+        completeChildStep: () => undefined,
+      },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'partial result', stopReason: 'max_turns' } as never);
+    const reportMetadata = vi.fn();
+
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'try hard' },
+      { reportMetadata } as never,
+    );
+
+    expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
   });
 });
 

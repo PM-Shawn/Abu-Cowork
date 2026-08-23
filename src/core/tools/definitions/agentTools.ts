@@ -313,6 +313,7 @@ export const delegateToAgentTool: ToolDefinition = {
       // Clear this agent from tracking and cleanup
       subagentCleanup();
       useChatStore.getState().removeActiveAgent(effectiveAgentName);
+      toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
       return result.text;
     } catch (err) {
       subagentCleanup();

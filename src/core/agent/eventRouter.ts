@@ -399,7 +399,6 @@ export class EventRouter {
     // Add result block for delegate steps — show summary instead of hiding content
     if (step.type === 'delegate') {
       const isZh = this.locale.startsWith('zh');
-      const isError = isToolResultError(result);
       // Truncate delegate result to a readable summary (first 500 chars)
       const maxSummaryLen = 500;
       const summary = result.length > maxSummaryLen
@@ -408,12 +407,16 @@ export class EventRouter {
       const summaryBlock: DetailBlock = {
         id: `${stepId}-result`,
         stepId,
-        type: isError ? 'error' : 'result',
-        label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '执行摘要' : 'Result Summary'),
-        labelKey: isError ? 'error' : 'summary',
+        // A step-end event is already the structured success channel.
+        // Delegate failures are routed through step-error by toolExecutor
+        // (or the direct @agent branch), so result text must not be parsed
+        // again here — a valid report may legitimately begin with "Error:".
+        type: 'result',
+        label: isZh ? '执行摘要' : 'Result Summary',
+        labelKey: 'summary',
         content: summary,
         isTruncated: result.length > maxSummaryLen,
-        isExpanded: isError,
+        isExpanded: false,
       };
       this.deps.executionStore.addDetailBlock(execution.id, stepId, summaryBlock);
     } else {

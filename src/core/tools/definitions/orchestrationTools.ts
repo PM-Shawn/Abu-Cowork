@@ -8,12 +8,13 @@
  * `delegate_to_agent async:true` path — it blocks until all sub-agents finish.
  */
 
-import type { ToolDefinition, ToolExecutionContext, SubagentDefinition } from '../../../types';
+import type { ToolDefinition, ToolExecutionContext, SubagentDefinition, SubagentStopReason } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
+import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
@@ -208,6 +209,38 @@ export function aggregateStructuredResults(
   entries: Array<{ task: string; ok: boolean; data?: Record<string, unknown>; error?: string }>,
 ): string {
   return JSON.stringify(entries, null, 2);
+}
+
+export function resolveBatchStopReason(settled: PromiseSettledResult<SubagentResult>[]): SubagentStopReason {
+  if (settled.some((result) => result.status === 'rejected' || result.value.stopReason === 'error')) {
+    return 'error';
+  }
+  if (settled.some((result) => result.status === 'fulfilled' && result.value.stopReason === 'aborted')) {
+    return 'aborted';
+  }
+  if (settled.some((result) => result.status === 'fulfilled' && result.value.stopReason === 'max_turns')) {
+    return 'max_turns';
+  }
+  return 'completed';
+}
+
+export function aggregateSubagentTextResults(
+  settled: PromiseSettledResult<SubagentResult>[],
+  labels: string[],
+): string {
+  const entries = settled.map((result, i) => {
+    const label = labels[i];
+    if (result.status === 'fulfilled') {
+      return {
+        label,
+        status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
+        text: result.value.text,
+      };
+    }
+    const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    return { label, status: 'error' as const, text: errMsg };
+  });
+  return aggregateBatchResults(entries);
 }
 
 // ─── Task item type ────────────────────────────────────────────────────────
@@ -407,13 +440,14 @@ export const runAgentBatchTool: ToolDefinition = {
       },
       loopCtx?.signal,
     );
+    toolExecContext?.reportMetadata?.({ subagentStopReason: resolveBatchStopReason(settled) });
 
     // Mark all tasks done in store (best-effort)
     try {
       const store = useBatchProgressStore.getState();
       settled.forEach((result, i) => {
         const isError = result.status === 'rejected'
-          || (result.status === 'fulfilled' && result.value.text.startsWith('Error:'));
+          || (result.status === 'fulfilled' && isSubagentResultError(result.value));
         store.setTaskDone(batchId, i, isError);
       });
     } catch {
@@ -429,6 +463,9 @@ export const runAgentBatchTool: ToolDefinition = {
           const errMsg =
             result.reason instanceof Error ? result.reason.message : String(result.reason);
           return { task, ok: false, error: errMsg };
+        }
+        if (isSubagentResultError(result.value)) {
+          return { task, ok: false, error: result.value.text };
         }
         const extracted = extractJsonObject(result.value.text);
         if (extracted === null) {
@@ -448,16 +485,7 @@ export const runAgentBatchTool: ToolDefinition = {
     }
 
     // Text aggregation path (behavior-preserving, schema absent)
-    const entries = settled.map((result, i) => {
-      const label = resolvedTasks[i].label;
-      if (result.status === 'fulfilled') {
-        return { label, status: 'ok' as const, text: result.value.text };
-      }
-      const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      return { label, status: 'error' as const, text: errMsg };
-    });
-
-    return aggregateBatchResults(entries);
+    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label));
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

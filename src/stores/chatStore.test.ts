@@ -2107,6 +2107,26 @@ describe('chatStore', () => {
       return useChatStore.getState().conversations[convId]?.messages[0]?.toolCalls?.[0];
     }
 
+    it('persists the trusted subagent terminal reason and derives isError from it', () => {
+      const convId = seedToolCall('delegate_to_agent');
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'partial result without an error prefix',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'max_turns' },
+      );
+
+      expect(getToolCall(convId)).toEqual(expect.objectContaining({
+        subagentStopReason: 'max_turns',
+        isError: true,
+      }));
+    });
+
     it('lifts a skill-proposal notice_card from JSON result onto the tool call', () => {
       const convId = seedToolCall();
       const result = JSON.stringify({

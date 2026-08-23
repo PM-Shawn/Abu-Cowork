@@ -1,4 +1,4 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
@@ -572,6 +572,11 @@ export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
   return reason === 'max_turns' || reason === 'no_progress' || reason === 'awaiting_user';
 }
 
+/** Keep the direct @agent entry aligned with delegate_to_agent/batch. */
+export function mapSubagentStopReason(reason: SubagentStopReason): Extract<AgentLoopExitReason, 'completed' | 'aborted' | 'error' | 'max_turns'> {
+  return reason;
+}
+
 export interface AgentLoopResult {
   reason: AgentLoopExitReason;
   error?: string;
@@ -1050,6 +1055,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         allowedTools: options?.allowedTools,
         blockedTools: options?.blockedTools,
       });
+      const delegateExitReason = mapSubagentStopReason(result.stopReason);
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
       // rather than throwing — deliberate for its structured-result contract, but
@@ -1057,7 +1063,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // delegate run. Re-check the abort signal here so a user Stop during an
       // @agent delegation is reported as {reason:'aborted'}, not a successful
       // completion (schedulers/triggers/isIncompleteReason depend on this).
-      if (abortController.signal.aborted) {
+      if (abortController.signal.aborted || delegateExitReason === 'aborted') {
         subagentCleanup();
         chatDelta.removeActiveAgent(delegateAgent.name);
         chatDelta.setAgentStatus('idle');
@@ -1072,7 +1078,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       subagentCleanup();
       chatDelta.removeActiveAgent(delegateAgent.name);
       if (delegateStepId) {
-        eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
+        if (delegateExitReason === 'completed') {
+          eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
+        } else {
+          eventRouter.route({ type: 'step-error', loopId, stepId: delegateStepId, error: result.text });
+        }
       }
 
       // Add result as assistant message
@@ -1101,16 +1111,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // the queue) — leaving the user bubble missing after reload.
       chatDelta.finishStreaming(conversationId, delegateAssistantId);
       abortRegistry.clearAbortController(conversationId);
-      eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
+      if (delegateExitReason === 'error') {
+        eventRouter.route({ type: 'error', loopId, error: result.text });
+        persistExecutionSnapshot(conversationId, loopId);
+        chatDelta.setAgentStatus('idle');
+        chatDelta.setConversationStatus(conversationId, 'error');
+        notifyTaskError(convTitle, conversationId);
+        return { reason: 'error', error: result.text };
+      }
+
+      eventRouter.route({
+        type: 'done',
+        loopId,
+        reason: delegateExitReason === 'max_turns' ? 'max_turns' : 'delegate_complete',
+      });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setAgentStatus('idle');
       chatDelta.setConversationStatus(conversationId, 'completed');
-      // Delegate run completed without an LLMError → provider is healthy; clears
-      // any stale config-failure recorded for it (mirrors the main-loop path).
+      // A completed or turn-limited delegate made successful provider calls.
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
-
-      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskCompleted(convTitle, conversationId);
+      return { reason: delegateExitReason };
     } catch (err) {
       subagentCleanup();
       chatDelta.removeActiveAgent(delegateAgent.name);

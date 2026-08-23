@@ -13,6 +13,16 @@ export function isToolResultError(result: string): boolean {
   return trimmed.startsWith('Error:') || trimmed.startsWith('Error ');
 }
 
+function isToolCallError(tc: ToolCall): boolean {
+  if (
+    (tc.name === TOOL_NAMES.DELEGATE_TO_AGENT || tc.name === TOOL_NAMES.RUN_AGENT_BATCH) &&
+    tc.subagentStopReason
+  ) {
+    return tc.subagentStopReason !== 'completed';
+  }
+  return tc.result !== undefined && isToolResultError(tc.result);
+}
+
 // Workflow step types
 export type StepType = 'thinking' | 'tool' | 'skill' | 'file-read' | 'file-write' | 'file-create' | 'command';
 
@@ -215,8 +225,7 @@ export function extractWorkflowSteps(
     if (tc.isExecuting) {
       status = 'running';
     } else if (tc.result !== undefined) {
-      // Check if result indicates a real tool execution error (prefix match, not full-text search)
-      status = isToolResultError(tc.result) ? 'error' : 'completed';
+      status = isToolCallError(tc) ? 'error' : 'completed';
     } else {
       status = 'pending';
     }
@@ -735,7 +744,7 @@ export function extractFileOutputs(
 
   for (const tc of toolCalls) {
     if (tc.result === undefined) continue; // Not completed yet
-    if (isToolResultError(tc.result)) continue; // Error result
+    if (isToolCallError(tc)) continue; // Error result
 
     const input = tc.input as Record<string, unknown>;
     const inputPath = String(input.path || input.file_path || input.filePath || '');

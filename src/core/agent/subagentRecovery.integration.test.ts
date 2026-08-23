@@ -145,6 +145,8 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     // The resumed answer is returned.
     expect(result.text).toContain('the final answer');
+    expect(result.stopReason).toBe('completed');
+    expect(result.turnCount).toBe(2);
   });
 
   // Contract that agentLoop's @agent delegate branch depends on: when the user
@@ -171,6 +173,22 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     // Returned (not thrown) as a SubagentResult, and did not start another turn.
     expect(result).toBeInstanceOf(SubagentResult);
+    expect(result.stopReason).toBe('aborted');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies an adapter rejection caused by a mid-stream abort as aborted, not error', async () => {
+    const ac = new AbortController();
+    mockClaudeChat.mockImplementationOnce(async () => {
+      ac.abort();
+      throw new DOMException('The operation was aborted', 'AbortError');
+    });
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing', signal: ac.signal });
+
+    expect(result).toBeInstanceOf(SubagentResult);
+    expect(result.stopReason).toBe('aborted');
+    expect(result.text).toContain('cancelled');
     expect(mockClaudeChat).toHaveBeenCalledTimes(1);
   });
 
@@ -237,6 +255,7 @@ describe('subagent max_tokens recovery (integration)', () => {
     // Did not run away to the 200-turn cap.
     expect(mockClaudeChat.mock.calls.length).toBeLessThan(10);
     expect(result).toBeTruthy();
+    expect(result.stopReason).toBe('error');
   });
 
   it('stops re-prompting once the recovery limit is exhausted and marks the result incomplete', async () => {
@@ -248,6 +267,22 @@ describe('subagent max_tokens recovery (integration)', () => {
     // 1 initial + 3 recovery attempts = 4 calls, then it stops (does not spin to maxTurns).
     expect(mockClaudeChat).toHaveBeenCalledTimes(4);
     expect(result.text).toContain('output token limit');
+    expect(result.stopReason).toBe('error');
+  });
+
+  it('marks a run that consumes all configured turns as max_turns', async () => {
+    mockClaudeChat.mockImplementation(emits([
+      { type: 'tool_use', id: 't1', name: 'do_work', input: { x: 1 } } as StreamEvent,
+      { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({
+      agent: { ...agent, maxTurns: 1 },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.turnCount).toBe(1);
   });
 
   // Gap fix: subagentLoop previously never called applyDeclaredCapabilities/resolveModelDeclared,
@@ -320,6 +355,29 @@ describe('subagent max_tokens recovery (integration)', () => {
     const byId = Object.fromEntries(toolEnds.map((e) => [e.id!, e]));
     expect(byId.t1.resultContent).toEqual(imageResult);
     expect(byId.t2.resultContent).toBeUndefined();
+  });
+
+  it('keeps the generic Error-prefix contract for child tool progress', async () => {
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce('Error: permission denied');
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/ok' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; error?: boolean; result?: string }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (e) => events.push(e) });
+
+    const toolEnds = events.filter((e) => e.type === 'tool-end');
+    expect(toolEnds).toEqual([
+      expect.objectContaining({ id: 't1', result: 'Error: permission denied', error: true }),
+    ]);
   });
 
   // The subagent's OWN eyes: a vision-capable model must receive its tool

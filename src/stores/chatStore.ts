@@ -1164,6 +1164,10 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+              if (metadata?.subagentStopReason) {
+                tc.subagentStopReason = metadata.subagentStopReason;
+                tc.isError = metadata.subagentStopReason !== 'completed';
+              }
 
               // Lift notice_card out of the tool's JSON result into a
               // first-class field on the tool call so the chat renderer

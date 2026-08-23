@@ -302,6 +302,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
       const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
+      const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
+        && metadata.subagentStopReason !== 'completed';
+      const isError = requiresUserRecovery || structuredSubagentFailure;
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -311,16 +314,16 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         toolInput: effectiveInput,
         abortSignal: abortController.signal,
         result: resultStr,
-        error: requiresUserRecovery,
+        error: isError,
         durationMs,
       });
-      logger.info('Tool executed', { toolName: tc.name, durationMs, error: requiresUserRecovery });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: isError });
       toolSpan.end({ output: resultStr });
       return {
         id: tc.id,
         result: resultStr,
         resultContent,
-        error: requiresUserRecovery,
+        error: isError,
         duration: durationMs / 1000,
         metadata,
       };

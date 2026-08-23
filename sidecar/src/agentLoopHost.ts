@@ -27,6 +27,7 @@
  */
 import type {
   ImageAttachment,
+  SubagentStopReason,
   ToolDefinition,
   ToolResult,
   ToolExecutionContext,
@@ -167,6 +168,23 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
     ...wireContext
   } = context;
   return wireContext;
+}
+
+function isSubagentStopReason(value: unknown): value is SubagentStopReason {
+  return value === 'completed' || value === 'aborted' || value === 'error' || value === 'max_turns';
+}
+
+function unwrapToolInvokeResult(response: unknown, context: ToolExecutionContext | undefined): ToolResult {
+  if (!isRecord(response)) return response as ToolResult;
+  if (!('result' in response) || !isSubagentStopReason(response.subagentStopReason)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
+  }
+  const result = response.result;
+  if (typeof result !== 'string' && !Array.isArray(result)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke result in subagent metadata envelope');
+  }
+  context?.reportMetadata?.({ subagentStopReason: response.subagentStopReason });
+  return result as ToolResult;
 }
 
 function parseAbortParams(params: unknown): { runId: string } {
@@ -371,12 +389,13 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
         // path below is always safe (nothing to double-execute, and no UI
         // has fired yet for this call).
       }
-      const result = (await sendRequest('tool.invoke', {
+      const response = await sendRequest('tool.invoke', {
         runId,
         toolName: name,
         input,
         context: toWireToolContext(context as ToolExecutionContext | undefined),
-      })) as ToolResult;
+      });
+      const result = unwrapToolInvokeResult(response, context as ToolExecutionContext | undefined);
       if (name === TOOL_NAMES.MANAGE_MCP_SERVER) refreshInBackground();
       return result;
     },

@@ -645,6 +645,38 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('replays a validated subagent stopReason envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'max_turns' },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'delegate_to_agent',
+          { task: 'work' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('partial report');
+      expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
+    });
+
+    it('rejects a malformed subagent metadata envelope instead of guessing', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'mystery' },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('delegate_to_agent', { task: 'work' }),
+      )).rejects.toThrow(/Invalid tool\.invoke subagent metadata envelope/);
+    });
+
     // ── P1-3d-3/3d-4 SAFETY-CRITICAL: approval.check deny (terminal, no
     // fallback) vs. transport failure / malformed response (fall back) ──
 

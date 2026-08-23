@@ -61,7 +61,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
 }
 
 function resultShape(text: string) {
-  return { text, toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 0 };
+  return { text, toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'completed' as const };
 }
 
 // handleSubagentRun's return type is deliberately `Promise<unknown>` at the
@@ -72,7 +72,9 @@ function resultShape(text: string) {
 // (subagentHost.ts:266-272), which is exactly `resultShape`'s shape — so
 // tests narrow the awaited value to this type rather than changing the
 // production return type.
-type SubagentRunResult = ReturnType<typeof resultShape>;
+type SubagentRunResult = ReturnType<typeof resultShape> & {
+  stopReason: 'completed' | 'aborted' | 'error' | 'max_turns';
+};
 
 describe('subagentHost', () => {
   beforeEach(() => {
@@ -184,6 +186,17 @@ describe('subagentHost', () => {
         context: { workspacePath: '/tmp' },
       });
       expect(result.text).toBe('file contents');
+    });
+
+    it('returns the structured subagent stopReason across the sidecar boundary', async () => {
+      runSubagentLoopMock.mockResolvedValueOnce({
+        ...resultShape('failed before completion'),
+        stopReason: 'error',
+      });
+
+      const result = (await handleSubagentRun(baseParams({ runId: 'stop-reason-run' }))) as SubagentRunResult;
+
+      expect(result.stopReason).toBe('error');
     });
 
     it('the sidecar-local ToolDefinition.execute stub throws if ever called directly (it never should be)', async () => {

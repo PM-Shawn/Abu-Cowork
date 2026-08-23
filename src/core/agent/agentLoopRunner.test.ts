@@ -1514,6 +1514,22 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    it('returns a narrow envelope when a subagent tool reports structured terminal metadata', async () => {
+      executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const context = args[4] as { reportMetadata?: (value: unknown) => void };
+        context.reportMetadata?.({ subagentStopReason: 'max_turns' });
+        return 'partial report';
+      });
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const result = await handler({ runId: 'run-1', toolName: 'delegate_to_agent', input: {} });
+
+      expect(result).toEqual({ result: 'partial report', subagentStopReason: 'max_turns' });
+    });
+
     it('falls back to the real permissionBridge default callbacks when session.options omits them', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

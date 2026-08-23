@@ -168,6 +168,34 @@ describe('conversationRunMirror', () => {
       expect(tc?.isError).toBe(true);
     });
 
+    it('mirrors structured subagent completion metadata into the checkpoint snapshot', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'delegate_to_agent', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1',
+        'm1',
+        'tc1',
+        'plain-text incomplete report',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'max_turns' },
+      ]);
+
+      // The sidecar checkpoints this mirror as plain JSON. Round-trip the same
+      // snapshot shape to prove a reload cannot fall back to `Error:` parsing.
+      const checkpoint = JSON.parse(JSON.stringify(mirror.reader.getConversation('conv-1'))) as Conversation;
+      const tc = checkpoint.messages[0].toolCalls?.[0];
+      expect(tc?.subagentStopReason).toBe('max_turns');
+      expect(tc?.isError).toBe(true);
+      expect(tc?.isExecuting).toBe(false);
+    });
+
     it('deleteMessagesFrom truncates from the given message onward', () => {
       const conv = makeConversation({
         messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' }), makeMessage({ id: 'm3' })],

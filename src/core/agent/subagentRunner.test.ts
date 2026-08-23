@@ -142,7 +142,7 @@ describe('subagentRunner', () => {
     onSidecarRequest.mockReset();
     onSidecarNotification.mockReset();
     runSubagentLoopMock.mockReset();
-    runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+    runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     getAllToolsMock.mockReset();
@@ -281,6 +281,7 @@ describe('subagentRunner', () => {
         turnCount: 3,
         tokenUsage: { input: 10, output: 20 },
         duration: 5,
+        stopReason: 'completed',
       });
       const { runSubagent } = await importFresh();
 
@@ -302,7 +303,30 @@ describe('subagentRunner', () => {
       expect(result.toolCallCount).toBe(2);
       expect(result.turnCount).toBe(3);
       expect(result.tokenUsage).toEqual({ input: 10, output: 20 });
+      expect(result.stopReason).toBe('completed');
     });
+
+    it.each([undefined, 'mystery'])(
+      'rejects a sidecar result with stopReason=%s instead of defaulting it to completed',
+      async (stopReason) => {
+        getSidecarStatus.mockReturnValue('running');
+        sidecarRequestMock.mockResolvedValue({
+          text: 'ambiguous result',
+          toolCallCount: 0,
+          turnCount: 1,
+          tokenUsage: { input: 0, output: 0 },
+          duration: 1,
+          ...(stopReason === undefined ? {} : { stopReason }),
+        });
+        const { runSubagent } = await importFresh();
+
+        const result = await runSubagent({ agent, task: 'do the thing' });
+
+        expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+        expect(result.text).toBe('in-process result');
+        expect(result.stopReason).toBe('completed');
+      },
+    );
 
     it('uses the parent run settings snapshot for both subagent credentials and sidecar model selection', async () => {
       getSidecarStatus.mockReturnValue('running');
@@ -312,6 +336,7 @@ describe('subagentRunner', () => {
         turnCount: 1,
         tokenUsage: { input: 1, output: 1 },
         duration: 1,
+        stopReason: 'completed',
       });
       const parentSettings = {
         activeModel: { providerId: 'parent-provider', modelId: 'parent-model' },
@@ -404,7 +429,7 @@ describe('subagentRunner', () => {
         expect.objectContaining({ workspacePath: '/tmp', abortSignal: controller.signal }),
       );
 
-      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
@@ -434,7 +459,7 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/not allowed/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
-      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
@@ -459,13 +484,13 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/blocked/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
-      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
     it('serializes blockedTools onto the subagent.run wire params, symmetric with allowedTools', async () => {
       getSidecarStatus.mockReturnValue('running');
-      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       const { runSubagent } = await importFresh();
 
       await runSubagent({ agent, task: 'restricted', allowedTools: ['read_*'], blockedTools: ['abu-browser__*'] });
@@ -477,7 +502,7 @@ describe('subagentRunner', () => {
 
     it('run-session lifecycle: the session is removed once the run settles — a LATE tool.invoke for the same (finished) runId is rejected as unknown', async () => {
       getSidecarStatus.mockReturnValue('running');
-      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       const { runSubagent } = await importFresh();
 
       await runSubagent({ agent, task: 'do the thing' });
@@ -517,7 +542,7 @@ describe('subagentRunner', () => {
       progressHandler({ runId, event: richEvent });
       expect(onProgress).toHaveBeenLastCalledWith(richEvent);
 
-      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
@@ -580,6 +605,7 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toContain('sidecar crashed mid-run');
+      expect(result.stopReason).toBe('error');
       expect(result.toolCallCount).toBe(0);
       expect(result.turnCount).toBe(0);
     });
@@ -611,6 +637,7 @@ describe('subagentRunner', () => {
 
         expect(runSubagentLoopMock).not.toHaveBeenCalled();
         expect(result.text).toContain('任务已取消');
+        expect(result.stopReason).toBe('aborted');
       } finally {
         vi.useRealTimers();
       }
@@ -631,13 +658,14 @@ describe('subagentRunner', () => {
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toContain('任务已取消');
+      expect(result.stopReason).toBe('aborted');
     });
   });
 
   describe('handler registration', () => {
     it('registers tool.invoke/hook.emit/hook.notify/subagent.progress handlers exactly once, no matter how many runs are dispatched', async () => {
       getSidecarStatus.mockReturnValue('running');
-      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       const { runSubagent } = await importFresh();
 
       await runSubagent({ agent, task: 'first' });

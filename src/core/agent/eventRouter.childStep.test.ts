@@ -61,16 +61,55 @@ function makeHarness(childOverrides: Partial<ExecutionStep> = {}) {
   };
   const updateChildStep = vi.fn();
   const addChildStep = vi.fn();
+  const setStepResult = vi.fn();
+  const setStepError = vi.fn();
+  const addDetailBlock = vi.fn();
   const executionStore = {
     getExecutionByLoopId: vi.fn().mockReturnValue(execution),
     updateChildStep,
     addChildStep,
+    setStepResult,
+    setStepError,
+    addDetailBlock,
   } as unknown as ExecutionPort;
   const appendMessageToolCall = vi.fn();
   const deps: EventRouterDeps = { executionStore, appendMessageToolCall };
   const router = createEventRouter(deps, 'en-US');
-  return { router, updateChildStep, addChildStep, appendMessageToolCall, childStep };
+  return {
+    router,
+    updateChildStep,
+    addChildStep,
+    setStepResult,
+    setStepError,
+    addDetailBlock,
+    appendMessageToolCall,
+    childStep,
+  };
 }
+
+describe('EventRouter delegate terminal channel', () => {
+  it('trusts step-end as success even when a completed report starts with Error:', () => {
+    const { router, setStepResult, addDetailBlock } = makeHarness();
+
+    router.route({
+      type: 'step-end',
+      loopId: 'loop-1',
+      stepId: 'parent-1',
+      result: 'Error: this is a quoted heading in the completed report',
+    });
+
+    expect(setStepResult).toHaveBeenCalledWith(
+      'exec-1',
+      'parent-1',
+      'Error: this is a quoted heading in the completed report',
+    );
+    expect(addDetailBlock).toHaveBeenCalledWith(
+      'exec-1',
+      'parent-1',
+      expect.objectContaining({ type: 'result', labelKey: 'summary', isExpanded: false }),
+    );
+  });
+});
 
 describe('EventRouter.completeChildStep', () => {
   it('attaches an image + result detail block when resultContent carries an image', () => {

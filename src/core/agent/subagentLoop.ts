@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext, ToolResultContent } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolExecutionContext, ToolResultContent } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
@@ -168,6 +168,12 @@ export type SubagentProgressEvent =
   | { type: 'tool-end'; id: string; toolName: string; result: string; error: boolean; resultContent?: ToolResultContent[] }
   | { type: 'turn-complete'; turn: number; totalTurns: number };
 
+export type { SubagentStopReason };
+
+export function isSubagentResultError(result: { stopReason: SubagentStopReason }): boolean {
+  return result.stopReason !== 'completed';
+}
+
 /**
  * Structured result from subagent execution.
  * Provides metrics alongside the text result.
@@ -179,6 +185,7 @@ export class SubagentResult {
   readonly turnCount: number;
   readonly tokenUsage: { input: number; output: number };
   readonly duration: number; // seconds
+  readonly stopReason: SubagentStopReason;
 
   constructor(params: {
     text: string;
@@ -186,12 +193,14 @@ export class SubagentResult {
     turnCount: number;
     tokenUsage: { input: number; output: number };
     duration: number;
+    stopReason: SubagentStopReason;
   }) {
     this.text = params.text;
     this.toolCallCount = params.toolCallCount;
     this.turnCount = params.turnCount;
     this.tokenUsage = params.tokenUsage;
     this.duration = params.duration;
+    this.stopReason = params.stopReason;
   }
 
   /** Backward compatible — callers that expect `string` get the text content */
@@ -249,6 +258,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   let totalToolCalls = 0;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  let resultBuffer = '';
+  let completedTurns = 0;
 
   // The caller owns signal freshness. Treat an already-aborted signal as a
   // real cancellation; silently replacing it can resurrect a stopped task.
@@ -405,7 +416,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // resolveMaxTurns so the cap chain + unlimited escape hatch can't drift.
     const globalMaxTurns = settingsReader.getSnapshot().agentMaxTurns;
     const maxTurns = resolveMaxTurns({ definitionMaxTurns: agent.maxTurns, globalMaxTurns });
-    let resultBuffer = '';
+    let terminalStopReason: SubagentStopReason = 'max_turns';
 
     // Abort sustained no-progress (all tool calls unparseable, or truncated with
     // no output) after MAX_NO_PROGRESS_TURNS consecutive turns (shared with
@@ -431,6 +442,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           turnCount: turn,
           tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
           duration: (Date.now() - startTime) / 1000,
+          stopReason: 'aborted',
         });
         await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: abortResult.text, error: false });
         subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
@@ -626,6 +638,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // A turn that resumes a max_tokens truncation is stitched on with no separator.
       resultBuffer = appendTurnText(resultBuffer, turnText, resumingFromTruncation);
       resumingFromTruncation = false;
+      completedTurns = turn + 1;
 
       // Max-output-tokens recovery: output truncated mid-thought with no tool call →
       // preserve the partial output in local history, re-prompt to resume, and let the
@@ -666,16 +679,23 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         && maxOutputTokensRecoveryCount >= MAX_OUTPUT_TOKENS_RECOVERY_LIMIT) {
         const note = getI18n().chat.subagent.outputLimitIncomplete;
         resultBuffer = resultBuffer ? resultBuffer + '\n\n' + note : note;
+        terminalStopReason = 'error';
       }
 
       // No-progress guard: abort a model that can't produce anything actionable
       // (all tool calls unparseable, or truncated with no output) after several
       // turns in a row — without this the loop spins to maxTurns (200) burning tokens.
-      if (isNoProgressTurn({ toolCalls: collectedToolCalls, turnText, stopReason: lastStopReason })) {
+      const noProgressTurn = isNoProgressTurn({
+        toolCalls: collectedToolCalls,
+        turnText,
+        stopReason: lastStopReason,
+      });
+      if (noProgressTurn) {
         consecutiveNoProgress++;
         if (consecutiveNoProgress >= MAX_NO_PROGRESS_TURNS) {
           const note = getI18n().chat.subagent.stoppedIncomplete;
           resultBuffer = resultBuffer ? resultBuffer + '\n\n' + note : note;
+          terminalStopReason = 'error';
           break;
         }
       } else {
@@ -683,6 +703,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       }
 
       if (!shouldContinue) {
+        if (terminalStopReason !== 'error') {
+          terminalStopReason = noProgressTurn ? 'error' : 'completed';
+        }
         break;
       }
       totalToolCalls += collectedToolCalls.length;
@@ -787,6 +810,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           ? r.value.result
           : `Error: ${r.reason}`;
         const resultContent = r.status === 'fulfilled' ? r.value.resultContent : undefined;
+        // ToolRegistry resolves its established generic failures as `Error:`
+        // strings, so this child-tool channel must keep the legacy prefix
+        // contract. B3 only structures the enclosing SubagentResult terminal.
         const isError = r.status === 'rejected' || result.startsWith('Error:');
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent };
@@ -817,21 +843,39 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const finalResult = new SubagentResult({
       text: resultBuffer || getI18n().chat.subagent.noContent,
       toolCallCount: totalToolCalls,
-      turnCount: maxTurns,
+      turnCount: completedTurns,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
+      stopReason: terminalStopReason,
     });
     await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: finalResult.text, error: false });
     subagentSpan.end({ output: finalResult.text, tokenUsage: finalResult.tokenUsage, toolCallCount: finalResult.toolCallCount, turnCount: finalResult.turnCount, duration: finalResult.duration });
     return finalResult;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    const wasAborted = signal?.aborted
+      || (err instanceof Error && err.name === 'AbortError')
+      || (err instanceof LLMError && err.code === 'cancelled');
+    if (wasAborted) {
+      const abortResult = new SubagentResult({
+        text: resultBuffer || getI18n().chat.subagent.taskCancelled,
+        toolCallCount: totalToolCalls,
+        turnCount: completedTurns,
+        tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
+        duration: (Date.now() - startTime) / 1000,
+        stopReason: 'aborted',
+      });
+      await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: abortResult.text, error: false });
+      subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
+      return abortResult;
+    }
     const errorResult = new SubagentResult({
       text: `Error: ${err instanceof LLMError ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody) : errMsg}`,
       toolCallCount: totalToolCalls,
       turnCount: 0,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
+      stopReason: 'error',
     });
     await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: errorResult.text, error: true });
     subagentSpan.end({ output: errorResult.text, tokenUsage: errorResult.tokenUsage, toolCallCount: errorResult.toolCallCount, turnCount: errorResult.turnCount, duration: errorResult.duration, error: errMsg });

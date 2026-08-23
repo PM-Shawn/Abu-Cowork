@@ -28,6 +28,8 @@ export interface SandboxRecoveryPayload {
   targetApp?: string;
 }
 
+export type SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max_turns';
+
 export type SandboxRecoveryAction =
   | 'pending'
   | 'started'
@@ -44,6 +46,7 @@ export type SandboxRecoveryAction =
  */
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
+  subagentStopReason?: SubagentStopReason;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -205,6 +208,8 @@ export interface ToolCall {
    * interactive (waiting for the user to answer).
    */
   userQuestionAnswers?: UserQuestionResult;
+  /** Structured terminal state for delegate_to_agent/run_agent_batch. */
+  subagentStopReason?: SubagentStopReason;
 }
 
 // Multimodal content types for messages

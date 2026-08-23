@@ -20,7 +20,46 @@ import {
   runWithTimeout,
   aggregateBatchResults,
   aggregateStructuredResults,
+  aggregateSubagentTextResults,
+  resolveBatchStopReason,
 } from './orchestrationTools';
+import { SubagentResult } from '../../agent/subagentLoop';
+
+function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'error' | 'max_turns') {
+  return new SubagentResult({
+    text,
+    stopReason,
+    toolCallCount: 0,
+    turnCount: 1,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+  });
+}
+
+describe('structured subagent terminal aggregation', () => {
+  it('treats completed Error-prefixed text as success and plain error text as failure', () => {
+    const output = aggregateSubagentTextResults([
+      { status: 'fulfilled', value: subagentResult('Error: quoted log heading', 'completed') },
+      { status: 'fulfilled', value: subagentResult('stopped before finishing', 'error') },
+    ], ['quoted report', 'failed report']);
+
+    expect(output).toContain('2 sub-tasks total: 1 succeeded, 1 failed');
+    expect(output).toContain('Error: quoted log heading');
+    expect(output).toContain('[Failed] stopped before finishing');
+  });
+
+  it('aggregates mixed terminal reasons with deterministic failure priority', () => {
+    const completed = { status: 'fulfilled', value: subagentResult('ok', 'completed') } as const;
+    const limited = { status: 'fulfilled', value: subagentResult('partial', 'max_turns') } as const;
+    const aborted = { status: 'fulfilled', value: subagentResult('cancelled', 'aborted') } as const;
+    const failed = { status: 'fulfilled', value: subagentResult('failed', 'error') } as const;
+
+    expect(resolveBatchStopReason([completed])).toBe('completed');
+    expect(resolveBatchStopReason([completed, limited])).toBe('max_turns');
+    expect(resolveBatchStopReason([limited, aborted])).toBe('aborted');
+    expect(resolveBatchStopReason([aborted, failed])).toBe('error');
+  });
+});
 
 // ─── clampConcurrency ──────────────────────────────────────────────────────
 

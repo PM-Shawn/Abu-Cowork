@@ -27,7 +27,7 @@ import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
-import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
@@ -78,6 +78,15 @@ type AssertNever<T extends never> = T;
 export type SubagentHostRunParamsWireExhaustive = AssertNever<
   Exclude<keyof SubagentHostRunParams, typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number]>
 >;
+
+interface SerializableSubagentResult {
+  text: string;
+  toolCallCount: number;
+  turnCount: number;
+  tokenUsage: { input: number; output: number };
+  duration: number;
+  stopReason: SubagentStopReason;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -341,7 +350,8 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       turnCount: result.turnCount,
       tokenUsage: result.tokenUsage,
       duration: result.duration,
-    };
+      stopReason: result.stopReason,
+    } satisfies SerializableSubagentResult;
   } finally {
     activeRuns.delete(runId);
   }

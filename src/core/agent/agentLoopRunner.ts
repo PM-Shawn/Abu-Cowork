@@ -30,7 +30,7 @@
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ImageAttachment, ToolExecutionContext, Conversation } from '../../types';
+import type { ImageAttachment, SubagentStopReason, ToolExecutionContext, Conversation } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -1008,7 +1008,8 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   session.committed = true;
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process main-loop run.
-  return await invoker.executeAnyTool(
+  let subagentStopReason: SubagentStopReason | undefined;
+  const result = await invoker.executeAnyTool(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
@@ -1016,8 +1017,15 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
     {
       ...((params.context as ToolExecutionContext | undefined) ?? {}),
       abortSignal: session.shellAbortController.signal,
+      reportMetadata: (metadata) => {
+        if (metadata.subagentStopReason) subagentStopReason = metadata.subagentStopReason;
+      },
     },
   );
+  // Keep the generic ToolResult wire unchanged. Only subagent tools need a
+  // tiny envelope so the sidecar parent loop can restore trusted terminal
+  // metadata onto its original ToolExecutionContext.
+  return subagentStopReason ? { result, subagentStopReason } : result;
 }
 
 /**

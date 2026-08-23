@@ -373,6 +373,79 @@ describe('executeToolBatch · hard run restrictions', () => {
       }],
     });
   });
+
+  it('persists structured subagent failure metadata and routes the delegate step as an error', async () => {
+    const executeAnyTool = vi.fn(async (
+      _name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePermission: unknown,
+      context?: ToolExecutionContext,
+    ) => {
+      context?.reportMetadata?.({ subagentStopReason: 'max_turns' });
+      return 'partial report without an Error prefix';
+    });
+    const toolCall = makeToolCall('delegate_to_agent');
+    const params = makeParams(toolCall, makeInvoker(executeAnyTool));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'partial report without an Error prefix',
+      undefined,
+      true,
+      undefined,
+      { subagentStopReason: 'max_turns' },
+    );
+    expect(mocks.route).toHaveBeenCalledWith({
+      type: 'step-error',
+      loopId: 'loop-1',
+      stepId: 'step-1',
+      error: 'partial report without an Error prefix',
+    });
+    expect(result.observations[0]).toEqual(expect.objectContaining({ error: true }));
+  });
+
+  it('routes a completed delegate through step-end even when its report starts with Error:', async () => {
+    const executeAnyTool = vi.fn(async (
+      _name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePermission: unknown,
+      context?: ToolExecutionContext,
+    ) => {
+      context?.reportMetadata?.({ subagentStopReason: 'completed' });
+      return 'Error: quoted heading from the completed report';
+    });
+    const toolCall = makeToolCall('delegate_to_agent');
+    const params = makeParams(toolCall, makeInvoker(executeAnyTool));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'Error: quoted heading from the completed report',
+      undefined,
+      false,
+      undefined,
+      { subagentStopReason: 'completed' },
+    );
+    expect(mocks.route).toHaveBeenCalledWith({
+      type: 'step-end',
+      loopId: 'loop-1',
+      stepId: 'step-1',
+      result: 'Error: quoted heading from the completed report',
+      resultContent: undefined,
+    });
+    expect(result.observations[0]).toEqual(expect.objectContaining({ error: false }));
+  });
 });
 
 describe('executeToolBatch · run_command batch scheduling', () => {

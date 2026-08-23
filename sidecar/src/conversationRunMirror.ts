@@ -191,6 +191,10 @@ export function createConversationRunMirror(
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
           }
+          if (metadata?.subagentStopReason) {
+            tc.subagentStopReason = metadata.subagentStopReason;
+            tc.isError = metadata.subagentStopReason !== 'completed';
+          }
           tc.isExecuting = false;
         }
         break;

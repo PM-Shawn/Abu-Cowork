@@ -60,8 +60,16 @@ interface ILinkMessage {
 // additionally carry `aeskey` (a raw 16-byte key as a hex string) which takes
 // precedence over `media.aes_key`. `media.full_url` is a ready-made download URL
 // the server sometimes provides instead of encrypt_query_param.
+/** A quoted ("引用") message: WeChat's own way to attach text to an earlier
+ *  photo, since a single message can't carry both. The quoted message's item
+ *  rides along inside the text item as `ref_msg.message_item`. */
+interface ILinkRefMessage {
+  message_item?: { type?: number; image_item?: { media?: CDNMedia; aeskey?: string } };
+  title?: string;
+}
+
 type ILinkItem =
-  | { type: 1; text_item: { text: string } }
+  | { type: 1; text_item: { text: string }; ref_msg?: ILinkRefMessage }
   | { type: 2; image_item: { media?: CDNMedia; aeskey?: string; mid_size?: number; thumb_size?: number } }
   | { type: 3; voice_item: { media?: CDNMedia; encode_type?: string; text?: string; playtime?: number } }
   | { type: 4; file_item: { media?: CDNMedia; file_name: string; md5?: string; len?: number } }
@@ -584,9 +592,34 @@ export class WeChatInboundAdapter implements InboundAdapter {
 
     for (const item of msg.item_list) {
       switch (item.type) {
-        case 1:
+        case 1: {
           parts.push(item.text_item.text);
+          // A quoted photo ("引用" an earlier image, then type the question) is
+          // WeChat's own answer to "one message can't carry image + text", and
+          // the official plugin reads it the same way: pull the quoted item's
+          // image so the question arrives WITH its picture, deterministically.
+          const quoted = item.ref_msg?.message_item;
+          if (quoted?.type === 2 && (quoted.image_item?.media?.encrypt_query_param || quoted.image_item?.media?.full_url)) {
+            try {
+              const { bytes } = await downloadAndDecryptMedia(
+                quoted.image_item.media,
+                quoted.image_item.aeskey,
+                'image.jpg',
+              );
+              images.push({
+                id: `wechat-img-${msg.message_id}-ref-${images.length}`,
+                data: bytesToBase64(bytes),
+                mediaType: imageMediaTypeFor('jpg'),
+              });
+              wechatLog.warn('inbound quoted image decoded ok', { bytes: bytes.length });
+            } catch (err) {
+              wechatLog.error('inbound quoted image download failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
           break;
+        }
         case 2: {
           try {
             // Ground-truth diagnostic: dump the real inbound image_item shape so
@@ -610,7 +643,10 @@ export class WeChatInboundAdapter implements InboundAdapter {
               mediaType: imageMediaTypeFor('jpg'),
             });
             wechatLog.warn('inbound image decoded ok', { bytes: images[images.length - 1]?.data.length ?? 0 });
-            parts.push('[图片]');
+            // No text placeholder on success: the image block itself is what the
+            // model sees, and a literal "[图片]" marker alongside it reads as a
+            // failed attachment ("the image didn't load") and makes the model
+            // narrate loading status instead of just describing the picture.
           } catch (err) {
             wechatLog.error('inbound image download failed', { error: err instanceof Error ? err.message : String(err) });
             parts.push('[图片（加载失败）]');

@@ -117,8 +117,45 @@ describe('WeChatInboundAdapter inbound image', () => {
     // decoded bytes must round-trip to the original plaintext
     expect(msg.images![0].data).toBe(btoa(String.fromCharCode(...PLAINTEXT)));
     expect(msg.images![0].mediaType).toBe('image/jpeg');
-    // text carries a placeholder; the image block is what the model sees
-    expect(msg.message.content).toContain('[图片]');
+    // No "[图片]" placeholder on success — the image block is the content, and a
+    // literal marker beside it reads to the model as a failed attachment.
+    expect(msg.message.content).toBe('');
+  }, 10000);
+
+  it('attaches a QUOTED photo to the text that quotes it (WeChat 引用)', async () => {
+    // WeChat's own answer to "one message can't carry image + text": quote the
+    // photo and type the question. The quoted item rides in ref_msg — the
+    // official plugin reads it the same way.
+    getUpdatesCalls = 99; // skip the default batch; serve a custom one below
+    fakeFetch.mockImplementationOnce(async () => ({
+      ok: true, status: 200,
+      json: async () => ({
+        ret: 0,
+        msgs: [{
+          message_id: 555, from_user_id: 'user@im.wechat', message_type: 1, context_token: 'ctx',
+          item_list: [{
+            type: 1,
+            text_item: { text: '这张图是啥' },
+            ref_msg: {
+              message_item: {
+                type: 2,
+                image_item: { media: { encrypt_query_param: '/enc?x=1', aes_key: KEY_B64, encrypt_type: 1 } },
+              },
+            },
+          }],
+        }],
+      }),
+    } as unknown as Response));
+
+    const adapter = new WeChatInboundAdapter();
+    const received = collect(adapter, 1);
+    await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
+    const [msg] = await received;
+    await adapter.disconnect();
+
+    expect(msg.message.content).toContain('这张图是啥');
+    expect(msg.images).toHaveLength(1); // the quoted photo rides along
+    expect(msg.images![0].data).toBe(btoa(String.fromCharCode(...PLAINTEXT)));
   }, 10000);
 
   it('preserves arrival order — a photo is dispatched before the text sent after it', async () => {

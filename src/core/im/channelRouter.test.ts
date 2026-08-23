@@ -4,7 +4,7 @@
  * Tests the core processMessage pipeline: session → thinking → agent → reply → error handling.
  * Uses mocks for all external dependencies (stores, agentLoop, streamingReply).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '@/types/imChannel';
 import { matchesToolName } from '../skill/toolFilter';
@@ -50,6 +50,9 @@ vi.mock('../../stores/chatStore', () => ({
         return id;
       }),
       renameConversation: vi.fn(),
+      // Router hydrates the conversation before dispatching (lazily-loaded
+      // conversations are evicted from memory; see channelRouter step 1a).
+      loadConversation: vi.fn(async () => {}),
       addMessage: vi.fn((convId: string, msg: { role: string; content: string }) => {
         if (mockConversations[convId]) mockConversations[convId].messages.push(msg);
       }),
@@ -166,6 +169,7 @@ type RouterInternal = {
   runningCount: number;
   activeSessions: Set<string>;
   recentMessageIds: Map<string, number>;
+  pendingMedia: Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>;
   stop(): void;
 };
 
@@ -206,6 +210,63 @@ describe('IMChannelRouter', () => {
     // Reset runningCount and session tracking
     getInternal().runningCount = 0;
     getInternal().activeSessions.clear();
+    getInternal().recentMessageIds.clear();
+    for (const { timer } of getInternal().pendingMedia.values()) clearTimeout(timer);
+    getInternal().pendingMedia.clear();
+  });
+
+  describe('photo + caption coalescing', () => {
+    // IM clients can't send an image and its text together, so a photo and the
+    // caption that follows arrive as two messages. Treating them as two turns
+    // made the agent answer the photo with no question, then answer the question
+    // with no photo ("I didn't get an image this turn").
+    const img = { id: 'i1', data: 'AAAA', mediaType: 'image/jpeg' as const };
+
+    beforeEach(() => {
+      // dispatchMessage (unlike processMessage) resolves the channel from the
+      // store, so the platform needs a registered enabled channel.
+      mockChannels['ch1'] = makeChannel({ responseMode: 'all_messages' });
+    });
+    afterEach(() => { delete mockChannels['ch1']; });
+
+    it('holds an image-only message instead of dispatching it immediately', () => {
+      getInternal().dispatchMessage(makeMessage({
+        text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm1' },
+      }));
+
+      expect(mockRunAgentLoop).not.toHaveBeenCalled();
+      expect(getInternal().pendingMedia.size).toBe(1);
+    });
+
+    it('merges the caption into the buffered photo and runs one turn', async () => {
+      getInternal().dispatchMessage(makeMessage({
+        text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm1' },
+      }));
+      getInternal().dispatchMessage(makeMessage({
+        text: '看看这张图是啥', replyContext: { platform: 'dingtalk', messageId: 'm2' },
+      }));
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+
+      // one run, carrying BOTH the caption text and the photo
+      expect(mockRunAgentLoop.mock.calls[0][1]).toContain('看看这张图是啥');
+      expect(mockRunAgentLoop.mock.calls[0][2].images).toHaveLength(1);
+      expect(getInternal().pendingMedia.size).toBe(0);
+    });
+
+    it('dispatches a lone photo once the wait elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        getInternal().dispatchMessage(makeMessage({
+          text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm3' },
+        }));
+        expect(mockRunAgentLoop).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(16_000); // past MEDIA_COALESCE_MS
+      } finally {
+        vi.useRealTimers();
+      }
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+      expect(mockRunAgentLoop.mock.calls[0][2].images).toHaveLength(1);
+    });
   });
 
   it('processes message through full pipeline', async () => {

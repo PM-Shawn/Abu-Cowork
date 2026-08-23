@@ -27,6 +27,45 @@ const AGENT_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
 
 const MAX_SESSION_QUEUE = 5;
 
+/** How long an image-only message waits for the caption that usually follows.
+ *
+ *  Sized for a human, not a network hop: the user picks the photo, sends it,
+ *  and only then types "what is this?" — several seconds of typing. A window
+ *  that expires mid-typing splits the pair back into two turns, which is the
+ *  whole failure this buffer exists to prevent.
+ *
+ *  The cost is paid ONLY by a photo sent with no caption at all: it waits this
+ *  long before the agent starts. A caption arriving inside the window merges
+ *  and dispatches immediately, so the common "photo + question" flow sees no
+ *  added latency at all. Tune here if that lone-photo wait feels too long. */
+const MEDIA_COALESCE_MS = 15_000;
+
+/** Placeholder markers the adapters emit for attached media, so a message that
+ *  is *only* a photo can be recognised as having no real text of its own. */
+const MEDIA_PLACEHOLDER_RE = /\[(图片|视频|文件[^\]]*)\]/g;
+
+/** True when the message carries images but no text beyond media placeholders. */
+function isMediaOnly(message: NormalizedIMMessage): boolean {
+  if (!message.images?.length) return false;
+  return message.text.replace(MEDIA_PLACEHOLDER_RE, '').trim() === '';
+}
+
+/** Merge a buffered media message with the follow-up that carries its caption.
+ *  Text comes from the follow-up (the placeholder adds nothing once the image
+ *  itself is attached); reply context is the newest message's. */
+function mergeInboundMessages(
+  buffered: NormalizedIMMessage,
+  next: NormalizedIMMessage,
+): NormalizedIMMessage {
+  const bufferedText = buffered.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
+  const nextText = next.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
+  return {
+    ...next,
+    text: [bufferedText, nextText].filter(Boolean).join('\n') || next.text,
+    images: [...(buffered.images ?? []), ...(next.images ?? [])],
+  };
+}
+
 class IMChannelRouter {
   private runningCount = 0;
   private queuedMessages: { message: NormalizedIMMessage; channelId: string }[] = [];
@@ -37,6 +76,8 @@ class IMChannelRouter {
   private activeSessions = new Set<string>();
   /** Per-session message queue — messages waiting for the active turn to finish */
   private sessionQueues = new Map<string, { message: NormalizedIMMessage; channel: IMChannel; capability: IMCapabilityLevel }[]>();
+  /** Per-chat image-only message awaiting the caption that usually follows it. */
+  private pendingMedia = new Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>();
 
   async start() {
     // IM inbound events are dispatched by inboundDispatcher (single dispatcher pattern).
@@ -67,6 +108,8 @@ class IMChannelRouter {
     this.recentMessageIds.clear();
     this.activeSessions.clear();
     this.sessionQueues.clear();
+    for (const { timer } of this.pendingMedia.values()) clearTimeout(timer);
+    this.pendingMedia.clear();
     console.log('[IMChannel] Router stopped');
   }
 
@@ -92,6 +135,35 @@ class IMChannelRouter {
     }
     this.recentMessageIds.set(dedupKey, now);
 
+    // Coalesce "photo, then caption" into ONE turn. IM clients (WeChat included)
+    // cannot send an image and its text together — the user must send two
+    // messages — but treating them as two turns makes the agent answer the photo
+    // with no question, then answer the question with no photo ("I didn't get an
+    // image this turn"). So an image-only message waits briefly for the caption
+    // that usually follows; the caption merges into it and dispatches one turn.
+    const chatKey = `${message.platform}:${message.chatId}`;
+    const pending = this.pendingMedia.get(chatKey);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingMedia.delete(chatKey);
+      message = mergeInboundMessages(pending.message, message);
+    }
+    if (isMediaOnly(message)) {
+      const buffered = message;
+      const timer = setTimeout(() => {
+        this.pendingMedia.delete(chatKey);
+        this.routeMessage(buffered);
+      }, MEDIA_COALESCE_MS);
+      this.pendingMedia.set(chatKey, { message: buffered, timer });
+      return;
+    }
+
+    this.routeMessage(message);
+  }
+
+  /** Channel resolution → auth → queueing → run. Split out of `handleMessage`
+   *  so the media-coalescing timer can dispatch a buffered message too. */
+  private routeMessage(message: NormalizedIMMessage) {
     // Find matching enabled channel for this platform
     const store = useIMChannelStore.getState();
     const channels = store.getChannelsByPlatform(message.platform).filter((c) => c.enabled);

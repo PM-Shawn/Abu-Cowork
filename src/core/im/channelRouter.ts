@@ -238,6 +238,9 @@ class IMChannelRouter {
       const callbacks = getCallbacksForLevel(capability);
       await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
+          // Inbound images (e.g. a WeChat photo) forwarded as real vision content
+          // so the model actually sees them instead of a "[图片]" text marker.
+          images: message.images,
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
           // Tier-scoped, not a hard-coded single entry: the read-only tier

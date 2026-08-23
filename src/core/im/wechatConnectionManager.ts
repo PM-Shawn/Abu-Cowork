@@ -27,7 +27,7 @@ function onMessage(msg: InboundMessage): void {
     return;
   }
 
-  dispatchDirect('wechat', msg.raw as Record<string, unknown>);
+  dispatchDirect('wechat', msg.raw as Record<string, unknown>, msg.images);
 }
 
 function findChannelIdByAdapter(): string | undefined {

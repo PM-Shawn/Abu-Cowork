@@ -17,6 +17,7 @@ import { writeFile } from '@tauri-apps/plugin-fs';
 import { readFile } from '../../tools/fsBridge';
 import { getBaseName } from '../../../utils/pathUtils';
 import { tempDir } from '@tauri-apps/api/path';
+import type { ImageAttachment } from '../../../types';
 import { BaseAdapter } from './base';
 import type {
   AdapterConfig,
@@ -285,7 +286,7 @@ async function downloadAndDecryptMedia(
   encryptQueryParam: string,
   aesKeyB64: string,
   fileName?: string,
-): Promise<string> {
+): Promise<{ path: string; bytes: Uint8Array }> {
   const cdnUrl = `https://novac2c.cdn.weixin.qq.com/c2c${encryptQueryParam}`;
   const f = await getTauriFetch();
   const resp = await f(cdnUrl);
@@ -299,7 +300,27 @@ async function downloadAndDecryptMedia(
   const tmp = await tempDir();
   const path = `${tmp}/${name}`;
   await writeFile(path, decrypted);
-  return path;
+  return { path, bytes: decrypted };
+}
+
+// Encode raw bytes to a base64 string (no data: prefix) for ImageAttachment.data.
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunk = 0x8000; // avoid call-stack limits on large inputs
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+// Map a WeChat image file extension to an ImageAttachment media type.
+function imageMediaTypeFor(ext: string): ImageAttachment['mediaType'] {
+  switch (ext.toLowerCase()) {
+    case 'png': return 'image/png';
+    case 'gif': return 'image/gif';
+    case 'webp': return 'image/webp';
+    default: return 'image/jpeg';
+  }
 }
 
 function clientId(): string {
@@ -508,6 +529,11 @@ export class WeChatInboundAdapter implements InboundAdapter {
 
   private async handleMessage(msg: ILinkMessage): Promise<void> {
     const parts: string[] = [];
+    // Inbound images are downloaded + decrypted here and carried as real image
+    // attachments so the vision model actually sees them (see onMessage →
+    // dispatchDirect → channelRouter, which passes these as `images`). Without
+    // this the model only ever saw a "[图片]" text marker.
+    const images: ImageAttachment[] = [];
 
     for (const item of msg.item_list) {
       switch (item.type) {
@@ -516,12 +542,17 @@ export class WeChatInboundAdapter implements InboundAdapter {
           break;
         case 2: {
           try {
-            const path = await downloadAndDecryptMedia(
+            const { bytes } = await downloadAndDecryptMedia(
               item.image_item.encrypt_query_param,
               item.image_item.aes_key,
               'image.jpg',
             );
-            parts.push(`[图片: ${path}]`);
+            images.push({
+              id: `wechat-img-${msg.message_id}-${images.length}`,
+              data: bytesToBase64(bytes),
+              mediaType: imageMediaTypeFor('jpg'),
+            });
+            parts.push('[图片]');
           } catch {
             parts.push('[图片（加载失败）]');
           }
@@ -535,11 +566,13 @@ export class WeChatInboundAdapter implements InboundAdapter {
         }
         case 4: {
           try {
-            const path = await downloadAndDecryptMedia(
+            const { path } = await downloadAndDecryptMedia(
               item.file_item.encrypt_query_param,
               item.file_item.aes_key,
               item.file_item.file_name,
             );
+            // Keep the local path in the text so the agent can read_file it
+            // (files aren't vision content; the path is how it reaches them).
             parts.push(`[文件: ${item.file_item.file_name}, 路径: ${path}]`);
           } catch {
             parts.push(`[文件: ${item.file_item.file_name}（加载失败）]`);
@@ -553,9 +586,9 @@ export class WeChatInboundAdapter implements InboundAdapter {
     }
 
     const text = parts.join('\n').trim();
-    if (!text) return;
+    if (!text && images.length === 0) return;
 
-    console.log(`[WeChat] dispatching inbound message: "${text.slice(0, 50)}"`);
+    console.log(`[WeChat] dispatching inbound message: "${text.slice(0, 50)}" (${images.length} image(s))`);
 
     const replyCtx: ReplyContext = {
       platform: 'wechat',
@@ -565,6 +598,7 @@ export class WeChatInboundAdapter implements InboundAdapter {
 
     this.messageCallback?.({
       message: { content: text },
+      images: images.length > 0 ? images : undefined,
       sender: {
         id: msg.from_user_id,
         name: msg.from_user_id.split('@')[0] ?? msg.from_user_id,

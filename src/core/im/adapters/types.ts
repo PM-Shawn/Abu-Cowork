@@ -165,6 +165,9 @@ export interface IMAdapter extends OutboundAdapter {
 
 export interface InboundMessage {
   message: AbuMessage;
+  /** Inbound image attachments (downloaded + decoded), passed to the agent as
+   *  real vision content. Set by adapters that receive images (e.g. WeChat). */
+  images?: import('../../../types').ImageAttachment[];
   sender: {
     id: string;
     name: string;

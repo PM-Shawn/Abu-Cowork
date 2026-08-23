@@ -13,6 +13,7 @@ import { parseInboundMessage } from './inboundRouter';
 import { triggerEngine } from '../trigger/triggerEngine';
 import { imChannelRouter } from './channelRouter';
 import { isTauriEnv } from '../../utils/tauriEnv';
+import type { ImageAttachment } from '../../types';
 
 let unlistenIM: UnlistenFn | null = null;
 
@@ -32,8 +33,12 @@ export async function startInboundDispatcher(): Promise<void> {
  * Directly dispatch a message that arrived via a polling adapter (e.g. WeChat iLink),
  * bypassing the Tauri event bus. Same routing logic as the event listener.
  */
-export function dispatchDirect(platform: string, payload: Record<string, unknown>): void {
-  dispatch(platform, payload);
+export function dispatchDirect(
+  platform: string,
+  payload: Record<string, unknown>,
+  images?: ImageAttachment[],
+): void {
+  dispatch(platform, payload, images);
 }
 
 export function stopInboundDispatcher(): void {
@@ -42,10 +47,14 @@ export function stopInboundDispatcher(): void {
   console.log('[InboundDispatcher] Stopped');
 }
 
-function dispatch(platform: string, rawPayload: Record<string, unknown>) {
+function dispatch(platform: string, rawPayload: Record<string, unknown>, images?: ImageAttachment[]) {
   // Parse once, share with both paths
   const message = parseInboundMessage(platform, rawPayload);
   if (!message) return;
+  // Attach adapter-downloaded images (e.g. WeChat inbound photos) so the channel
+  // router can forward them to the agent as real vision content. Trigger matching
+  // is text-based and unaffected.
+  if (images?.length) message.images = images;
 
   // Trigger first: check if any IM trigger matches this message
   const matched = triggerEngine.tryMatchIMTriggers(message);

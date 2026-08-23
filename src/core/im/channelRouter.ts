@@ -22,8 +22,17 @@ import { consumeTriggerContext } from './triggerContextCache';
 import { getI18n, format } from '../../i18n';
 
 const MAX_CONCURRENT_IM = 5;
-/** Maximum time (ms) to wait for agentLoop before aborting */
-const AGENT_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+/**
+ * Maximum time (ms) to wait for agentLoop before aborting.
+ *
+ * Ten minutes, not three: an attachment turn routinely runs longer than three
+ * (a real 427KB image-only PDF took 3m53s — read it, found no text layer,
+ * extracted the embedded images, identified the document) and the old ceiling
+ * killed the notification while the work itself was succeeding, so the user was
+ * told "处理出错" about a task that had actually finished. An IM user is not
+ * watching a progress bar; waiting is cheap, a false failure is not.
+ */
+const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 const MAX_SESSION_QUEUE = 5;
 

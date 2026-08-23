@@ -72,7 +72,14 @@ import {
   onSidecarNotification,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
-import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from './subagentLoop';
+import {
+  buildSubagentMcpPreflightFailure,
+  runSubagentLoop,
+  SubagentResult,
+  type SubagentLoopOptions,
+  type SubagentProgressEvent,
+  type SubagentStopReason,
+} from './subagentLoop';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
@@ -424,6 +431,14 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
   if (options.signal?.aborted) {
     return cancelledSubagentResult();
   }
+
+  // Run this before selecting or dispatching to either runtime. The loop has
+  // the same check as a defense for direct callers and the in-sidecar nested
+  // path; doing it here additionally guarantees a missing MCP dependency does
+  // not create a sidecar session/request at all.
+  const availableTools = (options.toolInvoker ?? getToolInvoker()).getAllTools();
+  const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
+  if (mcpPreflightFailure) return mcpPreflightFailure;
 
   if (getSidecarStatus() !== 'running') {
     logger.debug('subagent path selected', { path: 'local', sidecarStatus: getSidecarStatus() });

@@ -1,5 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { isNoProgressTurn, shouldRecoverMaxTokens, appendTurnText, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
+import {
+  appendTurnText,
+  buildSubagentStartEvent,
+  buildSubagentEndEvent,
+  findMissingSubagentMcpRequirements,
+  isNoProgressTurn,
+  shouldRecoverMaxTokens,
+} from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
 
@@ -121,6 +128,48 @@ describe('appendTurnText', () => {
   it('returns the new text as-is when the buffer is empty (no leading separator)', () => {
     expect(appendTurnText('', 'first answer', false)).toBe('first answer');
     expect(appendTurnText('', 'first answer', true)).toBe('first answer');
+  });
+});
+
+describe('findMissingSubagentMcpRequirements', () => {
+  it('accepts connected exact and named-wildcard MCP tools', () => {
+    const available = [
+      { name: 'github__search_issues' },
+      { name: 'github__create_issue' },
+    ];
+
+    expect(findMissingSubagentMcpRequirements(
+      ['github__search_issues', 'github__*'],
+      available,
+    )).toEqual([]);
+  });
+
+  it('returns each unavailable exact or named-wildcard requirement with its server', () => {
+    expect(findMissingSubagentMcpRequirements(
+      ['notion__query', 'slack__*', 'notion__query'],
+      [{ name: 'read_file' }],
+    )).toEqual([
+      { pattern: 'notion__query', serverName: 'notion' },
+      { pattern: 'slack__*', serverName: 'slack' },
+    ]);
+  });
+
+  it('keeps enterprise/custom server names containing the separator intact', () => {
+    expect(findMissingSubagentMcpRequirements(
+      ['enterprise__tenant-a__query', 'custom__nested__tool__v2'],
+      [],
+      ['enterprise__tenant-a', 'custom__nested', null] as never,
+    )).toEqual([
+      { pattern: 'enterprise__tenant-a__query', serverName: 'enterprise__tenant-a' },
+      { pattern: 'custom__nested__tool__v2', serverName: 'custom__nested' },
+    ]);
+  });
+
+  it('does not turn builtin typos or ambiguous cross-server wildcards into MCP connection errors', () => {
+    expect(findMissingSubagentMcpRequirements(
+      ['missing_tool', '*__search', 'server__', null, 42],
+      [],
+    )).toEqual([]);
   });
 });
 

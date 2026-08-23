@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolExecutionContext, ToolResultContent } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolDefinition, ToolExecutionContext, ToolResultContent } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
@@ -47,7 +47,7 @@ import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
-import { getI18n } from '../../i18n';
+import { format, getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 
@@ -209,6 +209,124 @@ export class SubagentResult {
   }
 }
 
+export interface MissingSubagentMcpRequirement {
+  /** Original agent.tools entry, retained so the error names the exact tool/pattern. */
+  pattern: string;
+  /** Fixed MCP server namespace before the canonical final `__` separator. */
+  serverName: string;
+}
+
+/**
+ * Resolve MCP capabilities explicitly required by an agent definition but
+ * absent from the live tool roster.
+ *
+ * MCP tools use the canonical `serverName__toolName` shape (the same rule as
+ * mcpManager's registration path). Server names may themselves contain `__`
+ * (`enterprise__<id>` is a real namespace), so the final separator is the
+ * fallback boundary; managed metadata, when present, supplies an exact
+ * longest-prefix hint. Only a fixed server namespace is treated as a hard
+ * requirement: a cross-server wildcard such as `*__search` cannot name one
+ * server to connect, so it keeps the existing best-effort wildcard behavior.
+ * Exact tool names and a named server wildcard (`github__*`) are fail-loud.
+ */
+export function findMissingSubagentMcpRequirements(
+  declaredTools: readonly unknown[] | undefined,
+  availableTools: readonly Pick<ToolDefinition, 'name'>[],
+  knownServerNames: readonly string[] = [],
+): MissingSubagentMcpRequirement[] {
+  if (!declaredTools?.length) return [];
+
+  const missing: MissingSubagentMcpRequirement[] = [];
+  const seenPatterns = new Set<string>();
+
+  for (const rawPattern of declaredTools) {
+    // Runtime-loaded AGENT.md frontmatter is not schema-validated. The result
+    // builder below reports non-string entries as a structured config error;
+    // keep this pure resolver total for direct callers too.
+    if (typeof rawPattern !== 'string') continue;
+    const pattern = rawPattern.trim();
+    if (!pattern || seenPatterns.has(pattern)) continue;
+
+    // matchesToolName strips an optional input constraint too; strip it here
+    // only to identify the MCP namespace used in the diagnostic.
+    const constraintIndex = pattern.indexOf('(');
+    const toolNamePattern = (constraintIndex === -1 ? pattern : pattern.slice(0, constraintIndex)).trim();
+    const hintedServerName = knownServerNames
+      .filter((serverName) => typeof serverName === 'string' && toolNamePattern.startsWith(`${serverName}__`))
+      .sort((a, b) => b.length - a.length)[0];
+    const separatorIndex = hintedServerName === undefined
+      ? toolNamePattern.lastIndexOf('__')
+      : hintedServerName.length;
+    if (separatorIndex <= 0 || separatorIndex + 2 >= toolNamePattern.length) continue;
+
+    const serverName = hintedServerName ?? toolNamePattern.slice(0, separatorIndex);
+    if (serverName.includes('*')) continue;
+    if (availableTools.some((tool) => matchesToolName(tool.name, pattern))) continue;
+
+    seenPatterns.add(pattern);
+    missing.push({ pattern, serverName });
+  }
+
+  return missing;
+}
+
+/** Build the structured, localized fail-fast result shared by every entry path. */
+export function buildSubagentMcpPreflightFailure(
+  agent: Pick<SubagentDefinition, 'name' | 'tools' | 'managed'>,
+  availableTools: readonly Pick<ToolDefinition, 'name'>[],
+): SubagentResult | null {
+  const rawDeclaredTools: unknown = agent.tools;
+  if (rawDeclaredTools !== undefined && !Array.isArray(rawDeclaredTools)) {
+    return new SubagentResult({
+      text: format(getI18n().chat.subagent.invalidToolsField, { agentName: agent.name }),
+      toolCallCount: 0,
+      turnCount: 0,
+      tokenUsage: { input: 0, output: 0 },
+      duration: 0,
+      stopReason: 'error',
+    });
+  }
+
+  const declaredTools: readonly unknown[] | undefined = rawDeclaredTools;
+  const invalidPositions = declaredTools
+    ?.flatMap((entry, index) => typeof entry === 'string' ? [] : [index + 1])
+    ?? [];
+  if (invalidPositions.length > 0) {
+    return new SubagentResult({
+      text: format(getI18n().chat.subagent.invalidToolDeclarations, {
+        agentName: agent.name,
+        positions: invalidPositions.join(', '),
+      }),
+      toolCallCount: 0,
+      turnCount: 0,
+      tokenUsage: { input: 0, output: 0 },
+      duration: 0,
+      stopReason: 'error',
+    });
+  }
+
+  const missing = findMissingSubagentMcpRequirements(
+    declaredTools,
+    availableTools,
+    agent.managed?.requiredMcpServers,
+  );
+  if (missing.length === 0) return null;
+
+  const servers = [...new Set(missing.map((requirement) => requirement.serverName))];
+  return new SubagentResult({
+    text: format(getI18n().chat.subagent.mcpRequiredUnavailable, {
+      agentName: agent.name,
+      requirements: missing.map((requirement) => requirement.pattern).join(', '),
+      servers: servers.join(', '),
+    }),
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+}
+
 export interface SubagentLoopOptions {
   agent: SubagentDefinition;
   task: string;
@@ -273,6 +391,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const toolInvoker = options.toolInvoker ?? getToolInvoker();
   const capsPort = options.capsPort ?? getCapsPort();
   const workspaceReaderInst = options.workspaceReader ?? getWorkspaceReader();
+
+  // Capability preflight happens before lifecycle hooks, observability, memory
+  // loading, side effects, or an LLM request. A disconnected MCP server makes
+  // its tools disappear from getAllTools(); treating that as an empty optional
+  // roster would start an agent that cannot perform its declared job.
+  const allTools = toolInvoker.getAllTools();
+  const mcpPreflightFailure = buildSubagentMcpPreflightFailure(agent, allTools);
+  if (mcpPreflightFailure) return mcpPreflightFailure;
 
   // Lifecycle: subagentStart
   await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });
@@ -344,7 +470,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const effectiveModelId = resolveAgentModel(agent.model, settings);
 
     // 3. Get + filter tools
-    let tools = toolInvoker.getAllTools();
+    let tools = allTools;
     if (agent.tools && agent.tools.length > 0) {
       const available = new Set(tools.map((t) => t.name));
       const unknown = agent.tools.filter((name) => !available.has(name));

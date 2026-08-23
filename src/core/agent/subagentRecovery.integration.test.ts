@@ -22,8 +22,9 @@ vi.mock('../llm/claude', () => ({ ClaudeAdapter: class { chat = mockClaudeChat; 
 vi.mock('../llm/openai-compatible', () => ({ OpenAICompatibleAdapter: class { chat = vi.fn(); } }));
 
 const mockExecuteAnyTool = vi.fn();
+const mockGetAllTools = vi.fn().mockReturnValue([]);
 vi.mock('../tools/registry', () => ({
-  getAllTools: vi.fn().mockReturnValue([]),
+  getAllTools: () => mockGetAllTools(),
   executeAnyTool: (...args: unknown[]) => mockExecuteAnyTool(...args),
   toolResultToString: (r: unknown) => String(r),
 }));
@@ -98,6 +99,8 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockClaudeChat.mockReset();
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockGetAllTools.mockReset();
+    mockGetAllTools.mockReturnValue([]);
     mockGetActiveProvider.mockReset();
     mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
   });
@@ -118,6 +121,62 @@ describe('subagent max_tokens recovery (integration)', () => {
     const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
     expect(chatOptions.systemPrompt).toContain('Path: /im/workspace');
     expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
+  });
+
+  it('fails before the model starts when a declared MCP tool is unavailable', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'notion-researcher', tools: ['notion__query', 'slack__*'] },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('notion-researcher');
+    expect(result.text).toContain('notion__query');
+    expect(result.text).toContain('slack__*');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured config error for non-string AGENT.md tools entries', async () => {
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'malformed-agent', tools: ['read_file', null, 42] as never },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('malformed-agent');
+    expect(result.text).toContain('2, 3');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
+  it.each(['notion__query', { server: 'notion' }])(
+    'returns a structured config error when AGENT.md tools is the non-array value %j',
+    async (tools) => {
+      const result = await runSubagentLoop({
+        agent: { ...agent, name: 'malformed-agent', tools: tools as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('tools');
+      expect(mockClaudeChat).not.toHaveBeenCalled();
+      expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('marks adapter failures with structured stopReason=error', async () => {
+    mockClaudeChat.mockRejectedValueOnce(new Error('adapter failed'));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.text).toContain('adapter failed');
+    expect(result.stopReason).toBe('error');
   });
 
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {

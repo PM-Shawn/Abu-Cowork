@@ -424,6 +424,12 @@ export interface TranslationDict {
       hookBlocked: string;
       /** Subagent produced no content. */
       noContent: string;
+      /** Required MCP tools are unavailable before delegation. {agentName} {requirements} {servers} */
+      mcpRequiredUnavailable: string;
+      /** Agent tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidToolDeclarations: string;
+      /** Agent tools frontmatter is not an array. {agentName} */
+      invalidToolsField: string;
     };
     // Work-process fold label (Codex-style turn collapse). {duration} = e.g. "1m 4s"
     workedFor: string;

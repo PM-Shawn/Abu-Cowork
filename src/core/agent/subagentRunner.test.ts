@@ -98,10 +98,15 @@ vi.mock('../../i18n', () => ({
         cancelled: '已取消',
         hookBlocked: '被拦截',
         noContent: '无内容',
+        mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
+        invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
       },
       errorEmptyBody: '空响应',
     },
   }),
+  format: (template: string, values: Record<string, string | number>) =>
+    template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? `{${key}}`)),
 }));
 
 const agent: SubagentDefinition = {
@@ -261,6 +266,59 @@ describe('subagentRunner', () => {
   });
 
   describe('routing', () => {
+    it.each(['stopped', 'running'])('fails before %s runtime dispatch when a required MCP tool is unavailable', async (sidecarStatus) => {
+      getSidecarStatus.mockReturnValue(sidecarStatus);
+      getAllToolsMock.mockReturnValue([
+        { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
+      ]);
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'notion-researcher', tools: ['notion__query'] },
+        task: 'research the workspace',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('notion-researcher');
+      expect(result.text).toContain('notion__query');
+      expect(result.text).toContain('notion');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(onSidecarRequest).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching malformed tools frontmatter', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'malformed-agent', tools: ['read_file', null] as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('2');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching scalar tools frontmatter', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'malformed-agent', tools: 'notion__query' as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('tools');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
     it('runs in-process (runSubagentLoop) when the sidecar is not running', async () => {
       getSidecarStatus.mockReturnValue('stopped');
       const { runSubagent } = await importFresh();

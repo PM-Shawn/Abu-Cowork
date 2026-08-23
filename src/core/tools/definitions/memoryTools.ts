@@ -204,6 +204,16 @@ export const reportPlanTool: ToolDefinition = {
     // calls (frequent status updates) must NOT re-trigger approval — otherwise a
     // risky plan re-prompts and re-locks writes on every progress update.
     const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning');
+    // IM channels have no interactive approval card: blocking on the desktop
+    // dialog would stall the turn until timeout while the remote user never sees
+    // it. Instead, record the plan and instruct the model to present it and ask
+    // for approval in its text reply, then stop — the user's next message
+    // resumes the conversation. Risky writes remain gated by the channel's
+    // capability tier (dangerous commands stay blocked regardless).
+    if (convId && context?.imReplyTarget && needsApproval) {
+      setPlanMode(convId, 'planning');
+      return format(t.planImApprovalNeeded, { count: steps.length });
+    }
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
       const payload = buildPlanApprovalPayload(stepTexts);

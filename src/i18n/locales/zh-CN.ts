@@ -2497,6 +2497,7 @@ const zhCN: TranslationDict = {
       planRejected: '用户未批准当前计划。请先向用户询问顾虑和期望的调整，在得到明确反馈之前不要重新提交相同的计划。当前为计划模式（只读）。',
       planRecorded: '已记录执行计划',
       planRecordedSteps: '已记录执行计划：{count}个步骤',
+      planImApprovalNeeded: '已记录执行计划（{count}个步骤）。当前是 IM 频道，无法弹出审批卡片：请把计划要点用文字发给用户，并明确询问“是否批准执行”，然后结束本轮、等待用户在下一条消息中回复。在用户明确批准前，不要执行有风险的步骤。',
       planApprovalHeader: '计划审批',
       planApprovalQuestion: '是否批准执行此计划？',
       planApproveLabel: '批准执行',

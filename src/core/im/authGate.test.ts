@@ -84,9 +84,12 @@ describe('getBlockedToolsForLevel', () => {
     return getBlockedToolsForLevel(level).some((pattern) => matchesToolName(tool, pattern));
   }
 
-  it('always blocks request_workspace — an IM run cannot answer a UI dialog', () => {
+  it('always blocks request_workspace + ask_user_question — an IM run cannot answer a UI dialog', () => {
     for (const level of ['chat_only', 'read_tools', 'safe_tools', 'full'] as const) {
       expect(getBlockedToolsForLevel(level), level).toContain('request_workspace');
+      // ask_user_question renders a blocking desktop card the remote IM user
+      // can't answer; blocked so the model asks in text instead.
+      expect(getBlockedToolsForLevel(level), level).toContain('ask_user_question');
     }
   });
 
@@ -103,9 +106,9 @@ describe('getBlockedToolsForLevel', () => {
     }
   });
 
-  it('leaves safe_tools and full untouched — request_workspace only', () => {
+  it('leaves safe_tools and full otherwise untouched — no browser blocking', () => {
     for (const level of ['safe_tools', 'full'] as const) {
-      expect(getBlockedToolsForLevel(level), level).toEqual(['request_workspace']);
+      expect(getBlockedToolsForLevel(level), level).toEqual(['request_workspace', 'ask_user_question']);
       expect(blocks(level, 'abu-browser__click'), level).toBe(false);
       expect(blocks(level, 'abu-browser__snapshot'), level).toBe(false);
     }

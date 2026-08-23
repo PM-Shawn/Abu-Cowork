@@ -248,7 +248,9 @@ describe('IMChannelRouter', () => {
 
     await getInternal().processMessage(makeMessage(), makeChannel(), 'full');
 
-    expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace']);
+    // request_workspace + ask_user_question are always blocked in IM (no desktop
+    // UI to answer them); browser tools remain available at higher tiers.
+    expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace', 'ask_user_question']);
   });
 
   it('sets channel error status when agentLoop throws', async () => {

@@ -2689,6 +2689,8 @@ export interface TranslationDict {
       planRecorded: string;
       /** Plan recorded with N steps. {count} */
       planRecordedSteps: string;
+      /** IM channel: plan recorded, ask the user for approval in text. {count} */
+      planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
       /** Plan-approval card question (rendered after step list). */

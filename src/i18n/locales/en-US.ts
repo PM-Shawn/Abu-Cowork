@@ -2496,6 +2496,7 @@ const enUS: TranslationDict = {
       planRejected: 'The user did not approve the current plan. Please ask the user about their concerns and desired changes — do not resubmit the same plan without explicit feedback. Currently in planning mode (read-only).',
       planRecorded: 'Execution plan recorded',
       planRecordedSteps: 'Execution plan recorded: {count} steps',
+      planImApprovalNeeded: 'Execution plan recorded ({count} steps). This is an IM channel with no approval card: present the plan to the user in your text reply, clearly ask whether they approve, then end your turn and wait for their next message. Do NOT execute risky steps until they explicitly approve.',
       planApprovalHeader: 'Plan Approval',
       planApprovalQuestion: 'Do you approve execution of this plan?',
       planApproveLabel: 'Approve',

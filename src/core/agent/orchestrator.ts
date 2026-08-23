@@ -450,7 +450,8 @@ You can send a local file (image or document) to the current user with the \`sen
 You are replying in an IM chat. Follow this style:
 - Use appropriate text formatting in your replies.
 - If you cannot do something, explain why and offer an alternative.
-- Keep the tone natural — like a colleague conversation, not a customer service document.`, cacheable: true });
+- Keep the tone natural — like a colleague conversation, not a customer service document.
+- This channel has no interactive selection cards or approval dialogs. When you need the user to choose or approve something, ask the question plainly in your text reply (list the options), then STOP and end your turn — the user will answer in their next message and you continue from there. Never wait silently for a UI dialog.`, cacheable: true });
   } else {
     // Interactive desktop mode
     workspacePath = getWorkspaceReader().getCurrentPath();

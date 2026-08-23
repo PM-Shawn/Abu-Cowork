@@ -1,4 +1,5 @@
-import { check, type Update } from '@tauri-apps/plugin-updater';
+import { Update } from '@tauri-apps/plugin-updater';
+import { invoke } from '@tauri-apps/api/core';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { publish } from '@/core/notice/bus';
@@ -18,6 +19,36 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const RELEASE_METADATA_URL = 'https://abu-agent.oss-cn-beijing.aliyuncs.com/electron/latest-release.json';
 
 let _pendingUpdate: Update | null = null;
+
+/**
+ * Raw result of `plugin:updater|check`. The Electron host (updaterHost.cjs) is
+ * three-state where Tauri's plugin was only two:
+ *  - metadata → newer version available;
+ *  - null     → the feed was actually queried and this version is current;
+ *  - `{ status: 'disabled', reason }` → the updater never armed in this build
+ *    (non-official/fork package, or dev shell without a feed).
+ * We invoke the command directly instead of going through the plugin's
+ * `check()` wrapper, because that wrapper blindly wraps any truthy result in
+ * an `Update` — it cannot carry the disabled marker. Legacy Tauri builds never
+ * produce the marker, so this stays backward compatible.
+ */
+interface UpdateCheckMetadata {
+  rid: number;
+  currentVersion: string;
+  version: string;
+  date?: string;
+  body?: string;
+  rawJson: Record<string, unknown>;
+}
+
+interface UpdaterDisabledMarker {
+  status: 'disabled';
+  reason?: string;
+}
+
+function isUpdaterDisabledMarker(v: unknown): v is UpdaterDisabledMarker {
+  return typeof v === 'object' && v !== null && (v as { status?: unknown }).status === 'disabled';
+}
 
 interface ElectronProgressData {
   total?: number;
@@ -124,14 +155,34 @@ export async function checkForUpdate(
   if (!silent) store.setUpdateChecking(true);
 
   try {
-    const update = await check();
+    const raw = await invoke<UpdateCheckMetadata | UpdaterDisabledMarker | null>(
+      'plugin:updater|check',
+      {},
+    );
+
+    if (isUpdaterDisabledMarker(raw)) {
+      // Updater never armed in this build — no feed was contacted, so this is
+      // NOT "up to date". Record the fact for the About/AccountMenu captions
+      // and the diagnostic app-check, and leave `lastUpdateCheck` untouched
+      // (see the invariant below): the 6h throttle then never suppresses the
+      // startup check on such builds, so the flag is re-learned each session.
+      store.setUpdaterUnsupported(true);
+      store.setUpdateInfo(null);
+      _pendingUpdate = null;
+      return null;
+    }
+    store.setUpdaterUnsupported(false);
+
     // Invariant relied on by the diagnostic app-check (core/diagnostic/checks/
-    // app.ts): `lastUpdateCheck` is advanced ONLY after check() actually
-    // resolves — i.e. the server (or the idle dev updater) was reached. A
-    // thrown check() skips straight to the catch below WITHOUT advancing it,
-    // which is how the diagnostic distinguishes "confirmed up to date" from
-    // "could not reach the update feed". Do not move this above `await check()`.
+    // app.ts): `lastUpdateCheck` is advanced ONLY after the check actually
+    // resolved with a feed answer — i.e. the server was reached. A thrown
+    // check skips straight to the catch below WITHOUT advancing it, and the
+    // disabled marker returns above it — that is how the diagnostic
+    // distinguishes "confirmed up to date" from "could not reach the update
+    // feed" and "updater disabled". Do not move this above the invoke.
     store.setLastUpdateCheck(Date.now());
+
+    const update = raw ? new Update(raw) : null;
 
     if (!update) {
       store.setUpdateInfo(null);

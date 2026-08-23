@@ -81,6 +81,67 @@ describe('ChapterRail', () => {
     expect(screen.getByRole('navigation').querySelectorAll('.line-clamp-3')).toHaveLength(0);
   });
 
+  it('caps its own height so a long conversation cannot clip the end ticks', () => {
+    // 10px per tick means 150 chapters overflow a chat pane, and because the
+    // rail is centred the overflow is cut off at BOTH ends — the oldest and
+    // newest ticks would be unreachable without this cap.
+    const many = Array.from({ length: 150 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+
+    const list = screen.getAllByRole('button')[0].parentElement;
+    expect(list?.className).toContain('max-h-[60vh]');
+    expect(list?.className).toContain('overflow-y-auto');
+  });
+
+  it('brings the current tick into view when it changes', () => {
+    const many = Array.from({ length: 60 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    const spy = vi.fn();
+    // happy-dom has no layout, so scrollIntoView is a stub — assert we asked.
+    Element.prototype.scrollIntoView = spy;
+
+    const { rerender } = render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    spy.mockClear();
+    rerender(<ChapterRail chapters={many} currentIndex={59} onJump={() => {}} />);
+
+    expect(spy).toHaveBeenCalledWith({ block: 'nearest' });
+  });
+
+  it('swells the hovered tick and its neighbours by distance, colouring only the hovered one', () => {
+    const many = Array.from({ length: 9 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    const ticks = screen.getAllByRole('button');
+
+    fireEvent.mouseEnter(ticks[4]);
+
+    // Hovered: longest, and the accent — never near-black, which read as a
+    // different kind of state next to the accent-coloured current chapter.
+    expect(ticks[4].className).toContain('before:w-[24px]');
+    expect(ticks[4].className).toContain('before:bg-[var(--abu-clay)]');
+    expect(ticks[4].className).not.toContain('var(--abu-text-primary)');
+    // Neighbours fall off with distance, so the column reads as one wave — but
+    // by LENGTH only. Colour stays exclusive to the tick under the pointer (and
+    // to the current chapter), or the rail reads as three states at once.
+    for (const [tick, width] of [[ticks[3], '16px'], [ticks[5], '16px'], [ticks[2], '10px']] as const) {
+      expect(tick.className).toContain(`before:w-[${width}]`);
+      expect(tick.className).toContain('before:bg-[var(--abu-text-placeholder)]');
+      expect(tick.className).not.toContain('before:bg-[var(--abu-clay)]');
+    }
+    // Far enough away, nothing moves.
+    expect(ticks[0].className).not.toContain('before:w-[10px]');
+  });
+
+  it('keeps the current chapter in the accent colour while a neighbour is hovered', () => {
+    const many = Array.from({ length: 5 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    const ticks = screen.getAllByRole('button');
+
+    fireEvent.mouseEnter(ticks[1]);
+
+    // Ramped in size by proximity, but still the chapter being read.
+    expect(ticks[0].className).toContain('before:w-[16px]');
+    expect(ticks[0].className).toContain('before:bg-[var(--abu-clay)]');
+  });
+
   it('condenses only the middle ticks once the rail gets long', () => {
     const many = Array.from({ length: 14 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
     render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);

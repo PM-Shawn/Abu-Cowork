@@ -28,12 +28,15 @@ const windowsMenus = new WeakMap();
 const WINDOW_DRAG_REGION_CSS = [
   '[data-tauri-drag],[data-tauri-drag-region]{-webkit-app-region:drag;-webkit-user-select:none;user-select:none}',
   '[data-electron-drag]{-webkit-app-region:drag;-webkit-user-select:none;user-select:none}',
-  '[data-electron-no-drag],[data-electron-no-drag] *:not([data-electron-drag]){-webkit-app-region:no-drag}',
+  // Keep no-drag on the marked surface itself. Applying it to every descendant
+  // lets a tall, scrolled conversation contribute un-clipped native geometry
+  // over the Windows title bar after Chromium recomputes the app regions.
+  '[data-electron-no-drag],[data-electron-drag] *:not([data-electron-drag]){-webkit-app-region:no-drag}',
   '[data-tauri-drag] :where(button,a,input,textarea,select,[role="button"],[contenteditable]),'
     + '[data-tauri-drag-region] :where(button,a,input,textarea,select,[role="button"],[contenteditable]),'
     + '[data-electron-drag] :where(button,a,input,textarea,select,[role="button"],[contenteditable])'
     + '{-webkit-app-region:no-drag}',
-  '[data-radix-popper-content-wrapper],[data-radix-popper-content-wrapper] *{-webkit-app-region:no-drag}',
+  '[data-radix-popper-content-wrapper]{-webkit-app-region:no-drag}',
 ].join('');
 
 function chromeColors(dark) {

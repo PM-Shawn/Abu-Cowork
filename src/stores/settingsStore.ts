@@ -234,6 +234,11 @@ export interface SettingsState {
   lastUpdateCheck: number;
   updateDownloadProgress: UpdateDownloadProgress | null;
   updateInstalling: boolean;
+  /** Whether this install's updater is unavailable (non-official package, or
+   *  dev shell without a feed) — learned from the update check's disabled
+   *  marker; `null` until a check has answered. Session-only.
+   *  Do NOT add to partialize. */
+  updaterUnsupported: boolean | null;
   userNickname: string;
   userAvatar: string;
   guideShown: boolean;
@@ -411,6 +416,7 @@ interface SettingsActions {
   setLastUpdateCheck: (time: number) => void;
   setUpdateDownloadProgress: (progress: UpdateDownloadProgress | null) => void;
   setUpdateInstalling: (installing: boolean) => void;
+  setUpdaterUnsupported: (unsupported: boolean) => void;
   setUserNickname: (nickname: string) => void;
   setUserAvatar: (avatar: string) => void;
   setGuideShown: (shown: boolean) => void;
@@ -654,6 +660,7 @@ export const useSettingsStore = create<SettingsStore>()(
       lastUpdateCheck: 0,
       updateDownloadProgress: null,
       updateInstalling: false,
+      updaterUnsupported: null,
       userNickname: '',
       userAvatar: '',
       guideShown: false,
@@ -1001,6 +1008,7 @@ export const useSettingsStore = create<SettingsStore>()(
       setLastUpdateCheck: (lastUpdateCheck) => set({ lastUpdateCheck }),
       setUpdateDownloadProgress: (updateDownloadProgress) => set({ updateDownloadProgress }),
       setUpdateInstalling: (updateInstalling) => set({ updateInstalling }),
+      setUpdaterUnsupported: (updaterUnsupported) => set({ updaterUnsupported }),
       setUserNickname: (userNickname) => set({ userNickname }),
       setUserAvatar: (userAvatar) => set({ userAvatar }),
       setGuideShown: (guideShown) => set({ guideShown }),

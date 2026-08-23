@@ -1202,6 +1202,7 @@ export interface TranslationDict {
     appLatest: string;
     appUpdateAvailable: string; // {version}
     appCheckFailed: string;
+    appUpdaterUnsupported: string;
     // Internal
     checkInternalError: string;
     checkTimedOut: string;
@@ -2290,6 +2291,9 @@ export interface TranslationDict {
     releaseNotes: string;
     checkFailed: string;
     justChecked: string;
+    unsupportedBuild: string;
+    unsupportedBuildShort: string;
+    getFromWebsite: string;
     preparingDownload: string;
     downloading: string;
     verifying: string;

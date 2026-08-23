@@ -54,15 +54,14 @@ export async function runAppChecks(): Promise<CheckResult[]> {
   await boundedWait(checkForUpdate(true, { silent: true }), UPDATE_CHECK_TIMEOUT_MS);
 
   const state = useSettingsStore.getState();
-  // checkForUpdate advances lastUpdateCheck ONLY after check() resolves (see the
-  // invariant comment in checker.ts). An unchanged timestamp therefore means the
-  // check did not complete — offline, updater errored, or we hit the timeout
-  // above — so we must NOT claim the app is up to date; say "couldn't check".
-  // Known limitation: in source/fork builds the updater is disabled and check()
-  // resolves null WITHOUT contacting any feed, which still advances the
-  // timestamp → "已是最新" is shown there without a real comparison. Acceptable:
-  // those builds don't self-update, and official builds (the ones users update)
-  // do reach the feed.
+  // checkForUpdate advances lastUpdateCheck ONLY after the check resolved with
+  // a feed answer (see the invariant comment in checker.ts). An unchanged
+  // timestamp therefore means the check did not complete — offline, updater
+  // errored, or we hit the timeout above — so we must NOT claim the app is up
+  // to date; say "couldn't check". Builds whose updater never armed
+  // (non-official package / dev shell) are reported via the disabled marker →
+  // `updaterUnsupported` below, checked FIRST because they also leave the
+  // timestamp untouched.
   const checkReachedFeed = state.lastUpdateCheck !== before;
   const updateInfo = state.updateInfo;
 
@@ -73,6 +72,14 @@ export async function runAppChecks(): Promise<CheckResult[]> {
     checkedAt: Date.now(),
     durationMs: Date.now() - startedAt,
   };
+
+  if (state.updaterUnsupported) {
+    return [{
+      ...base,
+      status: 'warning',
+      metric: `v${APP_VERSION} · ${t.diagnostic.appUpdaterUnsupported}`,
+    }];
+  }
 
   if (!checkReachedFeed) {
     return [{

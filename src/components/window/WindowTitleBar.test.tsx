@@ -56,6 +56,7 @@ describe('WindowTitleBar', () => {
     dragRegions.forEach((region) => {
       expect(region).toHaveAttribute('data-tauri-drag-region');
       expect(region).not.toHaveAttribute('data-electron-no-drag');
+      expect(region).toHaveClass('pointer-events-none', 'absolute', 'inset-0');
     });
     expect(menus).toHaveLength(3);
     menus.forEach((menu) => {

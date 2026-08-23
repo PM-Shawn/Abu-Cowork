@@ -91,6 +91,13 @@ describe('sendFileTool', () => {
     expect(out).toContain('boom');
   });
 
+  it('maps a rate_limited error to the friendly retry message', async () => {
+    mockSendIMFile.mockResolvedValue({ sent: false, error: '[WeChat] rate_limited: sendmessage ret=-2 prepare failed' });
+    const out = await run({ path: '/tmp/a.png' }, IM_CTX);
+    expect(out).not.toContain('ret=-2'); // not the raw error
+    expect(out.length).toBeGreaterThan(0);
+  });
+
   it('is not concurrency-safe (network side effect)', () => {
     expect(sendFileTool.isConcurrencySafe).toBe(false);
   });

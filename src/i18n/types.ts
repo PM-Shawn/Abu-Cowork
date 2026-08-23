@@ -3249,6 +3249,8 @@ export interface TranslationDict {
       sendFileSuccess: string;
       /** send_file failed. {error} */
       sendFileError: string;
+      /** send_file hit the platform's transient rate limit (ret=-2). */
+      sendFileRateLimited: string;
     };
     // show_widget / read_me — inline visualization tool
     widget: {

@@ -107,11 +107,13 @@ export type WeChatQRStatus =
 
 // ── Helpers ──
 
-// Encoded client version: major<<16 | minor<<8 | patch (matches official plugin 2.4.3 = 132099)
-const ILINK_CLIENT_VERSION = '132099';
+// Encoded client version: major<<16 | minor<<8 | patch. Aligned to the current
+// official plugin @tencent-weixin/openclaw-weixin 2.4.6 = (2<<16)|(4<<8)|6 = 132102.
+const ILINK_CLIENT_VERSION = '132102';
 
-// base_info is observability-only (not used for auth/routing) but every request carries it.
-const ILINK_BASE_INFO = { channel_version: '2.4.3', bot_agent: 'Abu' } as const;
+// base_info is observability-only (not used for auth/routing) but every request
+// carries it. channel_version kept in step with the official client (2.4.6).
+const ILINK_BASE_INFO = { channel_version: '2.4.6', bot_agent: 'Abu' } as const;
 
 // context_token cache shared between the inbound polling adapter (writes on each
 // received message) and the registry adapter's replyToChat (reads to route replies).
@@ -638,6 +640,26 @@ export class WeChatAdapter extends BaseAdapter {
         },
         base_info: ILINK_BASE_INFO,
       };
+      await this.postOneItem(f, creds, body);
+      if (i < items.length - 1) {
+        await new Promise<void>((r) => setTimeout(r, 300));
+      }
+    }
+  }
+
+  /**
+   * POST one sendmessage request. `ret=-2 prepare failed` is the server's
+   * transient rate-limit signal (observed after bursts of media sends): retry
+   * it once after a short backoff, then surface a stable `rate_limited` marker
+   * the tool layer maps to a friendly "please retry later" message. Other
+   * non-zero rets are hard errors.
+   */
+  private async postOneItem(
+    f: typeof globalThis.fetch,
+    creds: Pick<WeChatCredentials, 'botToken' | 'baseurl'>,
+    body: unknown,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt++) {
       const resp = await f(ilinkUrl(creds.baseurl, '/ilink/bot/sendmessage'), {
         method: 'POST',
         headers: makeILinkHeaders(creds.botToken),
@@ -645,12 +667,16 @@ export class WeChatAdapter extends BaseAdapter {
       });
       if (!resp.ok) throw new Error(`[WeChat] sendmessage HTTP ${resp.status}`);
       const data = (await resp.json()) as { ret?: number; errmsg?: string };
-      if (data.ret !== undefined && data.ret !== 0) {
-        throw new Error(`[WeChat] sendmessage ret=${data.ret}: ${data.errmsg ?? ''}`);
+      if (data.ret === undefined || data.ret === 0) return;
+      if (data.ret === -2 && attempt === 0) {
+        // transient "prepare failed" — back off once and retry
+        await new Promise<void>((r) => setTimeout(r, 1500));
+        continue;
       }
-      if (i < items.length - 1) {
-        await new Promise<void>((r) => setTimeout(r, 300));
+      if (data.ret === -2) {
+        throw new Error('[WeChat] rate_limited: sendmessage ret=-2 prepare failed');
       }
+      throw new Error(`[WeChat] sendmessage ret=${data.ret}: ${data.errmsg ?? ''}`);
     }
   }
 

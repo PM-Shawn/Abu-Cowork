@@ -91,6 +91,13 @@ const PREFETCH_RULES: ReadonlyArray<{
     tools: [TOOL_NAMES.PROCESS_IMAGE],
   },
   {
+    // send_file is deferred by default; promote it on send-intent so an IM run
+    // doesn't need a tool_search round-trip first. Harmless in non-IM runs —
+    // effectiveBlockedTools removes send_file there regardless of prefetch.
+    keywords: ['发给我', '发我', '发送给', '发文件', '发图', '发张图', '传给我', '发过来', '发给你', 'send file', 'send me'],
+    tools: [TOOL_NAMES.SEND_FILE],
+  },
+  {
     keywords: ['剪贴板', '粘贴板', '复制的', '粘贴', 'clipboard'],
     tools: [TOOL_NAMES.CLIPBOARD_READ, TOOL_NAMES.CLIPBOARD_WRITE],
   },

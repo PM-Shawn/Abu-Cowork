@@ -2842,6 +2842,7 @@ const enUS: TranslationDict = {
       sendFileUnsupported: 'Error: the current platform ({platform}) does not support sending files.',
       sendFileSuccess: 'Sent file "{fileName}" to the user.',
       sendFileError: 'Failed to send file: {error}',
+      sendFileRateLimited: 'Sending too frequently — the server is rate-limiting; please try again in a moment.',
     },
     widget: {
       errTitleEmpty: 'Parameter error: title cannot be empty.',

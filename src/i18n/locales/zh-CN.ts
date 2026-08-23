@@ -2843,6 +2843,7 @@ const zhCN: TranslationDict = {
       sendFileUnsupported: 'Error: 当前平台（{platform}）暂不支持发送文件。',
       sendFileSuccess: '已发送文件「{fileName}」给用户。',
       sendFileError: '发送文件失败：{error}',
+      sendFileRateLimited: '发送太频繁，服务端暂时限流了，请过一会儿再发。',
     },
     widget: {
       errTitleEmpty: '参数错误：title 不能为空。',

@@ -84,6 +84,9 @@ export const sendFileTool: ToolDefinition = {
       if (result.error === 'media_unsupported' || result.error === 'unknown_platform') {
         return format(t.sendFileUnsupported, { platform: target.platform });
       }
+      if (result.error?.includes('rate_limited')) {
+        return t.sendFileRateLimited;
+      }
       return format(t.sendFileError, { error: result.error ?? 'unknown' });
     } catch (err) {
       return format(t.sendFileError, { error: err instanceof Error ? err.message : String(err) });

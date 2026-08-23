@@ -21,6 +21,8 @@ vi.mock('../../tools/fsBridge', () => ({
 interface CapturedReq { url: string; init: RequestInit }
 let captured: CapturedReq[] = [];
 let uploadUrlResponse: Record<string, unknown> = { upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=UP' };
+// Per-call `ret` values for successive sendmessage requests; undefined → ret 0.
+let sendRetQueue: number[] = [];
 
 function makeResp(url: string): Response {
   // getuploadurl
@@ -34,10 +36,11 @@ function makeResp(url: string): Response {
   }
   // sendmessage
   if (url.includes('/ilink/bot/sendmessage')) {
+    const ret = sendRetQueue.length > 0 ? sendRetQueue.shift()! : 0;
     return {
       ok: true,
       status: 200,
-      json: async () => ({ ret: 0 }),
+      json: async () => ({ ret, errmsg: ret ? 'prepare failed' : undefined }),
       headers: { get: () => null },
     } as unknown as Response;
   }
@@ -78,6 +81,7 @@ describe('WeChatAdapter.sendMediaFile', () => {
     captured = [];
     fakeFetch.mockClear();
     uploadUrlResponse = { upload_full_url: 'https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=UP' };
+    sendRetQueue = [];
     // context_token is looked up from the module-level shared cache, restored
     // from localStorage. Seed it so the adapter can resolve the reply target.
     localStorage.setItem('wechat:ctx', JSON.stringify([[CHAT_ID, CTX_TOKEN]]));
@@ -188,4 +192,21 @@ describe('WeChatAdapter.sendMediaFile', () => {
   it('advertises outbound media support', () => {
     expect(new WeChatAdapter().config.supportsMediaOut).toBe(true);
   });
+
+  it('retries once on ret=-2 (prepare failed) then succeeds', async () => {
+    sendRetQueue = [-2]; // first sendmessage fails transiently, retry returns ret 0
+    const adapter = new WeChatAdapter();
+    await adapter.sendMediaFile(JSON.stringify(CREDS), { chatId: CHAT_ID }, { filePath: '/tmp/pic.png' });
+    // two sendmessage calls for the single media item (fail + retry)
+    const sends = captured.filter((c) => c.url.includes('sendmessage'));
+    expect(sends.length).toBe(2);
+  }, 10000);
+
+  it('throws a rate_limited marker when ret=-2 persists', async () => {
+    sendRetQueue = [-2, -2];
+    const adapter = new WeChatAdapter();
+    await expect(
+      adapter.sendMediaFile(JSON.stringify(CREDS), { chatId: CHAT_ID }, { filePath: '/tmp/pic.png' }),
+    ).rejects.toThrow(/rate_limited/);
+  }, 10000);
 });

@@ -344,4 +344,36 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     const out = trimOldScreenshots([mismatched, ...many], 90);
     expect(JSON.stringify(out)).not.toContain('[0 screenshot(s) removed');
   });
+
+  // Subagent-recorded entries (fromSubagent) never reach the LLM — they are
+  // the display/backfill persistence home for a child step's image. Counting
+  // them against the screenshot budget would strip REAL screenshots the model
+  // can still see, to make room for pictures it never sees.
+  it('ignores fromSubagent entries: they neither consume the budget nor get stripped', () => {
+    const subagentEntry = {
+      id: 'tc-sub',
+      name: 'computer',
+      input: {},
+      result: 'Image: /tmp/sub.png',
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'SUBAGENT_SHOT' } },
+      ],
+      hidden: true,
+      fromSubagent: true,
+    };
+    // 2 real screenshots + 1 subagent entry under a tight budget that keeps 2.
+    // Without the skip, the subagent entry would push the older real one out.
+    const twoReal = [screenshotTurn('r1', 'REAL_OLD'), screenshotTurn('r2', 'REAL_NEW')];
+    const withSubagent = {
+      ...twoReal[0],
+      toolCalls: [...(twoReal[0].toolCalls ?? []), subagentEntry],
+    } as Message;
+
+    const out = trimOldScreenshots([withSubagent, twoReal[1]], 90);
+    const raw = JSON.stringify(out);
+    expect(raw).toContain('REAL_OLD');
+    expect(raw).toContain('REAL_NEW');
+    expect(raw).toContain('SUBAGENT_SHOT');
+    expect(raw).not.toContain('screenshot(s) removed from history');
+  });
 });

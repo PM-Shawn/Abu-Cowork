@@ -123,6 +123,11 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
     if (msg.role !== 'assistant' || !msg.toolCalls) continue;
     for (let j = 0; j < msg.toolCalls.length; j++) {
       const tc = msg.toolCalls[j];
+      // Subagent-recorded entries never reach the LLM (no toolCallsForContext
+      // counterpart), so they neither count against the screenshot budget nor
+      // need stripping — and skipping them keeps the tcIdx↔toolCallsForContext
+      // index sharing below aligned on real entries only.
+      if (tc.fromSubagent) continue;
       if (tc.resultContent && Array.isArray(tc.resultContent) && tc.resultContent.some((b: ToolResultContent) => b.type === 'image')) {
         imageLocations.push({ msgIdx: i, tcIdx: j });
       }

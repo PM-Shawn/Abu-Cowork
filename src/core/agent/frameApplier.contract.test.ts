@@ -26,7 +26,7 @@ import { applyDeltaFrames } from './frameApplier';
 const CHAT_METHOD_NAMES: (keyof ChatDelta)[] = [
   'appendText', 'setLastMessageContent', 'appendThinking', 'setThinkingDuration', 'flushTokens',
   'finishStreaming', 'cancelStreaming', 'deactivateSkills', 'setMessageStreamingFlag', 'setMessageToolCalls',
-  'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'appendToolCallContext', 'updateMessageUsage',
+  'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'appendToolCallContext', 'appendMessageToolCall', 'updateMessageUsage',
   'setExecutionStepsSnapshot', 'setPlannedStepsSnapshot', 'setConversationStatus', 'setAgentStatus',
   'setCurrentUsage', 'setRetryInfo', 'setContextUsage', 'setContextCache', 'clearContextCache',
   'setIsCompressing', 'setConversationModel', 'setPendingProposalSignal', 'removeActiveAgent',

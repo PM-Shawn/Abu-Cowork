@@ -711,6 +711,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     appendToolCallContext: (loopId, context) => {
       chatDelta.appendToolCallContext(conversationId, loopId, context);
     },
+    appendMessageToolCall: (loopId, toolCall) => {
+      chatDelta.appendMessageToolCall(conversationId, loopId, toolCall);
+    },
     addScratchpadEntry: (entry) => {
       getScratchpadPort().addEntry(entry);
     },
@@ -971,6 +974,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     // Build onProgress to visualize subagent tools
     const childIdMap = new Map<string, string>();
+    const childInputById = new Map<string, Record<string, unknown>>();
+    // Image-bearing subagent tool calls, collected for post-hoc persistence:
+    // on THIS route the assistant message is only created AFTER the delegate
+    // completes, so completeChildStep's own appendMessageToolCall (which
+    // targets the loop's last assistant message) silently no-ops during the
+    // run — these are re-appended once the message exists (dedup by id makes
+    // the double call safe if that ever changes).
+    const pendingSubagentToolCalls: ToolCall[] = [];
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
     if (delegateStepId) {
       onProgress = (event) => {
@@ -978,13 +989,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const childStepId = eventRouter.addChildStepToDelegate(
             loopId,
             delegateStepId,
-            { toolName: event.toolName, toolInput: event.toolInput }
+            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
           );
-          if (childStepId) childIdMap.set(event.id, childStepId);
+          if (childStepId) {
+            childIdMap.set(event.id, childStepId);
+            childInputById.set(event.id, event.toolInput);
+          }
         } else if (event.type === 'tool-end') {
           const childStepId = childIdMap.get(event.id);
           if (childStepId) {
-            eventRouter.completeChildStep(loopId, delegateStepId, childStepId, event.result, event.error);
+            eventRouter.completeChildStep(loopId, delegateStepId, childStepId, event.result, event.error, event.resultContent);
+            if (event.resultContent?.some((b) => b.type === 'image')) {
+              pendingSubagentToolCalls.push({
+                id: event.id,
+                name: event.toolName,
+                input: childInputById.get(event.id) ?? {},
+                result: event.result,
+                resultContent: event.resultContent,
+                isError: event.error || undefined,
+                hidden: true,
+                fromSubagent: true,
+              });
+            }
           }
         }
       };
@@ -1058,6 +1084,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         timestamp: Date.now(),
         loopId,
       });
+
+      // Now that the loop's assistant message exists, land the subagent's
+      // image-bearing tool calls on it (see pendingSubagentToolCalls above) —
+      // before persistExecutionSnapshot below, whose grafted/snapshotted
+      // child steps join on these entries by toolCallId during replay.
+      for (const tc of pendingSubagentToolCalls) {
+        chatDelta.appendMessageToolCall(conversationId, loopId, tc);
+      }
 
       // Pass msgId so finishStreaming uses replaceMessageById (precise) instead
       // of updateLastMessage (blind last-line replace). Without this, the

@@ -219,6 +219,24 @@ export function createConversationRunMirror(
         }
         break;
       }
+      case 'appendMessageToolCall': {
+        // Subagent image persistence (hidden + fromSubagent entry) — mirrored
+        // so a later ledger checkpoint of this message carries it too, instead
+        // of clobbering the shell's applied copy. Same loopId scan + same
+        // duplicate-id guard as chatStore's action.
+        const [, loopId, toolCall] = args as [string, string, ToolCall];
+        for (let i = conversation.messages.length - 1; i >= 0; i--) {
+          const msg = conversation.messages[i];
+          if (msg.role === 'assistant' && msg.loopId === loopId) {
+            if (!msg.toolCalls) msg.toolCalls = [];
+            if (!msg.toolCalls.some((tc) => tc.id === toolCall.id)) {
+              msg.toolCalls.push(toolCall);
+            }
+            break;
+          }
+        }
+        break;
+      }
       case 'setConversationStatus': {
         const [, status] = args as [string, Conversation['status']];
         conversation.status = status;

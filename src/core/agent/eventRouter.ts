@@ -18,6 +18,7 @@ import type {
   StepStartPayload,
   ToolCallContext,
 } from '../../types/execution';
+import type { ToolCall, ToolResultContent } from '../../types';
 import type { ExecutionPort } from './ports/executionPort';
 import type { ScratchpadEntry } from '../../stores/scratchpadStore';
 import {
@@ -242,6 +243,12 @@ export interface EventRouterDeps {
    *  in-process wiring). Signature mirrors `ScratchpadStore.addEntry`'s
    *  actual parameter shape. */
   addScratchpadEntry?: (entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => void;
+  /** Callback to persist an image-bearing SUBAGENT tool call onto the parent
+   *  message's `toolCalls` (hidden + `fromSubagent`), so the image survives
+   *  reload for child-step backfill — see `completeChildStep`. Wired to
+   *  `chatDelta.appendMessageToolCall` by both router constructions
+   *  (agentLoop.ts and agentLoopRunner.ts's shell router). */
+  appendMessageToolCall?: (loopId: string, toolCall: ToolCall) => void;
 }
 
 export class EventRouter {
@@ -543,6 +550,7 @@ export class EventRouter {
     const childStep: ExecutionStep = {
       id: childId,
       executionId: execution.id,
+      toolCallId: payload.toolCallId,
       type: inferStepType(payload.toolName),
       label,
       detail,
@@ -559,12 +567,70 @@ export class EventRouter {
   }
 
   /**
-   * Complete a child step with result or error
+   * Complete a child step with result or error.
+   *
+   * When `resultContent` carries an image block (subagent screenshot /
+   * read_file image), the child step gets the same image + result detail
+   * blocks a top-level step gets in `handleStepEnd`, and the image-bearing
+   * tool call is persisted onto the parent message (hidden, `fromSubagent`)
+   * so `backfillDetailBlockImages` can re-attach the payload after the live
+   * execution is evicted or the app restarts.
    */
-  completeChildStep(loopId: string, parentStepId: string, childStepId: string, result: string, error: boolean): void {
+  completeChildStep(
+    loopId: string,
+    parentStepId: string,
+    childStepId: string,
+    result: string,
+    error: boolean,
+    resultContent?: ToolResultContent[],
+  ): void {
     const execution = this.deps.executionStore.getExecutionByLoopId(loopId);
     if (!execution) return;
-    this.deps.executionStore.updateChildStep(execution.id, parentStepId, childStepId, result, error);
+
+    const childStep = execution.steps
+      .find((s) => s.id === parentStepId)
+      ?.childSteps?.find((s) => s.id === childStepId);
+
+    const imageBlock = Array.isArray(resultContent)
+      ? resultContent.find((b) => b.type === 'image')
+      : undefined;
+
+    let detailBlocks: DetailBlock[] | undefined;
+    if (imageBlock && imageBlock.type === 'image' && childStep) {
+      const isZh = this.locale.startsWith('zh');
+      detailBlocks = [
+        {
+          id: `${childStepId}-image`,
+          stepId: childStepId,
+          type: 'image',
+          label: isZh ? '图片' : 'Image',
+          labelKey: 'image',
+          content: result,
+          imageData: { mediaType: imageBlock.source.media_type, base64: imageBlock.source.data },
+          isTruncated: false,
+          isExpanded: true,
+        },
+        createResultBlock(childStepId, result, childStep.toolName, this.locale),
+      ];
+    }
+
+    this.deps.executionStore.updateChildStep(execution.id, parentStepId, childStepId, result, error, detailBlocks);
+
+    // Persist the image payload's home: without a `Message.toolCalls[]` entry
+    // keyed by this child step's toolCallId, the snapshot restore path has
+    // nothing to backfill from (snapshots deliberately drop imageData).
+    if (imageBlock && childStep?.toolCallId && this.deps.appendMessageToolCall) {
+      this.deps.appendMessageToolCall(loopId, {
+        id: childStep.toolCallId,
+        name: childStep.toolName,
+        input: childStep.toolInput,
+        result,
+        resultContent,
+        isError: error || undefined,
+        hidden: true,
+        fromSubagent: true,
+      });
+    }
   }
 
   /**

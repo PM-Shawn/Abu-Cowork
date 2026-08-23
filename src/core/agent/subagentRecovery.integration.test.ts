@@ -265,4 +265,39 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(declaredOpts.declaredCapabilities?.supportsReasoning).toBe(false);
     expect(declaredOpts.enableThinking).toBeUndefined();
   });
+
+  // Subagent image visibility: a tool that returns rich content (screenshot /
+  // read_file image) must surface the raw blocks on the tool-end progress
+  // event — the parent's child-step visualization renders images from exactly
+  // this field, and it used to be silently dropped by the stringification.
+  it('tool-end progress event carries resultContent for rich tool results, omits it for strings', async () => {
+    const imageResult = [
+      { type: 'text', text: 'Image: /tmp/shot.png (37KB, image/png)' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
+    ];
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool
+      .mockResolvedValueOnce(imageResult)   // t1: rich result
+      .mockResolvedValueOnce('plain text'); // t2: string result
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'tool_use', id: 't2', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; resultContent?: unknown }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (e) => events.push(e) });
+
+    const toolEnds = events.filter((e) => e.type === 'tool-end');
+    expect(toolEnds).toHaveLength(2);
+    const byId = Object.fromEntries(toolEnds.map((e) => [e.id!, e]));
+    expect(byId.t1.resultContent).toEqual(imageResult);
+    expect(byId.t2.resultContent).toBeUndefined();
+  });
 });

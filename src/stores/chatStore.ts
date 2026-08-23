@@ -576,6 +576,14 @@ interface ChatActions {
    */
   setMessageToolCalls: (convId: string, messageId: string, toolCalls: ToolCall[]) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
+  /**
+   * Append one EXTRA tool call entry to the last assistant message of the
+   * given loop — used to persist a subagent's image-bearing tool call
+   * (`hidden` + `fromSubagent`, see the ToolCall type doc) so child-step
+   * image backfill has a payload to join on after reload. Same
+   * loopId-targeting as `appendToolCallContext`.
+   */
+  appendMessageToolCall: (convId: string, loopId: string, toolCall: ToolCall) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
 
@@ -1512,6 +1520,40 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
+      },
+
+      appendMessageToolCall: (convId, loopId, toolCall) => {
+        let targetMsgId: string | undefined;
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (!conv) return;
+          // Same backward loopId scan as appendToolCallContext above.
+          for (let i = conv.messages.length - 1; i >= 0; i--) {
+            const m = conv.messages[i];
+            if (m.role === 'assistant' && m.loopId === loopId) {
+              if (!m.toolCalls) m.toolCalls = [];
+              // Idempotence: the sidecar frame path can re-deliver; a second
+              // entry with the same id would make backfill's byToolCallId
+              // join ambiguous for no benefit.
+              if (!m.toolCalls.some((tc) => tc.id === toolCall.id)) {
+                m.toolCalls.push(toolCall);
+                targetMsgId = m.id;
+              }
+              break;
+            }
+          }
+        });
+        // Persist immediately — same crash-safety rationale (and same stream-
+        // snapshot channel) as updateToolCall above: this fires mid-turn,
+        // before any turn-boundary checkpoint would carry it to disk.
+        if (targetMsgId) {
+          const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
+          if (msg) {
+            import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+              snapshotMessageRevision(convId, msg).catch(() => {});
+            });
+          }
+        }
       },
 
       setExecutionStepsSnapshot: (convId, loopId, steps) => {

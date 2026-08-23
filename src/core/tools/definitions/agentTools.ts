@@ -262,7 +262,7 @@ export const delegateToAgentTool: ToolDefinition = {
             const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
               loopCtx.loopId,
               capturedParentStepId,
-              { toolName: event.toolName, toolInput: event.toolInput }
+              { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
             );
             if (childStepId) {
               childIdMap.set(event.id, childStepId);
@@ -275,7 +275,8 @@ export const delegateToAgentTool: ToolDefinition = {
                 capturedParentStepId,
                 childStepId,
                 event.result,
-                event.error
+                event.error,
+                event.resultContent
               );
             }
           }

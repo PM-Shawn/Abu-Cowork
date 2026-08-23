@@ -73,7 +73,7 @@ interface TaskExecutionActions {
   /** Add a child step to a delegate parent step */
   addChildStep: (execId: string, parentStepId: string, childStep: ExecutionStep) => void;
   /** Update a child step with result or error */
-  updateChildStep: (execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean) => void;
+  updateChildStep: (execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean, detailBlocks?: DetailBlock[]) => void;
 
   // --- Detail Block Management ---
 
@@ -306,7 +306,7 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
       });
     },
 
-    updateChildStep: (execId, parentStepId, childStepId, result, error) => {
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) => {
       set((state) => {
         const exec = state.executions[execId];
         const parentStep = exec?.steps.find((s) => s.id === parentStepId);
@@ -320,6 +320,9 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
           childStep.endTime = Date.now();
           if (childStep.startTime) {
             childStep.duration = (childStep.endTime - childStep.startTime) / 1000;
+          }
+          if (detailBlocks?.length) {
+            childStep.detailBlocks.push(...detailBlocks);
           }
         }
       });
@@ -340,7 +343,10 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
     toggleDetailExpanded: (execId, stepId, blockId) => {
       set((state) => {
         const exec = state.executions[execId];
-        const step = exec?.steps.find((s) => s.id === stepId);
+        // Child steps carry detail blocks too (subagent images) — search one
+        // level down when the id doesn't match a top-level step.
+        const step = exec?.steps.find((s) => s.id === stepId)
+          ?? exec?.steps.flatMap((s) => s.childSteps ?? []).find((s) => s.id === stepId);
         const block = step?.detailBlocks.find((b) => b.id === blockId);
         if (block) {
           block.isExpanded = !block.isExpanded;

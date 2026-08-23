@@ -99,6 +99,63 @@ describe('delegateToAgentTool', () => {
       }),
     );
   });
+
+  // The child-step visualization seam: tool-start must stamp the subagent's
+  // tool_use id onto the child step (snapshot backfill joins on it), and
+  // tool-end must forward the raw resultContent (image rendering). A wiring
+  // that drops either regresses subagent screenshots to invisible.
+  it('threads toolCallId and resultContent through the child-step progress wiring', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher', description: 'test', systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-step-1');
+    const completeChildStep = vi.fn();
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['toolu_delegate', 'parent-step-1']]),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => 'parent-step-1',
+        addChildStepToDelegate,
+        completeChildStep,
+      },
+    } as never);
+
+    const imageContent = [
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+    ];
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_sub_1', toolName: 'computer', toolInput: { action: 'screenshot' } });
+      options.onProgress?.({ type: 'tool-end', id: 'toolu_sub_1', toolName: 'computer', result: 'shot', error: false, resultContent: imageContent });
+      return { text: 'done' } as never;
+    });
+
+    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'screenshot the page' });
+
+    expect(addChildStepToDelegate).toHaveBeenCalledWith(
+      'loop-1',
+      'parent-step-1',
+      { toolName: 'computer', toolInput: { action: 'screenshot' }, toolCallId: 'toolu_sub_1' },
+    );
+    expect(completeChildStep).toHaveBeenCalledWith(
+      'loop-1',
+      'parent-step-1',
+      'child-step-1',
+      'shot',
+      false,
+      imageContent,
+    );
+  });
 });
 
 // save_skill was deprecated — skill creation/modification now goes through

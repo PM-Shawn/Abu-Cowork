@@ -73,7 +73,7 @@ export interface ExecutionPort {
   /** Mirrors taskExecutionStore's `addChildStep`. */
   addChildStep(execId: string, parentStepId: string, childStep: ExecutionStep): void;
   /** Mirrors taskExecutionStore's `updateChildStep`. */
-  updateChildStep(execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean): void;
+  updateChildStep(execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean, detailBlocks?: DetailBlock[]): void;
   /** Mirrors taskExecutionStore's `addDetailBlock`. */
   addDetailBlock(execId: string, stepId: string, block: DetailBlock): void;
   /** Mirrors taskExecutionStore's `appendThinking`. */
@@ -104,8 +104,8 @@ export function createInProcessExecutionPort(): ExecutionPort {
     setStepError: (execId, stepId, error) => useTaskExecutionStore.getState().setStepError(execId, stepId, error),
     addChildStep: (execId, parentStepId, childStep) =>
       useTaskExecutionStore.getState().addChildStep(execId, parentStepId, childStep),
-    updateChildStep: (execId, parentStepId, childStepId, result, error) =>
-      useTaskExecutionStore.getState().updateChildStep(execId, parentStepId, childStepId, result, error),
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) =>
+      useTaskExecutionStore.getState().updateChildStep(execId, parentStepId, childStepId, result, error, detailBlocks),
     addDetailBlock: (execId, stepId, block) => useTaskExecutionStore.getState().addDetailBlock(execId, stepId, block),
     appendThinking: (execId, content) => useTaskExecutionStore.getState().appendThinking(execId, content),
     setThinkingDuration: (execId, duration) => useTaskExecutionStore.getState().setThinkingDuration(execId, duration),

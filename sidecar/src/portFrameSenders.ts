@@ -79,6 +79,7 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
         metadata,
       ]),
     appendToolCallContext: (convId, loopId, context) => send('appendToolCallContext', [convId, loopId, context]),
+    appendMessageToolCall: (convId, loopId, toolCall) => send('appendMessageToolCall', [convId, loopId, toolCall]),
     updateMessageUsage: (convId, usage, msgId) => send('updateMessageUsage', [convId, usage, msgId]),
     setExecutionStepsSnapshot: (convId, loopId, steps) => send('setExecutionStepsSnapshot', [convId, loopId, steps]),
     setPlannedStepsSnapshot: (convId, loopId, steps) => send('setPlannedStepsSnapshot', [convId, loopId, steps]),
@@ -254,7 +255,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
       push({ p: 'exec', m: 'addChildStep', a: [execId, parentStepId, childStep] });
     },
 
-    updateChildStep: (execId, parentStepId, childStepId, result, error) => {
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) => {
       const exec = executions.get(execId);
       const parent = exec ? findStep(exec, parentStepId) : undefined;
       const child = parent?.childSteps?.find((s) => s.id === childStepId);
@@ -264,8 +265,9 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         if (error) child.errorMessage = result;
         child.endTime = Date.now();
         if (child.startTime) child.duration = (child.endTime - child.startTime) / 1000;
+        if (detailBlocks?.length) child.detailBlocks.push(...detailBlocks);
       }
-      push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error] });
+      push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error, detailBlocks] });
     },
 
     addDetailBlock: (execId, stepId, block: DetailBlock) => {

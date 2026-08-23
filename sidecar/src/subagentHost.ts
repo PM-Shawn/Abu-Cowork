@@ -242,15 +242,14 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     //
     // Serializability: every SubagentProgressEvent variant is already
     // JSON-safe. tool-start's `toolInput` is the parsed tool_use JSON
-    // object (always JSON-safe — it came FROM parsed JSON). tool-end's
-    // `result` is NOT a raw ToolResult (which could carry an
-    // image-content variant) — by the time subagentLoop.ts builds this
-    // event it has already been run through
-    // `toolInvoker.toolResultToString()` into a plain string (see
-    // subagentLoop.ts's `toolResultEntries` map, right where this event is
-    // built) — so no extra faithful-projection layer is needed here,
-    // unlike tool.invoke's raw ToolResult return value. turn-complete is
-    // two numbers. Verified by reading, not assumed.
+    // object (always JSON-safe — it came FROM parsed JSON). tool-end
+    // carries the stringified `result` plus an optional `resultContent`
+    // (the raw ToolResultContent[] blocks, for child-step image
+    // rendering) — both plain data: resultContent is the same JSON-safe
+    // array the tool.invoke response already carried in this direction's
+    // mirror, so forwarding it back is a second copy of known-serializable
+    // data, not a new projection concern. turn-complete is two numbers.
+    // Verified by reading, not assumed.
     //
     // Ordering: progress notifications and the final subagent.run RESPONSE
     // travel the same single ordered NDJSON stdout pipe (one JSON-RPC

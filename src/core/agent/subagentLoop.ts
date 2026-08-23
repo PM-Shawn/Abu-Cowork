@@ -6,7 +6,7 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, ToolExecutionContext, ToolResultContent } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
@@ -158,7 +158,14 @@ export function appendTurnText(buffer: string, text: string, seamless: boolean):
 
 export type SubagentProgressEvent =
   | { type: 'tool-start'; id: string; toolName: string; toolInput: Record<string, unknown> }
-  | { type: 'tool-end'; id: string; toolName: string; result: string; error: boolean }
+  /**
+   * `resultContent` carries the raw rich blocks (screenshots / read_file
+   * images) alongside the stringified `result`, so the parent's child-step
+   * visualization can render the same image blocks a top-level step gets.
+   * Still JSON-safe (plain data from the tool result) — the sidecar's
+   * subagent.progress notification forwards it verbatim.
+   */
+  | { type: 'tool-end'; id: string; toolName: string; result: string; error: boolean; resultContent?: ToolResultContent[] }
   | { type: 'turn-complete'; turn: number; totalTurns: number };
 
 /**
@@ -687,7 +694,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Execute tools in parallel (routed through preToolCall/postToolCall hooks)
       const toolResults = await Promise.allSettled(
-        collectedToolCalls.map(async (tc) => {
+        collectedToolCalls.map(async (tc): Promise<{ id: string; result: string; resultContent?: ToolResultContent[] }> => {
           if (signal?.aborted) {
             return { id: tc.id, result: getI18n().chat.subagent.cancelled };
           }
@@ -727,6 +734,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               subagentToolContext,
             );
             const result = toolInvoker.toolResultToString(rawResult);
+            // Keep the raw rich blocks for the tool-end progress event (child-step
+            // image rendering) — mirrors toolExecutor.ts's resultStr/resultContent split.
+            const resultContent: ToolResultContent[] | undefined =
+              typeof rawResult !== 'string' ? rawResult : undefined;
             const durationMs = Date.now() - toolStart;
             await emitHook({
               type: 'postToolCall' as const,
@@ -738,7 +749,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               error: false,
               durationMs,
             });
-            return { id: tc.id, result };
+            return { id: tc.id, result, resultContent };
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             const result = `Error: ${errMsg}`;
@@ -764,8 +775,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const result = r.status === 'fulfilled'
           ? r.value.result
           : `Error: ${r.reason}`;
+        const resultContent = r.status === 'fulfilled' ? r.value.resultContent : undefined;
         const isError = r.status === 'rejected' || result.startsWith('Error:');
-        onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError });
+        onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
         return { id: tc.id, name: tc.name, input: tc.input, result };
       });
 

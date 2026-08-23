@@ -367,6 +367,15 @@ describe('subagentRunner', () => {
       expect(onProgress).toHaveBeenCalledTimes(1);
       expect(onProgress).toHaveBeenCalledWith(event);
 
+      // tool-end may now carry resultContent (subagent image rendering) —
+      // the handler must forward it verbatim, not project it away.
+      const richEvent = {
+        type: 'tool-end', id: 't2', toolName: 'computer', result: 'shot', error: false,
+        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+      };
+      progressHandler({ runId, event: richEvent });
+      expect(onProgress).toHaveBeenLastCalledWith(richEvent);
+
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
     });

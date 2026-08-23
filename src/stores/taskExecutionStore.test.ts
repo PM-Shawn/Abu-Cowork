@@ -32,6 +32,77 @@ describe('taskExecutionStore', () => {
     });
   });
 
+  // ── child steps (subagent tool visualization) ──
+  describe('updateChildStep detail blocks', () => {
+    function setupWithChild() {
+      const store = useTaskExecutionStore.getState();
+      const exec = store.createExecution('conv-1', 'loop-1');
+      store.addStep(exec.id, {
+        id: 'parent-1',
+        executionId: exec.id,
+        type: 'delegate',
+        label: 'Delegate',
+        status: 'running',
+        toolName: 'delegate_to_agent',
+        toolInput: {},
+        source: 'agent',
+        detailBlocks: [],
+      });
+      store.addChildStep(exec.id, 'parent-1', {
+        id: 'child-1',
+        executionId: exec.id,
+        type: 'tool',
+        label: 'Screenshot',
+        status: 'running',
+        toolName: 'computer',
+        toolInput: {},
+        source: 'agent',
+        detailBlocks: [],
+      });
+      return exec.id;
+    }
+
+    const imageBlock = {
+      id: 'child-1-image',
+      stepId: 'child-1',
+      type: 'image' as const,
+      label: 'Image',
+      content: 'Image: /tmp/shot.png',
+      imageData: { mediaType: 'image/png', base64: 'aGk=' },
+      isTruncated: false,
+      isExpanded: true,
+    };
+
+    it('appends the provided detail blocks to the child step on completion', () => {
+      const execId = setupWithChild();
+      useTaskExecutionStore.getState().updateChildStep(execId, 'parent-1', 'child-1', 'done', false, [imageBlock]);
+
+      const child = useTaskExecutionStore.getState().executions[execId].steps[0].childSteps![0];
+      expect(child.status).toBe('completed');
+      expect(child.toolResult).toBe('done');
+      expect(child.detailBlocks).toHaveLength(1);
+      expect(child.detailBlocks[0].imageData).toEqual({ mediaType: 'image/png', base64: 'aGk=' });
+    });
+
+    it('leaves detail blocks untouched when none are provided (pre-existing shape)', () => {
+      const execId = setupWithChild();
+      useTaskExecutionStore.getState().updateChildStep(execId, 'parent-1', 'child-1', 'done', false);
+
+      const child = useTaskExecutionStore.getState().executions[execId].steps[0].childSteps![0];
+      expect(child.detailBlocks).toHaveLength(0);
+    });
+
+    it('toggleDetailExpanded reaches a child step\'s detail block', () => {
+      const execId = setupWithChild();
+      useTaskExecutionStore.getState().updateChildStep(execId, 'parent-1', 'child-1', 'done', false, [imageBlock]);
+
+      useTaskExecutionStore.getState().toggleDetailExpanded(execId, 'child-1', 'child-1-image');
+
+      const child = useTaskExecutionStore.getState().executions[execId].steps[0].childSteps![0];
+      expect(child.detailBlocks[0].isExpanded).toBe(false);
+    });
+  });
+
   describe('getExecutionByConversationId', () => {
     it('returns the latest execution for a conversation', () => {
       const store = useTaskExecutionStore.getState();

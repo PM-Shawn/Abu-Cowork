@@ -168,6 +168,17 @@ export interface ToolCall {
   hidden?: boolean;    // Hidden from UI (e.g., report_plan)
   hideScreenshot?: boolean;  // If true, screenshot thumbnails hidden from chat UI (still sent to LLM)
   /**
+   * This entry records a SUBAGENT's tool call (persisted on the parent
+   * message solely so its `resultContent` image payload survives reload for
+   * child-step backfill — see executionSnapshot.ts's
+   * `backfillDetailBlockImages`). Unlike every other entry, it has no
+   * counterpart in the parent LLM's tool_use history: it must never be sent
+   * to the LLM (messageNormalizer's toolCalls fallback filters it) and never
+   * counts against the screenshot history budget (contextManager's
+   * trimOldScreenshots skips it).
+   */
+  fromSubagent?: boolean;
+  /**
    * Interactive notice card attached to this tool call (e.g. a
    * "save as skill?" proposal). Populated from the tool's JSON result
    * when present. Chat renderer picks it up and renders the card right

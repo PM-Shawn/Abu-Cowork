@@ -1566,6 +1566,9 @@ export function createShellEventRouterForRun(runId: string): EventRouter {
       appendToolCallContext: (loopId, context) => {
         getChatDelta().appendToolCallContext(session.conversationId, loopId, context);
       },
+      appendMessageToolCall: (loopId, toolCall) => {
+        getChatDelta().appendMessageToolCall(session.conversationId, loopId, toolCall);
+      },
       addScratchpadEntry: (entry) => {
         getScratchpadPort().addEntry(entry);
       },

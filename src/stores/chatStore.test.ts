@@ -1282,6 +1282,60 @@ describe('chatStore', () => {
     });
   });
 
+  // ── appendMessageToolCall (subagent image persistence) ──
+  describe('appendMessageToolCall', () => {
+    const subagentToolCall = {
+      id: 'toolu_sub_1',
+      name: 'computer',
+      input: { action: 'screenshot' },
+      result: 'Image: /tmp/shot.png (37KB, image/png)',
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+      ],
+      hidden: true,
+      fromSubagent: true,
+    };
+
+    function setupLoopMessage() {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+        toolCalls: [{ id: 'toolu_delegate', name: 'delegate_to_agent', input: {} }],
+      });
+      return id;
+    }
+
+    it('appends the entry to the last assistant message of the loop, after existing tool calls', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toHaveLength(2);
+      expect(msg.toolCalls![1]).toEqual(subagentToolCall);
+    });
+
+    it('creates the toolCalls array when the message has none yet', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+      });
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toEqual([subagentToolCall]);
+    });
+
+    it('is idempotent per tool call id (sidecar frame path can re-deliver)', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(2);
+    });
+
+    it('is a no-op when no assistant message carries the loopId', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'other-loop', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(1);
+    });
+  });
+
   // ── deactivateConversationSkills ──
   // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch inside
   // deactivateAllSkills() as part of the chatStore write-side probe. Only the

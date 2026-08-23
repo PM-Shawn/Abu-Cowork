@@ -105,6 +105,32 @@ describe('conversationRunMirror', () => {
       expect(msg?.isStreaming).toBe(false);
     });
 
+    it('appendMessageToolCall appends a subagent-recorded entry to the loop message, idempotent per id', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          role: 'assistant',
+          loopId: 'loop-1',
+          toolCalls: [{ id: 'tc-delegate', name: 'delegate_to_agent', input: {} }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      const entry = {
+        id: 'toolu_sub_1',
+        name: 'computer',
+        input: { action: 'screenshot' },
+        result: 'Image: /tmp/shot.png',
+        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+        hidden: true,
+        fromSubagent: true,
+      };
+      mirror.applyChatDeltaWrite('appendMessageToolCall', ['conv-1', 'loop-1', entry]);
+      mirror.applyChatDeltaWrite('appendMessageToolCall', ['conv-1', 'loop-1', entry]);
+      const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
+      expect(toolCalls).toHaveLength(2);
+      expect(toolCalls?.[1]).toEqual(entry);
+    });
+
     it('updateToolCall updates the matching tool call result', () => {
       const conv = makeConversation({
         messages: [makeMessage({ id: 'm1', toolCalls: [{ id: 'tc1', name: 'x', input: {}, isExecuting: true }] })],

@@ -196,3 +196,125 @@ describe('MessageGroup — finished-task image replay', () => {
     expect(screen.getByText(PLACEHOLDER)).toBeInTheDocument();
   });
 });
+
+describe('MessageGroup — finished-task SUBAGENT image replay', () => {
+  const SUB_TOOL_CALL_ID = 'toolu_subagent_shot';
+
+  /**
+   * The on-disk shape a delegate run leaves behind: the parent message's
+   * toolCalls carry the delegate call itself PLUS the hidden `fromSubagent`
+   * entry recorded by completeChildStep for the subagent's screenshot; the
+   * snapshot's delegate step nests a child step whose image block (like every
+   * persisted block) lost its imageData.
+   */
+  function buildDelegateMessages(options: { recordSubagentToolCall: boolean }): Message[] {
+    const userMessage: Message = {
+      id: 'user-1',
+      role: 'user',
+      content: 'have the researcher screenshot the page',
+      timestamp: 1_000,
+      loopId: LOOP_ID,
+      runState: 'completed',
+      runEndedAt: 3_000,
+    };
+    const toolCallMessage: Message = {
+      id: 'assistant-tools',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_500,
+      loopId: LOOP_ID,
+      toolCalls: [
+        {
+          id: 'toolu_delegate',
+          name: 'delegate_to_agent',
+          input: { agent_name: 'researcher', task: 'screenshot the page' },
+          result: 'done',
+        },
+        ...(options.recordSubagentToolCall
+          ? [{
+              id: SUB_TOOL_CALL_ID,
+              name: 'computer',
+              input: { action: 'screenshot' },
+              result: PLACEHOLDER,
+              resultContent: IMAGE_RESULT_CONTENT,
+              hidden: true,
+              fromSubagent: true,
+            }]
+          : []),
+      ],
+    };
+    const snapshotMessage: Message = {
+      id: 'assistant-final',
+      role: 'assistant',
+      content: '',
+      timestamp: 2_000,
+      loopId: LOOP_ID,
+      executionSteps: [
+        {
+          id: 'step-delegate',
+          toolCallId: 'toolu_delegate',
+          type: 'delegate',
+          label: 'Delegate to researcher',
+          status: 'completed',
+          toolName: 'delegate_to_agent',
+          duration: 5,
+          childSteps: [
+            {
+              id: 'child-1',
+              toolCallId: SUB_TOOL_CALL_ID,
+              type: 'tool',
+              label: 'Screenshot',
+              status: 'completed',
+              toolName: 'computer',
+              detailBlocks: [
+                { id: 'child-1-image', title: 'Image', type: 'image', content: PLACEHOLDER },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    return [userMessage, toolCallMessage, snapshotMessage];
+  }
+
+  beforeEach(() => {
+    initLanguage('en-US');
+    useTaskExecutionStore.setState({
+      executions: {},
+      activeExecutionId: null,
+      loopIdIndex: {},
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders a real <img> for a child step from the recorded fromSubagent tool call', () => {
+    const { container } = renderReplayedGroup(buildDelegateMessages({ recordSubagentToolCall: true }));
+
+    fireEvent.click(screen.getByText('Called tool').closest('button')!);
+    fireEvent.click(screen.getByRole('button', { name: /Image/ }));
+
+    const img = container.querySelector('img[src^="data:"]');
+    expect(img).not.toBeNull();
+    expect(img!.getAttribute('src')).toBe(`data:image/png;base64,${PNG_1X1}`);
+  });
+
+  it('does not render the hidden fromSubagent tool call as a visible chat tool chip', () => {
+    renderReplayedGroup(buildDelegateMessages({ recordSubagentToolCall: true }));
+    // The subagent's raw computer call must stay out of the generic tool-call
+    // list — it exists solely as the image payload's persistence home.
+    expect(screen.queryByText('computer')).toBeNull();
+  });
+
+  it('degrades to the placeholder text when no fromSubagent entry was recorded', () => {
+    const { container } = renderReplayedGroup(buildDelegateMessages({ recordSubagentToolCall: false }));
+
+    fireEvent.click(screen.getByText('Called tool').closest('button')!);
+    fireEvent.click(screen.getByRole('button', { name: /Image/ }));
+
+    expect(container.querySelector('img[src^="data:"]')).toBeNull();
+    expect(screen.getByText(PLACEHOLDER)).toBeInTheDocument();
+  });
+});

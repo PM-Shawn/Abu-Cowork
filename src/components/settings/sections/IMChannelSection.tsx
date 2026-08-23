@@ -409,7 +409,13 @@ export default function IMChannelSection() {
           {/* Credentials — WeChat uses QR scan, others use AppId/AppSecret */}
           {newPlatform === 'wechat' ? (
             <WeChatQRPanel
-              onBound={(creds) => setWechatCreds(creds)}
+              onBound={(creds) => {
+                setWechatCreds(creds);
+                // Prefill a sensible default name on bind so Save is immediately
+                // enabled — the empty-name→disabled-Save trap is otherwise easy
+                // to miss right after a successful scan. User can still edit it.
+                setNewName((prev) => prev.trim() || getPlatformDisplayName('wechat'));
+              }}
             />
           ) : (
             <>

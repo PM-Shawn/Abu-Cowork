@@ -4,15 +4,27 @@
  * Tests the core processMessage pipeline: session → thinking → agent → reply → error handling.
  * Uses mocks for all external dependencies (stores, agentLoop, streamingReply).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '@/types/imChannel';
+import type { IMAdapter } from './adapters/types';
 import { matchesToolName } from '../skill/toolFilter';
 
 // Deterministic filler timestamp (TESTING.md §3) — used where a numeric
 // timestamp field is structurally required but its exact value is never
 // asserted on.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
+
+const typingMocks = vi.hoisted(() => ({
+  sendTyping: vi.fn(),
+  warn: vi.fn(),
+  adapter: {
+    config: { platform: 'dingtalk', supportsMessageUpdate: false },
+  } as {
+    config: { platform: string; supportsMessageUpdate: boolean };
+    sendTyping?: ReturnType<typeof vi.fn>;
+  },
+}));
 
 // ── Mocks ──
 
@@ -50,6 +62,9 @@ vi.mock('../../stores/chatStore', () => ({
         return id;
       }),
       renameConversation: vi.fn(),
+      // Router hydrates the conversation before dispatching (lazily-loaded
+      // conversations are evicted from memory; see channelRouter step 1a).
+      loadConversation: vi.fn(async () => {}),
       addMessage: vi.fn((convId: string, msg: { role: string; content: string }) => {
         if (mockConversations[convId]) mockConversations[convId].messages.push(msg);
       }),
@@ -67,6 +82,10 @@ const mockSendFinal = vi.fn();
 vi.mock('./streamingReply', () => ({
   sendThinking: (...args: unknown[]) => mockSendThinking(...args),
   sendFinal: (...args: unknown[]) => mockSendFinal(...args),
+}));
+
+vi.mock('../logging/logger', () => ({
+  createLogger: () => ({ warn: typingMocks.warn }),
 }));
 
 // Partial mock: `getBlockedToolsForLevel` is deliberately REAL so this file
@@ -130,9 +149,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Returning supportsMessageUpdate: false forces the non-reaction path which
 // calls sendThinking directly (observable from tests).
 vi.mock('./adapters/registry', () => ({
-  getAdapter: vi.fn(() => ({
-    config: { supportsMessageUpdate: false },
-  })),
+  getAdapter: vi.fn(() => typingMocks.adapter),
 }));
 
 // i18n — processMessage calls getI18n() on certain branches; give it
@@ -166,11 +183,19 @@ type RouterInternal = {
   runningCount: number;
   activeSessions: Set<string>;
   recentMessageIds: Map<string, number>;
+  pendingMedia: Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>;
+  typingOperations: Map<string, Promise<void>>;
+  activeTypingStops: Set<() => void>;
+  startTypingHeartbeat(adapter: IMAdapter, token: string, userId: string): () => void;
   stop(): void;
 };
 
 function getInternal(): RouterInternal {
   return imChannelRouter as unknown as RouterInternal;
+}
+
+async function drainTypingOperations(): Promise<void> {
+  await Promise.all([...getInternal().typingOperations.values()]);
 }
 
 function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
@@ -203,9 +228,97 @@ describe('IMChannelRouter', () => {
     mockSendFinal.mockReset();
     mockSendThinking.mockResolvedValue({ platform: 'dingtalk', supportsUpdate: false, replyContext: {} });
     mockSendFinal.mockResolvedValue({ success: true });
+    typingMocks.sendTyping.mockReset();
+    typingMocks.sendTyping.mockResolvedValue(undefined);
+    typingMocks.warn.mockReset();
+    typingMocks.adapter = {
+      config: { platform: 'dingtalk', supportsMessageUpdate: false },
+    };
     // Reset runningCount and session tracking
     getInternal().runningCount = 0;
     getInternal().activeSessions.clear();
+    getInternal().recentMessageIds.clear();
+    getInternal().typingOperations.clear();
+    for (const { timer } of getInternal().pendingMedia.values()) clearTimeout(timer);
+    getInternal().pendingMedia.clear();
+  });
+
+  afterEach(async () => {
+    for (const stopTyping of [...getInternal().activeTypingStops]) stopTyping();
+    await drainTypingOperations();
+  });
+
+  describe('photo + caption coalescing', () => {
+    // IM clients can't send an image and its text together, so a photo and the
+    // caption that follows arrive as two messages. Treating them as two turns
+    // made the agent answer the photo with no question, then answer the question
+    // with no photo ("I didn't get an image this turn").
+    const img = { id: 'i1', data: 'AAAA', mediaType: 'image/jpeg' as const };
+
+    beforeEach(() => {
+      // dispatchMessage (unlike processMessage) resolves the channel from the
+      // store, so the platform needs a registered enabled channel.
+      mockChannels['ch1'] = makeChannel({ responseMode: 'all_messages' });
+    });
+    afterEach(() => { delete mockChannels['ch1']; });
+
+    it('holds an image-only message instead of dispatching it immediately', () => {
+      getInternal().dispatchMessage(makeMessage({
+        text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm1' },
+      }));
+
+      expect(mockRunAgentLoop).not.toHaveBeenCalled();
+      expect(getInternal().pendingMedia.size).toBe(1);
+    });
+
+    it('merges the caption into the buffered photo and runs one turn', async () => {
+      getInternal().dispatchMessage(makeMessage({
+        text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm1' },
+      }));
+      getInternal().dispatchMessage(makeMessage({
+        text: '看看这张图是啥', replyContext: { platform: 'dingtalk', messageId: 'm2' },
+      }));
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+
+      // one run, carrying BOTH the caption text and the photo
+      expect(mockRunAgentLoop.mock.calls[0][1]).toContain('看看这张图是啥');
+      expect(mockRunAgentLoop.mock.calls[0][2].images).toHaveLength(1);
+      expect(getInternal().pendingMedia.size).toBe(0);
+    });
+
+    it('coalesces a FILE message with its caption too, keeping the local path', async () => {
+      // A file arrives as text-only ("[文件: x, 路径: /tmp/x]") with no images,
+      // so the image-only check missed it and files still split into two turns.
+      getInternal().dispatchMessage(makeMessage({
+        text: '[文件: 2026-08-22.log, 路径: /tmp/wechat-1.log]',
+        replyContext: { platform: 'dingtalk', messageId: 'f1' },
+      }));
+      expect(mockRunAgentLoop).not.toHaveBeenCalled();
+
+      getInternal().dispatchMessage(makeMessage({
+        text: '这个是啥', replyContext: { platform: 'dingtalk', messageId: 'f2' },
+      }));
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+
+      const sent = mockRunAgentLoop.mock.calls[0][1];
+      expect(sent).toContain('/tmp/wechat-1.log'); // path survives the merge
+      expect(sent).toContain('这个是啥');
+    });
+
+    it('dispatches a lone photo once the wait elapses', async () => {
+      vi.useFakeTimers();
+      try {
+        getInternal().dispatchMessage(makeMessage({
+          text: '', images: [img], replyContext: { platform: 'dingtalk', messageId: 'm3' },
+        }));
+        expect(mockRunAgentLoop).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(16_000); // past MEDIA_COALESCE_MS
+      } finally {
+        vi.useRealTimers();
+      }
+      await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(1));
+      expect(mockRunAgentLoop.mock.calls[0][2].images).toHaveLength(1);
+    });
   });
 
   it('processes message through full pipeline', async () => {
@@ -226,6 +339,196 @@ describe('IMChannelRouter', () => {
     expect(mockRunAgentLoop).toHaveBeenCalledOnce();
     expect(mockSendFinal).toHaveBeenCalledOnce();
     expect(mockSendFinal.mock.calls[0][1].content).toBe('AI reply');
+    expect(typingMocks.sendTyping).not.toHaveBeenCalled();
+  });
+
+  it('refreshes WeChat typing every 5 seconds and stops without leaving a timer', async () => {
+    vi.useFakeTimers();
+    let stopTyping: (() => void) | null = null;
+    try {
+      typingMocks.adapter = {
+        config: { platform: 'wechat', supportsMessageUpdate: false },
+        sendTyping: typingMocks.sendTyping,
+      };
+
+      stopTyping = getInternal().startTypingHeartbeat(
+        typingMocks.adapter as unknown as IMAdapter,
+        'wechat-credentials',
+        'user@im.wechat',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1]);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1, 1]);
+
+      stopTyping();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1, 1, 2]);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(typingMocks.sendTyping).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stopTyping?.();
+      vi.useRealTimers();
+    }
+  });
+
+  it('times out a stuck typing request so cancel and the next turn can proceed', async () => {
+    vi.useFakeTimers();
+    let stopFirst: (() => void) | null = null;
+    let stopSecond: (() => void) | null = null;
+    try {
+      typingMocks.adapter = {
+        config: { platform: 'wechat', supportsMessageUpdate: false },
+        sendTyping: typingMocks.sendTyping,
+      };
+      typingMocks.sendTyping
+        .mockImplementationOnce(() => new Promise<void>(() => {}))
+        .mockResolvedValue(undefined);
+      const adapter = typingMocks.adapter as unknown as IMAdapter;
+
+      stopFirst = getInternal().startTypingHeartbeat(adapter, 'credentials', 'stuck@im.wechat');
+      await vi.advanceTimersByTimeAsync(0);
+      stopFirst();
+      stopSecond = getInternal().startTypingHeartbeat(adapter, 'credentials', 'stuck@im.wechat');
+
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1, 2, 1]);
+      expect(typingMocks.warn).toHaveBeenCalledWith(
+        'typing indicator lifecycle failed',
+        expect.objectContaining({
+          userId: 'stuck@im.wechat',
+          error: expect.stringContaining('timed out'),
+        }),
+      );
+    } finally {
+      stopFirst?.();
+      stopSecond?.();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops active typing heartbeats when the router stops', async () => {
+    vi.useFakeTimers();
+    try {
+      typingMocks.adapter = {
+        config: { platform: 'wechat', supportsMessageUpdate: false },
+        sendTyping: typingMocks.sendTyping,
+      };
+
+      getInternal().startTypingHeartbeat(
+        typingMocks.adapter as unknown as IMAdapter,
+        'credentials',
+        'shutdown@im.wechat',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      getInternal().stop();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(typingMocks.sendTyping.mock.calls.map((call) => call[2])).toEqual([1, 2]);
+      expect(getInternal().activeTypingStops.size).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(typingMocks.sendTyping).toHaveBeenCalledTimes(2);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not register a heartbeat after stop wins the adapter-import race', async () => {
+    typingMocks.adapter = {
+      config: { platform: 'wechat', supportsMessageUpdate: false },
+      sendTyping: typingMocks.sendTyping,
+    };
+    mockRunAgentLoop.mockImplementation(async (convId: string) => {
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'done' });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(
+      makeMessage({
+        platform: 'wechat',
+        senderId: 'stopping@im.wechat',
+        chatId: 'stopping@im.wechat',
+        replyContext: { platform: 'wechat', chatId: 'stopping@im.wechat' },
+      }),
+      makeChannel({ platform: 'wechat', appSecret: 'credentials' }),
+      'safe_tools',
+    );
+    // processMessage has yielded at its dynamic import; stop invalidates that
+    // continuation before it can register a new interval.
+    getInternal().stop();
+
+    await processing;
+    await drainTypingOperations();
+    expect(typingMocks.sendTyping).not.toHaveBeenCalled();
+    expect(getInternal().activeTypingStops.size).toBe(0);
+  });
+
+  it('starts and cancels WeChat typing around the full processing lifecycle', async () => {
+    typingMocks.adapter = {
+      config: { platform: 'wechat', supportsMessageUpdate: false },
+      sendTyping: typingMocks.sendTyping,
+    };
+    mockRunAgentLoop.mockImplementation(async (convId: string) => {
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'done' });
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(
+      makeMessage({
+        platform: 'wechat',
+        senderId: 'user@im.wechat',
+        chatId: 'user@im.wechat',
+        replyContext: { platform: 'wechat', chatId: 'user@im.wechat' },
+      }),
+      makeChannel({ platform: 'wechat', appSecret: 'wechat-credentials' }),
+      'safe_tools',
+    );
+
+    await drainTypingOperations();
+    expect(typingMocks.sendTyping.mock.calls.map((call) => call.slice(0, 3))).toEqual([
+      ['wechat-credentials', 'user@im.wechat', 1],
+      ['wechat-credentials', 'user@im.wechat', 2],
+    ]);
+  });
+
+  it('keeps the reply pipeline healthy when WeChat typing requests reject', async () => {
+    typingMocks.adapter = {
+      config: { platform: 'wechat', supportsMessageUpdate: false },
+      sendTyping: typingMocks.sendTyping,
+    };
+    typingMocks.sendTyping.mockRejectedValue(new Error('typing unavailable'));
+    mockRunAgentLoop.mockImplementation(async (convId: string) => {
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'still works' });
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(
+      makeMessage({
+        platform: 'wechat',
+        senderId: 'failure@im.wechat',
+        chatId: 'failure@im.wechat',
+        replyContext: { platform: 'wechat', chatId: 'failure@im.wechat' },
+      }),
+      makeChannel({ platform: 'wechat', appSecret: 'wechat-credentials' }),
+      'safe_tools',
+    );
+
+    await drainTypingOperations();
+    expect(mockRunAgentLoop).toHaveBeenCalledOnce();
+    expect(mockSendFinal.mock.calls.at(-1)?.[1].content).toBe('still works');
+    expect(typingMocks.warn).toHaveBeenCalledWith(
+      'typing indicator lifecycle failed',
+      expect.objectContaining({ platform: 'wechat', userId: 'failure@im.wechat' }),
+    );
   });
 
   it('forwards the tier ceiling as blockedTools — read_tools gets no browser tools', async () => {
@@ -248,7 +551,9 @@ describe('IMChannelRouter', () => {
 
     await getInternal().processMessage(makeMessage(), makeChannel(), 'full');
 
-    expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace']);
+    // request_workspace + ask_user_question are always blocked in IM (no desktop
+    // UI to answer them); browser tools remain available at higher tiers.
+    expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace', 'ask_user_question']);
   });
 
   it('sets channel error status when agentLoop throws', async () => {

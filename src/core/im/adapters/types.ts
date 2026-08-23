@@ -62,6 +62,24 @@ export interface AdapterConfig {
    * before the real reply, so we suppress it.
    */
   skipThinkingAck?: boolean;
+  /**
+   * Whether this adapter can deliver a local file (image / document) outbound
+   * via `sendMediaFile`. Gates the `send_file` tool: it only offers to send on
+   * platforms that actually implement outbound media. Currently WeChat only.
+   */
+  supportsMediaOut?: boolean;
+}
+
+/**
+ * Parameters for an outbound media (image / file) send.
+ */
+export interface MediaFilePayload {
+  /** Absolute local path to the file to send. */
+  filePath: string;
+  /** File name shown to the recipient (defaults to the path's basename). */
+  fileName?: string;
+  /** Optional text caption sent alongside the file. */
+  caption?: string;
 }
 
 // ── Adapter Interfaces ──
@@ -130,12 +148,37 @@ export interface IMAdapter extends OutboundAdapter {
     context: DirectReplyContext,
     message: AbuMessage,
   ): Promise<{ messageId?: string }>;
+
+  /**
+   * Send a local file (image / document) outbound to a chat.
+   * Only implemented by adapters whose `config.supportsMediaOut` is true.
+   * Check the flag (or the method's presence) before calling.
+   */
+  sendMediaFile?(
+    token: string,
+    context: DirectReplyContext,
+    payload: MediaFilePayload,
+  ): Promise<{ messageId?: string }>;
+
+  /**
+   * Publish a transient typing state for platforms that expose one.
+   * WeChat iLink uses status 1 for typing and 2 for cancellation.
+   */
+  sendTyping?(
+    token: string,
+    userId: string,
+    status: 1 | 2,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 // ── Inbound Message (Phase 1B) ──
 
 export interface InboundMessage {
   message: AbuMessage;
+  /** Inbound image attachments (downloaded + decoded), passed to the agent as
+   *  real vision content. Set by adapters that receive images (e.g. WeChat). */
+  images?: import('../../../types').ImageAttachment[];
   sender: {
     id: string;
     name: string;

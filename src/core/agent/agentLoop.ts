@@ -843,7 +843,19 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     taskSummaryHash: await hashComputerUseTaskSummary(
       latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
     ),
+    // IM outbound target for tools like send_file. Only present when this run
+    // was dispatched from an IM channel and carries a reply chat id.
+    imReplyTarget:
+      options?.imContext?.replyChatId
+        ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+        : undefined,
   };
+  // send_file only makes sense with an IM reply target; keep it off the roster
+  // for every other run (desktop / scheduled / trigger) instead of letting the
+  // model discover it and hit the runtime refusal.
+  const effectiveBlockedTools = toolContext.imReplyTarget
+    ? options?.blockedTools
+    : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
   let computerUseTaskEndPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
     if (!computerUseTaskEndPromise) {
@@ -1022,7 +1034,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // beginning with `@researcher` delegated a subagent with no ceiling
         // at all, which is the one hole a roster on the parent cannot see.
         allowedTools: options?.allowedTools,
-        blockedTools: options?.blockedTools,
+        blockedTools: effectiveBlockedTools,
       });
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
@@ -1344,7 +1356,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
       const deferredTools = noTools ? [] : rawDeferredTools;
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
@@ -2194,7 +2206,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           eventRouter,
           executionId: execution.id,
           inputValidators,
-          blockedTools: options?.blockedTools,
+          blockedTools: effectiveBlockedTools,
           allowedTools: options?.allowedTools,
           confirmCb,
           filePermCb,
@@ -2255,7 +2267,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));

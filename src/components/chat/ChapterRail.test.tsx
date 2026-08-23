@@ -106,6 +106,42 @@ describe('ChapterRail', () => {
     expect(spy).toHaveBeenCalledWith({ block: 'nearest' });
   });
 
+  it('swells the hovered tick and its neighbours by distance, colouring only the hovered one', () => {
+    const many = Array.from({ length: 9 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    const ticks = screen.getAllByRole('button');
+
+    fireEvent.mouseEnter(ticks[4]);
+
+    // Hovered: longest, and the accent — never near-black, which read as a
+    // different kind of state next to the accent-coloured current chapter.
+    expect(ticks[4].className).toContain('before:w-[24px]');
+    expect(ticks[4].className).toContain('before:bg-[var(--abu-clay)]');
+    expect(ticks[4].className).not.toContain('var(--abu-text-primary)');
+    // Neighbours fall off with distance, so the column reads as one wave — but
+    // by LENGTH only. Colour stays exclusive to the tick under the pointer (and
+    // to the current chapter), or the rail reads as three states at once.
+    for (const [tick, width] of [[ticks[3], '16px'], [ticks[5], '16px'], [ticks[2], '10px']] as const) {
+      expect(tick.className).toContain(`before:w-[${width}]`);
+      expect(tick.className).toContain('before:bg-[var(--abu-text-placeholder)]');
+      expect(tick.className).not.toContain('before:bg-[var(--abu-clay)]');
+    }
+    // Far enough away, nothing moves.
+    expect(ticks[0].className).not.toContain('before:w-[10px]');
+  });
+
+  it('keeps the current chapter in the accent colour while a neighbour is hovered', () => {
+    const many = Array.from({ length: 5 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    const ticks = screen.getAllByRole('button');
+
+    fireEvent.mouseEnter(ticks[1]);
+
+    // Ramped in size by proximity, but still the chapter being read.
+    expect(ticks[0].className).toContain('before:w-[16px]');
+    expect(ticks[0].className).toContain('before:bg-[var(--abu-clay)]');
+  });
+
   it('condenses only the middle ticks once the rail gets long', () => {
     const many = Array.from({ length: 14 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
     render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);

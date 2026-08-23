@@ -221,6 +221,30 @@ describe('subagentHost', () => {
     });
   });
 
+  describe('run-scoped tool restrictions across the wire', () => {
+    it('forwards BOTH allowedTools and blockedTools from wire params into SubagentLoopOptions', async () => {
+      // blockedTools used to be dropped at this boundary, silently re-arming
+      // every blockedTools-only safety tier (scheduler/trigger/IM) whenever
+      // the subagent ran in the sidecar.
+      runSubagentLoopMock.mockResolvedValue(resultShape('ok'));
+
+      await handleSubagentRun(baseParams({
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*', 'request_workspace'],
+      }));
+
+      expect(runSubagentLoopMock).toHaveBeenCalledWith(expect.objectContaining({
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*', 'request_workspace'],
+      }));
+    });
+
+    it('rejects a malformed blockedTools param (type validation symmetric with allowedTools)', async () => {
+      await expect(handleSubagentRun(baseParams({ blockedTools: 'not-an-array' })))
+        .rejects.toMatchObject({ code: -32602 });
+    });
+  });
+
   describe('subagent image persistence (sidecar-authoritative when parent loop is sidecar-run)', () => {
     const imageContent = [
       { type: 'text' as const, text: 'Image: /tmp/shot.png' },

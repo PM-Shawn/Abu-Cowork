@@ -334,6 +334,43 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
+    // The denylist is a safety boundary (scheduler / trigger / IM tiers are
+    // blockedTools-ONLY) — it must hold on the reverse tool.invoke channel
+    // exactly like the whitelist above, or a sidecar-run subagent gets back
+    // every tool the unattended tier removed.
+    it('refuses a delegated tool call matching the inherited denylist (wildcards included)', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent, task: 'no browser', blockedTools: ['abu-browser__*', 'request_workspace'] });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'abu-browser__screenshot', input: {} }),
+      ).rejects.toThrow(/blocked/);
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'request_workspace', input: {} }),
+      ).rejects.toThrow(/blocked/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('serializes blockedTools onto the subagent.run wire params, symmetric with allowedTools', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'restricted', allowedTools: ['read_*'], blockedTools: ['abu-browser__*'] });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as { allowedTools?: string[]; blockedTools?: string[] };
+      expect(wireParams.allowedTools).toEqual(['read_*']);
+      expect(wireParams.blockedTools).toEqual(['abu-browser__*']);
+    });
+
     it('run-session lifecycle: the session is removed once the run settles — a LATE tool.invoke for the same (finished) runId is rejected as unknown', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });

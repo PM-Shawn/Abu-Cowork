@@ -55,6 +55,10 @@ interface SubagentRunParams {
   parentConversationId?: string;
   imContext?: IMContext;
   allowedTools?: string[];
+  /** Run-scoped denylist — must mirror allowedTools across the wire (see
+   *  subagentRunner.ts's SubagentRunParams doc: omitting it silently
+   *  disarmed every blockedTools-only safety tier on the sidecar path). */
+  blockedTools?: string[];
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -99,6 +103,12 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
     (!Array.isArray(params.allowedTools) || params.allowedTools.some((entry) => typeof entry !== 'string'))
   ) {
     throw new RpcError(-32602, 'Invalid params: allowedTools must be a string array');
+  }
+  if (
+    params.blockedTools !== undefined &&
+    (!Array.isArray(params.blockedTools) || params.blockedTools.some((entry) => typeof entry !== 'string'))
+  ) {
+    throw new RpcError(-32602, 'Invalid params: blockedTools must be a string array');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -301,6 +311,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       sendNotification('subagent.progress', { runId, event });
     },
     allowedTools: params.allowedTools,
+    blockedTools: params.blockedTools,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL

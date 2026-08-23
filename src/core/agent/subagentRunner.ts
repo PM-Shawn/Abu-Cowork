@@ -97,7 +97,7 @@ import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelector
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
-import { matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
@@ -124,6 +124,13 @@ export interface SubagentRunParams {
   parentConversationId?: string;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
+  /** Mirror of allowedTools — the run-scoped denylist MUST cross the wire
+   *  too. Omitting it silently re-armed every blockedTools-only safety tier
+   *  (scheduler / trigger full+safe_tools / IM) the moment the subagent ran
+   *  in the sidecar: the sidecar rebuilt SubagentLoopOptions with
+   *  blockedTools undefined, so both the roster filter and the execution
+   *  check no-oped. */
+  blockedTools?: string[];
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -217,6 +224,19 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     )
   ) {
     throw new SidecarRequestError(-32602, `Tool is not allowed for this subagent run: ${params.toolName}`);
+  }
+
+  // Denylist checked at the execution boundary too, mirroring both the
+  // allowedTools check above and subagentLoop.ts's own execution-time
+  // check: the model can name a tool that was never offered, and a
+  // sidecar-side roster filter alone would leave this reverse channel as
+  // the one door the restriction never covered.
+  if (
+    session.options.blockedTools?.some((pattern) =>
+      matchesToolName(params.toolName as string, pattern),
+    )
+  ) {
+    throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${params.toolName}`);
   }
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
@@ -316,6 +336,7 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     parentConversationId: options.parentConversationId,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
+    blockedTools: options.blockedTools,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,

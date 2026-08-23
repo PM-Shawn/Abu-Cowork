@@ -35,6 +35,13 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
   // locale (block.labelKey is language-neutral). Falls back to the baked label.
   const headerLabel = block.labelKey ? getDetailBlockLabel(block.labelKey, locale) : block.label;
 
+  // Build the data URL once per payload — the base64 can be megabytes, so it
+  // must not be re-concatenated on every render.
+  const imageSrc = useMemo(
+    () => (block.imageData ? `data:${block.imageData.mediaType};base64,${block.imageData.base64}` : null),
+    [block.imageData],
+  );
+
   // Style based on block type
   const styles = useMemo(() => {
     switch (block.type) {
@@ -133,8 +140,9 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
   // Render image content (from read_file images, screenshots)
   const renderImageContent = () => {
-    if (!block.imageData) return renderTextContent();
-    const src = `data:${block.imageData.mediaType};base64,${block.imageData.base64}`;
+    // No payload (e.g. a restored snapshot whose tool call is gone) → keep the
+    // placeholder text rather than render a broken image.
+    if (!imageSrc) return renderTextContent();
     return (
       <>
         <div className="p-2">
@@ -143,7 +151,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
             onClick={() => setImageFullscreen(true)}
           >
             <img
-              src={src}
+              src={imageSrc}
               alt={block.content || 'Image'}
               className="rounded border border-[var(--abu-bg-hover)] max-w-[320px] max-h-[200px] object-contain"
             />
@@ -160,7 +168,7 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
             onClick={() => setImageFullscreen(false)}
           >
             <img
-              src={src}
+              src={imageSrc}
               alt={block.content || 'Image (full)'}
               className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
             />

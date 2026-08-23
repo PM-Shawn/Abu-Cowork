@@ -25,7 +25,7 @@ import { computeRewindImpact } from '@/utils/rewindImpact';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
-import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
+import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -371,7 +371,15 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     const assistantMessages = messages.filter((m) => m.role === 'assistant');
     const msgWithSnapshot = [...assistantMessages].reverse().find((m) => m.executionSteps && m.executionSteps.length > 0);
     if (!msgWithSnapshot?.executionSteps) return undefined;
-    return snapshotToExecutionSteps(msgWithSnapshot.executionSteps);
+    // Image payloads are not stored in the snapshot (it stays lean); look them
+    // back up from the group's tool calls. The snapshot lives on the LAST
+    // assistant message while the tool call that produced the image sits on an
+    // earlier one, so the lookup must span the whole group, not just
+    // msgWithSnapshot.
+    return backfillDetailBlockImages(
+      snapshotToExecutionSteps(msgWithSnapshot.executionSteps),
+      messages,
+    );
   }, [executionSteps, messages]);
 
   // Check if THIS execution is active (not global status)

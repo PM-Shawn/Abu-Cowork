@@ -106,6 +106,15 @@ export interface ExecutionStep {
   id: string;
   executionId: string;
 
+  /**
+   * The LLM tool_use id this step was created for, when the step is backed by a
+   * real tool call. Lets persisted snapshots re-associate with the matching
+   * `Message.toolCalls[]` entry (whose `resultContent` still holds the full
+   * image payload) after the live execution is evicted. Absent for synthetic
+   * steps that have no tool_use id (e.g. @agent direct delegation).
+   */
+  toolCallId?: string;
+
   // Display info
   type: StepType;
   label: string;
@@ -205,6 +214,8 @@ export type AgentEvent =
 export interface StepStartPayload {
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** LLM tool_use id, when this step is backed by a real tool call. */
+  toolCallId?: string;
   source?: StepSource;
   skillName?: string;
   mcpServer?: string;
@@ -216,6 +227,12 @@ export interface StepStartPayload {
  *  Omits large fields (toolInput, toolResult) to keep payload small. */
 export interface ExecutionStepSnapshot {
   id: string;
+  /**
+   * LLM tool_use id of the originating tool call. Kept (it is tiny) so the
+   * renderer can look the heavy payload — e.g. an image block's base64 — back up
+   * from `Message.toolCalls[].resultContent` instead of duplicating it here.
+   */
+  toolCallId?: string;
   type: StepType;
   label: string;
   status: 'completed' | 'error';

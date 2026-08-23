@@ -595,6 +595,7 @@ export class EventRouter {
     const newStep: ExecutionStep = {
       id: stepId,
       executionId: execution.id,
+      toolCallId: payload.toolCallId,
       type: stepType,
       label,
       detail,

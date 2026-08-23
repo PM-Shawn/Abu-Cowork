@@ -133,6 +133,17 @@ interface GetUploadUrlResp {
   errmsg?: string;
 }
 
+interface GetConfigResp {
+  typing_ticket?: string;
+  ret?: number;
+  errmsg?: string;
+}
+
+interface SendTypingResp {
+  ret?: number;
+  errmsg?: string;
+}
+
 // ── QR login types ──
 
 export interface WeChatQRCode {
@@ -162,6 +173,17 @@ const ILINK_BASE_INFO = { channel_version: '2.4.6', bot_agent: 'Abu' } as const;
 // manager-created adapter instances and the registry adapter see the same tokens.
 const sharedContextTokens = new Map<string, string>();
 const CTX_STORAGE_KEY = 'wechat:ctx';
+
+interface CachedTypingTicket {
+  ticket: string;
+  expiresAt: number;
+}
+
+// getconfig tickets are scoped to one from_user_id. Keep them for a day instead
+// of fetching one for every message; a failed send invalidates the entry so the
+// next 5-second heartbeat can recover immediately from an early server expiry.
+const sharedTypingTickets = new Map<string, CachedTypingTicket>();
+const TYPING_TICKET_TTL_MS = 24 * 60 * 60 * 1000;
 
 function persistSharedContextTokens(): void {
   try {
@@ -824,6 +846,99 @@ export class WeChatAdapter extends BaseAdapter {
       },
       base_info: ILINK_BASE_INFO,
     };
+  }
+
+  /** Fetch the per-user ticket required by the iLink typing endpoint. */
+  private async getConfig(
+    f: typeof globalThis.fetch,
+    creds: Pick<WeChatCredentials, 'botToken' | 'baseurl'>,
+    userId: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    restoreSharedContextTokens();
+    const contextToken = sharedContextTokens.get(userId);
+    if (!contextToken) {
+      throw new Error(`[WeChat] No context_token for user ${userId} — user must send a message first`);
+    }
+
+    const resp = await f(ilinkUrl(creds.baseurl, '/ilink/bot/getconfig'), {
+      method: 'POST',
+      headers: makeILinkHeaders(creds.botToken),
+      signal,
+      body: JSON.stringify({
+        ilink_user_id: userId,
+        context_token: contextToken,
+        base_info: ILINK_BASE_INFO,
+      }),
+    });
+    if (!resp.ok) throw new Error(`[WeChat] getconfig HTTP ${resp.status}`);
+
+    const data = (await resp.json()) as GetConfigResp;
+    if (data.ret !== undefined && data.ret !== 0) {
+      throw new Error(`[WeChat] getconfig ret=${data.ret}: ${data.errmsg ?? ''}`);
+    }
+    if (!data.typing_ticket) {
+      throw new Error('[WeChat] getconfig returned no typing_ticket');
+    }
+    return data.typing_ticket;
+  }
+
+  /**
+   * Best-effort WeChat typing state. Protocol failures are deliberately
+   * contained here: a presence hint must never interrupt the real reply path.
+   */
+  async sendTyping(
+    token: string,
+    userId: string,
+    status: 1 | 2,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let ticket: string | undefined;
+    try {
+      const creds = JSON.parse(token) as WeChatCredentials;
+      const f = await getTauriFetch();
+      const cached = sharedTypingTickets.get(userId);
+
+      if (cached && cached.expiresAt > Date.now()) {
+        ticket = cached.ticket;
+      } else {
+        if (cached) sharedTypingTickets.delete(userId);
+        ticket = await this.getConfig(f, creds, userId, signal);
+        sharedTypingTickets.set(userId, {
+          ticket,
+          expiresAt: Date.now() + TYPING_TICKET_TTL_MS,
+        });
+      }
+
+      const resp = await f(ilinkUrl(creds.baseurl, '/ilink/bot/sendtyping'), {
+        method: 'POST',
+        headers: makeILinkHeaders(creds.botToken),
+        signal,
+        body: JSON.stringify({
+          ilink_user_id: userId,
+          typing_ticket: ticket,
+          status,
+          base_info: ILINK_BASE_INFO,
+        }),
+      });
+      if (!resp.ok) throw new Error(`[WeChat] sendtyping HTTP ${resp.status}`);
+
+      const data = (await resp.json()) as SendTypingResp;
+      if (data.ret !== undefined && data.ret !== 0) {
+        throw new Error(`[WeChat] sendtyping ret=${data.ret}: ${data.errmsg ?? ''}`);
+      }
+    } catch (err) {
+      const cached = sharedTypingTickets.get(userId);
+      if (ticket && cached?.ticket === ticket) {
+        sharedTypingTickets.delete(userId);
+      }
+      if (signal?.aborted) return;
+      wechatLog.warn('typing indicator request failed', {
+        userId,
+        status,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

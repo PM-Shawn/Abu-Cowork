@@ -159,6 +159,17 @@ export interface IMAdapter extends OutboundAdapter {
     context: DirectReplyContext,
     payload: MediaFilePayload,
   ): Promise<{ messageId?: string }>;
+
+  /**
+   * Publish a transient typing state for platforms that expose one.
+   * WeChat iLink uses status 1 for typing and 2 for cancellation.
+   */
+  sendTyping?(
+    token: string,
+    userId: string,
+    status: 1 | 2,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 // ── Inbound Message (Phase 1B) ──

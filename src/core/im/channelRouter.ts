@@ -20,8 +20,13 @@ import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import { tokenManager } from './tokenManager';
 import { consumeTriggerContext } from './triggerContextCache';
 import { getI18n, format } from '../../i18n';
+import { createLogger } from '../logging/logger';
+import type { IMAdapter } from './adapters/types';
 
 const MAX_CONCURRENT_IM = 5;
+const WECHAT_TYPING_REFRESH_MS = 5_000;
+const WECHAT_TYPING_REQUEST_TIMEOUT_MS = 4_000;
+const imChannelLog = createLogger('im-channel');
 /**
  * Maximum time (ms) to wait for agentLoop before aborting.
  *
@@ -91,6 +96,13 @@ class IMChannelRouter {
   private sessionQueues = new Map<string, { message: NormalizedIMMessage; channel: IMChannel; capability: IMCapabilityLevel }[]>();
   /** Per-chat image-only message awaiting the caption that usually follows it. */
   private pendingMedia = new Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>();
+  /** Serialize typing operations per user so one turn's cancel cannot overtake
+   *  the next turn's start when same-session messages drain back-to-back. */
+  private typingOperations = new Map<string, Promise<void>>();
+  /** Active heartbeat cleanup functions, including turns still inside agentLoop. */
+  private activeTypingStops = new Set<() => void>();
+  /** Invalidates async continuations that started before the latest stop(). */
+  private typingLifecycleGeneration = 0;
 
   async start() {
     // IM inbound events are dispatched by inboundDispatcher (single dispatcher pattern).
@@ -112,6 +124,9 @@ class IMChannelRouter {
   }
 
   stop() {
+    this.typingLifecycleGeneration++;
+    for (const stopTyping of [...this.activeTypingStops]) stopTyping();
+    this.activeTypingStops.clear();
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -230,6 +245,91 @@ class IMChannelRouter {
     this.processMessage(message, channel, authResult.capability);
   }
 
+  /** Queue a typing request behind earlier requests for the same user. */
+  private enqueueTyping(
+    adapter: IMAdapter,
+    token: string,
+    userId: string,
+    status: 1 | 2,
+  ): Promise<void> {
+    const sendTyping = adapter.sendTyping;
+    if (!sendTyping) return Promise.resolve();
+
+    const key = `${adapter.config.platform}:${userId}`;
+    const previous = this.typingOperations.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => {})
+      .then(() => new Promise<void>((resolve, reject) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`typing request timed out after ${WECHAT_TYPING_REQUEST_TIMEOUT_MS}ms`));
+        }, WECHAT_TYPING_REQUEST_TIMEOUT_MS);
+
+        Promise.resolve()
+          .then(() => sendTyping.call(adapter, token, userId, status, controller.signal))
+          .then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (err) => {
+              clearTimeout(timer);
+              reject(err);
+            },
+          );
+      }))
+      .catch((err) => {
+        // warn/error are the logger levels that reach the captured app log.
+        imChannelLog.warn('typing indicator lifecycle failed', {
+          platform: adapter.config.platform,
+          userId,
+          status,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+    const tracked = operation.finally(() => {
+      if (this.typingOperations.get(key) === tracked) {
+        this.typingOperations.delete(key);
+      }
+    });
+    this.typingOperations.set(key, tracked);
+    return tracked;
+  }
+
+  /** Start immediately, refresh while work continues, and return an idempotent stop. */
+  private startTypingHeartbeat(
+    adapter: IMAdapter,
+    token: string,
+    userId: string,
+  ): () => void {
+    let stopped = false;
+    let heartbeatInFlight: Promise<void> | null = null;
+
+    const heartbeat = () => {
+      if (stopped || heartbeatInFlight) return;
+      const current = this.enqueueTyping(adapter, token, userId, 1);
+      heartbeatInFlight = current;
+      void current.finally(() => {
+        if (heartbeatInFlight === current) heartbeatInFlight = null;
+      });
+    };
+
+    heartbeat();
+    const interval = setInterval(heartbeat, WECHAT_TYPING_REFRESH_MS);
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(interval);
+      this.activeTypingStops.delete(stop);
+      void this.enqueueTyping(adapter, token, userId, 2);
+    };
+    this.activeTypingStops.add(stop);
+    return stop;
+  }
+
   private async processMessage(
     message: NormalizedIMMessage,
     channel: IMChannel,
@@ -237,8 +337,23 @@ class IMChannelRouter {
   ) {
     this.runningCount++;
     let removeReaction: (() => Promise<void>) | null = null;
+    let stopTyping: (() => void) | null = null;
 
     try {
+      const typingGeneration = this.typingLifecycleGeneration;
+      const adapter = (await import('./adapters/registry')).getAdapter(message.platform);
+      if (
+        message.platform === 'wechat'
+        && adapter?.sendTyping
+        && typingGeneration === this.typingLifecycleGeneration
+      ) {
+        stopTyping = this.startTypingHeartbeat(
+          adapter,
+          channel.appSecret,
+          message.senderId,
+        );
+      }
+
       // 1. Session resolution
       const resolveResult = sessionMapper.resolve(message, channel, capability);
       const { session, isRecovered, hasRecoverableSession, recoverableContext } = resolveResult;
@@ -318,8 +433,6 @@ class IMChannelRouter {
       }
 
       // Add processing indicator: emoji reaction for Feishu/Slack, thinking message for others
-      const adapter = (await import('./adapters/registry')).getAdapter(message.platform);
-
       if (adapter?.config.supportsMessageUpdate) {
         // Feishu/Slack: add emoji reaction as processing indicator
         removeReaction = await addProcessingReaction(message.platform, message.replyContext);
@@ -403,6 +516,10 @@ class IMChannelRouter {
       // Best-effort error reply to user
       this.sendErrorReply(message, errorMsg).catch(() => {});
     } finally {
+      // Stop the WeChat heartbeat before draining this session's next message.
+      // enqueueTyping serializes the cancel ahead of the next turn's start.
+      stopTyping?.();
+
       // Remove processing reaction (emoji) if it was added
       if (removeReaction) {
         removeReaction().catch(() => {});

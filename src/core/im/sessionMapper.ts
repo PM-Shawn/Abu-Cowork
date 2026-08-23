@@ -48,9 +48,22 @@ const CONTINUE_PATTERNS = [
 const RESET_PATTERNS = [
   '新对话',
   '新话题',
+  '开启新对话',
+  '开始新对话',
+  '新开对话',
+  '重新开始',
+  '清空对话',
+  '重置对话',
   'new chat',
+  'new conversation',
+  'start over',
   'reset',
 ];
+
+// Preserve command-prefix matching without treating a longer word/phrase as
+// the command itself (`start overtime`, `清空对话框`). Free-form text after the
+// command must be separated by whitespace or punctuation.
+const RESET_COMMAND_BOUNDARY = /^[\s,，。.！!?？:：;；—（]/;
 
 export class SessionMapper {
   /**
@@ -273,7 +286,11 @@ export class SessionMapper {
 
   private isResetRequest(text: string): boolean {
     const lower = text.toLowerCase().trim();
-    return RESET_PATTERNS.some((p) => lower === p || lower.startsWith(p));
+    return RESET_PATTERNS.some((pattern) => {
+      if (lower === pattern) return true;
+      if (!lower.startsWith(pattern)) return false;
+      return RESET_COMMAND_BOUNDARY.test(lower.slice(pattern.length));
+    });
   }
 
   /**

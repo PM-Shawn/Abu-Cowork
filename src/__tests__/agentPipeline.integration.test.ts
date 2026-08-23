@@ -366,11 +366,9 @@ describe('Agent Pipeline Integration', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     useTaskExecutionStore.setState({
       executions: {},

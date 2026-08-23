@@ -344,14 +344,77 @@ export function __resetAgentLoopRunnerForTests(): void {
 
 // ── Reverse-channel handlers (registered ONCE at module init) ──────────
 
+function isPortFrame(value: unknown): value is PortFrame {
+  if (typeof value !== 'object' || value === null) return false;
+  const frame = value as { p?: unknown; m?: unknown; a?: unknown };
+  return (
+    (frame.p === 'chat' || frame.p === 'exec' || frame.p === 'scratchpad' || frame.p === 'session')
+    && typeof frame.m === 'string'
+    && Array.isArray(frame.a)
+  );
+}
+
+function frameConversationId(frame: PortFrame): string | undefined {
+  if (frame.p === 'chat') {
+    if (frame.m === 'setCurrentUsage') return undefined;
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'session') {
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'exec' && frame.m === 'createExecution') {
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'scratchpad') {
+    const entry = frame.a[1] as { conversationId?: unknown } | undefined;
+    return typeof entry?.conversationId === 'string' ? entry.conversationId : undefined;
+  }
+  return undefined;
+}
+
+function frameLoopId(frame: PortFrame): string | undefined {
+  if (frame.p !== 'exec') return undefined;
+  if (frame.m === 'createExecution') {
+    return typeof frame.a[1] === 'string' ? frame.a[1] : undefined;
+  }
+  return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+}
+
+function isDeltaFrameTrustedForSession(frame: PortFrame, session: RunSession): boolean {
+  switch (frame.p) {
+    case 'chat': {
+      if (frame.m === 'setCurrentUsage') return true;
+      return frameConversationId(frame) === session.conversationId;
+    }
+    case 'session':
+    case 'scratchpad':
+      return frameConversationId(frame) === session.conversationId;
+    case 'exec':
+      if (frame.m === 'createExecution') {
+        return frameConversationId(frame) === session.conversationId
+          && frameLoopId(frame) === session.loopId;
+      }
+      return frameLoopId(frame) === session.loopId;
+    default:
+      return false;
+  }
+}
+
+function trustedDeltaFramesForSession(session: RunSession, frames: PortFrame[]): PortFrame[] {
+  if (!useChatStore.getState().conversations[session.conversationId]) return [];
+  return frames.filter((frame) => isDeltaFrameTrustedForSession(frame, session));
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || !Array.isArray(params.frames)) return;
-  const frames = params.frames as PortFrame[];
+  const receivedFrames = params.frames.filter(isPortFrame);
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
   if (session.dropFrames) return; // terminal fence — late frames from an aborted run are stale
+  const frames = trustedDeltaFramesForSession(session, receivedFrames);
+  if (frames.length === 0) return;
   // P1-3B-3B fallback discipline: the first frame observed for this run is
   // an already-committed, observable side effect (text/thinking streamed to
   // the real chatStore) — see RunSession.committed's doc.
@@ -556,7 +619,7 @@ async function finalizeFailedRun(
         chatDelta.appendText(session.conversationId, `\n\n**Error:** ${displayMessage}`);
       }
       chatDelta.finishStreaming(session.conversationId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(session.conversationId, 'idle');
       chatDelta.setConversationStatus(session.conversationId, 'error');
     } catch (cleanupErr) {
       logger.warn('terminal UI finalization failed', {
@@ -661,7 +724,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
 
       chatDelta.cancelStreaming(session.conversationId, { fromSidecarFrame: true });
       chatDelta.deactivateSkills(session.conversationId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(session.conversationId, 'idle');
       chatDelta.setConversationStatus(session.conversationId, 'idle');
       getExecutionPort().cancelExecution(session.loopId);
         await waitForConversationPersistence(session.conversationId);

@@ -48,7 +48,7 @@ describe('conversationRunMirror', () => {
 
     it('getThinkingStartTime starts null', () => {
       const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
-      expect(mirror.reader.getThinkingStartTime()).toBeNull();
+      expect(mirror.reader.getThinkingStartTime('conv-1')).toBeNull();
     });
   });
 
@@ -186,19 +186,19 @@ describe('conversationRunMirror', () => {
 
     it('setAgentStatus tracks thinkingStartTime (thinking -> set, idle -> clear)', () => {
       const mirror = createConversationRunMirror('conv-1', { conversation: makeConversation() });
-      mirror.applyChatDeltaWrite('setAgentStatus', ['thinking', undefined, undefined]);
-      expect(mirror.reader.getThinkingStartTime()).not.toBeNull();
-      mirror.applyChatDeltaWrite('setAgentStatus', ['idle', undefined, undefined]);
-      expect(mirror.reader.getThinkingStartTime()).toBeNull();
+      mirror.applyChatDeltaWrite('setAgentStatus', ['conv-1', 'thinking', undefined, undefined]);
+      expect(mirror.reader.getThinkingStartTime('conv-1')).not.toBeNull();
+      mirror.applyChatDeltaWrite('setAgentStatus', ['conv-1', 'idle', undefined, undefined]);
+      expect(mirror.reader.getThinkingStartTime('conv-1')).toBeNull();
     });
 
     it('cancelStreaming clears isStreaming on the last message and thinkingStartTime', () => {
       const conv = makeConversation({ messages: [makeMessage({ id: 'm1', isStreaming: true })] });
       const mirror = createConversationRunMirror('conv-1', { conversation: conv });
-      mirror.applyChatDeltaWrite('setAgentStatus', ['thinking', undefined, undefined]);
+      mirror.applyChatDeltaWrite('setAgentStatus', ['conv-1', 'thinking', undefined, undefined]);
       mirror.applyChatDeltaWrite('cancelStreaming', ['conv-1']);
       expect(mirror.reader.getConversation('conv-1')?.messages[0].isStreaming).toBe(false);
-      expect(mirror.reader.getThinkingStartTime()).toBeNull();
+      expect(mirror.reader.getThinkingStartTime('conv-1')).toBeNull();
     });
 
     it('unhandled methods (e.g. flushTokens) are a documented no-op — no throw', () => {

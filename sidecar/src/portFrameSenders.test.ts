@@ -63,16 +63,16 @@ describe('createFrameChatDelta', () => {
     delta.setExecutionStepsSnapshot('c1', 'loop1', []);
     delta.setPlannedStepsSnapshot('c1', 'loop1', []);
     delta.setConversationStatus('c1', 'idle');
-    delta.setAgentStatus('idle', 'tool', 'agent1');
+    delta.setAgentStatus('c1', 'idle', 'tool', 'agent1');
     delta.setCurrentUsage(null);
-    delta.setRetryInfo(null);
+    delta.setRetryInfo('c1', null);
     delta.setContextUsage('c1', undefined);
     delta.setContextCache('c1', { compressed: true } as never);
     delta.clearContextCache('c1');
     delta.setIsCompressing('c1', true);
     delta.setConversationModel('c1', { providerId: 'p', modelId: 'm' });
     delta.setPendingProposalSignal('c1', undefined);
-    delta.removeActiveAgent('agent1');
+    delta.removeActiveAgent('c1', 'agent1');
 
     expect(frames).toHaveLength(28);
     for (const f of frames) {
@@ -84,7 +84,7 @@ describe('createFrameChatDelta', () => {
     expect(frames.find((frame) => frame.m === 'updateToolCall')?.a.at(-1)).toEqual({
       sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
     });
-    expect(frames[frames.length - 1]).toEqual({ p: 'chat', m: 'removeActiveAgent', a: ['agent1'] });
+    expect(frames[frames.length - 1]).toEqual({ p: 'chat', m: 'removeActiveAgent', a: ['c1', 'agent1'] });
   });
 
   it('onLocalApply is invoked synchronously BEFORE the frame is pushed', () => {

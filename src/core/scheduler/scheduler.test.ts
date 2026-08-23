@@ -74,11 +74,9 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     vi.clearAllMocks();
   });
@@ -134,11 +132,9 @@ describe('SchedulerEngine permission tier', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     // Pin the global fallback mode so "follows settings" tests are deterministic.
     useSettingsStore.setState({ permissionMode: 'standard' });

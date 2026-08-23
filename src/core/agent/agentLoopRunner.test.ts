@@ -689,7 +689,7 @@ describe('agentLoopRunner', () => {
       registerRunSession('run-1', makeSession());
 
       const handler = handlerFor(onSidecarNotification, 'agent.delta');
-      const frames = [{ p: 'chat', m: 'appendText', a: ['c1', 'hi'] }];
+      const frames = [{ p: 'chat', m: 'appendText', a: ['conv-1', 'hi'] }];
       handler({ runId: 'run-1', frames });
 
       await Promise.resolve();
@@ -741,6 +741,86 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarNotification, 'agent.delta');
       expect(() => handler(null)).not.toThrow();
       expect(() => handler({ runId: 123, frames: [] })).not.toThrow();
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+    });
+
+    it('drops malformed frame entries without throwing or applying the batch', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      expect(() => handler({
+        runId: 'run-1',
+        frames: [
+          null,
+          { p: 'chat', m: 'setAgentStatus' },
+          { p: 'exec', m: 'addStep', a: null },
+        ],
+      })).not.toThrow();
+
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+    });
+
+    it('filters chat/session frames that target a different conversation than the registered run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      const forged = [
+        { p: 'chat', m: 'setAgentStatus', a: ['conv-forged', 'tool-calling', 'read_file'] },
+        { p: 'session', m: 'replaceMessageById', a: ['conv-forged', { id: 'm-forged' }] },
+        { p: 'chat', m: 'setRetryInfo', a: ['conv-1', { attempt: 1, maxAttempts: 3, delayMs: 1000 }] },
+      ];
+
+      handler({ runId: 'run-1', frames: forged });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).toHaveBeenCalledWith([
+        { p: 'chat', m: 'setRetryInfo', a: ['conv-1', { attempt: 1, maxAttempts: 3, delayMs: 1000 }] },
+      ]);
+    });
+
+    it('filters exec and scratchpad frames that are not bound to the registered conversation and loop', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      const frames = [
+        { p: 'exec', m: 'createExecution', a: ['conv-forged', 'loop-1'] },
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-forged'] },
+        { p: 'exec', m: 'addStep', a: ['loop-forged', { id: 's-forged' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-forged', { conversationId: 'conv-forged', title: 't', type: 'summary', content: 'c' }] },
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-1'] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 's-real' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-real', { conversationId: 'conv-1', title: 't', type: 'summary', content: 'c' }] },
+      ];
+
+      handler({ runId: 'run-1', frames });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).toHaveBeenCalledWith([
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-1'] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 's-real' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-real', { conversationId: 'conv-1', title: 't', type: 'summary', content: 'c' }] },
+      ]);
+    });
+
+    it('drops valid-looking frames when the registered conversation has already been deleted', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      chatState = { conversations: {}, conversationIndex: {} };
+      registerRunSession('run-deleted', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-deleted',
+        frames: [{ p: 'chat', m: 'setAgentStatus', a: ['conv-1', 'tool-calling', 'read_file'] }],
+      });
+
+      await Promise.resolve();
       expect(applyDeltaFramesMock).not.toHaveBeenCalled();
     });
   });
@@ -2671,7 +2751,7 @@ describe('agentLoopRunner', () => {
       expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
       expect(drainSystemQueuedInputsMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
-      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
       expect(cancelExecutionMock).toHaveBeenCalledWith(expect.any(String));
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
@@ -2951,7 +3031,7 @@ describe('agentLoopRunner', () => {
       // conversation hangs streaming forever.
       expect(chatDeltaFinishStreamingMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
-      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
     });
 
     it('rejects a post-commit failure result when its terminal state cannot be persisted', async () => {

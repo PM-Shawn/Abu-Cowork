@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
-import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
@@ -503,8 +503,8 @@ export default function ChatView({
   // Optimistic feedback for the beat between submitting a question/plan answer
   // and the resumed loop producing anything (Bug 1: 点同意后无反应).
   const [resuming, setResuming] = useState(false);
-  const agentStatus = useChatStore((s) => s.agentStatus);
-  const retryInfo = useChatStore((s) => s.retryInfo);
+  const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
+  const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).retryInfo);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput

@@ -38,7 +38,7 @@ describe('MessageGroup stopped terminal', () => {
     useChatStore.setState({
       activeConversationId: conversation.id,
       conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
+      agentStates: new Map(),
     });
 
     render(<MessageGroup messages={[userMessage]} isLastGroup />);

@@ -310,6 +310,53 @@ describe('agentLoopHost', () => {
         },
       });
     });
+
+    it('aborts scoped run controllers on normal completion so background commands cannot outlive unattended runs', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        expect(capturedSignal.aborted).toBe(false);
+        ctx.abortRegistry.clearAbortController(ctx.conversationId);
+        return { reason: 'completed' };
+      });
+
+      await handleAgentRun(baseParams({
+        runId: 'scoped-controller-complete',
+        options: { authorizationScopeId: 'scope-complete' },
+      }));
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('aborts scoped run controllers when the loop throws', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        throw new Error('boom');
+      });
+
+      await expect(handleAgentRun(baseParams({
+        runId: 'scoped-controller-error',
+        options: { authorizationScopeId: 'scope-error' },
+      }))).rejects.toThrow('boom');
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('does not abort unscoped run controllers on normal completion', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        return { reason: 'completed' };
+      });
+
+      await handleAgentRun(baseParams({ runId: 'unscoped-controller-complete' }));
+
+      expect(capturedSignal?.aborted).toBe(false);
+    });
   });
 
   describe('ALS isolation of two concurrent runs\' ports', () => {

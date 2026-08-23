@@ -5,14 +5,47 @@
  * of "inside vs outside".
  */
 
-import { getAuthorizedDirs, type AuthorizationScopeId } from '../tools/pathSafety';
+import {
+  getAuthorizedDirs,
+  getAuthorizedWritablePaths,
+  type AuthorizationScopeId,
+} from '../tools/pathSafety';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { isWindows } from '../../utils/platform';
 
 // Temp dirs are always considered inside (scratch space, never sensitive).
 const ALWAYS_INSIDE = ['/tmp', '/private/tmp', '/var/tmp'];
 
-function norm(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+function norm(raw: string): string {
+  let p = raw.replace(/\\/g, '/').replace(/\/+/g, '/');
+  const driveMatch = /^([A-Za-z]:)(?:\/|$)/.exec(p);
+  const drive = driveMatch?.[1] ?? '';
+  if (drive) p = p.slice(drive.length);
+  const absolute = p.startsWith('/');
+  const parts: string[] = [];
+
+  for (const segment of p.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      if (parts.length > 0) {
+        parts.pop();
+      } else if (!absolute && !drive) {
+        parts.push(segment);
+      }
+      continue;
+    }
+    parts.push(segment);
+  }
+
+  let normalized: string;
+  if (drive) {
+    normalized = `${drive}${absolute ? '/' : ''}${parts.join('/')}`;
+  } else {
+    normalized = `${absolute ? '/' : ''}${parts.join('/')}`;
+  }
+  if (!normalized) normalized = drive ? `${drive}${absolute ? '/' : ''}` : absolute ? '/' : '.';
+  if (normalized.length > 1 && normalized.endsWith('/')) normalized = normalized.slice(0, -1);
+  return isWindows() ? normalized.toLowerCase() : normalized;
 }
 
 /** All directories the agent may operate in without escalation. */
@@ -33,4 +66,19 @@ export function allWorkingDirectories(scopeId?: AuthorizationScopeId): string[] 
 export function isInsideWorkingDirs(absPath: string, dirs: string[] = allWorkingDirectories()): boolean {
   const p = norm(absPath);
   return dirs.some((d) => p === d || p.startsWith(d + '/'));
+}
+
+/**
+ * Directories a scoped command may use as an implicit write location.
+ *
+ * Unscoped interactive command approval keeps the historical "working dirs"
+ * behavior. Scoped unattended runs are stricter: read-only grants let commands
+ * inspect a tree, but never make that tree a writable cwd or write target.
+ */
+export function commandWritableDirectories(scopeId?: AuthorizationScopeId): string[] {
+  if (scopeId === undefined) return allWorkingDirectories();
+  return [
+    ...getAuthorizedWritablePaths(scopeId),
+    ...ALWAYS_INSIDE,
+  ].map(norm);
 }

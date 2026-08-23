@@ -1232,18 +1232,19 @@ function assertRunToolAllowed(
  * runId → silent drop" discipline (3a), NOT `handleMainLoopToolInvoke`'s
  * hard-refuse-with-throw (there is no RPC response to fail here — silent
  * drop is the only sensible behavior for a fire-and-forget notification).
- * The real function is itself idempotent/self-guarding on a missing or
- * already-bound conversation (`defaultWorkspace.ts:119-122`), so this
- * lookup is a defense-in-depth consistency check, not the only thing
- * preventing a stale/deleted-conversation write from taking effect.
+ * The notification's conversationId must match the run-owned conversation;
+ * otherwise a delayed or forged sidecar notification could bind a different
+ * interactive conversation. The real function is itself idempotent and
+ * self-guarding on a missing or already-bound conversation
+ * (`defaultWorkspace.ts:119-122`).
  */
 function handleWorkspaceBindFromWrite(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; conversationId?: unknown; path?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || typeof params.path !== 'string') return;
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
-  const conversationId = typeof params.conversationId === 'string' ? params.conversationId : undefined;
-  void bindWorkspaceFromWrite(conversationId, params.path).catch((err: unknown) => {
+  if (typeof params.conversationId === 'string' && params.conversationId !== session.conversationId) return;
+  void bindWorkspaceFromWrite(session.conversationId, params.path).catch((err: unknown) => {
     logger.warn('bindWorkspaceFromWrite threw', { error: err instanceof Error ? err.message : String(err) });
   });
 }
@@ -2810,6 +2811,13 @@ async function runSingleAgentLoopDispatched(
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
+    if (
+      !handedOffToLocal
+      && options?.authorizationScopeId !== undefined
+      && !shellAbortController.signal.aborted
+    ) {
+      shellAbortController.abort(new Error('Scoped agent run finished'));
+    }
     if (!handedOffToLocal) {
       // Ownership-checked: everything above the `finally` can outlive this
       // run's visible terminal (persistence, the Computer Use lease release

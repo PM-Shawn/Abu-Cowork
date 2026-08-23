@@ -216,6 +216,51 @@ describe('pathSafety', () => {
         revokeWorkspace(ws);
       }
     });
+
+    it('ignores empty and whitespace-only global grants instead of matching every absolute path', async () => {
+      authorizeWorkspace('', ['read', 'write']);
+      authorizeWorkspace('   ', ['read', 'write']);
+
+      const read = await checkReadPath('/Users/testuser/Documents/notes.md');
+      const write = await checkWritePath('/Users/testuser/Documents/notes.md');
+
+      expect(read.allowed).toBe(false);
+      expect(read.needsPermission).toBe(true);
+      expect(write.allowed).toBe(false);
+      expect(write.needsPermission).toBe(true);
+    });
+
+    it('ignores empty and whitespace-only scoped grants instead of exposing scoped writable paths', async () => {
+      const scopeId = createAuthorizationScope();
+      try {
+        scopedAuthorizeWorkspace(scopeId, '', ['read', 'write']);
+        scopedAuthorizeWorkspace(scopeId, '\t  ', ['read', 'write']);
+
+        const write = await checkWritePath('/Users/testuser/Documents/notes.md', scopeId);
+
+        expect(write.allowed).toBe(false);
+        expect(write.needsPermission).toBe(true);
+        expect(getAuthorizedWritablePaths(scopeId)).toEqual([]);
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('preserves legal spaces in authorized paths rather than trimming them into a different path', async () => {
+      const ws = '/Users/testuser/Projects/project with trailing space ';
+      const trimmedWs = '/Users/testuser/Projects/project with trailing space';
+      revokeWorkspace(ws);
+      revokeWorkspace(trimmedWs);
+      try {
+        authorizeWorkspace(ws, ['read']);
+
+        expect((await checkReadPath(`${ws}/notes.md`)).allowed).toBe(true);
+        expect((await checkReadPath(`${trimmedWs}/notes.md`)).allowed).toBe(false);
+      } finally {
+        revokeWorkspace(ws);
+        revokeWorkspace(trimmedWs);
+      }
+    });
   });
 
   // ── Path traversal ──

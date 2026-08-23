@@ -169,6 +169,30 @@ describe('subagentRunner', () => {
       expect(result.text).toBe('in-process result');
     });
 
+    it('aborts a scoped in-process subagent signal when the subagent run settles', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      let runSignal: AbortSignal | undefined;
+      runSubagentLoopMock.mockImplementationOnce(async (options: { signal?: AbortSignal }) => {
+        runSignal = options.signal;
+        expect(runSignal?.aborted).toBe(false);
+        return { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 };
+      });
+      const { runSubagent } = await importFresh();
+      const parentController = new AbortController();
+
+      await runSubagent({
+        agent,
+        task: 'start a background command',
+        signal: parentController.signal,
+        authorizationScopeId: 'scope-subagent',
+      });
+
+      expect(runSignal).toBeDefined();
+      expect(runSignal).not.toBe(parentController.signal);
+      expect(runSignal?.aborted).toBe(true);
+      expect(parentController.signal.aborted).toBe(false);
+    });
+
     it('routes through the sidecar when running — dispatches subagent.run and reconstructs the SubagentResult', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({
@@ -198,6 +222,32 @@ describe('subagentRunner', () => {
       expect(result.toolCallCount).toBe(2);
       expect(result.turnCount).toBe(3);
       expect(result.tokenUsage).toEqual({ input: 10, output: 20 });
+    });
+
+    it('serializes blockedTools into subagent.run params alongside allowedTools', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({
+        agent,
+        task: 'read only',
+        allowedTools: ['read_*'],
+        blockedTools: ['run_command', 'abu-browser__*'],
+      });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        allowedTools?: string[];
+        blockedTools?: string[];
+      };
+      expect(params.allowedTools).toEqual(['read_*']);
+      expect(params.blockedTools).toEqual(['run_command', 'abu-browser__*']);
     });
 
     it('treats an empty authorization scope as explicit and snapshots no global workspace for sidecar subagents', async () => {
@@ -331,6 +381,38 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
+    it('aborts the shell-side tool signal after a scoped sidecar subagent settles without sending a late subagent.abort', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const parentController = new AbortController();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'start a background command',
+        signal: parentController.signal,
+        authorizationScopeId: 'scope-subagent',
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      await toolInvokeHandler({
+        runId,
+        toolName: 'run_command',
+        input: { command: 'start-background-worker', background: true, cwd: '/tmp' },
+      });
+      const toolContext = executeAnyToolMock.mock.calls[0][4] as { abortSignal?: AbortSignal };
+
+      expect(toolContext.abortSignal?.aborted).toBe(false);
+      expect(toolContext.abortSignal).not.toBe(parentController.signal);
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+
+      expect(toolContext.abortSignal?.aborted).toBe(true);
+      expect(parentController.signal.aborted).toBe(false);
+      expect(notifySidecar).not.toHaveBeenCalledWith('subagent.abort', expect.objectContaining({ runId }));
+    });
+
     it('overwrites a forged sidecar workspace with null when the subagent session has no trusted workspace', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -384,6 +466,24 @@ describe('subagentRunner', () => {
       await expect(
         toolInvokeHandler({ runId, toolName: 'write_file', input: { path: 'x' } }),
       ).rejects.toThrow(/not allowed/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('refuses a delegated tool call matching inherited blockedTools even if the sidecar explicitly asks for it', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent, task: 'read only', blockedTools: ['run_command', 'abu-browser__*'] });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'abu-browser__screenshot', input: {} }),
+      ).rejects.toThrow(/blocked/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });

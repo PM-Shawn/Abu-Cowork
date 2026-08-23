@@ -17,6 +17,7 @@ import {
 } from '../permissions/browserToolPolicy';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
+import { commandWritableDirectories, isInsideWorkingDirs } from '../permissions/workingDirs';
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
@@ -356,6 +357,22 @@ async function resolveBrowserActionOrigin(
   }
 }
 
+async function isScopedCommandCwdWriteAllowed(
+  input: Record<string, unknown>,
+  toolContext?: ToolExecutionContext,
+): Promise<boolean> {
+  const scopeId = toolContext?.authorizationScopeId;
+  if (scopeId === undefined) return true;
+  const effectiveCwd = typeof input.cwd === 'string' && input.cwd.trim().length > 0
+    ? input.cwd
+    : toolContext?.workspacePath ?? undefined;
+  if (!effectiveCwd) return false;
+  if (!isInsideWorkingDirs(effectiveCwd, commandWritableDirectories(scopeId))) {
+    return false;
+  }
+  return (await checkWritePath(effectiveCwd, scopeId)).allowed;
+}
+
 export async function checkToolApproval(
   name: string,
   input: Record<string, unknown>,
@@ -379,6 +396,13 @@ export async function checkToolApproval(
       // Block dangerous commands — always enforced regardless of permission mode
       if (analysis.level === 'block') {
         return { decision: 'deny', reason: `Error: ${t.commandConfirm.blocked}: ${analysis.reason}` };
+      }
+
+      if (!analysis.readOnly && !(await isScopedCommandCwdWriteAllowed(input, toolContext))) {
+        return {
+          decision: 'deny',
+          reason: 'Error: command working directory is not write-authorized for this scoped run',
+        };
       }
 
       // Best-effort boundary check: only matters for safe, non-read-only commands

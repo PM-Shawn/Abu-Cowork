@@ -127,7 +127,7 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         ? await getAuthorizedPathsReader().getAuthorizedWritablePaths(context?.authorizationScopeId)
         : [];
       const extraWritablePaths = [
-        ...(workspacePath ? [workspacePath] : []),
+        ...(context?.authorizationScopeId === undefined && workspacePath ? [workspacePath] : []),
         ...authorizedPaths,
       ];
 

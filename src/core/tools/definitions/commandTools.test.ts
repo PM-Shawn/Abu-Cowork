@@ -149,6 +149,32 @@ describe('runCommandTool', () => {
     expect(p.extraWritablePaths).toEqual([]);
   });
 
+  it('does not grant scoped Seatbelt writes just because the run has a workspacePath', async () => {
+    mockAuthorized([]);
+
+    await runCommandTool.execute(
+      { command: 'touch pwned.txt' },
+      { authorizationScopeId: 'scope-read-only', workspacePath: '/readonly/ws' },
+    );
+
+    const p = shellPayload();
+    expect(p.cwd).toBe('/readonly/ws');
+    expect(p.extraWritablePaths).toEqual([]);
+  });
+
+  it('passes only scoped write-authorized paths to Seatbelt for scoped runs', async () => {
+    mockAuthorized(['/writable/ws']);
+
+    await runCommandTool.execute(
+      { command: 'touch ok.txt' },
+      { authorizationScopeId: 'scope-write', workspacePath: '/readonly/ws' },
+    );
+
+    const p = shellPayload();
+    expect(p.cwd).toBe('/readonly/ws');
+    expect(p.extraWritablePaths).toEqual(['/writable/ws']);
+  });
+
   it('does not fall back to the global workspace for a scoped run with no trusted workspace field', async () => {
     mockReader('/reader/ws');
 

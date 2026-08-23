@@ -115,38 +115,17 @@ describe('resolveTriggerCallbacks', () => {
     });
   });
 
-  describe('scoped file callback grants preserve the requested capability', () => {
+  describe('run-scoped file callbacks do not import standing global grants', () => {
     beforeEach(() => {
       usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
     });
 
-    it('safe_tools syncs an existing read grant without upgrading it to write', async () => {
-      const path = '/Users/testuser/Desktop/trigger-safe-read.md';
-      const { callbacks, scopeId, dispose } = resolveForTest({ prompt: 'safe', capability: 'safe_tools' });
-      usePermissionStore.getState().grantPermission(path, ['read'], 'session');
-
-      try {
-        await expect(callbacks.filePermissionCallback({
-          path,
-          capability: 'read',
-          toolName: 'read_file',
-        })).resolves.toBe(true);
-
-        expect((await checkReadPath(path, scopeId)).allowed).toBe(true);
-        expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
-      } finally {
-        dispose();
-        revokeWorkspace(path);
-        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
-      }
-    });
-
-    it('custom callbacks sync an existing read grant without upgrading it to write', async () => {
-      const path = '/Users/testuser/Desktop/trigger-custom-read.md';
+    it('read_tools refuses a globally granted read outside its declared workspace', async () => {
+      const path = '/Users/testuser/Desktop/trigger-read-only.md';
       const { callbacks, scopeId, dispose } = resolveForTest({
-        prompt: 'custom',
-        capability: 'custom',
-        permissions: { allowedTools: ['read_file'] },
+        prompt: 'read',
+        capability: 'read_tools',
+        workspacePath: '/Users/testuser/Projects/trigger-read-workspace',
       });
       usePermissionStore.getState().grantPermission(path, ['read'], 'session');
 
@@ -155,9 +134,61 @@ describe('resolveTriggerCallbacks', () => {
           path,
           capability: 'read',
           toolName: 'read_file',
-        })).resolves.toBe(true);
+        })).resolves.toBe(false);
 
-        expect((await checkReadPath(path, scopeId)).allowed).toBe(true);
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+        revokeWorkspace(path);
+        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+      }
+    });
+
+    it('safe_tools refuses a globally granted path outside its declared workspace', async () => {
+      const path = '/Users/testuser/Desktop/trigger-safe-read.md';
+      const { callbacks, scopeId, dispose } = resolveForTest({
+        prompt: 'safe',
+        capability: 'safe_tools',
+        workspacePath: '/Users/testuser/Projects/trigger-safe-workspace',
+      });
+      usePermissionStore.getState().grantPermission(path, ['read', 'write'], 'session');
+
+      try {
+        await expect(callbacks.filePermissionCallback({
+          path,
+          capability: 'write',
+          toolName: 'write_file',
+        })).resolves.toBe(false);
+
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
+        expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+        revokeWorkspace(path);
+        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+      }
+    });
+
+    it('custom refuses a globally granted path outside its explicit allowlist', async () => {
+      const path = '/Users/testuser/Desktop/trigger-custom-write.md';
+      const { callbacks, scopeId, dispose } = resolveForTest({
+        prompt: 'custom',
+        capability: 'custom',
+        permissions: {
+          allowedPaths: ['/Users/testuser/Projects/only-this-path'],
+          allowedTools: ['write_file'],
+        },
+      });
+      usePermissionStore.getState().grantPermission(path, ['read', 'write'], 'session');
+
+      try {
+        await expect(callbacks.filePermissionCallback({
+          path,
+          capability: 'write',
+          toolName: 'write_file',
+        })).resolves.toBe(false);
+
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
         expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
       } finally {
         dispose();

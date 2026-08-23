@@ -202,6 +202,10 @@ function normalizeWorkspacePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/\/+$/, '');
 }
 
+function isBlankWorkspaceGrant(path: string): boolean {
+  return path.trim().length === 0;
+}
+
 function getAuthorizationMap(scopeId: AuthorizationScopeId | undefined): Map<string, Set<'read' | 'write'>> | undefined {
   if (scopeId === undefined) return authorizedWorkspaces;
   return scopedAuthorizedWorkspaces.get(scopeId);
@@ -212,6 +216,7 @@ function addAuthorizedWorkspace(
   path: string,
   capabilities?: ('read' | 'write')[],
 ): void {
+  if (isBlankWorkspaceGrant(path)) return;
   const normalized = normalizeWorkspacePath(path);
   const caps = capabilities ?? ['read', 'write'];
   const existing = target.get(normalized);
@@ -254,6 +259,7 @@ export function getAuthorizedWritablePaths(scopeId?: AuthorizationScopeId): stri
   if (!target) return [];
   const paths: string[] = [];
   for (const [workspace, caps] of target) {
+    if (isBlankWorkspaceGrant(workspace)) continue;
     if (caps.has('write')) paths.push(workspace);
   }
   return paths;
@@ -266,7 +272,7 @@ export function getAuthorizedWritablePaths(scopeId?: AuthorizationScopeId): stri
  */
 export function getAuthorizedDirs(scopeId?: AuthorizationScopeId): string[] {
   const target = getAuthorizationMap(scopeId);
-  return target ? Array.from(target.keys()) : [];
+  return target ? Array.from(target.keys()).filter((path) => !isBlankWorkspaceGrant(path)) : [];
 }
 
 /**
@@ -290,6 +296,7 @@ function isInAuthorizedWorkspace(
   let normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   if (isWindows()) normalized = normalized.toLowerCase();
   for (const [workspace, caps] of target) {
+    if (isBlankWorkspaceGrant(workspace)) continue;
     const compareWs = isWindows() ? workspace.toLowerCase() : workspace;
     if (normalized === compareWs || normalized.startsWith(compareWs + '/')) {
       if (caps.has(capability)) return true;

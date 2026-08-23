@@ -103,7 +103,7 @@ import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelector
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
-import { matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
@@ -130,6 +130,7 @@ export interface SubagentRunParams {
   parentConversationId?: string;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
+  blockedTools?: string[];
   authorizationScopeId?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
@@ -212,6 +213,10 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     throw new SidecarRequestError(-32000, `Unknown subagent runId: ${params.runId}`);
   }
   session.firstToolInvokeArrived = true;
+
+  if (session.options.blockedTools?.some((pattern) => matchesToolName(params.toolName as string, pattern))) {
+    throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${params.toolName}`);
+  }
 
   if (
     session.options.allowedTools?.length &&
@@ -329,6 +334,7 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     parentConversationId: options.parentConversationId,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
+    blockedTools: options.blockedTools,
     authorizationScopeId: options.authorizationScopeId,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
@@ -364,6 +370,34 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  if (options.authorizationScopeId === undefined) {
+    return runSubagentForSignal(options);
+  }
+
+  // A successful background run_command deliberately keeps its abort listener
+  // after the tool call resolves. Give every scoped subagent its own run-owned
+  // signal and abort it after every terminal path, so a direct/nested subagent
+  // cannot leave a process alive after the unattended authorization scope ends.
+  const scopedController = new AbortController();
+  const parentSignal = options.signal;
+  const abortFromParent = () => scopedController.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  try {
+    return await runSubagentForSignal({ ...options, signal: scopedController.signal });
+  } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    if (!scopedController.signal.aborted) {
+      scopedController.abort(new Error('Scoped subagent run finished'));
+    }
+  }
+}
+
+async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
   if (options.signal?.aborted) {
     return cancelledSubagentResult();
   }

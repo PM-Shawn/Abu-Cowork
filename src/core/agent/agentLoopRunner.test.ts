@@ -2078,6 +2078,22 @@ describe('agentLoopRunner', () => {
       expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
     });
 
+    it('silently drops a notification that targets a conversation not owned by the run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({
+        runId: 'run-1',
+        conversationId: 'conv-forged',
+        path: '/Users/x/Abu/report/out.html',
+      })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
     it('silently drops malformed params (missing runId/path)', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -2511,6 +2527,27 @@ describe('agentLoopRunner', () => {
       await expect(running).resolves.toEqual({ reason: 'completed' });
       expect(sidecarRequestMock).not.toHaveBeenCalledWith('agent.abort', expect.anything(), expect.anything());
       expect(chatDeltaCancelStreamingMock).not.toHaveBeenCalled();
+    });
+
+    it('aborts scoped shell controllers after a terminal without sending a late agent.abort', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((_method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => (
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        })
+      ));
+
+      const running = runAgentLoopDispatched('conv-1', 'hello', { authorizationScopeId: 'scope-shell' });
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const terminalHandler = handlerFor(onSidecarNotification, 'agent.terminal');
+      terminalHandler({ version: 1, runId, state: 'completed', result: { reason: 'completed' } });
+
+      await expect(running).resolves.toEqual({ reason: 'completed' });
+      expect(shellController.signal.aborted).toBe(true);
+      expect(sidecarRequestMock).not.toHaveBeenCalledWith('agent.abort', expect.anything(), expect.anything());
     });
 
     it('uses a failed terminal before any delta as authoritative and finalizes the UI exactly once', async () => {

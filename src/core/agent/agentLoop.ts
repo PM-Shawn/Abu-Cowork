@@ -2741,6 +2741,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
+  if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
+    abortController.abort(new Error('Scoped agent run finished'));
+  }
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return { reason: exitReason, error: exitError };

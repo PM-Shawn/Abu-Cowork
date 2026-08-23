@@ -631,6 +631,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   // ── AbortRegistry — sidecar-local Map, lazily-created controllers, same
   // contract as the in-process store (design doc §3 "abortRegistry" row) ──
   const controllers = new Map<string, AbortController>();
+  const createdControllers = new Set<AbortController>();
   const abortRegistry: AbortRegistry = {
     hasAbortController: (convId) => controllers.has(convId),
     getAbortController: (convId) => {
@@ -638,6 +639,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       if (!c) {
         c = new AbortController();
         controllers.set(convId, c);
+        createdControllers.add(c);
       }
       return c;
     },
@@ -801,6 +803,13 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     throw error;
   } finally {
     coalescer.flush();
+    if (params.options.authorizationScopeId !== undefined) {
+      for (const controller of createdControllers) {
+        if (!controller.signal.aborted) {
+          controller.abort(new Error('Scoped agent run finished'));
+        }
+      }
+    }
     activeRuns.delete(runId);
   }
 }

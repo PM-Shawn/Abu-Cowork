@@ -12,7 +12,6 @@ import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
 import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
 import { scopedAuthorizeWorkspace } from '../tools/pathSafety';
-import { usePermissionStore } from '../../stores/permissionStore';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 /** Simple glob matching for command patterns (e.g. "npm run *", "git *") */
@@ -85,14 +84,9 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           return false;
         },
         filePermissionCallback: async (req) => {
-          if (req.capability === 'read') {
-            // Auto-allow reads for pre-authorized workspaces (read-only)
-            const permStore = usePermissionStore.getState();
-            if (permStore.hasPermission(req.path, 'read')) {
-              scopedAuthorizeWorkspace(authorizationScopeId, req.path, ['read']);
-              return true;
-            }
-          }
+          // The run's declared workspace was already pre-authorized above.
+          // Reaching this callback means the path is outside that run-local
+          // set, so a standing interactive grant must not bridge into it.
           console.log(`[Trigger] read_tools: denied ${req.capability} "${req.path}"`);
           return false;
         },
@@ -111,11 +105,8 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           return allowed;
         },
         filePermissionCallback: async (req) => {
-          const permStore = usePermissionStore.getState();
-          if (permStore.hasPermission(req.path, req.capability)) {
-            scopedAuthorizeWorkspace(authorizationScopeId, req.path, [req.capability]);
-            return true;
-          }
+          // Workspace access is already present in this run's scope. Never
+          // import unrelated interactive grants into an unattended run.
           console.log(`[Trigger] safe_tools: denied ${req.capability} "${req.path}"`);
           return false;
         },
@@ -141,14 +132,13 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
       };
 
     case 'custom':
-      return buildCustomCallbacks(action.permissions, blockedTools, authorizationScopeId);
+      return buildCustomCallbacks(action.permissions, blockedTools);
   }
 }
 
 function buildCustomCallbacks(
   permissions: TriggerPermissions | undefined,
   blockedTools: string[],
-  authorizationScopeId: string,
 ): TriggerCallbacks {
   const allowedCommands = permissions?.allowedCommands;
 
@@ -168,11 +158,9 @@ function buildCustomCallbacks(
       return allowed;
     },
     filePermissionCallback: async (req) => {
-      const permStore = usePermissionStore.getState();
-      if (permStore.hasPermission(req.path, req.capability)) {
-        scopedAuthorizeWorkspace(authorizationScopeId, req.path, [req.capability]);
-        return true;
-      }
+      // Explicit allowedPaths were pre-authorized in the run scope. A path
+      // that still reaches this callback is outside that allowlist, even if
+      // an interactive conversation granted it globally.
       console.log(`[Trigger] custom: denied ${req.capability} "${req.path}"`);
       return false;
     },

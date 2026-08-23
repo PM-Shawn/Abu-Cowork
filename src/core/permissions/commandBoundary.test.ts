@@ -78,6 +78,17 @@ describe('commandBoundary', () => {
         disposeAuthorizationScope(scopeId);
       }
     });
+
+    it('scoped write detection does not treat read-only scope directories as writable', () => {
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, WS, ['read']);
+
+      try {
+        expect(analyzeCommandBoundary('echo hi > out.txt', WS, HOME, scopeId)).toBe('outside');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
   });
 
   describe('unknown (conservative — no extra prompt)', () => {

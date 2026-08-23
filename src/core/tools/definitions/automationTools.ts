@@ -11,6 +11,13 @@ import { getI18n, getLocale, format } from '../../../i18n';
 /** Locale tag for Date#toLocaleString, following the resolved UI locale. */
 const dateLocale = (): string => (getLocale() === 'zh-CN' ? 'zh-CN' : 'en-US');
 
+function filterNonBlankStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string =>
+    typeof item === 'string' && item.trim().length > 0,
+  );
+}
+
 export const manageScheduledTaskTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_SCHEDULED_TASK,
   description: 'Create, list, update, delete, pause, or resume scheduled tasks. Use when the user needs an operation to run automatically on a recurring or timed schedule.',
@@ -330,7 +337,8 @@ export const manageTriggerTool: ToolDefinition = {
           field: input.filter_field as string | undefined,
         };
 
-        // Build action. Capability level is user-controlled in Trigger Settings.
+        // Build action without a model-controlled capability. New triggers
+        // therefore take the safest default in triggerPermission.ts.
         const triggerAction: TriggerAction = {
           prompt,
           skillName: input.skill_name as string | undefined,
@@ -482,6 +490,9 @@ export const manageTriggerTool: ToolDefinition = {
 
         if (hasActionUpdate) {
           const existingCapability = existing.action.capability;
+          const allowedPaths = input.allowed_paths !== undefined
+            ? filterNonBlankStringList(input.allowed_paths)
+            : existing.action.permissions?.allowedPaths;
           updateData.action = {
             prompt: (input.prompt as string) ?? existing.action.prompt,
             skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
@@ -489,7 +500,7 @@ export const manageTriggerTool: ToolDefinition = {
             capability: existingCapability,
             permissions: existingCapability === 'custom' ? {
               allowedCommands: input.allowed_commands !== undefined ? input.allowed_commands : existing.action.permissions?.allowedCommands,
-              allowedPaths: input.allowed_paths !== undefined ? input.allowed_paths : existing.action.permissions?.allowedPaths,
+              allowedPaths,
               allowedTools: input.allowed_tools !== undefined ? input.allowed_tools : existing.action.permissions?.allowedTools,
             } : existing.action.permissions,
           };

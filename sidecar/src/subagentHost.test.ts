@@ -85,6 +85,7 @@ describe('subagentHost', () => {
       ['resolvedCreds not an object', { ...baseParams(), resolvedCreds: null }],
       ['uiStrings not an object', { ...baseParams(), uiStrings: null }],
       ['locale not a string', { ...baseParams(), locale: 42 }],
+      ['blockedTools not a string array', { ...baseParams(), blockedTools: ['read_file', 42] }],
       ['workspacePathSnapshot not string/null', { ...baseParams(), workspacePathSnapshot: 42 }],
       ['empty authorizationScopeId', { ...baseParams(), authorizationScopeId: '' }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
@@ -152,6 +153,22 @@ describe('subagentHost', () => {
         context: { workspacePath: '/tmp' },
       });
       expect(result.text).toBe('file contents');
+    });
+
+    it('parses and restores blockedTools into the sidecar SubagentLoopOptions', async () => {
+      let capturedOptions: { allowedTools?: string[]; blockedTools?: string[] } | undefined;
+      runSubagentLoopMock.mockImplementation(async (options: { allowedTools?: string[]; blockedTools?: string[] }) => {
+        capturedOptions = options;
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({
+        allowedTools: ['read_*'],
+        blockedTools: ['run_command', 'abu-browser__*'],
+      }));
+
+      expect(capturedOptions?.allowedTools).toEqual(['read_*']);
+      expect(capturedOptions?.blockedTools).toEqual(['run_command', 'abu-browser__*']);
     });
 
     it('the sidecar-local ToolDefinition.execute stub throws if ever called directly (it never should be)', async () => {

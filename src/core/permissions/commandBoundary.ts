@@ -9,7 +9,7 @@
  * commands is the OS sandbox, not this parser.
  */
 
-import { allWorkingDirectories, isInsideWorkingDirs } from './workingDirs';
+import { allWorkingDirectories, commandWritableDirectories, isInsideWorkingDirs } from './workingDirs';
 import type { AuthorizationScopeId } from '../tools/pathSafety';
 
 export type CmdBoundary = 'inside' | 'outside' | 'unknown';
@@ -31,9 +31,10 @@ function resolvePath(raw: string, cwd: string | undefined, home: string): string
   let p = unquote(raw.trim());
   if (!p) return null;
 
+  const isWindowsAbsolute = /^[A-Za-z]:[\\/]/.test(p);
   if (p === '~' || p.startsWith('~/')) {
     p = home + p.slice(1);
-  } else if (p.startsWith('/')) {
+  } else if (p.startsWith('/') || isWindowsAbsolute) {
     // absolute — keep
   } else {
     // relative — needs cwd to resolve
@@ -48,6 +49,9 @@ function resolvePath(raw: string, cwd: string | undefined, home: string): string
   for (const seg of parts) {
     if (seg === '..') out.pop();
     else if (seg !== '.' && seg !== '') out.push(seg);
+  }
+  if (out[0] && /^[A-Za-z]:$/.test(out[0])) {
+    return out.join('/');
   }
   return '/' + out.join('/');
 }
@@ -103,7 +107,9 @@ export function analyzeCommandBoundary(
   const targets = extractWriteTargets(command);
   if (targets.length === 0) return 'unknown';
 
-  const dirs = allWorkingDirectories(scopeId);
+  const dirs = scopeId === undefined
+    ? allWorkingDirectories()
+    : commandWritableDirectories(scopeId);
   let sawInside = false;
   for (const raw of targets) {
     const abs = resolvePath(raw, cwd, home);

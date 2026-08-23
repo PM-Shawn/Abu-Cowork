@@ -170,6 +170,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
+    authorizationScopeId: params.toolContext.authorizationScopeId,
   });
 
   let completedCount = 0;

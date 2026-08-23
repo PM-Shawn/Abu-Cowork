@@ -2571,6 +2571,7 @@ const enUS: TranslationDict = {
       capFull: 'Fully autonomous',
       capCustom: 'Custom allowlist',
       capLevelLine: 'Capability level: {label}',
+      triggerCapabilityUiNotice: 'Capability level is set by the user in Trigger Settings.',
       filterLine: 'Filter: {filter}',
       debounceLine: 'Debounce: {value}',
       debounceSeconds: '{seconds}s',

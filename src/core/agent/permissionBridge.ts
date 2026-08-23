@@ -16,7 +16,7 @@ import type { Message, UserQuestionPayload, UserQuestionResult } from '../../typ
 import { TOOL_NAMES } from '../tools/toolNames';
 import { usePermissionStore } from '../../stores/permissionStore';
 import type { PermissionDuration } from '../../stores/permissionStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
+import { authorizeWorkspace, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { EventRouter } from './eventRouter';
 import type { SettingsReader } from './ports/settingsReader';
 import * as approvalBridge from './ports/approvalBridge';
@@ -47,6 +47,8 @@ export interface LoopContext {
   blockedTools?: string[];
   /** Execution whitelist inherited by tools that may create nested work. */
   allowedTools?: string[];
+  /** Run-local path authorization scope inherited by delegated work. */
+  authorizationScopeId?: string;
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }
@@ -231,7 +233,12 @@ export async function requestFilePermission(request: {
   // Already has permission → auto-allow
   if (permStore.hasPermission(request.path, request.capability)) {
     // Also sync to pathSafety in case it wasn't already
-    authorizeWorkspace(request.path);
+    const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
+    if (ctx?.authorizationScopeId !== undefined) {
+      scopedAuthorizeWorkspace(ctx.authorizationScopeId, request.path, [request.capability]);
+    } else {
+      authorizeWorkspace(request.path);
+    }
     return true;
   }
 

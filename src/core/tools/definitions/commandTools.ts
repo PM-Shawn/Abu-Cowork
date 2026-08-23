@@ -112,14 +112,20 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         return formatAppAutomationRecovery(preflightAppAutomationRecovery);
       }
 
-      // Use conversation-scoped workspace from context; fall back to global store
-      // only if context is absent (e.g. direct invocation outside agent loop).
+      // Use the shell/session-owned workspace from context. Scoped unattended
+      // runs fail closed when that trusted value is null/absent; only
+      // unscoped interactive/direct invocations may fall back to the global
+      // workspace reader.
       // The fallback must not fail the command: in the sidecar the bare getter
       // resolves an ambient-run mirror and THROWS outside a registered run —
       // treat that as "no workspace" (cwd-less spawn), matching the shell's
       // no-workspace behavior instead of erroring before the spawn.
-      const workspacePath = context?.workspacePath ?? safeGlobalWorkspacePath();
-      const authorizedPaths = sandbox ? await getAuthorizedPathsReader().getAuthorizedWritablePaths() : [];
+      const workspacePath = context?.authorizationScopeId !== undefined
+        ? (context.workspacePath ?? null)
+        : (context?.workspacePath ?? safeGlobalWorkspacePath());
+      const authorizedPaths = sandbox
+        ? await getAuthorizedPathsReader().getAuthorizedWritablePaths(context?.authorizationScopeId)
+        : [];
       const extraWritablePaths = [
         ...(workspacePath ? [workspacePath] : []),
         ...authorizedPaths,

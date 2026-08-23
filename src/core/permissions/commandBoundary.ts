@@ -10,6 +10,7 @@
  */
 
 import { allWorkingDirectories, isInsideWorkingDirs } from './workingDirs';
+import type { AuthorizationScopeId } from '../tools/pathSafety';
 
 export type CmdBoundary = 'inside' | 'outside' | 'unknown';
 
@@ -93,11 +94,16 @@ function extractWriteTargets(command: string): string[] {
  * Decide whether a command writes outside the working directories.
  * Conservative: returns 'unknown' unless write targets are confidently resolved.
  */
-export function analyzeCommandBoundary(command: string, cwd: string | undefined, home: string): CmdBoundary {
+export function analyzeCommandBoundary(
+  command: string,
+  cwd: string | undefined,
+  home: string,
+  scopeId?: AuthorizationScopeId,
+): CmdBoundary {
   const targets = extractWriteTargets(command);
   if (targets.length === 0) return 'unknown';
 
-  const dirs = allWorkingDirectories();
+  const dirs = allWorkingDirectories(scopeId);
   let sawInside = false;
   for (const raw of targets) {
     const abs = resolvePath(raw, cwd, home);

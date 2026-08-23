@@ -206,6 +206,15 @@ vi.mock('./agentLoop', () => ({
   runAgentLoop: (...a: unknown[]) => runAgentLoopMock(...a),
   isInteractiveDesktop: (...a: unknown[]) => isInteractiveDesktopMock(...a),
   buildUserMessageContent: (...a: [string, string, unknown]) => buildUserMessageContentMock(...a),
+  resolveToolContextWorkspacePath: (
+    options: { authorizationScopeId?: string; imContext?: { workspacePath?: string | null } } | undefined,
+    conversation: { workspacePath?: string | null } | null | undefined,
+    globalWorkspacePath: string | null,
+  ) => (
+    options?.imContext?.workspacePath ??
+    conversation?.workspacePath ??
+    (options?.authorizationScopeId !== undefined ? null : globalWorkspacePath)
+  ),
 }));
 
 const precomputeOrchestrationMock = vi.fn().mockResolvedValue({
@@ -437,12 +446,25 @@ function handlerFor(mock: ReturnType<typeof vi.fn>, method: string): (params: un
 }
 
 function makeSession(
-  overrides: Partial<{ conversationId: string; loopId: string; terminalPublished: boolean }> = {},
+  overrides: Partial<{
+    conversationId: string;
+    loopId: string;
+    terminalPublished: boolean;
+    authorizationScopeId: string;
+    workspacePathSnapshot: string | null;
+  }> = {},
 ) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
-    options: {},
+    options: {
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
+        ? { authorizationScopeId: overrides.authorizationScopeId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'workspacePathSnapshot')
+        ? { workspacePathSnapshot: overrides.workspacePathSnapshot }
+        : {}),
+    },
     shellAbortController: new AbortController(),
     toolCallToStepId: new Map<string, string>(),
     ...(overrides.terminalPublished === undefined
@@ -1103,22 +1125,137 @@ describe('agentLoopRunner', () => {
   // ── workspace.authorizedWritablePaths (P1-3d-5 slice 2a) ──────────────
 
   describe('workspace.authorizedWritablePaths handler', () => {
-    it('returns the real getAuthorizedWritablePaths() result', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
+    it('returns writable paths from the shell-owned session scope, ignoring forged params', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
-      getAuthorizedWritablePathsMock.mockReturnValue(['/tmp/authorized-a', '/tmp/authorized-b']);
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: '/trusted/workspace',
+      }));
+      getAuthorizedWritablePathsMock.mockImplementation((scopeId?: string) =>
+        scopeId === 'scope-real' ? ['/tmp/scoped'] : ['/tmp/global'],
+      );
       const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
-      const result = await handler(undefined);
-      expect(result).toEqual(['/tmp/authorized-a', '/tmp/authorized-b']);
+      const result = await handler({ runId: 'run-1', authorizationScopeId: 'scope-forged' });
+      expect(result).toEqual(['/tmp/scoped']);
+      expect(getAuthorizedWritablePathsMock).toHaveBeenCalledWith('scope-real');
     });
 
-    it('returns an empty array when nothing is authorized', async () => {
+    it('rejects unknown runId instead of falling back to global writable paths', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
-      getAuthorizedWritablePathsMock.mockReturnValue([]);
       const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
-      const result = await handler(undefined);
-      expect(result).toEqual([]);
+      await expect(handler({ runId: 'missing' })).rejects.toThrow(MockSidecarRequestError);
+      expect(getAuthorizedWritablePathsMock).not.toHaveBeenCalled();
+    });
+
+    it('uses global writable paths only for an unscoped registered session', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      getAuthorizedWritablePathsMock.mockReturnValue(['/tmp/global']);
+      const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
+      const result = await handler({ runId: 'run-1' });
+      expect(result).toEqual(['/tmp/global']);
+      expect(getAuthorizedWritablePathsMock).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  describe('sidecar context scope hardening', () => {
+    it('tool.invoke overwrites sidecar-supplied scope and identity with the shell session values', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: '/trusted/workspace',
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          conversationId: 'conv-forged',
+          loopId: 'loop-forged',
+          workspacePath: '/forged/workspace',
+        },
+      });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/tmp/x' },
+        expect.any(Function),
+        expect.any(Function),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          conversationId: 'conv-1',
+          loopId: 'loop-1',
+          workspacePath: '/trusted/workspace',
+        }),
+      );
+    });
+
+    it('tool.invoke overwrites a forged workspace with null when the shell session has no trusted workspace', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: null,
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'run_command',
+        input: { command: 'touch ok' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          workspacePath: '/forged/workspace',
+        },
+      });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'run_command',
+        { command: 'touch ok' },
+        expect.any(Function),
+        expect.any(Function),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          workspacePath: null,
+        }),
+      );
+    });
+
+    it('approval.check overwrites sidecar-supplied scope before registry approval', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ authorizationScopeId: 'scope-real' }));
+      const handler = handlerFor(onSidecarRequest, 'approval.check') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          conversationId: 'conv-forged',
+          loopId: 'loop-forged',
+        },
+      });
+
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/tmp/x' },
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          conversationId: 'conv-1',
+          loopId: 'loop-1',
+        }),
+        expect.any(Function),
+        expect.any(Function),
+      );
     });
   });
 
@@ -1758,7 +1895,13 @@ describe('agentLoopRunner', () => {
       const result = await handler({ runId: 'run-1', toolName: 'show_widget', input: { title: 't' }, context });
 
       expect(result).toEqual({ decision: 'allow' });
-      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', { title: 't' }, context, confirmCb, filePermCb);
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'show_widget',
+        { title: 't' },
+        expect.objectContaining({ conversationId: 'conv-1', loopId: 'run-1' }),
+        confirmCb,
+        filePermCb,
+      );
     });
 
     it('marks an allowed side-effecting local tool as committed before returning its ACK', async () => {
@@ -1832,7 +1975,13 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarRequest, 'approval.check');
       await handler({ runId: 'run-1', toolName: 'show_widget', input: {} });
 
-      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', {}, undefined, requestCommandConfirmationMock, requestFilePermissionMock);
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'show_widget',
+        {},
+        expect.objectContaining({ conversationId: 'conv-1', loopId: 'loop-1' }),
+        requestCommandConfirmationMock,
+        requestFilePermissionMock,
+      );
     });
 
     it('refuses local sidecar approval outside the run whitelist', async () => {

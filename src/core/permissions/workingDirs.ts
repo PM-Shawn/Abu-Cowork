@@ -5,7 +5,7 @@
  * of "inside vs outside".
  */
 
-import { getAuthorizedDirs } from '../tools/pathSafety';
+import { getAuthorizedDirs, type AuthorizationScopeId } from '../tools/pathSafety';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 
 // Temp dirs are always considered inside (scratch space, never sensitive).
@@ -16,11 +16,11 @@ function norm(p: string): string {
 }
 
 /** All directories the agent may operate in without escalation. */
-export function allWorkingDirectories(): string[] {
+export function allWorkingDirectories(scopeId?: AuthorizationScopeId): string[] {
   const ws = useWorkspaceStore.getState().currentPath;
   const dirs = [
-    ...(ws ? [ws] : []),
-    ...getAuthorizedDirs(),
+    ...(scopeId === undefined && ws ? [ws] : []),
+    ...getAuthorizedDirs(scopeId),
     ...ALWAYS_INSIDE,
   ];
   return dirs.map(norm);

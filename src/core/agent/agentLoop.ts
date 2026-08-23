@@ -502,6 +502,8 @@ export interface AgentLoopOptions {
   /** Fail instead of staging into an already-running loop. Used by recovery
    * flows whose tool restrictions must apply from the first turn. */
   requireNewRun?: boolean;
+  /** Shell-created path authorization scope for unattended/background runs. */
+  authorizationScopeId?: string;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
@@ -545,6 +547,32 @@ export interface AgentLoopOptions {
     modelTier?: string;
     capabilitySource?: string;
   }) => void;
+}
+
+export function resolveToolContextWorkspacePath(
+  options: Pick<AgentLoopOptions, 'authorizationScopeId' | 'imContext'> | undefined,
+  conversation: { workspacePath?: string | null } | null | undefined,
+  globalWorkspacePath: string | null,
+): string | null {
+  return (
+    options?.imContext?.workspacePath ??
+    conversation?.workspacePath ??
+    (options?.authorizationScopeId !== undefined ? null : globalWorkspacePath)
+  );
+}
+
+export function buildDirectDelegateSubagentOptions(
+  baseOptions: Omit<Parameters<typeof runSubagent>[0], 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'workspaceReader'>,
+  parentOptions: Pick<AgentLoopOptions, 'allowedTools' | 'blockedTools' | 'authorizationScopeId'> | undefined,
+  trustedWorkspacePath: string | null,
+): Parameters<typeof runSubagent>[0] {
+  return {
+    ...baseOptions,
+    allowedTools: parentOptions?.allowedTools,
+    blockedTools: parentOptions?.blockedTools,
+    authorizationScopeId: parentOptions?.authorizationScopeId,
+    workspaceReader: { getCurrentPath: () => trustedWorkspacePath },
+  };
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -828,10 +856,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // first write. Headless contexts (IM / scheduled / trigger) are excluded —
   // they must not auto-create workspace directories.
   const toolContext: ToolExecutionContext = {
-    workspacePath:
-      options?.imContext?.workspacePath ??
-      _convForContext?.workspacePath ??
+    workspacePath: resolveToolContextWorkspacePath(
+      options,
+      _convForContext,
       getWorkspaceReader().getCurrentPath(),
+    ),
     loopId,
     conversationId,
     interactionMode: isInteractiveDesktop(options, _convForContext)
@@ -839,6 +868,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       : 'background',
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
+    authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(
       latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
@@ -1016,7 +1046,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
-      const result = await runSubagent({
+      const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
@@ -1027,15 +1057,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         imContext: options?.imContext,
         parentConversationId: conversationId,
         settingsReader: entrySettingsReader,
+      }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
-        // `delegate_to_agent`, so it never inherited either run-scoped tool
-        // restriction. An unattended tier is picked by the channel, but the
-        // prompt is user-authored — an IM message on a read-only channel
-        // beginning with `@researcher` delegated a subagent with no ceiling
-        // at all, which is the one hole a roster on the parent cannot see.
+        // `delegate_to_agent`, so it must inherit the parent run's effective
+        // restrictions as well as its authorization scope.
         allowedTools: options?.allowedTools,
         blockedTools: effectiveBlockedTools,
-      });
+        authorizationScopeId: options?.authorizationScopeId,
+      }, toolContext.workspacePath ?? null));
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
       // rather than throwing — deliberate for its structured-result contract, but

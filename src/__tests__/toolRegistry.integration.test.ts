@@ -4,7 +4,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { toolRegistry, executeAnyTool } from '../core/tools/registry';
-import { authorizeWorkspace, revokeWorkspace } from '../core/tools/pathSafety';
+import {
+  authorizeWorkspace,
+  checkWritePath,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  revokeWorkspace,
+  scopedAuthorizeWorkspace,
+} from '../core/tools/pathSafety';
+import { useSettingsStore } from '../stores/settingsStore';
 import { setPlatformForTest as _setPlatformForTest } from '../test/helpers';
 
 // Mock i18n. commandSafety resolves reason/label strings via
@@ -19,6 +27,11 @@ vi.mock('../i18n', () => ({
     },
     toolResult: {
       commandSafety: new Proxy({}, { get: (_t, key) => String(key) }),
+    },
+    toolErrors: {
+      userDeniedAccess: 'user denied access',
+      pathAccessDenied: 'path access denied',
+      needsAuthorization: 'needs authorization',
     },
   }),
 }));
@@ -153,6 +166,138 @@ describe('toolRegistry integration', () => {
         onFilePermission
       );
       expect(onFilePermission).toHaveBeenCalled();
+    });
+
+    it('checks, rechecks, and auto-authorizes inside the explicit run scope without falling back to global writes', async () => {
+      const ws = '/Users/testuser/Projects/scoped-registry';
+      revokeWorkspace(ws);
+      authorizeWorkspace(ws, ['read', 'write']);
+      const scopeId = createAuthorizationScope();
+      const executeFn = vi.fn().mockResolvedValue('written');
+      toolRegistry.register({
+        name: 'write_file',
+        description: 'Write file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        scopedAuthorizeWorkspace(scopeId, ws, ['read']);
+
+        const denied = await executeAnyTool(
+          'write_file',
+          { path: `${ws}/out.md` },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        );
+        expect(String(denied)).toContain('needs authorization');
+        expect(executeFn).not.toHaveBeenCalled();
+
+        const filePermission = vi.fn(async ({ path }) => {
+          scopedAuthorizeWorkspace(scopeId, path, ['write']);
+          return true;
+        });
+        const allowed = await executeAnyTool(
+          'write_file',
+          { path: `${ws}/out.md` },
+          undefined,
+          filePermission,
+          { authorizationScopeId: scopeId },
+        );
+        expect(allowed).toBe('written');
+        expect(filePermission).toHaveBeenCalledWith({
+          path: '/Users/testuser/Projects',
+          capability: 'write',
+          toolName: 'write_file',
+        }, undefined);
+
+        const filePermissionWithLoop = vi.fn(async ({ path }) => {
+          scopedAuthorizeWorkspace(scopeId, path, ['write']);
+          return true;
+        });
+        const allowedWithLoop = await executeAnyTool(
+          'write_file',
+          { path: '/Users/testuser/Desktop/scoped-registry-loop.md' },
+          undefined,
+          filePermissionWithLoop,
+          { authorizationScopeId: scopeId, loopId: 'loop-owned' },
+        );
+        expect(allowedWithLoop).toBe('written');
+        expect(filePermissionWithLoop).toHaveBeenCalledWith({
+          path: '/Users/testuser/Desktop',
+          capability: 'write',
+          toolName: 'write_file',
+        }, 'loop-owned');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+        revokeWorkspace(ws);
+      }
+    });
+
+    it('auto-authorizes scoped read access without upgrading the scope to write', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const path = '/Users/testuser/Desktop/scoped-auto-read.md';
+      const executeFn = vi.fn().mockResolvedValue('read');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = await executeAnyTool(
+          'read_file',
+          { path },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        );
+
+        expect(result).toBe('read');
+        expect(executeFn).toHaveBeenCalled();
+        expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('treats an empty explicit scope as fail-closed instead of auto-authorizing globally', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const path = '/Users/testuser/Desktop/empty-scope-auto-read.md';
+      revokeWorkspace('/Users/testuser/Desktop');
+      const executeFn = vi.fn().mockResolvedValue('read');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = await executeAnyTool(
+          'read_file',
+          { path },
+          undefined,
+          undefined,
+          { authorizationScopeId: '' },
+        );
+
+        expect(result).toBe('read');
+        expect(executeFn).toHaveBeenCalled();
+        expect((await checkWritePath(path)).allowed).toBe(false);
+        expect((await checkWritePath(path, '')).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        revokeWorkspace('/Users/testuser/Desktop');
+      }
     });
   });
 

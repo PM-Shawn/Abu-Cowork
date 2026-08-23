@@ -4,7 +4,11 @@ import {
   checkWritePath,
   checkListPath,
   authorizeWorkspace,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  getAuthorizedWritablePaths,
   revokeWorkspace,
+  scopedAuthorizeWorkspace,
   getPermissionDirectory,
   isCatastrophicDeleteTarget,
 } from './pathSafety';
@@ -129,6 +133,88 @@ describe('pathSafety', () => {
       authorizeWorkspace('/Users/testuser/Projects/myapp');
       const result = await checkReadPath('/Users/testuser/Projects/myapp');
       expect(result.allowed).toBe(true);
+    });
+
+    it('keeps an explicit read-only scope from inheriting a global write grant on the same path', async () => {
+      const ws = '/Users/testuser/Projects/scoped-global';
+      revokeWorkspace(ws);
+      authorizeWorkspace(ws, ['read', 'write']);
+      const scopeId = createAuthorizationScope();
+      try {
+        scopedAuthorizeWorkspace(scopeId, ws, ['read']);
+
+        expect((await checkReadPath(`${ws}/notes.md`, scopeId)).allowed).toBe(true);
+        const scopedWrite = await checkWritePath(`${ws}/out.md`, scopeId);
+        expect(scopedWrite.allowed).toBe(false);
+        expect(scopedWrite.needsPermission).toBe(true);
+        expect((await checkWritePath(`${ws}/out.md`)).allowed).toBe(true);
+      } finally {
+        disposeAuthorizationScope(scopeId);
+        revokeWorkspace(ws);
+      }
+    });
+
+    it('keeps concurrent scopes isolated and fails closed after disposal without touching global state', async () => {
+      const wsA = '/Users/testuser/Projects/scope-a';
+      const wsB = '/Users/testuser/Projects/scope-b';
+      const globalWs = '/Users/testuser/Projects/global-only';
+      revokeWorkspace(wsA);
+      revokeWorkspace(wsB);
+      revokeWorkspace(globalWs);
+      authorizeWorkspace(globalWs, ['read', 'write']);
+      const scopeA = createAuthorizationScope();
+      const scopeB = createAuthorizationScope();
+      try {
+        scopedAuthorizeWorkspace(scopeA, wsA, ['read']);
+        scopedAuthorizeWorkspace(scopeB, wsB, ['read', 'write']);
+
+        expect((await checkReadPath(`${wsA}/a.txt`, scopeA)).allowed).toBe(true);
+        expect((await checkWritePath(`${wsA}/a.txt`, scopeA)).allowed).toBe(false);
+        expect((await checkWritePath(`${wsA}/a.txt`, scopeB)).allowed).toBe(false);
+        expect((await checkWritePath(`${wsB}/b.txt`, scopeB)).allowed).toBe(true);
+        expect(getAuthorizedWritablePaths(scopeB)).toEqual([wsB]);
+
+        disposeAuthorizationScope(scopeA);
+
+        expect((await checkReadPath(`${wsA}/a.txt`, scopeA)).allowed).toBe(false);
+        expect(getAuthorizedWritablePaths(scopeA)).toEqual([]);
+        expect((await checkWritePath(`${globalWs}/g.txt`)).allowed).toBe(true);
+        expect((await checkWritePath(`${wsB}/b.txt`, scopeB)).allowed).toBe(true);
+      } finally {
+        disposeAuthorizationScope(scopeB);
+        revokeWorkspace(wsA);
+        revokeWorkspace(wsB);
+        revokeWorkspace(globalWs);
+      }
+    });
+
+    it('scopedAuthorizeWorkspace never falls back to global authorization when scope is missing', async () => {
+      const ws = '/Users/testuser/Projects/missing-scope';
+      revokeWorkspace(ws);
+      try {
+        scopedAuthorizeWorkspace(undefined as unknown as string, ws, ['read', 'write']);
+        scopedAuthorizeWorkspace('missing-scope', ws, ['read', 'write']);
+        scopedAuthorizeWorkspace('', ws, ['read', 'write']);
+
+        expect((await checkReadPath(`${ws}/notes.md`)).allowed).toBe(false);
+        expect((await checkWritePath(`${ws}/out.md`)).allowed).toBe(false);
+        expect((await checkWritePath(`${ws}/out.md`, '')).allowed).toBe(false);
+        expect(getAuthorizedWritablePaths('')).toEqual([]);
+      } finally {
+        revokeWorkspace(ws);
+      }
+    });
+
+    it('treats an empty explicit scope as scoped fail-closed instead of global fallback', async () => {
+      const ws = '/Users/testuser/Projects/empty-scope-global';
+      revokeWorkspace(ws);
+      authorizeWorkspace(ws, ['read', 'write']);
+      try {
+        expect((await checkWritePath(`${ws}/global.md`)).allowed).toBe(true);
+        expect((await checkWritePath(`${ws}/scoped.md`, '')).allowed).toBe(false);
+      } finally {
+        revokeWorkspace(ws);
+      }
     });
   });
 

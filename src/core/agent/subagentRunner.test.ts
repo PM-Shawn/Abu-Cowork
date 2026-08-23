@@ -200,6 +200,28 @@ describe('subagentRunner', () => {
       expect(result.tokenUsage).toEqual({ input: 10, output: 20 });
     });
 
+    it('treats an empty authorization scope as explicit and snapshots no global workspace for sidecar subagents', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+      });
+      getCurrentPathMock.mockReturnValue('/tmp/global-workspace');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'do the thing', authorizationScopeId: '' });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        authorizationScopeId?: string;
+        workspacePathSnapshot?: string | null;
+      };
+      expect(params.authorizationScopeId).toBe('');
+      expect(params.workspacePathSnapshot).toBeNull();
+    });
+
     it('uses the parent run settings snapshot for both subagent credentials and sidecar model selection', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({
@@ -232,10 +254,15 @@ describe('subagentRunner', () => {
       expect(getSubagentRunInheritance({
         conversationId: 'conv-parent',
         settingsReader: parentReader as never,
-      })).toEqual({
+      }, 'scope-parent', null)).toEqual(expect.objectContaining({
         parentConversationId: 'conv-parent',
         settingsReader: parentReader,
-      });
+        authorizationScopeId: 'scope-parent',
+      }));
+      expect(getSubagentRunInheritance({
+        conversationId: 'conv-parent',
+        settingsReader: parentReader as never,
+      }, 'scope-parent', null).workspaceReader?.getCurrentPath()).toBeNull();
 
       await runSubagent({ agent, task: 'do the thing', settingsReader: parentReader as never });
 
@@ -289,7 +316,7 @@ describe('subagentRunner', () => {
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
 
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
-      const toolResult = await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: { workspacePath: '/tmp' } });
+      const toolResult = await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: { workspacePath: '/forged' } });
 
       expect(toolResult).toBe('tool result');
       expect(executeAnyToolMock).toHaveBeenCalledWith(
@@ -297,7 +324,36 @@ describe('subagentRunner', () => {
         { path: 'x.txt' },
         confirmCb,
         filePermCb,
-        expect.objectContaining({ workspacePath: '/tmp', abortSignal: controller.signal }),
+        expect.objectContaining({ workspacePath: '/tmp/workspace', abortSignal: controller.signal }),
+      );
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('overwrites a forged sidecar workspace with null when the subagent session has no trusted workspace', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'do the thing',
+        workspaceReader: { getCurrentPath: () => null },
+      });
+
+      expect(onSidecarRequest).toHaveBeenCalledWith('tool.invoke', expect.any(Function));
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      await toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'touch ok' }, context: { workspacePath: '/forged' } });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'run_command',
+        { command: 'touch ok' },
+        undefined,
+        undefined,
+        expect.objectContaining({ workspacePath: null }),
       );
 
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });

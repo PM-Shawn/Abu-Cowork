@@ -219,6 +219,7 @@ describe('agentLoopHost', () => {
       ['resolvedCreds not an object', { ...baseParams(), resolvedCreds: null }],
       ['toolList not an array', { ...baseParams(), toolList: 'nope' }],
       ['locale not a string', { ...baseParams(), locale: 42 }],
+      ['empty authorizationScopeId', { ...baseParams(), options: { authorizationScopeId: '' } }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleAgentRun(params)).rejects.toThrow(RpcError);
       await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });

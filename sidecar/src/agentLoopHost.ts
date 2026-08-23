@@ -88,6 +88,8 @@ export interface AgentRunParams {
     images?: ImageAttachment[];
     blockedTools?: string[];
     allowedTools?: string[];
+    authorizationScopeId?: string;
+    workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
   };
@@ -141,6 +143,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
     typeof options.prePersistedUserMessageId !== 'string' || !options.prePersistedUserMessageId
   )) {
     throw new RpcError(-32602, 'Invalid params: options.prePersistedUserMessageId must be a non-empty string');
+  }
+  if (options.authorizationScopeId !== undefined && (typeof options.authorizationScopeId !== 'string' || !options.authorizationScopeId)) {
+    throw new RpcError(-32602, 'Invalid params: options.authorizationScopeId must be a non-empty string');
+  }
+  if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
   }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
@@ -729,6 +737,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       images: params.options.images,
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
+      authorizationScopeId: params.options.authorizationScopeId,
       imContext: params.options.imContext,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),

@@ -2820,6 +2820,8 @@ export interface TranslationDict {
       capCustom: string;
       /** {label} */
       capLevelLine: string;
+      /** Capability level is controlled by the user in the trigger settings UI. */
+      triggerCapabilityUiNotice: string;
       /** {filter} */
       filterLine: string;
       /** {value} */

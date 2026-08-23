@@ -2572,6 +2572,7 @@ const zhCN: TranslationDict = {
       capFull: '完全自主',
       capCustom: '自定义白名单',
       capLevelLine: '能力等级: {label}',
+      triggerCapabilityUiNotice: '能力档位由用户在触发器设置界面设置。',
       filterLine: '过滤: {filter}',
       debounceLine: '防抖: {value}',
       debounceSeconds: '{seconds}秒',

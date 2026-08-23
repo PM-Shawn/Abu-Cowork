@@ -316,7 +316,7 @@ export const delegateToAgentTool: ToolDefinition = {
         filePermissionCallback: loopCtx?.filePermissionCallback,
         allowedTools: loopCtx?.allowedTools,
         blockedTools: loopCtx?.blockedTools,
-        ...getSubagentRunInheritance(loopCtx),
+        ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
 

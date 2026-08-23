@@ -18,7 +18,7 @@ export type FilePermissionCallback = (request: {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
-}) => Promise<boolean>;
+}, loopId?: string) => Promise<boolean>;
 
 /**
  * Port #7 — abstracts subagentLoop's tool execution surface (currently a

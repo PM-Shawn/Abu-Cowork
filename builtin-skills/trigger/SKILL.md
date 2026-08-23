@@ -54,9 +54,9 @@ Content-Type: application/json
 
 ## 能力等级
 
-触发器无人值守运行，不能弹窗问用户。所以权限必须在创建时声明好。
+触发器无人值守运行，不能弹窗问用户。能力档位必须由用户在阿布的触发器设置界面中设置，模型和 `manage_trigger` 工具不能设置或提升档位。
 
-通过 `capability` 参数设置触发器的能力等级：
+`manage_trigger` 创建触发器时使用默认最小档位；创建或更新结果会提醒用户去设置界面确认能力档位。
 
 | 等级 | 说明 | 适用场景 |
 |------|------|---------|
@@ -65,11 +65,11 @@ Content-Type: application/json
 | `full` | 几乎所有操作（硬封锁的危险路径/命令仍然不可用） | 自动部署、运维操作、完整自动化 |
 | `custom` | 自定义白名单，精确控制 | 只允许特定命令/路径/工具的场景 |
 
-**不传 capability 时默认 `read_tools`，最安全。**
+**不要向 `manage_trigger` 传 `capability`。** 这个字段不会被工具接受，也不能用来设置触发器能力档位。
 
 ### custom 模式的额外参数
 
-当 `capability` 设为 `custom` 时，可通过以下参数精确控制权限：
+当用户已经在触发器设置界面把某个触发器设为 `custom` 时，可通过以下参数更新该触发器的白名单：
 
 - `allowed_commands`: 命令白名单，支持 glob 模式（如 `["npm run *", "git pull", "curl *"]`）
 - `allowed_paths`: 路径白名单，运行时自动授权（如 `["/Users/xx/project/src"]`）
@@ -79,10 +79,10 @@ Content-Type: application/json
 
 根据触发器需要做的事情，选择**最小够用**的等级：
 
-- 只需要分析、汇总、通知 → `read_tools`
-- 需要写文件但不跑命令 → `safe_tools`
-- 需要跑特定命令（如 `npm run build`）→ `custom` + `allowed_commands`
-- 需要完全自主 → `full`（创建时提醒用户风险）
+- 只需要分析、汇总、通知 → 建议用户在界面选择 `read_tools`
+- 需要写文件但不跑命令 → 建议用户在界面选择 `safe_tools`
+- 需要跑特定命令（如 `npm run build`）→ 建议用户在界面选择 `custom` 并配置命令白名单
+- 需要完全自主 → 建议用户在界面选择 `full`，并提醒用户风险
 
 ## 重要：必须使用 manage_trigger 工具
 
@@ -92,10 +92,10 @@ Content-Type: application/json
 
 1. 确认用户需求：什么事件、做什么处理
 2. 确定触发器类型：文件变化用 file，外部事件用 http，定时用 cron
-3. **根据需要的操作，选择合适的能力等级**
+3. **根据需要的操作，告诉用户应在触发器设置界面选择哪个能力等级**
 4. 设计过滤条件和执行指令（prompt）
-5. 调用 `manage_trigger` 工具创建
-6. 告知用户创建结果，包括能力等级和权限范围
+5. 调用 `manage_trigger` 工具创建，不传 `capability`
+6. 告知用户创建结果，并提醒用户到触发器设置界面设置/确认能力档位和权限范围
 
 ## Prompt 编写指南
 
@@ -116,29 +116,30 @@ $EVENT_DATA
 ### 告警分析（read_tools）
 ```
 用户：帮我创建一个触发器，收到告警就分析原因，结果发到飞书群
-→ capability: read_tools（只需要读和分析）
+→ 创建触发器，不传 capability
+→ 告知用户：建议在触发器设置界面选择 read_tools（只需要读和分析）
 ```
 
 ### 文件归档（safe_tools）
 ```
 用户：下载目录来了新 PDF 就提取摘要，归档到 /docs 目录
-→ capability: safe_tools（需要写文件）
 → workspace_path: "/Users/xx/docs"
+→ 创建触发器，不传 capability
+→ 告知用户：建议在触发器设置界面选择 safe_tools（需要写文件）
 ```
 
 ### CI 修复（custom）
 ```
 用户：CI 失败时自动修代码并提 PR
-→ capability: custom
-→ allowed_commands: ["npm run test", "npm run lint", "git *"]
-→ allowed_paths: ["/Users/xx/project"]
+→ 创建触发器，不传 capability
+→ 告知用户：建议在触发器设置界面选择 custom，并配置 allowed_commands / allowed_paths
 ```
 
 ### 全自动运维（full）
 ```
 用户：服务挂了自动重启并发通知
-→ capability: full
-→ ⚠️ 创建时提醒用户：此触发器拥有完全自主权限，请确认
+→ 创建触发器，不传 capability
+→ 告知用户：如确实需要 full，必须由用户在触发器设置界面手动选择，并确认风险
 ```
 
 ## 外部脚本示例（仅 HTTP 触发器需要）

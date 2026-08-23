@@ -1,7 +1,7 @@
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
-import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace } from './pathSafety';
+import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace, scopedAuthorizeWorkspace } from './pathSafety';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
@@ -246,7 +246,7 @@ export type FilePermissionCallback = (request: {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
-}) => Promise<boolean>;
+}, loopId?: string) => Promise<boolean>;
 
 /**
  * Map of file-related tools to their path extraction logic
@@ -387,7 +387,7 @@ export async function checkToolApproval(
       let boundary: CmdBoundary = 'unknown';
       if (!analysis.readOnly && analysis.level === 'safe' && permissionMode !== 'autonomous') {
         const cwd = (input.cwd as string | undefined) || toolContext?.workspacePath || undefined;
-        boundary = analyzeCommandBoundary(command, cwd, await getCachedHomeDir());
+        boundary = analyzeCommandBoundary(command, cwd, await getCachedHomeDir(), toolContext?.authorizationScopeId);
       }
 
       // Decide how this command is gated. 'review' (smart tier) routes to the AI reviewer.
@@ -438,7 +438,8 @@ export async function checkToolApproval(
         ? checkWritePath
         : (name === TOOL_NAMES.LIST_DIRECTORY ? checkListPath : checkReadPath);
 
-      const pathCheck = await checkFn(pathInfo.path);
+      const scopeId = toolContext?.authorizationScopeId;
+      const pathCheck = await checkFn(pathInfo.path, scopeId);
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
@@ -468,12 +469,12 @@ export async function checkToolApproval(
                 path: pathCheck.permissionPath,
                 capability: cap,
                 toolName: name,
-              });
+              }, toolContext?.loopId);
               if (!granted) {
                 return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
-              const recheck = await checkFn(pathInfo.path);
+              const recheck = await checkFn(pathInfo.path, scopeId);
               if (!recheck.allowed) {
                 return { decision: 'deny', reason: `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}` };
               }
@@ -483,7 +484,11 @@ export async function checkToolApproval(
             }
           } else {
             // allow → auto-authorize the workspace for this path
-            authorizeWorkspace(pathCheck.permissionPath);
+            if (scopeId !== undefined) {
+              scopedAuthorizeWorkspace(scopeId, pathCheck.permissionPath, [cap]);
+            } else {
+              authorizeWorkspace(pathCheck.permissionPath);
+            }
           }
         } else {
           // Hard blocked — always enforced regardless of permission mode

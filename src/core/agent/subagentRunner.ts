@@ -83,11 +83,17 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader'> | null | undefined,
-): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader'> {
+  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader' | 'authorizationScopeId'> | null | undefined,
+  authorizationScopeId?: string,
+  workspacePath?: string | null,
+): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'workspaceReader'> {
   return {
     parentConversationId: loopContext?.conversationId,
     settingsReader: loopContext?.settingsReader,
+    authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
+    ...(workspacePath !== undefined
+      ? { workspaceReader: { getCurrentPath: () => workspacePath } }
+      : {}),
   };
 }
 import { getToolInvoker } from './ports/toolInvoker';
@@ -124,6 +130,7 @@ export interface SubagentRunParams {
   parentConversationId?: string;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
+  authorizationScopeId?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -227,6 +234,9 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.filePermissionCallback,
     {
       ...((params.context as ToolExecutionContext | undefined) ?? {}),
+      workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
+      authorizationScopeId: session.options.authorizationScopeId,
+      conversationId: session.options.parentConversationId,
       abortSignal: session.options.signal,
     },
   );
@@ -305,7 +315,10 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     getActiveProvider(settingsSnapshot)?.baseUrl || undefined,
   );
 
-  const workspaceReader = options.workspaceReader ?? getWorkspaceReader();
+  const workspacePathSnapshot = options.imContext?.workspacePath
+    ?? (options.workspaceReader
+      ? options.workspaceReader.getCurrentPath()
+      : (options.authorizationScopeId !== undefined ? null : getWorkspaceReader().getCurrentPath()));
 
   return {
     runId,
@@ -316,12 +329,13 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     parentConversationId: options.parentConversationId,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
+    authorizationScopeId: options.authorizationScopeId,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
     resolvedCreds,
     tools,
-    workspacePathSnapshot: workspaceReader.getCurrentPath(),
+    workspacePathSnapshot,
   };
 }
 
@@ -378,7 +392,11 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     return runSubagentLoop(options);
   }
 
-  const session: RunSession = { options, firstToolInvokeArrived: false };
+  const sessionOptions: SubagentLoopOptions = {
+    ...options,
+    workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
+  };
+  const session: RunSession = { options: sessionOptions, firstToolInvokeArrived: false };
   sessions.set(runId, session);
 
   const signal = options.signal;

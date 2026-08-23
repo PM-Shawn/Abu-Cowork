@@ -49,6 +49,7 @@ import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { getWorkspaceReader } from './ports/workspaceReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
@@ -83,6 +84,7 @@ import {
   runAgentLoop,
   buildUserMessageContent,
   isInteractiveDesktop,
+  resolveToolContextWorkspacePath,
   type AgentLoopOptions,
   type AgentLoopResult,
 } from './agentLoop';
@@ -154,6 +156,8 @@ export interface AgentLoopRunOptions {
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
   allowedTools?: string[];
+  authorizationScopeId?: string;
+  workspacePathSnapshot?: string | null;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
@@ -993,16 +997,39 @@ async function handleToolList(): Promise<unknown> {
  * side twin: `sidecar/src/shims/authorizedPathsReaderRun.ts`. Answers "what
  * paths has the user authorized for write access?" for a locally-executed
  * `run_command` (once slice 2b registers it in `localTools/index.ts`) —
- * `pathSafety.ts`'s `authorizedWorkspaces` map is shell-only state (populated
- * by `authorizeWorkspace()`, `registry.ts`/`triggerPermission.ts`), so this
- * is the same real `getAuthorizedWritablePaths()` the in-process
- * `AuthorizedPathsReader` default wraps — single source of truth, no
- * duplicated logic. Stateless (no runId/session lookup, mirroring
- * `handleToolList` above) since the authorized-paths set is global, not
- * per-run.
+ * `pathSafety.ts`'s authorization maps are shell-only state (populated by
+ * `authorizeWorkspace()` / `scopedAuthorizeWorkspace()`), so this is the same
+ * real `getAuthorizedWritablePaths()` the in-process `AuthorizedPathsReader`
+ * default wraps — single source of truth, no duplicated logic. The request
+ * includes a runId and the shell resolves the session-owned scope; unknown
+ * runs fail closed rather than falling back to global writable paths.
  */
-async function handleWorkspaceAuthorizedPaths(): Promise<unknown> {
-  return getAuthorizedWritablePaths();
+async function handleWorkspaceAuthorizedPaths(rawParams: unknown): Promise<unknown> {
+  const params = rawParams as { runId?: unknown } | null;
+  if (!params || typeof params.runId !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid workspace.authorizedWritablePaths params: runId must be a string');
+  }
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  return getAuthorizedWritablePaths(session.options.authorizationScopeId);
+}
+
+function contextForSession(
+  session: RunSession,
+  incoming: ToolExecutionContext | undefined,
+): ToolExecutionContext {
+  return {
+    ...incoming,
+    conversationId: session.conversationId,
+    loopId: session.loopId,
+    authorizationScopeId: session.options.authorizationScopeId,
+    ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
+      ? { workspacePath: session.options.workspacePathSnapshot ?? null }
+      : {}),
+    abortSignal: session.shellAbortController.signal,
+  };
 }
 
 /**
@@ -1075,10 +1102,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
     (params.input as Record<string, unknown>) ?? {},
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
-    {
-      ...((params.context as ToolExecutionContext | undefined) ?? {}),
-      abortSignal: session.shellAbortController.signal,
-    },
+    contextForSession(session, params.context as ToolExecutionContext | undefined),
   );
 }
 
@@ -1135,7 +1159,7 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   const decision = await checkToolApproval(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
-    params.context as ToolExecutionContext | undefined,
+    contextForSession(session, params.context as ToolExecutionContext | undefined),
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
@@ -1662,6 +1686,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     toolCallToStepId: session.toolCallToStepId,
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
+    authorizationScopeId: session.options.authorizationScopeId,
   });
 }
 
@@ -1692,6 +1717,8 @@ interface AgentRunParams {
     images?: ImageAttachment[];
     blockedTools?: string[];
     allowedTools?: string[];
+    authorizationScopeId?: string;
+    workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
   };
@@ -2046,6 +2073,11 @@ async function buildAgentRunParams(
   if (!conversationSnapshot) {
     throw new Error(`buildAgentRunParams: conversation "${conversationId}" disappeared before dispatch`);
   }
+  const workspacePathSnapshot = resolveToolContextWorkspacePath(
+    options,
+    conversationSnapshot,
+    getWorkspaceReader().getCurrentPath(),
+  );
 
   // Snapshot only internal system wake-ups for this conversation at dispatch
   // time. User follow-ups remain shell-side until the current run terminates.
@@ -2065,6 +2097,8 @@ async function buildAgentRunParams(
       images: options?.images,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot,
       imContext: options?.imContext,
     },
   }));
@@ -2079,6 +2113,8 @@ async function buildAgentRunParams(
       images: options?.images,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot,
       imContext: options?.imContext,
       prePersistedUserMessageId: clientMessageId,
     },
@@ -2088,6 +2124,7 @@ async function buildAgentRunParams(
     // not be combined with this run's already-resolved credentials.
     conversationSnapshot: {
       ...conversationSnapshot,
+      workspacePath: workspacePathSnapshot,
       model: settingsForModel.activeModel,
     } as Conversation,
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
@@ -2368,6 +2405,8 @@ async function runSingleAgentLoopDispatched(
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot: params.options.workspacePathSnapshot,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,

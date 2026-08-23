@@ -136,6 +136,45 @@ describe('runCommandTool', () => {
     expect(p.extraWritablePaths).toEqual(['/reader/ws']);
   });
 
+  it('does not fall back to the global workspace for a scoped run with a null trusted workspace', async () => {
+    mockReader('/reader/ws');
+
+    await runCommandTool.execute(
+      { command: 'pwd' },
+      { authorizationScopeId: 'scope-1', workspacePath: null },
+    );
+
+    const p = shellPayload();
+    expect(p.cwd).toBeNull();
+    expect(p.extraWritablePaths).toEqual([]);
+  });
+
+  it('does not fall back to the global workspace for a scoped run with no trusted workspace field', async () => {
+    mockReader('/reader/ws');
+
+    await runCommandTool.execute(
+      { command: 'pwd' },
+      { authorizationScopeId: 'scope-1' },
+    );
+
+    const p = shellPayload();
+    expect(p.cwd).toBeNull();
+    expect(p.extraWritablePaths).toEqual([]);
+  });
+
+  it('treats an empty authorization scope as explicit and does not fall back to the global workspace', async () => {
+    mockReader('/reader/ws');
+
+    await runCommandTool.execute(
+      { command: 'pwd' },
+      { authorizationScopeId: '' },
+    );
+
+    const p = shellPayload();
+    expect(p.cwd).toBeNull();
+    expect(p.extraWritablePaths).toEqual([]);
+  });
+
   it('degrades to "no workspace" (cwd-less spawn) when the fallback reader throws — never fails the command (sidecar outside-run guard)', async () => {
     vi.mocked(getWorkspaceReader).mockReturnValue({
       getCurrentPath: () => {

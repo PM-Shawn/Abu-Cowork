@@ -86,6 +86,7 @@ describe('subagentHost', () => {
       ['uiStrings not an object', { ...baseParams(), uiStrings: null }],
       ['locale not a string', { ...baseParams(), locale: 42 }],
       ['workspacePathSnapshot not string/null', { ...baseParams(), workspacePathSnapshot: 42 }],
+      ['empty authorizationScopeId', { ...baseParams(), authorizationScopeId: '' }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleSubagentRun(params)).rejects.toThrow(RpcError);
       await expect(handleSubagentRun(params)).rejects.toMatchObject({ code: -32602 });

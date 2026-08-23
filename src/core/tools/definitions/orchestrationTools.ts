@@ -382,6 +382,7 @@ export const runAgentBatchTool: ToolDefinition = {
             filePermissionCallback: loopCtx?.filePermissionCallback,
             allowedTools: loopCtx?.allowedTools,
             blockedTools: loopCtx?.blockedTools,
+            imContext: loopCtx?.imContext,
             ...getSubagentRunInheritance(loopCtx),
             onProgress: (event) => {
               try {

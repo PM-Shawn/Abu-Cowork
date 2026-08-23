@@ -1385,6 +1385,21 @@ describe('agentLoopRunner', () => {
       expect(ctx.filePermissionCallback).toBe(customFilePerm);
     });
 
+    it('installs the session imContext into the shell LoopContext for nested delegate tools', async () => {
+      const { registerRunSession, installShellLoopContext } = await importFresh();
+      const imContext = { platform: 'dchat' as const, workspacePath: '/im/workspace' };
+      const session = {
+        ...makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }),
+        options: { imContext },
+      };
+      registerRunSession('run-1', session);
+
+      installShellLoopContext('run-1', session);
+
+      const [, ctx] = setLoopContextMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(ctx.imContext).toBe(imContext);
+    });
+
     it('removeShellLoopContext calls clearLoopContext with the session loopId', async () => {
       const { registerRunSession, removeShellLoopContext } = await importFresh();
       const session = makeSession({ loopId: 'loop-42' });
@@ -2013,6 +2028,23 @@ describe('agentLoopRunner', () => {
       const runId = (params as { runId: string }).runId;
       expect(endComputerUseTaskMock).toHaveBeenCalledOnce();
       expect(endComputerUseTaskMock).toHaveBeenCalledWith('conv-1', runId);
+    });
+
+    it('keeps imContext on both wire params and the installed shell LoopContext', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const imContext = { platform: 'dchat' as const, workspacePath: '/im/workspace' };
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello', { imContext });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        options: { imContext?: unknown };
+      };
+      expect(params.options.imContext).toBe(imContext);
+      const installedContext = setLoopContextMock.mock.calls.at(-1)?.[1] as {
+        imContext?: unknown;
+      };
+      expect(installedContext.imContext).toBe(imContext);
     });
 
     it('does not let shell-side Computer Use cleanup failure replace the settled run result', async () => {

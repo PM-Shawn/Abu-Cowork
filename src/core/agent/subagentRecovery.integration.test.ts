@@ -102,6 +102,24 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
   });
 
+  it('uses the IM workspace inherited by a delegate instead of the global workspace reader', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'do the thing',
+      imContext: { platform: 'dchat', workspacePath: '/im/workspace' },
+      workspaceReader: { getCurrentPath: () => '/global/workspace' },
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(chatOptions.systemPrompt).toContain('Path: /im/workspace');
+    expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
+  });
+
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {
     // Turn 1: empty truncation (no text, no tool calls). Turn 2: normal completion.
     mockClaudeChat

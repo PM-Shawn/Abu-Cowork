@@ -32,6 +32,7 @@ import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
+import type { IMContext } from './orchestrator';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
@@ -81,6 +82,8 @@ export interface ToolBatchParams {
   /** Per-run execution whitelist. Pattern matching follows skill allowedTools
    * semantics and is enforced before hooks or tool invocation. */
   allowedTools?: string[];
+  /** Headless IM context to pass through delegate tools into subagent runs. */
+  imContext?: IMContext;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -170,6 +173,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
+    imContext: params.imContext,
   });
 
   let completedCount = 0;

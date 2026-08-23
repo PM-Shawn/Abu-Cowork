@@ -154,6 +154,7 @@ export interface AgentLoopRunOptions {
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
   allowedTools?: string[];
+  imContext?: IMContext;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
@@ -1602,6 +1603,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     toolCallToStepId: session.toolCallToStepId,
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
+    imContext: session.options.imContext,
   });
 }
 
@@ -2308,6 +2310,7 @@ async function runSingleAgentLoopDispatched(
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      imContext: options?.imContext,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,

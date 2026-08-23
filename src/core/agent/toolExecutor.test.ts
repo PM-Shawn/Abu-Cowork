@@ -240,7 +240,11 @@ describe('executeToolBatch · hard run restrictions', () => {
 
   it('installs the frozen parent settings reader for nested delegate tools', async () => {
     const executeAnyTool = vi.fn().mockResolvedValue('ok');
-    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+    const imContext = { platform: 'dchat' as const, workspacePath: '/im/workspace' };
+    const params = {
+      ...makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool)),
+      imContext,
+    };
 
     await executeToolBatch(params);
 
@@ -249,6 +253,7 @@ describe('executeToolBatch · hard run restrictions', () => {
       expect.objectContaining({
         conversationId: 'conv-1',
         settingsReader: params.settingsReader,
+        imContext,
       }),
     );
   });

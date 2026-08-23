@@ -80,6 +80,7 @@ describe('delegateToAgentTool', () => {
     vi.mocked(getCurrentLoopContext).mockReturnValue({
       allowedTools: ['read_file'],
       blockedTools: ['request_workspace', 'abu-browser__*'],
+      imContext: { platform: 'dchat', workspacePath: '/im/workspace' },
       toolCallToStepId: new Map(),
       loopId: 'loop-1',
       conversationId: 'conv-1',
@@ -96,6 +97,7 @@ describe('delegateToAgentTool', () => {
       expect.objectContaining({
         allowedTools: ['read_file'],
         blockedTools: ['request_workspace', 'abu-browser__*'],
+        imContext: { platform: 'dchat', workspacePath: '/im/workspace' },
       }),
     );
   });

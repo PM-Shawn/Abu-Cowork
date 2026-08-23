@@ -14,8 +14,7 @@ import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
-import { extractParentConversationSummary } from '../../agent/subagentLoop';
-import { useChatStore } from '../../../stores/chatStore';
+import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { getI18n, format } from '../../../i18n';
@@ -309,17 +308,7 @@ export const runAgentBatchTool: ToolDefinition = {
     const batchId = toolExecContext?.toolCallId ?? `batch-${Date.now()}`;
 
     // ── 3. Extract parent conversation summary ─────────────────────────────
-    let parentConversationSummary: string | undefined;
-    try {
-      const chatState = useChatStore.getState();
-      const activeConvId = chatState.activeConversationId;
-      if (activeConvId) {
-        const messages = chatState.conversations[activeConvId]?.messages ?? [];
-        parentConversationSummary = extractParentConversationSummary(messages);
-      }
-    } catch {
-      // Non-critical
-    }
+    const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };

@@ -3,7 +3,7 @@ import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { extractParentConversationSummary } from '../../agent/subagentLoop';
+import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
@@ -285,17 +285,7 @@ export const delegateToAgentTool: ToolDefinition = {
     }
 
     // 6. Extract parent conversation summary for context injection
-    let parentConversationSummary: string | undefined;
-    try {
-      const chatState = useChatStore.getState();
-      const activeConvId = chatState.activeConversationId;
-      if (activeConvId) {
-        const messages = chatState.conversations[activeConvId]?.messages ?? [];
-        parentConversationSummary = extractParentConversationSummary(messages);
-      }
-    } catch {
-      // Non-critical: proceed without parent context
-    }
+    const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // 7. Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(

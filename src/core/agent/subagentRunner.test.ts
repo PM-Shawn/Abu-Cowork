@@ -8,8 +8,10 @@
  * exactly once" / "capture the ONE registered tool.invoke handler" tests
  * need that isolation.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeAll, beforeEach } from 'vitest';
 import type { SubagentDefinition } from '../../types';
+import type { SubagentLoopOptions } from './subagentLoop';
+import type { SubagentRunParams } from './subagentRunner';
 
 // ── Mocked dependencies (thin forwarding factories over stable outer
 // vi.fn() proxies — survives vi.resetModules() per-test re-import, same
@@ -154,6 +156,108 @@ describe('subagentRunner', () => {
     resolveEffectiveLlmCredsMock.mockReset();
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
     emitHookMock.mockClear();
+  });
+
+  describe('wire projection contract', () => {
+    it('keeps SubagentRunParams and SubagentLoopOptions projection fields explicit and exhaustive', async () => {
+      const {
+        SUBAGENT_RUN_WIRE_FIELDS,
+        SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS,
+      } = await importFresh();
+
+      type WireField = typeof SUBAGENT_RUN_WIRE_FIELDS[number];
+      type MissingRunParam = Exclude<keyof SubagentRunParams, WireField>;
+      expectTypeOf<MissingRunParam>().toEqualTypeOf<never>();
+
+      type LocalOnlyField = typeof SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS[number];
+      type WireOptionField =
+        | 'agent'
+        | 'task'
+        | 'context'
+        | 'parentConversationSummary'
+        | 'parentConversationId'
+        | 'imContext'
+        | 'allowedTools'
+        | 'blockedTools';
+      type CoveredOptionField = WireOptionField | LocalOnlyField;
+      type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
+      expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
+
+      expect(SUBAGENT_RUN_WIRE_FIELDS).toEqual([
+        'runId',
+        'agent',
+        'task',
+        'context',
+        'parentConversationSummary',
+        'parentConversationId',
+        'imContext',
+        'allowedTools',
+        'blockedTools',
+        'locale',
+        'uiStrings',
+        'settingsSnapshot',
+        'resolvedCreds',
+        'tools',
+        'workspacePathSnapshot',
+      ]);
+      expect(SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS).toEqual([
+        'signal',
+        'commandConfirmCallback',
+        'filePermissionCallback',
+        'onProgress',
+        'settingsReader',
+        'toolInvoker',
+        'capsPort',
+        'workspaceReader',
+      ]);
+    });
+
+    it('serializes every shell-side wire field onto subagent.run params and omits per-run ports', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'completed',
+      });
+      const { SUBAGENT_RUN_WIRE_FIELDS, SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS, runSubagent } = await importFresh();
+      const signal = new AbortController().signal;
+      const commandConfirmCallback = vi.fn();
+      const filePermissionCallback = vi.fn();
+      const onProgress = vi.fn();
+
+      await runSubagent({
+        agent,
+        task: 'wire everything serializable',
+        context: 'ctx',
+        parentConversationSummary: 'summary',
+        parentConversationId: 'conv-1',
+        imContext: { workspacePath: '/im/ws' } as never,
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*'],
+        signal,
+        commandConfirmCallback,
+        filePermissionCallback,
+        onProgress,
+        settingsReader: { getSnapshot: () => ({ agentMaxTurns: 5 }) } as never,
+        toolInvoker: {
+          getAllTools: () => [],
+          executeAnyTool: vi.fn(),
+          toolResultToString: String,
+        } as never,
+        capsPort: { get: () => undefined, recordMaxOutputTokens: vi.fn(), recordContextWindow: vi.fn(), recordReasoningObserved: vi.fn() } as never,
+        workspaceReader: { getCurrentPath: () => '/explicit/ws' } as never,
+      });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(Object.keys(wireParams).sort()).toEqual([...SUBAGENT_RUN_WIRE_FIELDS].sort());
+      expect(wireParams.workspacePathSnapshot).toBe('/explicit/ws');
+      for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
+        expect(wireParams).not.toHaveProperty(localField);
+      }
+    });
   });
 
   describe('routing', () => {

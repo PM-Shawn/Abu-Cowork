@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
 import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import type { SubagentHostRunParams } from './subagentHost';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -24,7 +25,7 @@ vi.mock('./agentLoopHost', () => ({
   findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
 }));
 
-import { handleSubagentRun, handleSubagentAbort, __getActiveSubagentRunCount } from './subagentHost';
+import { handleSubagentRun, handleSubagentAbort, __getActiveSubagentRunCount, SUBAGENT_HOST_RUN_WIRE_FIELDS } from './subagentHost';
 
 // Unique default runId per call — `activeRuns` is real module-level state
 // that persists across tests within this file (no reset hook exists for
@@ -83,6 +84,30 @@ describe('subagentHost', () => {
   });
 
   describe('param validation', () => {
+    it('keeps the sidecar-side SubagentRunParams field list explicit and exhaustive', () => {
+      type HostWireField = typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number];
+      type MissingHostRunParam = Exclude<keyof SubagentHostRunParams, HostWireField>;
+      expectTypeOf<MissingHostRunParam>().toEqualTypeOf<never>();
+
+      expect(SUBAGENT_HOST_RUN_WIRE_FIELDS).toEqual([
+        'runId',
+        'agent',
+        'task',
+        'context',
+        'parentConversationSummary',
+        'parentConversationId',
+        'imContext',
+        'allowedTools',
+        'blockedTools',
+        'locale',
+        'uiStrings',
+        'settingsSnapshot',
+        'resolvedCreds',
+        'tools',
+        'workspacePathSnapshot',
+      ]);
+    });
+
     it.each([
       ['non-object params', 42],
       ['missing runId', { ...baseParams(), runId: undefined }],
@@ -236,6 +261,39 @@ describe('subagentHost', () => {
       expect(runSubagentLoopMock).toHaveBeenCalledWith(expect.objectContaining({
         allowedTools: ['read_*'],
         blockedTools: ['abu-browser__*', 'request_workspace'],
+      }));
+    });
+
+    it('reconstructs every wire-backed SubagentLoopOptions field from one request', async () => {
+      runSubagentLoopMock.mockResolvedValue(resultShape('ok'));
+      const agentOverride = {
+        name: 'wire-agent',
+        description: 'wire description',
+        systemPrompt: 'wire prompt',
+        filePath: '__preset__',
+      };
+      const imContext = { platform: 'dchat', workspacePath: '/im/workspace' };
+
+      await handleSubagentRun(baseParams({
+        agent: agentOverride,
+        task: 'wire task',
+        context: 'wire context',
+        parentConversationSummary: 'wire summary',
+        parentConversationId: 'parent-conversation',
+        imContext,
+        allowedTools: ['read_*'],
+        blockedTools: ['write_*'],
+      }));
+
+      expect(runSubagentLoopMock).toHaveBeenCalledWith(expect.objectContaining({
+        agent: agentOverride,
+        task: 'wire task',
+        context: 'wire context',
+        parentConversationSummary: 'wire summary',
+        parentConversationId: 'parent-conversation',
+        imContext,
+        allowedTools: ['read_*'],
+        blockedTools: ['write_*'],
       }));
     });
 

@@ -33,6 +33,7 @@ import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
+import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
 
 interface SerializableToolDefinition {
   name: string;
@@ -46,7 +47,7 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   return wireContext;
 }
 
-interface SubagentRunParams {
+export interface SubagentHostRunParams {
   runId: string;
   agent: SubagentDefinition;
   task: string;
@@ -67,11 +68,22 @@ interface SubagentRunParams {
   workspacePathSnapshot: string | null;
 }
 
+export const SUBAGENT_HOST_RUN_WIRE_FIELDS =
+  SHARED_SUBAGENT_RUN_WIRE_FIELDS satisfies readonly (keyof SubagentHostRunParams)[];
+
+type AssertNever<T extends never> = T;
+
+/** Reverse exhaustiveness gate in production code; sidecar tests are not a
+ * substitute for `tsc` checking newly-added host params against the wire. */
+export type SubagentHostRunParamsWireExhaustive = AssertNever<
+  Exclude<keyof SubagentHostRunParams, typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number]>
+>;
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function parseSubagentRunParams(params: unknown): SubagentRunParams {
+function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (!isRecord(params)) throw new RpcError(-32602, 'Invalid params: expected object');
   const { runId, agent, task, tools, settingsSnapshot, resolvedCreds, uiStrings, locale } = params;
   if (typeof runId !== 'string' || !runId) {
@@ -114,7 +126,7 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: workspacePathSnapshot must be a string or null');
   }
-  return params as unknown as SubagentRunParams;
+  return params as unknown as SubagentHostRunParams;
 }
 
 /**

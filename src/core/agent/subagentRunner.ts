@@ -98,6 +98,7 @@ import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
+import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from './subagentWireContract';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
@@ -145,6 +146,47 @@ export interface SubagentRunParams {
    */
   workspacePathSnapshot: string | null;
 }
+
+export const SUBAGENT_RUN_WIRE_FIELDS =
+  SHARED_SUBAGENT_RUN_WIRE_FIELDS satisfies readonly (keyof SubagentRunParams)[];
+
+type AssertNever<T extends never> = T;
+
+/**
+ * Production-module type gates (tests are excluded from tsconfig.app.json):
+ * - every request param must appear in the canonical wire tuple;
+ * - every loop option must be explicitly classified as wire-backed or local.
+ *
+ * Adding a field without updating this contract now fails `npm run typecheck`.
+ */
+export type SubagentRunParamsWireExhaustive = AssertNever<
+  Exclude<keyof SubagentRunParams, typeof SUBAGENT_RUN_WIRE_FIELDS[number]>
+>;
+
+/** Loop options carried by the request are derived from the canonical tuple,
+ * not a second hand-maintained classification that could drift from params. */
+export type SubagentWireBackedLoopOptionField = Extract<
+  typeof SUBAGENT_RUN_WIRE_FIELDS[number],
+  keyof SubagentLoopOptions
+>;
+
+export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
+  'signal',
+  'commandConfirmCallback',
+  'filePermissionCallback',
+  'onProgress',
+  'settingsReader',
+  'toolInvoker',
+  'capsPort',
+  'workspaceReader',
+] as const satisfies readonly (keyof SubagentLoopOptions)[];
+
+export type SubagentLoopOptionsWireExhaustive = AssertNever<
+  Exclude<
+    keyof SubagentLoopOptions,
+    SubagentWireBackedLoopOptionField | typeof SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS[number]
+  >
+>;
 
 /** Wire-safe SubagentResult projection — plain data, matches `new SubagentResult(...)`'s constructor param shape exactly so the shell can reconstruct a real instance. */
 interface SerializableSubagentResult {

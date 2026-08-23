@@ -48,16 +48,29 @@ const fakeFetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
         json: async () => ({
           ret: 0,
           get_updates_buf: 'cursor1',
-          msgs: [{
-            message_id: 424242,
-            from_user_id: 'user@im.wechat',
-            message_type: 1,
-            context_token: 'ctx',
-            item_list: [{
-              type: 2,
-              image_item: { encrypt_query_param: '/enc?x=1', aes_key: KEY_B64, encrypt_type: 1 },
-            }],
-          }],
+          // A photo followed by a text message, exactly as WeChat delivers
+          // "<photo>" then "describe this". Order must be preserved even though
+          // the photo needs an async CDN download and the text does not.
+          msgs: [
+            {
+              message_id: 424242,
+              from_user_id: 'user@im.wechat',
+              message_type: 1,
+              context_token: 'ctx',
+              item_list: [{
+                type: 2,
+                // inbound nests the CDN ref under `media` (2.4.6 wire shape)
+                image_item: { media: { encrypt_query_param: '/enc?x=1', aes_key: KEY_B64, encrypt_type: 1 } },
+              }],
+            },
+            {
+              message_id: 424243,
+              from_user_id: 'user@im.wechat',
+              message_type: 1,
+              context_token: 'ctx',
+              item_list: [{ type: 1, text_item: { text: '描述这图片' } }],
+            },
+          ],
         }),
       } as unknown as Response;
     }
@@ -79,14 +92,24 @@ describe('WeChatInboundAdapter inbound image', () => {
     localStorage.clear();
   });
 
+  /** Collect the first `n` non-system inbound messages, in arrival order. */
+  function collect(adapter: WeChatInboundAdapter, n: number): Promise<InboundMessage[]> {
+    const out: InboundMessage[] = [];
+    return new Promise<InboundMessage[]>((resolve) => {
+      adapter.onMessage((m) => {
+        if (m.sender.id === '__system__') return;
+        out.push(m);
+        if (out.length >= n) resolve(out);
+      });
+    });
+  }
+
   it('emits an InboundMessage with a decoded base64 image attachment', async () => {
     const adapter = new WeChatInboundAdapter();
-    const received = new Promise<InboundMessage>((resolve) => {
-      adapter.onMessage((m) => { if (m.sender.id !== '__system__') resolve(m); });
-    });
+    const received = collect(adapter, 1);
 
     await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
-    const msg = await received;
+    const [msg] = await received;
     await adapter.disconnect();
 
     expect(msg.images).toBeDefined();
@@ -96,5 +119,22 @@ describe('WeChatInboundAdapter inbound image', () => {
     expect(msg.images![0].mediaType).toBe('image/jpeg');
     // text carries a placeholder; the image block is what the model sees
     expect(msg.message.content).toContain('[图片]');
+  }, 10000);
+
+  it('preserves arrival order — a photo is dispatched before the text sent after it', async () => {
+    // Regression: handleMessage was fire-and-forget, so the text message (no
+    // network) overtook the photo (async CDN download) and the agent answered
+    // "describe this" before it had the image — then claimed it saw nothing.
+    const adapter = new WeChatInboundAdapter();
+    const received = collect(adapter, 2);
+
+    await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
+    const msgs = await received;
+    await adapter.disconnect();
+
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0].images?.length).toBe(1); // photo first, with its image attached
+    expect(msgs[1].message.content).toContain('描述这图片'); // then the text
+    expect(msgs[1].images).toBeUndefined();
   }, 10000);
 });

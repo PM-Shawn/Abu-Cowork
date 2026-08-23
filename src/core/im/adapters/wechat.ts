@@ -18,6 +18,7 @@ import { readFile } from '../../tools/fsBridge';
 import { getBaseName } from '../../../utils/pathUtils';
 import { tempDir } from '@tauri-apps/api/path';
 import type { ImageAttachment } from '../../../types';
+import { createLogger } from '../../logging/logger';
 import { BaseAdapter } from './base';
 import type {
   AdapterConfig,
@@ -54,17 +55,23 @@ interface ILinkMessage {
   item_list: ILinkItem[];
 }
 
+// Inbound items nest the CDN reference under `media` (verified against the
+// official plugin 2.4.6: image/file/voice all read `*_item.media.*`). Images may
+// additionally carry `aeskey` (a raw 16-byte key as a hex string) which takes
+// precedence over `media.aes_key`. `media.full_url` is a ready-made download URL
+// the server sometimes provides instead of encrypt_query_param.
 type ILinkItem =
   | { type: 1; text_item: { text: string } }
-  | { type: 2; image_item: CDNMedia & { mid_size?: CDNMedia; thumb_size?: CDNMedia } }
-  | { type: 3; voice_item: CDNMedia & { encode_type: string; text?: string; playtime: number } }
-  | { type: 4; file_item: CDNMedia & { file_name: string; md5: string; len: number } }
-  | { type: 5; video_item: CDNMedia & { video_size: number; play_length: number; thumb_media: CDNMedia } };
+  | { type: 2; image_item: { media?: CDNMedia; aeskey?: string; mid_size?: number; thumb_size?: number } }
+  | { type: 3; voice_item: { media?: CDNMedia; encode_type?: string; text?: string; playtime?: number } }
+  | { type: 4; file_item: { media?: CDNMedia; file_name: string; md5?: string; len?: number } }
+  | { type: 5; video_item: { media?: CDNMedia; video_size?: number; play_length?: number; thumb_media?: CDNMedia } };
 
 interface CDNMedia {
-  encrypt_query_param: string;
-  aes_key: string; // base64-encoded 16-byte key
-  encrypt_type: 1;
+  encrypt_query_param?: string;
+  aes_key?: string; // base64-encoded key (raw 16 bytes, or base64 of a 32-char hex string)
+  encrypt_type?: 1;
+  full_url?: string; // ready-made download URL (used instead of encrypt_query_param when present)
 }
 
 // ── Outbound media (getuploadurl → CDN upload → sendmessage) ──
@@ -79,6 +86,11 @@ const UPLOAD_MEDIA_TYPE = { IMAGE: 1, VIDEO: 2, FILE: 3, VOICE: 4 } as const;
 export const WECHAT_MAX_OUTBOUND_BYTES = 25 * 1024 * 1024;
 
 const CDN_UPLOAD_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c';
+const CDN_DOWNLOAD_BASE = 'https://novac2c.cdn.weixin.qq.com/c2c';
+
+// Logs land in the captured app log (renderer console.* does not), so inbound
+// media diagnostics are visible in ~/Library/.../logs/<date>.log.
+const wechatLog = createLogger('wechat-im');
 
 // Deliberately separate from toolHelpers' IMAGE_EXTENSIONS (which is for reading
 // files as vision content): this decides outbound WeChat *routing* — image bubble
@@ -158,8 +170,21 @@ function makeILinkHeaders(token?: string): Record<string, string> {
   return headers;
 }
 
-function aes128EcbDecrypt(data: Uint8Array, keyBase64: string): Uint8Array {
-  const keyBytes = Uint8Array.from(atob(keyBase64), (c) => c.charCodeAt(0));
+// Parse an inbound aes_key field into the raw 16 key bytes. Two encodings appear
+// in the wild (verified against the official plugin's parseAesKey):
+//   - base64(raw 16 bytes)           → images (media.aes_key)
+//   - base64(32-char hex string)     → file / voice / video
+function parseInboundAesKey(aesKeyBase64: string): Uint8Array {
+  const decoded = Uint8Array.from(atob(aesKeyBase64), (c) => c.charCodeAt(0));
+  if (decoded.length === 16) return decoded;
+  if (decoded.length === 32) {
+    const ascii = String.fromCharCode(...decoded);
+    if (/^[0-9a-fA-F]{32}$/.test(ascii)) return aesjs.utils.hex.toBytes(ascii);
+  }
+  throw new Error(`[WeChat] aes_key must decode to 16 raw bytes or a 32-char hex string (got ${decoded.length} bytes)`);
+}
+
+function aes128EcbDecryptBytes(data: Uint8Array, keyBytes: Uint8Array): Uint8Array {
   // aes-js v3 ECB mode; operates on raw blocks (no built-in padding removal)
   const aesEcb = new aesjs.ModeOfOperation.ecb(keyBytes);
   const decrypted = aesEcb.decrypt(data);
@@ -282,18 +307,35 @@ async function uploadMediaToCdn(
   };
 }
 
+/**
+ * Download + AES-128-ECB decrypt an inbound media item's CDN blob.
+ *
+ * Field layout verified against the official plugin 2.4.6:
+ *   - URL: `media.full_url` if present, else the CDN download endpoint
+ *     `${CDN_DOWNLOAD_BASE}/download?encrypted_query_param=<param>` (the raw
+ *     param is NOT a path — it must be a query arg).
+ *   - Key: `aeskeyHex` (image_item.aeskey, a raw-hex string) takes precedence;
+ *     otherwise `media.aes_key` (base64 of raw-16 or of a 32-char hex string).
+ */
 async function downloadAndDecryptMedia(
-  encryptQueryParam: string,
-  aesKeyB64: string,
+  media: CDNMedia,
+  aesKeyHex: string | undefined,
   fileName?: string,
 ): Promise<{ path: string; bytes: Uint8Array }> {
-  const cdnUrl = `https://novac2c.cdn.weixin.qq.com/c2c${encryptQueryParam}`;
+  const keyBytes = aesKeyHex
+    ? aesjs.utils.hex.toBytes(aesKeyHex)
+    : parseInboundAesKey(media.aes_key ?? '');
+
+  const cdnUrl = media.full_url
+    ? media.full_url
+    : `${CDN_DOWNLOAD_BASE}/download?encrypted_query_param=${encodeURIComponent(media.encrypt_query_param ?? '')}`;
+
   const f = await getTauriFetch();
   const resp = await f(cdnUrl);
   if (!resp.ok) throw new Error(`CDN download failed: HTTP ${resp.status}`);
 
   const buf = await resp.arrayBuffer();
-  const decrypted = aes128EcbDecrypt(new Uint8Array(buf), aesKeyB64);
+  const decrypted = aes128EcbDecryptBytes(new Uint8Array(buf), keyBytes);
 
   const ext = fileName?.split('.').pop() ?? 'bin';
   const name = `wechat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.${ext}`;
@@ -512,7 +554,12 @@ export class WeChatInboundAdapter implements InboundAdapter {
 
           sharedContextTokens.set(msg.from_user_id, msg.context_token);
           persistSharedContextTokens();
-          void this.handleMessage(msg);
+          // Await, do NOT fire-and-forget: handleMessage downloads+decrypts media
+          // for image/file items, so a text message sent right after a photo would
+          // otherwise overtake it and reach the agent first. WeChat's ordering is
+          // meaningful ("<photo>" then "describe this"), so a batch must be
+          // dispatched strictly in order.
+          await this.handleMessage(msg);
         }
 
         failCount = 0;
@@ -542,9 +589,19 @@ export class WeChatInboundAdapter implements InboundAdapter {
           break;
         case 2: {
           try {
+            // Ground-truth diagnostic: dump the real inbound image_item shape so
+            // we can see exactly which fields the server sends vs what we read.
+            wechatLog.warn('inbound image_item shape', {
+              keys: Object.keys(item.image_item ?? {}),
+              mediaKeys: Object.keys(item.image_item?.media ?? {}),
+              hasAeskey: Boolean(item.image_item?.aeskey),
+              raw: JSON.stringify(item.image_item).slice(0, 400),
+            });
+            const media = item.image_item.media;
+            if (!media?.encrypt_query_param && !media?.full_url) throw new Error('image_item has no media ref');
             const { bytes } = await downloadAndDecryptMedia(
-              item.image_item.encrypt_query_param,
-              item.image_item.aes_key,
+              media,
+              item.image_item.aeskey, // raw-hex key, takes precedence over media.aes_key
               'image.jpg',
             );
             images.push({
@@ -552,8 +609,10 @@ export class WeChatInboundAdapter implements InboundAdapter {
               data: bytesToBase64(bytes),
               mediaType: imageMediaTypeFor('jpg'),
             });
+            wechatLog.warn('inbound image decoded ok', { bytes: images[images.length - 1]?.data.length ?? 0 });
             parts.push('[图片]');
-          } catch {
+          } catch (err) {
+            wechatLog.error('inbound image download failed', { error: err instanceof Error ? err.message : String(err) });
             parts.push('[图片（加载失败）]');
           }
           break;
@@ -566,15 +625,18 @@ export class WeChatInboundAdapter implements InboundAdapter {
         }
         case 4: {
           try {
+            const media = item.file_item.media;
+            if (!media?.encrypt_query_param && !media?.full_url) throw new Error('file_item has no media ref');
             const { path } = await downloadAndDecryptMedia(
-              item.file_item.encrypt_query_param,
-              item.file_item.aes_key,
+              media,
+              undefined, // files use media.aes_key (base64 of hex)
               item.file_item.file_name,
             );
             // Keep the local path in the text so the agent can read_file it
             // (files aren't vision content; the path is how it reaches them).
             parts.push(`[文件: ${item.file_item.file_name}, 路径: ${path}]`);
-          } catch {
+          } catch (err) {
+            console.error('[WeChat] inbound file download failed:', err);
             parts.push(`[文件: ${item.file_item.file_name}（加载失败）]`);
           }
           break;

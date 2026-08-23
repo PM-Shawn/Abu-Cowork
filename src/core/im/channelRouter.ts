@@ -158,6 +158,17 @@ class IMChannelRouter {
       const resolveResult = sessionMapper.resolve(message, channel, capability);
       const { session, isRecovered, hasRecoverableSession, recoverableContext } = resolveResult;
 
+      // 1a. Hydrate the conversation before any run touches it. Conversations are
+      // lazily loaded (and evicted by `unloadOldConversations`), so a message for
+      // a session the desktop hasn't opened recently finds no in-memory record:
+      // `buildAgentRunParams` then throws "no conversation record" and the
+      // in-process fallback silently skips upgrading the persisted user message —
+      // which drops inbound image attachments and leaves the message stuck in
+      // `pending` ("发送失败" in the UI). Loading first keeps both paths whole.
+      if (!useChatStore.getState().conversations[session.conversationId]) {
+        await useChatStore.getState().loadConversation(session.conversationId);
+      }
+
       // 1b. Auto-extract memories from archived session (non-blocking)
       if (resolveResult.archivedConversationId) {
         const extractWorkspace = channel.workspacePaths[0] ?? null;

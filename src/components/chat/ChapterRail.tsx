@@ -22,17 +22,47 @@ import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
  *  rail reads as an even scale rather than a ragged bar chart. State is carried
  *  by colour (current) and weight (hover) instead. */
 const TICK_BASE =
-  'relative block w-[22px] h-[10px] border-0 p-0 bg-transparent cursor-pointer ' +
+  'relative block w-[28px] h-[10px] border-0 p-0 bg-transparent cursor-pointer ' +
   "before:content-[''] before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 " +
   'before:w-[5px] before:h-[2px] before:rounded-[1px] before:bg-[var(--abu-text-placeholder)] ' +
-  'before:opacity-75 before:transition-all before:duration-150 ' +
-  'hover:before:w-[10px] hover:before:h-[3px] hover:before:bg-[var(--abu-text-primary)] hover:before:opacity-100 ' +
+  'before:opacity-75 before:transition-all before:duration-150 before:ease-out ' +
   'focus-visible:outline-2 focus-visible:outline-[var(--abu-clay)] focus-visible:outline-offset-2';
 
 /** Condensed rows tighten the pitch only — the tick keeps its length, so a long
  *  conversation still reads as the same scale, just a denser one. */
 const TICK_CONDENSED = 'h-[6px]';
 
+/**
+ * Fisheye ramp, indexed by distance from the tick under the pointer.
+ *
+ * A single tick lighting up on hover makes a 5x2px target feel like a dare: you
+ * get no feedback until you are already on it. Letting the neighbours swell by
+ * proximity — the macOS dock trick ChatGPT uses on the same control — turns the
+ * rail into something that reacts as the pointer approaches, so the eye leads
+ * the cursor onto the right one. The transition on every tick is what makes the
+ * whole column read as one soft wave rather than five independent flickers.
+ *
+ * Only the tick under the pointer takes colour. Tinting the neighbours too
+ * reads as three separate states rather than one target with a run-up, and it
+ * competes with the accent that means "the chapter you are reading". The
+ * neighbours carry the wave through length alone.
+ *
+ * The resting 5px is deliberately tiny — the rail has to sit beside the text
+ * without competing with it. That makes the swell do double duty: it is both
+ * the "you are on this one" signal and the target itself, so it goes to 24px,
+ * near five times the resting length. The button is 28px wide throughout, so
+ * the whole of the swollen line is clickable rather than just its first 5px.
+ *
+ * Distances past the end of this ramp keep the resting size.
+ */
+const TICK_RAMP = [
+  'before:w-[24px] before:h-[3px] before:bg-[var(--abu-clay)] before:opacity-100',
+  'before:w-[16px]',
+  'before:w-[10px]',
+];
+
+/** The chapter being read. Colour only — the ramp above owns the sizes, so a
+ *  current tick under the pointer still swells like any other. */
 const TICK_CURRENT = 'before:bg-[var(--abu-clay)] before:opacity-100';
 
 /** Breathing room kept between the preview card and the window edge. */
@@ -138,6 +168,9 @@ export default function ChapterRail({
                   // ends of the scale, and condensing them would make the rail's
                   // top and bottom drift as the conversation grows.
                   condensed && index > 0 && index < chapters.length - 1 && TICK_CONDENSED,
+                  peeked && TICK_RAMP[Math.abs(index - peeked.index)],
+                  // After the ramp, so the chapter being read keeps its colour
+                  // even while a neighbour is hovered.
                   index === currentIndex && TICK_CURRENT,
                 )}
                 onMouseEnter={() => showPeek(index)}

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
@@ -35,6 +35,9 @@ const TICK_CONDENSED = 'h-[6px]';
 
 const TICK_CURRENT = 'before:bg-[var(--abu-clay)] before:opacity-100';
 
+/** Breathing room kept between the preview card and the window edge. */
+const VIEWPORT_GUTTER = 16;
+
 export default function ChapterRail({
   chapters,
   currentIndex,
@@ -46,7 +49,14 @@ export default function ChapterRail({
 }) {
   const { t } = useI18n();
   const [peeked, setPeeked] = useState<{ index: number; top: number } | null>(null);
+  // Pixels to lift the preview card by so it stays inside the window. Measured
+  // rather than estimated: the card is one line or two depending on whether the
+  // chapter has a summary yet, so any hard-coded height would be wrong half the
+  // time.
+  const [peekShift, setPeekShift] = useState(0);
   const tickRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const ticksRef = useRef<HTMLDivElement>(null);
+  const peekRef = useRef<HTMLDivElement>(null);
 
   // The preview card is aligned to the tick under the cursor, so it is measured
   // from the live element rather than computed from an index: the condensed
@@ -55,8 +65,26 @@ export default function ChapterRail({
   const showPeek = useCallback((index: number) => {
     const tick = tickRefs.current[index];
     if (!tick) return;
+    setPeekShift(0);
     setPeeked({ index, top: tick.offsetTop - 10 });
   }, []);
+
+  // Keep the card on screen. It is anchored to a tick, and ticks near the foot
+  // of a long rail sit close enough to the composer that a two-line card would
+  // hang off the bottom of the window.
+  useLayoutEffect(() => {
+    if (!peeked) return;
+    const card = peekRef.current;
+    if (!card) return;
+    const overflow = card.getBoundingClientRect().bottom - (window.innerHeight - VIEWPORT_GUTTER);
+    if (overflow > 0) setPeekShift((current) => current + overflow);
+  }, [peeked]);
+
+  // Once the rail scrolls, the current tick can fall outside it — most visibly
+  // on open, which lands on the newest chapter at the very bottom of the list.
+  useEffect(() => {
+    tickRefs.current[currentIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [currentIndex, chapters.length]);
 
   if (chapters.length === 0) return null;
 
@@ -84,7 +112,19 @@ export default function ChapterRail({
           className="absolute left-1 -translate-y-1/2 py-1.5 px-1"
           onMouseLeave={() => setPeeked(null)}
         >
-          <div className="flex flex-col items-start">
+          {/* The rail's height is 10px per chapter (6px condensed), so it grows
+              without limit: 150 chapters already exceed a chat pane, and since
+              the rail is centred the overflow is clipped at BOTH ends — the
+              oldest and newest ticks silently become unreachable. Cap it and
+              let the excess scroll instead. The scrollbar is hidden because a
+              second one beside the transcript reads as chrome, not navigation;
+              the effect below keeps the current tick in view, which is what the
+              scrollbar would otherwise be for. */}
+          <div
+            ref={ticksRef}
+            className="flex flex-col items-start max-h-[60vh] overflow-y-auto
+                       [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {chapters.map((chapter, index) => (
               <button
                 key={chapter.messageId}
@@ -110,9 +150,10 @@ export default function ChapterRail({
 
           {preview && peeked && (
             <div
+              ref={peekRef}
               className="absolute left-[calc(100%+10px)] w-[300px] flex flex-col gap-1 px-3 py-2.5 pointer-events-none
                          rounded-xl bg-[var(--abu-bg-base)] border border-[var(--abu-border)] shadow-lg"
-              style={{ top: peeked.top }}
+              style={{ top: peeked.top - peekShift }}
             >
               <span className="text-h-xs text-[var(--abu-text-primary)] truncate">{preview.title}</span>
               {preview.summary && (

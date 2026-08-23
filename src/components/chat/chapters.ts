@@ -174,6 +174,20 @@ export function topVisibleGroup(
 }
 
 /**
+ * Below this many chapters the rail is not worth drawing.
+ *
+ * One or two ticks navigate nothing — the whole conversation is already on
+ * screen — so the rail would be pure ornament next to the text. Three is the
+ * first count where scrubbing beats scrolling.
+ */
+export const MIN_CHAPTERS_FOR_RAIL = 3;
+
+/** Whether a conversation has enough chapters for the rail to earn its place. */
+export function shouldShowRail(chapters: Chapter[]): boolean {
+  return chapters.length >= MIN_CHAPTERS_FOR_RAIL;
+}
+
+/**
  * Above this many chapters the rail switches to its condensed pitch: the ticks
  * keep their length and only the row spacing tightens, so the rail's height
  * stops growing with the conversation instead of turning into a scrollbar of

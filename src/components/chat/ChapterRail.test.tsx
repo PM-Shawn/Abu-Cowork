@@ -81,6 +81,31 @@ describe('ChapterRail', () => {
     expect(screen.getByRole('navigation').querySelectorAll('.line-clamp-3')).toHaveLength(0);
   });
 
+  it('caps its own height so a long conversation cannot clip the end ticks', () => {
+    // 10px per tick means 150 chapters overflow a chat pane, and because the
+    // rail is centred the overflow is cut off at BOTH ends — the oldest and
+    // newest ticks would be unreachable without this cap.
+    const many = Array.from({ length: 150 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+
+    const list = screen.getAllByRole('button')[0].parentElement;
+    expect(list?.className).toContain('max-h-[60vh]');
+    expect(list?.className).toContain('overflow-y-auto');
+  });
+
+  it('brings the current tick into view when it changes', () => {
+    const many = Array.from({ length: 60 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
+    const spy = vi.fn();
+    // happy-dom has no layout, so scrollIntoView is a stub — assert we asked.
+    Element.prototype.scrollIntoView = spy;
+
+    const { rerender } = render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);
+    spy.mockClear();
+    rerender(<ChapterRail chapters={many} currentIndex={59} onJump={() => {}} />);
+
+    expect(spy).toHaveBeenCalledWith({ block: 'nearest' });
+  });
+
   it('condenses only the middle ticks once the rail gets long', () => {
     const many = Array.from({ length: 14 }, (_, i) => chapter(i, `第 ${i + 1} 段`));
     render(<ChapterRail chapters={many} currentIndex={0} onJump={() => {}} />);

@@ -36,6 +36,8 @@ import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
+import { firstImageContent } from '../tools/toolResultContent';
+import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
 
@@ -553,6 +555,20 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
             result: toolResult,
           }, workspacePath).catch((e) => logger.warn('snapshot tool output failed', { tool: matchedTc.name, err: e }));
         }).catch(() => {});
+
+        const image = firstImageContent(resultContent);
+        if (image) {
+          const sourcePath = matchedTc.name === TOOL_NAMES.READ_FILE && typeof matchedTc.input.path === 'string'
+            ? matchedTc.input.path
+            : undefined;
+          const isPersistedExplicitScreenshot = matchedTc.name === TOOL_NAMES.COMPUTER
+            && matchedTc.input.action === 'screenshot'
+            && resultContent?.some((block) => block.type === 'text' && block.text.includes('Screenshot saved to:'));
+          if (!isPersistedExplicitScreenshot) {
+            void snapshotResultImage(conversationId, id, image, sourcePath)
+              .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
+          }
+        }
       }
 
       chatDelta.updateToolCall(

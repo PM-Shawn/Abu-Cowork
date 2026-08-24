@@ -9,9 +9,11 @@ import {
   resolveTools,
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
+  buildInterruptedToolCallContext,
   resolveToolContextWorkspacePath,
 } from './agentLoop';
-import type { ToolDefinition } from '../../types';
+import { trimOldScreenshots } from '../context/contextManager';
+import type { Message, ToolDefinition, ToolResultContent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
 
 // escalateMaxOutputTokens / shouldContinueTruncatedToolCalls moved to
@@ -226,6 +228,50 @@ describe('buildDirectDelegateSubagentOptions', () => {
       workspaceReader: expect.any(Object),
     }));
     expect(params.workspaceReader?.getCurrentPath()).toBeNull();
+  });
+});
+
+describe('buildInterruptedToolCallContext', () => {
+  it('keeps a mixed completed/interrupted message eligible for id-based screenshot trimming', () => {
+    const image = (data: string): ToolResultContent => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data },
+    });
+    const interrupted = buildInterruptedToolCallContext({
+      id: 'tc-aborted',
+      name: 'read_file',
+      input: { path: '/tmp/aborted.png' },
+    });
+    const message: Message = {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 'tc-old', name: 'read_file', input: {}, result: 'old', resultContent: [image('old')] },
+        { id: 'tc-aborted', name: 'read_file', input: {}, result: interrupted.result, isError: true },
+        { id: 'tc-new-1', name: 'read_file', input: {}, result: 'new-1', resultContent: [image('new-1')] },
+        { id: 'tc-new-2', name: 'read_file', input: {}, result: 'new-2', resultContent: [image('new-2')] },
+      ],
+      // Completion order deliberately differs from request order. The
+      // interrupted row must still carry its id or the whole context side is
+      // conservatively left untrimmed.
+      toolCallsForContext: [
+        { id: 'tc-new-1', name: 'read_file', input: {}, result: 'new-1', resultContent: [image('new-1')] },
+        interrupted,
+        { id: 'tc-old', name: 'read_file', input: {}, result: 'old', resultContent: [image('old')] },
+        { id: 'tc-new-2', name: 'read_file', input: {}, result: 'new-2', resultContent: [image('new-2')] },
+      ],
+    };
+
+    const [trimmed] = trimOldScreenshots([message], 60);
+    const contextById = new Map(trimmed.toolCallsForContext?.map((call) => [call.id, call]));
+
+    expect(interrupted.id).toBe('tc-aborted');
+    expect(contextById.get('tc-old')?.resultContent).toEqual([]);
+    expect(contextById.get('tc-new-1')?.resultContent).toHaveLength(1);
+    expect(contextById.get('tc-new-2')?.resultContent).toHaveLength(1);
+    expect(contextById.get('tc-aborted')).toEqual(interrupted);
   });
 });
 

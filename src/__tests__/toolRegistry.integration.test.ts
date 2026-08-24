@@ -253,6 +253,42 @@ describe('toolRegistry integration', () => {
         disposeAuthorizationScope(scopeId);
       }
     });
+
+    it('tells a workspace-less unattended run how to get a writable cwd instead of a bare refusal', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        // Most permissive tier an unattended run can have — the refusal below
+        // is about having no judgeable cwd at all, not about the tier.
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = String(await executeAnyTool(
+          'run_command',
+          { command: 'touch /tmp/report.json' },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        ));
+
+        expect(executeFn).not.toHaveBeenCalled();
+        // Distinct from the "cwd exists but is not writable" refusal, and it
+        // names both remedies so an unattended run fails loudly, not opaquely.
+        expect(result).toContain('no write-authorized working directory');
+        expect(result).toContain('workspace path');
+        expect(result).toContain('cwd');
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
   });
 
   // ── Path safety through executeAnyTool ──

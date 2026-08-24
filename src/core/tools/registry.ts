@@ -357,20 +357,35 @@ async function resolveBrowserActionOrigin(
   }
 }
 
-async function isScopedCommandCwdWriteAllowed(
+/**
+ * Why a scoped (unattended) run's non-read-only command was refused, so the
+ * denial the model reads says what to change instead of just "no".
+ *
+ * `no-cwd` is the notable case: an unattended run with neither an explicit
+ * `cwd` nor a trusted workspace path has NOTHING to judge the command's
+ * implicit write location against, so it fails closed — including for the
+ * `full` / `autonomous` tiers, and including writes that only touch `/tmp`.
+ * That is deliberately strict (loosening it is a permission-granularity
+ * decision, not a review fix), but it silently removes a capability those
+ * tiers used to have, so the reason has to name the remedy: give the
+ * trigger/task a workspace path, or pass an absolute `cwd`.
+ */
+type ScopedCwdDenial = 'no-cwd' | 'not-writable';
+
+async function scopedCommandCwdDenial(
   input: Record<string, unknown>,
   toolContext?: ToolExecutionContext,
-): Promise<boolean> {
+): Promise<ScopedCwdDenial | null> {
   const scopeId = toolContext?.authorizationScopeId;
-  if (scopeId === undefined) return true;
+  if (scopeId === undefined) return null;
   const effectiveCwd = typeof input.cwd === 'string' && input.cwd.trim().length > 0
     ? input.cwd
     : toolContext?.workspacePath ?? undefined;
-  if (!effectiveCwd) return false;
+  if (!effectiveCwd) return 'no-cwd';
   if (!isInsideWorkingDirs(effectiveCwd, commandWritableDirectories(scopeId))) {
-    return false;
+    return 'not-writable';
   }
-  return (await checkWritePath(effectiveCwd, scopeId)).allowed;
+  return (await checkWritePath(effectiveCwd, scopeId)).allowed ? null : 'not-writable';
 }
 
 export async function checkToolApproval(
@@ -398,11 +413,22 @@ export async function checkToolApproval(
         return { decision: 'deny', reason: `Error: ${t.commandConfirm.blocked}: ${analysis.reason}` };
       }
 
-      if (!analysis.readOnly && !(await isScopedCommandCwdWriteAllowed(input, toolContext))) {
-        return {
-          decision: 'deny',
-          reason: 'Error: command working directory is not write-authorized for this scoped run',
-        };
+      if (!analysis.readOnly) {
+        const cwdDenial = await scopedCommandCwdDenial(input, toolContext);
+        if (cwdDenial === 'no-cwd') {
+          return {
+            decision: 'deny',
+            reason: 'Error: this unattended run has no write-authorized working directory, '
+              + 'so no writing command can run. Set the trigger/task workspace path, '
+              + 'or pass an absolute `cwd` inside an authorized directory.',
+          };
+        }
+        if (cwdDenial === 'not-writable') {
+          return {
+            decision: 'deny',
+            reason: 'Error: command working directory is not write-authorized for this scoped run',
+          };
+        }
       }
 
       // Best-effort boundary check: only matters for safe, non-read-only commands

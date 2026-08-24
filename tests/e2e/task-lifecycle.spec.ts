@@ -592,26 +592,39 @@ test.describe.serial('Electron product task lifecycle', () => {
       (_, index) => `abu-e2e-context-prefill-answer-${index}-${runId}`,
     );
     const finalResponse = `abu-e2e-context-after-compression-${runId}`;
-    const agentLoopPath = path.join(process.cwd(), 'src/core/agent/agentLoop.ts');
-    const chatStorePath = path.join(process.cwd(), 'src/stores/chatStore.ts');
+    const firstFixtureMarker = `abu-e2e-owned-fixture-alpha-${runId}`;
+    const secondFixtureMarker = `abu-e2e-owned-fixture-beta-${runId}`;
+    dataRoot = createElectronDataRoot();
+    const fixtureDir = path.join(dataRoot.rootDir, 'owned-context-fixtures');
+    const firstFixturePath = path.join(fixtureDir, 'alpha-large-fixture.txt');
+    const secondFixturePath = path.join(fixtureDir, 'beta-large-fixture.txt');
+    const makeLargeFixture = (marker: string, label: string) => [
+      marker,
+      ...Array.from(
+        { length: 119 },
+        (_, index) => `${label}-${index.toString().padStart(3, '0')}: ${label.repeat(32)}`,
+      ),
+    ].join('\n');
+    fs.mkdirSync(fixtureDir, { recursive: true });
+    fs.writeFileSync(firstFixturePath, makeLargeFixture(firstFixtureMarker, 'alpha-context-fixture'));
+    fs.writeFileSync(secondFixturePath, makeLargeFixture(secondFixtureMarker, 'beta-context-fixture'));
     mock = await startOpenAiMock([
       ...prefillResponses.map((responseText) => ({ kind: 'complete' as const, responseText })),
       {
         kind: 'tool-call',
         toolCallId: `call-agent-loop-${runId}`,
         toolName: 'read_file',
-        arguments: { path: agentLoopPath, offset: 0, limit: 80 },
+        arguments: { path: firstFixturePath, offset: 0, limit: 80 },
       },
       {
         kind: 'tool-call',
         toolCallId: `call-chat-store-${runId}`,
         toolName: 'read_file',
-        arguments: { path: chatStorePath, offset: 0, limit: 80 },
+        arguments: { path: secondFixturePath, offset: 0, limit: 80 },
       },
       { kind: 'complete', responseText: finalResponse },
     ]);
 
-    dataRoot = createElectronDataRoot();
     const launch = await launchAbuElectron(dataRoot);
     app = launch.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
@@ -649,19 +662,21 @@ test.describe.serial('Electron product task lifecycle', () => {
     await page.keyboard.press('Escape');
     await expect(popover).toBeHidden();
 
-    await input.fill(`请依次读取这两个大文件：${agentLoopPath} 和 ${chatStorePath}`);
+    await input.fill(`请依次读取这两个大文件：${firstFixturePath} 和 ${secondFixturePath}`);
     await input.press('Enter');
-    await expect(page.getByRole('heading', { name: '文件读取权限' }))
-      .toBeVisible({ timeout: READY_TIMEOUT });
-    await page.getByRole('button', { name: '允许本次会话', exact: true }).click();
+    for (let index = 0; index < 2; index += 1) {
+      await expect(page.getByRole('heading', { name: '文件读取权限' }))
+        .toBeVisible({ timeout: READY_TIMEOUT });
+      await page.getByRole('button', { name: '允许本次会话', exact: true }).click();
+    }
     await expect(page.getByText(finalResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
 
     expect(compressionRequests(mock).length).toBeGreaterThan(0);
     const requests = taskRequests(mock);
     expect(requests).toHaveLength(9);
-    expect(JSON.stringify(requests[7].body)).toContain('agentLoop.ts must never take a');
-    expect(JSON.stringify(requests[8].body)).toContain('function generateId(): string');
+    expect(JSON.stringify(requests[7].body)).toContain(firstFixtureMarker);
+    expect(JSON.stringify(requests[8].body)).toContain(secondFixtureMarker);
     expect(JSON.stringify(requests[8].body)).toContain('Abu E2E compacted conversation summary.');
 
     await indicator.click();

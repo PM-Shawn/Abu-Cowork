@@ -1,6 +1,6 @@
 /**
  * Shared wire-contract fixture for the `agent.delta` reverse channel
- * (sidecar → shell). One canonical, positional argument list per method,
+ * (sidecar → shell). One or more canonical positional argument lists per method,
  * used by BOTH ends of the wire:
  *
  * - `sidecar/src/portFrameSenders.contract.test.ts` calls the real sender
@@ -101,6 +101,13 @@ const sampleContextUsage = {
   },
 };
 
+const sampleLegacyContextUsage = {
+  percent: 25,
+  tokensUsed: 500,
+  tokensMax: 2000,
+  messageCountAtPublish: 1,
+};
+
 const sampleContextCache = { compressed: true, summary: 'compressed history' };
 
 const sampleModel = { providerId: 'anthropic', modelId: 'claude-sonnet-5' };
@@ -133,7 +140,8 @@ const sampleDetailBlock = {
   isExpanded: false,
 };
 
-/** All 27 generic-dispatch ChatDelta methods (28 total minus cancelStreaming). */
+/** All 27 generic-dispatch ChatDelta methods (28 total minus cancelStreaming),
+ * plus a second setContextUsage case for the legacy payload shape. */
 export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'appendText', args: ['conv-1', 'tok', 'msg-1'] },
   { port: 'chat', method: 'setLastMessageContent', args: ['conv-1', 'full content', 'msg-1'] },
@@ -160,6 +168,7 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setCurrentUsage', args: [sampleUsage] },
   { port: 'chat', method: 'setRetryInfo', args: ['conv-1', { attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
   { port: 'chat', method: 'setContextUsage', args: ['conv-1', sampleContextUsage] },
+  { port: 'chat', method: 'setContextUsage', args: ['conv-legacy', sampleLegacyContextUsage] },
   { port: 'chat', method: 'setContextCache', args: ['conv-1', sampleContextCache] },
   { port: 'chat', method: 'clearContextCache', args: ['conv-1'] },
   { port: 'chat', method: 'setIsCompressing', args: ['conv-1', true] },

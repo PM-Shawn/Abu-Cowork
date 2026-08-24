@@ -2,11 +2,12 @@ import type { Message, ToolDefinition } from '@/types';
 import type { PromptSection } from '@/core/llm/promptSections';
 import {
   estimateMessageTokens,
+  estimateTextTokenWeight,
   estimateTokens,
   estimateToolSchemaTokens,
 } from './tokenEstimator';
 
-const BUCKET_KEYS = [
+export const BUCKET_KEYS = [
   'systemPrompt',
   'tools',
   'mcp',
@@ -18,18 +19,39 @@ const SKILL_SECTION_NAMES = new Set([
   'active-skills',
   'preload-skills',
   'available-skills',
+  'skill-content',
+  'skills-guidance',
+  'fork-task',
 ]);
 
 type UsageBreakdownBucket = (typeof BUCKET_KEYS)[number];
 
 export type UsageBreakdownBuckets = Record<UsageBreakdownBucket, number>;
 
+export type UsageBreakdownToolWeights = Pick<UsageBreakdownBuckets, 'tools' | 'mcp'>;
+
 export interface ComputeBreakdownWeightsInput {
   allSections: PromptSection[];
-  tools: ToolDefinition[];
+  tools?: ToolDefinition[];
+  toolWeights?: UsageBreakdownToolWeights;
   deferredToolsSummary?: string;
   messagesForContext: Message[];
   volatileContextTail?: string;
+}
+
+export function computeToolBreakdownWeights(
+  tools: ToolDefinition[],
+): UsageBreakdownToolWeights {
+  const builtinTools: ToolDefinition[] = [];
+  const mcpTools: ToolDefinition[] = [];
+  for (const tool of tools) {
+    (tool.name.includes('__') ? mcpTools : builtinTools).push(tool);
+  }
+
+  return {
+    tools: builtinTools.length > 0 ? estimateToolSchemaTokens(builtinTools) : 0,
+    mcp: mcpTools.length > 0 ? estimateToolSchemaTokens(mcpTools) : 0,
+  };
 }
 
 function emptyBuckets(): UsageBreakdownBuckets {
@@ -46,29 +68,46 @@ export function computeBreakdownWeights(
   input: ComputeBreakdownWeightsInput,
 ): UsageBreakdownBuckets {
   const weights = emptyBuckets();
+  const sectionWeights = emptyBuckets();
+  let hasDeferredToolsSection = false;
 
-  for (const section of input.allSections) {
-    // The same deferred summary is supplied separately below so it is
-    // attributed to tools exactly once instead of also falling through here.
-    if (section.name === 'deferred-tools') continue;
-    const sectionTokens = estimateTokens(section.text);
+  for (const [index, section] of input.allSections.entries()) {
+    // sectionsToString() inserts this exact separator before every section
+    // after the first. Assigning it to the following section keeps the raw
+    // weights additive, so rounding once below reproduces the old aggregate
+    // estimateTokens(effectiveSystemPrompt) value exactly.
+    const sectionWeight = estimateTextTokenWeight(
+      `${index > 0 ? '\n\n' : ''}${section.text}`,
+    );
     if (SKILL_SECTION_NAMES.has(section.name)) {
-      weights.skills += sectionTokens;
+      sectionWeights.skills += sectionWeight;
     } else if (section.name === 'mcp-capabilities') {
-      weights.mcp += sectionTokens;
+      sectionWeights.mcp += sectionWeight;
+    } else if (section.name === 'deferred-tools') {
+      hasDeferredToolsSection = true;
+      sectionWeights.tools += sectionWeight;
     } else {
-      weights.systemPrompt += sectionTokens;
+      sectionWeights.systemPrompt += sectionWeight;
     }
   }
 
-  for (const tool of input.tools) {
-    const bucket = tool.name.includes('__') ? 'mcp' : 'tools';
-    weights[bucket] += estimateToolSchemaTokens([tool]);
-  }
+  const systemPromptTokens = Math.ceil(
+    Object.values(sectionWeights).reduce((sum, value) => sum + value, 0),
+  );
+  const distributedSections = distributeWithConservation(sectionWeights, systemPromptTokens);
+  for (const key of BUCKET_KEYS) weights[key] += distributedSections[key];
 
-  weights.tools += estimateTokens(input.deferredToolsSummary ?? '');
+  const toolWeights = input.toolWeights ?? computeToolBreakdownWeights(input.tools ?? []);
+  weights.tools += toolWeights.tools;
+  weights.mcp += toolWeights.mcp;
+
+  if (!hasDeferredToolsSection && input.deferredToolsSummary) {
+    weights.tools += estimateTokens(input.deferredToolsSummary);
+  }
   weights.conversation += estimateMessageTokens(input.messagesForContext);
-  weights.conversation += estimateTokens(input.volatileContextTail ?? '');
+  if (input.volatileContextTail) {
+    weights.conversation += estimateTokens(input.volatileContextTail);
+  }
 
   return weights;
 }

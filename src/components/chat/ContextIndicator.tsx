@@ -9,6 +9,7 @@ import { calculateWarningLevel, getDisplayPercent } from '@/core/context/autoCom
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { estimateMessageTokens } from '@/core/context/tokenEstimator';
 import {
+  BUCKET_KEYS,
   distributeWithConservation,
   type UsageBreakdownBuckets,
 } from '@/core/context/usageBreakdown';
@@ -21,15 +22,7 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const VIEWBOX = '0 0 22 22';
 const CENTER = 11;
 
-const BREAKDOWN_KEYS = [
-  'systemPrompt',
-  'tools',
-  'mcp',
-  'skills',
-  'conversation',
-] as const satisfies readonly (keyof UsageBreakdownBuckets)[];
-
-type BreakdownKey = (typeof BREAKDOWN_KEYS)[number];
+type BreakdownKey = (typeof BUCKET_KEYS)[number];
 
 /* eslint-disable no-restricted-syntax -- five arbitrary context categories need
    distinct hues; these are categorical markers, not semantic status colors. */
@@ -78,7 +71,7 @@ function isValidBreakdown(
   }
 
   let bucketTotal = 0;
-  for (const key of BREAKDOWN_KEYS) {
+  for (const key of BUCKET_KEYS) {
     const value = breakdown[key];
     if (!Number.isSafeInteger(value) || value < 0) return false;
     bucketTotal += value;
@@ -184,7 +177,7 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
     ? distributeWithConservation(breakdown, usage.percent)
     : undefined;
   const breakdownRows = breakdown && breakdownPercents
-    ? BREAKDOWN_KEYS.map((key) => ({
+    ? BUCKET_KEYS.map((key) => ({
         key,
         tokens: breakdown[key],
         percent: breakdownPercents[key],

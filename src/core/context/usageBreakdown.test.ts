@@ -8,6 +8,7 @@ import {
   resetCalibration,
 } from './tokenEstimator';
 import {
+  BUCKET_KEYS,
   computeBreakdownWeights,
   distributeWithConservation,
   type UsageBreakdownBuckets,
@@ -39,17 +40,39 @@ describe('usageBreakdown', () => {
     resetCalibration();
   });
 
+  it('exports the canonical bucket order used by producers and consumers', () => {
+    expect(BUCKET_KEYS).toEqual(Object.keys(ZERO_BUCKETS));
+  });
+
   describe('computeBreakdownWeights', () => {
-    it('maps skill and MCP sections explicitly and falls unknown sections back to systemPrompt', () => {
+    it.each([
+      'active-skills',
+      'preload-skills',
+      'available-skills',
+      'skill-content',
+      'skills-guidance',
+      'fork-task',
+    ])('routes the production %s section to skills', (name) => {
+      const text = `${name} content`;
+      const result = computeBreakdownWeights({
+        allSections: [{ name, text, cacheable: true }],
+        tools: [],
+        deferredToolsSummary: '',
+        messagesForContext: [],
+        volatileContextTail: '',
+      });
+
+      expect(result).toEqual({
+        ...ZERO_BUCKETS,
+        skills: estimateTokens(text),
+      });
+    });
+
+    it('routes MCP explicitly and falls an unknown section back to systemPrompt', () => {
       const sections: PromptSection[] = [
-        { name: 'identity', text: 'system identity', cacheable: true },
         { name: 'future-section', text: 'future content', cacheable: false },
-        { name: 'active-skills', text: 'active skill', cacheable: true },
-        { name: 'preload-skills', text: 'preloaded skill', cacheable: true },
-        { name: 'available-skills', text: 'available skill', cacheable: true },
         { name: 'mcp-capabilities', text: 'mcp capability', cacheable: true },
       ];
-
       const result = computeBreakdownWeights({
         allSections: sections,
         tools: [],
@@ -58,15 +81,10 @@ describe('usageBreakdown', () => {
         volatileContextTail: '',
       });
 
-      expect(result).toEqual({
-        systemPrompt: estimateTokens('system identity') + estimateTokens('future content'),
-        tools: 0,
-        mcp: estimateTokens('mcp capability'),
-        skills: estimateTokens('active skill')
-          + estimateTokens('preloaded skill')
-          + estimateTokens('available skill'),
-        conversation: 0,
-      });
+      expect(result.systemPrompt).toBeGreaterThan(0);
+      expect(result.mcp).toBeGreaterThan(0);
+      expect(result.skills).toBe(0);
+      expect(sumBuckets(result)).toBe(estimateTokens('future content\n\nmcp capability'));
     });
 
     it('routes tool schemas by the repository MCP naming convention', () => {

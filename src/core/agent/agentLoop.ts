@@ -44,8 +44,12 @@ import {
 } from '../context/compactBoundary';
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent, getDisplayPercent } from '../context/autoCompact';
-import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
-import { computeBreakdownWeights, distributeWithConservation } from '../context/usageBreakdown';
+import { estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
+import {
+  computeBreakdownWeights,
+  computeToolBreakdownWeights,
+  distributeWithConservation,
+} from '../context/usageBreakdown';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
@@ -1413,7 +1417,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // real tool registry executes in the renderer; this name-only snapshot
       // safely crosses that boundary and is re-filtered by the shell registry.
       toolContext.deferredToolNames = deferredTools.map(tool => tool.name);
-      const toolTokens = estimateToolSchemaTokens(tools);
+      const toolBreakdownWeights = computeToolBreakdownWeights(tools);
+      const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const deferredToolsSummary = buildDeferredToolsSummary(deferredTools);
       const activeSkillContent = await loadActiveSkillContent(
@@ -1634,8 +1639,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
 
       // Step 2: Trim old screenshots dynamically based on context usage
-      const postCompressionTokens = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(messagesForContext) + toolTokens
-        + (volatileContextTail ? estimateTokens(volatileContextTail) : 0);
+      // The breakdown is the single estimation pass for the published payload.
+      // Deriving the total from these same weights prevents the header and its
+      // categories from drifting while avoiding a second full prompt/history scan.
+      const breakdownWeights = computeBreakdownWeights({
+        allSections,
+        toolWeights: toolBreakdownWeights,
+        deferredToolsSummary,
+        messagesForContext,
+        volatileContextTail,
+      });
+      const postCompressionTokens = Object.values(breakdownWeights)
+        .reduce((sum, value) => sum + value, 0);
       const usagePercent = getUsagePercent(postCompressionTokens, maxInputTokens);
       // NOTE: usage MUST be published on post-compression tokens. Pre-compression
       // tokens stay critically high in long conversations even after cache-hit
@@ -1654,13 +1669,6 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // AS COMPRESSED. The indicator estimates only the messages after that index
       // (the assistant reply currently streaming), so it stays live without
       // re-counting — and thereby un-compressing — the history behind the anchor.
-      const breakdownWeights = computeBreakdownWeights({
-        allSections,
-        tools,
-        deferredToolsSummary,
-        messagesForContext,
-        volatileContextTail,
-      });
       const breakdown = distributeWithConservation(breakdownWeights, postCompressionTokens);
       chatDelta.setContextUsage(conversationId, {
         percent: getDisplayPercent(postCompressionTokens, contextWindowSize),

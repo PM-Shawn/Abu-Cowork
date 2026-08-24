@@ -33,6 +33,16 @@ const EXEC_SPECIAL_CASED = new Set([
 ]);
 
 describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
+  it('covers setContextUsage frames both with and without a breakdown payload', () => {
+    const usageFixtures = CHAT_CONTRACT_FIXTURES
+      .filter(({ method }) => method === 'setContextUsage')
+      .map(({ args }) => args[1] as Record<string, unknown>);
+
+    expect(usageFixtures).toHaveLength(2);
+    expect(usageFixtures.some((usage) => 'breakdown' in usage)).toBe(true);
+    expect(usageFixtures.some((usage) => !('breakdown' in usage))).toBe(true);
+  });
+
   it.each(CHAT_CONTRACT_FIXTURES)('$method pushes {p:"chat", m:"$method", a: <fixture args, same order>}', ({ method, args }) => {
     const frames: PortFrame[] = [];
     const delta = createFrameChatDelta((f) => frames.push(f)) as unknown as Record<string, (...a: unknown[]) => unknown>;
@@ -42,14 +52,15 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
 
     expect(frames).toEqual([{ p: 'chat', m: method, a: args }]);
     if (method === 'setContextUsage') {
-      expect(frames).toEqual([{
-        p: 'chat',
-        m: 'setContextUsage',
-        a: ['conv-1', {
-          percent: expect.any(Number),
-          tokensUsed: expect.any(Number),
-          tokensMax: expect.any(Number),
-          messageCountAtPublish: expect.any(Number),
+      const usage = frames[0].a[1] as Record<string, unknown>;
+      expect(usage).toMatchObject({
+        percent: expect.any(Number),
+        tokensUsed: expect.any(Number),
+        tokensMax: expect.any(Number),
+        messageCountAtPublish: expect.any(Number),
+      });
+      if ('breakdown' in (args[1] as Record<string, unknown>)) {
+        expect(usage).toMatchObject({
           breakdown: {
             version: 1,
             systemPrompt: expect.any(Number),
@@ -58,8 +69,10 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
             skills: expect.any(Number),
             conversation: expect.any(Number),
           },
-        }],
-      }]);
+        });
+      } else {
+        expect(usage).not.toHaveProperty('breakdown');
+      }
     }
   });
 });
@@ -117,7 +130,7 @@ describe('portFrameSenders wire contract — fixture completeness', () => {
   it('the shared fixture covers every generic-dispatch ChatDelta method (all of them, minus the special-cased ones)', () => {
     const realMethods = new Set(Object.keys(createInProcessChatDelta()));
     const expectedGenericMethods = [...realMethods].filter((m) => !CHAT_SPECIAL_CASED.has(m)).sort();
-    const fixtureMethods = CHAT_CONTRACT_FIXTURES.map((f) => f.method).sort();
+    const fixtureMethods = [...new Set(CHAT_CONTRACT_FIXTURES.map((f) => f.method))].sort();
     expect(fixtureMethods).toEqual(expectedGenericMethods);
   });
 

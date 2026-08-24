@@ -158,6 +158,9 @@ vi.mock('../core/context/autoCompact', () => ({
 vi.mock('../core/context/tokenEstimator', () => ({
   estimateToolSchemaTokens: vi.fn().mockReturnValue(500),
   estimateTokens: vi.fn().mockReturnValue(100),
+  estimateTextTokenWeight: vi.fn().mockImplementation(
+    (text: string) => (text === 'You are Abu' ? 100 : 0),
+  ),
   estimateMessageTokens: vi.fn().mockReturnValue(200),
   calibrateFromUsage: vi.fn(),
   setActiveModel: vi.fn(),
@@ -412,6 +415,24 @@ describe('Agent Pipeline Integration', () => {
 
     const assistantMsg = conv.messages.find((m) => m.role === 'assistant' && m.content !== '');
     expect(assistantMsg).toBeDefined();
+  });
+
+  it('estimates each published context component only once per turn', async () => {
+    mockClaudeChat.mockImplementation(
+      async (_msgs: unknown, _opts: unknown, onEvent: (e: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'Done.' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+
+    const convId = useChatStore.getState().createConversation();
+    await runAgentLoop(convId, 'Measure this turn once');
+
+    const usage = useChatStore.getState().conversations[convId].contextUsage;
+    expect(usage?.tokensUsed).toBe(800);
+    expect(tokenEstimatorModule.estimateToolSchemaTokens).toHaveBeenCalledTimes(1);
+    expect(tokenEstimatorModule.estimateMessageTokens).toHaveBeenCalledTimes(1);
+    expect(tokenEstimatorModule.estimateTokens).not.toHaveBeenCalled();
   });
 
   it('handles missing API key gracefully', async () => {

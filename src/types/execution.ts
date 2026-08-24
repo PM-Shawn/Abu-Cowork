@@ -252,6 +252,8 @@ export interface ExecutionStepSnapshot {
  * Simplified tool call info for LLM context building
  */
 export interface ToolCallContext {
+  /** LLM tool_use id for matching the request-order UI call to this completion-order context call. */
+  id?: string;
   name: string;
   input: Record<string, unknown>;
   result: string;

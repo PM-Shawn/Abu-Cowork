@@ -64,6 +64,7 @@ const RESULT_IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
 // ────────────────────────────────────────────────────────────────────────────
 
 export type SnapshotSource = 'tool-output' | 'user-upload' | 'code-save';
+type SnapshotSkipReason = 'oversized' | 'copy-failed' | 'write-failed';
 
 export interface SnapshotEntry {
   /** Normalized original path or stable tool-result:// identity (manifest index key). */
@@ -95,7 +96,7 @@ export interface SnapshotEntry {
    */
   refKind: string;
   /** Reason snapshotRelPath is empty. Only set when not snapshotted. */
-  skipReason?: 'oversized' | 'copy-failed';
+  skipReason?: SnapshotSkipReason;
 }
 
 export interface OutputManifest {
@@ -284,11 +285,14 @@ function buildEntry(
   mtime: number,
   meta: SnapshotMeta,
   snapshotRelPath: string,
-  skipReason?: 'oversized' | 'copy-failed',
+  options: {
+    basename?: string;
+    skipReason?: SnapshotSkipReason;
+  } = {},
 ): SnapshotEntry {
   return {
     originalPath: normalized,
-    basename: getBaseName(normalized),
+    basename: options.basename ?? getBaseName(normalized),
     snapshotRelPath,
     size,
     originalMtime: mtime,
@@ -296,7 +300,7 @@ function buildEntry(
     source: meta.source,
     refId: meta.refId,
     refKind: meta.refKind,
-    ...(skipReason ? { skipReason } : {}),
+    ...(options.skipReason ? { skipReason: options.skipReason } : {}),
   };
 }
 
@@ -355,7 +359,10 @@ async function snapshotFileNormalized(
     logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
     return await recordEntry(
       convId,
-      buildEntry(identityPath, st.size, mtimeMs, meta, '', 'oversized'),
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'oversized',
+      }),
     );
   }
 
@@ -372,13 +379,18 @@ async function snapshotFileNormalized(
     logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
     return await recordEntry(
       convId,
-      buildEntry(identityPath, st.size, mtimeMs, meta, '', 'copy-failed'),
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'copy-failed',
+      }),
     );
   }
 
   return await recordEntry(
     convId,
-    buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`),
+    buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`, {
+      basename: targetBasename,
+    }),
   );
 }
 
@@ -490,13 +502,43 @@ export async function snapshotResultImage(
       return;
     }
 
-    const outputsDir = await getOutputsDir(convId);
-    const subdir = joinPath(outputsDir, 'files', hash);
-    const targetPath = joinPath(subdir, basename);
-    const bytes = base64ToUint8Array(imageBlock.base64);
-    if (!(await exists(subdir))) await mkdir(subdir, { recursive: true });
-    await writeFile(targetPath, bytes);
-    await recordEntry(convId, buildEntry(originalPath, bytes.byteLength, 0, meta, `files/${hash}/${basename}`));
+    let decodedSize = 0;
+    try {
+      const bytes = base64ToUint8Array(imageBlock.base64);
+      decodedSize = bytes.byteLength;
+      if (decodedSize > MAX_FILE_BYTES) {
+        logger.info('[snapshot] result image skipped: oversized', {
+          convId,
+          toolCallId,
+          size: decodedSize,
+        });
+        await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+          basename,
+          skipReason: 'oversized',
+        }));
+        return;
+      }
+
+      const outputsDir = await getOutputsDir(convId);
+      const subdir = joinPath(outputsDir, 'files', hash);
+      const targetPath = joinPath(subdir, basename);
+      if (!(await exists(subdir))) await mkdir(subdir, { recursive: true });
+      await writeFile(targetPath, bytes);
+      await recordEntry(convId, buildEntry(
+        originalPath,
+        decodedSize,
+        0,
+        meta,
+        `files/${hash}/${basename}`,
+        { basename },
+      ));
+    } catch (e) {
+      logger.warn('[snapshot] result image write failed', { convId, toolCallId, err: e });
+      await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+        basename,
+        skipReason: 'write-failed',
+      }));
+    }
   });
 }
 

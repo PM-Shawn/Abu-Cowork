@@ -387,8 +387,11 @@ describe('executeToolBatch · result image snapshots', () => {
     mocks.snapshotResultImage.mockResolvedValue(undefined);
   });
 
-  it('does not turn a successful tool result into an error when its image snapshot fails', async () => {
-    mocks.snapshotResultImage.mockRejectedValueOnce(new Error('disk unavailable'));
+  it('does not await image persistence and absorbs a late snapshot rejection', async () => {
+    let rejectSnapshot!: (error: Error) => void;
+    mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((_resolve, reject) => {
+      rejectSnapshot = reject;
+    }));
     const toolCall = makeToolCall('read_file', { path: '/Users/testuser/Desktop/chart.png' });
     const imageResult = [{
       type: 'image' as const,
@@ -397,6 +400,13 @@ describe('executeToolBatch · result image snapshots', () => {
     const invoker = makeInvoker(vi.fn().mockResolvedValue(imageResult));
 
     const result = await executeToolBatch(makeParams(toolCall, invoker));
+
+    // Reject only after the tool batch has completed. This constrains both
+    // halves of the fire-and-forget contract: no await, and a rejection handler
+    // is already attached before persistence settles.
+    rejectSnapshot(new Error('disk unavailable'));
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
       'conv-1',

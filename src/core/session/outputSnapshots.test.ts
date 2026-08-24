@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, stat, copyFile, rename, writeFile } from '@tauri-apps/plugin-fs';
 
+const base64ToUint8ArrayMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/utils/base64', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/base64')>('@/utils/base64');
+  return {
+    ...actual,
+    base64ToUint8Array: base64ToUint8ArrayMock,
+  };
+});
+
 // Extend the global plugin-fs mock with the symbols outputSnapshots needs
 // (stat, copyFile, rename, writeFile are not in the default test setup mock).
 vi.mock('@tauri-apps/plugin-fs', async () => {
@@ -138,6 +148,11 @@ describe('outputSnapshots', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    base64ToUint8ArrayMock.mockReset();
+    base64ToUint8ArrayMock.mockImplementation((base64: string) => {
+      const binary = atob(base64);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    });
     memFs = createMemoryFs();
     mod = await import('./outputSnapshots');
     mod.__testing.resetCaches();
@@ -460,6 +475,7 @@ describe('outputSnapshots', () => {
         source: 'tool-output',
         refKind: 'result-image',
         refId: 'toolu_read',
+        basename: 'result.png',
         snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
       });
       expect(memFs.copyFile).toHaveBeenCalledWith(sourcePath, expect.stringMatching(/result\.png$/));
@@ -480,7 +496,64 @@ describe('outputSnapshots', () => {
         source: 'tool-output',
         refKind: 'result-image',
         refId: 'toolu_screen',
+        basename: 'result.png',
         size: 3,
+      });
+    });
+
+    it('records an oversized base64 result without writing its bytes', async () => {
+      const oversized = mod.__testing.MAX_FILE_BYTES + 1;
+      base64ToUint8ArrayMock.mockReturnValueOnce({ byteLength: oversized } as Uint8Array);
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_oversized', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_oversized']).toMatchObject({
+        basename: 'result.png',
+        size: oversized,
+        snapshotRelPath: '',
+        skipReason: 'oversized',
+      });
+    });
+
+    it('records write-failed when decoded result bytes cannot be persisted', async () => {
+      memFs.writeFile.mockRejectedValueOnce(new Error('disk unavailable'));
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_write_failed', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_write_failed']).toMatchObject({
+        basename: 'result.png',
+        size: 3,
+        snapshotRelPath: '',
+        skipReason: 'write-failed',
+      });
+    });
+
+    it('records write-failed when result base64 decoding fails', async () => {
+      base64ToUint8ArrayMock.mockImplementationOnce(() => {
+        throw new Error('invalid base64');
+      });
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_decode_failed', {
+        mediaType: 'image/png',
+        base64: 'not-base64',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_decode_failed']).toMatchObject({
+        basename: 'result.png',
+        size: 0,
+        snapshotRelPath: '',
+        skipReason: 'write-failed',
       });
     });
 
@@ -547,6 +620,8 @@ describe('outputSnapshots', () => {
         expect.stringMatching(new RegExp(`/result\\.${extension}$`)),
         expect.any(Uint8Array),
       );
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries[`tool-result://toolu_${extension}`]?.basename).toBe(`result.${extension}`);
     });
 
     it('does not write an unsupported image MIME type under a false extension', async () => {

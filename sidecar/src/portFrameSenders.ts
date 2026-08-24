@@ -267,7 +267,13 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         if (error) child.errorMessage = result;
         child.endTime = Date.now();
         if (child.startTime) child.duration = (child.endTime - child.startTime) / 1000;
-        if (detailBlocks?.length) child.detailBlocks.push(...detailBlocks);
+        if (detailBlocks?.length) {
+          for (const block of detailBlocks) {
+            const existingIndex = child.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+            if (existingIndex >= 0) child.detailBlocks[existingIndex] = block;
+            else child.detailBlocks.push(block);
+          }
+        }
       }
       push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error, detailBlocks] });
     },
@@ -275,8 +281,22 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
     addDetailBlock: (execId, stepId, block: DetailBlock) => {
       const exec = executions.get(execId);
       const step = exec ? findStep(exec, stepId) : undefined;
-      if (step) step.detailBlocks.push(block);
+      if (step) {
+        const existingIndex = step.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+        if (existingIndex >= 0) step.detailBlocks[existingIndex] = block;
+        else step.detailBlocks.push(block);
+      }
       push({ p: 'exec', m: 'addDetailBlock', a: [execId, stepId, block] });
+    },
+
+    releaseDetailBlockImage: (execId, stepId, blockId) => {
+      const exec = executions.get(execId);
+      const step = exec?.steps.find((candidate) => candidate.id === stepId)
+        ?? exec?.steps.flatMap((candidate) => candidate.childSteps ?? [])
+          .find((candidate) => candidate.id === stepId);
+      const block = step?.detailBlocks.find((candidate) => candidate.id === blockId);
+      if (block) delete block.imageData;
+      push({ p: 'exec', m: 'releaseDetailBlockImage', a: [execId, stepId, blockId] });
     },
 
     appendThinking: (execId, content) => {

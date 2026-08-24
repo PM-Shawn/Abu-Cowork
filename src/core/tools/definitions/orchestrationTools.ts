@@ -396,6 +396,9 @@ export const runAgentBatchTool: ToolDefinition = {
     // ── Tool call ID for batch progress tracking ──────────────────────────
     const batchIdentity: BatchIdentity = {
       conversationId: toolExecContext?.conversationId ?? '__unknown_conversation__',
+      ...(toolExecContext?.assistantMessageId
+        ? { assistantMessageId: toolExecContext.assistantMessageId }
+        : {}),
       batchToolCallId: toolExecContext?.toolCallId ?? `batch-${Date.now()}`,
     };
 

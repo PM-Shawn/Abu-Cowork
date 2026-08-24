@@ -20,6 +20,7 @@ import {
   useComposerDraftStore,
   writePersistedComposerText,
 } from './composerDraftStore';
+import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -1332,6 +1333,48 @@ describe('chatStore', () => {
       useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
       useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
       expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(2);
+    });
+
+    it('keeps identical provider ids from separate scoped subagent runs', () => {
+      const id = setupLoopMessage();
+      const first = { ...subagentToolCall, id: 'subagent-v1:run-a:call_1' };
+      const second = {
+        ...subagentToolCall,
+        id: 'subagent-v1:run-b:call_1',
+        resultContent: [{
+          type: 'image' as const,
+          source: { type: 'base64' as const, media_type: 'image/png', data: 'SECOND' },
+        }],
+      };
+
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', first);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', second);
+
+      const appended = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(appended.map((toolCall) => toolCall.id)).toEqual([first.id, second.id]);
+      expect(appended.map((toolCall) => toolCall.resultContent?.[0])).toEqual([
+        first.resultContent[0],
+        second.resultContent[0],
+      ]);
+    });
+
+    it('bounds retained subagent images before snapshotting the parent message', () => {
+      const id = setupLoopMessage();
+      for (let index = 0; index <= DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST; index++) {
+        useChatStore.getState().appendMessageToolCall(id, 'loop-1', {
+          ...subagentToolCall,
+          id: `subagent-v1:run-${index}:call_1`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: `IMAGE_${index}` },
+          }],
+        });
+      }
+
+      const childCalls = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(childCalls).toHaveLength(DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST + 1);
+      expect(childCalls[0].resultContent).toBeUndefined();
+      expect(childCalls.slice(1).every((toolCall) => toolCall.resultContent?.[0]?.type === 'image')).toBe(true);
     });
 
     it('is a no-op when no assistant message carries the loopId', () => {

@@ -82,6 +82,22 @@ describe('batch terminal summary normalization', () => {
     }), expected)).toBeUndefined();
   });
 
+  it('validates the assistant-message scope while accepting legacy summaries that omit it', () => {
+    const scopedExpected = { ...expected, assistantMessageId: 'assistant-1' };
+    const scoped = validSummary({
+      batch: { ...expected, assistantMessageId: 'assistant-1' },
+    });
+
+    expect(normalizeBatchTerminalSummary(scoped, scopedExpected)?.batch.assistantMessageId)
+      .toBe('assistant-1');
+    expect(normalizeBatchTerminalSummary(scoped, {
+      ...expected,
+      assistantMessageId: 'assistant-2',
+    })).toBeUndefined();
+    expect(normalizeBatchTerminalSummary(validSummary(), scopedExpected)?.batch)
+      .toEqual(expected);
+  });
+
   it('merges cumulative partial summaries monotonically and recomputes counts from tasks', () => {
     const first = normalizeBatchTerminalSummary({
       version: 1,

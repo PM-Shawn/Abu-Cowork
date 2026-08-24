@@ -48,6 +48,7 @@ import { atomicWrite } from '@/utils/atomicFs';
 import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } from './messageLedger';
 import type { Message, MessageContent, SandboxRecoveryAction } from '@/types';
 import { APP_VERSION } from '@/utils/version';
+import { boundMessageToolResultContentForDisk } from './durableToolResultContent';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -1070,7 +1071,10 @@ export function isMessageWrittenToDisk(id: string): boolean {
  * - HTML/Mermaid/code blocks preserved intact
  */
 function stripForDisk(msg: Message): Message {
-  const stripped: Message = { ...msg };
+  // Tool-result rich content is a different persistence surface from
+  // Message.content. Bound both tool projections before every ledger/snapshot
+  // serialization so no alternate writer can bypass the admission guard.
+  const stripped: Message = { ...boundMessageToolResultContentForDisk(msg) };
 
   // 2. Clear image base64 data (preserve filePath for recovery)
   if (Array.isArray(stripped.content)) {

@@ -195,7 +195,7 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'removeActiveAgent', args: ['conv-1', 'agent-1'] },
 ];
 
-/** All 13 generic-dispatch ExecutionPort methods (14 total minus createExecution). */
+/** All 14 generic-dispatch ExecutionPort methods (15 total minus createExecution). */
 export const EXEC_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'exec', method: 'cancelExecution', args: ['loop-1'] },
   { port: 'exec', method: 'evictExecution', args: ['loop-1'] },
@@ -207,6 +207,7 @@ export const EXEC_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'exec', method: 'addChildStep', args: ['loop-1', 'parent-1', sampleExecutionStep] },
   { port: 'exec', method: 'updateChildStep', args: ['loop-1', 'parent-1', 'child-1', 'child result', false, [sampleDetailBlock]] },
   { port: 'exec', method: 'addDetailBlock', args: ['loop-1', 'step-1', sampleDetailBlock] },
+  { port: 'exec', method: 'releaseDetailBlockImage', args: ['loop-1', 'step-1', sampleDetailBlock.id] },
   { port: 'exec', method: 'appendThinking', args: ['loop-1', 'exec thinking chunk'] },
   { port: 'exec', method: 'setThinkingDuration', args: ['loop-1', 4.2] },
   { port: 'exec', method: 'setUsage', args: ['loop-1', sampleUsage] },

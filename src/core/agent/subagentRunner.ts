@@ -62,7 +62,9 @@
  *      shape a failed subagent already produces today (see
  *      `subagentLoop.ts`'s outer catch block).
  * `RunSession.firstToolInvokeArrived` is the bit that decides which path
- * fires — set the instant `handleToolInvoke` sees a matching runId.
+ * fires — set the instant `handleToolInvoke` sees a matching runId. Progress
+ * is buffered until that commit point (or a valid successful response), so a
+ * pre-commit transport failure cannot leave a ghost tool step behind.
  */
 import type { ToolDefinition, ToolExecutionContext } from '../../types';
 import {
@@ -113,6 +115,11 @@ import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from './subagentWireContract';
+import {
+  createSubagentProgressScopeId,
+  scopeSubagentLoopProgress,
+  scopeSubagentProgressEvent,
+} from './subagentProgressIdentity';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
@@ -137,6 +144,7 @@ export interface SubagentRunParams {
   context?: string;
   parentConversationSummary?: string;
   parentConversationId?: string;
+  persistParentToolImages?: boolean;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
   /** Mirror of allowedTools — the run-scoped denylist MUST cross the wire
@@ -241,14 +249,28 @@ interface RunSession {
   offeredToolNames: ReadonlySet<string>;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
+  /** Progress received before the sidecar run reaches a no-rerun commit point. */
+  bufferedProgress: SubagentProgressEvent[];
 }
 
 const sessions = new Map<string, RunSession>();
 
-let runIdCounter = 0;
-function generateRunId(): string {
-  runIdCounter += 1;
-  return `sar-${Date.now().toString(36)}-${runIdCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+function publishSessionProgress(session: RunSession, event: SubagentProgressEvent): void {
+  try {
+    session.options.onProgress?.(event);
+  } catch (err) {
+    // Progress is observational and must never turn a committed tool request
+    // or a valid sidecar result into a transport failure.
+    logger.warn('subagent progress callback threw', {
+      eventType: event.type,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function flushBufferedProgress(session: RunSession): void {
+  const buffered = session.bufferedProgress.splice(0);
+  for (const event of buffered) publishSessionProgress(session, event);
 }
 
 // ── Reverse-channel handlers (registered ONCE at module init) ──────────
@@ -277,8 +299,6 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown subagent runId: ${params.runId}`);
   }
-  session.firstToolInvokeArrived = true;
-
   if (
     session.options.allowedTools?.length &&
     !session.options.allowedTools.some((pattern) =>
@@ -327,6 +347,15 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     );
   }
 
+  // The run becomes non-rerunnable only after every inherited/fixed roster
+  // and input constraint accepts the request. A rejected request has produced
+  // no side effect, so publishing its buffered tool-start would create a ghost
+  // step and incorrectly suppress the safe local fallback.
+  if (!session.firstToolInvokeArrived) {
+    session.firstToolInvokeArrived = true;
+    flushBufferedProgress(session);
+  }
+
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
   return await invoker.executeAnyTool(
     params.toolName,
@@ -358,7 +387,13 @@ function handleSubagentProgress(rawParams: unknown): void {
   if (!params || typeof params.runId !== 'string' || !params.event) return;
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
-  session.options.onProgress?.(params.event);
+  if (!session.options.onProgress) return;
+  const event = scopeSubagentProgressEvent(params.runId, params.event);
+  if (!session.firstToolInvokeArrived) {
+    session.bufferedProgress.push(event);
+    return;
+  }
+  publishSessionProgress(session, event);
 }
 
 let handlersRegistered = false;
@@ -431,6 +466,7 @@ function buildSubagentRunParams(
     context: options.context,
     parentConversationSummary: options.parentConversationSummary,
     parentConversationId: options.parentConversationId,
+    persistParentToolImages: options.persistParentToolImages,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
     blockedTools: options.blockedTools,
@@ -513,14 +549,19 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
 
+  // Generate an app-owned scope for EVERY runtime path. Provider tool-call ids
+  // are only run-local; exposing them raw to the parent causes cross-agent
+  // collisions in child-step replay and hidden image persistence.
+  const runId = createSubagentProgressScopeId();
+  const localOptions = scopeSubagentLoopProgress(options, runId);
+
   if (getSidecarStatus() !== 'running') {
-    logger.debug('subagent path selected', { path: 'local', sidecarStatus: getSidecarStatus() });
-    return runSubagentLoop(options);
+    logger.debug('subagent path selected', { path: 'local', runId, sidecarStatus: getSidecarStatus() });
+    return runSubagentLoop(localOptions);
   }
 
   ensureHandlersRegistered();
 
-  const runId = generateRunId();
   logger.debug('subagent path selected', { path: 'sidecar', runId, agent: options.agent?.name });
 
   let params: SubagentRunParams;
@@ -534,7 +575,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       runId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return runSubagentLoop(options);
+    return runSubagentLoop(localOptions);
   }
 
   const sessionOptions: SubagentLoopOptions = {
@@ -552,6 +593,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       ).map((tool) => tool.name),
     ),
     firstToolInvokeArrived: false,
+    bufferedProgress: [],
   };
   sessions.set(runId, session);
 
@@ -579,7 +621,11 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
 
   try {
     const raw = signal ? await Promise.race([requestPromise, gracePromise]) : await requestPromise;
-    return reconstructSubagentResult(raw);
+    const result = reconstructSubagentResult(raw);
+    // A direct-answer run never sends tool.invoke. Its ordered progress frames
+    // become durable only after the final response itself validates.
+    flushBufferedProgress(session);
+    return result;
   } catch (err) {
     // User cancellation and transport failure are different outcomes. Even
     // before the first tool call, a cancelled run must never be resurrected in
@@ -593,7 +639,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-      return runSubagentLoop(options);
+      return runSubagentLoop(scopeSubagentLoopProgress(options));
     }
     logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
       runId,

@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
 import { APP_VERSION } from '@/utils/version';
 import type { Message } from '@/types';
+import { DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST } from './durableToolResultContent';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
 // We re-import the module fresh for each test to reset module-level state
@@ -890,6 +891,71 @@ describe('conversationStorage', () => {
       const source = imageBlock.source as Record<string, string>;
       expect(source.data).toBe(''); // base64 cleared
       expect(imageBlock.filePath).toBe('/path/to/image.png'); // filePath preserved
+    });
+
+    it('bounds nested tool-result images in both durable projections', async () => {
+      const oversized = 'x'.repeat(DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST + 1);
+      const image = {
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: 'image/png', data: oversized },
+      };
+      const msg = makeMsg({
+        id: 'tool-rich-oversized',
+        role: 'assistant',
+        toolCalls: [{
+          id: 'subagent-v1:run-a:call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [image],
+          hidden: true,
+          fromSubagent: true,
+        }],
+        toolCallsForContext: [{
+          id: 'call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [image],
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const [loaded] = await storage.loadMessages('conv-1');
+      expect(loaded.toolCalls?.[0].resultContent).toBeUndefined();
+      expect(loaded.toolCalls?.[0].result).toContain('storage budget');
+      expect(loaded.toolCallsForContext?.[0].resultContent).toBeUndefined();
+      expect(loaded.toolCallsForContext?.[0].result).toContain('storage budget');
+    });
+
+    it('keeps a normal bounded subagent screenshot available for restart replay', async () => {
+      const msg = makeMsg({
+        id: 'tool-rich-normal',
+        role: 'assistant',
+        toolCalls: [{
+          id: 'subagent-v1:run-a:call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'NORMAL_IMAGE' },
+          }],
+          hidden: true,
+          fromSubagent: true,
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const [loaded] = await storage.loadMessages('conv-1');
+      expect(loaded.toolCalls?.[0].resultContent?.[0]).toMatchObject({
+        type: 'image',
+        source: { data: 'NORMAL_IMAGE' },
+      });
     });
 
     it('clears streaming flag', async () => {

@@ -127,7 +127,7 @@ describe('SubagentTab', () => {
       id: 'second',
       toolName: 'abu-browser__screenshot',
       result: 'second',
-      resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'b' } }],
+      resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YmJi' } }],
       error: false,
     });
 

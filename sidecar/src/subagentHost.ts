@@ -34,6 +34,7 @@ import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
+import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
 
 interface SerializableToolDefinition {
   name: string;
@@ -54,6 +55,7 @@ export interface SubagentHostRunParams {
   context?: string;
   parentConversationSummary?: string;
   parentConversationId?: string;
+  persistParentToolImages?: boolean;
   imContext?: IMContext;
   allowedTools?: string[];
   /** Run-scoped denylist — must mirror allowedTools across the wire (see
@@ -168,6 +170,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
+  }
+  if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
+    throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -300,6 +305,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     context: params.context,
     parentConversationSummary: params.parentConversationSummary,
     parentConversationId: params.parentConversationId,
+    persistParentToolImages: params.persistParentToolImages,
     imContext: params.imContext,
     allowedTools: params.allowedTools,
     blockedTools: params.blockedTools,
@@ -359,23 +365,27 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     onProgress: (event: SubagentProgressEvent) => {
       if (event.type === 'tool-start') {
         toolInputById.set(event.id, event.toolInput);
-      } else if (
-        event.type === 'tool-end'
-        && params.parentConversationId
-        && event.resultContent?.some((b) => b.type === 'image')
-      ) {
-        const parentRun = findActiveRunDeltaForConversation(params.parentConversationId);
-        if (parentRun) {
-          parentRun.chatDelta.appendMessageToolCall(params.parentConversationId, parentRun.loopId, {
-            id: event.id,
-            name: event.toolName,
-            input: toolInputById.get(event.id) ?? {},
-            result: event.result,
-            resultContent: event.resultContent,
-            isError: event.error || undefined,
-            hidden: true,
-            fromSubagent: true,
-          });
+      } else if (event.type === 'tool-end') {
+        const toolInput = toolInputById.get(event.id) ?? {};
+        toolInputById.delete(event.id);
+        if (
+          params.persistParentToolImages === true
+          && params.parentConversationId
+          && event.resultContent?.some((b) => b.type === 'image')
+        ) {
+          const parentRun = findActiveRunDeltaForConversation(params.parentConversationId);
+          if (parentRun) {
+            parentRun.chatDelta.appendMessageToolCall(params.parentConversationId, parentRun.loopId, {
+              id: makeSubagentProgressToolCallId(runId, event.id),
+              name: event.toolName,
+              input: toolInput,
+              result: event.result,
+              resultContent: event.resultContent,
+              isError: event.error || undefined,
+              hidden: true,
+              fromSubagent: true,
+            });
+          }
         }
       }
       sendNotification('subagent.progress', { runId, event });

@@ -68,10 +68,19 @@ export function normalizeBatchTerminalSummary(
 ): BatchTerminalSummary | undefined {
   if (!isRecord(value) || value.version !== 1) return undefined;
   if (!isRecord(value.batch)) return undefined;
-  const { conversationId, batchToolCallId } = value.batch;
+  const { conversationId, assistantMessageId: rawAssistantMessageId, batchToolCallId } = value.batch;
   if (typeof conversationId !== 'string' || conversationId.length === 0) return undefined;
   if (typeof batchToolCallId !== 'string' || batchToolCallId.length === 0) return undefined;
+  if (
+    rawAssistantMessageId !== undefined
+    && (typeof rawAssistantMessageId !== 'string' || rawAssistantMessageId.length === 0)
+  ) return undefined;
   if (expected?.conversationId !== undefined && conversationId !== expected.conversationId) return undefined;
+  if (
+    expected?.assistantMessageId !== undefined
+    && rawAssistantMessageId !== undefined
+    && rawAssistantMessageId !== expected.assistantMessageId
+  ) return undefined;
   if (expected?.batchToolCallId !== undefined && batchToolCallId !== expected.batchToolCallId) return undefined;
   if (!isFiniteNonNegativeInteger(value.taskCount)) return undefined;
   if (value.taskCount < 1 || value.taskCount > MAX_BATCH_TERMINAL_TASK_COUNT) return undefined;
@@ -99,9 +108,17 @@ export function normalizeBatchTerminalSummary(
     if (value.counts[status] !== counts[status]) return undefined;
   }
 
+  // A legacy v1 summary may omit the message scope. Accept it when the two
+  // original fields match, but do not manufacture a v2 identity on disk; only
+  // newly emitted summaries carry the assistant id.
+  const assistantMessageId = rawAssistantMessageId;
   return {
     version: 1,
-    batch: { conversationId, batchToolCallId },
+    batch: {
+      conversationId,
+      ...(assistantMessageId ? { assistantMessageId } : {}),
+      batchToolCallId,
+    },
     taskCount: value.taskCount,
     counts,
     tasks,
@@ -116,6 +133,11 @@ export function mergeBatchTerminalSummaries(
     existing
     && (
       existing.batch.conversationId !== incoming.batch.conversationId
+      || (
+        existing.batch.assistantMessageId !== undefined
+        && incoming.batch.assistantMessageId !== undefined
+        && existing.batch.assistantMessageId !== incoming.batch.assistantMessageId
+      )
       || existing.batch.batchToolCallId !== incoming.batch.batchToolCallId
       || existing.taskCount !== incoming.taskCount
     )

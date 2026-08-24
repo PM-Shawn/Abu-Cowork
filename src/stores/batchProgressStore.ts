@@ -114,6 +114,8 @@ export const BATCH_PROGRESS_COMPLETED_TTL_MS = 5 * 60 * 1000;
 export const BATCH_PROGRESS_MAX_RESULT_CHARS = 20_000;
 export const BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES = 16 * 1024 * 1024;
 export const BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES = 32 * 1024 * 1024;
+export const BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS = 64;
+export const BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCK_BYTES = BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES;
 export const BATCH_PROGRESS_MAX_STEPS_PER_TASK = 64;
 
 function keyOf(identity: BatchIdentity): string {
@@ -121,35 +123,100 @@ function keyOf(identity: BatchIdentity): string {
 }
 
 const textEncoder = new TextEncoder();
-const fatalTextDecoder = new TextDecoder('utf-8', { fatal: true });
+const TEXT_BLOCK_JSON_ENVELOPE_BYTES = textEncoder.encode(JSON.stringify({ type: 'text', text: '' })).byteLength;
+const IMAGE_BLOCK_JSON_ENVELOPE_BYTES = textEncoder.encode(JSON.stringify({
+  type: 'image',
+  source: { type: 'base64', media_type: '', data: '' },
+})).byteLength;
+const RESULT_CONTENT_ARRAY_ENVELOPE_BYTES = 2;
+const JSON_SAFE_ASCII = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/;
 
-function utf8ByteLength(text: string): number {
-  return textEncoder.encode(text).byteLength;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function truncateUtf8ToBytes(text: string, maxBytes: number): string {
-  if (maxBytes <= 0) return '';
-  // A valid UTF-8 prefix cannot require more UTF-16 code units than its byte
-  // cap. Slice before encoding so hostile multi-hundred-MiB text blocks do not
-  // force an unbounded renderer allocation just to retain the first 16 MiB.
-  const boundedPrefix = text.length > maxBytes + 1 ? text.slice(0, maxBytes + 1) : text;
-  const encoded = textEncoder.encode(boundedPrefix);
-  if (encoded.byteLength <= maxBytes) return text;
-  for (let end = maxBytes; end >= Math.max(0, maxBytes - 3); end--) {
-    try {
-      return fatalTextDecoder.decode(encoded.subarray(0, end));
-    } catch {
-      // Back up at most one UTF-8 code point (4 bytes total) until the prefix
-      // ends on a valid boundary. This avoids per-code-point encoding on large
-      // near-boundary payloads while guaranteeing no dangling surrogate/emoji.
-    }
+function isBase64Like(value: string): boolean {
+  if (value.length === 0 || value.length > BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCK_BYTES) return false;
+  // Accept standard and URL-safe alphabets with optional terminal padding.
+  // Reject whitespace/control/Unicode and impossible one-character tails.
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return false;
+  const paddingLength = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  return (value.length - paddingLength) % 4 !== 1;
+}
+
+function isImageMediaType(value: string): boolean {
+  return value.length <= 255 && /^image\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(value);
+}
+
+/** Exact UTF-8 bytes produced inside a JSON string, without materializing a
+ * second attacker-sized JSON copy. This accounts for JSON escapes and treats a
+ * surrogate pair atomically so retained text never ends on half an emoji. */
+function jsonStringContentBytes(text: string, maxBytes = Number.POSITIVE_INFINITY): { bytes: number; end: number } {
+  const safeAsciiLimit = Number.isFinite(maxBytes)
+    ? Math.max(0, Math.min(text.length, Math.floor(maxBytes)))
+    : text.length;
+  const safeAsciiCandidate = safeAsciiLimit === text.length
+    ? text
+    : text.slice(0, safeAsciiLimit);
+  if (JSON_SAFE_ASCII.test(safeAsciiCandidate)) {
+    return { bytes: safeAsciiLimit, end: safeAsciiLimit };
   }
-  return '';
+
+  let bytes = 0;
+  let index = 0;
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    let codeUnits = 1;
+    let nextBytes: number;
+    if (code === 0x22 || code === 0x5c) {
+      nextBytes = 2;
+    } else if (code <= 0x1f) {
+      nextBytes = code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d ? 2 : 6;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codeUnits = 2;
+        nextBytes = 4;
+      } else {
+        // Well-formed JSON.stringify escapes lone surrogates as \udxxx.
+        nextBytes = 6;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      nextBytes = 6;
+    } else if (code <= 0x7f) {
+      nextBytes = 1;
+    } else if (code <= 0x7ff) {
+      nextBytes = 2;
+    } else {
+      nextBytes = 3;
+    }
+    if (bytes + nextBytes > maxBytes) break;
+    bytes += nextBytes;
+    index += codeUnits;
+  }
+  return { bytes, end: index };
+}
+
+function richContentBlockBytes(block: ToolResultContent): number {
+  if (block.type === 'text') {
+    return TEXT_BLOCK_JSON_ENVELOPE_BYTES + jsonStringContentBytes(block.text).bytes;
+  }
+  // Admission restricts both strings to JSON-safe ASCII, so their exact JSON
+  // UTF-8 contribution is their code-unit length with no escaping expansion.
+  return IMAGE_BLOCK_JSON_ENVELOPE_BYTES
+    + block.source.media_type.length
+    + block.source.data.length;
 }
 
 function richContentBytes(content: ToolResultContent[] | undefined): number {
-  return content?.reduce((total, block) =>
-    total + (block.type === 'image' ? block.source.data.length : utf8ByteLength(block.text)), 0) ?? 0;
+  if (!content || content.length === 0) return 0;
+  return RESULT_CONTENT_ARRAY_ENVELOPE_BYTES
+    + content.reduce((total, block, index) =>
+      total + richContentBlockBytes(block) + (index > 0 ? 1 : 0), 0);
+}
+
+function richContentBlockCount(content: ToolResultContent[] | undefined): number {
+  return content?.length ?? 0;
 }
 
 function batchRichContentBytes(entry: BatchEntry): number {
@@ -158,53 +225,109 @@ function batchRichContentBytes(entry: BatchEntry): number {
       taskTotal + richContentBytes(step.resultContent), 0), 0);
 }
 
+function batchRichContentBlockCount(entry: BatchEntry): number {
+  return entry.tasks.reduce((batchTotal, task) =>
+    batchTotal + task.steps.reduce((taskTotal, step) =>
+      taskTotal + richContentBlockCount(step.resultContent), 0), 0);
+}
+
 interface RetainedBatchResultContent {
   content?: ToolResultContent[];
   state?: BatchTaskStepRichContentState;
 }
 
 function retainBatchResultContentWithState(
-  content: ToolResultContent[] | undefined,
+  content: unknown,
   availableBytes: number,
+  availableBlocks = BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS,
 ): RetainedBatchResultContent {
-  if (!content || content.length === 0) return {};
-  if (availableBytes <= 0) {
-    return content.some((block) =>
-      block.type === 'image' ? block.source.data.length > 0 : block.text.length > 0)
-      ? { state: 'partially-retained' }
-      : {};
-  }
-  let remaining = availableBytes;
+  if (content === undefined) return {};
+  if (!Array.isArray(content)) return { state: 'partially-retained' };
+  if (content.length === 0) return {};
+  const byteBudget = Number.isFinite(availableBytes)
+    ? Math.max(0, Math.min(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES, Math.floor(availableBytes)))
+    : 0;
+  const blockBudget = Number.isFinite(availableBlocks)
+    ? Math.max(0, Math.min(BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS, Math.floor(availableBlocks)))
+    : 0;
+  const scanLimit = Math.min(content.length, BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS);
   const retained: ToolResultContent[] = [];
-  let omitted = false;
+  let retainedBytes = RESULT_CONTENT_ARRAY_ENVELOPE_BYTES;
+  let omitted = content.length > scanLimit;
   let sawRich = false;
-  for (const block of content) {
-    if (block.type === 'image') {
-      const bytes = block.source.data.length;
-      if (bytes <= 0) continue;
-      sawRich = true;
-      if (bytes > remaining) {
-        omitted = true;
-        continue;
-      }
-      retained.push(block);
-      remaining -= bytes;
-      continue;
+  for (let index = 0; index < scanLimit; index++) {
+    if (retained.length >= blockBudget) {
+      omitted = true;
+      break;
     }
-    if (block.text.length <= 0) continue;
-    sawRich = true;
-    if (remaining <= 0) {
+    const rawBlock = content[index] as unknown;
+    if (!isRecord(rawBlock) || typeof rawBlock.type !== 'string') {
+      sawRich = true;
       omitted = true;
       continue;
     }
-    const bytes = block.text.length > remaining ? remaining + 1 : utf8ByteLength(block.text);
-    const text = truncateUtf8ToBytes(block.text, remaining);
-    if (text) retained.push({ type: 'text', text });
-    const retainedBytes = utf8ByteLength(text);
-    remaining -= retainedBytes;
-    if (retainedBytes < bytes) omitted = true;
+    const commaBytes = retained.length > 0 ? 1 : 0;
+    const availableForBlock = Math.max(0, byteBudget - retainedBytes - commaBytes);
+    const maxBlockBytes = Math.min(BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCK_BYTES, availableForBlock);
+    if (rawBlock.type === 'image') {
+      const source = rawBlock.source;
+      if (!isRecord(source)
+        || source.type !== 'base64'
+        || typeof source.media_type !== 'string'
+        || !isImageMediaType(source.media_type)
+        || typeof source.data !== 'string') {
+        sawRich = true;
+        omitted = true;
+        continue;
+      }
+      if (source.data.length === 0) continue;
+      sawRich = true;
+      if (!isBase64Like(source.data)) {
+        omitted = true;
+        continue;
+      }
+      const candidate: ToolResultContent = {
+        type: 'image',
+        source: { type: 'base64', media_type: source.media_type, data: source.data },
+      };
+      const candidateBytes = richContentBlockBytes(candidate);
+      if (candidateBytes > maxBlockBytes) {
+        omitted = true;
+        continue;
+      }
+      retained.push(candidate);
+      retainedBytes += candidateBytes + commaBytes;
+      continue;
+    }
+    if (rawBlock.type !== 'text' || typeof rawBlock.text !== 'string') {
+      sawRich = true;
+      omitted = true;
+      continue;
+    }
+    if (rawBlock.text.length === 0) continue;
+    sawRich = true;
+    const textBudget = maxBlockBytes - TEXT_BLOCK_JSON_ENVELOPE_BYTES;
+    if (textBudget <= 0) {
+      omitted = true;
+      continue;
+    }
+    const fitted = jsonStringContentBytes(rawBlock.text, textBudget);
+    if (fitted.end === 0) {
+      omitted = true;
+      continue;
+    }
+    const text = fitted.end === rawBlock.text.length ? rawBlock.text : rawBlock.text.slice(0, fitted.end);
+    const candidate: ToolResultContent = { type: 'text', text };
+    const candidateBytes = richContentBlockBytes(candidate);
+    if (candidateBytes > maxBlockBytes) {
+      omitted = true;
+      continue;
+    }
+    retained.push(candidate);
+    retainedBytes += candidateBytes + commaBytes;
+    if (fitted.end < rawBlock.text.length) omitted = true;
   }
-  if (!sawRich) return {};
+  if (!sawRich) return omitted ? { state: 'partially-retained' } : {};
   return {
     content: retained.length > 0 ? retained : undefined,
     state: omitted ? 'partially-retained' : retained.length > 0 ? 'retained' : undefined,
@@ -313,12 +436,14 @@ function emptyDiagnostics(): BatchRichContentDiagnostics {
   };
 }
 
-function totalRetainedRichBytes(batches: Record<string, BatchEntry>): number {
-  return Object.values(batches).reduce((total, entry) => total + entry.retainedRichBytes, 0);
-}
-
 function refreshDiagnostics(state: BatchProgressState): void {
-  const total = totalRetainedRichBytes(state.batches);
+  let total = 0;
+  for (const entry of Object.values(state.batches)) {
+    // Re-derive from the retained canonical blocks so admission, diagnostics,
+    // and LRU all use one exact JSON UTF-8 accounting path.
+    entry.retainedRichBytes = batchRichContentBytes(entry);
+    total += entry.retainedRichBytes;
+  }
   state.richContentDiagnostics.totalRetainedRichBytes = total;
   state.richContentDiagnostics.retainedRichBytesCap = BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES;
   state.richContentDiagnostics.overageBytes = Math.max(0, total - BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES);
@@ -446,12 +571,23 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
         const now = Date.now();
         const step = task.steps.find((existing) => existing.id === result.id);
         if (step) {
+          const existingRichBytes = richContentBytes(step.resultContent);
+          const existingRichBlocks = richContentBlockCount(step.resultContent);
           const availableRichBytes = Math.max(
             0,
             BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES
-              - (batchRichContentBytes(entry) - richContentBytes(step.resultContent)),
+              - (batchRichContentBytes(entry) - existingRichBytes),
           );
-          const retention = retainBatchResultContentWithState(result.resultContent, availableRichBytes);
+          const availableRichBlocks = Math.max(
+            0,
+            BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS
+              - (batchRichContentBlockCount(entry) - existingRichBlocks),
+          );
+          const retention = retainBatchResultContentWithState(
+            result.resultContent,
+            availableRichBytes,
+            availableRichBlocks,
+          );
           step.result = truncateBatchResult(result.result);
           step.resultContent = retention.content;
           step.richContentState = retention.state;
@@ -479,7 +615,15 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
           0,
           BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - batchRichContentBytes(entry),
         );
-        const retention = retainBatchResultContentWithState(result.resultContent, availableRichBytes);
+        const availableRichBlocks = Math.max(
+          0,
+          BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS - batchRichContentBlockCount(entry),
+        );
+        const retention = retainBatchResultContentWithState(
+          result.resultContent,
+          availableRichBytes,
+          availableRichBlocks,
+        );
         task.steps.push({
           id: result.id,
           toolName: result.toolName,

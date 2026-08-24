@@ -13,6 +13,7 @@ export const SUBAGENT_RUN_WIRE_FIELDS = [
   'context',
   'parentConversationSummary',
   'parentConversationId',
+  'persistParentToolImages',
   'imContext',
   'allowedTools',
   'blockedTools',

@@ -50,6 +50,10 @@ import { format, getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import {
+  ActiveToolResultAdmission,
+  type ActiveToolResultToken,
+} from './activeToolResultContent';
 
 const logger = createLogger('subagentLoop');
 
@@ -410,6 +414,13 @@ export interface SubagentLoopOptions {
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /**
+   * Whether image-bearing child tool results need a hidden parent-message
+   * replay entry. Single-agent delegation has persisted execution child steps
+   * that consume it after restart; batch progress is intentionally ephemeral
+   * and must leave this false to avoid duplicating every screenshot to disk.
+   */
+  persistParentToolImages?: boolean;
+  /**
    * Per-run injectable ports — mirrors agentLoop.ts's `options?.settingsReader
    * ?? getSettingsReader()` pattern (agentLoop.ts:~717). Zero behavior change
    * for existing callers (both default to the in-process port singleton via
@@ -583,6 +594,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         timestamp: Date.now(),
       },
     ];
+    const activeRichResults = new ActiveToolResultAdmission();
 
     // 6. Main loop
     // maxTurns priority: agent definition > global setting > DEFAULT_MAX_TURNS
@@ -907,7 +919,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Execute tools in parallel (routed through preToolCall/postToolCall hooks)
       const toolResults = await Promise.allSettled(
-        collectedToolCalls.map(async (tc): Promise<{ id: string; result: string; resultContent?: ToolResultContent[] }> => {
+        collectedToolCalls.map(async (tc): Promise<{
+          id: string;
+          result: string;
+          resultContentToken?: ActiveToolResultToken;
+        }> => {
           if (signal?.aborted) {
             return { id: tc.id, result: getI18n().chat.subagent.cancelled };
           }
@@ -986,11 +1002,18 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               filePermissionCallback,
               subagentToolContext,
             );
-            const result = toolInvoker.toolResultToString(rawResult);
-            // Keep the raw rich blocks for the tool-end progress event (child-step
-            // image rendering) — mirrors toolExecutor.ts's resultStr/resultContent split.
-            const resultContent: ToolResultContent[] | undefined =
-              typeof rawResult !== 'string' ? rawResult : undefined;
+            // Admit untrusted rich blocks at their first active-run boundary.
+            // The Promise result carries only an opaque token: an older payload
+            // evicted by a concurrently-finishing tool cannot remain pinned in
+            // Promise.allSettled's result array.
+            const resultContentToken = activeRichResults.admit(
+              typeof rawResult !== 'string' ? rawResult : undefined,
+            );
+            const result = toolInvoker.toolResultToString(
+              typeof rawResult === 'string'
+                ? rawResult
+                : (activeRichResults.get(resultContentToken) ?? []),
+            );
             const durationMs = Date.now() - toolStart;
             await emitHook({
               type: 'postToolCall' as const,
@@ -1002,7 +1025,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               error: false,
               durationMs,
             });
-            return { id: tc.id, result, resultContent };
+            return { id: tc.id, result, resultContentToken };
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             const result = `Error: ${errMsg}`;
@@ -1028,13 +1051,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const result = r.status === 'fulfilled'
           ? r.value.result
           : `Error: ${r.reason}`;
-        const resultContent = r.status === 'fulfilled' ? r.value.resultContent : undefined;
+        const resultContentToken = r.status === 'fulfilled' ? r.value.resultContentToken : undefined;
+        const resultContent = activeRichResults.get(resultContentToken);
         // ToolRegistry resolves its established generic failures as `Error:`
         // strings, so this child-tool channel must keep the legacy prefix
         // contract. B3 only structures the enclosing SubagentResult terminal.
         const isError = r.status === 'rejected' || result.startsWith('Error:');
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError, resultContent });
-        return { id: tc.id, name: tc.name, input: tc.input, result, resultContent };
+        return { id: tc.id, name: tc.name, input: tc.input, result, resultContent, resultContentToken };
       });
 
       onProgress?.({
@@ -1062,6 +1086,18 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       assistantMsg.toolCallsForContext = toolResultEntries.map(
         ({ id, name, input, result, resultContent }) => ({ id, name, input, result, resultContent })
       );
+
+      // Bind the ledger to BOTH canonical in-run projections. Later admission
+      // evicts only the old rich payload while preserving the tool-call object,
+      // id/result/input and therefore provider tool pairing.
+      toolResultEntries.forEach((entry, index) => {
+        const toolCall = assistantMsg.toolCalls?.[index];
+        const contextCall = assistantMsg.toolCallsForContext?.[index];
+        activeRichResults.bindRelease(entry.resultContentToken, () => {
+          if (toolCall) delete toolCall.resultContent;
+          if (contextCall) delete contextCall.resultContent;
+        });
+      });
     }
 
     const finalText = resultBuffer || getI18n().chat.subagent.noContent;

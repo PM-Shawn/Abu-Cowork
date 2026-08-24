@@ -30,6 +30,7 @@ import {
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
+import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 
 enableMapSet();
 
@@ -1232,6 +1233,7 @@ export const useChatStore = create<ChatStore>()(
               }
               const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
                 conversationId: convId,
+                assistantMessageId: messageId,
                 batchToolCallId: toolCallId,
               });
               if (incomingSummary) {
@@ -1295,6 +1297,7 @@ export const useChatStore = create<ChatStore>()(
           }
           const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
             conversationId: convId,
+            assistantMessageId: messageId,
             batchToolCallId: toolCallId,
           });
           if (incomingSummary) {
@@ -1640,12 +1643,18 @@ export const useChatStore = create<ChatStore>()(
           for (let i = conv.messages.length - 1; i >= 0; i--) {
             const m = conv.messages[i];
             if (m.role === 'assistant' && m.loopId === loopId) {
-              if (!m.toolCalls) m.toolCalls = [];
-              // Idempotence: the sidecar frame path can re-deliver; a second
-              // entry with the same id would make backfill's byToolCallId
-              // join ambiguous for no benefit.
-              if (!m.toolCalls.some((tc) => tc.id === toolCall.id)) {
-                m.toolCalls.push(toolCall);
+              // Canonical admission boundary: the sidecar frame path can
+              // re-deliver, and image-bearing child steps can otherwise grow
+              // this repeatedly-snapshotted message without bound. The helper
+              // deduplicates by the app-scoped id and retains only the newest
+              // bounded rich payloads while leaving ordinary parent calls
+              // untouched.
+              const appended = appendBoundedSubagentToolCall(
+                m.toolCalls as ToolCall[] | undefined,
+                toolCall,
+              );
+              if (appended.appended) {
+                m.toolCalls = appended.toolCalls;
                 targetMsgId = m.id;
               }
               break;

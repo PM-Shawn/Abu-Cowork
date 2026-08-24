@@ -56,6 +56,7 @@ import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
+import { ActiveToolResultAdmission } from './activeToolResultContent';
 import {
   allToolsUnparseable,
   MAX_NO_PROGRESS_TURNS,
@@ -1034,6 +1035,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // run — these are re-appended once the message exists (dedup by id makes
     // the double call safe if that ever changes).
     const pendingSubagentToolCalls: ToolCall[] = [];
+    const pendingRichResults = new ActiveToolResultAdmission();
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
     if (delegateStepId) {
       onProgress = (event) => {
@@ -1049,18 +1051,32 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         } else if (event.type === 'tool-end') {
           const childStepId = childIdMap.get(event.id);
+          const childInput = childInputById.get(event.id) ?? {};
+          // A completed child no longer needs either lookup. Delete before
+          // downstream rendering/persistence so even a thrown consumer cannot
+          // pin a hostile tool input for the remainder of a long delegate run.
+          childIdMap.delete(event.id);
+          childInputById.delete(event.id);
           if (childStepId) {
             eventRouter.completeChildStep(loopId, delegateStepId, childStepId, event.result, event.error, event.resultContent);
-            if (event.resultContent?.some((b) => b.type === 'image')) {
-              pendingSubagentToolCalls.push({
+            const token = pendingRichResults.admit(event.resultContent);
+            const resultContent = pendingRichResults.get(token);
+            if (resultContent?.some((block) => block.type === 'image')) {
+              const pendingCall: ToolCall = {
                 id: event.id,
                 name: event.toolName,
-                input: childInputById.get(event.id) ?? {},
+                input: childInput,
                 result: event.result,
-                resultContent: event.resultContent,
+                resultContent,
                 isError: event.error || undefined,
                 hidden: true,
                 fromSubagent: true,
+              };
+              pendingSubagentToolCalls.push(pendingCall);
+              pendingRichResults.bindRelease(token, () => {
+                // Keep the hidden call's identity/result/input for replay
+                // pairing; only the budgeted rich payload is releasable.
+                delete pendingCall.resultContent;
               });
             }
           }
@@ -1092,6 +1108,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         onProgress,
         imContext: options?.imContext,
         parentConversationId: conversationId,
+        persistParentToolImages: true,
         settingsReader: entrySettingsReader,
       }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through

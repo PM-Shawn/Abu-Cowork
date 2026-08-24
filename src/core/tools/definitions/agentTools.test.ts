@@ -111,6 +111,7 @@ describe('delegateToAgentTool', () => {
         allowedTools: ['read_file'],
         blockedTools: ['request_workspace', 'abu-browser__*'],
         imContext: { platform: 'dchat', workspacePath: '/im/workspace' },
+        persistParentToolImages: true,
       }),
     );
   });
@@ -160,7 +161,11 @@ describe('delegateToAgentTool', () => {
     expect(addChildStepToDelegate).toHaveBeenCalledWith(
       'loop-1',
       'parent-step-1',
-      { toolName: 'computer', toolInput: { action: 'screenshot' }, toolCallId: 'toolu_sub_1' },
+      {
+        toolName: 'computer',
+        toolInput: { action: 'screenshot' },
+        toolCallId: expect.stringMatching(/^subagent-v1:sar-.*:toolu_sub_1$/),
+      },
     );
     expect(completeChildStep).toHaveBeenCalledWith(
       'loop-1',
@@ -170,6 +175,42 @@ describe('delegateToAgentTool', () => {
       false,
       imageContent,
     );
+  });
+
+  it('forgets a completed child id so a duplicate tool-end cannot complete it twice', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher', description: 'test', systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    const completeChildStep = vi.fn();
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate', 'parent-step']]),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => 'parent-step',
+        addChildStepToDelegate: () => 'child-step',
+        completeChildStep,
+      },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} });
+      options.onProgress?.({ type: 'tool-end', id: 'call_1', toolName: 'read_file', result: 'first', error: false });
+      options.onProgress?.({ type: 'tool-end', id: 'call_1', toolName: 'read_file', result: 'duplicate', error: false });
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'read it' });
+
+    expect(completeChildStep).toHaveBeenCalledOnce();
   });
 
   it('reports structured subagentStopReason through trusted tool metadata', async () => {

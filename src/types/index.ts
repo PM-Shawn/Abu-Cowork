@@ -2,6 +2,8 @@
 // ABU — Core Type Definitions
 // ============================================================
 
+import { encodeBoundedIdentityPart } from '@/utils/boundedIdentity';
+
 // --- Messages & Conversations ---
 
 // ─── Interactive Notice Cards (Module I) ───────────────────────────────
@@ -32,11 +34,25 @@ export type SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max_turns'
 
 export interface BatchIdentity {
   conversationId: string;
+  /** Owning assistant message. Optional only for v1 persisted summaries. */
+  assistantMessageId?: string;
   batchToolCallId: string;
 }
 
+export const BATCH_KEY_MAX_PART_BYTES = 1_024;
+export const BATCH_KEY_MAX_BYTES = 3 + (BATCH_KEY_MAX_PART_BYTES * 3) + 2;
+
 export function makeBatchKey(identity: BatchIdentity): string {
-  return `v1:${encodeURIComponent(identity.conversationId)}:${encodeURIComponent(identity.batchToolCallId)}`;
+  const conversationId = encodeBoundedIdentityPart(identity.conversationId, BATCH_KEY_MAX_PART_BYTES);
+  const batchToolCallId = encodeBoundedIdentityPart(identity.batchToolCallId, BATCH_KEY_MAX_PART_BYTES);
+  if (identity.assistantMessageId) {
+    const assistantMessageId = encodeBoundedIdentityPart(
+      identity.assistantMessageId,
+      BATCH_KEY_MAX_PART_BYTES,
+    );
+    return `v2:${conversationId}:${assistantMessageId}:${batchToolCallId}`;
+  }
+  return `v1:${conversationId}:${batchToolCallId}`;
 }
 
 export type BatchTaskTerminalStatus = 'succeeded' | 'failed' | 'stopped' | 'incomplete';

@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   BATCH_PROGRESS_COMPLETED_TTL_MS,
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
+  BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS,
+  BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCK_BYTES,
   BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES,
   BATCH_PROGRESS_MAX_RESULT_CHARS,
   BATCH_PROGRESS_MAX_STEPS_PER_TASK,
   retainBatchResultContent,
   useBatchProgressStore,
 } from './batchProgressStore';
-import { makeBatchKey, type BatchIdentity } from '@/types';
+import { BATCH_KEY_MAX_BYTES, makeBatchKey, type BatchIdentity } from '@/types';
 
 function identity(conversationId: string, batchToolCallId = 'shared-tool-call'): BatchIdentity {
   return { conversationId, batchToolCallId };
@@ -21,6 +23,32 @@ function testIdentity(batchToolCallId: string): BatchIdentity {
 function batch(identityValue: BatchIdentity) {
   return useBatchProgressStore.getState().batches[makeBatchKey(identityValue)];
 }
+
+const testTextEncoder = new TextEncoder();
+
+function jsonBytes(value: unknown): number {
+  return testTextEncoder.encode(JSON.stringify(value)).byteLength;
+}
+
+function imageContentWithJsonBytes(retainedBytes: number, fill = 'A') {
+  const empty = [{
+    type: 'image' as const,
+    source: { type: 'base64' as const, media_type: 'image/png', data: '' },
+  }];
+  const dataLength = retainedBytes - jsonBytes(empty);
+  if (dataLength < 0 || dataLength % 4 === 1) {
+    throw new Error(`Cannot build base64-like image content with ${retainedBytes} JSON bytes`);
+  }
+  return [{
+    type: 'image' as const,
+    source: { type: 'base64' as const, media_type: 'image/png', data: fill.repeat(dataLength) },
+  }];
+}
+
+const MIN_IMAGE_CONTENT_BYTES = jsonBytes([{
+  type: 'image',
+  source: { type: 'base64', media_type: 'image/png', data: 'YQ==' },
+}]);
 
 function resetBatchProgressStore() {
   useBatchProgressStore.setState({
@@ -38,7 +66,7 @@ function resetBatchProgressStore() {
   });
 }
 
-function finishRichBatch(id: BatchIdentity, size: number, taskIndex = 0, stepId = 'tool-1') {
+function finishRichBatch(id: BatchIdentity, retainedBytes: number, taskIndex = 0, stepId = 'tool-1') {
   const store = useBatchProgressStore.getState();
   store.initBatch(id, ['Task A']);
   store.startTaskStep(id, taskIndex, { id: stepId, toolName: 'abu-browser__screenshot', toolInput: {} });
@@ -46,13 +74,43 @@ function finishRichBatch(id: BatchIdentity, size: number, taskIndex = 0, stepId 
     id: stepId,
     toolName: 'abu-browser__screenshot',
     result: 'Screenshot',
-    resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(size) } }],
+    resultContent: imageContentWithJsonBytes(retainedBytes),
     error: false,
   });
   store.setTaskTerminal(id, taskIndex, { status: 'succeeded', reason: 'completed' });
 }
 
 describe('batchProgressStore', () => {
+  it('makes total bounded batch keys without collapsing repaired identity domains', () => {
+    const malformed = makeBatchKey({
+      conversationId: 'conversation',
+      assistantMessageId: 'assistant',
+      batchToolCallId: '\ud800',
+    });
+    const transformedPart = malformed.slice(malformed.lastIndexOf(':') + 1);
+    const craftedValidInput = decodeURIComponent(transformedPart);
+    const crafted = makeBatchKey({
+      conversationId: 'conversation',
+      assistantMessageId: 'assistant',
+      batchToolCallId: craftedValidInput,
+    });
+    const sharedPrefix = 'x'.repeat(10_000);
+    const firstLong = makeBatchKey({
+      conversationId: sharedPrefix,
+      assistantMessageId: sharedPrefix,
+      batchToolCallId: `${sharedPrefix}a`,
+    });
+    const secondLong = makeBatchKey({
+      conversationId: sharedPrefix,
+      assistantMessageId: sharedPrefix,
+      batchToolCallId: `${sharedPrefix}b`,
+    });
+
+    expect(malformed).not.toBe(crafted);
+    expect(firstLong).not.toBe(secondLong);
+    expect(new TextEncoder().encode(firstLong).byteLength).toBeLessThanOrEqual(BATCH_KEY_MAX_BYTES);
+  });
+
   beforeEach(() => {
     resetBatchProgressStore();
   });
@@ -99,6 +157,27 @@ describe('batchProgressStore', () => {
 
       expect(batch(a).tasks[0].status).toBe('running');
       expect(batch(b).tasks[0].status).toBe('queued');
+    });
+
+    it('isolates reused provider ids by owning assistant message', () => {
+      const first: BatchIdentity = {
+        conversationId: 'conv-shared',
+        assistantMessageId: 'assistant-1',
+        batchToolCallId: 'call_1',
+      };
+      const second: BatchIdentity = {
+        conversationId: 'conv-shared',
+        assistantMessageId: 'assistant-2',
+        batchToolCallId: 'call_1',
+      };
+      const store = useBatchProgressStore.getState();
+      store.initBatch(first, ['first batch']);
+      store.setTaskTerminal(first, 0, { status: 'succeeded', reason: 'completed' });
+      store.initBatch(second, ['second batch']);
+
+      expect(batch(first).tasks[0].label).toBe('first batch');
+      expect(batch(second).tasks[0].label).toBe('second batch');
+      expect(makeBatchKey(first)).not.toBe(makeBatchKey(second));
     });
   });
 
@@ -223,30 +302,42 @@ describe('batchProgressStore', () => {
       expect(task.steps.at(-1)?.result).toHaveLength(BATCH_PROGRESS_MAX_RESULT_CHARS + 2);
       expect(retainBatchResultContent([
         { type: 'text', text: 'abcdef' },
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'image' } },
-      ], 4)).toEqual([{ type: 'text', text: 'abcd' }]);
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+      ], jsonBytes([{ type: 'text', text: 'abcd' }]))).toEqual([{ type: 'text', text: 'abcd' }]);
       expect(retainBatchResultContent([
         { type: 'text', text: 'é你abc' },
-      ], 5)).toEqual([{ type: 'text', text: 'é你' }]);
-      expect(retainBatchResultContent([{ type: 'text', text: 'a😀b' }], 3))
+      ], jsonBytes([{ type: 'text', text: 'é你' }]))).toEqual([{ type: 'text', text: 'é你' }]);
+      expect(retainBatchResultContent(
+        [{ type: 'text', text: 'a😀b' }],
+        jsonBytes([{ type: 'text', text: 'a' }]),
+      ))
         .toEqual([{ type: 'text', text: 'a' }]);
-      expect(retainBatchResultContent([{ type: 'text', text: 'a😀b' }], 5))
+      expect(retainBatchResultContent(
+        [{ type: 'text', text: 'a😀b' }],
+        jsonBytes([{ type: 'text', text: 'a😀' }]),
+      ))
         .toEqual([{ type: 'text', text: 'a😀' }]);
-      expect(retainBatchResultContent([{ type: 'text', text: 'a😀b' }], 6))
+      expect(retainBatchResultContent(
+        [{ type: 'text', text: 'a😀b' }],
+        jsonBytes([{ type: 'text', text: 'a😀b' }]),
+      ))
         .toEqual([{ type: 'text', text: 'a😀b' }]);
     });
 
     it('truncates large near-boundary UTF-8 text without per-code-point encoder work or emoji corruption', () => {
+      const emptyTextContentBytes = jsonBytes([{ type: 'text', text: '' }]);
+      const retainedTextLength = BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - emptyTextContentBytes - 1;
       const retained = retainBatchResultContent([
-        { type: 'text', text: `${'a'.repeat(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - 1)}😀x` },
+        { type: 'text', text: `${'a'.repeat(retainedTextLength)}😀x` },
       ], BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
 
       expect(retained).toHaveLength(1);
       expect(retained?.[0].type).toBe('text');
       if (retained?.[0].type !== 'text') return;
-      expect(retained[0].text).toHaveLength(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - 1);
+      expect(retained[0].text).toHaveLength(retainedTextLength);
       expect(retained[0].text.endsWith('\uD83D')).toBe(false);
       expect(retained[0].text).not.toContain('�');
+      expect(jsonBytes(retained)).toBeLessThanOrEqual(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
     });
 
     it('keeps running steps at the cap and does not double-count their late tool-end', () => {
@@ -473,6 +564,7 @@ describe('batchProgressStore', () => {
     it('accounts retained rich bytes exactly and caps one batch at 16 MiB', () => {
       const accounting = testIdentity('rich-accounting');
       const cap = testIdentity('rich-cap');
+      const escapedText = 'é你"\\\u0000😀\uD800';
       const store = useBatchProgressStore.getState();
       store.initBatch(accounting, ['A']);
       store.finishTaskStep(accounting, 0, {
@@ -480,14 +572,18 @@ describe('batchProgressStore', () => {
         toolName: 'read_file',
         result: 'mixed',
         resultContent: [
-          { type: 'text', text: 'é你' },
+          { type: 'text', text: escapedText },
           { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abcd' } },
         ],
         error: false,
       });
 
-      expect(batch(accounting).retainedRichBytes).toBe(9);
-      expect(useBatchProgressStore.getState().richContentDiagnostics.totalRetainedRichBytes).toBe(9);
+      const accountingBytes = jsonBytes([
+        { type: 'text', text: escapedText },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'abcd' } },
+      ]);
+      expect(batch(accounting).retainedRichBytes).toBe(accountingBytes);
+      expect(useBatchProgressStore.getState().richContentDiagnostics.totalRetainedRichBytes).toBe(accountingBytes);
 
       store.initBatch(cap, ['A']);
       store.finishTaskStep(cap, 0, {
@@ -498,6 +594,102 @@ describe('batchProgressStore', () => {
         error: false,
       });
       expect(batch(cap).retainedRichBytes).toBe(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
+      expect(batch(cap).retainedRichBytes).toBe(jsonBytes(batch(cap).tasks[0].steps[0].resultContent));
+    });
+
+    it('rejects hostile image envelopes without retaining them or inflating diagnostics', () => {
+      const id = testIdentity('rich-hostile-envelope');
+      const store = useBatchProgressStore.getState();
+      store.initBatch(id, ['A']);
+      const hostileMediaType = `image/${'x'.repeat(9 * 1024 * 1024)}`;
+      store.finishTaskStep(id, 0, {
+        id: 'hostile-image',
+        toolName: 'abu-browser__screenshot',
+        result: 'hostile',
+        resultContent: [{
+          type: 'image',
+          source: { type: 'base64', media_type: hostileMediaType, data: 'AAAA' },
+        }],
+        error: false,
+      });
+
+      const step = batch(id).tasks[0].steps[0];
+      expect(step.resultContent).toBeUndefined();
+      expect(step.richContentState).toBe('partially-retained');
+      expect(batch(id).retainedRichBytes).toBe(0);
+      expect(useBatchProgressStore.getState().richContentDiagnostics).toMatchObject({
+        totalRetainedRichBytes: 0,
+        overageBytes: 0,
+      });
+    });
+
+    it('validates runtime block/source/base64 structure and retains only canonical valid blocks', () => {
+      const malformedContainer = testIdentity('rich-malformed-container');
+      const malformedBlocks = testIdentity('rich-malformed-blocks');
+      const store = useBatchProgressStore.getState();
+      store.initBatch(malformedContainer, ['A']);
+      store.finishTaskStep(malformedContainer, 0, {
+        id: 'malformed-container',
+        toolName: 'read_file',
+        result: 'malformed',
+        resultContent: { type: 'text', text: 'not-an-array' } as never,
+        error: false,
+      });
+      expect(batch(malformedContainer).tasks[0].steps[0]).toMatchObject({
+        resultContent: undefined,
+        richContentState: 'partially-retained',
+      });
+
+      store.initBatch(malformedBlocks, ['A']);
+      store.finishTaskStep(malformedBlocks, 0, {
+        id: 'malformed-blocks',
+        toolName: 'abu-browser__screenshot',
+        result: 'mixed',
+        resultContent: [
+          null,
+          { type: 'unknown', payload: 'ignored' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'not base64!\u0000' } },
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'YQ==' },
+            attackerOwnedExtra: 'discarded',
+          },
+        ] as never,
+        error: false,
+      });
+
+      const retained = batch(malformedBlocks).tasks[0].steps[0];
+      expect(retained.richContentState).toBe('partially-retained');
+      expect(retained.resultContent).toEqual([{
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'YQ==' },
+      }]);
+      expect(batch(malformedBlocks).retainedRichBytes).toBe(jsonBytes(retained.resultContent));
+      expect(useBatchProgressStore.getState().richContentDiagnostics.totalRetainedRichBytes)
+        .toBe(jsonBytes(retained.resultContent));
+    });
+
+    it('caps the retained runtime structure at 64 blocks with truthful accounting', () => {
+      const id = testIdentity('rich-block-cap');
+      const store = useBatchProgressStore.getState();
+      store.initBatch(id, ['A']);
+      store.finishTaskStep(id, 0, {
+        id: 'many-blocks',
+        toolName: 'read_file',
+        result: 'many',
+        resultContent: Array.from(
+          { length: BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS + 1 },
+          (_, index) => ({ type: 'text' as const, text: String(index) }),
+        ),
+        error: false,
+      });
+
+      const step = batch(id).tasks[0].steps[0];
+      expect(step.resultContent).toHaveLength(BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCKS);
+      expect(step.richContentState).toBe('partially-retained');
+      const retainedBytes = jsonBytes(step.resultContent);
+      expect(batch(id).retainedRichBytes).toBe(retainedBytes);
+      expect(useBatchProgressStore.getState().richContentDiagnostics.totalRetainedRichBytes).toBe(retainedBytes);
     });
 
     it('evicts terminal rich content by deterministic LRU and canonical-key tie-break', () => {
@@ -548,7 +740,7 @@ describe('batchProgressStore', () => {
     it('protects running batches, reports overage when no candidate exists, then converges after terminal visibility changes', () => {
       const active = identity('conv-active', 'batch-rich');
       const running = identity('conv-running', 'batch-rich');
-      const payloadSize = 16 * 1024 * 1024;
+      const payloadSize = BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES;
       const store = useBatchProgressStore.getState();
 
       store.initBatch(active, ['A']);
@@ -556,7 +748,7 @@ describe('batchProgressStore', () => {
         id: 'active-rich',
         toolName: 'read_file',
         result: 'active',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(payloadSize) } }],
+        resultContent: imageContentWithJsonBytes(payloadSize),
         error: false,
       });
       store.setTaskTerminal(active, 0, { status: 'succeeded', reason: 'completed' });
@@ -568,7 +760,7 @@ describe('batchProgressStore', () => {
         id: 'running-rich',
         toolName: 'read_file',
         result: 'running',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'b'.repeat(payloadSize) } }],
+        resultContent: imageContentWithJsonBytes(payloadSize, 'B'),
         error: false,
       });
       // With only protected entries at exactly the cap, there is no overage.
@@ -577,10 +769,10 @@ describe('batchProgressStore', () => {
         id: 'over-rich',
         toolName: 'read_file',
         result: 'over',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'c'.repeat(1) } }],
+        resultContent: imageContentWithJsonBytes(MIN_IMAGE_CONTENT_BYTES, 'C'),
         error: false,
       });
-      expect(useBatchProgressStore.getState().richContentDiagnostics.overageBytes).toBe(1);
+      expect(useBatchProgressStore.getState().richContentDiagnostics.overageBytes).toBe(MIN_IMAGE_CONTENT_BYTES);
 
       store.setTaskTerminal(running, 0, { status: 'succeeded', reason: 'completed' });
       expect(batch(running).retainedRichBytes).toBe(0);
@@ -616,14 +808,14 @@ describe('batchProgressStore', () => {
         id: 'first-image',
         toolName: 'abu-browser__screenshot',
         result: 'first',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES) } }],
+        resultContent: imageContentWithJsonBytes(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES),
         error: false,
       });
       store.finishTaskStep(id, 0, {
         id: 'second-image',
         toolName: 'abu-browser__screenshot',
         result: 'second',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'b' } }],
+        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'Yg==' } }],
         error: false,
       });
 
@@ -643,7 +835,7 @@ describe('batchProgressStore', () => {
         toolName: 'read_file',
         result: 'mixed',
         resultContent: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES + 1) } },
+          ...imageContentWithJsonBytes(BATCH_PROGRESS_MAX_RICH_CONTENT_BLOCK_BYTES + 4),
           { type: 'text', text: 'later text' },
         ],
         error: false,
@@ -652,7 +844,7 @@ describe('batchProgressStore', () => {
       const step = batch(id).tasks[0].steps[0];
       expect(step.richContentState).toBe('partially-retained');
       expect(step.resultContent).toEqual([{ type: 'text', text: 'later text' }]);
-      expect(batch(id).retainedRichBytes).toBe(10);
+      expect(batch(id).retainedRichBytes).toBe(jsonBytes([{ type: 'text', text: 'later text' }]));
     });
 
     it('marks partial UTF-8 text admission without corrupting emoji', () => {
@@ -677,7 +869,9 @@ describe('batchProgressStore', () => {
         id: 'prefix',
         toolName: 'read_file',
         result: 'prefix',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x'.repeat(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - 3) } }],
+        resultContent: imageContentWithJsonBytes(
+          BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - jsonBytes([{ type: 'text', text: 'a' }]),
+        ),
         error: false,
       });
       store.finishTaskStep(partialId, 0, {
@@ -702,19 +896,19 @@ describe('batchProgressStore', () => {
         id: 'first',
         toolName: 'abu-browser__screenshot',
         result: 'first',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'a'.repeat(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES) } }],
+        resultContent: imageContentWithJsonBytes(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES),
         error: false,
       });
       store.finishTaskStep(partial, 0, {
         id: 'second',
         toolName: 'abu-browser__screenshot',
         result: 'second',
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'b' } }],
+        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'Yg==' } }],
         error: false,
       });
       store.setTaskTerminal(partial, 0, { status: 'succeeded', reason: 'completed' });
       finishRichBatch(b, BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
-      finishRichBatch(c, 1);
+      finishRichBatch(c, MIN_IMAGE_CONTENT_BYTES);
 
       expect(batch(partial).retainedRichBytes).toBe(0);
       expect(batch(partial).tasks[0].steps.map((step) => step.richContentState)).toEqual(['released', 'released']);
@@ -735,7 +929,7 @@ describe('batchProgressStore', () => {
       });
       store.releaseBatchRichContent(running);
       expect(batch(running).tasks[0].steps[0].richContentState).toBe('retained');
-      expect(batch(running).retainedRichBytes).toBe(12);
+      expect(batch(running).retainedRichBytes).toBe(jsonBytes([{ type: 'text', text: 'running rich' }]));
 
       finishRichBatch(visible, 1024);
       store.setActiveVisibleBatch(visible);

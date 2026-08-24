@@ -200,6 +200,7 @@ describe('subagentRunner', () => {
         'context',
         'parentConversationSummary',
         'parentConversationId',
+        'persistParentToolImages',
         'imContext',
         'allowedTools',
         'blockedTools',
@@ -245,6 +246,7 @@ describe('subagentRunner', () => {
         context: 'ctx',
         parentConversationSummary: 'summary',
         parentConversationId: 'conv-1',
+        persistParentToolImages: true,
         imContext: { workspacePath: '/im/ws' } as never,
         allowedTools: ['read_*'],
         blockedTools: ['abu-browser__*'],
@@ -266,6 +268,7 @@ describe('subagentRunner', () => {
       const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
       expect(Object.keys(wireParams).sort()).toEqual([...SUBAGENT_RUN_WIRE_FIELDS].sort());
       expect(wireParams.workspacePathSnapshot).toBe('/im/ws');
+      expect(wireParams.persistParentToolImages).toBe(true);
       for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
         expect(wireParams).not.toHaveProperty(localField);
       }
@@ -352,6 +355,27 @@ describe('subagentRunner', () => {
       expect(runSubagentLoopMock).toHaveBeenCalledWith({ agent, task: 'do the thing' });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result.text).toBe('in-process result');
+    });
+
+    it('namespaces in-process progress ids before exposing them to the parent', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'call_1',
+          toolName: 'read_file',
+          toolInput: {},
+        });
+        return { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      });
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      await runSubagent({ agent, task: 'do the thing', onProgress });
+
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+        id: expect.stringMatching(/^subagent-v1:sar-.*:call_1$/),
+      }));
     });
 
     it('aborts a scoped in-process subagent signal when the subagent run settles', async () => {
@@ -791,6 +815,68 @@ describe('subagentRunner', () => {
   });
 
   describe('subagent.progress reverse-channel handler', () => {
+    it('gives parallel runs distinct parent-visible ids when providers both emit call_1', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const firstDone = deferred<unknown>();
+      const secondDone = deferred<unknown>();
+      sidecarRequestMock
+        .mockReturnValueOnce(firstDone.promise)
+        .mockReturnValueOnce(secondDone.promise);
+      const { runSubagent } = await importFresh();
+      const firstProgress = vi.fn();
+      const secondProgress = vi.fn();
+
+      const firstRun = runSubagent({ agent, task: 'first', onProgress: firstProgress });
+      const secondRun = runSubagent({ agent, task: 'second', onProgress: secondProgress });
+      const firstRunId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const secondRunId = (sidecarRequestMock.mock.calls[1][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const event = { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} };
+
+      progressHandler({ runId: firstRunId, event });
+      progressHandler({ runId: secondRunId, event });
+
+      expect(firstProgress).not.toHaveBeenCalled();
+      expect(secondProgress).not.toHaveBeenCalled();
+
+      const done = { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      firstDone.resolve(done);
+      secondDone.resolve(done);
+      await Promise.all([firstRun, secondRun]);
+
+      const firstId = firstProgress.mock.calls[0][0].id as string;
+      const secondId = secondProgress.mock.calls[0][0].id as string;
+      expect(firstId).not.toBe(secondId);
+      expect(firstId).toContain(firstRunId);
+      expect(secondId).toContain(secondRunId);
+    });
+
+    it('buffers progress until the first tool.invoke commits the sidecar run', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const event = { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} };
+
+      progressHandler({ runId, event });
+      expect(onProgress).not.toHaveBeenCalled();
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      expect(onProgress).toHaveBeenCalledWith({
+        ...event,
+        id: `subagent-v1:${encodeURIComponent(runId)}:call_1`,
+      });
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
     it('dispatches an incoming subagent.progress notification to the ORIGINAL session\'s onProgress callback', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -804,11 +890,16 @@ describe('subagentRunner', () => {
       const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
 
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
       const event = { type: 'tool-end', id: 't1', toolName: 'read_file', result: 'contents', error: false };
       progressHandler({ runId, event });
 
       expect(onProgress).toHaveBeenCalledTimes(1);
-      expect(onProgress).toHaveBeenCalledWith(event);
+      expect(onProgress).toHaveBeenCalledWith({
+        ...event,
+        id: `subagent-v1:${encodeURIComponent(runId)}:t1`,
+      });
 
       // tool-end may now carry resultContent (subagent image rendering) —
       // the handler must forward it verbatim, not project it away.
@@ -817,7 +908,10 @@ describe('subagentRunner', () => {
         resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
       };
       progressHandler({ runId, event: richEvent });
-      expect(onProgress).toHaveBeenLastCalledWith(richEvent);
+      expect(onProgress).toHaveBeenLastCalledWith({
+        ...richEvent,
+        id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+      });
 
       const usageEvent = {
         type: 'turn-complete' as const,
@@ -873,6 +967,75 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
       expect(result.text).toBe('in-process result');
+    });
+
+    it('drops pre-invoke sidecar progress and gives the local fallback a fresh scope', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'call_1',
+          toolName: 'read_file',
+          toolInput: {},
+        });
+        return { text: 'fallback', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      });
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      progressHandler({
+        runId,
+        event: { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} },
+      });
+
+      expect(onProgress).not.toHaveBeenCalled();
+      d.reject(new Error('Sidecar process closed'));
+      const result = await runPromise;
+
+      expect(result.text).toBe('fallback');
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      const fallbackId = onProgress.mock.calls[0][0].id as string;
+      expect(fallbackId).toMatch(/^subagent-v1:sar-.*:call_1$/);
+      expect(fallbackId).not.toBe(`subagent-v1:${encodeURIComponent(runId)}:call_1`);
+    });
+
+    it('does not commit or publish progress for a rejected reverse tool request', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'read only',
+        allowedTools: ['read_*'],
+        onProgress,
+      });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+
+      progressHandler({
+        runId,
+        event: { type: 'tool-start', id: 'call_1', toolName: 'write_file', toolInput: { path: 'x' } },
+      });
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'write_file', input: { path: 'x' } }),
+      ).rejects.toThrow(/not allowed/);
+      expect(onProgress).not.toHaveBeenCalled();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.reject(new Error('Sidecar process closed'));
+      const result = await runPromise;
+      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(onProgress).not.toHaveBeenCalled();
     });
 
     it('a transport failure AFTER ≥1 tool.invoke arrived surfaces an error SubagentResult — NO rerun', async () => {

@@ -32,6 +32,10 @@ import { isToolResultError } from '../../utils/workflowExtractor';
 import { getToolLabel } from '../../utils/toolLabels';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { firstImageContent } from '../tools/toolResultContent';
+import {
+  ActiveToolResultAdmission,
+  type ActiveToolResultToken,
+} from './activeToolResultContent';
 
 // --- Helper Functions ---
 
@@ -256,10 +260,40 @@ export class EventRouter {
   private deps: EventRouterDeps;
   private locale: string;
   private thinkingStartTime: number | null = null;
+  private readonly activeRichResults = new ActiveToolResultAdmission();
+  private readonly activeRichResultOwners = new Map<string, ActiveToolResultToken>();
 
   constructor(deps: EventRouterDeps, locale: string = 'zh') {
     this.deps = deps;
     this.locale = locale;
+  }
+
+  private releaseRichResultOwner(ownerKey: string): void {
+    const previous = this.activeRichResultOwners.get(ownerKey);
+    if (!previous) return;
+    this.activeRichResults.release(previous);
+    // A bound callback normally removes itself. Keep this fallback for a
+    // token replaced before its owner callback was attached.
+    if (this.activeRichResultOwners.get(ownerKey) === previous) {
+      this.activeRichResultOwners.delete(ownerKey);
+    }
+  }
+
+  private bindRichResultOwner(
+    ownerKey: string,
+    token: ActiveToolResultToken | undefined,
+    release: () => void,
+  ): void {
+    if (!token) return;
+    this.activeRichResultOwners.set(ownerKey, token);
+    this.activeRichResults.bindRelease(token, () => {
+      // Explicit replacement and automatic LRU eviction are synchronous, but
+      // guard the identity anyway: an obsolete callback must never clear the
+      // payload installed by a newer event for this same detail-block owner.
+      if (this.activeRichResultOwners.get(ownerKey) !== token) return;
+      this.activeRichResultOwners.delete(ownerKey);
+      release();
+    });
   }
 
   /**
@@ -395,6 +429,11 @@ export class EventRouter {
     const step = execution.steps.find((s) => s.id === stepId);
     if (!step) return;
 
+    const imageOwnerKey = JSON.stringify([execution.id, stepId, `${stepId}-image`]);
+    this.releaseRichResultOwner(imageOwnerKey);
+    const resultContentToken = this.activeRichResults.admit(resultContent);
+    const admittedResultContent = this.activeRichResults.get(resultContentToken);
+
     // Update step result
     this.deps.executionStore.setStepResult(execution.id, stepId, result);
 
@@ -424,8 +463,8 @@ export class EventRouter {
     } else {
       // Add image block if resultContent contains images. Must use the SAME
       // extraction rule as the snapshot-replay backfill — see firstImageContent.
-      if (resultContent && Array.isArray(resultContent)) {
-        const imageData = firstImageContent(resultContent);
+      if (admittedResultContent) {
+        const imageData = firstImageContent(admittedResultContent);
         if (imageData) {
           const isZh = this.locale.startsWith('zh');
           const imgDetailBlock: DetailBlock = {
@@ -440,6 +479,9 @@ export class EventRouter {
             isExpanded: true,
           };
           this.deps.executionStore.addDetailBlock(execution.id, stepId, imgDetailBlock);
+          this.bindRichResultOwner(imageOwnerKey, resultContentToken, () => {
+            this.deps.executionStore.releaseDetailBlockImage(execution.id, stepId, imgDetailBlock.id);
+          });
         }
       }
       const resultBlock = createResultBlock(stepId, result, step.toolName, this.locale);
@@ -468,7 +510,7 @@ export class EventRouter {
         name: step.toolName,
         input: step.toolInput,
         result,
-        ...(resultContent ? { resultContent } : {}),
+        ...(admittedResultContent ? { resultContent: admittedResultContent } : {}),
       });
     }
   }
@@ -597,22 +639,25 @@ export class EventRouter {
       .find((s) => s.id === parentStepId)
       ?.childSteps?.find((s) => s.id === childStepId);
 
-    const imageBlock = Array.isArray(resultContent)
-      ? resultContent.find((b) => b.type === 'image')
-      : undefined;
+    const imageBlockId = `${childStepId}-image`;
+    const imageOwnerKey = JSON.stringify([execution.id, childStepId, imageBlockId]);
+    this.releaseRichResultOwner(imageOwnerKey);
+    const resultContentToken = this.activeRichResults.admit(resultContent);
+    const admittedResultContent = this.activeRichResults.get(resultContentToken);
+    const imageData = firstImageContent(admittedResultContent);
 
     let detailBlocks: DetailBlock[] | undefined;
-    if (imageBlock && imageBlock.type === 'image' && childStep) {
+    if (imageData && childStep) {
       const isZh = this.locale.startsWith('zh');
       detailBlocks = [
         {
-          id: `${childStepId}-image`,
+          id: imageBlockId,
           stepId: childStepId,
           type: 'image',
           label: isZh ? '图片' : 'Image',
           labelKey: 'image',
           content: result,
-          imageData: { mediaType: imageBlock.source.media_type, base64: imageBlock.source.data },
+          imageData,
           isTruncated: false,
           isExpanded: true,
         },
@@ -621,17 +666,22 @@ export class EventRouter {
     }
 
     this.deps.executionStore.updateChildStep(execution.id, parentStepId, childStepId, result, error, detailBlocks);
+    if (imageData) {
+      this.bindRichResultOwner(imageOwnerKey, resultContentToken, () => {
+        this.deps.executionStore.releaseDetailBlockImage(execution.id, childStepId, imageBlockId);
+      });
+    }
 
     // Persist the image payload's home: without a `Message.toolCalls[]` entry
     // keyed by this child step's toolCallId, the snapshot restore path has
     // nothing to backfill from (snapshots deliberately drop imageData).
-    if (imageBlock && childStep?.toolCallId && this.deps.appendMessageToolCall) {
+    if (imageData && childStep?.toolCallId && this.deps.appendMessageToolCall) {
       this.deps.appendMessageToolCall(loopId, {
         id: childStep.toolCallId,
         name: childStep.toolName,
         input: childStep.toolInput,
         result,
-        resultContent,
+        resultContent: admittedResultContent,
         isError: error || undefined,
         hidden: true,
         fromSubagent: true,

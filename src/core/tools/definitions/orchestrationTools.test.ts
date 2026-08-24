@@ -71,8 +71,8 @@ describe('runAgentBatchTool progress wiring', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     clearLoopContext('loop-parent-abort');
-    for (const batchId of Object.keys(useBatchProgressStore.getState().batches)) {
-      useBatchProgressStore.getState().clearBatch(batchId);
+    for (const entry of Object.values(useBatchProgressStore.getState().batches)) {
+      useBatchProgressStore.getState().clearBatch(entry.identity);
     }
   });
 

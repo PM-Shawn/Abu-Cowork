@@ -302,7 +302,7 @@ export function buildRenderSegments(
   let nominalStepIndex = 0;
   let passedFirstAssistant = false;
   let assistantIdx = 0;
-  const seenBatchToolCallIds = new Set<string>();
+  const seenBatchKeys = new Set<string>();
   const claimedExecStepIndices = new Set<number>();
   const claimedLegacyStepIndices = new Set<number>();
 
@@ -358,7 +358,8 @@ export function buildRenderSegments(
         continue;
       }
 
-      if (isBatchToolCall(toolCall) && seenBatchToolCallIds.has(toolCall.id)) {
+      const batchKey = `${msg.id}\u0000${toolCall.id}`;
+      if (isBatchToolCall(toolCall) && seenBatchKeys.has(batchKey)) {
         continue;
       }
 
@@ -376,10 +377,10 @@ export function buildRenderSegments(
       }
 
       if (isBatchToolCall(toolCall)) {
-        if (!seenBatchToolCallIds.has(toolCall.id)) {
+        if (!seenBatchKeys.has(batchKey)) {
           flushSteps();
           segments.push({ kind: 'batch', toolCall, message: msg });
-          seenBatchToolCallIds.add(toolCall.id);
+          seenBatchKeys.add(batchKey);
         }
         continue;
       }
@@ -720,7 +721,11 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const liveBatches = useBatchProgressStore((s) => s.batches);
   const batchRollup = useMemo(() => {
     return batchSegments.reduce<BatchRowsRollup>((rollup, segment) => {
-      const identity: BatchIdentity = { conversationId, batchToolCallId: segment.toolCall.id };
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: segment.message.id,
+        batchToolCallId: segment.toolCall.id,
+      };
       const liveBatch = liveBatches[makeBatchKey(identity)];
       const rows = liveBatch
         ? rowsFromLiveBatch(liveBatch, Date.now())
@@ -876,10 +881,17 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     }
 
     if (seg.kind === 'batch') {
-      const identity: BatchIdentity = { conversationId, batchToolCallId: seg.toolCall.id };
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: seg.message.id,
+        batchToolCallId: seg.toolCall.id,
+      };
       return (
         <MessageErrorBoundary key={`batch-${makeBatchKey(identity)}`}>
-          <BatchProgress identity={identity} toolCall={seg.toolCall} />
+          <BatchProgress
+            identity={identity}
+            toolCall={seg.toolCall}
+          />
         </MessageErrorBoundary>
       );
     }

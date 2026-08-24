@@ -272,6 +272,7 @@ export const delegateToAgentTool: ToolDefinition = {
             }
           } else if (event.type === 'tool-end') {
             const childStepId = childIdMap.get(event.id);
+            childIdMap.delete(event.id);
             if (childStepId) {
               loopCtx.eventRouter.completeChildStep(
                 loopCtx.loopId,
@@ -309,6 +310,7 @@ export const delegateToAgentTool: ToolDefinition = {
         allowedTools: loopCtx?.allowedTools,
         blockedTools: loopCtx?.blockedTools,
         imContext: loopCtx?.imContext,
+        persistParentToolImages: true,
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });

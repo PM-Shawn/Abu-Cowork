@@ -97,6 +97,7 @@ const EXEC_METHODS = new Set<string>([
   'addChildStep',
   'updateChildStep',
   'addDetailBlock',
+  'releaseDetailBlockImage',
   'appendThinking',
   'setThinkingDuration',
   'setUsage',

@@ -79,6 +79,8 @@ interface TaskExecutionActions {
 
   /** Add a detail block to a step */
   addDetailBlock: (execId: string, stepId: string, block: DetailBlock) => void;
+  /** Release only a live image payload while preserving its replay placeholder. */
+  releaseDetailBlockImage: (execId: string, stepId: string, blockId: string) => void;
   /** Toggle detail block expanded state */
   toggleDetailExpanded: (execId: string, stepId: string, blockId: string) => void;
   /** Update detail block content (for streaming results) */
@@ -322,7 +324,11 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
             childStep.duration = (childStep.endTime - childStep.startTime) / 1000;
           }
           if (detailBlocks?.length) {
-            childStep.detailBlocks.push(...detailBlocks);
+            for (const block of detailBlocks) {
+              const existingIndex = childStep.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+              if (existingIndex >= 0) childStep.detailBlocks[existingIndex] = block;
+              else childStep.detailBlocks.push(block);
+            }
           }
         }
       });
@@ -335,8 +341,21 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
         const exec = state.executions[execId];
         const step = exec?.steps.find((s) => s.id === stepId);
         if (step) {
-          step.detailBlocks.push(block);
+          const existingIndex = step.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+          if (existingIndex >= 0) step.detailBlocks[existingIndex] = block;
+          else step.detailBlocks.push(block);
         }
+      });
+    },
+
+    releaseDetailBlockImage: (execId, stepId, blockId) => {
+      set((state) => {
+        const exec = state.executions[execId];
+        const step = exec?.steps.find((candidate) => candidate.id === stepId)
+          ?? exec?.steps.flatMap((candidate) => candidate.childSteps ?? [])
+            .find((candidate) => candidate.id === stepId);
+        const block = step?.detailBlocks.find((candidate) => candidate.id === blockId);
+        if (block) delete block.imageData;
       });
     },
 

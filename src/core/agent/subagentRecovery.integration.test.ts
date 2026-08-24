@@ -750,6 +750,53 @@ describe('subagent max_tokens recovery (integration)', () => {
     ]);
   });
 
+  it('bounds the canonical long-run history while preserving every tool pairing and the newest images', async () => {
+    // Deliberately repeat the first raw provider id. Owner release must bind by
+    // array position, not `.find(id)`, or both evicted tokens clear only the
+    // first call and the second rich payload leaks in both history projections.
+    const toolIds = ['duplicate', 'duplicate', ...Array.from({ length: 8 }, (_, index) => `t${index + 2}`)];
+    const imageResults = Array.from({ length: 10 }, (_, index) => ([
+      { type: 'text', text: `Screenshot ${index}` },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: index.toString(36).padStart(4, 'A') },
+      },
+    ]));
+    mockExecuteAnyTool.mockReset();
+    for (const result of imageResults) mockExecuteAnyTool.mockResolvedValueOnce(result);
+    for (let index = 0; index < imageResults.length; index++) {
+      mockClaudeChat.mockImplementationOnce(emits([
+        { type: 'tool_use', id: toolIds[index], name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]));
+    }
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'done' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'take ten screenshots' });
+
+    type HistoryCall = { id: string; result?: string; resultContent?: unknown[] };
+    type HistoryMessage = { toolCalls?: HistoryCall[]; toolCallsForContext?: HistoryCall[] };
+    const finalHistory = mockClaudeChat.mock.calls.at(-1)?.[0] as HistoryMessage[];
+    const primaryCalls = finalHistory.flatMap((message) => message.toolCalls ?? []);
+    const contextCalls = finalHistory.flatMap((message) => message.toolCallsForContext ?? []);
+    const primaryWithImages = primaryCalls.filter((call) => call.resultContent?.some((block) => (
+      block as { type?: string }
+    ).type === 'image'));
+    const contextWithImages = contextCalls.filter((call) => call.resultContent?.some((block) => (
+      block as { type?: string }
+    ).type === 'image'));
+
+    expect(primaryCalls.map((call) => call.id)).toEqual(toolIds);
+    expect(contextCalls.map((call) => call.id)).toEqual(toolIds);
+    expect(primaryWithImages.map((call) => call.id)).toEqual(toolIds.slice(2));
+    expect(contextWithImages.map((call) => call.id)).toEqual(toolIds.slice(2));
+    expect(primaryCalls.every((call) => call.result !== undefined)).toBe(true);
+    expect(contextCalls.every((call) => call.result !== undefined)).toBe(true);
+  });
+
   // The subagent's OWN eyes: a vision-capable model must receive its tool
   // results' image blocks back in its next-turn context (it used to be sent
   // text-only with supportsVision hardcoded false — a subagent that took a

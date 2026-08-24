@@ -58,6 +58,7 @@ import {
 } from '@/core/agent/batchTerminalSummary';
 import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
+import { appendBoundedSubagentToolCall } from '@/core/session/durableToolResultContent';
 
 export interface ConversationRunMirrorSeed {
   conversation: Conversation;
@@ -210,6 +211,7 @@ export function createConversationRunMirror(
           }
           const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
             conversationId,
+            assistantMessageId: messageId,
             batchToolCallId: toolCallId,
           });
           if (incomingSummary) {
@@ -240,6 +242,7 @@ export function createConversationRunMirror(
         }
         const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
           conversationId,
+          assistantMessageId: messageId,
           batchToolCallId: toolCallId,
         });
         if (incomingSummary) {
@@ -286,10 +289,7 @@ export function createConversationRunMirror(
         for (let i = conversation.messages.length - 1; i >= 0; i--) {
           const msg = conversation.messages[i];
           if (msg.role === 'assistant' && msg.loopId === loopId) {
-            if (!msg.toolCalls) msg.toolCalls = [];
-            if (!msg.toolCalls.some((tc) => tc.id === toolCall.id)) {
-              msg.toolCalls.push(toolCall);
-            }
+            msg.toolCalls = appendBoundedSubagentToolCall(msg.toolCalls, toolCall).toolCalls;
             break;
           }
         }

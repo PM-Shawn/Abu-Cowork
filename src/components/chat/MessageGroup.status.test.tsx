@@ -100,7 +100,11 @@ describe('MessageGroup stopped terminal', () => {
     };
     setConversationState(conversation);
     const store = useBatchProgressStore.getState();
-    const identity = { conversationId: conversation.id, batchToolCallId: 'batch-tool-call' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: assistantMessage.id,
+      batchToolCallId: 'batch-tool-call',
+    };
     store.initBatch(identity, ['inspect']);
     store.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
 
@@ -112,6 +116,67 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.queryByText('✓ 1 sub-tasks completed')).toBeNull();
     expect(screen.getByText('1 sub-tasks recorded')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect.*Unknown/ })).toBeInTheDocument();
+  });
+
+  it('renders two batches when separate assistant messages reuse the same provider tool-call id', () => {
+    const userMessage: Message = {
+      id: 'user-reused-batch-id',
+      role: 'user',
+      content: 'run two batches',
+      timestamp: 1_000,
+      loopId: 'loop-reused-batch-id',
+      runState: 'completed',
+    };
+    const batchCall = (task: string) => ({
+      id: 'call_1',
+      name: TOOL_NAMES.RUN_AGENT_BATCH,
+      input: { tasks: [{ task }] },
+      result: 'done',
+    });
+    const first: Message = {
+      id: 'assistant-reused-1',
+      role: 'assistant',
+      content: '',
+      timestamp: 2_000,
+      loopId: 'loop-reused-batch-id',
+      toolCalls: [batchCall('first batch')],
+    };
+    const second: Message = {
+      id: 'assistant-reused-2',
+      role: 'assistant',
+      content: '',
+      timestamp: 3_000,
+      loopId: 'loop-reused-batch-id',
+      toolCalls: [batchCall('second batch')],
+    };
+    const conversation: Conversation = {
+      id: 'conversation-reused-batch-id',
+      title: 'Reused batch ids',
+      messages: [userMessage, first, second],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+
+    const store = useBatchProgressStore.getState();
+    const firstIdentity = {
+      conversationId: conversation.id,
+      assistantMessageId: first.id,
+      batchToolCallId: 'call_1',
+    };
+    store.initBatch(firstIdentity, ['first live batch']);
+    store.setTaskTerminal(firstIdentity, 0, { status: 'succeeded', reason: 'completed' });
+    // A v1 fallback entry is still valid for a legacy-only reload, but must
+    // not be reused by the second v2 assistant message in this live view.
+    store.initBatch({ conversationId: conversation.id, batchToolCallId: 'call_1' }, ['legacy fallback']);
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    expect(screen.getByText('✓ 1 sub-tasks completed')).toBeInTheDocument();
+    expect(screen.getAllByText('1 sub-tasks recorded')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Open first live batch.*Succeeded/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open second batch.*Unknown/ })).toBeInTheDocument();
   });
 
   it('folds terminal batch process details while keeping the final answer outside', async () => {
@@ -162,7 +227,11 @@ describe('MessageGroup stopped terminal', () => {
     };
     setConversationState(conversation);
     const store = useBatchProgressStore.getState();
-    const identity = { conversationId: conversation.id, batchToolCallId: 'folded-batch-tool-call' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'folded-batch-tool-call',
+    };
     store.initBatch(identity, ['inspect folded state']);
     store.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
 
@@ -211,7 +280,11 @@ describe('MessageGroup stopped terminal', () => {
       status: 'running',
     };
     setConversationState(conversation, 'tool-calling');
-    const identity = { conversationId: conversation.id, batchToolCallId: 'running-fold-batch' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: assistantMessage.id,
+      batchToolCallId: 'running-fold-batch',
+    };
     useBatchProgressStore.getState().initBatch(identity, ['inspect running']);
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
 
@@ -266,7 +339,11 @@ describe('MessageGroup stopped terminal', () => {
       status: 'idle',
     };
     setConversationState(conversation);
-    const identity = { conversationId: conversation.id, batchToolCallId: 'success-manual-batch' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'success-manual-batch',
+    };
     useBatchProgressStore.getState().initBatch(identity, ['inspect success']);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
 
@@ -321,7 +398,11 @@ describe('MessageGroup stopped terminal', () => {
       status: 'idle',
     };
     setConversationState(conversation);
-    const identity = { conversationId: conversation.id, batchToolCallId: 'failed-fold-batch' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'failed-fold-batch',
+    };
     useBatchProgressStore.getState().initBatch(identity, ['inspect failure']);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'failed', reason: 'error' });
 
@@ -373,7 +454,11 @@ describe('MessageGroup stopped terminal', () => {
       status: 'idle',
     };
     setConversationState(conversation);
-    const identity = { conversationId: conversation.id, batchToolCallId: `${label}-fold-batch` };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: `${label}-fold-batch`,
+    };
     useBatchProgressStore.getState().initBatch(identity, [`inspect ${label}`]);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status, reason });
 
@@ -421,7 +506,11 @@ describe('MessageGroup stopped terminal', () => {
       status: 'running',
     };
     setConversationState(conversation, 'tool-calling');
-    const identity = { conversationId: conversation.id, batchToolCallId: 'focus-fold-batch' };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'focus-fold-batch',
+    };
     const store = useBatchProgressStore.getState();
     store.initBatch(identity, ['inspect focus']);
     store.setTaskRunning(identity, 0);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createConversationRunMirror } from './conversationRunMirror';
 import type { Conversation, Message } from '@/types';
+import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
 
 function makeConversation(overrides?: Partial<Conversation>): Conversation {
   return {
@@ -129,6 +130,37 @@ describe('conversationRunMirror', () => {
       const toolCalls = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls;
       expect(toolCalls).toHaveLength(2);
       expect(toolCalls?.[1]).toEqual(entry);
+    });
+
+    it('bounds hidden subagent images in the sidecar mirror before checkpointing', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          role: 'assistant',
+          loopId: 'loop-1',
+          toolCalls: [{ id: 'tc-delegate', name: 'delegate_to_agent', input: {} }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      for (let index = 0; index <= DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST; index++) {
+        mirror.applyChatDeltaWrite('appendMessageToolCall', ['conv-1', 'loop-1', {
+          id: `subagent-v1:run-${index}:call_1`,
+          name: 'computer',
+          input: {},
+          result: `image ${index}`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: `IMAGE_${index}` },
+          }],
+          hidden: true,
+          fromSubagent: true,
+        }]);
+      }
+
+      const childCalls = mirror.reader.getConversation('conv-1')!.messages[0].toolCalls!.slice(1);
+      expect(childCalls).toHaveLength(DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST + 1);
+      expect(childCalls[0].resultContent).toBeUndefined();
+      expect(childCalls.slice(1).every((toolCall) => toolCall.resultContent?.[0]?.type === 'image')).toBe(true);
     });
 
     it('updateToolCall updates the matching tool call result', () => {

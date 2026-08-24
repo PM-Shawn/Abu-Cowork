@@ -1050,7 +1050,7 @@ function findTrustedToolCall(
 
 function normalizeTrustedToolMetadata(
   next: ToolExecutionMetadata,
-  expected: { conversationId: string; batchToolCallId: string },
+  expected: { conversationId: string; assistantMessageId?: string; batchToolCallId: string },
 ): ToolExecutionMetadata | undefined {
   const metadata: ToolExecutionMetadata = { ...next };
   if (next.batchTerminalSummary !== undefined) {
@@ -1157,6 +1157,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
         if (!trustedToolCallId) return;
         const normalized = normalizeTrustedToolMetadata(next, {
           conversationId: trustedConversationId,
+          assistantMessageId: trustedAssistantMessageId,
           batchToolCallId: trustedToolCallId,
         });
         if (!normalized) return;

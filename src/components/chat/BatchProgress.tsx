@@ -67,7 +67,10 @@ function summaryLabel(rows: BatchTaskRow[], t: TranslationDict): string {
   return format(t.batch.completionSummary, { n: rows.length });
 }
 
-export default function BatchProgress({ identity, toolCall }: BatchProgressProps) {
+export default function BatchProgress({
+  identity,
+  toolCall,
+}: BatchProgressProps) {
   const { t, locale } = useI18n();
   const batch = useBatchProgress(identity);
   const openSubagent = usePreviewStore((s) => s.openSubagent);

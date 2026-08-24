@@ -104,6 +104,7 @@ describe('subagentHost', () => {
         'context',
         'parentConversationSummary',
         'parentConversationId',
+        'persistParentToolImages',
         'imContext',
         'allowedTools',
         'blockedTools',
@@ -359,6 +360,11 @@ describe('subagentHost', () => {
       await expect(handleSubagentRun(baseParams({ blockedTools: 'not-an-array' })))
         .rejects.toMatchObject({ code: -32602 });
     });
+
+    it('rejects a malformed persistParentToolImages flag', async () => {
+      await expect(handleSubagentRun(baseParams({ persistParentToolImages: 'yes' })))
+        .rejects.toMatchObject({ code: -32602 });
+    });
   });
 
   describe('subagent image persistence (sidecar-authoritative when parent loop is sidecar-run)', () => {
@@ -380,12 +386,12 @@ describe('subagentHost', () => {
       const appendMessageToolCall = vi.fn();
       findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
 
-      await emitScreenshotRun();
+      await emitScreenshotRun({ runId: 'image-persist-run', persistParentToolImages: true });
 
       expect(findActiveRunDeltaMock).toHaveBeenCalledWith('conv-parent');
       expect(appendMessageToolCall).toHaveBeenCalledTimes(1);
       expect(appendMessageToolCall).toHaveBeenCalledWith('conv-parent', 'parent-loop-1', {
-        id: 'sub-t1',
+        id: 'subagent-v1:image-persist-run:sub-t1',
         name: 'computer',
         input: { action: 'screenshot' },
         result: 'Image: /tmp/shot.png',
@@ -398,9 +404,20 @@ describe('subagentHost', () => {
       expect(sendNotificationMock).toHaveBeenCalledTimes(2);
     });
 
+    it('does not copy batch-only progress images into the durable parent message', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+
+      await emitScreenshotRun({ persistParentToolImages: false });
+
+      expect(findActiveRunDeltaMock).not.toHaveBeenCalled();
+      expect(appendMessageToolCall).not.toHaveBeenCalled();
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2);
+    });
+
     it('does nothing when the parent loop is not sidecar-run (shell-side append is the authority)', async () => {
       findActiveRunDeltaMock.mockReturnValue(undefined);
-      await emitScreenshotRun();
+      await emitScreenshotRun({ persistParentToolImages: true });
       expect(sendNotificationMock).toHaveBeenCalledTimes(2); // forwarding unaffected
     });
 
@@ -410,8 +427,34 @@ describe('subagentHost', () => {
         options.onProgress?.({ type: 'tool-end', id: 't1', toolName: 'read_file', result: 'plain', error: false, resultContent: [{ type: 'text', text: 'plain' }] });
         return resultShape('ok');
       });
-      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent' }));
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', persistParentToolImages: true }));
       expect(findActiveRunDeltaMock).not.toHaveBeenCalled();
+    });
+
+    it('releases a completed tool input instead of reusing it for a duplicate late end', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'reused-id',
+          toolName: 'computer',
+          toolInput: { hostile: 'x'.repeat(1024) },
+        });
+        options.onProgress?.({
+          type: 'tool-end', id: 'reused-id', toolName: 'computer', result: 'first', error: false, resultContent: imageContent,
+        });
+        options.onProgress?.({
+          type: 'tool-end', id: 'reused-id', toolName: 'computer', result: 'duplicate', error: false, resultContent: imageContent,
+        });
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', persistParentToolImages: true }));
+
+      expect(appendMessageToolCall).toHaveBeenCalledTimes(2);
+      expect(appendMessageToolCall.mock.calls[0][2].input).toEqual({ hostile: 'x'.repeat(1024) });
+      expect(appendMessageToolCall.mock.calls[1][2].input).toEqual({});
     });
   });
 

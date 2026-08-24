@@ -128,6 +128,50 @@ describe('executionSnapshot', () => {
       expect(steps[0].detailBlocks[0].imageData).toBeUndefined();
     });
 
+    it('fails closed when a duplicate legacy raw id has lost one payload to eviction', () => {
+      const steps = [
+        step({ id: 'step-1', toolCallId: undefined }),
+        step({ id: 'step-2', toolCallId: undefined }),
+      ];
+      const surviving = imageToolCall('duplicate-raw-id');
+      const evicted = imageToolCall('duplicate-raw-id', { resultContent: undefined });
+
+      const result = backfillDetailBlockImages(steps, [
+        assistantMessage('msg-a', [surviving]),
+        assistantMessage('msg-b', [evicted]),
+      ]);
+
+      expect(result[0].detailBlocks[0].imageData).toBeUndefined();
+      expect(result[1].detailBlocks[0].imageData).toBeUndefined();
+    });
+
+    it('fails closed instead of cross-filling legacy duplicate provider ids', () => {
+      const steps = [
+        step({ id: 'step-1', toolCallId: 'call_1' }),
+        step({ id: 'step-2', toolCallId: 'call_1' }),
+      ];
+      const messages = [
+        assistantMessage('msg-a', [imageToolCall('call_1', {
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'FIRST' },
+          }],
+        })]),
+        assistantMessage('msg-b', [imageToolCall('call_1', {
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'SECOND' },
+          }],
+        })]),
+      ];
+
+      const result = backfillDetailBlockImages(steps, messages);
+
+      expect(result).toBe(steps);
+      expect(result[0].detailBlocks[0].imageData).toBeUndefined();
+      expect(result[1].detailBlocks[0].imageData).toBeUndefined();
+    });
+
     it('finds the tool call on a different message than the snapshot', () => {
       // Real shape: snapshot rides the LAST assistant message, the tool call
       // with resultContent rides an earlier one.

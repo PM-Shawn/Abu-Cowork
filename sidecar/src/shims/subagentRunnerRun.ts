@@ -16,13 +16,15 @@
  * call sites were read anyway (per the card's instruction) to build a
  * `SubagentLoopOptions`-shaped implementation general enough for either.
  *
- * ── Ports: shared with the parent run, not a new reverse-RPC identity ────
+ * ── Ports: shared with the parent run, progress identity stays separate ──
  * `toolInvoker`/`capsPort`/`workspaceReader` come straight from
  * `getCurrentAgentRunContext()` — the SAME per-run reverse `ToolInvoker`
  * (→ `tool.invoke`), snapshot+notify `CapsPort`, and mirror-backed
- * `WorkspaceReader` the parent main-loop run already uses. A nested
- * subagent is NOT a new peer run with its own identity; it's dependent
- * work done ON BEHALF of the parent run, so it shares the parent's channel.
+ * `WorkspaceReader` the parent main-loop run already uses. A nested subagent
+ * is dependent work done ON BEHALF of the parent run, so it shares the
+ * parent's execution channel. Its progress ids still need an independent
+ * app-owned namespace: separate nested model runs may both emit `call_1`, and
+ * those ids join the same parent event stream.
  * `settingsReader` is the one exception — `AgentRunContext` deliberately has
  * no `settingsReader` field (see `agentRunContext.ts`'s own doc: settings
  * live in the sidecar-GLOBAL `settingsMirror.ts`, not per-run) — so this
@@ -39,7 +41,7 @@
  * serialize/deserialize needed, unlike `subagentHost.ts`'s top-level
  * `subagent.run` RPC handler, which crosses the shell↔sidecar wire).
  *
- * ── `onProgress` — plain passthrough, no forwarding needed ───────────────
+ * ── `onProgress` — local delivery with an independent namespace ─────────
  * Verified against `agentLoop.ts:728-745`'s `onProgress` construction: it
  * calls `eventRouter.addChildStepToDelegate`/`.completeChildStep` — methods
  * on the SAME sidecar-local `EventRouter` `agentLoop.ts` itself built (via
@@ -48,31 +50,23 @@
  * `runSubagentLoop` calls `onProgress` synchronously in-process (no wire
  * crossing for a NESTED subagent, unlike `subagentHost.ts`'s TOP-LEVEL
  * `subagent.run` RPC, which does need to forward it via `subagent.progress`
- * because that runs in a SEPARATE dispatch from a possibly-different
- * process boundary), no special handling is needed here — thread
- * `options.onProgress` straight through unchanged.
+ * because that runs in a SEPARATE dispatch from a possibly-different process
+ * boundary). Delivery remains local and synchronous, but the shared
+ * production helper namespaces every nested loop independently before its
+ * events enter the parent router.
  *
- * ── Abort-signal linkage — ALREADY DONE by the caller, not by this shim ──
- * Finding (verified by reading, corrects an assumption in this card's
- * brief): the SHELL-side `subagentRunner.ts`'s own `runSubagent(options)`
- * does NOT wire the parent↔child abort cascade itself — it just uses
- * whatever `options.signal` the CALLER already passed in. The cascade is
- * built by the CALLER via `createSubagentController(agentName, parentSignal)`
- * (`src/core/agent/subagentAbort.ts`) BEFORE `runSubagent` is ever invoked
- * — see `agentLoop.ts:755-758`: `const { signal: subagentSignal, cleanup } =
- * createSubagentController(delegateAgent.name, abortController.signal);`
- * then `runSubagent({ ..., signal: subagentSignal })`. `subagentAbort.ts` is
- * a zero-import, pure module-level singleton (`P1-3b-pre-REPORT.md`'s own
- * classification: "if the loop moves to sidecar this state should just live
- * wherever runAgentLoop runs (no shim needed, it migrates naturally with
- * the loop)") — `agentLoop.ts` already imports it directly, unshimmed, and
- * it already runs for real inside the sidecar bundle. So by the time
- * `runSubagent(options)` (this shim) is called, `options.signal` is ALREADY
- * the correctly-cascaded child signal — no additional wiring is needed or
- * built here; this shim just forwards `options.signal` unchanged, matching
- * the real shell-side `runSubagent`'s own behavior exactly.
+ * ── Abort-signal linkage and scoped-run lifetime ─────────────────────────
+ * The caller still creates the ordinary parent-linked subagent signal via
+ * `createSubagentController`. For an unattended authorization scope, however,
+ * shell `subagentRunner.ts` adds one more run-owned controller: background
+ * commands may deliberately survive a successful tool result, so cleanup of
+ * the ordinary subagent registry alone is not a lifetime boundary. This shim
+ * mirrors the shell behavior exactly — scoped runs cascade parent aborts and
+ * actively abort their private signal after every success/error terminal.
+ * Unscoped runs keep forwarding the caller's signal unchanged.
  */
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentResult } from '@/core/agent/subagentLoop';
+import { scopeSubagentLoopProgress } from '@/core/agent/subagentProgressIdentity';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getSettingsMirrorReader } from '../settingsMirror';
 
@@ -87,5 +81,28 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     workspaceReader: ctx.workspaceReader,
   };
 
-  return runSubagentLoop(fullOptions);
+  if (options.authorizationScopeId === undefined) {
+    return runSubagentLoop(scopeSubagentLoopProgress(fullOptions));
+  }
+
+  const scopedController = new AbortController();
+  const parentSignal = options.signal;
+  const abortFromParent = () => scopedController.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  try {
+    return await runSubagentLoop(scopeSubagentLoopProgress({
+      ...fullOptions,
+      signal: scopedController.signal,
+    }));
+  } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    if (!scopedController.signal.aborted) {
+      scopedController.abort(new Error('Scoped subagent run finished'));
+    }
+  }
 }

@@ -101,6 +101,21 @@ describe('taskExecutionStore', () => {
       const child = useTaskExecutionStore.getState().executions[execId].steps[0].childSteps![0];
       expect(child.detailBlocks[0].isExpanded).toBe(false);
     });
+
+    it('releases only child imageData while preserving its replay placeholder', () => {
+      const execId = setupWithChild();
+      const store = useTaskExecutionStore.getState();
+      store.updateChildStep(execId, 'parent-1', 'child-1', 'done', false, [imageBlock]);
+
+      store.releaseDetailBlockImage(execId, 'child-1', 'child-1-image');
+
+      const child = useTaskExecutionStore.getState().executions[execId].steps[0].childSteps![0];
+      expect(child.detailBlocks[0]).toMatchObject({
+        id: 'child-1-image',
+        content: 'Image: /tmp/shot.png',
+      });
+      expect(child.detailBlocks[0].imageData).toBeUndefined();
+    });
   });
 
   describe('getExecutionByConversationId', () => {

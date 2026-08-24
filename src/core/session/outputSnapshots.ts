@@ -31,6 +31,7 @@ import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
 import type { ToolCall } from '@/types';
+import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('outputSnapshots');
@@ -45,14 +46,28 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 /** Manifest schema version */
 const MANIFEST_VERSION = 1 as const;
 
+/** Safe on-disk extension for rich tool-result image MIME types. */
+const RESULT_IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'image/x-icon': 'ico',
+  'image/vnd.microsoft.icon': 'ico',
+};
+
 // ────────────────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 
 export type SnapshotSource = 'tool-output' | 'user-upload' | 'code-save';
+type SnapshotSkipReason = 'oversized' | 'copy-failed' | 'write-failed';
 
 export interface SnapshotEntry {
-  /** Normalized absolute path of the original file (manifest index key) */
+  /** Normalized original path or stable tool-result:// identity (manifest index key). */
   originalPath: string;
   /** Filename for display */
   basename: string;
@@ -81,12 +96,12 @@ export interface SnapshotEntry {
    */
   refKind: string;
   /** Reason snapshotRelPath is empty. Only set when not snapshotted. */
-  skipReason?: 'oversized' | 'copy-failed';
+  skipReason?: SnapshotSkipReason;
 }
 
 export interface OutputManifest {
   version: typeof MANIFEST_VERSION;
-  /** Keyed by normalizedOriginalPath */
+  /** Keyed by SnapshotEntry.originalPath. */
   entries: Record<string, SnapshotEntry>;
 }
 
@@ -270,11 +285,14 @@ function buildEntry(
   mtime: number,
   meta: SnapshotMeta,
   snapshotRelPath: string,
-  skipReason?: 'oversized' | 'copy-failed',
+  options: {
+    basename?: string;
+    skipReason?: SnapshotSkipReason;
+  } = {},
 ): SnapshotEntry {
   return {
     originalPath: normalized,
-    basename: getBaseName(normalized),
+    basename: options.basename ?? getBaseName(normalized),
     snapshotRelPath,
     size,
     originalMtime: mtime,
@@ -282,7 +300,7 @@ function buildEntry(
     source: meta.source,
     refId: meta.refId,
     refKind: meta.refKind,
-    ...(skipReason ? { skipReason } : {}),
+    ...(options.skipReason ? { skipReason: options.skipReason } : {}),
   };
 }
 
@@ -315,48 +333,65 @@ export async function snapshotFile(
     return null;
   }
 
-  return withConvLock(convId, async () => {
-    const outputsDir = await getOutputsDir(convId);
-    // Idempotency guard: don't snapshot files already inside outputs/
-    // (prevents recursion when AI writes directly to the session output dir)
-    if (normalized.startsWith(outputsDir)) return null;
+  return withConvLock(convId, () => snapshotFileNormalized(convId, normalized, meta));
+}
 
-    const st = await safeStat(normalized);
-    if (!st || !st.isFile) return null;
+/** snapshotFile copy route once its path is normalized and conversation lock held. */
+async function snapshotFileNormalized(
+  convId: string,
+  normalized: string,
+  meta: SnapshotMeta,
+  identityPath: string = normalized,
+  targetBasename: string = getBaseName(normalized),
+): Promise<SnapshotEntry | null> {
+  const outputsDir = await getOutputsDir(convId);
+  // Idempotency guard: don't snapshot files already inside outputs/
+  // (prevents recursion when AI writes directly to the session output dir)
+  if (identityPath === normalized && normalized.startsWith(outputsDir)) return null;
 
-    const mtimeMs = st.mtime ? st.mtime.getTime() : 0;
+  const st = await safeStat(normalized);
+  if (!st || !st.isFile) return null;
 
-    // Oversized check
-    if (st.size > MAX_FILE_BYTES) {
-      logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
-      return await recordEntry(
-        convId,
-        buildEntry(normalized, st.size, mtimeMs, meta, '', 'oversized'),
-      );
-    }
+  const mtimeMs = st.mtime ? st.mtime.getTime() : 0;
 
-    // Copy
-    const subdir = joinPath(outputsDir, 'files', hashPath(normalized));
-    const basename = getBaseName(normalized);
-    const dest = joinPath(subdir, basename);
-    try {
-      if (!(await exists(subdir))) {
-        await mkdir(subdir, { recursive: true });
-      }
-      await copyFile(normalized, dest);
-    } catch (e) {
-      logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
-      return await recordEntry(
-        convId,
-        buildEntry(normalized, st.size, mtimeMs, meta, '', 'copy-failed'),
-      );
-    }
-
+  // Oversized check
+  if (st.size > MAX_FILE_BYTES) {
+    logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
     return await recordEntry(
       convId,
-      buildEntry(normalized, st.size, mtimeMs, meta, `files/${hashPath(normalized)}/${basename}`),
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'oversized',
+      }),
     );
-  });
+  }
+
+  // Copy
+  const identityHash = hashPath(identityPath);
+  const subdir = joinPath(outputsDir, 'files', identityHash);
+  const dest = joinPath(subdir, targetBasename);
+  try {
+    if (!(await exists(subdir))) {
+      await mkdir(subdir, { recursive: true });
+    }
+    await copyFile(normalized, dest);
+  } catch (e) {
+    logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
+    return await recordEntry(
+      convId,
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'copy-failed',
+      }),
+    );
+  }
+
+  return await recordEntry(
+    convId,
+    buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`, {
+      basename: targetBasename,
+    }),
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -411,6 +446,99 @@ export async function snapshotUserUpload(
     source: 'user-upload',
     refId: messageId,
     refKind: kind,
+  });
+}
+
+/**
+ * Persist an image returned in a tool result.
+ *
+ * A read_file result can retain the original path and therefore uses the same
+ * copy-based snapshot route as every other filesystem file. Computer-use
+ * screenshots have no source path, so their base64 bytes are materialised
+ * directly under the ordinary outputs/files/{hash}/ layout instead.
+ */
+export async function snapshotResultImage(
+  convId: string,
+  toolCallId: string,
+  imageBlock: ToolResultImage,
+  sourcePath?: string,
+): Promise<void> {
+  if (!toolCallId || !imageBlock.base64) return;
+
+  const extension = RESULT_IMAGE_EXTENSIONS[imageBlock.mediaType.toLowerCase()];
+  if (!extension) {
+    logger.warn('[snapshot] unsupported result image media type', { mediaType: imageBlock.mediaType });
+    return;
+  }
+
+  const meta: SnapshotMeta = {
+    source: 'tool-output',
+    refId: toolCallId,
+    refKind: 'result-image',
+  };
+  const originalPath = `tool-result://${toolCallId}`;
+  const hash = hashPath(originalPath);
+  // Never use the provider-controlled toolCallId as a path segment. Its stable
+  // identity lives in the manifest; the hashed directory + fixed basename keep
+  // `..`, slashes and platform-invalid characters out of the filesystem path.
+  const basename = `result.${extension}`;
+
+  await withConvLock(convId, async () => {
+    const manifest = await loadManifest(convId);
+    const alreadySnapshotted = Object.values(manifest.entries).some(
+      (entry) => entry.source === meta.source && entry.refId === meta.refId && entry.refKind === meta.refKind,
+    );
+    if (alreadySnapshotted) return;
+
+    if (sourcePath) {
+      const expanded = await expandTilde(sourcePath);
+      const normalized = normalizePath(expanded);
+      if (!isAbsolutePath(normalized)) {
+        logger.warn('[snapshot] rejected non-absolute result image path', { sourcePath, normalized });
+        return;
+      }
+
+      await snapshotFileNormalized(convId, normalized, meta, originalPath, basename);
+      return;
+    }
+
+    let decodedSize = 0;
+    try {
+      const bytes = base64ToUint8Array(imageBlock.base64);
+      decodedSize = bytes.byteLength;
+      if (decodedSize > MAX_FILE_BYTES) {
+        logger.info('[snapshot] result image skipped: oversized', {
+          convId,
+          toolCallId,
+          size: decodedSize,
+        });
+        await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+          basename,
+          skipReason: 'oversized',
+        }));
+        return;
+      }
+
+      const outputsDir = await getOutputsDir(convId);
+      const subdir = joinPath(outputsDir, 'files', hash);
+      const targetPath = joinPath(subdir, basename);
+      if (!(await exists(subdir))) await mkdir(subdir, { recursive: true });
+      await writeFile(targetPath, bytes);
+      await recordEntry(convId, buildEntry(
+        originalPath,
+        decodedSize,
+        0,
+        meta,
+        `files/${hash}/${basename}`,
+        { basename },
+      ));
+    } catch (e) {
+      logger.warn('[snapshot] result image write failed', { convId, toolCallId, err: e });
+      await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+        basename,
+        skipReason: 'write-failed',
+      }));
+    }
   });
 }
 

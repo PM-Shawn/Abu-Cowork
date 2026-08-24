@@ -1,4 +1,5 @@
 import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext } from '../../types';
+import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
@@ -600,6 +601,18 @@ export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
   return reason === 'max_turns' || reason === 'no_progress' || reason === 'awaiting_user';
 }
 
+/** Build the context row used to close an in-flight tool call after user Stop. */
+export function buildInterruptedToolCallContext(
+  toolCall: Pick<ToolCall, 'id' | 'name' | 'input'>,
+): ToolCallContext {
+  return {
+    id: toolCall.id,
+    name: toolCall.name,
+    input: toolCall.input,
+    result: '[Tool execution interrupted by user]',
+  };
+}
+
 export interface AgentLoopResult {
   reason: AgentLoopExitReason;
   error?: string;
@@ -1006,6 +1019,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     chatDelta.setAgentStatus(conversationId, 'tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
 
     // Create a delegate step in the execution
+    // Direct @agent delegation has no provider tool_use block and no target
+    // chat tool-call row, so it intentionally has no toolCallId to propagate.
+    // If this route ever appends ToolCallContext, introduce a stable id first.
     const delegateStepId = eventRouter.createStepForToolUse(loopId, {
       toolName: TOOL_NAMES.DELEGATE_TO_AGENT,
       toolInput: { agent_name: delegateAgent.name, task: taskText },
@@ -2561,11 +2577,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           if (existing && existing.result === undefined) {
             chatDelta.updateToolCall(conversationId, assistantMsgId, tc.id,
               '[Tool execution interrupted by user]', undefined, true);
-            chatDelta.appendToolCallContext(conversationId, loopId, {
-              name: tc.name,
-              input: tc.input,
-              result: '[Tool execution interrupted by user]',
-            });
+            chatDelta.appendToolCallContext(
+              conversationId,
+              loopId,
+              buildInterruptedToolCallContext(tc),
+            );
           }
         }
 

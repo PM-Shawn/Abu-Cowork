@@ -453,6 +453,20 @@ describe('batchProgressStore', () => {
       vi.advanceTimersByTime(BATCH_PROGRESS_COMPLETED_TTL_MS);
       expect(batch(batchId)).toBeUndefined();
     });
+
+    it('never clears a running batch when an unmounted view requests TTL cleanup', () => {
+      vi.useFakeTimers();
+      const batchId = identity('conv-running-lease', 'batch-running-lease');
+      const store = useBatchProgressStore.getState();
+      store.initBatch(batchId, ['A']);
+      store.setTaskRunning(batchId, 0);
+
+      store.scheduleClearBatch(batchId, BATCH_PROGRESS_COMPLETED_TTL_MS);
+      vi.advanceTimersByTime(BATCH_PROGRESS_COMPLETED_TTL_MS * 2);
+
+      expect(batch(batchId)).toMatchObject({ runLeaseCount: 1 });
+      expect(batch(batchId).tasks[0].status).toBe('running');
+    });
   });
 
   describe('rich retention LRU', () => {

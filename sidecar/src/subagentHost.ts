@@ -73,10 +73,44 @@ export const SUBAGENT_HOST_RUN_WIRE_FIELDS =
 
 type AssertNever<T extends never> = T;
 
+type SubagentWireBackedLoopOptionField = Extract<
+  typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number],
+  keyof SubagentLoopOptions
+>;
+
+type SubagentHostOnlyRunWireField = Exclude<
+  typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number],
+  keyof SubagentLoopOptions
+>;
+
+export const SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS = [
+  'runId',
+  'locale',
+  'uiStrings',
+  'settingsSnapshot',
+  'resolvedCreds',
+  'tools',
+  'workspacePathSnapshot',
+] as const satisfies readonly SubagentHostOnlyRunWireField[];
+
+/** Runtime form of `SUBAGENT_RUN_WIRE_FIELDS ∩ keyof SubagentLoopOptions`.
+ * The reverse exhaustiveness gate below makes a newly-added host-only field
+ * fail typecheck until it is classified here; every other canonical wire
+ * field is therefore a loop option and enters this derived list automatically.
+ */
+const hostOnlyRunWireFieldSet = new Set<string>(SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS);
+export const SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS = SUBAGENT_HOST_RUN_WIRE_FIELDS.filter(
+  (field): field is SubagentWireBackedLoopOptionField => !hostOnlyRunWireFieldSet.has(field),
+);
+
 /** Reverse exhaustiveness gate in production code; sidecar tests are not a
  * substitute for `tsc` checking newly-added host params against the wire. */
 export type SubagentHostRunParamsWireExhaustive = AssertNever<
   Exclude<keyof SubagentHostRunParams, typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number]>
+>;
+
+export type SubagentHostOnlyRunWireFieldsExhaustive = AssertNever<
+  Exclude<SubagentHostOnlyRunWireField, typeof SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS[number]>
 >;
 
 interface SerializableSubagentResult {
@@ -253,13 +287,23 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     resolvedCreds: params.resolvedCreds,
   };
 
-  const options: SubagentLoopOptions = {
+  // Record<> is intentional: optional loop fields still have to be present in
+  // this projection (while preserving their `undefined` value type) so adding
+  // a canonical wire-backed option cannot compile until the host forwards it.
+  const wireBackedLoopOptions = {
     agent: params.agent,
     task: params.task,
     context: params.context,
     parentConversationSummary: params.parentConversationSummary,
     parentConversationId: params.parentConversationId,
     imContext: params.imContext,
+    allowedTools: params.allowedTools,
+    blockedTools: params.blockedTools,
+  } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
+    & Record<SubagentWireBackedLoopOptionField, unknown>;
+
+  const options: SubagentLoopOptions = {
+    ...wireBackedLoopOptions,
     signal: controller.signal,
     settingsReader,
     toolInvoker,
@@ -331,8 +375,6 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       }
       sendNotification('subagent.progress', { runId, event });
     },
-    allowedTools: params.allowedTools,
-    blockedTools: params.blockedTools,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL

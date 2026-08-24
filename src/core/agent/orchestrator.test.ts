@@ -302,13 +302,13 @@ describe('buildSystemPrompt - structure', () => {
 
 describe('Available Agents tool boundaries', () => {
   it('formats unrestricted, declared, and long declared tool lists', () => {
-    expect(formatAvailableAgentTools({})).toBe('(Tools: all tools, including browser / image / MCP)');
-    expect(formatAvailableAgentTools({ tools: [] })).toBe('(Tools: all tools, including browser / image / MCP)');
+    expect(formatAvailableAgentTools({})).toBe('(Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
+    expect(formatAvailableAgentTools({ tools: [] })).toBe('(Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
     expect(formatAvailableAgentTools({ tools: ['read_file', 'web_search'] })).toBe('(Tools: read_file, web_search)');
     expect(formatAvailableAgentTools({ tools: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }))
       .toBe('(Tools: 9 tools incl. a, b, c…)');
     expect(formatAvailableAgentTools({ disallowedTools: ['abu-browser__*'] }))
-      .toBe('(Tools: all tools except abu-browser__*)');
+      .toBe('(Tools: all tools except nested delegation, user prompts, and abu-browser__*)');
     expect(formatAvailableAgentTools({ tools: ['read_file'], disallowedTools: ['write_file'] }))
       .toBe('(Tools: read_file; excludes write_file)');
   });
@@ -332,7 +332,7 @@ describe('Available Agents tool boundaries', () => {
 
     const prompt = await buildSystemPrompt(routeInput('delegate this'), 'base prompt', 'test-conv');
 
-    expect(prompt).toContain('- unrestricted: full access (Tools: all tools, including browser / image / MCP)');
+    expect(prompt).toContain('- unrestricted: full access (Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
     expect(prompt).toContain('- narrow: limited access (Tools: read_file)');
     expect(prompt).toContain('they do not authorize any operation');
     expect(prompt).toContain('Tool approval and permission controls remain authoritative');

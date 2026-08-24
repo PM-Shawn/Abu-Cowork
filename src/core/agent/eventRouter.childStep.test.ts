@@ -64,8 +64,10 @@ function makeHarness(childOverrides: Partial<ExecutionStep> = {}) {
   const setStepResult = vi.fn();
   const setStepError = vi.fn();
   const addDetailBlock = vi.fn();
+  const addStep = vi.fn();
   const executionStore = {
     getExecutionByLoopId: vi.fn().mockReturnValue(execution),
+    addStep,
     updateChildStep,
     addChildStep,
     setStepResult,
@@ -82,12 +84,31 @@ function makeHarness(childOverrides: Partial<ExecutionStep> = {}) {
     setStepResult,
     setStepError,
     addDetailBlock,
+    addStep,
     appendMessageToolCall,
     childStep,
   };
 }
 
 describe('EventRouter delegate terminal channel', () => {
+  it('classifies run_agent_batch as a delegate step', async () => {
+    const { router, addStep } = makeHarness();
+
+    await router.route({
+      type: 'step-start',
+      loopId: 'loop-1',
+      step: {
+        toolName: 'run_agent_batch',
+        toolInput: { tasks: [{ task: 'scan one file' }] },
+      },
+    });
+
+    expect(addStep).toHaveBeenCalledWith(
+      'exec-1',
+      expect.objectContaining({ type: 'delegate', toolName: 'run_agent_batch' }),
+    );
+  });
+
   it('trusts step-end as success even when a completed report starts with Error:', () => {
     const { router, setStepResult, addDetailBlock } = makeHarness();
 

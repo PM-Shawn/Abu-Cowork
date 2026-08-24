@@ -203,7 +203,9 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     if (msg.role !== 'assistant') return msg;
     // If toolCalls exist but all results are missing, strip them
     // (they were likely orphaned by truncation)
-    const tc = msg.toolCallsForContext || msg.toolCalls;
+    const tc = (msg.toolCallsForContext || msg.toolCalls)?.filter(
+      (toolCall) => !('fromSubagent' in toolCall && toolCall.fromSubagent),
+    );
     if (!tc || tc.length === 0) return msg;
 
     const allMissing = tc.every((t) => {

@@ -220,19 +220,18 @@ export interface MissingSubagentMcpRequirement {
  * Resolve MCP capabilities explicitly required by an agent definition but
  * absent from the live tool roster.
  *
- * MCP tools use the canonical `serverName__toolName` shape (the same rule as
- * mcpManager's registration path). Server names may themselves contain `__`
- * (`enterprise__<id>` is a real namespace), so the final separator is the
- * fallback boundary; managed metadata, when present, supplies an exact
- * longest-prefix hint. Only a fixed server namespace is treated as a hard
- * requirement: a cross-server wildcard such as `*__search` cannot name one
- * server to connect, so it keeps the existing best-effort wildcard behavior.
- * Exact tool names and a named server wildcard (`github__*`) are fail-loud.
+ * MCP tools use the canonical `serverName__toolName` shape, and the runtime
+ * dispatcher treats the first `__` as the boundary. Keep this preflight on the
+ * same conservative boundary so it never reports a hard requirement that the
+ * registry would dispatch to a different server. Only exact MCP tool names are
+ * fail-loud; wildcard declarations stay best-effort because a disconnected
+ * optional runtime (for example Abu's bundled browser server outside Electron)
+ * should not block delegation before the model has tried to use that tool.
  */
 export function findMissingSubagentMcpRequirements(
   declaredTools: readonly unknown[] | undefined,
   availableTools: readonly Pick<ToolDefinition, 'name'>[],
-  knownServerNames: readonly string[] = [],
+  _knownServerNames: readonly string[] = [],
 ): MissingSubagentMcpRequirement[] {
   if (!declaredTools?.length) return [];
 
@@ -251,16 +250,11 @@ export function findMissingSubagentMcpRequirements(
     // only to identify the MCP namespace used in the diagnostic.
     const constraintIndex = pattern.indexOf('(');
     const toolNamePattern = (constraintIndex === -1 ? pattern : pattern.slice(0, constraintIndex)).trim();
-    const hintedServerName = knownServerNames
-      .filter((serverName) => typeof serverName === 'string' && toolNamePattern.startsWith(`${serverName}__`))
-      .sort((a, b) => b.length - a.length)[0];
-    const separatorIndex = hintedServerName === undefined
-      ? toolNamePattern.lastIndexOf('__')
-      : hintedServerName.length;
+    if (toolNamePattern.includes('*')) continue;
+    const separatorIndex = toolNamePattern.indexOf('__');
     if (separatorIndex <= 0 || separatorIndex + 2 >= toolNamePattern.length) continue;
 
-    const serverName = hintedServerName ?? toolNamePattern.slice(0, separatorIndex);
-    if (serverName.includes('*')) continue;
+    const serverName = toolNamePattern.slice(0, separatorIndex);
     if (availableTools.some((tool) => matchesToolName(tool.name, pattern))) continue;
 
     seenPatterns.add(pattern);
@@ -1057,13 +1051,17 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       );
     }
 
+    const finalText = resultBuffer || getI18n().chat.subagent.noContent;
+    const finalStopReason = terminalStopReason === 'completed' && resultBuffer.trim() === ''
+      ? 'error'
+      : terminalStopReason;
     const finalResult = new SubagentResult({
-      text: resultBuffer || getI18n().chat.subagent.noContent,
+      text: finalText,
       toolCallCount: totalToolCalls,
       turnCount: completedTurns,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
-      stopReason: terminalStopReason,
+      stopReason: finalStopReason,
     });
     await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: finalResult.text, error: false });
     subagentSpan.end({ output: finalResult.text, tokenUsage: finalResult.tokenUsage, toolCallCount: finalResult.toolCallCount, turnCount: finalResult.turnCount, duration: finalResult.duration });

@@ -46,7 +46,7 @@ const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
 const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SEARCH_TOOLS: string[] = ['search', 'grep', 'find', TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.FIND_FILES];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
-const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT];
+const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH];
 
 /**
  * Check if a tool is an MCP tool (format: serverName__toolName)

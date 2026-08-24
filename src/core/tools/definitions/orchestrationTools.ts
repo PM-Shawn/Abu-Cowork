@@ -331,7 +331,7 @@ export const runAgentBatchTool: ToolDefinition = {
           properties: {
             type: {
               type: 'string',
-              description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools). Mutually exclusive with agent_name; defaults to research when neither is provided',
+              description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name; defaults to research when neither is provided',
               enum: ['research', 'writer', 'executor'],
             },
             agent_name: {

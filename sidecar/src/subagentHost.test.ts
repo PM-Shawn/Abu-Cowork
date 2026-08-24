@@ -25,7 +25,13 @@ vi.mock('./agentLoopHost', () => ({
   findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
 }));
 
-import { handleSubagentRun, handleSubagentAbort, __getActiveSubagentRunCount, SUBAGENT_HOST_RUN_WIRE_FIELDS } from './subagentHost';
+import {
+  handleSubagentRun,
+  handleSubagentAbort,
+  __getActiveSubagentRunCount,
+  SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS,
+  SUBAGENT_HOST_RUN_WIRE_FIELDS,
+} from './subagentHost';
 
 // Unique default runId per call — `activeRuns` is real module-level state
 // that persists across tests within this file (no reset hook exists for
@@ -305,7 +311,7 @@ describe('subagentHost', () => {
       };
       const imContext = { platform: 'dchat', workspacePath: '/im/workspace' };
 
-      await handleSubagentRun(baseParams({
+      const request = baseParams({
         agent: agentOverride,
         task: 'wire task',
         context: 'wire context',
@@ -314,18 +320,19 @@ describe('subagentHost', () => {
         imContext,
         allowedTools: ['read_*'],
         blockedTools: ['write_*'],
-      }));
+      });
 
-      expect(runSubagentLoopMock).toHaveBeenCalledWith(expect.objectContaining({
-        agent: agentOverride,
-        task: 'wire task',
-        context: 'wire context',
-        parentConversationSummary: 'wire summary',
-        parentConversationId: 'parent-conversation',
-        imContext,
-        allowedTools: ['read_*'],
-        blockedTools: ['write_*'],
-      }));
+      await handleSubagentRun(request);
+
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as Record<string, unknown>;
+      const wireRequest = request as Record<string, unknown>;
+
+      for (const field of SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS) {
+        expect(loopOptions, `runSubagentLoop options should contain wire field "${field}"`)
+          .toHaveProperty(field);
+        expect(loopOptions[field], `runSubagentLoop option "${field}" should preserve its wire value`)
+          .toEqual(wireRequest[field]);
+      }
     });
 
     it('rejects a malformed blockedTools param (type validation symmetric with allowedTools)', async () => {

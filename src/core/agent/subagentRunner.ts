@@ -203,23 +203,23 @@ interface SerializableSubagentResult {
   turnCount: number;
   tokenUsage: { input: number; output: number };
   duration: number;
-  stopReason: SubagentStopReason;
+  stopReason?: SubagentStopReason;
+}
+
+function isSubagentStopReason(v: unknown): v is SubagentStopReason {
+  return v === 'completed' || v === 'aborted' || v === 'error' || v === 'max_turns';
 }
 
 function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResult {
+  const record = v as Record<string, unknown>;
   return (
     typeof v === 'object' &&
     v !== null &&
-    typeof (v as Record<string, unknown>).text === 'string' &&
-    typeof (v as Record<string, unknown>).toolCallCount === 'number' &&
-    typeof (v as Record<string, unknown>).turnCount === 'number' &&
-    typeof (v as Record<string, unknown>).duration === 'number' &&
-    (
-      (v as Record<string, unknown>).stopReason === 'completed' ||
-      (v as Record<string, unknown>).stopReason === 'aborted' ||
-      (v as Record<string, unknown>).stopReason === 'error' ||
-      (v as Record<string, unknown>).stopReason === 'max_turns'
-    )
+    typeof record.text === 'string' &&
+    typeof record.toolCallCount === 'number' &&
+    typeof record.turnCount === 'number' &&
+    typeof record.duration === 'number' &&
+    (record.stopReason === undefined || isSubagentStopReason(record.stopReason))
   );
 }
 
@@ -434,7 +434,10 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
   if (!isSerializableSubagentResult(raw)) {
     throw new Error('subagent.run response did not match the expected SubagentResult shape');
   }
-  return new SubagentResult(raw);
+  return new SubagentResult({
+    ...raw,
+    stopReason: raw.stopReason ?? 'completed',
+  });
 }
 
 function cancelledSubagentResult(): SubagentResult {

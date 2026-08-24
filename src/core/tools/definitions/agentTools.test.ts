@@ -58,7 +58,7 @@ describe('delegateToAgentTool', () => {
     const type = delegateToAgentTool.inputSchema.properties.type as { description: string };
     expect(type.description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
     expect(type.description).toContain('writer (content authoring: read/write/edit files plus web search)');
-    expect(type.description).toContain('executor (full toolset — includes browser, image and MCP tools)');
+    expect(type.description).toContain('executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts)');
   });
 
   it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {

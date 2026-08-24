@@ -85,6 +85,19 @@ describe('SubagentTab', () => {
     expect(view.container.querySelector('.animate-spin')).toBeNull();
   });
 
+  it('shows live activity and an explicit empty state before the first tool call', () => {
+    const store = useBatchProgressStore.getState();
+    store.initBatch(identity, ['Worker']);
+    store.setTaskRunning(identity, 0);
+    store.setTaskActivity(identity, 0, 'Planning the task', 1);
+
+    render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Planning the task');
+    expect(screen.getByText('Planning the task', { selector: 'span' })).toBeInTheDocument();
+    expect(screen.getByText('No tool calls have been retained yet.')).toBeInTheDocument();
+  });
+
   it('shows a localized released-rich fallback while preserving the step shell', () => {
     seedRichStep();
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });

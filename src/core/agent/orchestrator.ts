@@ -48,9 +48,9 @@ export function formatAvailableAgentTools(
 
   if (allowed.values.length === 0) {
     if (denied.values.length === 0) {
-      return '(Tools: all tools, including browser / image / MCP)';
+      return '(Tools: all tools except nested delegation and user prompts, including browser / image / MCP)';
     }
-    return `(Tools: all tools except ${formatDeclaredToolNames(denied.values)})`;
+    return `(Tools: all tools except nested delegation, user prompts, and ${formatDeclaredToolNames(denied.values)})`;
   }
 
   const exclusions = denied.values.length > 0

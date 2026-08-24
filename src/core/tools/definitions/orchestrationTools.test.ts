@@ -58,7 +58,7 @@ describe('runAgentBatchTool preset boundaries', () => {
     const description = tasks.items.properties.type.description;
     expect(description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
     expect(description).toContain('writer (content authoring: read/write/edit files plus web search)');
-    expect(description).toContain('executor (full toolset — includes browser, image and MCP tools)');
+    expect(description).toContain('executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts)');
   });
 });
 

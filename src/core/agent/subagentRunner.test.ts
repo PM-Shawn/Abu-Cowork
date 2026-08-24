@@ -384,9 +384,27 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('completed');
     });
 
-    it.each([undefined, 'mystery'])(
-      'rejects a sidecar result with stopReason=%s instead of defaulting it to completed',
-      async (stopReason) => {
+    it('defaults a legacy sidecar result with no stopReason to completed', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'legacy sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('legacy sidecar result');
+      expect(result.stopReason).toBe('completed');
+    });
+
+    it(
+      'rejects a sidecar result with an unknown stopReason instead of defaulting it to completed',
+      async () => {
         getSidecarStatus.mockReturnValue('running');
         sidecarRequestMock.mockResolvedValue({
           text: 'ambiguous result',
@@ -394,7 +412,7 @@ describe('subagentRunner', () => {
           turnCount: 1,
           tokenUsage: { input: 0, output: 0 },
           duration: 1,
-          ...(stopReason === undefined ? {} : { stopReason }),
+          stopReason: 'mystery',
         });
         const { runSubagent } = await importFresh();
 

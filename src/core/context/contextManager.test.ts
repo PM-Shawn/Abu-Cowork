@@ -216,6 +216,28 @@ describe('contextManager', () => {
       expect(compressed?.content).not.toContain('[computer_screenshot]');
     });
 
+    it('does not summarize orphaned subagent-recorded tool calls into LLM context', () => {
+      const messages: Message[] = [
+        makeMsg('user', 'Start'),
+        {
+          ...makeMsg('assistant', ''),
+          toolCalls: [{
+            id: 'child-tool',
+            name: 'abu-browser__screenshot',
+            input: {},
+            hidden: true,
+            fromSubagent: true,
+          }],
+        },
+      ];
+
+      const result = enforceContextBudget(messages, systemPrompt, 200, 50);
+
+      expect(JSON.stringify(result.messages)).not.toContain('[abu-browser__screenshot]');
+      expect(JSON.stringify(result.messages)).not.toContain('tool results lost during context compression');
+      expect(result.messages[1]?.toolCalls).toEqual(messages[1].toolCalls);
+    });
+
     it('truncates a giant latest tool result and preserves the outbound invariant', () => {
       const messages: Message[] = [
         makeMsg('user', 'Inspect the file'),

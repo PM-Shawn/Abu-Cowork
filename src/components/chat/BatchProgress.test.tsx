@@ -52,7 +52,8 @@ describe('BatchProgress', () => {
     render(<BatchProgress identity={identity} toolCall={toolCall()} />);
 
     expect(screen.getByText('Running 1 parallel sub-tasks')).toBeInTheDocument();
-    expect(screen.getByText('read_file')).toBeInTheDocument();
+    expect(screen.getByText('Read file')).toBeInTheDocument();
+    expect(screen.queryByText('read_file')).not.toBeInTheDocument();
     expect(screen.getByText('1 tools')).toBeInTheDocument();
     expect(screen.getByText('165 tokens')).toBeInTheDocument();
     expect(screen.getByText('Turn 2')).toBeInTheDocument();

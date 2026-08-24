@@ -132,36 +132,35 @@ describe('appendTurnText', () => {
 });
 
 describe('findMissingSubagentMcpRequirements', () => {
-  it('accepts connected exact and named-wildcard MCP tools', () => {
+  it('accepts connected exact MCP tools and leaves named wildcards best-effort', () => {
     const available = [
       { name: 'github__search_issues' },
       { name: 'github__create_issue' },
     ];
 
     expect(findMissingSubagentMcpRequirements(
-      ['github__search_issues', 'github__*'],
+      ['github__search_issues', 'github__*', 'github__search_*'],
       available,
     )).toEqual([]);
   });
 
-  it('returns each unavailable exact or named-wildcard requirement with its server', () => {
+  it('returns each unavailable exact MCP requirement with its server', () => {
     expect(findMissingSubagentMcpRequirements(
       ['notion__query', 'slack__*', 'notion__query'],
       [{ name: 'read_file' }],
     )).toEqual([
       { pattern: 'notion__query', serverName: 'notion' },
-      { pattern: 'slack__*', serverName: 'slack' },
     ]);
   });
 
-  it('keeps enterprise/custom server names containing the separator intact', () => {
+  it('uses the same first separator boundary as MCP dispatch', () => {
     expect(findMissingSubagentMcpRequirements(
       ['enterprise__tenant-a__query', 'custom__nested__tool__v2'],
       [],
       ['enterprise__tenant-a', 'custom__nested', null] as never,
     )).toEqual([
-      { pattern: 'enterprise__tenant-a__query', serverName: 'enterprise__tenant-a' },
-      { pattern: 'custom__nested__tool__v2', serverName: 'custom__nested' },
+      { pattern: 'enterprise__tenant-a__query', serverName: 'enterprise' },
+      { pattern: 'custom__nested__tool__v2', serverName: 'custom' },
     ]);
   });
 

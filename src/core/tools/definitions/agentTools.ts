@@ -163,7 +163,7 @@ const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string;
   executor: {
     description: 'Executing complex operational tasks',
     systemPrompt: 'You are an efficient execution assistant. Able to use various tools to complete file operations, command execution, and other tasks.',
-    tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
+    tools: [], // Empty = all tools allowed except nested delegation and user prompts.
   },
 };
 
@@ -186,7 +186,7 @@ export const delegateToAgentTool: ToolDefinition = {
     type: 'object',
     properties: {
       agent_name: { type: 'string', description: 'User-defined agent name (mutually exclusive with type)' },
-      type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
+      type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
     },

@@ -212,7 +212,7 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(result.stopReason).toBe('error');
     expect(result.text).toContain('notion-researcher');
     expect(result.text).toContain('notion__query');
-    expect(result.text).toContain('slack__*');
+    expect(result.text).not.toContain('slack__*');
     expect(mockClaudeChat).not.toHaveBeenCalled();
     expect(mockExecuteAnyTool).not.toHaveBeenCalled();
   });
@@ -345,6 +345,18 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     expect(result.text).toContain('adapter failed');
     expect(result.stopReason).toBe('error');
+  });
+
+  it('marks a normal end_turn with no text or tools as no-content error', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.text).toContain('no content');
+    expect(result.stopReason).toBe('error');
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
   });
 
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {

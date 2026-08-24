@@ -7,6 +7,7 @@ import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import type { BatchIdentity, ToolCall } from '@/types';
+import { getToolLabel } from '@/utils/toolLabels';
 import {
   batchRowStatusLabel,
   compactBatchRollupSummary,
@@ -67,7 +68,7 @@ function summaryLabel(rows: BatchTaskRow[], t: TranslationDict): string {
 }
 
 export default function BatchProgress({ identity, toolCall }: BatchProgressProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const batch = useBatchProgress(identity);
   const openSubagent = usePreviewStore((s) => s.openSubagent);
   const [now, setNow] = useState(() => Date.now());
@@ -111,37 +112,42 @@ export default function BatchProgress({ identity, toolCall }: BatchProgressProps
       </div>
 
       <div className="divide-y divide-[var(--abu-border-subtle)]">
-        {rows.map((row) => (
-          <button
-            key={row.taskIndex}
-            type="button"
-            onClick={() => openSubagent(identity, row.taskIndex, row.label)}
-            className="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] transition-colors"
-            aria-label={format(t.batch.openTaskLabel, { label: row.label, status: batchRowStatusLabel(row.status, t) })}
-          >
-            <span className="mt-0.5 shrink-0"><StatusIcon status={row.status} /></span>
-            <span className="flex-1 min-w-0">
-              <span className={cn(
-                'text-caption truncate block',
-                row.status === 'running' ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
-                row.status === 'failed' && 'text-[var(--abu-danger)]',
-              )}>
-                {row.label}
+        {rows.map((row) => {
+          const lastToolLabel = row.lastToolName
+            ? getToolLabel(row.lastToolName, {}, locale).label
+            : undefined;
+          return (
+            <button
+              key={row.taskIndex}
+              type="button"
+              onClick={() => openSubagent(identity, row.taskIndex, row.label)}
+              className="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] transition-colors"
+              aria-label={format(t.batch.openTaskLabel, { label: row.label, status: batchRowStatusLabel(row.status, t) })}
+            >
+              <span className="mt-0.5 shrink-0"><StatusIcon status={row.status} /></span>
+              <span className="flex-1 min-w-0">
+                <span className={cn(
+                  'text-caption truncate block',
+                  row.status === 'running' ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
+                  row.status === 'failed' && 'text-[var(--abu-danger)]',
+                )}>
+                  {row.label}
+                </span>
+                <span className="text-caption text-[var(--abu-text-tertiary)] flex flex-wrap gap-x-1.5">
+                  <span>{batchRowStatusLabel(row.status, t)}</span>
+                  {lastToolLabel && <span>{lastToolLabel}</span>}
+                  {row.toolCallCount !== undefined && <span>{format(t.batch.toolCount, { n: row.toolCallCount })}</span>}
+                  {row.elapsedMs !== undefined && row.elapsedMs !== null && <span>{formatElapsed(row.elapsedMs)}</span>}
+                  {row.tokenTotal !== undefined && <span>{format(t.batch.tokenCount, { n: row.tokenTotal })}</span>}
+                  {row.status === 'running' && row.turn !== undefined && row.turn > 0 && (
+                    <span>{format(t.batch.turnLabel, { n: row.turn })}</span>
+                  )}
+                </span>
               </span>
-              <span className="text-caption text-[var(--abu-text-tertiary)] flex flex-wrap gap-x-1.5">
-                <span>{batchRowStatusLabel(row.status, t)}</span>
-                {row.lastToolName && <span>{row.lastToolName}</span>}
-                {row.toolCallCount !== undefined && <span>{format(t.batch.toolCount, { n: row.toolCallCount })}</span>}
-                {row.elapsedMs !== undefined && row.elapsedMs !== null && <span>{formatElapsed(row.elapsedMs)}</span>}
-                {row.tokenTotal !== undefined && <span>{format(t.batch.tokenCount, { n: row.tokenTotal })}</span>}
-                {row.status === 'running' && row.turn !== undefined && row.turn > 0 && (
-                  <span>{format(t.batch.turnLabel, { n: row.turn })}</span>
-                )}
-              </span>
-            </span>
-            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[var(--abu-text-muted)]" />
-          </button>
-        ))}
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[var(--abu-text-muted)]" />
+            </button>
+          );
+        })}
       </div>
     </section>
   );

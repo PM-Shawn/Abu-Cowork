@@ -54,12 +54,16 @@ describe('builtin Agent tool boundaries', () => {
 
   it.each([
     ['高级开发工程师', 'abu-browser__*'],
+    ['高级开发工程师', 'abu-browser-bridge__*'],
     ['产品经理', 'abu-browser__*'],
+    ['产品经理', 'abu-browser-bridge__*'],
     ['HR 招聘官', 'abu-browser__*'],
+    ['HR 招聘官', 'abu-browser-bridge__*'],
     ['公众号编辑', 'write_file'],
     ['公众号编辑', 'edit_file'],
     ['公众号编辑', 'list_directory'],
     ['数据分析师', 'abu-browser__*'],
+    ['数据分析师', 'abu-browser-bridge__*'],
   ])('%s retains the declared %s capability', (name, tool) => {
     expect(registry.getAgent(name)?.tools).toContain(tool)
   })

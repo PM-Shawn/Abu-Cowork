@@ -1892,6 +1892,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               const stepId = eventRouter.createStepForToolUse(loopId, {
                 toolName: event.name,
                 toolInput: event.input,
+                toolCallId: event.id,
               });
 
               // Store the mapping for later result update

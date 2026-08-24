@@ -2047,6 +2047,17 @@ export interface TranslationDict {
     filterField: string;
     filterFieldPlaceholder: string;
     filter: string;
+    capability: string;
+    capabilityReadTools: string;
+    capabilityReadToolsDescription: string;
+    capabilitySafeTools: string;
+    capabilitySafeToolsDescription: string;
+    capabilityFull: string;
+    capabilityFullDescription: string;
+    capabilityCustomLegacy: string;
+    capabilityCustomLegacyDescription: string;
+    capabilityHint: string;
+    capabilityFullWarning: string;
     debounceEnabled: string;
     debounce: string;
     seconds: string;

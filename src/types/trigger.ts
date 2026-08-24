@@ -90,7 +90,7 @@ export interface QuietHoursConfig {
  * Permissions are declared at creation time (no runtime dialogs for unattended execution).
  *
  * - read_tools:  Read files, search, web fetch — no modifications (default, safest)
- * - safe_tools:  Read + write within workspace, safe commands only (ls, git status, etc.)
+ * - safe_tools:  Read + write within the declared workspace via reviewed tools; no shell
  * - full:        All operations except hard-blocked paths/commands (.ssh, rm -rf /, etc.)
  * - custom:      Fine-grained control via TriggerPermissions whitelist
  */

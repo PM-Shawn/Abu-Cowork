@@ -62,9 +62,11 @@ export function resetCalibration(modelId?: string): void {
 }
 
 /**
- * Estimate token count for a string
+ * Unrounded token weight for a string. Keeping the rounding boundary separate
+ * lets callers partition one payload without rounding each section twice or
+ * changing the aggregate estimate.
  */
-export function estimateTokens(text: string): number {
+export function estimateTextTokenWeight(text: string): number {
   if (!text) return 0;
 
   const cjkMatches = text.match(CJK_REGEX);
@@ -75,7 +77,14 @@ export function estimateTokens(text: string): number {
   const cjkTokens = cjkCount / 1.5;
   const nonCjkTokens = nonCjkCount / 4;
 
-  return Math.ceil((cjkTokens + nonCjkTokens) * getCalibrationRatio());
+  return (cjkTokens + nonCjkTokens) * getCalibrationRatio();
+}
+
+/**
+ * Estimate token count for a string.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(estimateTextTokenWeight(text));
 }
 
 // Approximate tokens per image, deliberately provider-agnostic.

@@ -2571,6 +2571,7 @@ const enUS: TranslationDict = {
       capFull: 'Fully autonomous',
       capCustom: 'Custom allowlist',
       capLevelLine: 'Capability level: {label}',
+      triggerCapabilityUiNotice: 'The model cannot change the capability level. New triggers use Read Only; updates keep the existing level.',
       filterLine: 'Filter: {filter}',
       debounceLine: 'Debounce: {value}',
       debounceSeconds: '{seconds}s',

@@ -1,4 +1,4 @@
-import { useChatStore } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore } from '@/stores/chatStore';
 import type { Conversation } from '@/types';
 import type { ConversationMeta } from '../../session/conversationStorage';
 import { createPortSlot } from './portSlot';
@@ -6,8 +6,8 @@ import { createPortSlot } from './portSlot';
 /**
  * Port abstracting agentLoop's (and toolExecutor's) READS of chatStore's
  * conversation data: the full per-conversation record, the lighter index/
- * catalog metadata, and the one global (non-per-conversation) scalar these
- * callers consult mid-loop.
+ * catalog metadata, and per-conversation live agent timing these callers
+ * consult mid-loop.
  *
  * This is the read-side counterpart to `ChatDelta` (see `chatDelta.ts`) for
  * conversation data, following the same call-time-not-cached discipline as
@@ -64,9 +64,8 @@ export interface ConversationReader {
    *  metadata (title, workspacePath, model, etc.), used e.g. for
    *  notification text where the full conversation record isn't needed. */
   getIndexEntry(convId: string): Readonly<ConversationMeta> | undefined;
-  /** Mirrors chatStore's `thinkingStartTime` — a global scalar (not keyed
-   *  by conversation), unlike the other two accessors. */
-  getThinkingStartTime(): number | null;
+  /** Mirrors the addressed conversation's agent-state thinking timer. */
+  getThinkingStartTime(convId: string): number | null;
 }
 
 /** Default in-process implementation over the Zustand store's synchronous
@@ -79,7 +78,10 @@ export function createInProcessConversationReader(): ConversationReader {
   return {
     getConversation: (convId) => useChatStore.getState().conversations[convId],
     getIndexEntry: (convId) => useChatStore.getState().conversationIndex[convId],
-    getThinkingStartTime: () => useChatStore.getState().thinkingStartTime,
+    getThinkingStartTime: (convId) => {
+      const state = useChatStore.getState();
+      return getConversationAgentState(state.agentStates, convId).thinkingStartTime;
+    },
   };
 }
 

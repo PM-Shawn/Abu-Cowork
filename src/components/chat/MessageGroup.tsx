@@ -16,7 +16,7 @@ import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
 import SourcesSection from './SourcesSection';
-import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
@@ -351,8 +351,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
-  const agentStatus = useChatStore((s) => s.agentStatus);
   const activeConv = useActiveConversation();
+  const activeConversationId = activeConv?.id ?? null;
+  const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
 
   // Get loopId from messages (all messages in group share same loopId)
@@ -470,8 +471,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   const skillInfo = userMsg?.skill;
 
   // Extract workflow steps from all tool calls (legacy fallback)
-  // Only pass agentStatus to the currently streaming group — prevents the global
-  // 'thinking' status from injecting a phantom thinking step into completed groups
+  // Only pass the active conversation's agent status to the currently streaming
+  // group — prevents another running conversation from injecting a phantom
+  // thinking step into completed groups.
   const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
 
   // Extract file outputs for attachments — deliverables semantics: only show

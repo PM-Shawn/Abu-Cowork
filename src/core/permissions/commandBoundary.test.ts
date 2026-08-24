@@ -1,13 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { analyzeCommandBoundary } from './commandBoundary';
-import { authorizeWorkspace, revokeWorkspace } from '../tools/pathSafety';
+import { allWorkingDirectories } from './workingDirs';
+import { useWorkspaceStore } from '../../stores/workspaceStore';
+import {
+  authorizeWorkspace,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  revokeWorkspace,
+  scopedAuthorizeWorkspace,
+} from '../tools/pathSafety';
 
 const WS = '/Users/test/project';
 const HOME = '/Users/test';
+const GLOBAL_EXTRA = '/Users/test/global-extra';
+const SCOPED_WS = '/Users/test/scoped-project';
 
 describe('commandBoundary', () => {
-  beforeEach(() => authorizeWorkspace(WS));
-  afterEach(() => revokeWorkspace(WS));
+  beforeEach(() => {
+    authorizeWorkspace(WS);
+    useWorkspaceStore.setState({ currentPath: null });
+  });
+  afterEach(() => {
+    revokeWorkspace(WS);
+    useWorkspaceStore.setState({ currentPath: null });
+  });
 
   describe('inside the working set', () => {
     it('relative redirect resolves inside cwd', () => {
@@ -33,6 +49,45 @@ describe('commandBoundary', () => {
     });
     it('tee to an absolute system path', () => {
       expect(analyzeCommandBoundary('tee /etc/evil.conf', WS, HOME)).toBe('outside');
+    });
+
+    it('scoped runs do not treat globally authorized extra directories as inside', () => {
+      const scopeId = createAuthorizationScope();
+      authorizeWorkspace(GLOBAL_EXTRA, ['read', 'write']);
+      scopedAuthorizeWorkspace(scopeId, WS, ['read', 'write']);
+
+      try {
+        expect(analyzeCommandBoundary(`echo data > ${GLOBAL_EXTRA}/out.txt`, WS, HOME, scopeId)).toBe('outside');
+        expect(analyzeCommandBoundary(`echo data > ${GLOBAL_EXTRA}/out.txt`, WS, HOME)).toBe('inside');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+        revokeWorkspace(GLOBAL_EXTRA);
+      }
+    });
+
+    it('scoped runs do not inherit the ambient workspace store currentPath', () => {
+      const scopeId = createAuthorizationScope();
+      useWorkspaceStore.setState({ currentPath: WS });
+      scopedAuthorizeWorkspace(scopeId, SCOPED_WS, ['read', 'write']);
+
+      try {
+        expect(allWorkingDirectories(scopeId)).not.toContain(WS);
+        expect(analyzeCommandBoundary('echo hi > out.txt', WS, HOME, scopeId)).toBe('outside');
+        expect(analyzeCommandBoundary('echo hi > out.txt', WS, HOME)).toBe('inside');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('scoped write detection does not treat read-only scope directories as writable', () => {
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, WS, ['read']);
+
+      try {
+        expect(analyzeCommandBoundary('echo hi > out.txt', WS, HOME, scopeId)).toBe('outside');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
     });
   });
 

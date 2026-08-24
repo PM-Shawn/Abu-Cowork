@@ -470,6 +470,12 @@ export interface ToolExecutionContext {
   /** Effective three-tier permission mode for this conversation. */
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
   /**
+   * Shell-created authorization scope for unattended runs. When present,
+   * path checks must read only that scoped grant set and never fall back to
+   * process-global interactive grants.
+   */
+  authorizationScopeId?: string;
+  /**
    * Whether the active model supports vision/image input, resolved from the
    * turn's model capabilities. When explicitly `false`, tools that would emit
    * image content (e.g. read_file on an image) must return a text note instead

@@ -88,6 +88,8 @@ export interface AgentRunParams {
     images?: ImageAttachment[];
     blockedTools?: string[];
     allowedTools?: string[];
+    authorizationScopeId?: string;
+    workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
   };
@@ -141,6 +143,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
     typeof options.prePersistedUserMessageId !== 'string' || !options.prePersistedUserMessageId
   )) {
     throw new RpcError(-32602, 'Invalid params: options.prePersistedUserMessageId must be a non-empty string');
+  }
+  if (options.authorizationScopeId !== undefined && (typeof options.authorizationScopeId !== 'string' || !options.authorizationScopeId)) {
+    throw new RpcError(-32602, 'Invalid params: options.authorizationScopeId must be a non-empty string');
+  }
+  if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
   }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
@@ -623,6 +631,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   // ── AbortRegistry — sidecar-local Map, lazily-created controllers, same
   // contract as the in-process store (design doc §3 "abortRegistry" row) ──
   const controllers = new Map<string, AbortController>();
+  const createdControllers = new Set<AbortController>();
   const abortRegistry: AbortRegistry = {
     hasAbortController: (convId) => controllers.has(convId),
     getAbortController: (convId) => {
@@ -630,6 +639,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       if (!c) {
         c = new AbortController();
         controllers.set(convId, c);
+        createdControllers.add(c);
       }
       return c;
     },
@@ -729,6 +739,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       images: params.options.images,
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
+      authorizationScopeId: params.options.authorizationScopeId,
       imContext: params.options.imContext,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),
@@ -792,6 +803,13 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     throw error;
   } finally {
     coalescer.flush();
+    if (params.options.authorizationScopeId !== undefined) {
+      for (const controller of createdControllers) {
+        if (!controller.signal.aborted) {
+          controller.abort(new Error('Scoped agent run finished'));
+        }
+      }
+    }
     activeRuns.delete(runId);
   }
 }

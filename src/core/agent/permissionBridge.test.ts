@@ -25,6 +25,12 @@ import {
 } from './permissionBridge';
 import { usePermissionStore } from '../../stores/permissionStore';
 import type { Message, UserQuestionPayload, UserQuestionResult } from '../../types';
+import {
+  checkReadPath,
+  checkWritePath,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+} from '../tools/pathSafety';
 
 const MINIMAL_PAYLOAD: UserQuestionPayload = {
   questions: [
@@ -245,5 +251,91 @@ describe('permissionBridge — resolveFilePermission pending guard (F1 regressio
     // Second resolve: nothing pending anymore — must not re-grant.
     resolveFilePermission(true, '/ws/double', ['write'], 'always');
     expect(usePermissionStore.getState().hasPermission('/ws/double', 'write')).toBe(false);
+  });
+
+  it('syncs an existing permission into the loopId-owned scope, not the first ambient loop context', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-owned/out.md';
+    const scopeA = createAuthorizationScope();
+    const scopeB = createAuthorizationScope();
+    setLoopContext('loop-a', {
+      loopId: 'loop-a',
+      conversationId: 'conv-a',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeA,
+    } as unknown as LoopContext);
+    setLoopContext('loop-b', {
+      loopId: 'loop-b',
+      conversationId: 'conv-b',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeB,
+    } as unknown as LoopContext);
+    usePermissionStore.getState().grantPermission(path, ['write'], 'session');
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'write', toolName: 'write_file' }, 'loop-b')).resolves.toBe(true);
+
+      expect((await checkWritePath(path, scopeB)).allowed).toBe(true);
+      expect((await checkWritePath(path, scopeA)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-a');
+      clearLoopContext('loop-b');
+      disposeAuthorizationScope(scopeA);
+      disposeAuthorizationScope(scopeB);
+    }
+  });
+
+  it('syncs an existing read permission into the run scope without granting write', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-read/notes.md';
+    const scopeId = createAuthorizationScope();
+    setLoopContext('loop-read-only', {
+      loopId: 'loop-read-only',
+      conversationId: 'conv-read-only',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeId,
+    } as unknown as LoopContext);
+    usePermissionStore.getState().grantPermission(path, ['read'], 'session');
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'read', toolName: 'read_file' }, 'loop-read-only')).resolves.toBe(true);
+
+      expect((await checkReadPath(path, scopeId)).allowed).toBe(true);
+      expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-read-only');
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('treats an empty authorization scope as explicit and never syncs existing grants globally', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-empty/notes.md';
+    setLoopContext('loop-empty-scope', {
+      loopId: 'loop-empty-scope',
+      conversationId: 'conv-empty-scope',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: '',
+    } as unknown as LoopContext);
+    usePermissionStore.setState({
+      sessionGrants: {
+        [path]: {
+          path,
+          grantedAt: 0,
+          expiresAt: null,
+          capabilities: ['read'],
+          duration: 'session',
+        },
+      },
+      persistedGrants: {},
+      pendingRequest: null,
+    });
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'read', toolName: 'read_file' }, 'loop-empty-scope')).resolves.toBe(true);
+
+      expect((await checkReadPath(path, '')).allowed).toBe(false);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-empty-scope');
+      usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+    }
   });
 });

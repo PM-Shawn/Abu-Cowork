@@ -113,7 +113,7 @@ function renderReplayedGroup(messages: Message[]) {
   useChatStore.setState({
     activeConversationId: conversation.id,
     conversations: { [conversation.id]: conversation },
-    agentStatus: 'idle',
+    agentStates: new Map(),
   });
   return render(<MessageGroup messages={messages} isLastGroup />);
 }

@@ -52,6 +52,10 @@ vi.mock('../../agent/ports/settingsReader', () => ({
 }));
 
 describe('delegateToAgentTool', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {
     expect(delegateToAgentTool.isConcurrencySafe).toBe(true);
   });
@@ -98,6 +102,51 @@ describe('delegateToAgentTool', () => {
         blockedTools: ['request_workspace', 'abu-browser__*'],
       }),
     );
+  });
+
+  it('prefers the shell-owned tool execution authorization scope for nested delegation', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done' } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      authorizationScopeId: undefined,
+      allowedTools: ['read_file'],
+      blockedTools: [],
+      toolCallToStepId: new Map(),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate: () => undefined,
+        completeChildStep: () => undefined,
+      },
+    } as never);
+
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'look something up' },
+      { authorizationScopeId: 'scope-from-tool-context', workspacePath: null } as never,
+    );
+
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorizationScopeId: 'scope-from-tool-context',
+        workspaceReader: expect.any(Object),
+      }),
+    );
+    const call = vi.mocked(runSubagentLoop).mock.calls.at(-1)?.[0] as { workspaceReader?: { getCurrentPath: () => string | null } };
+    expect(call.workspaceReader?.getCurrentPath()).toBeNull();
   });
 });
 

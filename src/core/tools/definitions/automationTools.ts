@@ -11,6 +11,13 @@ import { getI18n, getLocale, format } from '../../../i18n';
 /** Locale tag for Date#toLocaleString, following the resolved UI locale. */
 const dateLocale = (): string => (getLocale() === 'zh-CN' ? 'zh-CN' : 'en-US');
 
+function filterNonBlankStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string =>
+    typeof item === 'string' && item.trim().length > 0,
+  );
+}
+
 export const manageScheduledTaskTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_SCHEDULED_TASK,
   description: 'Create, list, update, delete, pause, or resume scheduled tasks. Use when the user needs an operation to run automatically on a recurring or timed schedule.',
@@ -273,25 +280,20 @@ export const manageTriggerTool: ToolDefinition = {
       source_interval: { type: 'number', description: 'Polling interval in seconds (required when source_type=cron, minimum 10)' },
       debounce_enabled: { type: 'boolean', description: 'Whether to enable debounce (default: true)' },
       debounce_seconds: { type: 'number', description: 'Debounce time window in seconds (default: 300)' },
-      capability: {
-        type: 'string',
-        enum: ['read_tools', 'safe_tools', 'full', 'custom'],
-        description: 'Capability level (default: read_tools). read_tools=read-only analysis; safe_tools=read/write workspace + safe commands; full=almost all operations; custom=custom allowlist',
-      },
       allowed_commands: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Command allowlist, glob patterns (used when capability=custom, e.g. ["npm run *", "git pull"])',
+        description: 'Command allowlist, glob patterns (used for triggers whose capability level is custom, e.g. ["npm run *", "git pull"])',
       },
       allowed_paths: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Path allowlist, auto-authorized at runtime (used when capability=custom)',
+        description: 'Path allowlist, auto-authorized at runtime (used for triggers whose capability level is custom)',
       },
       allowed_tools: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Tool allowlist (used when capability=custom, e.g. ["read_file", "http_fetch"])',
+        description: 'Tool allowlist (used for triggers whose capability level is custom, e.g. ["read_file", "http_fetch"])',
       },
       trigger_id: { type: 'string', description: 'Trigger ID (required for update/delete/pause/resume)' },
       status_filter: {
@@ -335,18 +337,12 @@ export const manageTriggerTool: ToolDefinition = {
           field: input.filter_field as string | undefined,
         };
 
-        // Build action with capability
-        const capabilityInput = input.capability as string | undefined;
+        // Build action without a model-controlled capability. New triggers
+        // therefore take the safest default in triggerPermission.ts.
         const triggerAction: TriggerAction = {
           prompt,
           skillName: input.skill_name as string | undefined,
           workspacePath: input.workspace_path as string | undefined,
-          capability: (capabilityInput as TriggerAction['capability']) ?? undefined,
-          permissions: capabilityInput === 'custom' ? {
-            allowedCommands: input.allowed_commands as string[] | undefined,
-            allowedPaths: input.allowed_paths as string[] | undefined,
-            allowedTools: input.allowed_tools as string[] | undefined,
-          } : undefined,
         };
 
         // Build debounce
@@ -423,6 +419,7 @@ export const manageTriggerTool: ToolDefinition = {
 
         resultLines.push(
           format(t.capLevelLine, { label: capLabel }),
+          t.triggerCapabilityUiNotice,
           format(t.filterLine, { filter: `${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}` }),
           format(t.debounceLine, { value: debounce.enabled ? format(t.debounceSeconds, { seconds: debounce.windowSeconds }) : t.debounceOff }),
         );
@@ -483,18 +480,27 @@ export const manageTriggerTool: ToolDefinition = {
         const updateData: Record<string, unknown> = {};
         if (input.name !== undefined) updateData.name = input.name;
         if (input.description !== undefined) updateData.description = input.description;
-        if (input.prompt !== undefined || input.skill_name !== undefined || input.workspace_path !== undefined || input.capability !== undefined) {
-          const updatedCapability = input.capability !== undefined
-            ? (input.capability as TriggerAction['capability'])
-            : existing.action.capability;
+        const hasActionUpdate =
+          input.prompt !== undefined ||
+          input.skill_name !== undefined ||
+          input.workspace_path !== undefined ||
+          input.allowed_commands !== undefined ||
+          input.allowed_paths !== undefined ||
+          input.allowed_tools !== undefined;
+
+        if (hasActionUpdate) {
+          const existingCapability = existing.action.capability;
+          const allowedPaths = input.allowed_paths !== undefined
+            ? filterNonBlankStringList(input.allowed_paths)
+            : existing.action.permissions?.allowedPaths;
           updateData.action = {
             prompt: (input.prompt as string) ?? existing.action.prompt,
             skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
             workspacePath: input.workspace_path !== undefined ? input.workspace_path : existing.action.workspacePath,
-            capability: updatedCapability,
-            permissions: updatedCapability === 'custom' ? {
+            capability: existingCapability,
+            permissions: existingCapability === 'custom' ? {
               allowedCommands: input.allowed_commands !== undefined ? input.allowed_commands : existing.action.permissions?.allowedCommands,
-              allowedPaths: input.allowed_paths !== undefined ? input.allowed_paths : existing.action.permissions?.allowedPaths,
+              allowedPaths,
               allowedTools: input.allowed_tools !== undefined ? input.allowed_tools : existing.action.permissions?.allowedTools,
             } : existing.action.permissions,
           };
@@ -515,7 +521,10 @@ export const manageTriggerTool: ToolDefinition = {
         }
 
         store.updateTrigger(triggerId, updateData as Parameters<typeof store.updateTrigger>[1]);
-        return format(t.triggerUpdated, { name: (input.name as string) || existing.name, id: triggerId });
+        return [
+          format(t.triggerUpdated, { name: (input.name as string) || existing.name, id: triggerId }),
+          t.triggerCapabilityUiNotice,
+        ].join('\n');
       }
 
       case 'delete': {

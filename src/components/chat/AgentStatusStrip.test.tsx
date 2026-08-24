@@ -18,7 +18,7 @@ const baseConv: Conversation = {
 
 describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
   beforeEach(() => {
-    useChatStore.setState({ conversations: { c1: baseConv }, retryInfo: null });
+    useChatStore.setState({ conversations: { c1: baseConv }, agentStates: new Map() });
   });
   afterEach(() => cleanup());
 
@@ -30,17 +30,14 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
   it('shows the compaction status while compressing', () => {
     useChatStore.setState({
       conversations: { c1: { ...baseConv, isCompressing: true } },
-      retryInfo: null,
+      agentStates: new Map(),
     });
     render(<AgentStatusStrip conversationId="c1" />);
     expect(screen.getByText(/Compacting|压缩/)).toBeInTheDocument();
   });
 
   it('shows "正在重试 N/M" while retrying', () => {
-    useChatStore.setState({
-      conversations: { c1: baseConv },
-      retryInfo: { attempt: 2, maxAttempts: 3, delayMs: 5000 },
-    });
+    useChatStore.getState().setRetryInfo('c1', { attempt: 2, maxAttempts: 3, delayMs: 5000 });
     render(<AgentStatusStrip conversationId="c1" />);
     expect(screen.getByText(/(retrying|重试).*2\/3/)).toBeInTheDocument();
   });
@@ -48,10 +45,19 @@ describe('AgentStatusStrip (Bug 1: 死寂可见)', () => {
   it('prioritizes retry over compaction when both are active', () => {
     useChatStore.setState({
       conversations: { c1: { ...baseConv, isCompressing: true } },
-      retryInfo: { attempt: 1, maxAttempts: 3, delayMs: 1000 },
     });
+    useChatStore.getState().setRetryInfo('c1', { attempt: 1, maxAttempts: 3, delayMs: 1000 });
     render(<AgentStatusStrip conversationId="c1" />);
     expect(screen.getByText(/retrying|重试/)).toBeInTheDocument();
     expect(screen.queryByText(/Compacting|压缩/)).not.toBeInTheDocument();
+  });
+
+  it('does not show another conversation retry state', () => {
+    useChatStore.setState({
+      conversations: { c1: baseConv, c2: { ...baseConv, id: 'c2' } },
+    });
+    useChatStore.getState().setRetryInfo('c1', { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+    const { container } = render(<AgentStatusStrip conversationId="c2" />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

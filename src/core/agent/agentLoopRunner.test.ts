@@ -206,6 +206,15 @@ vi.mock('./agentLoop', () => ({
   runAgentLoop: (...a: unknown[]) => runAgentLoopMock(...a),
   isInteractiveDesktop: (...a: unknown[]) => isInteractiveDesktopMock(...a),
   buildUserMessageContent: (...a: [string, string, unknown]) => buildUserMessageContentMock(...a),
+  resolveToolContextWorkspacePath: (
+    options: { authorizationScopeId?: string; imContext?: { workspacePath?: string | null } } | undefined,
+    conversation: { workspacePath?: string | null } | null | undefined,
+    globalWorkspacePath: string | null,
+  ) => (
+    options?.imContext?.workspacePath ??
+    conversation?.workspacePath ??
+    (options?.authorizationScopeId !== undefined ? null : globalWorkspacePath)
+  ),
 }));
 
 const precomputeOrchestrationMock = vi.fn().mockResolvedValue({
@@ -437,12 +446,25 @@ function handlerFor(mock: ReturnType<typeof vi.fn>, method: string): (params: un
 }
 
 function makeSession(
-  overrides: Partial<{ conversationId: string; loopId: string; terminalPublished: boolean }> = {},
+  overrides: Partial<{
+    conversationId: string;
+    loopId: string;
+    terminalPublished: boolean;
+    authorizationScopeId: string;
+    workspacePathSnapshot: string | null;
+  }> = {},
 ) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
-    options: {},
+    options: {
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
+        ? { authorizationScopeId: overrides.authorizationScopeId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'workspacePathSnapshot')
+        ? { workspacePathSnapshot: overrides.workspacePathSnapshot }
+        : {}),
+    },
     shellAbortController: new AbortController(),
     toolCallToStepId: new Map<string, string>(),
     ...(overrides.terminalPublished === undefined
@@ -689,7 +711,7 @@ describe('agentLoopRunner', () => {
       registerRunSession('run-1', makeSession());
 
       const handler = handlerFor(onSidecarNotification, 'agent.delta');
-      const frames = [{ p: 'chat', m: 'appendText', a: ['c1', 'hi'] }];
+      const frames = [{ p: 'chat', m: 'appendText', a: ['conv-1', 'hi'] }];
       handler({ runId: 'run-1', frames });
 
       await Promise.resolve();
@@ -741,6 +763,86 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarNotification, 'agent.delta');
       expect(() => handler(null)).not.toThrow();
       expect(() => handler({ runId: 123, frames: [] })).not.toThrow();
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+    });
+
+    it('drops malformed frame entries without throwing or applying the batch', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      expect(() => handler({
+        runId: 'run-1',
+        frames: [
+          null,
+          { p: 'chat', m: 'setAgentStatus' },
+          { p: 'exec', m: 'addStep', a: null },
+        ],
+      })).not.toThrow();
+
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+    });
+
+    it('filters chat/session frames that target a different conversation than the registered run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      const forged = [
+        { p: 'chat', m: 'setAgentStatus', a: ['conv-forged', 'tool-calling', 'read_file'] },
+        { p: 'session', m: 'replaceMessageById', a: ['conv-forged', { id: 'm-forged' }] },
+        { p: 'chat', m: 'setRetryInfo', a: ['conv-1', { attempt: 1, maxAttempts: 3, delayMs: 1000 }] },
+      ];
+
+      handler({ runId: 'run-1', frames: forged });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).toHaveBeenCalledWith([
+        { p: 'chat', m: 'setRetryInfo', a: ['conv-1', { attempt: 1, maxAttempts: 3, delayMs: 1000 }] },
+      ]);
+    });
+
+    it('filters exec and scratchpad frames that are not bound to the registered conversation and loop', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      const frames = [
+        { p: 'exec', m: 'createExecution', a: ['conv-forged', 'loop-1'] },
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-forged'] },
+        { p: 'exec', m: 'addStep', a: ['loop-forged', { id: 's-forged' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-forged', { conversationId: 'conv-forged', title: 't', type: 'summary', content: 'c' }] },
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-1'] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 's-real' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-real', { conversationId: 'conv-1', title: 't', type: 'summary', content: 'c' }] },
+      ];
+
+      handler({ runId: 'run-1', frames });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).toHaveBeenCalledWith([
+        { p: 'exec', m: 'createExecution', a: ['conv-1', 'loop-1'] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 's-real' }] },
+        { p: 'scratchpad', m: 'addEntry', a: ['entry-real', { conversationId: 'conv-1', title: 't', type: 'summary', content: 'c' }] },
+      ]);
+    });
+
+    it('drops valid-looking frames when the registered conversation has already been deleted', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      chatState = { conversations: {}, conversationIndex: {} };
+      registerRunSession('run-deleted', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-deleted',
+        frames: [{ p: 'chat', m: 'setAgentStatus', a: ['conv-1', 'tool-calling', 'read_file'] }],
+      });
+
+      await Promise.resolve();
       expect(applyDeltaFramesMock).not.toHaveBeenCalled();
     });
   });
@@ -1023,22 +1125,137 @@ describe('agentLoopRunner', () => {
   // ── workspace.authorizedWritablePaths (P1-3d-5 slice 2a) ──────────────
 
   describe('workspace.authorizedWritablePaths handler', () => {
-    it('returns the real getAuthorizedWritablePaths() result', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
+    it('returns writable paths from the shell-owned session scope, ignoring forged params', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
-      getAuthorizedWritablePathsMock.mockReturnValue(['/tmp/authorized-a', '/tmp/authorized-b']);
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: '/trusted/workspace',
+      }));
+      getAuthorizedWritablePathsMock.mockImplementation((scopeId?: string) =>
+        scopeId === 'scope-real' ? ['/tmp/scoped'] : ['/tmp/global'],
+      );
       const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
-      const result = await handler(undefined);
-      expect(result).toEqual(['/tmp/authorized-a', '/tmp/authorized-b']);
+      const result = await handler({ runId: 'run-1', authorizationScopeId: 'scope-forged' });
+      expect(result).toEqual(['/tmp/scoped']);
+      expect(getAuthorizedWritablePathsMock).toHaveBeenCalledWith('scope-real');
     });
 
-    it('returns an empty array when nothing is authorized', async () => {
+    it('rejects unknown runId instead of falling back to global writable paths', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
-      getAuthorizedWritablePathsMock.mockReturnValue([]);
       const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
-      const result = await handler(undefined);
-      expect(result).toEqual([]);
+      await expect(handler({ runId: 'missing' })).rejects.toThrow(MockSidecarRequestError);
+      expect(getAuthorizedWritablePathsMock).not.toHaveBeenCalled();
+    });
+
+    it('uses global writable paths only for an unscoped registered session', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      getAuthorizedWritablePathsMock.mockReturnValue(['/tmp/global']);
+      const handler = handlerFor(onSidecarRequest, 'workspace.authorizedWritablePaths') as (p: unknown) => Promise<unknown>;
+      const result = await handler({ runId: 'run-1' });
+      expect(result).toEqual(['/tmp/global']);
+      expect(getAuthorizedWritablePathsMock).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  describe('sidecar context scope hardening', () => {
+    it('tool.invoke overwrites sidecar-supplied scope and identity with the shell session values', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: '/trusted/workspace',
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          conversationId: 'conv-forged',
+          loopId: 'loop-forged',
+          workspacePath: '/forged/workspace',
+        },
+      });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/tmp/x' },
+        expect.any(Function),
+        expect.any(Function),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          conversationId: 'conv-1',
+          loopId: 'loop-1',
+          workspacePath: '/trusted/workspace',
+        }),
+      );
+    });
+
+    it('tool.invoke overwrites a forged workspace with null when the shell session has no trusted workspace', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        workspacePathSnapshot: null,
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'run_command',
+        input: { command: 'touch ok' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          workspacePath: '/forged/workspace',
+        },
+      });
+
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'run_command',
+        { command: 'touch ok' },
+        expect.any(Function),
+        expect.any(Function),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          workspacePath: null,
+        }),
+      );
+    });
+
+    it('approval.check overwrites sidecar-supplied scope before registry approval', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ authorizationScopeId: 'scope-real' }));
+      const handler = handlerFor(onSidecarRequest, 'approval.check') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          conversationId: 'conv-forged',
+          loopId: 'loop-forged',
+        },
+      });
+
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/tmp/x' },
+        expect.objectContaining({
+          authorizationScopeId: 'scope-real',
+          conversationId: 'conv-1',
+          loopId: 'loop-1',
+        }),
+        expect.any(Function),
+        expect.any(Function),
+      );
     });
   });
 
@@ -1678,7 +1895,13 @@ describe('agentLoopRunner', () => {
       const result = await handler({ runId: 'run-1', toolName: 'show_widget', input: { title: 't' }, context });
 
       expect(result).toEqual({ decision: 'allow' });
-      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', { title: 't' }, context, confirmCb, filePermCb);
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'show_widget',
+        { title: 't' },
+        expect.objectContaining({ conversationId: 'conv-1', loopId: 'run-1' }),
+        confirmCb,
+        filePermCb,
+      );
     });
 
     it('marks an allowed side-effecting local tool as committed before returning its ACK', async () => {
@@ -1752,7 +1975,13 @@ describe('agentLoopRunner', () => {
       const handler = handlerFor(onSidecarRequest, 'approval.check');
       await handler({ runId: 'run-1', toolName: 'show_widget', input: {} });
 
-      expect(checkToolApprovalMock).toHaveBeenCalledWith('show_widget', {}, undefined, requestCommandConfirmationMock, requestFilePermissionMock);
+      expect(checkToolApprovalMock).toHaveBeenCalledWith(
+        'show_widget',
+        {},
+        expect.objectContaining({ conversationId: 'conv-1', loopId: 'loop-1' }),
+        requestCommandConfirmationMock,
+        requestFilePermissionMock,
+      );
     });
 
     it('refuses local sidecar approval outside the run whitelist', async () => {
@@ -1844,6 +2073,22 @@ describe('agentLoopRunner', () => {
 
       const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
       expect(() => handler({ runId: 'no-such-run', conversationId: 'conv-1', path: '/tmp/x' })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('silently drops a notification that targets a conversation not owned by the run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({
+        runId: 'run-1',
+        conversationId: 'conv-forged',
+        path: '/Users/x/Abu/report/out.html',
+      })).not.toThrow();
       await Promise.resolve();
 
       expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
@@ -2284,6 +2529,27 @@ describe('agentLoopRunner', () => {
       expect(chatDeltaCancelStreamingMock).not.toHaveBeenCalled();
     });
 
+    it('aborts scoped shell controllers after a terminal without sending a late agent.abort', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const shellController = new AbortController();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((_method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => (
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        })
+      ));
+
+      const running = runAgentLoopDispatched('conv-1', 'hello', { authorizationScopeId: 'scope-shell' });
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const terminalHandler = handlerFor(onSidecarNotification, 'agent.terminal');
+      terminalHandler({ version: 1, runId, state: 'completed', result: { reason: 'completed' } });
+
+      await expect(running).resolves.toEqual({ reason: 'completed' });
+      expect(shellController.signal.aborted).toBe(true);
+      expect(sidecarRequestMock).not.toHaveBeenCalledWith('agent.abort', expect.anything(), expect.anything());
+    });
+
     it('uses a failed terminal before any delta as authoritative and finalizes the UI exactly once', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockImplementation((_method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => (
@@ -2671,7 +2937,7 @@ describe('agentLoopRunner', () => {
       expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
       expect(drainSystemQueuedInputsMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
-      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
       expect(cancelExecutionMock).toHaveBeenCalledWith(expect.any(String));
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
@@ -2951,7 +3217,7 @@ describe('agentLoopRunner', () => {
       // conversation hangs streaming forever.
       expect(chatDeltaFinishStreamingMock).toHaveBeenCalledWith('conv-1');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error');
-      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('idle');
+      expect(chatDeltaSetAgentStatusMock).toHaveBeenCalledWith('conv-1', 'idle');
     });
 
     it('rejects a post-commit failure result when its terminal state cannot be persisted', async () => {

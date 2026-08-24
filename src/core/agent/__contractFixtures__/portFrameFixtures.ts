@@ -143,16 +143,16 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setExecutionStepsSnapshot', args: ['conv-1', 'loop-1', [sampleExecStepSnapshot]] },
   { port: 'chat', method: 'setPlannedStepsSnapshot', args: ['conv-1', 'loop-1', [samplePlannedStep]] },
   { port: 'chat', method: 'setConversationStatus', args: ['conv-1', 'running'] },
-  { port: 'chat', method: 'setAgentStatus', args: ['tool-calling', 'run_command', 'abu'] },
+  { port: 'chat', method: 'setAgentStatus', args: ['conv-1', 'tool-calling', 'run_command', 'abu'] },
   { port: 'chat', method: 'setCurrentUsage', args: [sampleUsage] },
-  { port: 'chat', method: 'setRetryInfo', args: [{ attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
+  { port: 'chat', method: 'setRetryInfo', args: ['conv-1', { attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
   { port: 'chat', method: 'setContextUsage', args: ['conv-1', sampleContextUsage] },
   { port: 'chat', method: 'setContextCache', args: ['conv-1', sampleContextCache] },
   { port: 'chat', method: 'clearContextCache', args: ['conv-1'] },
   { port: 'chat', method: 'setIsCompressing', args: ['conv-1', true] },
   { port: 'chat', method: 'setConversationModel', args: ['conv-1', sampleModel] },
   { port: 'chat', method: 'setPendingProposalSignal', args: ['conv-1', sampleProposalSignal] },
-  { port: 'chat', method: 'removeActiveAgent', args: ['agent-1'] },
+  { port: 'chat', method: 'removeActiveAgent', args: ['conv-1', 'agent-1'] },
 ];
 
 /** All 13 generic-dispatch ExecutionPort methods (14 total minus createExecution). */

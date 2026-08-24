@@ -87,7 +87,7 @@ export function createConversationRunMirror(
   const reader: ConversationReader = {
     getConversation: (convId) => (convId === conversationId ? conversation : undefined),
     getIndexEntry: (convId) => (convId === conversationId ? indexEntry : undefined),
-    getThinkingStartTime: () => thinkingStartTime,
+    getThinkingStartTime: (convId) => (convId === conversationId ? thinkingStartTime : null),
   };
 
   function findTarget(msgId: string | undefined): Message | undefined {
@@ -231,7 +231,8 @@ export function createConversationRunMirror(
         break;
       }
       case 'setAgentStatus': {
-        const [status] = args as [AgentStatus, string | undefined, string | undefined];
+        const [convId, status] = args as [string, AgentStatus, string | undefined, string | undefined];
+        if (convId !== conversationId) break;
         if (status === 'thinking') thinkingStartTime = Date.now();
         else if (status === 'idle') thinkingStartTime = null;
         break;

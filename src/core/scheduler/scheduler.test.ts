@@ -74,11 +74,9 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     vi.clearAllMocks();
   });
@@ -134,11 +132,9 @@ describe('SchedulerEngine permission tier', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     // Pin the global fallback mode so "follows settings" tests are deterministic.
     useSettingsStore.setState({ permissionMode: 'standard' });
@@ -269,19 +265,50 @@ describe('SchedulerEngine permission tier', () => {
     expect(latestRunError(task.id)).toContain('请求批准');
   });
 
-  it('authorizes the workspace with full read+write regardless of mode (no read-only rung in this model)', async () => {
+  it('authorizes the workspace only for the unattended run scope and disposes it after completion', async () => {
     const task = makeTask({
       id: 'task-ws',
       permissionMode: 'standard',
       workspacePath: '/Users/testuser/Projects/report',
     });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
-    runWithProbe(async () => {}, 'completed');
+    let scopedWriteAllowed: boolean | undefined;
+    runWithProbe(async (options) => {
+      const scopeId = (options as { authorizationScopeId?: string }).authorizationScopeId;
+      expect(scopeId).toBeDefined();
+      scopedWriteAllowed = (await checkWritePath('/Users/testuser/Projects/report/out.md', scopeId)).allowed;
+    }, 'completed');
 
     await schedulerEngine.runNow(task.id);
 
-    const write = await checkWritePath('/Users/testuser/Projects/report/out.md');
-    expect(write.allowed).toBe(true);
+    expect(scopedWriteAllowed).toBe(true);
+    const writeAfterRun = await checkWritePath('/Users/testuser/Projects/report/out.md');
+    expect(writeAfterRun.allowed).toBe(false);
+    expect(writeAfterRun.needsPermission).toBe(true);
+  });
+
+  it('disposes the unattended run scope when the agent run throws', async () => {
+    const task = makeTask({
+      id: 'task-ws-throw',
+      permissionMode: 'standard',
+      workspacePath: '/Users/testuser/Projects/report',
+    });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let scopeId: string | undefined;
+    let scopedWriteAllowedDuringRun: boolean | undefined;
+    vi.mocked(runAgentLoop).mockImplementation(async (_conv, _msg, options) => {
+      scopeId = (options as { authorizationScopeId?: string }).authorizationScopeId;
+      expect(scopeId).toBeDefined();
+      scopedWriteAllowedDuringRun = (await checkWritePath('/Users/testuser/Projects/report/out.md', scopeId)).allowed;
+      throw new Error('agent exploded');
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(scopedWriteAllowedDuringRun).toBe(true);
+    expect(latestRunError(task.id)).toContain('agent exploded');
+    expect((await checkWritePath('/Users/testuser/Projects/report/out.md', scopeId)).allowed).toBe(false);
+    expect((await checkWritePath('/Users/testuser/Projects/report/out.md')).allowed).toBe(false);
   });
 
   it('leaves the result text alone when nothing was refused', async () => {

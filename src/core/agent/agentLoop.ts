@@ -502,6 +502,8 @@ export interface AgentLoopOptions {
   /** Fail instead of staging into an already-running loop. Used by recovery
    * flows whose tool restrictions must apply from the first turn. */
   requireNewRun?: boolean;
+  /** Shell-created path authorization scope for unattended/background runs. */
+  authorizationScopeId?: string;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
@@ -545,6 +547,32 @@ export interface AgentLoopOptions {
     modelTier?: string;
     capabilitySource?: string;
   }) => void;
+}
+
+export function resolveToolContextWorkspacePath(
+  options: Pick<AgentLoopOptions, 'authorizationScopeId' | 'imContext'> | undefined,
+  conversation: { workspacePath?: string | null } | null | undefined,
+  globalWorkspacePath: string | null,
+): string | null {
+  return (
+    options?.imContext?.workspacePath ??
+    conversation?.workspacePath ??
+    (options?.authorizationScopeId !== undefined ? null : globalWorkspacePath)
+  );
+}
+
+export function buildDirectDelegateSubagentOptions(
+  baseOptions: Omit<Parameters<typeof runSubagent>[0], 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'workspaceReader'>,
+  parentOptions: Pick<AgentLoopOptions, 'allowedTools' | 'blockedTools' | 'authorizationScopeId'> | undefined,
+  trustedWorkspacePath: string | null,
+): Parameters<typeof runSubagent>[0] {
+  return {
+    ...baseOptions,
+    allowedTools: parentOptions?.allowedTools,
+    blockedTools: parentOptions?.blockedTools,
+    authorizationScopeId: parentOptions?.authorizationScopeId,
+    workspaceReader: { getCurrentPath: () => trustedWorkspacePath },
+  };
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -828,10 +856,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // first write. Headless contexts (IM / scheduled / trigger) are excluded —
   // they must not auto-create workspace directories.
   const toolContext: ToolExecutionContext = {
-    workspacePath:
-      options?.imContext?.workspacePath ??
-      _convForContext?.workspacePath ??
+    workspacePath: resolveToolContextWorkspacePath(
+      options,
+      _convForContext,
       getWorkspaceReader().getCurrentPath(),
+    ),
     loopId,
     conversationId,
     interactionMode: isInteractiveDesktop(options, _convForContext)
@@ -839,6 +868,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       : 'background',
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
+    authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(
       latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
@@ -973,7 +1003,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const delegateAgent = route.delegateAgent;
     const taskText = route.cleanInput;
 
-    chatDelta.setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
+    chatDelta.setAgentStatus(conversationId, 'tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
 
     // Create a delegate step in the execution
     const delegateStepId = eventRouter.createStepForToolUse(loopId, {
@@ -1016,7 +1046,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
-      const result = await runSubagent({
+      const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
@@ -1027,15 +1057,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         imContext: options?.imContext,
         parentConversationId: conversationId,
         settingsReader: entrySettingsReader,
+      }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
-        // `delegate_to_agent`, so it never inherited either run-scoped tool
-        // restriction. An unattended tier is picked by the channel, but the
-        // prompt is user-authored — an IM message on a read-only channel
-        // beginning with `@researcher` delegated a subagent with no ceiling
-        // at all, which is the one hole a roster on the parent cannot see.
+        // `delegate_to_agent`, so it must inherit the parent run's effective
+        // restrictions as well as its authorization scope.
         allowedTools: options?.allowedTools,
         blockedTools: effectiveBlockedTools,
-      });
+        authorizationScopeId: options?.authorizationScopeId,
+      }, toolContext.workspacePath ?? null));
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
       // rather than throwing — deliberate for its structured-result contract, but
@@ -1045,8 +1074,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // completion (schedulers/triggers/isIncompleteReason depend on this).
       if (abortController.signal.aborted) {
         subagentCleanup();
-        chatDelta.removeActiveAgent(delegateAgent.name);
-        chatDelta.setAgentStatus('idle');
+        chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
+        chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.cancelStreaming(conversationId);
         abortRegistry.clearAbortController(conversationId);
         executionPort.cancelExecution(execution.id);
@@ -1056,7 +1085,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Complete the delegate step
       subagentCleanup();
-      chatDelta.removeActiveAgent(delegateAgent.name);
+      chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
       if (delegateStepId) {
         eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
       }
@@ -1081,7 +1110,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
       persistExecutionSnapshot(conversationId, loopId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(conversationId, 'idle');
       chatDelta.setConversationStatus(conversationId, 'completed');
       // Delegate run completed without an LLMError → provider is healthy; clears
       // any stale config-failure recorded for it (mirrors the main-loop path).
@@ -1091,8 +1120,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       notifyTaskCompleted(convTitle, conversationId);
     } catch (err) {
       subagentCleanup();
-      chatDelta.removeActiveAgent(delegateAgent.name);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
+      chatDelta.setAgentStatus(conversationId, 'idle');
       // Treat retry-layer cancellation sentinel (LLMError code='cancelled', thrown
       // from retry.ts's abort-aware sleep) as a user abort, not a user-facing error.
       const isUserAbort = err instanceof Error
@@ -1312,7 +1341,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       loopId,
     });
 
-    chatDelta.setAgentStatus('thinking');
+    chatDelta.setAgentStatus(conversationId, 'thinking');
 
     const collectedToolCalls: ToolCall[] = [];
     const toolCallToStepId: Map<string, string> = new Map();  // Map toolCallId -> stepId
@@ -1839,13 +1868,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // while the body text is already streaming, which looks broken.
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
-              chatDelta.setAgentStatus('streaming');
+              chatDelta.setAgentStatus(conversationId, 'streaming');
               chatDelta.appendText(conversationId, event.text, assistantMsgId);
               break;
 
@@ -1862,7 +1891,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // completed (same reason as the 'text' branch above).
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1886,7 +1915,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 break;
               }
 
-              chatDelta.setAgentStatus('tool-calling', event.name);
+              chatDelta.setAgentStatus(conversationId, 'tool-calling', event.name);
 
               // Create step in TaskExecutionStore via EventRouter
               const stepId = eventRouter.createStepForToolUse(loopId, {
@@ -1935,7 +1964,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               // Calculate and save thinking duration
               if (collectedThinking && thinkingEndTime) {
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1986,9 +2015,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // provider isn't a silent dead wait. rate_limit gets 5 attempts in
             // retry.ts, others get 3.
             const maxAttempts = error.code === 'rate_limit' ? 5 : 3;
-            chatDelta.setRetryInfo({ attempt, maxAttempts, delayMs });
+            chatDelta.setRetryInfo(conversationId, { attempt, maxAttempts, delayMs });
             if (error.code === 'rate_limit') {
-              chatDelta.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
+              chatDelta.setAgentStatus(conversationId, 'rate-limited', `${Math.round(delayMs / 1000)}s`);
             }
             // Clear any partial content written before the stream failed so
             // the retry starts with a clean message instead of appending to
@@ -2712,6 +2741,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
+  if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
+    abortController.abort(new Error('Scoped agent run finished'));
+  }
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return { reason: exitReason, error: exitError };

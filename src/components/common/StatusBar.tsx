@@ -1,4 +1,4 @@
-import { useChatStore } from '../../stores/chatStore';
+import { getConversationAgentState, useChatStore } from '../../stores/chatStore';
 import { useSettingsStore, getEffectiveModel, getActiveProvider } from '../../stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { Loader2, Wrench, Zap } from 'lucide-react';
@@ -31,9 +31,10 @@ function useElapsedTime(startTime: number | null): number {
 }
 
 export default function StatusBar() {
-  const agentStatus = useChatStore((s) => s.agentStatus);
-  const currentTool = useChatStore((s) => s.currentTool);
-  const thinkingStartTime = useChatStore((s) => s.thinkingStartTime);
+  const activeConversationId = useChatStore((s) => s.activeConversationId);
+  const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
+  const currentTool = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).currentTool);
+  const thinkingStartTime = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).thinkingStartTime);
   const currentUsage = useChatStore((s) => s.currentUsage);
   const effectiveModel = getEffectiveModel(useSettingsStore.getState());
   const activeProvider = getActiveProvider(useSettingsStore.getState());

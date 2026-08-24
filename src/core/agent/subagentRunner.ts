@@ -83,11 +83,17 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader'> | null | undefined,
-): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader'> {
+  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader' | 'authorizationScopeId'> | null | undefined,
+  authorizationScopeId?: string,
+  workspacePath?: string | null,
+): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'workspaceReader'> {
   return {
     parentConversationId: loopContext?.conversationId,
     settingsReader: loopContext?.settingsReader,
+    authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
+    ...(workspacePath !== undefined
+      ? { workspaceReader: { getCurrentPath: () => workspacePath } }
+      : {}),
   };
 }
 import { getToolInvoker } from './ports/toolInvoker';
@@ -97,7 +103,7 @@ import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelector
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
-import { matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
@@ -124,6 +130,8 @@ export interface SubagentRunParams {
   parentConversationId?: string;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
+  blockedTools?: string[];
+  authorizationScopeId?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -206,6 +214,10 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   }
   session.firstToolInvokeArrived = true;
 
+  if (session.options.blockedTools?.some((pattern) => matchesToolName(params.toolName as string, pattern))) {
+    throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${params.toolName}`);
+  }
+
   if (
     session.options.allowedTools?.length &&
     !session.options.allowedTools.some((pattern) =>
@@ -227,6 +239,9 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.filePermissionCallback,
     {
       ...((params.context as ToolExecutionContext | undefined) ?? {}),
+      workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
+      authorizationScopeId: session.options.authorizationScopeId,
+      conversationId: session.options.parentConversationId,
       abortSignal: session.options.signal,
     },
   );
@@ -305,7 +320,10 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     getActiveProvider(settingsSnapshot)?.baseUrl || undefined,
   );
 
-  const workspaceReader = options.workspaceReader ?? getWorkspaceReader();
+  const workspacePathSnapshot = options.imContext?.workspacePath
+    ?? (options.workspaceReader
+      ? options.workspaceReader.getCurrentPath()
+      : (options.authorizationScopeId !== undefined ? null : getWorkspaceReader().getCurrentPath()));
 
   return {
     runId,
@@ -316,12 +334,14 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     parentConversationId: options.parentConversationId,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
+    blockedTools: options.blockedTools,
+    authorizationScopeId: options.authorizationScopeId,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
     resolvedCreds,
     tools,
-    workspacePathSnapshot: workspaceReader.getCurrentPath(),
+    workspacePathSnapshot,
   };
 }
 
@@ -350,6 +370,34 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  if (options.authorizationScopeId === undefined) {
+    return runSubagentForSignal(options);
+  }
+
+  // A successful background run_command deliberately keeps its abort listener
+  // after the tool call resolves. Give every scoped subagent its own run-owned
+  // signal and abort it after every terminal path, so a direct/nested subagent
+  // cannot leave a process alive after the unattended authorization scope ends.
+  const scopedController = new AbortController();
+  const parentSignal = options.signal;
+  const abortFromParent = () => scopedController.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  try {
+    return await runSubagentForSignal({ ...options, signal: scopedController.signal });
+  } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    if (!scopedController.signal.aborted) {
+      scopedController.abort(new Error('Scoped subagent run finished'));
+    }
+  }
+}
+
+async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
   if (options.signal?.aborted) {
     return cancelledSubagentResult();
   }
@@ -378,7 +426,11 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     return runSubagentLoop(options);
   }
 
-  const session: RunSession = { options, firstToolInvokeArrived: false };
+  const sessionOptions: SubagentLoopOptions = {
+    ...options,
+    workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
+  };
+  const session: RunSession = { options: sessionOptions, firstToolInvokeArrived: false };
   sessions.set(runId, session);
 
   const signal = options.signal;

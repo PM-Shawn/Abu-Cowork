@@ -247,7 +247,6 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "allowed_commands",
       "allowed_paths",
       "allowed_tools",
-      "capability",
       "debounce_enabled",
       "debounce_seconds",
       "description",

@@ -46,12 +46,10 @@ describe('applyDeltaFrames', () => {
       conversations: {},
       conversationIndex: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
       pendingInputAppend: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
     useScratchpadStore.setState({ entries: {}, order: [] });

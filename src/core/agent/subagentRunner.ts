@@ -72,25 +72,52 @@ import {
   onSidecarNotification,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
-import { runSubagentLoop, SubagentResult, type SubagentLoopOptions, type SubagentProgressEvent } from './subagentLoop';
+import {
+  runSubagentLoop,
+  resolveSubagentInteractionMode,
+  SubagentResult,
+  type SubagentLoopOptions,
+  type SubagentProgressEvent,
+} from './subagentLoop';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
 import type { LoopContext } from './permissionBridge';
+import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
+import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
+import {
+  createRunResourceSettlement,
+  registerRunResourceSettlement,
+  unregisterRunResourceSettlement,
+  type RunResourceSettlement,
+} from './runResourceSettlement';
 
 const logger = createLogger('subagent-transport');
 
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'conversationId' | 'settingsReader' | 'authorizationScopeId'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'workspaceReader'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext'> {
+  const imReplyTarget = loopContext?.imReplyTarget;
+  const runPermissionCeiling = loopContext?.runPermissionCeiling;
+  const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
+    ? {
+        platform: imReplyTarget.platform,
+        replyChatId: imReplyTarget.chatId,
+        workspacePath: workspacePath ?? null,
+        capability: normalizeIMRunCapability(runPermissionCeiling.capability),
+      }
+    : undefined;
   return {
+    parentLoopId: loopContext?.loopId,
     parentConversationId: loopContext?.conversationId,
     settingsReader: loopContext?.settingsReader,
     authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
+    runPermissionCeiling,
+    ...(imContext ? { imContext } : {}),
     ...(workspacePath !== undefined
       ? { workspaceReader: { getCurrentPath: () => workspacePath } }
       : {}),
@@ -132,6 +159,7 @@ export interface SubagentRunParams {
   allowedTools?: string[];
   blockedTools?: string[];
   authorizationScopeId?: string;
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -174,11 +202,48 @@ function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResu
 
 interface RunSession {
   options: SubagentLoopOptions;
+  /** Shell-owned outbound identity for IM tools; never accepted from sidecar context. */
+  imReplyTarget?: { platform: string; chatId: string };
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
+  resourceSettlement: RunResourceSettlement;
 }
 
 const sessions = new Map<string, RunSession>();
+
+function buildTrustedSubagentToolContext(
+  session: RunSession,
+  incoming?: ToolExecutionContext,
+): ToolExecutionContext {
+  const trustedContext: ToolExecutionContext = {
+    ...incoming,
+    workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
+    authorizationScopeId: session.options.authorizationScopeId,
+    runPermissionCeiling: session.options.runPermissionCeiling,
+    loopId: session.options.parentLoopId,
+    conversationId: session.options.parentConversationId,
+    imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
+    interactionMode: resolveSubagentInteractionMode(session.options),
+    abortSignal: session.options.signal,
+  };
+  return attachTrustedSkillCommandApproval(trustedContext, {
+    commandConfirmCallback: session.options.commandConfirmCallback,
+    filePermissionCallback: session.options.filePermissionCallback,
+  });
+}
+
+function withTrustedSkillCommandApproval(
+  options: SubagentLoopOptions,
+): SubagentLoopOptions {
+  return {
+    ...options,
+    skillCommandApprovalFactory: (context) =>
+      attachTrustedSkillCommandApproval(context, {
+        commandConfirmCallback: options.commandConfirmCallback,
+        filePermissionCallback: options.filePermissionCallback,
+      }).skillCommandApproval!,
+  };
+}
 
 let runIdCounter = 0;
 function generateRunId(): string {
@@ -208,43 +273,44 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     throw new SidecarRequestError(-32602, 'Invalid tool.invoke params: runId and toolName must be strings');
   }
 
-  const session = sessions.get(params.runId);
+  const { runId, toolName } = params;
+  const session = sessions.get(runId);
   if (!session) {
-    throw new SidecarRequestError(-32000, `Unknown subagent runId: ${params.runId}`);
+    throw new SidecarRequestError(-32000, `Unknown subagent runId: ${runId}`);
+  }
+  if (session.options.signal?.aborted) {
+    throw new SidecarRequestError(-32000, `Subagent run is stopping: ${runId}`);
   }
   session.firstToolInvokeArrived = true;
 
-  if (session.options.blockedTools?.some((pattern) => matchesToolName(params.toolName as string, pattern))) {
-    throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${params.toolName}`);
+  if (session.options.blockedTools?.some((pattern) => matchesToolName(toolName, pattern))) {
+    throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${toolName}`);
   }
 
   if (
     session.options.allowedTools?.length &&
     !session.options.allowedTools.some((pattern) =>
       matchesToolPattern(
-        params.toolName as string,
+        toolName,
         pattern,
         (params.input as Record<string, unknown>) ?? {},
       ),
     )
   ) {
-    throw new SidecarRequestError(-32602, `Tool is not allowed for this subagent run: ${params.toolName}`);
+    throw new SidecarRequestError(-32602, `Tool is not allowed for this subagent run: ${toolName}`);
   }
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
-  return await invoker.executeAnyTool(
-    params.toolName,
+  return await session.resourceSettlement.run(() => invoker.executeAnyTool(
+    toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.commandConfirmCallback,
     session.options.filePermissionCallback,
-    {
-      ...((params.context as ToolExecutionContext | undefined) ?? {}),
-      workspacePath: session.options.workspaceReader?.getCurrentPath() ?? null,
-      authorizationScopeId: session.options.authorizationScopeId,
-      conversationId: session.options.parentConversationId,
-      abortSignal: session.options.signal,
-    },
-  );
+    buildTrustedSubagentToolContext(
+      session,
+      params.context as ToolExecutionContext | undefined,
+    ),
+  ));
 }
 
 /**
@@ -280,7 +346,13 @@ function ensureHandlersRegistered(): void {
   registerToolInvokeSource('subagent', { has: (runId) => sessions.has(runId), handle: handleToolInvoke });
   ensureToolInvokeRouterRegistered();
   registerHookSignalSource('subagent', {
+    has: (runId) => sessions.has(runId),
     getAbortSignal: (runId) => sessions.get(runId)?.options.signal,
+    getToolContext: (runId) => {
+      const session = sessions.get(runId);
+      if (!session) return undefined;
+      return buildTrustedSubagentToolContext(session);
+    },
   });
   // hook.emit / hook.notify are shared with the main-loop path (both run in
   // the sidecar and forward hooks to the real webview registry) — registered
@@ -336,6 +408,7 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     allowedTools: options.allowedTools,
     blockedTools: options.blockedTools,
     authorizationScopeId: options.authorizationScopeId,
+    runPermissionCeiling: options.runPermissionCeiling,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -370,8 +443,9 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  const trustedOptions = withTrustedSkillCommandApproval(options);
   if (options.authorizationScopeId === undefined) {
-    return runSubagentForSignal(options);
+    return runSubagentForSignal(trustedOptions);
   }
 
   // A successful background run_command deliberately keeps its abort listener
@@ -388,7 +462,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
   }
 
   try {
-    return await runSubagentForSignal({ ...options, signal: scopedController.signal });
+    return await runSubagentForSignal({ ...trustedOptions, signal: scopedController.signal });
   } finally {
     parentSignal?.removeEventListener('abort', abortFromParent);
     if (!scopedController.signal.aborted) {
@@ -430,8 +504,19 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ...options,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
-  const session: RunSession = { options: sessionOptions, firstToolInvokeArrived: false };
+  const session: RunSession = {
+    options: sessionOptions,
+    imReplyTarget: options.imContext?.replyChatId
+      ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+      : undefined,
+    firstToolInvokeArrived: false,
+    resourceSettlement: createRunResourceSettlement(
+      sessionOptions.signal,
+      () => { session.firstToolInvokeArrived = true; },
+    ),
+  };
   sessions.set(runId, session);
+  registerRunResourceSettlement(runId, session.resourceSettlement);
 
   const signal = options.signal;
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -443,9 +528,11 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
 
   const onAbort = (): void => {
     notifySidecar('subagent.abort', { runId });
-    graceTimer = setTimeout(() => {
-      rejectOnGrace?.(new Error('Subagent abort grace period exceeded'));
-    }, ABORT_GRACE_MS);
+    if (options.authorizationScopeId === undefined) {
+      graceTimer = setTimeout(() => {
+        rejectOnGrace?.(new Error('Subagent abort grace period exceeded'));
+      }, ABORT_GRACE_MS);
+    }
   };
   signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -456,7 +543,9 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   requestPromise.catch(() => {}); // avoid an unhandled rejection if the grace timer wins the race below
 
   try {
-    const raw = signal ? await Promise.race([requestPromise, gracePromise]) : await requestPromise;
+    const raw = signal && options.authorizationScopeId === undefined
+      ? await Promise.race([requestPromise, gracePromise])
+      : await requestPromise;
     return reconstructSubagentResult(raw);
   } catch (err) {
     // User cancellation and transport failure are different outcomes. Even
@@ -489,7 +578,12 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       duration: 0,
     });
   } finally {
+    session.resourceSettlement.seal();
+    if (options.authorizationScopeId !== undefined) {
+      await session.resourceSettlement.settlement;
+    }
     sessions.delete(runId);
+    unregisterRunResourceSettlement(runId, session.resourceSettlement);
     if (graceTimer) clearTimeout(graceTimer);
     signal?.removeEventListener('abort', onAbort);
   }

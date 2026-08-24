@@ -49,6 +49,10 @@ export interface LoopContext {
   allowedTools?: string[];
   /** Run-local path authorization scope inherited by delegated work. */
   authorizationScopeId?: string;
+  /** Run-owned authority ceiling inherited by delegated work. */
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
+  imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }

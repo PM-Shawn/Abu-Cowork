@@ -199,6 +199,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       systemPrompt: 'research',
     };
     const settingsReader = { getSnapshot: () => ({}) };
+    const runPermissionCeiling = { version: 1, source: 'trigger', capability: 'safe_tools' } as never;
 
     const params = buildDirectDelegateSubagentOptions({
       agent,
@@ -215,6 +216,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       allowedTools: ['read_*'],
       blockedTools: ['run_command'],
       authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
     }, null);
 
     expect(params).toEqual(expect.objectContaining({
@@ -225,6 +227,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       allowedTools: ['read_*'],
       blockedTools: ['run_command'],
       authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
       workspaceReader: expect.any(Object),
     }));
     expect(params.workspaceReader?.getCurrentPath()).toBeNull();

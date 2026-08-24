@@ -72,7 +72,7 @@ import {
   pauseComputerUseStatus,
   setSessionWindowHidden,
 } from './computerUseStatus';
-import { setComputerUseBatchMode, setSkipAutoScreenshot, clearAllSkillHooks } from '../tools/builtins';
+import { setComputerUseBatchMode, setSkipAutoScreenshot, clearSkillHooksByLoop } from '../tools/builtins';
 import { notifyTaskCompleted, notifyTaskError } from '../../utils/notifications';
 import { useSettingsStore, type SettingsState } from '../../stores/settingsStore';
 import { useChatStore, waitForConversationPersistence } from '../../stores/chatStore';
@@ -124,6 +124,15 @@ import {
   traceRuntimeEvent,
 } from '../observability/runtimeTrace';
 import { getElectronSidecarRunFact } from '../../utils/electronHost';
+import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
+import {
+  createRunResourceSettlement,
+  getRunResourceSettlement,
+  registerRunResourceSettlement,
+  unregisterRunResourceSettlement,
+  __resetRunResourceSettlementsForTests,
+  type RunResourceSettlement,
+} from './runResourceSettlement';
 
 const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
@@ -135,6 +144,14 @@ const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 function rendererRuntimeOptions(options?: AgentLoopOptions): AgentLoopOptions {
   return {
     ...options,
+    // This function never crosses the wire. Rebuild it for every in-process
+    // fallback so skill directives use the same registry/policy chain as a
+    // normal tool call.
+    skillCommandApprovalFactory: (context) =>
+      attachTrustedSkillCommandApproval(context, {
+        commandConfirmCallback: options?.commandConfirmCallback ?? requestCommandConfirmation,
+        filePermissionCallback: options?.filePermissionCallback ?? requestFilePermission,
+      }).skillCommandApproval!,
     runtimeEvent: (event, attributes) => {
       traceRuntimeEvent(`renderer.${event}`, attributes);
       options?.runtimeEvent?.(event, attributes);
@@ -157,7 +174,10 @@ export interface AgentLoopRunOptions {
   blockedTools?: string[];
   allowedTools?: string[];
   authorizationScopeId?: string;
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   workspacePathSnapshot?: string | null;
+  /** Shell-owned outbound identity for IM tools; never accepted from sidecar context. */
+  imReplyTarget?: { platform: string; chatId: string };
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
@@ -243,31 +263,40 @@ export interface RunSession {
   resolveTerminal?: (terminal: AgentRunTerminal) => void;
   failureFinalizationPromise?: Promise<void>;
   /**
-   * Set the moment a terminal finalizer (`finalizeFailedRun` /
-   * `finalizeAbortedRun`) starts, i.e. before it publishes the visible
-   * terminal state. The session stays REGISTERED past that point — the
-   * finalizer still has to await persistence, and the dispatch `finally`
-   * still has to release the Computer Use lease over IPC — so for a few
-   * hundred milliseconds `findRunSessionForConversation` keeps answering
-   * "a run owns this conversation" while the UI already shows the run as
-   * over (banner up, Stop hidden, composer editable). A send inside that
-   * window was staged into this dead run's queue and then parked by
-   * `runAgentLoopDispatched`'s pause branch, so it never reached the model.
-   * `findJoinableRunSessionForConversation` reads this flag so the staging
-   * decision matches what the user can see.
+   * Set only after this run has completed every conversation-wide terminal
+   * mutation (stream cancellation, skill/status cleanup, queue handling).
+   * From that point a replacement run may safely start while this session is
+   * still REGISTERED to await durability and release run-owned resources.
+   * Publishing earlier would let the stale finalizer mutate or cancel that
+   * replacement; publishing only at unregister time would park a user send in
+   * an already-dead run. `findJoinableRunSessionForConversation` reads this
+   * boundary when deciding whether a send joins or starts a new run.
    */
   terminalPublished?: boolean;
   runtimeStartedAt?: number;
   firstDeltaAt?: number;
   firstFrameApplied?: boolean;
   firstFrameStallTimer?: ReturnType<typeof setTimeout>;
+  /** Shell requests already entered on behalf of this sidecar run. Scoped
+   * runs keep their authority/session owner until all of them settle. */
+  resourceSettlement?: RunResourceSettlement;
 }
 
 const sessions = new Map<string, RunSession>();
 
 /** Register a run session — exported for 3b-3 (the `agent.run` dispatch path) and this batch's own tests. Idempotent overwrite (a second register for the same runId replaces the first). Installs the push emitters on the FIRST registration. */
 export function registerRunSession(runId: string, session: RunSession): void {
+  const previous = sessions.get(runId);
+  if (previous?.resourceSettlement && previous !== session) {
+    previous.resourceSettlement.seal();
+    unregisterRunResourceSettlement(runId, previous.resourceSettlement);
+  }
   session.runId = runId;
+  session.resourceSettlement ??= createRunResourceSettlement(
+    session.shellAbortController.signal,
+    () => { session.committed = true; },
+  );
+  registerRunResourceSettlement(runId, session.resourceSettlement);
   sessions.set(runId, session);
   installPushEmitters();
 }
@@ -284,16 +313,19 @@ export function findRunSessionForConversation(conversationId: string): RunSessio
  * The still-joinable session for a conversationId — the concurrency guard's
  * view of "is a run live for this conversation right now". Unlike
  * `findRunSessionForConversation` it skips sessions whose terminal has
- * already been published (see `RunSession.terminalPublished`), so a send
- * made after the run visibly ended starts its own run instead of being
- * staged into a session that is only still registered because its teardown
- * has not finished. Full scan rather than filtering the first match: during
- * the teardown window a newer, genuinely live session for the same
- * conversation can already be registered behind the dying one.
+ * already been safely published (see `RunSession.terminalPublished`), so a
+ * send made after all old conversation-wide cleanup starts its own run
+ * instead of being staged into a session that remains registered only for
+ * durability/resource teardown. Full scan rather than filtering the first
+ * match: during that teardown window a newer, genuinely live session for the
+ * same conversation can already be registered behind the dying one.
  */
 function findJoinableRunSessionForConversation(conversationId: string): RunSession | undefined {
   for (const session of sessions.values()) {
-    if (session.conversationId === conversationId && !session.terminalPublished) return session;
+    if (
+      session.conversationId === conversationId
+      && (!session.terminalPublished || session.options.authorizationScopeId !== undefined)
+    ) return session;
   }
   return undefined;
 }
@@ -323,6 +355,8 @@ export function unregisterRunSession(runId: string): void {
   const session = sessions.get(runId);
   if (session?.abortWatchdog) clearTimeout(session.abortWatchdog);
   if (session?.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
+  session?.resourceSettlement?.seal();
+  unregisterRunResourceSettlement(runId, session?.resourceSettlement);
   sessions.delete(runId);
   if (sessions.size === 0) uninstallPushEmitters();
 }
@@ -343,6 +377,7 @@ export function __resetAgentLoopRunnerForTests(): void {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   }
   sessions.clear();
+  __resetRunResourceSettlementsForTests();
   uninstallPushEmitters();
 }
 
@@ -609,10 +644,6 @@ async function finalizeFailedRun(
 ): Promise<void> {
   if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
 
-  // Before anything else: this run is over. Nothing sent from here on may be
-  // staged into it — see `RunSession.terminalPublished`.
-  session.terminalPublished = true;
-
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
     updateSessionMessageState(session, state, displayMessage);
@@ -631,6 +662,9 @@ async function finalizeFailedRun(
         error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
       });
     }
+    // A replacement may start only after every conversation-wide mutation
+    // above is complete. The remaining durability wait is run-owned teardown.
+    session.terminalPublished = true;
     // Both the user lifecycle row and the finalized assistant/error state are
     // part of the terminal contract. Never report a failed run as settled
     // while either write is still pending or has failed.
@@ -649,11 +683,6 @@ async function finalizeFailedRun(
  */
 async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog' | 'run-terminal'): Promise<void> {
   if (session.abortFinalizationPromise) return session.abortFinalizationPromise;
-
-  // Before anything else — including the queue pause below, which is meant to
-  // preserve follow-ups staged while the run was still live, not to swallow
-  // ones typed after it ended. See `RunSession.terminalPublished`.
-  session.terminalPublished = true;
 
   session.abortFinalizationPromise = (async () => {
     try {
@@ -731,11 +760,16 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       chatDelta.setAgentStatus(session.conversationId, 'idle');
       chatDelta.setConversationStatus(session.conversationId, 'idle');
       getExecutionPort().cancelExecution(session.loopId);
+
+        // All conversation-wide cleanup is now finished. A new run may start
+        // while only this old run's durability/resource teardown remains.
+        session.terminalPublished = true;
         await waitForConversationPersistence(session.conversationId);
       }
     } finally {
       // These are best-effort shell resources; a force-finalized sidecar run
       // can no longer be trusted to send its normal cleanup notifications.
+      clearSkillHooksByLoop(session.loopId);
       void import('../capabilityPlugins/setupBridge')
         .then(({ drainCapabilitySetupRequests }) => drainCapabilitySetupRequests(session.loopId))
         .catch(() => {});
@@ -749,7 +783,10 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       // Reject only this run's never-ending RPC. This must happen even when
       // the durability barrier fails, while that persistence error still
       // propagates to the caller instead of being disguised as a settled run.
-      if (!session.transportAbortController?.signal.aborted) {
+      if (
+        session.options.authorizationScopeId === undefined
+        && !session.transportAbortController?.signal.aborted
+      ) {
         const error = new Error(`agent.run transport closed after abort ${source}`);
         error.name = 'AbortError';
         session.transportAbortController?.abort(error);
@@ -936,7 +973,8 @@ function handleCuSetState(rawParams: unknown): void {
 }
 
 /**
- * `native.invoke` (REQUEST) → {cmd, args} → the real Tauri `invoke(cmd, args)`, ALLOWLISTED.
+ * `native.invoke` (REQUEST) → {runId, cmd, args} → the real Tauri
+ * `invoke(cmd, args)`, ALLOWLISTED and retained by that run's resource owner.
  *
  * Allowlist = the Computer Use window-orchestration commands
  * (`toolExecutor.ts:300/304/310/316`) + `run_shell_command`
@@ -976,15 +1014,33 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
 ]);
 
 async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
-  const params = rawParams as { cmd?: unknown; args?: unknown } | null;
-  if (!params || typeof params.cmd !== 'string') {
-    throw new SidecarRequestError(-32602, 'Invalid native.invoke params: cmd must be a string');
+  const params = rawParams as { runId?: unknown; cmd?: unknown; args?: unknown } | null;
+  if (!params || typeof params.runId !== 'string' || typeof params.cmd !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid native.invoke params: runId and cmd must be strings');
   }
   if (!NATIVE_INVOKE_ALLOWLIST.has(params.cmd)) {
     throw new SidecarRequestError(-32601, `native.invoke: "${params.cmd}" is not allowlisted`);
   }
-  const { invoke } = await import('@tauri-apps/api/core');
-  return invoke(params.cmd, params.args as Record<string, unknown> | undefined);
+  const owner = getRunResourceSettlement(params.runId);
+  if (!owner) {
+    throw new SidecarRequestError(-32000, `Unknown runId for native.invoke: ${params.runId}`);
+  }
+  const cleanupAfterAbort = params.cmd === 'abort_command'
+    || params.cmd === 'ax_close_session'
+    || params.cmd === 'computer_use_end_task';
+  const assertMayStart = (): void => {
+    if (owner.signal?.aborted && !cleanupAfterAbort) {
+      throw new SidecarRequestError(-32000, `Run is stopping; native.invoke denied: ${params.cmd}`);
+    }
+  };
+  return owner.run(async () => {
+    assertMayStart();
+    const { invoke } = await import('@tauri-apps/api/core');
+    // Dynamic import is an await boundary. Stop can win while it loads, so
+    // fence again immediately before the native side effect.
+    assertMayStart();
+    return invoke(params.cmd as string, params.args as Record<string, unknown> | undefined);
+  });
 }
 
 /** `tool.list` (REQUEST) → the same wire-safe tool projection P1-3a's subagent.run params use, reused via subagentRunner.ts's exported `toSerializableTool`. Unlike 3a's static per-run snapshot, this is a LIVE request — the design doc's §1 finding 7 (mcpChanged mid-loop tool-table refresh) means the sidecar must re-request rather than cache. */
@@ -1020,16 +1076,33 @@ function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
 ): ToolExecutionContext {
-  return {
+  const trustedContext: ToolExecutionContext = {
     ...incoming,
     conversationId: session.conversationId,
     loopId: session.loopId,
     authorizationScopeId: session.options.authorizationScopeId,
+    interactionMode:
+      session.options.runPermissionCeiling || session.options.authorizationScopeId !== undefined
+        ? 'background'
+        : (incoming?.interactionMode ?? 'foreground'),
+    // Security boundary: the shell session owns the ceiling. Never trust a
+    // sidecar-provided context to omit or widen it.
+    runPermissionCeiling: session.options.runPermissionCeiling,
+    // Security boundary: outbound identity is authority-bearing. A sidecar may
+    // describe a tool call, but it may not choose a different IM recipient or
+    // manufacture one for a non-IM run.
+    imReplyTarget: session.options.imReplyTarget
+      ? { ...session.options.imReplyTarget }
+      : undefined,
     ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
       ? { workspacePath: session.options.workspacePathSnapshot ?? null }
       : {}),
     abortSignal: session.shellAbortController.signal,
   };
+  return attachTrustedSkillCommandApproval(trustedContext, {
+    commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,
+    filePermissionCallback: session.options.requestFilePermission ?? requestFilePermission,
+  });
 }
 
 /**
@@ -1071,6 +1144,16 @@ function contextForSession(
  * tool call (e.g. `write_file`) arrives after deletion, it's refused here
  * rather than executed against a conversation nobody can see anymore.
  */
+function assertRunNotStopping(session: RunSession, runId: string): void {
+  if (
+    sessions.get(runId) !== session
+    || session.abortRequested
+    || session.shellAbortController.signal.aborted
+  ) {
+    throw new SidecarRequestError(-32000, `Agent-loop run is stopping: ${runId}`);
+  }
+}
+
 async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   const params = rawParams as {
     runId?: unknown;
@@ -1082,28 +1165,27 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   if (!params || typeof params.runId !== 'string' || typeof params.toolName !== 'string') {
     throw new SidecarRequestError(-32602, 'Invalid tool.invoke params: runId and toolName must be strings');
   }
-  const session = sessions.get(params.runId);
+  const { runId, toolName } = params;
+  const session = sessions.get(runId);
   if (!session) {
-    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${runId}`);
   }
-  if (session.abortRequested || session.shellAbortController.signal.aborted) {
-    throw new SidecarRequestError(-32000, `Agent-loop run is stopping: ${params.runId}`);
-  }
+  assertRunNotStopping(session, runId);
   if (!useChatStore.getState().conversations[session.conversationId]) {
-    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
+    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${runId}`);
   }
-  assertRunToolAllowed(session, params.toolName, (params.input as Record<string, unknown>) ?? {});
+  assertRunToolAllowed(session, toolName, (params.input as Record<string, unknown>) ?? {});
   // P1-3B-3B fallback discipline — see RunSession.committed's doc.
   session.committed = true;
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process main-loop run.
-  return await invoker.executeAnyTool(
-    params.toolName,
+  return await session.resourceSettlement!.run(() => invoker.executeAnyTool(
+    toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
     contextForSession(session, params.context as ToolExecutionContext | undefined),
-  );
+  ));
 }
 
 /**
@@ -1151,6 +1233,7 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   if (!session) {
     throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
   }
+  assertRunNotStopping(session, params.runId);
   if (!useChatStore.getState().conversations[session.conversationId]) {
     throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
   }
@@ -1163,6 +1246,10 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
+  // Approval can await AI review, file policy, or a callback while Stop wins
+  // concurrently. Never return a stale allow ACK that would let the sidecar
+  // begin a new local side effect after this run crossed its abort barrier.
+  assertRunNotStopping(session, params.runId);
   if (decision.decision === 'allow' && !isToolCallReplaySafe(params.toolName, params.input)) {
     // The sidecar executes this tool locally immediately after this ACK. From
     // this point onward a transport failure cannot prove whether the local
@@ -1244,6 +1331,10 @@ function handleWorkspaceBindFromWrite(rawParams: unknown): void {
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
   if (typeof params.conversationId === 'string' && params.conversationId !== session.conversationId) return;
+  // The shell session, not the sidecar notification, owns interaction mode.
+  // Scoped/ceiling runs are background runs whose grants must die with the
+  // run; never promote their writes into a persistent managed workspace.
+  if (session.options.runPermissionCeiling || session.options.authorizationScopeId !== undefined) return;
   void bindWorkspaceFromWrite(session.conversationId, params.path).catch((err: unknown) => {
     logger.warn('bindWorkspaceFromWrite threw', { error: err instanceof Error ? err.message : String(err) });
   });
@@ -1278,39 +1369,42 @@ async function handleSnapshotBeforeAiEdit(rawParams: unknown): Promise<null> {
     throw new SidecarRequestError(-32602, 'Invalid snapshot.beforeAiEdit params: runId and path must be strings');
   }
 
-  const session = sessions.get(params.runId);
+  const { runId, path } = params;
+  const session = sessions.get(runId);
   if (!session) {
-    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${runId}`);
   }
   if (!useChatStore.getState().conversations[session.conversationId]) {
-    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${params.runId}`);
+    throw new SidecarRequestError(-32000, `Conversation no longer exists for agent-loop runId: ${runId}`);
   }
 
   const rawOpts = (params.opts && typeof params.opts === 'object' ? params.opts : {}) as Record<string, unknown>;
-  await snapshotBeforeAiEdit(params.path, {
+  await session.resourceSettlement!.run(() => snapshotBeforeAiEdit(path, {
     loopId: typeof rawOpts.loopId === 'string' ? rawOpts.loopId : undefined,
     conversationId: typeof rawOpts.conversationId === 'string' ? rawOpts.conversationId : undefined,
     knownContent: typeof rawOpts.knownContent === 'string' ? rawOpts.knownContent : undefined,
-  });
+  }));
   return null;
 }
 
 /**
- * `skillHooks.clearAll` (NOTIFICATION) → {runId} → the real
- * `clearAllSkillHooks()`. Closes a P1-3B-3A escalation
+ * `skillHooks.clearAll` (legacy wire name, NOTIFICATION) → {runId} → clear
+ * hooks owned by that exact run loop. Closes a P1-3B-3A escalation
  * (`sidecar/src/shims/builtinsRun.ts`'s doc comment / P1-3B-3A-REPORT.md
  * escalation #4): `builtinsRun.ts` already sends this notification on every
  * sidecar-run loop end, but no shell-side handler existed to receive it —
  * skill-scoped PreToolUse/PostToolUse hooks activated during a sidecar-run
  * main loop (via `use_skill`, which — like every tool — always executes
- * shell-side) leaked across turns until this. `runId` is informational only
- * (`skillHookCleanups` is a single GLOBAL map, not per-run — same
- * discipline as `plan.clear`/`approval.drain`).
+ * shell-side) leaked across turns until this. The runId is authority-bearing:
+ * an unknown/stale run is dropped, and one conversation ending must not clear
+ * hooks still owned by another concurrent run.
  */
 function handleSkillHooksClearAll(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown } | null;
   if (!params || typeof params.runId !== 'string') return;
-  clearAllSkillHooks();
+  const session = sessions.get(params.runId);
+  if (!session) return;
+  clearSkillHooksByLoop(session.loopId);
 }
 
 /**
@@ -1347,7 +1441,12 @@ export function ensureHandlersRegistered(): void {
   registerToolInvokeSource('agentLoop', { has: (runId) => sessions.has(runId), handle: handleMainLoopToolInvoke });
   ensureToolInvokeRouterRegistered();
   registerHookSignalSource('agentLoop', {
+    has: (runId) => sessions.has(runId),
     getAbortSignal: (runId) => sessions.get(runId)?.shellAbortController.signal,
+    getToolContext: (runId) => {
+      const session = sessions.get(runId);
+      return session ? contextForSession(session, undefined) : undefined;
+    },
   });
   // hook.emit / hook.notify — shared with the subagent path via the neutral
   // hookBridge (see hookBridge.ts's doc). Without this, a session that runs
@@ -1688,6 +1787,10 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
     authorizationScopeId: session.options.authorizationScopeId,
+    runPermissionCeiling: session.options.runPermissionCeiling,
+    imReplyTarget: session.options.imReplyTarget
+      ? { ...session.options.imReplyTarget }
+      : undefined,
   });
 }
 
@@ -1719,6 +1822,7 @@ interface AgentRunParams {
     blockedTools?: string[];
     allowedTools?: string[];
     authorizationScopeId?: string;
+    runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
     workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
@@ -1945,13 +2049,14 @@ async function waitForReattachedTerminal(
   params: AgentRunParams,
   session: RunSession,
 ): Promise<AgentRunTerminal> {
+  const scoped = session.options.authorizationScopeId !== undefined;
   let unavailableChecks = 0;
   while (true) {
     const tick = recoveryDelay(2_000).then(() => ({ kind: 'tick' as const }));
     const terminal = session.terminalPromise!.then((value) => ({ kind: 'terminal' as const, value }));
     const outcome = await Promise.race([terminal, tick]);
     if (outcome.kind === 'terminal') return outcome.value;
-    if (session.shellAbortController.signal.aborted) {
+    if (session.shellAbortController.signal.aborted && !scoped) {
       throw session.shellAbortController.signal.reason ?? new Error('Agent run aborted while reattaching');
     }
     const recovery = await queryRunForTransportRecovery(params);
@@ -1964,7 +2069,7 @@ async function waitForReattachedTerminal(
     }
     if (recovery.action === 'unavailable') {
       unavailableChecks += 1;
-      if (unavailableChecks >= 3) {
+      if (unavailableChecks >= 3 && !scoped) {
         throw new Error('Sidecar run state remained unavailable during reattach');
       }
     } else {
@@ -2020,12 +2125,30 @@ async function buildAgentRunParams(
   // entryOrchestration.ts's precomputeOrchestration — see
   // resolveEntryModel.ts's doc for why this is the third (not a fourth,
   // hand-copied) caller of the same pure formula.
+  const precomputeToolContext = attachTrustedSkillCommandApproval({
+    workspacePath: resolveToolContextWorkspacePath(
+      options,
+      initialConversationSnapshot,
+      getWorkspaceReader().getCurrentPath(),
+    ),
+    conversationId,
+    loopId: runId,
+    interactionMode: options?.authorizationScopeId === undefined && !options?.imContext ? 'foreground' : 'background',
+    permissionMode: initialConversationSnapshot.permissionMode
+      ?? getSettingsReader().getSnapshot().permissionMode,
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+  }, {
+    commandConfirmCallback: options?.commandConfirmCallback ?? requestCommandConfirmation,
+    filePermissionCallback: options?.filePermissionCallback ?? requestFilePermission,
+  });
   const orchestration = await precomputeOrchestration(
     conversationId,
     userMessage,
     options?.imContext,
     { settingsForModel },
     abortSignal,
+    precomputeToolContext,
   );
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
@@ -2099,6 +2222,7 @@ async function buildAgentRunParams(
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       authorizationScopeId: options?.authorizationScopeId,
+      runPermissionCeiling: options?.runPermissionCeiling,
       workspacePathSnapshot,
       imContext: options?.imContext,
     },
@@ -2115,6 +2239,7 @@ async function buildAgentRunParams(
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       authorizationScopeId: options?.authorizationScopeId,
+      runPermissionCeiling: options?.runPermissionCeiling,
       workspacePathSnapshot,
       imContext: options?.imContext,
       prePersistedUserMessageId: clientMessageId,
@@ -2263,6 +2388,7 @@ async function runSingleAgentLoopDispatched(
   const abortRegistry = getAbortRegistry();
   abortRegistry.clearAbortController(conversationId);
   const shellAbortController = abortRegistry.getAbortController(conversationId);
+  options?.onAbortControllerReady?.(shellAbortController);
   const shellChatDelta = getChatDelta();
   useChatStore.getState().addMessage(conversationId, {
     id: clientMessageId,
@@ -2407,7 +2533,14 @@ async function runSingleAgentLoopDispatched(
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       authorizationScopeId: options?.authorizationScopeId,
+      runPermissionCeiling: options?.runPermissionCeiling,
       workspacePathSnapshot: params.options.workspacePathSnapshot,
+      imReplyTarget: options?.imContext?.replyChatId
+        ? {
+            platform: options.imContext.platform,
+            chatId: options.imContext.replyChatId,
+          }
+        : undefined,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,
@@ -2460,6 +2593,7 @@ async function runSingleAgentLoopDispatched(
     });
   }, AGENT_FIRST_FRAME_STALL_MS);
   let handedOffToLocal = false;
+  const scopedRun = options?.authorizationScopeId !== undefined;
 
   const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopResult> => {
     await settleRunPersistence(session);
@@ -2605,7 +2739,7 @@ async function runSingleAgentLoopDispatched(
     if (session.terminal) {
       return await settleFromTerminal(session.terminal);
     }
-    if (shellAbortController.signal.aborted) {
+    if (shellAbortController.signal.aborted && !scopedRun) {
       await finalizeAbortedRun(session, 'run-terminal');
       traceRuntimeEvent('renderer.agent_run_aborted', {
         runId,
@@ -2635,6 +2769,20 @@ async function runSingleAgentLoopDispatched(
         } catch (reattachError) {
           transportError = reattachError;
         }
+      }
+      if (recovery.action === 'unavailable' && scopedRun) {
+        try {
+          return await settleFromTerminal(await waitForReattachedTerminal(params, session));
+        } catch (reattachError) {
+          transportError = reattachError;
+        }
+      }
+      if (
+        shellAbortController.signal.aborted
+        && (recovery.action === 'not_found' || recovery.action === 'replay_execution')
+      ) {
+        await finalizeAbortedRun(session, 'run-terminal');
+        return { reason: 'aborted' };
       }
       if (
         (recovery.action === 'replay_execution' || recovery.action === 'not_found')
@@ -2770,6 +2918,25 @@ async function runSingleAgentLoopDispatched(
     return { reason: 'error', error: realMessage };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
+    // From here the dispatcher, not the UI, owns teardown. Remove the Stop
+    // forwarder before aborting a scoped controller for normal resource
+    // cleanup, otherwise that internal abort emits a spurious agent.abort.
+    shellAbortController.signal.removeEventListener('abort', onShellAbort);
+    if (
+      !handedOffToLocal
+      && scopedRun
+      && !shellAbortController.signal.aborted
+    ) {
+      shellAbortController.abort(new Error('Scoped agent run finished'));
+    }
+    // Once the sidecar execution/transport has ended, no new reverse request
+    // is legitimate. Seal first (late arrivals fail closed), then keep a
+    // scoped run's session, callbacks, loop context, and authorization owner
+    // alive until every shell request that already entered really settles.
+    session.resourceSettlement?.seal();
+    if (!handedOffToLocal && scopedRun) {
+      await session.resourceSettlement?.settlement;
+    }
     // The sidecar normally releases the task-scoped Computer Use lease from
     // agentLoop.ts before it emits agent.terminal. Keep a shell-owned,
     // idempotent release at the process boundary as the authoritative
@@ -2808,16 +2975,9 @@ async function runSingleAgentLoopDispatched(
       }
     }
     finishRuntimeRun(runId);
+    clearSkillHooksByLoop(session.loopId);
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
-    shellAbortController.signal.removeEventListener('abort', onShellAbort);
-    if (
-      !handedOffToLocal
-      && options?.authorizationScopeId !== undefined
-      && !shellAbortController.signal.aborted
-    ) {
-      shellAbortController.abort(new Error('Scoped agent run finished'));
-    }
     if (!handedOffToLocal) {
       // Ownership-checked: everything above the `finally` can outlive this
       // run's visible terminal (persistence, the Computer Use lease release
@@ -2853,7 +3013,18 @@ export async function runAgentLoopDispatched(
   ) {
     const queuedInput = dequeueNextUserInput(conversationId);
     if (!queuedInput) break;
-    previousResult = await runSingleAgentLoopDispatched(conversationId, queuedInput.text);
+    previousResult = await runSingleAgentLoopDispatched(
+      conversationId,
+      queuedInput.text,
+      // User queue entries are authored by the desktop composer (or by the
+      // two concurrency guards, which only admit interactive desktop sends).
+      // They are not owned by the run that happened to be active when they
+      // were staged. Reusing that old run's callbacks/scope/ceiling/IM target
+      // would either elevate the desktop message into an unattended full run
+      // or incorrectly retain a lower ceiling. System-authored wake-ups never
+      // reach this dequeue path (`dequeueNextUserInput` skips them).
+      undefined,
+    );
   }
 
   if (

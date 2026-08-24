@@ -231,9 +231,9 @@ If the user's request involves writing files, executing commands, launching prog
 
     case 'safe_tools':
       return `\n## Current capability level: standard
-You can read and write files in authorized directories, and execute **safe commands** (e.g. ls, cat, grep, git status, npm run, and other read-only or standard development commands).
-You **cannot** execute dangerous commands (e.g. rm -rf, sudo, chmod 777, curl | sh, or other destructive or privilege-escalating operations).
-If the user's request involves a dangerous command, briefly explain that the current channel is in standard mode — you can execute safe commands but cannot execute this dangerous operation; if full permissions are needed, ask the user to contact an administrator to adjust the channel's permissions.`;
+You can read and write files in authorized directories through the available structured tools.
+You **cannot** execute shell commands or act outside the authorized directories.
+If the user's request requires command execution or access outside those directories, briefly explain that the current channel is in standard mode and ask the user to contact an administrator to adjust the channel's permissions.`;
 
     case 'full':
       return `\n## Current capability level: full

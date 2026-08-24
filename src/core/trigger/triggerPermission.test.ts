@@ -36,17 +36,53 @@ describe('resolveTriggerCallbacks', () => {
     }
   });
 
-  // read_tools is the exception since RB-02 — see the read_tools write
-  // ceiling block below. The confirming tiers stay callback-driven.
-  it('does not create a whitelist for the confirming capability levels', () => {
+  it('caps safe_tools at a shared positive roster while leaving full unrestricted', () => {
     const safe = resolveForTest({ prompt: 'safe', capability: 'safe_tools' });
     const full = resolveForTest({ prompt: 'full', capability: 'full' });
     try {
-      expect(safe.callbacks.allowedTools).toBeUndefined();
+      expect(safe.callbacks.allowedTools).not.toContain('run_command');
+      expect(safe.callbacks.allowedTools).toContain('write_file');
+      expect(safe.callbacks.allowedTools).not.toContain('manage_mcp_server');
       expect(full.callbacks.allowedTools).toBeUndefined();
     } finally {
       safe.dispose();
       full.dispose();
+    }
+  });
+
+  it('fails closed for source-invalid persisted capabilities', () => {
+    const { callbacks, dispose } = resolveForTest({ prompt: 'read', capability: 'chat_only' as never });
+    try {
+      expect(callbacks.allowedTools).toContain('read_file');
+      expect(callbacks.allowedTools).not.toContain('run_command');
+      expect(callbacks.blockedTools.some((p) => matchesToolName('abu-browser__navigate', p))).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('fails closed for malformed persisted custom arrays without throwing matchers', async () => {
+    const malformedTools = resolveForTest({
+      prompt: 'custom',
+      capability: 'custom',
+      permissions: { allowedTools: [42] as never },
+    });
+    const malformedCommands = resolveForTest({
+      prompt: 'custom',
+      capability: 'custom',
+      permissions: { allowedCommands: [42] as never },
+    });
+    try {
+      const allowedTools = malformedTools.callbacks.allowedTools ?? [];
+      expect(allowedTools.some((p) => matchesToolName('read_file', p))).toBe(false);
+      await expect(malformedCommands.callbacks.commandConfirmCallback({
+        command: 'npm run build',
+        level: 'safe',
+        reason: 'safe',
+      })).resolves.toBe(false);
+    } finally {
+      malformedTools.dispose();
+      malformedCommands.dispose();
     }
   });
 

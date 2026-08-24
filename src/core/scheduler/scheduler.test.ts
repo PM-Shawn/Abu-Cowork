@@ -18,6 +18,20 @@ import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
 import { checkWritePath, revokeWorkspace } from '../tools/pathSafety';
 
+const getSchedulerToolsMock = vi.fn(() => [
+  { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
+  { name: 'github__list_repositories', description: 'mcp read', inputSchema: { type: 'object', properties: {} } },
+  { name: 'github__delete_repository', description: 'mcp destructive', inputSchema: { type: 'object', properties: {} } },
+  { name: 'computer', description: 'foreground UI', inputSchema: { type: 'object', properties: {} } },
+]);
+vi.mock('../agent/ports/toolInvoker', () => ({
+  getToolInvoker: () => ({
+    getAllTools: () => getSchedulerToolsMock(),
+    executeAnyTool: vi.fn(),
+    toolResultToString: (value: unknown) => String(value),
+  }),
+}));
+
 // Mock agentLoop — control the exit reason. isIncompleteReason is a trivial pure
 // fn (tested in agentLoop.test.ts); duplicate it here to avoid importing the real
 // heavy module and its dependency tree.
@@ -188,6 +202,52 @@ describe('SchedulerEngine permission tier', () => {
 
     const conversationId = latestRun(task.id)?.conversationId;
     expect(useChatStore.getState().conversations[conversationId!]?.permissionMode).toBeUndefined();
+  });
+
+  it('freezes an exact host-owned scheduler roster into both dispatch filters and the ceiling', async () => {
+    const task = makeTask({ id: 'task-roster', permissionMode: 'autonomous' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let capturedOptions: Record<string, unknown> | undefined;
+    vi.mocked(runAgentLoop).mockImplementation(async (_conv, _msg, options) => {
+      capturedOptions = options as unknown as Record<string, unknown>;
+      return { reason: 'completed' };
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(capturedOptions?.allowedTools).toEqual(expect.arrayContaining([
+      'read_file',
+      'get_system_info',
+    ]));
+    expect(capturedOptions?.allowedTools).not.toContain('github__list_repositories');
+    expect(capturedOptions?.allowedTools).not.toContain('github__delete_repository');
+    expect(capturedOptions?.allowedTools).not.toContain('computer');
+    expect(capturedOptions?.allowedTools).not.toContain('http_fetch');
+    expect(capturedOptions?.allowedTools).not.toContain('generate_image');
+    expect(capturedOptions?.allowedTools).not.toContain('process_image');
+    expect(capturedOptions?.allowedTools).not.toContain('*');
+    expect(capturedOptions?.runPermissionCeiling).toEqual({
+      version: 1,
+      source: 'scheduler',
+      capability: 'scheduled',
+      allowedTools: capturedOptions?.allowedTools,
+    });
+    expect(Object.isFrozen(capturedOptions?.runPermissionCeiling)).toBe(true);
+    expect(Object.isFrozen(capturedOptions?.allowedTools)).toBe(true);
+  });
+
+  it('records a roster snapshot failure and releases the scheduled-run owner', async () => {
+    const task = makeTask({ id: 'task-roster-failure' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    getSchedulerToolsMock.mockImplementationOnce(() => {
+      throw new Error('tool snapshot unavailable');
+    });
+
+    await expect(schedulerEngine.runNow(task.id)).resolves.toBeUndefined();
+
+    expect(latestRunStatus(task.id)).toBe('error');
+    expect(schedulerEngine.isTaskRunning(task.id)).toBe(false);
+    expect(runAgentLoop).not.toHaveBeenCalled();
   });
 
   it('denies a confirm-requiring command and names the effective mode in the result text', async () => {

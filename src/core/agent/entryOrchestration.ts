@@ -63,6 +63,7 @@
  * this one call site. No existing test depends on it — full suite verified
  * green after this change (see P1-3B-3A-REPORT.md).
  */
+import type { ToolExecutionContext } from '../../types';
 import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -92,6 +93,7 @@ export async function precomputeOrchestration(
   imContext: IMContext | undefined,
   entry: { settingsForModel: SettingsState },
   abortSignal?: AbortSignal,
+  toolContext?: ToolExecutionContext,
 ): Promise<PrecomputedOrchestration> {
   const route = routeInput(userMessage);
 
@@ -120,7 +122,7 @@ export async function precomputeOrchestration(
     conversationId,
     imContext,
     0,
-    { abortSignal },
+    { ...toolContext, abortSignal },
   );
 
   return { route, systemPromptSections };

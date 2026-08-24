@@ -448,7 +448,14 @@ describe('TriggerEngine', () => {
       expect(runAgentLoopMock).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
-        expect.objectContaining({ authorizationScopeId: 'scope-trigger-test' }),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-trigger-test',
+          runPermissionCeiling: expect.objectContaining({
+            version: 1,
+            source: 'trigger',
+            capability: 'read_tools',
+          }),
+        }),
       );
       expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
     });

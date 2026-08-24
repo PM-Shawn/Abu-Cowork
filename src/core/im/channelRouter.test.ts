@@ -9,6 +9,7 @@ import type { NormalizedIMMessage } from './inboundRouter';
 import type { IMChannel } from '@/types/imChannel';
 import type { IMAdapter } from './adapters/types';
 import { matchesToolName } from '../skill/toolFilter';
+import { checkReadPath, checkWritePath } from '../tools/pathSafety';
 
 // Deterministic filler timestamp (TESTING.md §3) — used where a numeric
 // timestamp field is structurally required but its exact value is never
@@ -48,6 +49,10 @@ vi.mock('../../stores/imChannelStore', () => ({
 }));
 
 const mockConversations: Record<string, { messages: { role: string; content: string }[] }> = {};
+const abortControllerMocks = vi.hoisted(() => ({
+  has: vi.fn(() => false),
+  get: vi.fn(() => new AbortController()),
+}));
 // Deterministic id source (TESTING.md §3) — a monotonic counter guarantees each
 // createConversation() call gets a distinct id, which real Date.now() only did
 // incidentally (two calls within the same millisecond would have collided).
@@ -65,6 +70,8 @@ vi.mock('../../stores/chatStore', () => ({
       // Router hydrates the conversation before dispatching (lazily-loaded
       // conversations are evicted from memory; see channelRouter step 1a).
       loadConversation: vi.fn(async () => {}),
+      hasAbortController: abortControllerMocks.has,
+      getAbortController: abortControllerMocks.get,
       addMessage: vi.fn((convId: string, msg: { role: string; content: string }) => {
         if (mockConversations[convId]) mockConversations[convId].messages.push(msg);
       }),
@@ -75,6 +82,10 @@ vi.mock('../../stores/chatStore', () => ({
 const mockRunAgentLoop = vi.fn();
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: (...args: unknown[]) => mockRunAgentLoop(...args),
+}));
+
+vi.mock('../agent/agentLoopRunner', () => ({
+  runAgentLoopDispatched: (...args: unknown[]) => mockRunAgentLoop(...args),
 }));
 
 const mockSendThinking = vi.fn();
@@ -179,13 +190,25 @@ import { imChannelRouter } from './channelRouter';
 type RouterInternal = {
   processMessage(msg: NormalizedIMMessage, channel: IMChannel, capability: string): Promise<void>;
   dispatchMessage(msg: NormalizedIMMessage): void;
-  runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
+  runWithTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    onTimeout?: () => void,
+    settleGraceMs?: number,
+  ): Promise<T>;
   runningCount: number;
+  queuedMessages: Array<{ message: NormalizedIMMessage; channelId: string; sessionKey: string }>;
   activeSessions: Set<string>;
+  sessionQueues: Map<string, Array<{
+    message: NormalizedIMMessage;
+    channel: IMChannel;
+    capability: 'safe_tools';
+  }>>;
   recentMessageIds: Map<string, number>;
   pendingMedia: Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>;
   typingOperations: Map<string, Promise<void>>;
   activeTypingStops: Set<() => void>;
+  processQueue(): void;
   startTypingHeartbeat(adapter: IMAdapter, token: string, userId: string): () => void;
   stop(): void;
 };
@@ -234,9 +257,15 @@ describe('IMChannelRouter', () => {
     typingMocks.adapter = {
       config: { platform: 'dingtalk', supportsMessageUpdate: false },
     };
+    abortControllerMocks.has.mockReset();
+    abortControllerMocks.has.mockReturnValue(false);
+    abortControllerMocks.get.mockReset();
+    abortControllerMocks.get.mockImplementation(() => new AbortController());
     // Reset runningCount and session tracking
     getInternal().runningCount = 0;
+    getInternal().queuedMessages.length = 0;
     getInternal().activeSessions.clear();
+    getInternal().sessionQueues.clear();
     getInternal().recentMessageIds.clear();
     getInternal().typingOperations.clear();
     for (const { timer } of getInternal().pendingMedia.values()) clearTimeout(timer);
@@ -538,12 +567,337 @@ describe('IMChannelRouter', () => {
 
     const options = mockRunAgentLoop.mock.calls[0][2];
     expect(options.blockedTools).toContain('request_workspace');
+    expect(options.runPermissionCeiling).toEqual({
+      version: 1,
+      source: 'im',
+      capability: 'read_tools',
+    });
     for (const tool of ['click', 'navigate', 'execute_js', 'snapshot']) {
       expect(
         options.blockedTools.some((p: string) => matchesToolName(`abu-browser__${tool}`, p)),
         tool,
       ).toBe(true);
     }
+  });
+
+  it('creates a per-turn scoped read grant for read_tools and disposes it after the turn', async () => {
+    const workspace = '/Users/testuser/Projects/im-read-scope';
+    let scopeId = '';
+    mockRunAgentLoop.mockImplementation(async (convId: string, _text: string, options: {
+      authorizationScopeId: string;
+    }) => {
+      scopeId = options.authorizationScopeId;
+      expect(scopeId).toBeTruthy();
+      expect((await checkReadPath(`${workspace}/notes.md`, scopeId)).allowed).toBe(true);
+      expect((await checkWritePath(`${workspace}/notes.md`, scopeId)).allowed).toBe(false);
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'done' });
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(
+      makeMessage(),
+      makeChannel({ workspacePaths: [workspace] }),
+      'read_tools',
+    );
+
+    expect((await checkReadPath(`${workspace}/notes.md`, scopeId)).allowed).toBe(false);
+  });
+
+  it('creates a per-turn scoped write grant for safe_tools and disposes it after the turn', async () => {
+    const workspace = '/Users/testuser/Projects/im-safe-scope';
+    let scopeId = '';
+    mockRunAgentLoop.mockImplementation(async (convId: string, _text: string, options: {
+      authorizationScopeId: string;
+    }) => {
+      scopeId = options.authorizationScopeId;
+      expect((await checkWritePath(`${workspace}/out.md`, scopeId)).allowed).toBe(true);
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'done' });
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(
+      makeMessage(),
+      makeChannel({ workspacePaths: [workspace] }),
+      'safe_tools',
+    );
+
+    expect((await checkWritePath(`${workspace}/out.md`, scopeId)).allowed).toBe(false);
+  });
+
+  it('keeps a timed-out session and scope quarantined until its stuck run actually settles', async () => {
+    vi.useFakeTimers();
+    const sessionKey = 'test:chat1:window';
+    const workspace = '/Users/testuser/Projects/im-timeout-quarantine';
+    let settleFirst!: () => void;
+    let firstScopeId = '';
+    try {
+      mockRunAgentLoop
+        .mockImplementationOnce((_convId: string, _text: string, options: {
+          authorizationScopeId: string;
+        }) => {
+          firstScopeId = options.authorizationScopeId;
+          return new Promise<void>((resolve) => { settleFirst = resolve; });
+        })
+        .mockImplementationOnce(async (convId: string) => {
+          mockConversations[convId]?.messages.push({ role: 'assistant', content: 'second done' });
+          return { reason: 'completed' };
+        });
+
+      const first = makeMessage({ text: 'first' });
+      const second = makeMessage({ text: 'second' });
+      const channel = makeChannel({ workspacePaths: [workspace] });
+      const internal = getInternal();
+      internal.activeSessions.add(sessionKey);
+      const processing = internal.processMessage(first, channel, 'safe_tools');
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockRunAgentLoop).toHaveBeenCalledTimes(1);
+      expect(firstScopeId).toBeTruthy();
+      internal.sessionQueues.set(sessionKey, [{ message: second, channel, capability: 'safe_tools' }]);
+
+      // 10-minute run timeout + 6-second cancellation grace.  The user gets a
+      // bounded error, but the next same-session turn must remain queued while
+      // the original execution is still alive.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 6_000);
+      await processing;
+      expect(mockRunAgentLoop).toHaveBeenCalledTimes(1);
+      expect(internal.activeSessions.has(sessionKey)).toBe(true);
+      expect(internal.sessionQueues.get(sessionKey)).toHaveLength(1);
+      expect((await checkWritePath(`${workspace}/still-owned.md`, firstScopeId)).allowed).toBe(true);
+
+      settleFirst();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockRunAgentLoop).toHaveBeenCalledTimes(2);
+      expect(internal.activeSessions.has(sessionKey)).toBe(false);
+      expect(internal.sessionQueues.has(sessionKey)).toBe(false);
+      expect(internal.runningCount).toBe(0);
+      expect((await checkWritePath(`${workspace}/released.md`, firstScopeId)).allowed).toBe(false);
+    } finally {
+      settleFirst?.();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts the timed-out run owner without cancelling a newer controller for the conversation', async () => {
+    vi.useFakeTimers();
+    const ownedController = new AbortController();
+    const newerController = new AbortController();
+    let settleRun!: () => void;
+    try {
+      abortControllerMocks.has.mockReturnValue(true);
+      abortControllerMocks.get.mockReturnValue(newerController);
+      mockRunAgentLoop.mockImplementationOnce((_convId: string, _text: string, options: {
+        onAbortControllerReady?: (controller: AbortController) => void;
+      }) => {
+        options.onAbortControllerReady?.(ownedController);
+        return new Promise<void>((resolve) => { settleRun = resolve; });
+      });
+
+      const processing = getInternal().processMessage(
+        makeMessage({ text: 'times out' }),
+        makeChannel(),
+        'safe_tools',
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockRunAgentLoop).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      expect(ownedController.signal.aborted).toBe(true);
+      expect(newerController.signal.aborted).toBe(false);
+
+      settleRun();
+      await vi.advanceTimersByTimeAsync(0);
+      await processing;
+    } finally {
+      settleRun?.();
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
+
+  it('acquires the session lock before starting a turn from the global queue', async () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    const message = makeMessage({ isDirect: true, text: 'globally queued' });
+    let settleRun!: () => void;
+    mockChannels[channel.id] = channel;
+    mockRunAgentLoop.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      settleRun = resolve;
+    }));
+    internal.runningCount = 4;
+    internal.queuedMessages.push({ message, channelId: channel.id, sessionKey });
+
+    internal.processQueue();
+
+    expect(internal.activeSessions.has(sessionKey)).toBe(true);
+    await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledOnce());
+    settleRun();
+    await vi.waitFor(() => expect(internal.activeSessions.has(sessionKey)).toBe(false));
+    delete mockChannels[channel.id];
+  });
+
+  it('moves a global-queue item into the existing session queue instead of overlapping that session', () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    const message = makeMessage({ isDirect: true, text: 'same session' });
+    mockChannels[channel.id] = channel;
+    internal.runningCount = 4;
+    internal.activeSessions.add(sessionKey);
+    internal.queuedMessages.push({ message, channelId: channel.id, sessionKey });
+
+    internal.processQueue();
+
+    expect(mockRunAgentLoop).not.toHaveBeenCalled();
+    expect(internal.runningCount).toBe(4);
+    expect(internal.sessionQueues.get(sessionKey)).toEqual([
+      expect.objectContaining({ message, channel }),
+    ]);
+    delete mockChannels[channel.id];
+  });
+
+  it('applies the per-session queue cap even before that session starts from the global queue', () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+    internal.runningCount = 5;
+    for (let index = 0; index < 5; index++) {
+      internal.queuedMessages.push({
+        message: makeMessage({ text: `queued-${index}` }),
+        channelId: channel.id,
+        sessionKey,
+      });
+    }
+
+    internal.dispatchMessage(makeMessage({
+      isDirect: true,
+      text: 'one too many',
+      replyContext: { platform: 'dingtalk', messageId: 'per-session-overflow' },
+    }));
+
+    expect(internal.queuedMessages).toHaveLength(5);
+    delete mockChannels[channel.id];
+  });
+
+  it('bounds the total global queue when all execution slots are occupied', () => {
+    const internal = getInternal();
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+    internal.runningCount = 5;
+    for (let index = 0; index < 25; index++) {
+      internal.queuedMessages.push({
+        message: makeMessage({ text: `global-${index}`, chatId: `chat-${index}` }),
+        channelId: channel.id,
+        sessionKey: `session-${index}`,
+      });
+    }
+
+    internal.dispatchMessage(makeMessage({
+      isDirect: true,
+      text: 'global overflow',
+      replyContext: { platform: 'dingtalk', messageId: 'global-overflow' },
+    }));
+
+    expect(internal.queuedMessages).toHaveLength(25);
+    delete mockChannels[channel.id];
+  });
+
+  it('applies one per-session cap across both global and active-session queues', () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+    internal.runningCount = 5;
+    internal.activeSessions.add(sessionKey);
+    for (let index = 0; index < 4; index++) {
+      internal.queuedMessages.push({
+        message: makeMessage({ text: `older-global-${index}` }),
+        channelId: channel.id,
+        sessionKey,
+      });
+    }
+
+    internal.dispatchMessage(makeMessage({
+      isDirect: true,
+      text: 'fills aggregate cap',
+      replyContext: { platform: 'dingtalk', messageId: 'aggregate-cap-last' },
+    }));
+    internal.dispatchMessage(makeMessage({
+      isDirect: true,
+      text: 'exceeds aggregate cap',
+      replyContext: { platform: 'dingtalk', messageId: 'aggregate-cap-overflow' },
+    }));
+
+    const queuedForSession = internal.queuedMessages.filter(
+      (queued) => queued.sessionKey === sessionKey,
+    ).length + (internal.sessionQueues.get(sessionKey)?.length ?? 0);
+    expect(queuedForSession).toBe(5);
+    expect(internal.sessionQueues.get(sessionKey)).toHaveLength(1);
+    delete mockChannels[channel.id];
+  });
+
+  it('keeps a stopped run owning its session until settlement, then hands off a restarted turn', async () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ responseMode: 'all_messages' });
+    let settleOldRun!: () => void;
+    mockChannels[channel.id] = channel;
+    mockRunAgentLoop
+      .mockImplementationOnce(() => new Promise<void>((resolve) => {
+        settleOldRun = resolve;
+      }))
+      .mockImplementationOnce(async (convId: string) => {
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: 'restarted done' });
+        return { reason: 'completed' };
+      });
+    internal.activeSessions.add(sessionKey);
+    const oldProcessing = internal.processMessage(makeMessage({ text: 'old run' }), channel, 'safe_tools');
+    await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledOnce());
+
+    internal.stop();
+    expect(internal.runningCount).toBe(1);
+    expect(internal.activeSessions.has(sessionKey)).toBe(true);
+
+    internal.dispatchMessage(makeMessage({
+      isDirect: true,
+      text: 'after restart',
+      replyContext: { platform: 'dingtalk', messageId: 'after-restart' },
+    }));
+    expect(mockRunAgentLoop).toHaveBeenCalledTimes(1);
+    expect(internal.sessionQueues.get(sessionKey)).toHaveLength(1);
+
+    settleOldRun();
+    await oldProcessing;
+    await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(internal.activeSessions.has(sessionKey)).toBe(false));
+    expect(internal.runningCount).toBe(0);
+    delete mockChannels[channel.id];
+  });
+
+  it('scopes full file callback grants to the current turn only', async () => {
+    const outside = '/Users/testuser/Desktop/im-full-outside.md';
+    let scopeId = '';
+    mockRunAgentLoop.mockImplementation(async (convId: string, _text: string, options: {
+      authorizationScopeId: string;
+      filePermissionCallback: (request: { path: string; capability: 'read' | 'write'; toolName: string }) => Promise<boolean>;
+    }) => {
+      scopeId = options.authorizationScopeId;
+      await expect(options.filePermissionCallback({
+        path: outside,
+        capability: 'write',
+        toolName: 'write_file',
+      })).resolves.toBe(true);
+      expect((await checkWritePath(outside, scopeId)).allowed).toBe(true);
+      mockConversations[convId]?.messages.push({ role: 'assistant', content: 'done' });
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(makeMessage(), makeChannel(), 'full');
+
+    expect((await checkWritePath(outside, scopeId)).allowed).toBe(false);
   });
 
   it('does not strip browser tools for the higher tiers', async () => {
@@ -612,6 +966,66 @@ describe('runWithTimeout', () => {
   it('rejects if promise exceeds timeout', async () => {
     const slow = new Promise((resolve) => setTimeout(resolve, 5000));
     await expect(getInternal().runWithTimeout(slow, 50)).rejects.toThrow('timed out');
+  });
+
+  it('waits for the cancelled run to settle before surfacing timeout', async () => {
+    let settleRun!: () => void;
+    const slow = new Promise<void>((resolve) => { settleRun = resolve; });
+    const onTimeout = vi.fn();
+    let rejected = false;
+    let rejection: unknown;
+
+    const observed = getInternal().runWithTimeout(slow, 10, onTimeout).catch((error) => {
+      rejected = true;
+      rejection = error;
+    });
+
+    await vi.waitFor(() => expect(onTimeout).toHaveBeenCalledOnce());
+    await Promise.resolve();
+    expect(rejected).toBe(false);
+
+    settleRun();
+    await observed;
+    expect(rejected).toBe(true);
+    expect(rejection).toEqual(expect.objectContaining({ message: expect.stringContaining('timed out') }));
+  });
+
+  it('bounds abort settlement wait and exposes the still-running settlement for quarantine', async () => {
+    vi.useFakeTimers();
+    try {
+      let settleRun!: () => void;
+      const stuck = new Promise<void>((resolve) => { settleRun = resolve; });
+      const onTimeout = vi.fn();
+      let rejection: unknown;
+
+      const observed = getInternal()
+        .runWithTimeout(stuck, 10, onTimeout, 20)
+        .catch((error) => { rejection = error; });
+
+      await vi.advanceTimersByTimeAsync(29);
+      expect(onTimeout).toHaveBeenCalledOnce();
+      expect(rejection).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await observed;
+      expect(rejection).toEqual(expect.objectContaining({
+        name: 'TimedOutRunStillActiveError',
+        message: expect.stringContaining('timed out'),
+        settlement: expect.any(Promise),
+      }));
+
+      let quarantinedRunSettled = false;
+      const settlement = (rejection as { settlement: Promise<void> }).settlement
+        .then(() => { quarantinedRunSettled = true; });
+      await Promise.resolve();
+      expect(quarantinedRunSettled).toBe(false);
+
+      settleRun();
+      await settlement;
+      expect(quarantinedRunSettled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('propagates original error if promise rejects before timeout', async () => {

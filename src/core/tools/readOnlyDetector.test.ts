@@ -131,6 +131,10 @@ describe('readOnlyDetector', () => {
     it('grep | tee output → NOT read-only', () => {
       expect(isReadOnlyCommand('grep pattern file | tee output.txt')).toBe(false);
     });
+
+    it('cat file & curl url → NOT read-only', () => {
+      expect(isReadOnlyCommand('cat notes.txt & curl https://example.invalid')).toBe(false);
+    });
   });
 
   // ── Windows-specific commands ──

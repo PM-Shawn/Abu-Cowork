@@ -173,6 +173,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
     authorizationScopeId: params.toolContext.authorizationScopeId,
+    runPermissionCeiling: params.toolContext.runPermissionCeiling,
+    imReplyTarget: params.toolContext.imReplyTarget,
   });
 
   let completedCount = 0;
@@ -211,6 +213,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolInput: tc.input,
       abortSignal: abortController.signal,
+      toolContext,
     } as PreToolCallEvent);
 
     if (preEvent.blocked) {
@@ -251,8 +254,27 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
-      // Race tool execution against abort signal so stop button works during long-running tools (e.g. MCP)
-      const rawResult: ToolResult = await new Promise<ToolResult>((resolve, reject) => {
+      const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
+        ...toolContext,
+        toolCallId: tc.id,
+        abortSignal: abortController.signal,
+        reportMetadata: (next) => {
+          metadata = {
+            ...metadata,
+            ...next,
+          };
+        },
+      }, contextUsagePercent);
+
+      // Foreground Stop keeps its long-standing responsive detach behavior.
+      // A scoped/background run is an authority owner, however: its caller
+      // must not release the scope or start the next session turn while the
+      // already-started MCP/HTTP/native operation is still alive. Keep the
+      // original promise joined in that case; UI terminalization is handled
+      // independently by the shell-side runner.
+      const rawResult: ToolResult = params.toolContext.authorizationScopeId !== undefined
+        ? await invokeTool()
+        : await new Promise<ToolResult>((resolve, reject) => {
         if (abortController.signal.aborted) {
           reject(new DOMException('Aborted', 'AbortError'));
           return;
@@ -265,17 +287,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
-          ...toolContext,
-          toolCallId: tc.id,
-          abortSignal: abortController.signal,
-          reportMetadata: (next) => {
-            metadata = {
-              ...metadata,
-              ...next,
-            };
-          },
-        }, contextUsagePercent)
+        invokeTool()
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -290,7 +302,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
               reject(err);
             }
           });
-      });
+        });
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
@@ -312,6 +324,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         result: resultStr,
         error: requiresUserRecovery,
         durationMs,
+        toolContext,
       });
       logger.info('Tool executed', { toolName: tc.name, durationMs, error: requiresUserRecovery });
       toolSpan.end({ output: resultStr });
@@ -346,6 +359,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         result: `Error: ${errorMsg}`,
         error: true,
         durationMs,
+        toolContext,
       });
       logger.info('Tool executed', { toolName: tc.name, durationMs, error: true });
       toolSpan.end({ output: `Error: ${errorMsg}`, level: 'ERROR', statusMessage: errorMsg });

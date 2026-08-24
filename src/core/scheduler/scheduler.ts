@@ -20,6 +20,8 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
+import { getToolInvoker } from '../agent/ports/toolInvoker';
+import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
@@ -199,14 +201,26 @@ class SchedulerEngine {
     }
 
     const authorizationScopeId = createAuthorizationScope();
-    const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
-
     try {
+      // Everything after scope creation belongs inside this lifecycle owner.
+      // Tool discovery and permission initialization can throw synchronously;
+      // the finally below must still dispose the scope and release runningTasks.
+      const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
+      const runPermissionCeiling = buildScheduledRunPermissionCeiling(
+        getToolInvoker().getAllTools().map((tool) => tool.name),
+      );
+      // Builder output is deeply frozen. AgentLoopOptions predates immutable
+      // rosters and types this field as mutable, but no consumer mutates it;
+      // keep the exact frozen host snapshot at both authorization boundaries.
+      const allowedTools = runPermissionCeiling.allowedTools as string[];
+
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: permissions.commandConfirmCallback,
         filePermissionCallback: permissions.filePermissionCallback,
         blockedTools: permissions.blockedTools,
+        allowedTools,
         authorizationScopeId,
+        runPermissionCeiling,
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { lstat } from '@tauri-apps/plugin-fs';
 import {
   checkReadPath,
   checkWritePath,
@@ -16,6 +17,8 @@ import { setPlatformForTest } from '../../test/helpers';
 
 describe('pathSafety', () => {
   beforeEach(() => {
+    vi.mocked(lstat).mockReset();
+    vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as never);
     // Clear any authorized workspaces by revoking known ones
     revokeWorkspace('/Users/testuser/Projects/myapp');
     revokeWorkspace('/tmp/test');
@@ -133,6 +136,42 @@ describe('pathSafety', () => {
       authorizeWorkspace('/Users/testuser/Projects/myapp');
       const result = await checkReadPath('/Users/testuser/Projects/myapp');
       expect(result.allowed).toBe(true);
+    });
+
+    it('rejects a scoped path whose parent component is a symlink', async () => {
+      const ws = '/Users/testuser/Projects/symlink-scope';
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, ws, ['read', 'write']);
+      vi.mocked(lstat).mockImplementation(async (candidate) => ({
+        isSymlink: String(candidate).endsWith('/link'),
+      }) as never);
+
+      try {
+        const escapedPath = `${ws}/link/outside.txt`;
+        expect((await checkReadPath(escapedPath, scopeId)).allowed).toBe(false);
+        expect((await checkWritePath(escapedPath, scopeId)).allowed).toBe(false);
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('starts symlink inspection inside the Electron file capability root', async () => {
+      const ws = '/Users/testuser/Projects/electron-scope';
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, ws, ['read']);
+      vi.mocked(lstat).mockImplementation(async (candidate) => {
+        if (String(candidate) === '/Users') {
+          throw new Error('fs: path is outside the allowed scope: /Users');
+        }
+        return { isSymlink: false } as never;
+      });
+
+      try {
+        expect((await checkReadPath(`${ws}/notes.txt`, scopeId)).allowed).toBe(true);
+        expect(lstat).not.toHaveBeenCalledWith('/Users');
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
     });
 
     it('keeps an explicit read-only scope from inheriting a global write grant on the same path', async () => {

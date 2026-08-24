@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Skill } from '../../types';
 import { clearAllHooks, emitHook } from '../agent/lifecycleHooks';
 import { activateSkillHooks } from './skillHooks';
+import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 
 function setElectronMarker(enabled: boolean): void {
   const runtime = globalThis as typeof globalThis & {
@@ -113,6 +114,74 @@ describe('skill command hooks', () => {
         commandId: expect.stringMatching(/^skill-hook-/),
       }),
     );
+    cleanup();
+  });
+
+  it('blocks hook commands for non-full unattended runs before native execution', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const cleanup = activateSkillHooks(skillWithHooks(), {
+      runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'safe_tools' }),
+    });
+
+    const event = await emitHook({
+      type: 'preToolCall',
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3)
+      toolName: 'write_file',
+      toolInput: {},
+    });
+
+    expect(event.blocked).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('does not run one loop\'s skill hook on another loop or borrow the other loop\'s authority', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const cleanup = activateSkillHooks(skillWithHooks(), {
+      conversationId: 'conv-a',
+      loopId: 'loop-a',
+      runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'safe_tools' }),
+    });
+
+    const event = await emitHook({
+      type: 'preToolCall',
+      timestamp: 1_700_000_000_000,
+      conversationId: 'conv-b',
+      toolName: 'write_file',
+      toolInput: {},
+      toolContext: {
+        conversationId: 'conv-b',
+        loopId: 'loop-b',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'full' }),
+        skillCommandApproval: async () => ({ decision: 'allow' }),
+      },
+    });
+
+    expect(event.blocked).not.toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('blocks hard-blocked pre-tool hook commands under full unattended runs', async () => {
+    const skill = skillWithHooks();
+    skill.hooks!.PreToolUse![0].hooks[0] = { type: 'command', command: 'rm -rf /' };
+    const cleanup = activateSkillHooks(skill, {
+      runPermissionCeiling: {
+        version: 1,
+        source: 'trigger',
+        capability: 'full',
+      },
+    });
+
+    const event = await emitHook({
+      type: 'preToolCall',
+      timestamp: 1_700_000_000_000, // filler (TESTING.md §3)
+      toolName: 'write_file',
+      toolInput: {},
+    });
+
+    expect(event.blocked).toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
     cleanup();
   });
 });

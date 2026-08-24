@@ -2,7 +2,7 @@
  * AuthGate Tests
  */
 import { describe, it, expect } from 'vitest';
-import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel } from './authGate';
+import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel, getCallbacksForLevel } from './authGate';
 import { matchesToolName } from '../skill/toolFilter';
 import type { IMChannel } from '../../types/imChannel';
 
@@ -135,12 +135,23 @@ describe('getAllowedToolsForLevel', () => {
     }
   });
 
-  it('returns undefined — never an empty array — for the levels with no roster', () => {
+  it('caps chat_only and safe_tools explicitly while leaving full unrestricted', () => {
     // An empty array reads as "unrestricted" at every enforcement point
-    // (`allowedTools?.length && ...`), so returning [] here would hand
-    // safe_tools/full a silently-open gate.
-    for (const level of ['chat_only', 'safe_tools', 'full'] as const) {
-      expect(getAllowedToolsForLevel(level), level).toBeUndefined();
-    }
+    // (`allowedTools?.length && ...`), so chat_only uses a never-match
+    // sentinel instead of [].
+    expect(getAllowedToolsForLevel('chat_only')).toEqual(['__chat_only_no_tools__']);
+    expect(getAllowedToolsForLevel('safe_tools')).toEqual(expect.arrayContaining(['write_file']));
+    expect(getAllowedToolsForLevel('safe_tools')).toContain('send_file');
+    expect(getAllowedToolsForLevel('safe_tools')).not.toContain('run_command');
+    expect(getAllowedToolsForLevel('full')).toBeUndefined();
+  });
+
+  it('keeps the safe_tools fallback callbacks fail-closed outside its pre-authorized run scope', async () => {
+    const callbacks = getCallbacksForLevel('safe_tools');
+    await expect(callbacks.commandConfirmCallback({ command: 'ls', level: 'safe' })).resolves.toBe(false);
+    await expect(callbacks.filePermissionCallback({
+      path: '/Users/testuser/Desktop/outside.txt',
+      capability: 'read',
+    })).resolves.toBe(false);
   });
 });

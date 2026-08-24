@@ -305,6 +305,15 @@ function isInAuthorizedWorkspace(
   return false;
 }
 
+export function isInScopedAuthorizedWorkspace(
+  path: string,
+  capability: 'read' | 'write' = 'read',
+  scopeId?: AuthorizationScopeId,
+): boolean {
+  if (scopeId === undefined) return false;
+  return isInAuthorizedWorkspace(normalizePath(path), capability, scopeId);
+}
+
 /**
  * Fold a path for the `~/.abu` comparisons below.
  *
@@ -510,18 +519,78 @@ async function isBlockedPath(path: string): Promise<{ blocked: boolean; reason?:
   return { blocked: false };
 }
 
+function isMissingPathError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  if (code === 'ENOENT' || code === 'ENOTDIR') return true;
+  return /enoent|enotdir|not found|no such file|cannot find/i.test(String(error));
+}
+
+function pathComponentPrefixes(path: string, trustedRoot?: string): string[] {
+  const normalized = normalizePath(path);
+  const driveMatch = normalized.match(/^([a-zA-Z]:)\/(.*)$/);
+  const root = driveMatch ? `${driveMatch[1]}/` : '/';
+  const tail = driveMatch ? driveMatch[2] : normalized.replace(/^\//, '');
+  const prefixes: string[] = [];
+  let cursor = root;
+  for (const component of tail.split('/').filter(Boolean)) {
+    cursor = cursor === '/' || /^[a-zA-Z]:\/$/.test(cursor)
+      ? `${cursor}${component}`
+      : `${cursor}/${component}`;
+    prefixes.push(cursor);
+  }
+  if (!trustedRoot) return prefixes;
+
+  const normalizedRoot = normalizePath(trustedRoot);
+  const compareRoot = normalizeForCompare(normalizedRoot);
+  return prefixes.filter((prefix) => {
+    const comparePrefix = normalizeForCompare(prefix);
+    return comparePrefix !== compareRoot && comparePrefix.startsWith(`${compareRoot}/`);
+  });
+}
+
+async function getTrustedSymlinkInspectionRoot(path: string): Promise<string | undefined> {
+  if (isWindows()) return undefined;
+
+  const normalizedPath = normalizePath(path);
+  const candidates = [
+    await getHomeDir(),
+    ...ALWAYS_ALLOWED_PATHS,
+    '/Volumes',
+    '/Applications',
+  ]
+    .map((candidate) => normalizePath(candidate))
+    .sort((a, b) => b.length - a.length);
+
+  return candidates.find((candidate) => {
+    const comparePath = normalizeForCompare(normalizedPath);
+    const compareCandidate = normalizeForCompare(candidate);
+    return comparePath === compareCandidate || comparePath.startsWith(`${compareCandidate}/`);
+  });
+}
+
 /**
- * Check if any component of a path is a symlink that could bypass security checks.
- * Returns true if a symlink is detected pointing outside expected boundaries.
+ * Check every existing component, not just the final entry. A lexical path
+ * such as `<workspace>/link/secret` escapes the run scope when `link` points
+ * elsewhere even though `lstat(secret)` itself reports a regular file.
  */
 async function isSymlinkBypass(path: string): Promise<boolean> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymlink) {
-      return true;
+  // Electron's plugin-fs host deliberately cannot inspect ancestors above its
+  // capability roots (for example `/Users` above `$HOME`). Treat the matched
+  // host root as a trusted anchor and inspect every descendant component. The
+  // host independently canonicalizes that root, while this layer still catches
+  // a symlink that escapes a narrower run/workspace scope inside it.
+  const trustedRoot = await getTrustedSymlinkInspectionRoot(path);
+  for (const componentPath of pathComponentPrefixes(path, trustedRoot)) {
+    try {
+      const info = await lstat(componentPath);
+      if (info.isSymlink) return true;
+    } catch (error) {
+      // Once an ancestor is missing, no deeper component can currently be a
+      // symlink. Other inspection errors fail closed.
+      return !isMissingPathError(error);
     }
-  } catch {
-    // File doesn't exist yet (write) or can't be stat'd — not a symlink bypass
   }
   return false;
 }

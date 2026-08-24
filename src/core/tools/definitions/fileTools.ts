@@ -267,9 +267,14 @@ export const writeFileTool: ToolDefinition = {
         conversationId: context?.conversationId,
       });
       await writeTextFile(path, finalContent);
-      // Lazily bind a managed default workspace on the first write under ~/Abu/
-      // (fire-and-forget — must never affect the write result).
-      void bindWorkspaceFromWrite(context?.conversationId, path);
+      // Lazily bind a managed default workspace only for a shell-confirmed
+      // foreground turn. Background IM/schedule/trigger runs carry scoped,
+      // per-run grants; persisting one here would silently widen that temporary
+      // authority into a global read/write/execute workspace grant.
+      if (context?.interactionMode === 'foreground') {
+        // Fire-and-forget — workspace bookkeeping must never affect the write.
+        void bindWorkspaceFromWrite(context.conversationId, path);
+      }
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {
       return `Error writing file: ${err instanceof Error ? err.message : String(err)}`;

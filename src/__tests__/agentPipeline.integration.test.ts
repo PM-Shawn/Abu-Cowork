@@ -207,6 +207,8 @@ vi.mock('../core/agent/lifecycleHooks', () => ({
 
 vi.mock('../core/tools/builtins', () => ({
   clearAllSkillHooks: vi.fn(),
+  clearSkillHooksByConversation: vi.fn(),
+  clearSkillHooksByLoop: vi.fn(),
 }));
 
 vi.mock('../core/agent/toolExecutor', () => ({

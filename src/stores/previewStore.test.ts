@@ -1,15 +1,35 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { usePreviewStore, type WorkspaceTab } from './previewStore';
+import { makeBatchKey, type BatchIdentity } from '@/types';
+import {
+  BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
+  useBatchProgressStore,
+} from './batchProgressStore';
+import { subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
 
 function reset() {
   usePreviewStore.setState({
     tabs: [],
     activeTabId: null,
+    focusTabId: null,
     menuOpen: false,
+    appModalOpen: false,
     previewFilePath: null,
     chatWidth: null,
     reloadNonce: 0,
     fileTreeMode: false,
+  });
+  useBatchProgressStore.setState({
+    batches: {},
+    activeVisibleBatchKey: undefined,
+    richAccessClock: 0,
+    richContentDiagnostics: {
+      totalRetainedRichBytes: 0,
+      retainedRichBytesCap: BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
+      overageBytes: 0,
+      evictionCount: 0,
+      releasedBatchCount: 0,
+      lastEvictedKey: undefined,
+    },
   });
 }
 
@@ -20,7 +40,20 @@ function kinds(): string[] {
 function describeTab(t: WorkspaceTab): string {
   if (t.kind === 'preview') return t.filePath;
   if (t.kind === 'browser') return t.url;
+  if (t.kind === 'subagent') return `${makeBatchKey(t.identity)}:${t.taskIndex}`;
   return '';
+}
+
+function identity(conversationId: string, batchToolCallId = 'tool-call'): BatchIdentity {
+  return { conversationId, batchToolCallId };
+}
+
+function initBatch(identityValue: BatchIdentity) {
+  useBatchProgressStore.getState().initBatch(identityValue, ['Subagent']);
+}
+
+function batch(identityValue: BatchIdentity) {
+  return useBatchProgressStore.getState().batches[makeBatchKey(identityValue)];
 }
 
 describe('previewStore', () => {
@@ -122,6 +155,99 @@ describe('previewStore', () => {
       const s = usePreviewStore.getState();
       expect(s.tabs.filter((t) => t.kind === 'terminal')).toHaveLength(2);
       expect(s.previewFilePath).toBeNull();
+    });
+  });
+
+  describe('openSubagent lifecycle', () => {
+    it('uses identity+taskIndex as the tab id, dedupes, activates, focuses, and expands the panel', async () => {
+      const { useSettingsStore } = await import('./settingsStore');
+      const idn = identity('conv-subagent', 'batch-1');
+      initBatch(idn);
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+
+      const id = usePreviewStore.getState().openSubagent(idn, 0, 'Worker A');
+      const duplicate = usePreviewStore.getState().openSubagent(idn, 0, 'Worker A');
+
+      expect(id).toBe(subagentTabId(idn, 0));
+      expect(duplicate).toBe(id);
+      expect(usePreviewStore.getState().tabs).toHaveLength(1);
+      expect(usePreviewStore.getState().activeTabId).toBe(id);
+      expect(usePreviewStore.getState().focusTabId).toBe(id);
+      expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+      expect(batch(idn).viewLeaseCount).toBe(1);
+      expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBe(makeBatchKey(idn));
+    });
+
+    it('isolates two conversations with the same batch tool call id', () => {
+      const a = identity('conv-a', 'shared');
+      const b = identity('conv-b', 'shared');
+      initBatch(a);
+      initBatch(b);
+
+      usePreviewStore.getState().openSubagent(a, 0, 'A');
+      usePreviewStore.getState().openSubagent(b, 0, 'B');
+
+      expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([
+        subagentTabId(a, 0),
+        subagentTabId(b, 0),
+      ]);
+      expect(batch(a).viewLeaseCount).toBe(1);
+      expect(batch(b).viewLeaseCount).toBe(1);
+    });
+
+    it('balances view leases across closeTab, closeOtherTabs, closeAllTabs and conversation-switch clear', () => {
+      const a = identity('conv-close-a', 'batch');
+      const b = identity('conv-close-b', 'batch');
+      const c = identity('conv-close-c', 'batch');
+      initBatch(a);
+      initBatch(b);
+      initBatch(c);
+      const aTab = usePreviewStore.getState().openSubagent(a, 0, 'A');
+      const bTab = usePreviewStore.getState().openSubagent(b, 0, 'B');
+      usePreviewStore.getState().openSubagent(c, 0, 'C');
+
+      usePreviewStore.getState().closeTab(bTab);
+      expect(batch(a).viewLeaseCount).toBe(1);
+      expect(batch(b).viewLeaseCount).toBe(0);
+      expect(batch(c).viewLeaseCount).toBe(1);
+
+      usePreviewStore.getState().closeOtherTabs(aTab);
+      expect(batch(a).viewLeaseCount).toBe(1);
+      expect(batch(c).viewLeaseCount).toBe(0);
+
+      usePreviewStore.getState().closeAllTabs();
+      expect(batch(a).viewLeaseCount).toBe(0);
+
+      usePreviewStore.getState().openSubagent(a, 0, 'A');
+      usePreviewStore.getState().closePreview();
+      expect(batch(a).viewLeaseCount).toBe(0);
+    });
+
+    it('updates active protection on subagent/non-subagent transitions without changing run state', () => {
+      const idn = identity('conv-protect', 'batch');
+      initBatch(idn);
+      useBatchProgressStore.getState().setTaskRunning(idn, 0);
+      usePreviewStore.getState().openSubagent(idn, 0, 'Agent');
+      expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBe(makeBatchKey(idn));
+
+      usePreviewStore.getState().openBrowser('https://example.com');
+      expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBeUndefined();
+      expect(batch(idn).runLeaseCount).toBe(1);
+      expect(batch(idn).tasks[0].status).toBe('running');
+
+      const subagentId = subagentTabId(idn, 0);
+      usePreviewStore.getState().activateTab(subagentId);
+      expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBe(makeBatchKey(idn));
+    });
+
+    it('does not treat reorder as a rich-access event', () => {
+      const idn = identity('conv-reorder', 'batch');
+      initBatch(idn);
+      const subagentId = usePreviewStore.getState().openSubagent(idn, 0, 'Agent');
+      usePreviewStore.getState().openBrowser('https://example.com');
+      const before = batch(idn).lastRichAccessTick;
+      usePreviewStore.getState().reorderTabs(subagentId, usePreviewStore.getState().tabs[1].id);
+      expect(batch(idn).lastRichAccessTick).toBe(before);
     });
   });
 

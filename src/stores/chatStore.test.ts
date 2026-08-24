@@ -2127,6 +2127,131 @@ describe('chatStore', () => {
       }));
     });
 
+    it('checkpoints a legal minimal batch summary without storing rich task details', () => {
+      const convId = seedToolCall('run_agent_batch');
+
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 2,
+            counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+            prompt: 'do not persist',
+            resultContent: [{ type: 'image', source: { data: 'base64' } }],
+            tasks: [
+              { taskIndex: 0, status: 'succeeded', terminalReason: 'completed', output: 'do not persist' },
+              { taskIndex: 1, status: 'stopped', terminalReason: 'aborted', steps: ['do not persist'] },
+            ],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('prompt');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('output');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('resultContent');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('steps');
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('does not let a late all-success response regress a stopped batch checkpoint', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      );
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late success',
+        undefined,
+        false,
+        undefined,
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary?.counts.stopped).toBe(1);
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('merges cumulative partial batch summaries and keeps coarse completed from clearing non-success state', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+        },
+      });
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      });
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late completed envelope',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'completed' },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(getToolCall(convId)?.isError).toBe(true);
+      expect(getToolCall(convId)?.subagentStopReason).toBe('completed');
+    });
+
     it('lifts a skill-proposal notice_card from JSON result onto the tool call', () => {
       const convId = seedToolCall();
       const result = JSON.stringify({

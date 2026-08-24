@@ -28,6 +28,7 @@
 import type {
   ImageAttachment,
   SubagentStopReason,
+  ToolExecutionMetadata,
   ToolDefinition,
   ToolResult,
   ToolExecutionContext,
@@ -50,6 +51,7 @@ import {
   createAgentRunTerminal,
   type AgentRunTerminal,
 } from '@/core/agent/agentRunTerminal';
+import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -174,16 +176,58 @@ function isSubagentStopReason(value: unknown): value is SubagentStopReason {
   return value === 'completed' || value === 'aborted' || value === 'error' || value === 'max_turns';
 }
 
+function parseToolExecutionMetadata(
+  value: unknown,
+  expectedBatchIdentity?: { conversationId?: string; batchToolCallId?: string },
+): ToolExecutionMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
+  const metadata: ToolExecutionMetadata = {};
+  if (value.subagentStopReason !== undefined) {
+    if (!isSubagentStopReason(value.subagentStopReason)) {
+      throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
+    }
+    metadata.subagentStopReason = value.subagentStopReason;
+  }
+  if (value.batchTerminalSummary !== undefined) {
+    const summary = normalizeBatchTerminalSummary(value.batchTerminalSummary, expectedBatchIdentity);
+    if (!summary) {
+      throw new RpcError(-32603, 'Invalid tool.invoke batch summary envelope');
+    }
+    metadata.batchTerminalSummary = summary;
+  }
+  if (value.sandboxRecovery !== undefined) {
+    if (!isRecord(value.sandboxRecovery) || value.sandboxRecovery.kind !== 'app-automation') {
+      throw new RpcError(-32603, 'Invalid tool.invoke sandbox recovery envelope');
+    }
+    metadata.sandboxRecovery = typeof value.sandboxRecovery.targetApp === 'string'
+      ? { kind: 'app-automation', targetApp: value.sandboxRecovery.targetApp }
+      : { kind: 'app-automation' };
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 function unwrapToolInvokeResult(response: unknown, context: ToolExecutionContext | undefined): ToolResult {
   if (!isRecord(response)) return response as ToolResult;
-  if (!('result' in response) || !isSubagentStopReason(response.subagentStopReason)) {
-    throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
+  if (!('result' in response)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
   }
   const result = response.result;
   if (typeof result !== 'string' && !Array.isArray(result)) {
     throw new RpcError(-32603, 'Invalid tool.invoke result in subagent metadata envelope');
   }
-  context?.reportMetadata?.({ subagentStopReason: response.subagentStopReason });
+  const metadata = parseToolExecutionMetadata(
+    response.metadata ?? (
+      response.subagentStopReason !== undefined
+        ? { subagentStopReason: response.subagentStopReason }
+        : undefined
+    ),
+    {
+      conversationId: context?.conversationId,
+      batchToolCallId: context?.toolCallId,
+    },
+  );
+  if (metadata) context?.reportMetadata?.(metadata);
   return result as ToolResult;
 }
 

@@ -51,6 +51,11 @@
  */
 import type { ChatDelta } from '@/core/agent/ports/chatDelta';
 import type { ConversationReader } from '@/core/agent/ports/conversationReader';
+import {
+  batchSummaryHasNonSuccess,
+  mergeBatchTerminalSummaries,
+  normalizeBatchTerminalSummary,
+} from '@/core/agent/batchTerminalSummary';
 import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 
@@ -74,6 +79,11 @@ export interface ConversationRunMirror {
   applyConvPatch(patch: ConversationPatch): void;
   /** Live workspacePath read for the per-run `WorkspaceReader` — always reflects the latest conv-patch/write. */
   getWorkspacePathSnapshot(): string | null;
+}
+
+function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
+  return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
+    || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
 }
 
 export function createConversationRunMirror(
@@ -191,11 +201,55 @@ export function createConversationRunMirror(
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
           }
-          if (metadata?.subagentStopReason) {
+          if (
+            metadata?.subagentStopReason
+            && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+          ) {
             tc.subagentStopReason = metadata.subagentStopReason;
-            tc.isError = metadata.subagentStopReason !== 'completed';
+            tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+          }
+          const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
+            conversationId,
+            batchToolCallId: toolCallId,
+          });
+          if (incomingSummary) {
+            tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+            if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+            else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
           }
           tc.isExecuting = false;
+        }
+        break;
+      }
+      case 'checkpointToolCallMetadata': {
+        const [, messageId, toolCallId, metadata] = args as [
+          string,
+          string,
+          string,
+          import('@/types').ToolExecutionMetadata,
+        ];
+        const msg = conversation.messages.find((m) => m.id === messageId);
+        const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
+        if (!tc) break;
+        if (
+          metadata.subagentStopReason
+          && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+        ) {
+          tc.subagentStopReason = metadata.subagentStopReason;
+          tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+        }
+        const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
+          conversationId,
+          batchToolCallId: toolCallId,
+        });
+        if (incomingSummary) {
+          tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+          if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+          else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+        }
+        if (tc.name === 'run_command' && metadata.sandboxRecovery) {
+          tc.sandboxRecovery = metadata.sandboxRecovery;
+          tc.isError = true;
         }
         break;
       }

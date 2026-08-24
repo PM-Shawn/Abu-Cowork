@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight } from 'lucide-react';
-import { usePreviewStore, type WorkspaceTab } from '@/stores/previewStore';
+import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot } from 'lucide-react';
+import {
+  usePreviewStore,
+  workspaceTabButtonId,
+  workspaceTabPanelId,
+  type WorkspaceTab,
+} from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { getBaseName } from '@/utils/pathUtils';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -17,6 +22,7 @@ function tabIcon(tab: WorkspaceTab) {
   if (tab.kind === 'summary') return ListChecks;
   if (tab.kind === 'preview') return FileText;
   if (tab.kind === 'browser') return AppWindow;
+  if (tab.kind === 'subagent') return Bot;
   return SquareTerminal;
 }
 
@@ -34,6 +40,7 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
       return tab.url;
     }
   }
+  if (tab.kind === 'subagent') return tab.title || t.workspace.agentTitle;
   return t.workspace.terminalTitle;
 }
 
@@ -59,6 +66,8 @@ export default function TabStrip() {
   const closeOtherTabs = usePreviewStore((s) => s.closeOtherTabs);
   const closeAllTabs = usePreviewStore((s) => s.closeAllTabs);
   const reorderTabs = usePreviewStore((s) => s.reorderTabs);
+  const focusTabId = usePreviewStore((s) => s.focusTabId);
+  const consumeFocusTabRequest = usePreviewStore((s) => s.consumeFocusTabRequest);
   const openSummary = usePreviewStore((s) => s.openSummary);
   const openBrowser = usePreviewStore((s) => s.openBrowser);
   const openTerminal = usePreviewStore((s) => s.openTerminal);
@@ -76,6 +85,7 @@ export default function TabStrip() {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const dragMovedRef = useRef(false);
   const dragCleanupRef = useRef<(() => void) | null>(null);
+  const tabButtonRefs = useRef(new Map<string, HTMLButtonElement>());
 
   const closeMenus = () => {
     setNewTabMenuPos(null);
@@ -160,9 +170,58 @@ export default function TabStrip() {
     dragCleanupRef.current = cleanupListeners;
   };
 
+  const focusTabButton = (id: string) => {
+    const schedule = window.requestAnimationFrame ?? ((cb: FrameRequestCallback) => window.setTimeout(() => cb(performance.now()), 0));
+    schedule(() => {
+      tabButtonRefs.current.get(id)?.focus();
+    });
+  };
+
+  const activateAndFocusIndex = (index: number) => {
+    const tab = tabs[index];
+    if (!tab) return;
+    activateTab(tab.id);
+    focusTabButton(tab.id);
+  };
+
+  const handleTabKeyDown = (id: string) => (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    const currentIndex = tabs.findIndex((tab) => tab.id === id);
+    if (currentIndex === -1 || tabs.length === 0) return;
+    switch (e.key) {
+      case 'ArrowLeft':
+        e.preventDefault();
+        activateAndFocusIndex((currentIndex - 1 + tabs.length) % tabs.length);
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        activateAndFocusIndex((currentIndex + 1) % tabs.length);
+        break;
+      case 'Home':
+        e.preventDefault();
+        activateAndFocusIndex(0);
+        break;
+      case 'End':
+        e.preventDefault();
+        activateAndFocusIndex(tabs.length - 1);
+        break;
+      case 'Delete':
+        e.preventDefault();
+        closeTab(id, { focusAfterClose: true });
+        break;
+    }
+  };
+
   useEffect(() => () => {
     dragCleanupRef.current?.();
   }, []);
+
+  useEffect(() => {
+    if (!focusTabId) return;
+    const el = tabButtonRefs.current.get(focusTabId);
+    if (!el) return;
+    el.focus();
+    consumeFocusTabRequest(focusTabId);
+  }, [focusTabId, consumeFocusTabRequest, tabs]);
 
   // Tell the store when a popover is open so a native browser webview (which
   // paints over React) hides instead of occluding the menu.
@@ -195,71 +254,93 @@ export default function TabStrip() {
     <div
       data-abu-workspace-tabs
       className={cn(
-        'relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1 overflow-x-auto',
+        'relative shrink-0 flex items-center border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)] pr-1',
         windowsWorkspaceHeader && 'h-11',
       )}
     >
-      {tabs.map((tab) => {
-        const Icon = tabIcon(tab);
-        const active = tab.id === activeTabId;
-        return (
-          <div
-            key={tab.id}
-            data-tab-id={tab.id}
-            role="tab"
-            aria-selected={active}
-            onPointerDown={handleTabPointerDown(tab.id)}
-            onClick={() => {
-              // Suppress the click that follows an actual drag (would re-activate).
-              if (dragMovedRef.current) return;
-              activateTab(tab.id);
-            }}
-            onAuxClick={(e) => {
-              // Middle-click closes the tab.
-              if (e.button === 1) closeTab(tab.id);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              openContextMenu(tab.id, e.clientX, e.clientY);
-            }}
-            className={cn(
-              'group flex items-center gap-1.5 px-2.5 max-w-[160px] shrink-0 select-none',
-              windowsWorkspaceHeader ? 'h-full' : 'h-8',
-              'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
-              draggingId === tab.id && 'cursor-grabbing',
-              active
-                ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
-                : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
-              // The dragged tab lifts off the strip; a drop target gets highlighted.
-              // pointer-events-none lets elementFromPoint "see through" it to the
-              // tab underneath (the drop target) instead of hitting itself.
-              draggingId === tab.id && 'relative z-20 shadow-lg opacity-90 rounded-md bg-[var(--abu-bg-base)] pointer-events-none',
-              // Drop target: a neutral vertical insertion line on the left edge
-              // (an "insert here" caret) — NOT a filled accent/red fill, which
-              // reads as a "can't drop" state.
-              dragOverId === tab.id && 'shadow-[inset_2px_0_0_0_var(--abu-text-primary)]',
-            )}
-            style={draggingId === tab.id ? { transform: `translateX(${dragDx}px)` } : undefined}
-          >
-            <Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
-            <span className="truncate flex-1">{tabTitle(tab, t)}</span>
-            <button
-              type="button"
-              // Don't let pressing × start a tab drag (which would flip the tab to
-              // pointer-events-none and swallow this click).
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                closeTab(tab.id);
+      <div role="tablist" aria-label={t.workspace.tabListLabel} className="flex min-w-0 flex-1 overflow-x-auto">
+        {tabs.map((tab) => {
+          const Icon = tabIcon(tab);
+          const active = tab.id === activeTabId;
+          const title = tabTitle(tab, t);
+          return (
+            <div
+              key={tab.id}
+              role="presentation"
+              data-tab-id={tab.id}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                openContextMenu(tab.id, e.clientX, e.clientY);
               }}
-              className="shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--abu-bg-pressed)]"
-              title={t.workspace.closeTab}
+              className={cn(
+                'group flex items-center max-w-[160px] shrink-0 select-none',
+                windowsWorkspaceHeader ? 'h-full' : 'h-8',
+                'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
+                draggingId === tab.id && 'cursor-grabbing',
+                active
+                  ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
+                  : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
+                // The dragged tab lifts off the strip; a drop target gets highlighted.
+                // pointer-events-none lets elementFromPoint "see through" it to the
+                // tab underneath (the drop target) instead of hitting itself.
+                draggingId === tab.id && 'relative z-20 shadow-lg opacity-90 rounded-md bg-[var(--abu-bg-base)] pointer-events-none',
+                // Drop target: a neutral vertical insertion line on the left edge
+                // (an "insert here" caret) — NOT a filled accent/red fill, which
+                // reads as a "can't drop" state.
+                dragOverId === tab.id && 'shadow-[inset_2px_0_0_0_var(--abu-text-primary)]',
+              )}
+              style={draggingId === tab.id ? { transform: `translateX(${dragDx}px)` } : undefined}
             >
-              <X className="w-3 h-3" strokeWidth={1.5} />
-            </button>
-          </div>
-        );
-      })}
+              <button
+                id={workspaceTabButtonId(tab.id)}
+                ref={(node) => {
+                  if (node) tabButtonRefs.current.set(tab.id, node);
+                  else tabButtonRefs.current.delete(tab.id);
+                }}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                aria-controls={workspaceTabPanelId(tab.id)}
+                tabIndex={active ? 0 : -1}
+                onPointerDown={handleTabPointerDown(tab.id)}
+                onClick={() => {
+                  // Suppress the click that follows an actual drag (would re-activate).
+                  if (dragMovedRef.current) return;
+                  activateTab(tab.id);
+                }}
+                onAuxClick={(e) => {
+                  // Middle-click closes the tab.
+                  if (e.button === 1) closeTab(tab.id);
+                }}
+                onKeyDown={handleTabKeyDown(tab.id)}
+                className={cn(
+                  'flex min-w-0 flex-1 items-center gap-1.5 px-2.5 h-full text-left',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)] focus-visible:ring-inset',
+                )}
+              >
+                <Icon aria-hidden="true" className="w-3.5 h-3.5 shrink-0" strokeWidth={1.5} />
+                <span className="truncate flex-1">{title}</span>
+              </button>
+              <button
+                type="button"
+                tabIndex={-1}
+                // Don't let pressing × start a tab drag (which would flip the tab to
+                // pointer-events-none and swallow this click).
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id, { focusAfterClose: true });
+                }}
+                className="mr-1 shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--abu-bg-pressed)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+                aria-label={format(t.workspace.closeTabLabel, { title })}
+                title={t.workspace.closeTab}
+              >
+                <X aria-hidden="true" className="w-3 h-3" strokeWidth={1.5} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
 
       <Tooltip>
         <TooltipTrigger asChild>
@@ -271,7 +352,7 @@ export default function TabStrip() {
             aria-label={t.workspace.newTab}
             className="ml-0.5 shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)]"
           >
-            <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
+            <Plus aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{t.workspace.newTab}</TooltipContent>
@@ -287,9 +368,10 @@ export default function TabStrip() {
             variant="ghost"
             size="icon-xs"
             onClick={() => setRightPanelCollapsed(true)}
+            aria-label={t.panel.hidePanel}
             className="ml-auto shrink-0 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]"
           >
-            <PanelRight className="w-3.5 h-3.5" strokeWidth={1.5} />
+            <PanelRight aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">{t.panel.hidePanel}</TooltipContent>
@@ -306,15 +388,15 @@ export default function TabStrip() {
                 style={{ top: newTabMenuPos.top, left: newTabMenuPos.left }}
               >
                 <button type="button" className={menuItemCls} onClick={() => { openSummary(); closeMenus(); }}>
-                  <ListChecks className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <ListChecks aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
                   {t.workspace.summaryTitle}
                 </button>
                 <button type="button" className={menuItemCls} onClick={() => { openBrowser(); closeMenus(); }}>
-                  <AppWindow className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <AppWindow aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
                   {t.workspace.newBrowserTab}
                 </button>
                 <button type="button" className={menuItemCls} onClick={() => { openTerminal(); closeMenus(); }}>
-                  <SquareTerminal className="w-3.5 h-3.5" strokeWidth={1.5} />
+                  <SquareTerminal aria-hidden="true" className="w-3.5 h-3.5" strokeWidth={1.5} />
                   {t.workspace.newTerminalTab}
                 </button>
               </div>

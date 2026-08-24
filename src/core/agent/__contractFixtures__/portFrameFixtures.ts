@@ -150,6 +150,11 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
     method: 'updateToolCall',
     args: ['conv-1', 'msg-1', 'tc-1', 'tool result', sampleToolResultContent, true, false, sampleToolExecutionMetadata],
   },
+  {
+    port: 'chat',
+    method: 'checkpointToolCallMetadata',
+    args: ['conv-1', 'msg-1', 'tc-1', sampleToolExecutionMetadata],
+  },
   { port: 'chat', method: 'appendToolCallContext', args: ['conv-1', 'loop-1', sampleToolCallForContext] },
   { port: 'chat', method: 'appendMessageToolCall', args: ['conv-1', 'loop-1', sampleSubagentToolCall] },
   { port: 'chat', method: 'updateMessageUsage', args: ['conv-1', sampleUsage, 'msg-1'] },

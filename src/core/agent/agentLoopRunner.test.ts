@@ -94,6 +94,7 @@ const chatDeltaCancelStreamingMock = vi.fn();
 const chatDeltaDeactivateSkillsMock = vi.fn();
 const chatDeltaAddMessageMock = vi.fn();
 const chatDeltaDeleteMessagesFromMock = vi.fn();
+const chatDeltaCheckpointToolCallMetadataMock = vi.fn();
 vi.mock('./ports/chatDelta', () => ({
   getChatDelta: () => ({
     appendToolCallContext: (...a: unknown[]) => appendToolCallContextMock(...a),
@@ -105,6 +106,7 @@ vi.mock('./ports/chatDelta', () => ({
     deactivateSkills: (...a: unknown[]) => chatDeltaDeactivateSkillsMock(...a),
     addMessage: (...a: unknown[]) => chatDeltaAddMessageMock(...a),
     deleteMessagesFrom: (...a: unknown[]) => chatDeltaDeleteMessagesFromMock(...a),
+    checkpointToolCallMetadata: (...a: unknown[]) => chatDeltaCheckpointToolCallMetadataMock(...a),
   }),
 }));
 
@@ -482,6 +484,7 @@ describe('agentLoopRunner', () => {
     chatDeltaDeactivateSkillsMock.mockReset();
     chatDeltaAddMessageMock.mockReset();
     chatDeltaDeleteMessagesFromMock.mockReset();
+    chatDeltaCheckpointToolCallMetadataMock.mockReset();
     cancelExecutionMock.mockReset();
     scratchpadAddEntryMock.mockReset();
     recordMaxOutputTokensMock.mockReset();
@@ -1514,7 +1517,7 @@ describe('agentLoopRunner', () => {
       );
     });
 
-    it('returns a narrow envelope when a subagent tool reports structured terminal metadata', async () => {
+    it('returns a narrow metadata envelope and checkpoints when a subagent tool reports structured terminal metadata', async () => {
       executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
         const context = args[4] as { reportMetadata?: (value: unknown) => void };
         context.reportMetadata?.({ subagentStopReason: 'max_turns' });
@@ -1523,11 +1526,180 @@ describe('agentLoopRunner', () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
       registerRunSession('run-1', makeSession());
+      chatState = {
+        conversations: {
+          'conv-1': {
+            messages: [{
+              id: 'msg-1',
+              role: 'assistant',
+              content: '',
+              timestamp: 0,
+              toolCalls: [{ id: 'tc-1', name: 'delegate_to_agent', input: {}, isExecuting: true }],
+            }],
+          },
+        },
+        conversationIndex: {},
+      } as unknown as ChatStateStub;
 
       const handler = handlerFor(onSidecarRequest, 'tool.invoke');
-      const result = await handler({ runId: 'run-1', toolName: 'delegate_to_agent', input: {} });
+      const result = await handler({
+        runId: 'run-1',
+        toolName: 'delegate_to_agent',
+        input: {},
+        context: { conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tc-1' },
+      });
 
-      expect(result).toEqual({ result: 'partial report', subagentStopReason: 'max_turns' });
+      expect(result).toEqual({ result: 'partial report', metadata: { subagentStopReason: 'max_turns' } });
+      expect(chatDeltaCheckpointToolCallMetadataMock).toHaveBeenCalledWith(
+        'conv-1',
+        'msg-1',
+        'tc-1',
+        { subagentStopReason: 'max_turns' },
+      );
+    });
+
+    it('does not checkpoint metadata when the wire context forges a different conversation', async () => {
+      executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const context = args[4] as { reportMetadata?: (value: unknown) => void };
+        context.reportMetadata?.({
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        });
+        return 'partial report';
+      });
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = {
+        conversations: {
+          'conv-1': {
+            messages: [{
+              id: 'msg-1',
+              role: 'assistant',
+              content: '',
+              timestamp: 0,
+              toolCalls: [{ id: 'tc-1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+            }],
+          },
+          'other-conv': {
+            messages: [{
+              id: 'msg-1',
+              role: 'assistant',
+              content: '',
+              timestamp: 0,
+              toolCalls: [{ id: 'tc-1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+            }],
+          },
+        },
+        conversationIndex: {},
+      } as unknown as ChatStateStub;
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const result = await handler({
+        runId: 'run-1',
+        toolName: 'run_agent_batch',
+        input: {},
+        context: { conversationId: 'other-conv', assistantMessageId: 'msg-1', toolCallId: 'tc-1' },
+      });
+
+      expect(result).toEqual({
+        result: 'partial report',
+        metadata: {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      });
+      expect(chatDeltaCheckpointToolCallMetadataMock).not.toHaveBeenCalled();
+    });
+
+    it('drops a forged batch summary identity instead of returning or checkpointing it', async () => {
+      executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const context = args[4] as { reportMetadata?: (value: unknown) => void };
+        context.reportMetadata?.({
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'other-conv', batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        });
+        return 'partial report';
+      });
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = {
+        conversations: {
+          'conv-1': {
+            messages: [{
+              id: 'msg-1',
+              role: 'assistant',
+              content: '',
+              timestamp: 0,
+              toolCalls: [{ id: 'tc-1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+            }],
+          },
+        },
+        conversationIndex: {},
+      } as unknown as ChatStateStub;
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const result = await handler({
+        runId: 'run-1',
+        toolName: 'run_agent_batch',
+        input: {},
+        context: { conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tc-1' },
+      });
+
+      expect(result).toBe('partial report');
+      expect(chatDeltaCheckpointToolCallMetadataMock).not.toHaveBeenCalled();
+    });
+
+    it('does not checkpoint into a same-conversation historical same-name tool call that is not live', async () => {
+      executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
+        const context = args[4] as { reportMetadata?: (value: unknown) => void };
+        context.reportMetadata?.({ subagentStopReason: 'max_turns' });
+        return 'partial report';
+      });
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      chatState = {
+        conversations: {
+          'conv-1': {
+            messages: [{
+              id: 'msg-1',
+              role: 'assistant',
+              content: '',
+              timestamp: 0,
+              toolCalls: [{ id: 'tc-1', name: 'delegate_to_agent', input: {}, isExecuting: false }],
+            }],
+          },
+        },
+        conversationIndex: {},
+      } as unknown as ChatStateStub;
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const result = await handler({
+        runId: 'run-1',
+        toolName: 'delegate_to_agent',
+        input: {},
+        context: { conversationId: 'conv-1', assistantMessageId: 'msg-1', toolCallId: 'tc-1' },
+      });
+
+      expect(result).toEqual({ result: 'partial report', metadata: { subagentStopReason: 'max_turns' } });
+      expect(chatDeltaCheckpointToolCallMetadataMock).not.toHaveBeenCalled();
     });
 
     it('falls back to the real permissionBridge default callbacks when session.options omits them', async () => {

@@ -23,10 +23,21 @@ import {
   aggregateSubagentTextResults,
   resolveBatchStopReason,
   runAgentBatchTool,
+  SUBAGENT_WALLCLOCK_TIMEOUT_MS,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
 import * as subagentRunner from '../../agent/subagentRunner';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
+import { makeBatchKey, type BatchIdentity } from '../../../types';
+import { clearLoopContext, setLoopContext } from '../../agent/permissionBridge';
+
+function batchIdentity(conversationId: string, batchToolCallId: string): BatchIdentity {
+  return { conversationId, batchToolCallId };
+}
+
+function batch(identity: BatchIdentity) {
+  return useBatchProgressStore.getState().batches[makeBatchKey(identity)];
+}
 
 function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'error' | 'max_turns') {
   return new SubagentResult({
@@ -58,6 +69,8 @@ describe('runAgentBatchTool progress wiring', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
+    clearLoopContext('loop-parent-abort');
     for (const batchId of Object.keys(useBatchProgressStore.getState().batches)) {
       useBatchProgressStore.getState().clearBatch(batchId);
     }
@@ -81,11 +94,11 @@ describe('runAgentBatchTool progress wiring', () => {
 
     await runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'capture the page' }] },
-      { toolCallId: 'batch-progress' },
+      { conversationId: 'conv-progress', toolCallId: 'batch-progress' },
     );
 
-    const task = useBatchProgressStore.getState().batches['batch-progress'].tasks[0];
-    expect(task.status).toBe('done');
+    const task = batch(batchIdentity('conv-progress', 'batch-progress')).tasks[0];
+    expect(task.status).toBe('succeeded');
     expect(task.toolCallCount).toBe(1);
     expect(task.lastToolName).toBe('abu-browser__screenshot');
     expect(task.tokenUsage).toEqual({ inputTokens: 120, outputTokens: 45 });
@@ -109,11 +122,11 @@ describe('runAgentBatchTool progress wiring', () => {
 
     await runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'answer directly' }] },
-      { toolCallId: 'batch-terminal-usage' },
+      { conversationId: 'conv-terminal-usage', toolCallId: 'batch-terminal-usage' },
     );
 
-    const task = useBatchProgressStore.getState().batches['batch-terminal-usage'].tasks[0];
-    expect(task.status).toBe('done');
+    const task = batch(batchIdentity('conv-terminal-usage', 'batch-terminal-usage')).tasks[0];
+    expect(task.status).toBe('succeeded');
     expect(task.toolCallCount).toBe(3);
     expect(task.tokenUsage).toEqual({ inputTokens: 90, outputTokens: 30 });
   });
@@ -133,12 +146,198 @@ describe('runAgentBatchTool progress wiring', () => {
         tasks: [{ type: 'executor', task: 'return structured data' }],
         schema: { type: 'object', required: ['name'] },
       },
-      { toolCallId: 'batch-invalid-structured' },
+      { conversationId: 'conv-invalid-structured', toolCallId: 'batch-invalid-structured' },
     );
 
-    expect(useBatchProgressStore.getState().batches['batch-invalid-structured'].tasks[0].status)
-      .toBe('error');
+    expect(batch(batchIdentity('conv-invalid-structured', 'batch-invalid-structured')).tasks[0].status)
+      .toBe('failed');
+    expect(batch(batchIdentity('conv-invalid-structured', 'batch-invalid-structured')).tasks[0].terminalReason)
+      .toBe('invalid_structured');
     expect(JSON.parse(output)[0]).toMatchObject({ ok: false });
+  });
+
+  it('preserves a structured child abort instead of overwriting it as invalid_structured', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
+      text: 'not json',
+      toolCallCount: 0,
+      turnCount: 1,
+      tokenUsage: { input: 50, output: 10 },
+      duration: 1,
+      stopReason: 'aborted',
+    }));
+
+    await runAgentBatchTool.execute(
+      {
+        tasks: [{ type: 'executor', task: 'return structured data' }],
+        schema: { type: 'object', required: ['name'] },
+      },
+      { conversationId: 'conv-aborted-structured', toolCallId: 'batch-aborted-structured' },
+    );
+
+    const task = batch(batchIdentity('conv-aborted-structured', 'batch-aborted-structured')).tasks[0];
+    expect(task.status).toBe('stopped');
+    expect(task.terminalReason).toBe('aborted');
+  });
+
+  it('checkpoints a minimal batch terminal summary through trusted metadata', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent')
+      .mockResolvedValueOnce(new SubagentResult({
+        text: 'ok',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 2 },
+        duration: 1,
+        stopReason: 'completed',
+      }))
+      .mockResolvedValueOnce(new SubagentResult({
+        text: 'partial',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 3, output: 4 },
+        duration: 1,
+        stopReason: 'max_turns',
+      }));
+    const reportMetadata = vi.fn();
+
+    await runAgentBatchTool.execute(
+      { tasks: [{ type: 'executor', task: 'one' }, { type: 'executor', task: 'two' }] },
+      { conversationId: 'conv-summary', toolCallId: 'batch-summary', reportMetadata },
+    );
+
+    expect(reportMetadata).toHaveBeenCalledWith({
+      batchTerminalSummary: {
+        version: 1,
+        batch: { conversationId: 'conv-summary', batchToolCallId: 'batch-summary' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 1 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'incomplete', terminalReason: 'max_turns' },
+        ],
+      },
+    });
+  });
+
+  it('marks parent-aborted unclaimed tasks as stopped without flattening completed siblings', async () => {
+    const controller = new AbortController();
+    setLoopContext('loop-parent-abort', {
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      signal: controller.signal,
+      eventRouter: { route: vi.fn() } as never,
+      loopId: 'loop-parent-abort',
+      conversationId: 'conv-parent-abort',
+      toolCallToStepId: new Map(),
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async () => {
+      controller.abort();
+      return new SubagentResult({
+        text: 'first completed',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+        stopReason: 'completed',
+      });
+    });
+
+    await runAgentBatchTool.execute(
+      {
+        tasks: [{ type: 'executor', task: 'claimed' }, { type: 'executor', task: 'unclaimed' }],
+        concurrency: 1,
+      },
+      { conversationId: 'conv-parent-abort', toolCallId: 'batch-parent-abort', loopId: 'loop-parent-abort' },
+    );
+
+    const tasks = batch(batchIdentity('conv-parent-abort', 'batch-parent-abort')).tasks;
+    expect(tasks[0].status).toBe('succeeded');
+    expect(tasks[1].status).toBe('stopped');
+    expect(tasks[1].startedAt).toBeUndefined();
+  });
+
+  it('checkpoints parent-aborted queued tasks immediately while a non-cooperative running child is still pending', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    setLoopContext('loop-parent-abort', {
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      signal: controller.signal,
+      eventRouter: { route: vi.fn() } as never,
+      loopId: 'loop-parent-abort',
+      conversationId: 'conv-parent-abort',
+      toolCallToStepId: new Map(),
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      if (options.task.startsWith('running')) {
+        return new Promise(() => {});
+      }
+      controller.abort();
+      return new SubagentResult({
+        text: 'aborter completed',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+        stopReason: 'completed',
+      });
+    });
+    const reportMetadata = vi.fn();
+    let settled = false;
+
+    const run = runAgentBatchTool.execute(
+      {
+        tasks: [
+          { type: 'executor', task: 'running non-cooperative' },
+          { type: 'executor', task: 'aborter' },
+          { type: 'executor', task: 'queued' },
+        ],
+        concurrency: 2,
+      },
+      {
+        conversationId: 'conv-parent-abort-immediate',
+        toolCallId: 'batch-parent-abort-immediate',
+        loopId: 'loop-parent-abort',
+        reportMetadata,
+      },
+    ).then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const tasks = batch(batchIdentity('conv-parent-abort-immediate', 'batch-parent-abort-immediate')).tasks;
+    expect(tasks[2].status).toBe('stopped');
+    expect(tasks[2].startedAt).toBeUndefined();
+    expect(settled).toBe(false);
+    expect(subagentRunner.runSubagent).toHaveBeenCalledTimes(2);
+    expect(reportMetadata).toHaveBeenCalledWith({
+      batchTerminalSummary: expect.objectContaining({
+        taskCount: 3,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 2, status: 'stopped', terminalReason: 'aborted' }],
+      }),
+    });
+
+    await vi.advanceTimersByTimeAsync(SUBAGENT_WALLCLOCK_TIMEOUT_MS);
+    await run;
+  });
+
+  it('marks a wall-clock timeout as a failed task with timeout reason', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(() => new Promise(() => {}));
+
+    const run = runAgentBatchTool.execute(
+      { tasks: [{ type: 'executor', task: 'hang' }] },
+      { conversationId: 'conv-timeout', toolCallId: 'batch-timeout' },
+    );
+    await vi.advanceTimersByTimeAsync(SUBAGENT_WALLCLOCK_TIMEOUT_MS);
+    await run;
+
+    const task = batch(batchIdentity('conv-timeout', 'batch-timeout')).tasks[0];
+    expect(task.status).toBe('failed');
+    expect(task.terminalReason).toBe('timeout');
   });
 });
 
@@ -155,15 +354,32 @@ describe('structured subagent terminal aggregation', () => {
   });
 
   it('aggregates mixed terminal reasons with deterministic failure priority', () => {
-    const completed = { status: 'fulfilled', value: subagentResult('ok', 'completed') } as const;
-    const limited = { status: 'fulfilled', value: subagentResult('partial', 'max_turns') } as const;
-    const aborted = { status: 'fulfilled', value: subagentResult('cancelled', 'aborted') } as const;
-    const failed = { status: 'fulfilled', value: subagentResult('failed', 'error') } as const;
+    const makeSummary = (tasks: Array<{ taskIndex: number; status: 'succeeded' | 'failed' | 'stopped' | 'incomplete'; terminalReason: 'completed' | 'error' | 'aborted' | 'max_turns' }>) => ({
+      version: 1 as const,
+      batch: { conversationId: 'conv-stop', batchToolCallId: 'batch-stop' },
+      taskCount: tasks.length,
+      counts: {
+        succeeded: tasks.filter((task) => task.status === 'succeeded').length,
+        failed: tasks.filter((task) => task.status === 'failed').length,
+        stopped: tasks.filter((task) => task.status === 'stopped').length,
+        incomplete: tasks.filter((task) => task.status === 'incomplete').length,
+      },
+      tasks,
+    });
 
-    expect(resolveBatchStopReason([completed])).toBe('completed');
-    expect(resolveBatchStopReason([completed, limited])).toBe('max_turns');
-    expect(resolveBatchStopReason([limited, aborted])).toBe('aborted');
-    expect(resolveBatchStopReason([aborted, failed])).toBe('error');
+    expect(resolveBatchStopReason(makeSummary([{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }]))).toBe('completed');
+    expect(resolveBatchStopReason(makeSummary([
+      { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+      { taskIndex: 1, status: 'incomplete', terminalReason: 'max_turns' },
+    ]))).toBe('max_turns');
+    expect(resolveBatchStopReason(makeSummary([
+      { taskIndex: 0, status: 'incomplete', terminalReason: 'max_turns' },
+      { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+    ]))).toBe('aborted');
+    expect(resolveBatchStopReason(makeSummary([
+      { taskIndex: 0, status: 'stopped', terminalReason: 'aborted' },
+      { taskIndex: 1, status: 'failed', terminalReason: 'error' },
+    ]))).toBe('error');
   });
 });
 

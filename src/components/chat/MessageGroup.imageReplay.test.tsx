@@ -115,7 +115,7 @@ function renderReplayedGroup(messages: Message[]) {
     conversations: { [conversation.id]: conversation },
     agentStatus: 'idle',
   });
-  return render(<MessageGroup messages={messages} isLastGroup />);
+  return render(<MessageGroup conversationId="conv-image-replay" messages={messages} isLastGroup />);
 }
 
 /**

@@ -65,6 +65,7 @@ const CHAT_METHODS = new Set<string>([
   'addMessage',
   'deleteMessagesFrom',
   'updateToolCall',
+  'checkpointToolCallMetadata',
   'appendToolCallContext',
   'appendMessageToolCall',
   'updateMessageUsage',

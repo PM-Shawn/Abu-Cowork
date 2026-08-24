@@ -12,6 +12,7 @@ import {
 } from './MessageGroup';
 import type { Message } from '@/types';
 import type { ExecutionStep } from '@/types/execution';
+import type { WorkflowStep } from '@/utils/workflowExtractor';
 
 function makeAssistant(id: string, text: string, toolCount = 0): Message {
   return {
@@ -45,6 +46,24 @@ function makeExecStep(id: string): ExecutionStep {
     source: 'agent',
     detailBlocks: [],
   };
+}
+
+function makeToolCall(id: string, name: string): NonNullable<Message['toolCalls']>[number] {
+  return { id, name, input: {}, result: 'ok' };
+}
+
+function makeLegacyStep(id: string, toolName?: string): WorkflowStep {
+  const step: WorkflowStep = {
+    id,
+    type: toolName ? 'tool' : 'skill',
+    label: id,
+    status: 'completed',
+    timestamp: 0,
+    toolInput: {},
+    toolResult: 'ok',
+  };
+  if (toolName) step.toolName = toolName;
+  return step;
 }
 
 function makeThinkingAssistant(
@@ -226,17 +245,377 @@ describe('buildRenderSegments', () => {
       toolCalls: [{ id: 'tc-list', name: 'list_directory', input: {}, result: 'ok' }],
     };
     const widgetStep: ExecutionStep = { ...makeExecStep('step-widget'), toolName: 'show_widget' };
+    const listStep: ExecutionStep = { ...makeExecStep('step-list'), toolName: 'list_directory' };
     const segs = buildRenderSegments(
       [makeUser('u1', 'go'), a1, a2],
-      [makeExecStep('step-read'), widgetStep, makeExecStep('step-list')],
+      [makeExecStep('step-read'), widgetStep, listStep],
       [],
     );
-    // a1 → widget segment + steps(step-read, widget step filtered out);
+    // a1 → steps(step-read) then widget segment;
     // a2 → text + steps(step-list) — alignment preserved across the widget slot.
-    expect(segs.map((s) => s.kind)).toEqual(['widget', 'steps', 'text', 'steps']);
+    expect(segs.map((s) => s.kind)).toEqual(['steps', 'widget', 'text', 'steps']);
     const stepSegs = segs.filter((s) => s.kind === 'steps') as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>[];
     expect(stepSegs[0].executionSteps.map((s) => s.id)).toEqual(['step-read']);
     expect(stepSegs[1].executionSteps.map((s) => s.id)).toEqual(['step-list']);
+  });
+
+  it('renders batch segments at exact tool-call positions without duplicating generic steps', () => {
+    const msg: Message = {
+      id: 'a-batches',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-read', 'read_file'),
+        makeToolCall('tc-batch-a', 'run_agent_batch'),
+        makeToolCall('tc-write', 'write_file'),
+        makeToolCall('tc-batch-b', 'run_agent_batch'),
+      ],
+    };
+    const readStep = { ...makeExecStep('read-step'), toolCallId: 'tc-read' };
+    const batchStepA = { ...makeExecStep('batch-a-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-a' };
+    const writeStep = { ...makeExecStep('write-step'), toolName: 'write_file', toolCallId: 'tc-write' };
+    const batchStepB = { ...makeExecStep('batch-b-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-b' };
+
+    const segs = buildRenderSegments([makeUser('u1', 'go'), msg], [readStep, batchStepA, writeStep, batchStepB], []);
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps', 'batch', 'steps', 'batch']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['read-step']);
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-a');
+    expect((segs[2] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['write-step']);
+    expect((segs[3] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-b');
+    expect(JSON.stringify(segs)).not.toContain('batch-a-step');
+    expect(JSON.stringify(segs)).not.toContain('batch-b-step');
+  });
+
+  it('claims execution steps by exact toolCallId across same-name batch positions', () => {
+    const msg: Message = {
+      id: 'a-same-name-batches',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-read', 'read_file'),
+        makeToolCall('tc-batch-a', 'run_agent_batch'),
+        makeToolCall('tc-write', 'write_file'),
+        makeToolCall('tc-batch-b', 'run_agent_batch'),
+      ],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), msg],
+      [
+        { ...makeExecStep('batch-b-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-b' },
+        { ...makeExecStep('write-step'), toolName: 'write_file', toolCallId: 'tc-write' },
+        { ...makeExecStep('read-step'), toolCallId: 'tc-read' },
+        { ...makeExecStep('batch-a-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-a' },
+      ],
+      [],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps', 'batch', 'steps', 'batch']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['read-step']);
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-a');
+    expect((segs[2] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['write-step']);
+    expect((segs[3] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-b');
+  });
+
+  it('uses original positions for old snapshots with same-name batches missing toolCallId', () => {
+    const msg: Message = {
+      id: 'a-old-batches',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-batch-a', 'run_agent_batch'),
+        makeToolCall('tc-batch-b', 'run_agent_batch'),
+      ],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), msg],
+      [
+        { ...makeExecStep('old-batch-a-step'), toolName: 'run_agent_batch' },
+        { ...makeExecStep('old-batch-b-step'), toolName: 'run_agent_batch' },
+      ],
+      [],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['batch', 'batch']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-a');
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'batch' }>).toolCall.id).toBe('tc-batch-b');
+  });
+
+  it('keeps raw offsets aligned across first-message batch and second-message generic/batch', () => {
+    const batchTurn: Message = {
+      id: 'a-batch-first',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-batch-first', 'run_agent_batch')],
+    };
+    const mixedTurn: Message = {
+      id: 'a-mixed-second',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-read-second', 'read_file'),
+        makeToolCall('tc-batch-second', 'run_agent_batch'),
+      ],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), batchTurn, mixedTurn],
+      [
+        { ...makeExecStep('batch-first-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-first' },
+        { ...makeExecStep('read-second-step'), toolCallId: 'tc-read-second' },
+        { ...makeExecStep('batch-second-step'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-second' },
+      ],
+      [],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['batch', 'steps', 'batch']);
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['read-second-step']);
+  });
+
+  it('claims execution steps by exact toolCallId from the global remaining set across messages', () => {
+    const firstTurn: Message = {
+      id: 'a-first-missing',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-A', 'read_file')],
+    };
+    const secondTurn: Message = {
+      id: 'a-second-present',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-B', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), firstTurn, secondTurn],
+      [{ ...makeExecStep('step-B'), toolCallId: 'tc-B' }],
+      [],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['step-B']);
+  });
+
+  it('leaves duplicate exact execution steps unclaimed without hiding later message matches', () => {
+    const firstTurn: Message = {
+      id: 'a-first-duplicate',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-A', 'read_file')],
+    };
+    const secondTurn: Message = {
+      id: 'a-second-after-duplicate',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-B', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), firstTurn, secondTurn],
+      [
+        { ...makeExecStep('step-A-1'), toolCallId: 'tc-A' },
+        { ...makeExecStep('step-A-2'), toolCallId: 'tc-A' },
+        { ...makeExecStep('step-B'), toolCallId: 'tc-B' },
+      ],
+      [],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['step-A-1', 'step-B']);
+  });
+
+  it('does not drift missing-id execution fallback to a later same-tool message', () => {
+    const firstTurn: Message = {
+      id: 'a-first-write',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-write', 'write_file')],
+    };
+    const secondTurn: Message = {
+      id: 'a-second-read',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), firstTurn, secondTurn],
+      [makeExecStep('old-read-at-first-slot')],
+      [],
+    );
+
+    expect(segs).toHaveLength(0);
+  });
+
+  it('claims legacy exact ids globally only when the tool name also matches', () => {
+    const firstTurn: Message = {
+      id: 'a-first-legacy-missing',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-A', 'read_file')],
+    };
+    const secondTurn: Message = {
+      id: 'a-second-legacy-present',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-B', 'write_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), firstTurn, secondTurn],
+      [],
+      [
+        makeLegacyStep('tc-B', 'write_file'),
+        makeLegacyStep('tc-A', 'write_file'),
+      ],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).legacySteps.map((s) => s.id)).toEqual(['tc-B']);
+  });
+
+  it('renders duplicate batch tool-call ids once without shifting the next message offset', () => {
+    const duplicateTurn: Message = {
+      id: 'a-duplicate-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-batch-dup', 'run_agent_batch'),
+        makeToolCall('tc-batch-dup', 'run_agent_batch'),
+      ],
+    };
+    const nextTurn: Message = {
+      id: 'a-after-duplicate',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read-after', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), duplicateTurn, nextTurn],
+      [
+        { ...makeExecStep('batch-dup-1'), toolName: 'run_agent_batch', toolCallId: 'tc-batch-dup' },
+        { ...makeExecStep('read-after-step'), toolCallId: 'tc-read-after' },
+      ],
+      [],
+    );
+
+    const batchSegments = segs.filter((seg) => seg.kind === 'batch');
+    expect(batchSegments).toHaveLength(1);
+    expect(segs.map((seg) => seg.kind)).toEqual(['batch', 'steps']);
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps.map((s) => s.id)).toEqual(['read-after-step']);
+  });
+
+  it('dedupes duplicate legacy batch rows without shifting the next message offset', () => {
+    const duplicateTurn: Message = {
+      id: 'a-duplicate-legacy-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [
+        makeToolCall('tc-batch-dup', 'run_agent_batch'),
+        makeToolCall('tc-batch-dup', 'run_agent_batch'),
+      ],
+    };
+    const nextTurn: Message = {
+      id: 'a-after-duplicate-legacy',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read-after', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), duplicateTurn, nextTurn],
+      [],
+      [
+        makeLegacyStep('tc-batch-dup', 'run_agent_batch'),
+        makeLegacyStep('tc-batch-dup', 'run_agent_batch'),
+        makeLegacyStep('tc-read-after', 'read_file'),
+      ],
+    );
+
+    const batchSegments = segs.filter((seg) => seg.kind === 'batch');
+    expect(batchSegments).toHaveLength(1);
+    expect(segs.map((seg) => seg.kind)).toEqual(['batch', 'steps']);
+    expect((segs[1] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).legacySteps.map((s) => s.id)).toEqual(['tc-read-after']);
+  });
+
+  it('does not fallback to a positional execution step with a conflicting present toolCallId', () => {
+    const msg: Message = {
+      id: 'a-wrong-id',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), msg],
+      [{ ...makeExecStep('wrong-step'), toolCallId: 'different-call' }],
+      [],
+    );
+
+    expect(segs).toHaveLength(0);
+  });
+
+  it('uses same-position same-tool fallback only for old execution snapshots missing toolCallId', () => {
+    const msg: Message = {
+      id: 'a-old-snapshot',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read', 'read_file')],
+    };
+    const segs = buildRenderSegments([makeUser('u1', 'go'), msg], [makeExecStep('old-read-step')], []);
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).executionSteps[0].id).toBe('old-read-step');
+  });
+
+  it('filters synthetic legacy skill rows before raw offset slicing and claims legacy by exact id', () => {
+    const msg: Message = {
+      id: 'a-legacy',
+      role: 'assistant',
+      content: '',
+      timestamp: 0,
+      loopId: 'loop-1',
+      toolCalls: [makeToolCall('tc-read', 'read_file')],
+    };
+    const segs = buildRenderSegments(
+      [makeUser('u1', 'go'), msg],
+      [],
+      [makeLegacyStep('skill'), makeLegacyStep('tc-read', 'read_file')],
+    );
+
+    expect(segs.map((seg) => seg.kind)).toEqual(['steps']);
+    expect((segs[0] as Extract<ReturnType<typeof buildRenderSegments>[0], { kind: 'steps' }>).legacySteps.map((s) => s.id)).toEqual(['tc-read']);
   });
 
   it('a thinking-typed step in allExecSteps is discarded; msg thinking merges with the tool', () => {
@@ -269,11 +648,12 @@ describe('persisted stop terminal', () => {
 });
 
 describe('computeWorkProcessFold', () => {
+  type Segment = ReturnType<typeof buildRenderSegments>[number];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const seg = (kind: string): any => (kind === 'text' ? { kind, text: 'x', message: { id: 't' }, isLastTurn: true } : { kind, executionSteps: [], legacySteps: [], isLastGroup: false, stepsMsgs: [] });
 
-  it('returns null when the group is not done', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBeNull();
+  it('allows running work to be manually folded', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(2);
   });
   it('folds everything before the final text answer', () => {
     // [thinking, plan, tool, text] → foldEnd = 3
@@ -283,12 +663,16 @@ describe('computeWorkProcessFold', () => {
   it('returns null when the only/first segment is the answer (nothing to fold)', () => {
     expect(computeWorkProcessFold([seg('text')], true)).toBeNull();
   });
-  it('returns null when there is no final text answer (all steps)', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBeNull();
+  it('folds all process segments when there is no final text answer', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBe(2);
   });
   it('intermediate text folds in; only the last text stays outside', () => {
     // [thinking, text(mid), tool, text(final)] → foldEnd = 3
     expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
+  });
+  it('does not treat preamble text as a final answer when process work follows it', () => {
+    const batch = { kind: 'batch', toolCall: { id: 'b', name: 'run_agent_batch', input: {} }, message: { id: 'm' } } as Extract<Segment, { kind: 'batch' }>;
+    expect(computeWorkProcessFold([seg('steps'), seg('text'), batch], true)).toBe(3);
   });
 });
 

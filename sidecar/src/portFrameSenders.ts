@@ -78,6 +78,8 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
         hideScreenshot,
         metadata,
       ]),
+    checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) =>
+      send('checkpointToolCallMetadata', [convId, messageId, toolCallId, metadata]),
     appendToolCallContext: (convId, loopId, context) => send('appendToolCallContext', [convId, loopId, context]),
     appendMessageToolCall: (convId, loopId, toolCall) => send('appendMessageToolCall', [convId, loopId, toolCall]),
     updateMessageUsage: (convId, usage, msgId) => send('updateMessageUsage', [convId, usage, msgId]),

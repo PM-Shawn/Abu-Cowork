@@ -30,6 +30,38 @@ export interface SandboxRecoveryPayload {
 
 export type SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max_turns';
 
+export interface BatchIdentity {
+  conversationId: string;
+  batchToolCallId: string;
+}
+
+export function makeBatchKey(identity: BatchIdentity): string {
+  return `v1:${encodeURIComponent(identity.conversationId)}:${encodeURIComponent(identity.batchToolCallId)}`;
+}
+
+export type BatchTaskTerminalStatus = 'succeeded' | 'failed' | 'stopped' | 'incomplete';
+export type BatchTaskTerminalReason =
+  | 'completed'
+  | 'error'
+  | 'aborted'
+  | 'max_turns'
+  | 'timeout'
+  | 'invalid_structured';
+
+export interface BatchTerminalTaskSummary {
+  taskIndex: number;
+  status: BatchTaskTerminalStatus;
+  terminalReason: BatchTaskTerminalReason;
+}
+
+export interface BatchTerminalSummary {
+  version: 1;
+  batch: BatchIdentity;
+  taskCount: number;
+  counts: Record<BatchTaskTerminalStatus, number>;
+  tasks: BatchTerminalTaskSummary[];
+}
+
 export type SandboxRecoveryAction =
   | 'pending'
   | 'started'
@@ -47,6 +79,7 @@ export type SandboxRecoveryAction =
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
   subagentStopReason?: SubagentStopReason;
+  batchTerminalSummary?: BatchTerminalSummary;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -210,6 +243,8 @@ export interface ToolCall {
   userQuestionAnswers?: UserQuestionResult;
   /** Structured terminal state for delegate_to_agent/run_agent_batch. */
   subagentStopReason?: SubagentStopReason;
+  /** Minimal persisted terminal summary for run_agent_batch. */
+  batchTerminalSummary?: BatchTerminalSummary;
 }
 
 // Multimodal content types for messages
@@ -478,6 +513,8 @@ export interface ToolExecutionContext {
   conversationId?: string;
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */
+  assistantMessageId?: string;
   /**
    * Whether this tool belongs to a user-visible desktop task. Background,
    * scheduled, trigger and IM runs must never open local setup/approval UI.

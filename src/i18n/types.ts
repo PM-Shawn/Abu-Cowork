@@ -635,6 +635,24 @@ export interface TranslationDict {
     completionSummary: string;
     /** "⚠ {done} 个完成，{failed} 个失败" */
     completionWithErrors: string;
+    /** Mixed terminal summary. {summary} */
+    mixedSummary: string;
+    /** Persisted summary unavailable/partial. */
+    unknownSummary: string;
+    /** Fallback row title. */
+    taskFallback: string;
+    /** Unknown task status. */
+    statusUnknown: string;
+    /** Open child agent task row accessible label. */
+    openTaskLabel: string;
+    /** Fold header aggregate for child agents. {total} {summary} */
+    foldBatchAggregate: string;
+    batchStatusSucceededCount: string;
+    batchStatusFailedCount: string;
+    batchStatusStoppedCount: string;
+    batchStatusIncompleteCount: string;
+    batchStatusRunningCount: string;
+    batchStatusUnknownCount: string;
     /** "展开" */
     expand: string;
     /** "收起" */
@@ -1904,15 +1922,32 @@ export interface TranslationDict {
     newBrowserTab: string;
     newTerminalTab: string;
     closeTab: string;
+    closeTabLabel: string;
     closeOtherTabs: string;
     closeAllTabs: string;
+    tabListLabel: string;
     newTabPage: string;
     terminalTitle: string;
     browserTitle: string;
+    agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
     browserDesc: string;
     terminalDesc: string;
+    agentStatusQueued: string;
+    agentStatusRunning: string;
+    agentStatusSucceeded: string;
+    agentStatusFailed: string;
+    agentStatusStopped: string;
+    agentStatusIncomplete: string;
+    agentStatusDone: string;
+    agentStatusError: string;
+    agentTools: string;
+    agentTokens: string;
+    agentNoSteps: string;
+    agentFullProcessUnavailable: string;
+    agentRichContentReleased: string;
+    agentRichContentPartiallyRetained: string;
     startHere: string;
     terminalProcessExited: string;
     terminalStartFailed: string;

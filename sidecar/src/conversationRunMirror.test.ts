@@ -196,6 +196,167 @@ describe('conversationRunMirror', () => {
       expect(tc?.isExecuting).toBe(false);
     });
 
+    it('mirrors batch terminal summary checkpoint metadata into the checkpoint snapshot', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1',
+        'm1',
+        'tc1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      ]);
+
+      const checkpoint = JSON.parse(JSON.stringify(mirror.reader.getConversation('conv-1'))) as Conversation;
+      const tc = checkpoint.messages[0].toolCalls?.[0];
+      expect(tc?.batchTerminalSummary?.counts.stopped).toBe(1);
+      expect(tc?.isError).toBe(true);
+      expect(tc?.isExecuting).toBe(true);
+    });
+
+    it('canonicalizes malicious batch summary extras before checkpointing', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1',
+        'm1',
+        'tc1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            prompt: 'do not persist',
+            resultContent: [{ type: 'image', source: { data: 'base64' } }],
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted', output: 'do not persist', steps: ['x'] }],
+          },
+        },
+      ]);
+
+      const serialized = JSON.stringify(mirror.reader.getConversation('conv-1')?.messages[0].toolCalls?.[0].batchTerminalSummary);
+      expect(serialized).not.toContain('prompt');
+      expect(serialized).not.toContain('resultContent');
+      expect(serialized).not.toContain('output');
+      expect(serialized).not.toContain('steps');
+    });
+
+    it('does not let a late all-success update regress a stopped batch checkpoint', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1',
+        'm1',
+        'tc1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      ]);
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1',
+        'm1',
+        'tc1',
+        'late success',
+        undefined,
+        false,
+        undefined,
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 1,
+            counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+          },
+        },
+      ]);
+
+      const tc = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls?.[0];
+      expect(tc?.batchTerminalSummary?.counts.stopped).toBe(1);
+      expect(tc?.isError).toBe(true);
+    });
+
+    it('merges cumulative partial summaries and keeps completed coarse metadata from clearing an existing non-success task', () => {
+      const conv = makeConversation({
+        messages: [makeMessage({
+          id: 'm1',
+          toolCalls: [{ id: 'tc1', name: 'run_agent_batch', input: {}, isExecuting: true }],
+        })],
+      });
+      const mirror = createConversationRunMirror('conv-1', { conversation: conv });
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1',
+        'm1',
+        'tc1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 2,
+            counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+          },
+        },
+      ]);
+      mirror.applyChatDeltaWrite('checkpointToolCallMetadata', [
+        'conv-1',
+        'm1',
+        'tc1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: 'tc1' },
+            taskCount: 2,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      ]);
+      mirror.applyChatDeltaWrite('updateToolCall', [
+        'conv-1',
+        'm1',
+        'tc1',
+        'late completed envelope',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'completed' },
+      ]);
+
+      const tc = mirror.reader.getConversation('conv-1')?.messages[0].toolCalls?.[0];
+      expect(tc?.batchTerminalSummary?.counts).toEqual({ succeeded: 1, failed: 0, stopped: 1, incomplete: 0 });
+      expect(tc?.isError).toBe(true);
+      expect(tc?.subagentStopReason).toBe('completed');
+    });
+
     it('deleteMessagesFrom truncates from the given message onward', () => {
       const conv = makeConversation({
         messages: [makeMessage({ id: 'm1' }), makeMessage({ id: 'm2' }), makeMessage({ id: 'm3' })],

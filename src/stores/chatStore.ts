@@ -18,12 +18,18 @@ import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
+import {
+  batchSummaryHasNonSuccess,
+  mergeBatchTerminalSummaries,
+  normalizeBatchTerminalSummary,
+} from '../core/agent/batchTerminalSummary';
 import { resetSessionPromotions } from '../core/tools/toolSearch';
 import {
   clearConversationComposerDraft,
   getComposerDraftScopeForEnterpriseMode,
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
+import { useWorkProcessFoldStore } from './workProcessFoldStore';
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -36,6 +42,11 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'connection-failed',
   'interrupted',
 ]);
+
+function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
+  return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
+    || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+}
 
 function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
@@ -514,6 +525,7 @@ interface ChatActions {
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
   updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean, metadata?: ToolExecutionMetadata) => void;
+  checkpointToolCallMetadata: (convId: string, messageId: string, toolCallId: string, metadata: ToolExecutionMetadata) => void;
   /**
    * Persist the user's click on an interactive notice card attached to a
    * tool call (see `ToolCall.noticeCardAction`). Called from the card
@@ -897,6 +909,7 @@ export const useChatStore = create<ChatStore>()(
         clearSkillHooksByConversation(id);
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
+        useWorkProcessFoldStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,
           getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode),
@@ -1164,9 +1177,21 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
-              if (metadata?.subagentStopReason) {
+              if (
+                metadata?.subagentStopReason
+                && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+              ) {
                 tc.subagentStopReason = metadata.subagentStopReason;
-                tc.isError = metadata.subagentStopReason !== 'completed';
+                tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+              }
+              const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
+                conversationId: convId,
+                batchToolCallId: toolCallId,
+              });
+              if (incomingSummary) {
+                tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+                if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+                else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
               }
 
               // Lift notice_card out of the tool's JSON result into a
@@ -1202,6 +1227,40 @@ export const useChatStore = create<ChatStore>()(
         // every earlier result, so appending here would cost O(N²) bytes within
         // a single tool-heavy turn. The turn-boundary checkpoint in agentLoop is
         // what commits the batch to the ledger.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (
+            metadata.subagentStopReason
+            && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+          ) {
+            tc.subagentStopReason = metadata.subagentStopReason;
+            tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+          }
+          const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
+            conversationId: convId,
+            batchToolCallId: toolCallId,
+          });
+          if (incomingSummary) {
+            tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+            if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+            else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+          }
+          if (tc.name === TOOL_NAMES.RUN_COMMAND && metadata.sandboxRecovery) {
+            tc.sandboxRecovery = metadata.sandboxRecovery;
+            tc.isError = true;
+          }
+        });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {

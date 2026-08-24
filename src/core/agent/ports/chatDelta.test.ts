@@ -321,6 +321,7 @@ describe('getChatDelta / setChatDelta', () => {
       addMessage: () => calls.push('addMessage'),
       deleteMessagesFrom: () => calls.push('deleteMessagesFrom'),
       updateToolCall: () => calls.push('updateToolCall'),
+      checkpointToolCallMetadata: () => calls.push('checkpointToolCallMetadata'),
       appendToolCallContext: () => calls.push('appendToolCallContext'),
       updateMessageUsage: () => calls.push('updateMessageUsage'),
       setExecutionStepsSnapshot: () => calls.push('setExecutionStepsSnapshot'),

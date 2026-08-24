@@ -37,6 +37,7 @@ import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
+import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 
 const logger = createLogger('toolExecutor');
 
@@ -249,6 +250,13 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
     const startTime = Date.now();
     let metadata: ToolExecutionMetadata | undefined;
+    const checkpointMetadata = (next: ToolExecutionMetadata): void => {
+      metadata = {
+        ...metadata,
+        ...next,
+      };
+      chatDelta.checkpointToolCallMetadata(conversationId, assistantMsgId, tc.id, metadata);
+    };
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
@@ -269,13 +277,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
           ...toolContext,
           toolCallId: tc.id,
+          assistantMessageId: assistantMsgId,
           abortSignal: abortController.signal,
-          reportMetadata: (next) => {
-            metadata = {
-              ...metadata,
-              ...next,
-            };
-          },
+          reportMetadata: checkpointMetadata,
         }, contextUsagePercent)
           .then((result) => {
             if (!settled) {
@@ -304,7 +308,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
       const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
         && metadata.subagentStopReason !== 'completed';
-      const isError = requiresUserRecovery || structuredSubagentFailure;
+      const batchTerminalFailure = batchSummaryHasNonSuccess(metadata?.batchTerminalSummary);
+      const isError = requiresUserRecovery || structuredSubagentFailure || batchTerminalFailure;
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',

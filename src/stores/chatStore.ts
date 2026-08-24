@@ -2247,6 +2247,15 @@ export const useChatStore = create<ChatStore>()(
             // Don't unload conversations with running status
             if (state.conversations[id]?.status === 'running') continue;
             delete state.conversations[id];
+            // Drop the conversation's live agent state together with its
+            // record. Every writer (`setAgentStatus`/`setRetryInfo`) refuses
+            // to touch a conversation that is no longer loaded, so an entry
+            // left behind here can never be cleared again: it retains memory
+            // for the process lifetime AND resurrects a stale non-idle status
+            // strip the next time that conversation is loaded and viewed.
+            // Same class of leak the computerUseStatus per-conversation map
+            // had to fix after PR #209/#216.
+            state.agentStates = removeConversationAgentState(state.agentStates, id);
           }
         });
       },

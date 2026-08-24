@@ -7,6 +7,7 @@ import {
   createAuthorizationScope,
   disposeAuthorizationScope,
   getAuthorizedWritablePaths,
+  hasFullShellAuthorizationScope,
   revokeWorkspace,
   scopedAuthorizeWorkspace,
   getPermissionDirectory,
@@ -185,6 +186,22 @@ describe('pathSafety', () => {
         revokeWorkspace(wsA);
         revokeWorkspace(wsB);
         revokeWorkspace(globalWs);
+      }
+    });
+
+    it('keeps full shell policy scoped to the live authorization scope', () => {
+      const strictScope = createAuthorizationScope();
+      const fullScope = createAuthorizationScope({ shell: 'full' });
+      try {
+        expect(hasFullShellAuthorizationScope(strictScope)).toBe(false);
+        expect(hasFullShellAuthorizationScope(fullScope)).toBe(true);
+        expect(hasFullShellAuthorizationScope('missing-scope')).toBe(false);
+
+        disposeAuthorizationScope(fullScope);
+        expect(hasFullShellAuthorizationScope(fullScope)).toBe(false);
+      } finally {
+        disposeAuthorizationScope(strictScope);
+        disposeAuthorizationScope(fullScope);
       }
     });
 

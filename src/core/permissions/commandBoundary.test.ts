@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { analyzeCommandBoundary } from './commandBoundary';
+import {
+  analyzeCommandBoundary,
+  resolveFullNoWorkspaceCommandWriteTargets,
+} from './commandBoundary';
 import { allWorkingDirectories } from './workingDirs';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import {
@@ -101,6 +104,39 @@ describe('commandBoundary', () => {
     });
     it('does not treat 2>&1 as a file redirect', () => {
       expect(analyzeCommandBoundary('make 2>&1', WS, HOME)).toBe('unknown');
+    });
+    it('keeps touch and mkdir outside the shared standard/smart boundary parser', () => {
+      expect(analyzeCommandBoundary('touch ~/Desktop/out.txt', WS, HOME)).toBe('unknown');
+      expect(analyzeCommandBoundary('mkdir ~/Desktop/out', WS, HOME)).toBe('unknown');
+    });
+  });
+
+  describe('full no-workspace hard-floor targets', () => {
+    it('checks every compound segment without changing the shared boundary parser', () => {
+      expect(resolveFullNoWorkspaceCommandWriteTargets(
+        'touch ~ && touch ~/.AbU/mcp/config.json',
+        undefined,
+        HOME,
+      )).toEqual(expect.arrayContaining([HOME, `${HOME}/.AbU/mcp/config.json`]));
+    });
+
+    it.each([
+      'New-Item -Path "$HOME/.AbU/mcp/config.json" -ItemType File',
+      'Set-Content -LiteralPath "$env:USERPROFILE/.ABU/mcp/config.json" -Value x',
+    ])('resolves direct PowerShell self-managed targets: %s', (command) => {
+      const targets = resolveFullNoWorkspaceCommandWriteTargets(command, undefined, HOME);
+      expect(targets.some((target) => (
+        target.toLowerCase() === `${HOME}/.abu/mcp/config.json`.toLowerCase()
+      ))).toBe(true);
+    });
+
+    it.each([
+      ['Set-Content -Path "$HOME/.ssh/authorized_keys" -Value x', `${HOME}/.ssh/authorized_keys`],
+      ['Set-Content -Path "$HOME/tmp/../.AbU/mcp/config.json" -Value x', `${HOME}/.AbU/mcp/config.json`],
+      ['Set-Content -Path "$env:APPDATA/Abu/config.json" -Value x', `${HOME}/AppData/Roaming/Abu/config.json`],
+      ['cmd /c echo x > %USERPROFILE%\\.ssh\\authorized_keys', `${HOME}/.ssh/authorized_keys`],
+    ])('expands direct shell environment paths before normalization: %s', (command, expected) => {
+      expect(resolveFullNoWorkspaceCommandWriteTargets(command, undefined, HOME)).toContain(expected);
     });
   });
 });

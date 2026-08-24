@@ -318,15 +318,19 @@ class TriggerEngine {
       prompt = `/${trigger.action.skillName} ${prompt}`;
     }
 
-    const authorizationScopeId = createAuthorizationScope();
+    // Resolve permission callbacks based on trigger's capability level.
+    // Permissions are declared at creation time — no runtime dialogs.
+    // Pass resolved workspacePath so it gets pre-authorized for file access.
+    const actionWithWorkspace = workspacePath
+      ? { ...trigger.action, workspacePath }
+      : trigger.action;
+    const authorizationScopeId = createAuthorizationScope(
+      (actionWithWorkspace.capability ?? 'read_tools') === 'full'
+        ? { shell: 'full' }
+        : undefined,
+    );
 
     try {
-      // Resolve permission callbacks based on trigger's capability level.
-      // Permissions are declared at creation time — no runtime dialogs.
-      // Pass resolved workspacePath so it gets pre-authorized for file access.
-      const actionWithWorkspace = workspacePath
-        ? { ...trigger.action, workspacePath }
-        : trigger.action;
       const callbacks = resolveTriggerCallbacks(actionWithWorkspace, { authorizationScopeId });
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,

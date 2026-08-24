@@ -22,6 +22,7 @@ import {
   aggregateStructuredResults,
   aggregateSubagentTextResults,
   resolveBatchStopReason,
+  runAgentBatchTool,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
 
@@ -35,6 +36,18 @@ function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'err
     duration: 0,
   });
 }
+
+describe('runAgentBatchTool preset boundaries', () => {
+  it('describes the fixed tool boundaries of built-in role presets', () => {
+    const tasks = runAgentBatchTool.inputSchema.properties.tasks as {
+      items: { properties: { type: { description: string } } };
+    };
+    const description = tasks.items.properties.type.description;
+    expect(description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
+    expect(description).toContain('writer (content authoring: read/write/edit files plus web search)');
+    expect(description).toContain('executor (full toolset — includes browser, image and MCP tools)');
+  });
+});
 
 describe('structured subagent terminal aggregation', () => {
   it('treats completed Error-prefixed text as success and plain error text as failure', () => {

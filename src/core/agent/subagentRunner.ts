@@ -80,6 +80,7 @@ import {
   type SubagentProgressEvent,
   type SubagentStopReason,
 } from './subagentLoop';
+import { resolveSubagentToolRoster } from './subagentToolRoster';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
@@ -229,6 +230,8 @@ function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResu
 
 interface RunSession {
   options: SubagentLoopOptions;
+  /** Frozen shell-side mirror of the roster sent to the sidecar loop. */
+  offeredToolNames: ReadonlySet<string>;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
 }
@@ -293,6 +296,28 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     )
   ) {
     throw new SidecarRequestError(-32602, `Tool is blocked for this subagent run: ${params.toolName}`);
+  }
+
+  if (!session.offeredToolNames.has(params.toolName)) {
+    throw new SidecarRequestError(
+      -32602,
+      `Tool is outside this agent's fixed tool boundary: ${params.toolName}`,
+    );
+  }
+  if (
+    session.options.agent.tools?.length
+    && !session.options.agent.tools.some((pattern) =>
+      matchesToolPattern(
+        params.toolName as string,
+        pattern,
+        (params.input as Record<string, unknown>) ?? {},
+      ),
+    )
+  ) {
+    throw new SidecarRequestError(
+      -32602,
+      `Tool input is outside this agent's fixed tool boundary: ${params.toolName}`,
+    );
   }
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
@@ -370,11 +395,14 @@ function ensureHandlersRegistered(): void {
  * which hits the identical real error path itself rather than this
  * function duplicating its error-shaping logic.
  */
-function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): SubagentRunParams {
+function buildSubagentRunParams(
+  runId: string,
+  options: SubagentLoopOptions,
+  availableTools: ToolDefinition[],
+): SubagentRunParams {
   const settingsReader = options.settingsReader ?? getSettingsReader();
   const settingsSnapshot = settingsReader.getSnapshot();
-  const toolInvoker = options.toolInvoker ?? getToolInvoker();
-  const tools = toolInvoker.getAllTools().map(toSerializableTool);
+  const tools = availableTools.map(toSerializableTool);
 
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsSnapshot),
@@ -452,7 +480,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
 
   let params: SubagentRunParams;
   try {
-    params = buildSubagentRunParams(runId, options);
+    params = buildSubagentRunParams(runId, options, availableTools);
   } catch (err) {
     // Failed before any dispatch — no tool has executed. Fall back to the
     // in-process engine, which hits the identical real error path (e.g.
@@ -464,7 +492,18 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     return runSubagentLoop(options);
   }
 
-  const session: RunSession = { options, firstToolInvokeArrived: false };
+  const session: RunSession = {
+    options,
+    offeredToolNames: new Set(
+      resolveSubagentToolRoster(
+        availableTools,
+        options.agent,
+        options.allowedTools,
+        options.blockedTools,
+      ).map((tool) => tool.name),
+    ),
+    firstToolInvokeArrived: false,
+  };
   sessions.set(runId, session);
 
   const signal = options.signal;

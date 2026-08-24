@@ -101,6 +101,10 @@ vi.mock('../../i18n', () => ({
         mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
         invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
         invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        invalidDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
       },
       errorEmptyBody: '空响应',
     },
@@ -299,6 +303,22 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('error');
       expect(result.text).toContain('malformed-agent');
       expect(result.text).toContain('2');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching a blank tools entry', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'blank-agent', tools: ['   '] },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('blank-agent');
+      expect(result.text).toContain('1');
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(sidecarRequestMock).not.toHaveBeenCalled();
     });
@@ -515,6 +535,33 @@ describe('subagentRunner', () => {
       await expect(
         toolInvokeHandler({ runId, toolName: 'write_file', input: { path: 'x' } }),
       ).rejects.toThrow(/not allowed/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
+      ['agent denylist', { disallowedTools: ['write_file'] }, 'write_file'],
+      ['always-blocked orchestration roster', {}, 'run_agent_batch'],
+    ])('refuses a reverse tool.invoke outside the frozen %s', async (_label, boundary, toolName) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
+        { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: async () => 'write' },
+        { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: async () => 'batch' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent: { ...agent, ...boundary }, task: 'hostile call' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(
+        toolInvokeHandler({ runId, toolName, input: { path: '/tmp/x' } }),
+      ).rejects.toThrow(/fixed tool boundary/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });

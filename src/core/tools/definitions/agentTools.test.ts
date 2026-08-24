@@ -54,6 +54,13 @@ vi.mock('../../agent/ports/settingsReader', () => ({
 }));
 
 describe('delegateToAgentTool', () => {
+  it('describes the fixed tool boundaries of built-in role presets', () => {
+    const type = delegateToAgentTool.inputSchema.properties.type as { description: string };
+    expect(type.description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
+    expect(type.description).toContain('writer (content authoring: read/write/edit files plus web search)');
+    expect(type.description).toContain('executor (full toolset — includes browser, image and MCP tools)');
+  });
+
   it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {
     expect(delegateToAgentTool.isConcurrencySafe).toBe(true);
   });

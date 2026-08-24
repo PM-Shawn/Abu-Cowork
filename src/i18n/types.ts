@@ -430,6 +430,14 @@ export interface TranslationDict {
       invalidToolDeclarations: string;
       /** Agent tools frontmatter is not an array. {agentName} */
       invalidToolsField: string;
+      /** Agent tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidDisallowedToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter is not an array. {agentName} */
+      invalidDisallowedToolsField: string;
+      /** Agent disallowed-tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyDisallowedToolDeclarations: string;
     };
     // Work-process fold label (Codex-style turn collapse). {duration} = e.g. "1m 4s"
     workedFor: string;

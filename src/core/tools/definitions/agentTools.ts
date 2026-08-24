@@ -186,7 +186,7 @@ export const delegateToAgentTool: ToolDefinition = {
     type: 'object',
     properties: {
       agent_name: { type: 'string', description: 'User-defined agent name (mutually exclusive with type)' },
-      type: { type: 'string', description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
+      type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
     },

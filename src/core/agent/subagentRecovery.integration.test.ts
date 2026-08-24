@@ -52,6 +52,11 @@ vi.mock('../context/contextCompressor', () => ({
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
 
+const mockEmitHook = vi.fn((event: unknown) => event);
+vi.mock('./lifecycleHooks', () => ({
+  emitHook: (event: unknown) => mockEmitHook(event),
+}));
+
 const mockGetActiveProvider = vi.fn(
   (..._args: unknown[]): Partial<ProviderInstance> | undefined => ({
     id: 'p1',
@@ -84,6 +89,7 @@ vi.mock('../enterprise/llm-resolver', () => ({
 }));
 
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
+import { agentRegistry } from './registry';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
 function emits(events: StreamEvent[]) {
@@ -99,8 +105,17 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockClaudeChat.mockReset();
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockEmitHook.mockReset();
+    mockEmitHook.mockImplementation((event: unknown) => event);
     mockGetAllTools.mockReset();
-    mockGetAllTools.mockReturnValue([]);
+    mockGetAllTools.mockReturnValue(
+      ['noop', 'do_work', 'computer', 'read_file'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object', properties: {} },
+        execute: vi.fn(),
+      })),
+    );
     mockGetActiveProvider.mockReset();
     mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
   });
@@ -121,6 +136,21 @@ describe('subagent max_tokens recovery (integration)', () => {
     const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
     expect(chatOptions.systemPrompt).toContain('Path: /im/workspace');
     expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
+  });
+
+  it('informs subagents that their tool and permission boundary is fixed', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'do the thing' });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(chatOptions.systemPrompt).toContain('## Tool and Permission Boundaries');
+    expect(chatOptions.systemPrompt).toContain('fixed when this run started and cannot be expanded in this session');
+    expect(chatOptions.systemPrompt).toContain('tell the parent agent exactly what is missing');
+    expect(chatOptions.systemPrompt).toContain('Do not work around a missing tool by simulating it or installing alternative software');
   });
 
   it('applies wildcard matching to agent.tools and warns when an entry matches no known tool', async () => {
@@ -146,6 +176,27 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
     expect(chatOptions.tools?.map((t) => t.name)).toEqual(['abu-browser__screenshot']);
+  });
+
+  it('expands the senior engineer builtin browser wildcard into browser tools', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    // Builtins are normally registered during application discovery. This
+    // isolated loop test deliberately bypasses discovery's filesystem work.
+    (agentRegistry as unknown as { registerBuiltins: () => void }).registerBuiltins();
+    const seniorEngineer = agentRegistry.getAgent('高级开发工程师');
+    expect(seniorEngineer).toBeDefined();
+    await runSubagentLoop({ agent: seniorEngineer!, task: 'inspect the page' });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((tool) => tool.name)).toContain('abu-browser__screenshot');
   });
 
   it('fails before the model starts when a declared MCP tool is unavailable', async () => {
@@ -179,6 +230,19 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(mockExecuteAnyTool).not.toHaveBeenCalled();
   });
 
+  it('fails closed before the model when an AGENT.md tools entry is blank', async () => {
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'blank-agent', tools: ['   '] },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('blank-agent');
+    expect(result.text).toContain('1');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
   it.each(['notion__query', { server: 'notion' }])(
     'returns a structured config error when AGENT.md tools is the non-array value %j',
     async (tools) => {
@@ -190,6 +254,22 @@ describe('subagent max_tokens recovery (integration)', () => {
       expect(result.stopReason).toBe('error');
       expect(result.text).toContain('malformed-agent');
       expect(result.text).toContain('tools');
+      expect(mockClaudeChat).not.toHaveBeenCalled();
+      expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['write_file', ['read_file', null], ['   ']])(
+    'fails closed for malformed AGENT.md disallowed-tools value %j',
+    async (disallowedTools) => {
+      const result = await runSubagentLoop({
+        agent: { ...agent, name: 'malformed-agent', disallowedTools: disallowedTools as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('disallowed-tools');
       expect(mockClaudeChat).not.toHaveBeenCalled();
       expect(mockExecuteAnyTool).not.toHaveBeenCalled();
     },
@@ -502,6 +582,115 @@ describe('subagent max_tokens recovery (integration)', () => {
     const byId = Object.fromEntries(toolEnds.map((e) => [e.id!, e]));
     expect(byId.t1.resultContent).toEqual(imageResult);
     expect(byId.t2.resultContent).toBeUndefined();
+  });
+
+  it.each([
+    ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
+    ['agent denylist', { tools: [], disallowedTools: ['write_file'] }, 'write_file'],
+    ['always-blocked orchestration tool', { tools: [] }, 'run_agent_batch'],
+  ])('rejects a hostile model call outside the frozen %s roster', async (_label, boundary, toolName) => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'hostile-tool', name: toolName, input: { path: '/tmp/x' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent: { ...agent, ...boundary },
+      task: 'attempt an unavailable tool',
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'hostile-tool',
+      error: true,
+      result: expect.stringContaining('fixed tool boundary'),
+    }));
+  });
+
+  it('rechecks constrained tool input after a preToolCall hook modifies it', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockEmitHook.mockImplementation((event: unknown) => {
+      const hookEvent = event as { type?: string };
+      return hookEvent.type === 'preToolCall'
+        ? { ...hookEvent, modifiedInput: { command: 'rm -rf /tmp/forbidden' } }
+        : event;
+    });
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'hook-mutated', name: 'run_command', input: { command: 'npm run test:unit' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent: { ...agent, tools: ['run_command(npm run *)'] },
+      task: 'run a safe command',
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'hook-mutated',
+      error: true,
+      result: expect.stringContaining('fixed tool boundary'),
+    }));
+  });
+
+  it('rechecks the parent run constraint after a preToolCall hook modifies input', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockEmitHook.mockImplementation((event: unknown) => {
+      const hookEvent = event as { type?: string };
+      return hookEvent.type === 'preToolCall'
+        ? { ...hookEvent, modifiedInput: { command: 'rm -rf /tmp/forbidden' } }
+        : event;
+    });
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'parent-hook-mutated', name: 'run_command', input: { command: 'npm run test:unit' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent,
+      task: 'run a safe command',
+      allowedTools: ['run_command(npm run *)'],
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'parent-hook-mutated',
+      error: true,
+      result: expect.stringContaining('not allowed for this agent run'),
+    }));
   });
 
   it('keeps the generic Error-prefix contract for child tool progress', async () => {

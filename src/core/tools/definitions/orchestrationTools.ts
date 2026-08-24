@@ -399,6 +399,14 @@ export const runAgentBatchTool: ToolDefinition = {
         // Belt-and-suspenders: if we raced the abort check in the worker loop,
         // bail before starting a fresh sub-agent run.
         if (loopCtx?.signal?.aborted) throw new Error(getI18n().toolResult.orchestration.errCancelled);
+        // A task can spend its whole run answering directly without calling a
+        // tool. Mark it running at worker admission, not at its first
+        // tool-start event, so those tasks never appear queued until done.
+        try {
+          useBatchProgressStore.getState().setTaskRunning(batchId, idx);
+        } catch {
+          // Best-effort: progress state must never break the batch.
+        }
         const effectiveTask =
           schema !== undefined
             ? resolved.task + buildSchemaInstruction(schema)
@@ -421,13 +429,25 @@ export const runAgentBatchTool: ToolDefinition = {
               try {
                 const store = useBatchProgressStore.getState();
                 if (event.type === 'tool-start') {
-                  if (store.batches[batchId]?.tasks[idx]?.status === 'queued') {
-                    store.setTaskRunning(batchId, idx);
-                  }
+                  store.startTaskStep(batchId, idx, event);
                   store.setTaskActivity(batchId, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
+                } else if (event.type === 'tool-end') {
+                  // Preserve rich blocks verbatim: BatchProgress turns image
+                  // blocks into DetailBlockView input while this in-memory
+                  // batch card remains open.
+                  store.finishTaskStep(batchId, idx, {
+                    id: event.id,
+                    toolName: event.toolName,
+                    result: event.result,
+                    resultContent: event.resultContent,
+                    error: event.error,
+                  });
                 } else if (event.type === 'turn-complete') {
                   currentTurn = event.turn;
                   store.setTaskActivity(batchId, idx, '', currentTurn);
+                  if (event.usage) {
+                    store.setTaskTokenUsage(batchId, idx, event.usage);
+                  }
                 }
               } catch {
                 // Best-effort: never let store errors break the batch
@@ -442,22 +462,12 @@ export const runAgentBatchTool: ToolDefinition = {
     );
     toolExecContext?.reportMetadata?.({ subagentStopReason: resolveBatchStopReason(settled) });
 
-    // Mark all tasks done in store (best-effort)
-    try {
-      const store = useBatchProgressStore.getState();
-      settled.forEach((result, i) => {
-        const isError = result.status === 'rejected'
-          || (result.status === 'fulfilled' && isSubagentResultError(result.value));
-        store.setTaskDone(batchId, i, isError);
-      });
-    } catch {
-      // Best-effort
-    }
-
-    // ── 6. Aggregate results ───────────────────────────────────────────────
-    if (schema !== undefined) {
-      // Structured path: extract + validate JSON from each sub-agent's output
-      const structuredEntries = settled.map((result, i) => {
+    // Structured validation is part of task success, not merely output
+    // formatting. Compute it before setting terminal progress state so an
+    // invalid/missing JSON payload cannot leave a green "done" row.
+    const structuredEntries = schema === undefined
+      ? undefined
+      : settled.map((result, i) => {
         const task = resolvedTasks[i].label;
         if (result.status === 'rejected') {
           const errMsg =
@@ -481,6 +491,33 @@ export const runAgentBatchTool: ToolDefinition = {
         }
         return { task, ok: true, data: extracted };
       });
+
+    // Mark all tasks done in store (best-effort)
+    try {
+      const store = useBatchProgressStore.getState();
+      settled.forEach((result, i) => {
+        const isError = result.status === 'rejected'
+          || (result.status === 'fulfilled' && isSubagentResultError(result.value))
+          || structuredEntries?.[i]?.ok === false;
+        // Direct-answer / old-sidecar paths may omit progress events. The
+        // terminal result is the authoritative fallback for final counters.
+        if (result.status === 'fulfilled') {
+          store.setTaskFinalStats(batchId, i, {
+            toolCallCount: result.value.toolCallCount,
+            tokenUsage: {
+              inputTokens: result.value.tokenUsage.input,
+              outputTokens: result.value.tokenUsage.output,
+            },
+          });
+        }
+        store.setTaskDone(batchId, i, isError);
+      });
+    } catch {
+      // Best-effort
+    }
+
+    // ── 6. Aggregate results ───────────────────────────────────────────────
+    if (structuredEntries !== undefined) {
       return aggregateStructuredResults(structuredEntries);
     }
 

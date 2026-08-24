@@ -647,6 +647,15 @@ describe('subagentRunner', () => {
       progressHandler({ runId, event: richEvent });
       expect(onProgress).toHaveBeenLastCalledWith(richEvent);
 
+      const usageEvent = {
+        type: 'turn-complete' as const,
+        turn: 1,
+        totalTurns: 200,
+        usage: { inputTokens: 120, outputTokens: 45 },
+      };
+      progressHandler({ runId, event: usageEvent });
+      expect(onProgress).toHaveBeenLastCalledWith(usageEvent);
+
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });

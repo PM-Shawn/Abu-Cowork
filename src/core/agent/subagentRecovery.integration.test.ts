@@ -584,6 +584,28 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(byId.t2.resultContent).toBeUndefined();
   });
 
+  it('attaches cumulative token usage to a completed tool turn progress event', async () => {
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce('ok');
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } } as StreamEvent,
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 0, outputTokens: 5 } } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number } }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (event) => events.push(event) });
+
+    expect(events.find((event) => event.type === 'turn-complete')).toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 25 },
+    });
+  });
+
   it.each([
     ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
     ['agent denylist', { tools: [], disallowedTools: ['write_file'] }, 'write_file'],

@@ -633,10 +633,16 @@ export interface TranslationDict {
     turnLabel: string;
     /** "✓ {n} 个子任务完成" — completion summary */
     completionSummary: string;
+    /** "⚠ {done} 个完成，{failed} 个失败" */
+    completionWithErrors: string;
     /** "展开" */
     expand: string;
     /** "收起" */
     collapse: string;
+    /** "{n} 个工具" */
+    toolCount: string;
+    /** "{n} tokens" */
+    tokenCount: string;
   };
 
   // Settings Modal

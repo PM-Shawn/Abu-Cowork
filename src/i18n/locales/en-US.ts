@@ -524,8 +524,11 @@ const enUS: TranslationDict = {
     stopButton: 'Stop',
     turnLabel: 'Turn {n}',
     completionSummary: '✓ {n} sub-tasks completed',
+    completionWithErrors: '⚠ {done} completed, {failed} failed',
     expand: 'Expand',
     collapse: 'Collapse',
+    toolCount: '{n} tools',
+    tokenCount: '{n} tokens',
   },
 
   settings: {

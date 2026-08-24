@@ -524,8 +524,11 @@ const zhCN: TranslationDict = {
     stopButton: '停止',
     turnLabel: '第{n}轮',
     completionSummary: '✓ {n} 个子任务完成',
+    completionWithErrors: '⚠ {done} 个完成，{failed} 个失败',
     expand: '展开',
     collapse: '收起',
+    toolCount: '{n} 个工具',
+    tokenCount: '{n} tokens',
   },
 
   settings: {

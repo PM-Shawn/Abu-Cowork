@@ -218,7 +218,7 @@ describe('subagentHost', () => {
       const events: SubagentProgressEvent[] = [
         { type: 'tool-start', id: 't1', toolName: 'read_file', toolInput: { path: 'x.txt' } },
         { type: 'tool-end', id: 't1', toolName: 'read_file', result: 'file contents', error: false },
-        { type: 'turn-complete', turn: 1, totalTurns: 200 },
+        { type: 'turn-complete', turn: 1, totalTurns: 200, usage: { inputTokens: 120, outputTokens: 45 } },
       ];
       runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
         for (const e of events) options.onProgress?.(e);
@@ -256,6 +256,24 @@ describe('subagentHost', () => {
       const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
       const roundTripped = JSON.parse(JSON.stringify(notifiedParams));
       expect(roundTripped).toEqual({ runId: 'roundtrip-run', event: toolEndEvent });
+    });
+
+    it('serializability: cumulative turn usage round-trips through the progress notification unchanged', async () => {
+      const turnEvent: SubagentProgressEvent = {
+        type: 'turn-complete',
+        turn: 2,
+        totalTurns: 200,
+        usage: { inputTokens: 120, outputTokens: 45 },
+      };
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.(turnEvent);
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ runId: 'usage-roundtrip-run' }));
+
+      const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
+      expect(JSON.parse(JSON.stringify(notifiedParams))).toEqual({ runId: 'usage-roundtrip-run', event: turnEvent });
     });
   });
 

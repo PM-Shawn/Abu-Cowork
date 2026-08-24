@@ -25,6 +25,8 @@ import {
   runAgentBatchTool,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
+import * as subagentRunner from '../../agent/subagentRunner';
+import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 
 function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'error' | 'max_turns') {
   return new SubagentResult({
@@ -46,6 +48,97 @@ describe('runAgentBatchTool preset boundaries', () => {
     expect(description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
     expect(description).toContain('writer (content authoring: read/write/edit files plus web search)');
     expect(description).toContain('executor (full toolset — includes browser, image and MCP tools)');
+  });
+});
+
+describe('runAgentBatchTool progress wiring', () => {
+  beforeEach(() => {
+    useBatchProgressStore.setState({ batches: {} });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const batchId of Object.keys(useBatchProgressStore.getState().batches)) {
+      useBatchProgressStore.getState().clearBatch(batchId);
+    }
+  });
+
+  it('retains tool-end rich content and cumulative progress usage in the batch store', async () => {
+    const image = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'aGk=' } }];
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'abu-browser__screenshot', toolInput: { fullPage: true } });
+      options.onProgress?.({ type: 'tool-end', id: 'sub-tool-1', toolName: 'abu-browser__screenshot', result: 'Screenshot', resultContent: image, error: false });
+      options.onProgress?.({ type: 'turn-complete', turn: 1, totalTurns: 20, usage: { inputTokens: 120, outputTokens: 45 } });
+      return new SubagentResult({
+        text: 'done',
+        stopReason: 'completed',
+        toolCallCount: 1,
+        turnCount: 2,
+        tokenUsage: { input: 120, output: 45 },
+        duration: 1,
+      });
+    });
+
+    await runAgentBatchTool.execute(
+      { tasks: [{ type: 'executor', task: 'capture the page' }] },
+      { toolCallId: 'batch-progress' },
+    );
+
+    const task = useBatchProgressStore.getState().batches['batch-progress'].tasks[0];
+    expect(task.status).toBe('done');
+    expect(task.toolCallCount).toBe(1);
+    expect(task.lastToolName).toBe('abu-browser__screenshot');
+    expect(task.tokenUsage).toEqual({ inputTokens: 120, outputTokens: 45 });
+    expect(task.steps[0]).toMatchObject({
+      id: 'sub-tool-1',
+      result: 'Screenshot',
+      resultContent: image,
+      status: 'completed',
+    });
+  });
+
+  it('uses terminal counters when no progress event is emitted', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
+      text: 'direct answer',
+      toolCallCount: 3,
+      turnCount: 1,
+      tokenUsage: { input: 90, output: 30 },
+      duration: 1,
+      stopReason: 'completed',
+    }));
+
+    await runAgentBatchTool.execute(
+      { tasks: [{ type: 'executor', task: 'answer directly' }] },
+      { toolCallId: 'batch-terminal-usage' },
+    );
+
+    const task = useBatchProgressStore.getState().batches['batch-terminal-usage'].tasks[0];
+    expect(task.status).toBe('done');
+    expect(task.toolCallCount).toBe(3);
+    expect(task.tokenUsage).toEqual({ inputTokens: 90, outputTokens: 30 });
+  });
+
+  it('marks the progress row failed when structured output validation fails', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
+      text: 'not json',
+      toolCallCount: 0,
+      turnCount: 1,
+      tokenUsage: { input: 50, output: 10 },
+      duration: 1,
+      stopReason: 'completed',
+    }));
+
+    const output = await runAgentBatchTool.execute(
+      {
+        tasks: [{ type: 'executor', task: 'return structured data' }],
+        schema: { type: 'object', required: ['name'] },
+      },
+      { toolCallId: 'batch-invalid-structured' },
+    );
+
+    expect(useBatchProgressStore.getState().batches['batch-invalid-structured'].tasks[0].status)
+      .toBe('error');
+    expect(JSON.parse(output)[0]).toMatchObject({ ok: false });
   });
 });
 

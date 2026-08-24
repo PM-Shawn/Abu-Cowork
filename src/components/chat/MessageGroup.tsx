@@ -402,6 +402,14 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     () => assistantMsgs.flatMap((m) => m.toolCalls || []),
     [assistantMsgs]
   );
+  const batchToolCalls = useMemo<ToolCall[]>(() => {
+    const seen = new Set<string>();
+    return allToolCalls.filter((tc) => {
+      if (tc.name !== TOOL_NAMES.RUN_AGENT_BATCH || seen.has(tc.id)) return false;
+      seen.add(tc.id);
+      return true;
+    });
+  }, [allToolCalls]);
 
   // Extract search results: prefer structured data from tool calls, fallback to text parsing
   const searchResults = useMemo(() => {
@@ -743,12 +751,6 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
           .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
       : [];
 
-    // Live run_agent_batch progress cards for this steps segment (tc.id = LLM
-    // call id, matches the batchProgressStore key set by the tool's execute)
-    const segActiveBatches = seg.stepsMsgs
-      .flatMap((m) => m.toolCalls ?? [])
-      .filter((tc) => tc.name === TOOL_NAMES.RUN_AGENT_BATCH && tc.isExecuting && tc.result === undefined);
-
     return (
       <div key={`steps-${segIdx}`}>
         {hasExecSteps ? (
@@ -766,9 +768,6 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
           />
         )}
-        {segActiveBatches.map((tc) => (
-          <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
-        ))}
         {segSettledUQCards.map((tc) => (
           <UserQuestionCard key={`uq-${tc.id}`} toolCall={tc} />
         ))}
@@ -853,7 +852,12 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                 intermediate segments (thinking/plan/steps) are folded
                 behind a single collapsible "工作过程" row (Codex-style). */}
             {workFoldEnd == null ? (
-              segments.map(renderSegment)
+              <>
+                {segments.map(renderSegment)}
+                {batchToolCalls.map((tc) => (
+                  <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
+                ))}
+              </>
             ) : (
               <>
                 {/* Lightweight fold header — matches the thinking/step block
@@ -875,6 +879,14 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                   : segments.slice(0, workFoldEnd)
                       .filter((seg) => seg.kind === 'widget')
                       .map((seg, i) => renderSegment(seg, i))}
+                {/* A live/completed batch is primary task state, not auxiliary
+                    work-process detail. Keep it inspectable when the completed
+                    turn folds its intermediate steps. Once its ephemeral store
+                    entry expires, BatchProgress returns null and the persisted
+                    aggregate result remains the replay fallback. */}
+                {batchToolCalls.map((tc) => (
+                  <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
+                ))}
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>
             )}

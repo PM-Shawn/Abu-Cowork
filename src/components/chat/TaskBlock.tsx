@@ -47,6 +47,8 @@ export type UnifiedStep = {
   completionMessage?: string;
   // New: detail blocks from ExecutionStep
   detailBlocks?: DetailBlock[];
+  /** Batch-progress steps may show a rich image block alongside legacy input/result details. */
+  showLegacyDetailsWithDetailBlocks?: boolean;
   // Reference to original execution for toggle actions
   executionId?: string;
   // Delegate (subagent) support
@@ -500,13 +502,15 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
 /**
  * Individual step item with vertical timeline connector
  */
-function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
+export interface TaskStepItemProps {
   step: UnifiedStep;
   showConnector: boolean;
   hasLaterToolStep: boolean;
   locale: string;
   t: TranslationDict;
-}) {
+}
+
+export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: TaskStepItemProps) {
   const Icon = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
@@ -672,7 +676,7 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
 
   // Render legacy collapsible details (backward compatibility)
   const renderLegacyDetails = () => {
-    if (step.detailBlocks && step.detailBlocks.length > 0) {
+    if (step.detailBlocks && step.detailBlocks.length > 0 && !step.showLegacyDetailsWithDetailBlocks) {
       return null; // Use new detail blocks instead
     }
 
@@ -747,7 +751,8 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
         {renderThinkingDetail()}
 
         {/* Detail blocks - prefer new architecture */}
-        {renderDetailBlocks() || renderLegacyDetails()}
+        {renderDetailBlocks()}
+        {renderLegacyDetails()}
 
         {/* Completion message */}
         {isCompleted && completionMsg && (

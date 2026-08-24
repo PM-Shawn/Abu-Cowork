@@ -166,7 +166,7 @@ export type SubagentProgressEvent =
    * subagent.progress notification forwards it verbatim.
    */
   | { type: 'tool-end'; id: string; toolName: string; result: string; error: boolean; resultContent?: ToolResultContent[] }
-  | { type: 'turn-complete'; turn: number; totalTurns: number };
+  | { type: 'turn-complete'; turn: number; totalTurns: number; usage?: { inputTokens: number; outputTokens: number } };
 
 export type { SubagentStopReason };
 
@@ -842,7 +842,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           content: 'Output token limit reached. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
           timestamp: Date.now(),
         });
-        onProgress?.({ type: 'turn-complete', turn: turn + 1, totalTurns: maxTurns });
+        onProgress?.({
+          type: 'turn-complete',
+          turn: turn + 1,
+          totalTurns: maxTurns,
+          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+        });
         continue;
       }
 
@@ -1025,7 +1030,12 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         return { id: tc.id, name: tc.name, input: tc.input, result, resultContent };
       });
 
-      onProgress?.({ type: 'turn-complete', turn: turn + 1, totalTurns: maxTurns });
+      onProgress?.({
+        type: 'turn-complete',
+        turn: turn + 1,
+        totalTurns: maxTurns,
+        usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
+      });
 
       // Update tool call results on the assistant message (match by id, not name).
       // resultContent rides along on BOTH toolCalls and toolCallsForContext, in

@@ -220,6 +220,10 @@ describe('agentLoopHost', () => {
       ['toolList not an array', { ...baseParams(), toolList: 'nope' }],
       ['locale not a string', { ...baseParams(), locale: 42 }],
       ['empty authorizationScopeId', { ...baseParams(), options: { authorizationScopeId: '' } }],
+      ['malformed runPermissionCeiling', {
+        ...baseParams(),
+        options: { runPermissionCeiling: { version: 1, source: 'trigger', capability: 'not-a-tier' } },
+      }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleAgentRun(params)).rejects.toThrow(RpcError);
       await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });
@@ -274,6 +278,19 @@ describe('agentLoopHost', () => {
       expect(capturedOptions?.allowedTools).toEqual(['read_*']);
       expect(capturedOptions?.orchestration).toBe(params.orchestration);
       expect(capturedOptions?.settingsReader).toBeDefined();
+    });
+
+    it('validates and restores the run permission ceiling into AgentLoopOptions', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      runAgentLoopMock.mockImplementationOnce(async (_convId: string, _msg: string, options: Record<string, unknown>) => {
+        capturedOptions = options;
+        return { reason: 'completed' };
+      });
+      const ceiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+
+      await handleAgentRun(baseParams({ options: { runPermissionCeiling: ceiling } }));
+
+      expect(capturedOptions?.runPermissionCeiling).toEqual(ceiling);
     });
 
     it('applies planMode when provided', async () => {
@@ -656,6 +673,40 @@ describe('agentLoopHost', () => {
         expect.objectContaining({ toolName: 'show_widget', input: { title: 't' } }),
       );
       expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined, undefined);
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+    });
+
+    it('does not start a local tool when Stop wins after the allow ACK was requested', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      isLocalToolReadOnlyMock.mockReturnValue(false);
+      let approve!: (value: { decision: 'allow' }) => void;
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') {
+          return new Promise((resolve) => { approve = resolve; });
+        }
+        return Promise.resolve('unexpected fallback');
+      });
+      const controller = new AbortController();
+
+      const execution = withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'write_file',
+          { path: '/tmp/late.txt', content: 'late' },
+          undefined,
+          undefined,
+          { abortSignal: controller.signal },
+        ),
+      );
+      await vi.waitFor(() => expect(sendRequestMock).toHaveBeenCalledWith(
+        'approval.check',
+        expect.objectContaining({ toolName: 'write_file' }),
+      ));
+
+      controller.abort();
+      approve({ decision: 'allow' });
+
+      await expect(execution).rejects.toEqual(expect.objectContaining({ name: 'AbortError' }));
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
     });
 

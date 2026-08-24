@@ -28,6 +28,7 @@ import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
@@ -56,6 +57,7 @@ interface SubagentRunParams {
   allowedTools?: string[];
   blockedTools?: string[];
   authorizationScopeId?: string;
+  runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -109,6 +111,12 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
   }
   if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
+  }
+  if (
+    params.runPermissionCeiling !== undefined
+    && !isRunPermissionCeiling(params.runPermissionCeiling)
+  ) {
+    throw new RpcError(-32602, 'Invalid params: runPermissionCeiling must be a valid run permission ceiling');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -279,6 +287,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     allowedTools: params.allowedTools,
     blockedTools: params.blockedTools,
     authorizationScopeId: params.authorizationScopeId,
+    runPermissionCeiling: params.runPermissionCeiling,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL

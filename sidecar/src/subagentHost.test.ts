@@ -88,6 +88,10 @@ describe('subagentHost', () => {
       ['blockedTools not a string array', { ...baseParams(), blockedTools: ['read_file', 42] }],
       ['workspacePathSnapshot not string/null', { ...baseParams(), workspacePathSnapshot: 42 }],
       ['empty authorizationScopeId', { ...baseParams(), authorizationScopeId: '' }],
+      ['malformed runPermissionCeiling', {
+        ...baseParams(),
+        runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
+      }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleSubagentRun(params)).rejects.toThrow(RpcError);
       await expect(handleSubagentRun(params)).rejects.toMatchObject({ code: -32602 });
@@ -169,6 +173,19 @@ describe('subagentHost', () => {
 
       expect(capturedOptions?.allowedTools).toEqual(['read_*']);
       expect(capturedOptions?.blockedTools).toEqual(['run_command', 'abu-browser__*']);
+    });
+
+    it('validates and restores the run permission ceiling into SubagentLoopOptions', async () => {
+      let capturedOptions: { runPermissionCeiling?: unknown } | undefined;
+      runSubagentLoopMock.mockImplementation(async (options: { runPermissionCeiling?: unknown }) => {
+        capturedOptions = options;
+        return resultShape('ok');
+      });
+      const ceiling = { version: 1, source: 'trigger', capability: 'custom', allowedTools: ['read_file'] };
+
+      await handleSubagentRun(baseParams({ runPermissionCeiling: ceiling }));
+
+      expect(capturedOptions?.runPermissionCeiling).toEqual(ceiling);
     });
 
     it('the sidecar-local ToolDefinition.execute stub throws if ever called directly (it never should be)', async () => {

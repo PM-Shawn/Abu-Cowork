@@ -52,25 +52,14 @@
  * process boundary), no special handling is needed here — thread
  * `options.onProgress` straight through unchanged.
  *
- * ── Abort-signal linkage — ALREADY DONE by the caller, not by this shim ──
- * Finding (verified by reading, corrects an assumption in this card's
- * brief): the SHELL-side `subagentRunner.ts`'s own `runSubagent(options)`
- * does NOT wire the parent↔child abort cascade itself — it just uses
- * whatever `options.signal` the CALLER already passed in. The cascade is
- * built by the CALLER via `createSubagentController(agentName, parentSignal)`
- * (`src/core/agent/subagentAbort.ts`) BEFORE `runSubagent` is ever invoked
- * — see `agentLoop.ts:755-758`: `const { signal: subagentSignal, cleanup } =
- * createSubagentController(delegateAgent.name, abortController.signal);`
- * then `runSubagent({ ..., signal: subagentSignal })`. `subagentAbort.ts` is
- * a zero-import, pure module-level singleton (`P1-3b-pre-REPORT.md`'s own
- * classification: "if the loop moves to sidecar this state should just live
- * wherever runAgentLoop runs (no shim needed, it migrates naturally with
- * the loop)") — `agentLoop.ts` already imports it directly, unshimmed, and
- * it already runs for real inside the sidecar bundle. So by the time
- * `runSubagent(options)` (this shim) is called, `options.signal` is ALREADY
- * the correctly-cascaded child signal — no additional wiring is needed or
- * built here; this shim just forwards `options.signal` unchanged, matching
- * the real shell-side `runSubagent`'s own behavior exactly.
+ * ── Abort-signal linkage and scoped terminal cleanup ────────────────────
+ * The caller already supplies the parent-linked child signal. Scoped runs
+ * need one additional owner layer, matching the real shell-side
+ * `subagentRunner.ts`: a background command can return while its native
+ * process listener remains live, so the nested run gets its own controller
+ * and that controller is aborted on every terminal path. Parent abort still
+ * cascades into it; an unscoped interactive subagent keeps the original
+ * signal unchanged.
  */
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentResult } from '@/core/agent/subagentLoop';
 import { getCurrentAgentRunContext } from '../agentRunContext';
@@ -87,5 +76,25 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
     workspaceReader: ctx.workspaceReader,
   };
 
-  return runSubagentLoop(fullOptions);
+  if (options.authorizationScopeId === undefined) {
+    return runSubagentLoop(fullOptions);
+  }
+
+  const scopedController = new AbortController();
+  const parentSignal = options.signal;
+  const abortFromParent = () => scopedController.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  try {
+    return await runSubagentLoop({ ...fullOptions, signal: scopedController.signal });
+  } finally {
+    parentSignal?.removeEventListener('abort', abortFromParent);
+    if (!scopedController.signal.aborted) {
+      scopedController.abort(new Error('Scoped subagent run finished'));
+    }
+  }
 }

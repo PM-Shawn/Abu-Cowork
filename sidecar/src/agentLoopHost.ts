@@ -44,6 +44,7 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import {
   createAgentRunTerminal,
   type AgentRunTerminal,
@@ -89,6 +90,7 @@ export interface AgentRunParams {
     blockedTools?: string[];
     allowedTools?: string[];
     authorizationScopeId?: string;
+    runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
     workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
@@ -146,6 +148,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   }
   if (options.authorizationScopeId !== undefined && (typeof options.authorizationScopeId !== 'string' || !options.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: options.authorizationScopeId must be a non-empty string');
+  }
+  if (
+    options.runPermissionCeiling !== undefined
+    && !isRunPermissionCeiling(options.runPermissionCeiling)
+  ) {
+    throw new RpcError(-32602, 'Invalid params: options.runPermissionCeiling must be a valid run permission ceiling');
   }
   if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
@@ -354,6 +362,15 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
           return approval.reason;
         }
         if (approval.decision === 'allow') {
+          // Stop can win in the microtask gap after the shell's allow ACK is
+          // received but before this local execute() begins. The shell's
+          // post-approval barrier protects ACK creation; this second,
+          // sidecar-local barrier protects ACK consumption.
+          if (context?.abortSignal?.aborted) {
+            const error = new Error('Tool execution aborted');
+            error.name = 'AbortError';
+            throw error;
+          }
           try {
             return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
           } catch (err) {
@@ -740,6 +757,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
       authorizationScopeId: params.options.authorizationScopeId,
+      runPermissionCeiling: params.options.runPermissionCeiling,
       imContext: params.options.imContext,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),

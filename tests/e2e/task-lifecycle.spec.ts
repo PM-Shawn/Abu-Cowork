@@ -28,12 +28,18 @@ interface MockRequest {
   authorization: string | undefined;
   body: unknown;
   pathname: string;
-  purpose: 'memory' | 'task';
+  purpose: 'compression' | 'memory' | 'task';
   responseAborted: boolean;
 }
 
 type MockReplyPlan =
   | { kind: 'complete'; responseText: string }
+  | {
+      arguments: Record<string, unknown>;
+      kind: 'tool-call';
+      toolCallId: string;
+      toolName: string;
+    }
   | { kind: 'hold-open'; partialText: string };
 
 interface OpenAiMock {
@@ -74,7 +80,11 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     } catch {
       // Keep malformed input available in the assertion output if this ever regresses.
     }
-    const purpose = isMemoryExtractionRequest(body) ? 'memory' : 'task';
+    const purpose = isMemoryExtractionRequest(body)
+      ? 'memory'
+      : isCompressionRequest(body)
+        ? 'compression'
+        : 'task';
     const mockRequest: MockRequest = {
       authorization: req.headers.authorization,
       body,
@@ -92,10 +102,53 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     const replyPlan =
       purpose === 'memory'
         ? { kind: 'complete' as const, responseText: '[]' }
+        : purpose === 'compression'
+          ? { kind: 'complete' as const, responseText: 'Abu E2E compacted conversation summary.' }
         : replyPlans[taskRequestCount++];
     if (!replyPlan) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
+      return;
+    }
+
+    const usesStreaming = !body
+      || typeof body !== 'object'
+      || !('stream' in body)
+      || (body as { stream?: unknown }).stream !== false;
+    if (!usesStreaming) {
+      res.writeHead(200, {
+        'cache-control': 'no-cache',
+        'content-type': 'application/json; charset=utf-8',
+      });
+      if (replyPlan.kind === 'hold-open') {
+        res.end(JSON.stringify({ error: 'hold-open replies require a streaming request' }));
+        return;
+      }
+      const message = replyPlan.kind === 'tool-call'
+        ? {
+            content: null,
+            role: 'assistant',
+            tool_calls: [{
+              id: replyPlan.toolCallId,
+              type: 'function',
+              function: {
+                name: replyPlan.toolName,
+                arguments: JSON.stringify(replyPlan.arguments),
+              },
+            }],
+          }
+        : { content: replyPlan.responseText, role: 'assistant' };
+      res.end(JSON.stringify({
+        id: 'chatcmpl-abu-e2e',
+        object: 'chat.completion',
+        created: 0,
+        model: TEST_MODEL_ID,
+        choices: [{
+          index: 0,
+          message,
+          finish_reason: replyPlan.kind === 'tool-call' ? 'tool_calls' : 'stop',
+        }],
+      }));
       return;
     }
 
@@ -111,6 +164,12 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
         mockRequest.responseAborted = !res.writableEnded;
       });
       res.write(sseChunk(replyPlan.partialText, null));
+      return;
+    }
+
+    if (replyPlan.kind === 'tool-call') {
+      res.write(sseToolCall(replyPlan));
+      res.end('data: [DONE]\n\n');
       return;
     }
 
@@ -148,6 +207,30 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
   };
 }
 
+function sseToolCall(plan: Extract<MockReplyPlan, { kind: 'tool-call' }>): string {
+  return `data: ${JSON.stringify({
+    id: 'chatcmpl-abu-e2e',
+    object: 'chat.completion.chunk',
+    created: 0,
+    model: TEST_MODEL_ID,
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: plan.toolCallId,
+          type: 'function',
+          function: {
+            name: plan.toolName,
+            arguments: JSON.stringify(plan.arguments),
+          },
+        }],
+      },
+      finish_reason: null,
+    }],
+  })}\n\n${sseChunk('', 'tool_calls')}`;
+}
+
 function isMemoryExtractionRequest(body: unknown): boolean {
   if (!body || typeof body !== 'object' || !('messages' in body)) return false;
   const messages = (body as { messages?: unknown }).messages;
@@ -160,8 +243,23 @@ function isMemoryExtractionRequest(body: unknown): boolean {
   });
 }
 
+function isCompressionRequest(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || !('messages' in body)) return false;
+  const messages = (body as { messages?: unknown }).messages;
+  return Array.isArray(messages) && messages.some((message) => {
+    if (!message || typeof message !== 'object') return false;
+    const content = (message as { content?: unknown }).content;
+    return typeof content === 'string'
+      && content.includes('请将以下对话内容压缩为一段简洁的摘要');
+  });
+}
+
 function taskRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'task');
+}
+
+function compressionRequests(mock: OpenAiMock): MockRequest[] {
+  return mock.requests.filter((request) => request.purpose === 'compression');
 }
 
 function closeServer(server: Server, activeResponses: ReadonlySet<ServerResponse>): Promise<void> {
@@ -316,8 +414,16 @@ async function waitForApp(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-async function configureLocalMockProvider(page: Page, baseUrl: string): Promise<void> {
-  await page.evaluate(({ baseUrl, testApiKey, testModelId }) => {
+async function configureLocalMockProvider(
+  page: Page,
+  baseUrl: string,
+  options: {
+    contextWindowSize?: number;
+    maxOutputTokens?: number;
+    supportsTools?: boolean;
+  } = {},
+): Promise<void> {
+  await page.evaluate(({ baseUrl, contextWindowSize, maxOutputTokens, supportsTools, testApiKey, testModelId }) => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -335,13 +441,13 @@ async function configureLocalMockProvider(page: Page, baseUrl: string): Promise<
         id: testModelId,
         label: 'Abu E2E deterministic model',
         isCustom: true,
-        declaredCapabilities: { supportsTools: false },
+        declaredCapabilities: { supportsReasoning: false, supportsTools },
       }],
       defaultModelId: testModelId,
       status: 'verified',
       sortOrder: 0,
       userAdded: true,
-      declaredCapabilities: { supportsTools: false },
+      declaredCapabilities: { supportsReasoning: false, supportsTools },
     }];
     state.activeModel = { providerId: 'abu-e2e-local-provider', modelId: testModelId };
     state.recentModels = [];
@@ -350,9 +456,18 @@ async function configureLocalMockProvider(page: Page, baseUrl: string): Promise<
     state.guideOpen = false;
     state.hasAcknowledgedDisclaimer = true;
     state.hasRunSensitiveAudit_v015 = true;
+    if (contextWindowSize !== undefined) state.contextWindowSize = contextWindowSize;
+    if (maxOutputTokens !== undefined) state.maxOutputTokens = maxOutputTokens;
 
     window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
-  }, { baseUrl, testApiKey: TEST_API_KEY, testModelId: TEST_MODEL_ID });
+  }, {
+    baseUrl,
+    contextWindowSize: options.contextWindowSize,
+    maxOutputTokens: options.maxOutputTokens,
+    supportsTools: options.supportsTools ?? false,
+    testApiKey: TEST_API_KEY,
+    testModelId: TEST_MODEL_ID,
+  });
   await page.reload();
   await waitForApp(page);
 }
@@ -425,6 +540,165 @@ test.describe.serial('Electron product task lifecycle', () => {
     await recentConversation.click();
     await expect(secondPage.getByText(prompt, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(secondPage.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  });
+
+  test('opens a conserved context breakdown after a real sidecar turn', async () => {
+    const prompt = `abu-e2e-context-breakdown-${randomUUID()}`;
+    const response = `abu-e2e-context-answer-${randomUUID()}`;
+    mock = await startOpenAiMock([{ kind: 'complete', responseText: response }]);
+
+    dataRoot = createElectronDataRoot();
+    const launch = await launchAbuElectron(dataRoot);
+    app = launch.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+
+    const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    await input.fill(prompt);
+    await input.press('Enter');
+    await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const indicator = page.getByTestId('context-indicator');
+    await expect(indicator).toHaveAttribute('aria-expanded', 'false');
+    await indicator.click();
+
+    const popover = page.getByTestId('context-breakdown-popover');
+    await expect(popover).toBeVisible();
+    const rows = popover.locator('[data-testid^="context-breakdown-row-"]');
+    await expect(rows).toHaveCount(5);
+
+    const totalTokens = await popover.getAttribute('data-tokens-used');
+    expect(totalTokens).not.toBeNull();
+    const bucketTokens = await rows.evaluateAll((elements) => (
+      elements.map((element) => Number((element as HTMLElement).dataset.tokens))
+    ));
+    expect(bucketTokens.reduce((sum, value) => sum + value, 0)).toBe(Number(totalTokens));
+
+    const headerText = await popover.getByTestId('context-breakdown-header').innerText();
+    const headerPercent = Number(headerText.match(/(\d+)%/)?.[1]);
+    const bucketPercents = await popover
+      .locator('[data-testid^="context-breakdown-percent-"]')
+      .allInnerTexts();
+    expect(bucketPercents.reduce((sum, value) => sum + Number.parseInt(value, 10), 0))
+      .toBe(headerPercent);
+  });
+
+  test('keeps the breakdown conserved after reading two large files and compressing', async () => {
+    test.setTimeout(120_000);
+    const runId = randomUUID();
+    const prefillResponses = Array.from(
+      { length: 6 },
+      (_, index) => `abu-e2e-context-prefill-answer-${index}-${runId}`,
+    );
+    const finalResponse = `abu-e2e-context-after-compression-${runId}`;
+    const firstFixtureMarker = `abu-e2e-owned-fixture-alpha-${runId}`;
+    const secondFixtureMarker = `abu-e2e-owned-fixture-beta-${runId}`;
+    dataRoot = createElectronDataRoot();
+    const fixtureDir = path.join(dataRoot.rootDir, 'owned-context-fixtures');
+    const firstFixturePath = path.join(fixtureDir, 'alpha-large-fixture.txt');
+    const secondFixturePath = path.join(fixtureDir, 'beta-large-fixture.txt');
+    const makeLargeFixture = (marker: string, label: string) => [
+      marker,
+      ...Array.from(
+        { length: 119 },
+        (_, index) => `${label}-${index.toString().padStart(3, '0')}: ${label.repeat(32)}`,
+      ),
+    ].join('\n');
+    fs.mkdirSync(fixtureDir, { recursive: true });
+    fs.writeFileSync(firstFixturePath, makeLargeFixture(firstFixtureMarker, 'alpha-context-fixture'));
+    fs.writeFileSync(secondFixturePath, makeLargeFixture(secondFixtureMarker, 'beta-context-fixture'));
+    mock = await startOpenAiMock([
+      ...prefillResponses.map((responseText) => ({ kind: 'complete' as const, responseText })),
+      {
+        kind: 'tool-call',
+        toolCallId: `call-agent-loop-${runId}`,
+        toolName: 'read_file',
+        arguments: { path: firstFixturePath, offset: 0, limit: 80 },
+      },
+      {
+        kind: 'tool-call',
+        toolCallId: `call-chat-store-${runId}`,
+        toolName: 'read_file',
+        arguments: { path: secondFixturePath, offset: 0, limit: 80 },
+      },
+      { kind: 'complete', responseText: finalResponse },
+    ]);
+
+    const launch = await launchAbuElectron(dataRoot);
+    app = launch.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, {
+      contextWindowSize: 50_000,
+      maxOutputTokens: 4_096,
+      supportsTools: true,
+    });
+
+    const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    const largePayload = 'x'.repeat(20_000);
+    for (const [index, response] of prefillResponses.entries()) {
+      await input.fill(`abu-e2e-context-prefill-${index}-${runId}\n${largePayload}`);
+      await input.press('Enter');
+      await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+    }
+
+    const indicator = page.getByTestId('context-indicator');
+    await indicator.click();
+    const popover = page.getByTestId('context-breakdown-popover');
+    await expect(popover).toBeVisible();
+    const rows = popover.locator('[data-testid^="context-breakdown-row-"]');
+    const beforeTokens = Number(await popover.getAttribute('data-tokens-used'));
+    const beforeBucketTokens = await rows.evaluateAll((elements) => (
+      elements.map((element) => Number((element as HTMLElement).dataset.tokens))
+    ));
+    const beforeConversation = Number(
+      await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
+    );
+    expect(beforeTokens).toBeGreaterThan(50_000 * 0.65);
+    expect(beforeBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(beforeTokens);
+    expect(beforeConversation).toBe(Math.max(...beforeBucketTokens));
+    await page.keyboard.press('Escape');
+    await expect(popover).toBeHidden();
+
+    await input.fill(`请依次读取这两个大文件：${firstFixturePath} 和 ${secondFixturePath}`);
+    await input.press('Enter');
+    for (let index = 0; index < 2; index += 1) {
+      await expect(page.getByRole('heading', { name: '文件读取权限' }))
+        .toBeVisible({ timeout: READY_TIMEOUT });
+      await page.getByRole('button', { name: '允许本次会话', exact: true }).click();
+    }
+    await expect(page.getByText(finalResponse, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+
+    expect(compressionRequests(mock).length).toBeGreaterThan(0);
+    const requests = taskRequests(mock);
+    expect(requests).toHaveLength(9);
+    expect(JSON.stringify(requests[7].body)).toContain(firstFixtureMarker);
+    expect(JSON.stringify(requests[8].body)).toContain(secondFixtureMarker);
+    expect(JSON.stringify(requests[8].body)).toContain('Abu E2E compacted conversation summary.');
+
+    await indicator.click();
+    await expect(popover).toBeVisible();
+    const afterTokens = Number(await popover.getAttribute('data-tokens-used'));
+    const afterBucketTokens = await rows.evaluateAll((elements) => (
+      elements.map((element) => Number((element as HTMLElement).dataset.tokens))
+    ));
+    const afterConversation = Number(
+      await popover.getByTestId('context-breakdown-row-conversation').getAttribute('data-tokens'),
+    );
+    expect(afterTokens).toBeLessThan(beforeTokens);
+    expect(afterBucketTokens.reduce((sum, value) => sum + value, 0)).toBe(afterTokens);
+    expect(afterConversation).toBe(Math.max(...afterBucketTokens));
+
+    const headerText = await popover.getByTestId('context-breakdown-header').innerText();
+    const headerPercent = Number(headerText.match(/(\d+)%/)?.[1]);
+    const bucketPercents = await popover
+      .locator('[data-testid^="context-breakdown-percent-"]')
+      .allInnerTexts();
+    expect(bucketPercents.reduce((sum, value) => sum + Number.parseInt(value, 10), 0))
+      .toBe(headerPercent);
   });
 
   test('stops an open stream, persists its partial reply, and continues after restart', async () => {

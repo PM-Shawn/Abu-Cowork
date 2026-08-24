@@ -368,6 +368,15 @@ export interface TranslationDict {
     contextTooltipCompressing: string;
     contextTooltipUsage: string;
     contextTooltipSubtitle: string;
+    contextBreakdown: {
+      title: string;
+      systemPrompt: string;
+      tools: string;
+      mcp: string;
+      skills: string;
+      conversation: string;
+      free: string;
+    };
     // Agent loop max turns
     maxTurnsReached: string;
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)

@@ -1104,6 +1104,16 @@ describe('Agent Pipeline Integration', () => {
       expect(usage.messageCountAtPublish).toBeGreaterThanOrEqual(historyMsgs.length);
       expect(usage.messageCountAtPublish).toBeLessThanOrEqual(conv.messages.length);
       expect(usage.tokensUsed).toBeLessThan(180_000); // post-compression, not raw history
+
+      expect(usage.breakdown?.version).toBe(1);
+      const breakdown = usage.breakdown!;
+      expect(
+        breakdown.systemPrompt
+          + breakdown.tools
+          + breakdown.mcp
+          + breakdown.skills
+          + breakdown.conversation,
+      ).toBe(usage.tokensUsed);
     });
   });
 });

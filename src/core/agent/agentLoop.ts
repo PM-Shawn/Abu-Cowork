@@ -45,6 +45,7 @@ import {
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent, getDisplayPercent } from '../context/autoCompact';
 import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
+import { computeBreakdownWeights, distributeWithConservation } from '../context/usageBreakdown';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
@@ -1653,11 +1654,20 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // AS COMPRESSED. The indicator estimates only the messages after that index
       // (the assistant reply currently streaming), so it stays live without
       // re-counting — and thereby un-compressing — the history behind the anchor.
+      const breakdownWeights = computeBreakdownWeights({
+        allSections,
+        tools,
+        deferredToolsSummary,
+        messagesForContext,
+        volatileContextTail,
+      });
+      const breakdown = distributeWithConservation(breakdownWeights, postCompressionTokens);
       chatDelta.setContextUsage(conversationId, {
         percent: getDisplayPercent(postCompressionTokens, contextWindowSize),
         tokensUsed: postCompressionTokens,
         tokensMax: contextWindowSize,
         messageCountAtPublish: historyMessages.length,
+        breakdown: { version: 1, ...breakdown },
       });
 
       // Step 2.1: Persistent compaction (long-conversation Part A). When the

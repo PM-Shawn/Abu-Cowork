@@ -41,6 +41,26 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
     delta[method](...args);
 
     expect(frames).toEqual([{ p: 'chat', m: method, a: args }]);
+    if (method === 'setContextUsage') {
+      expect(frames).toEqual([{
+        p: 'chat',
+        m: 'setContextUsage',
+        a: ['conv-1', {
+          percent: expect.any(Number),
+          tokensUsed: expect.any(Number),
+          tokensMax: expect.any(Number),
+          messageCountAtPublish: expect.any(Number),
+          breakdown: {
+            version: 1,
+            systemPrompt: expect.any(Number),
+            tools: expect.any(Number),
+            mcp: expect.any(Number),
+            skills: expect.any(Number),
+            conversation: expect.any(Number),
+          },
+        }],
+      }]);
+    }
   });
 });
 

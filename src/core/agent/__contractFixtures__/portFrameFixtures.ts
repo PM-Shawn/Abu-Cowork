@@ -86,7 +86,20 @@ const sampleExecStepSnapshot = { id: 'step1', label: 'do thing', status: 'comple
 
 const samplePlannedStep = { id: 'p1', content: 'plan step 1', status: 'pending' as const };
 
-const sampleContextUsage = { used: 1000, limit: 200000, percent: 0.5 };
+const sampleContextUsage = {
+  percent: 50,
+  tokensUsed: 1000,
+  tokensMax: 2000,
+  messageCountAtPublish: 2,
+  breakdown: {
+    version: 1,
+    systemPrompt: 100,
+    tools: 150,
+    mcp: 50,
+    skills: 200,
+    conversation: 500,
+  },
+};
 
 const sampleContextCache = { compressed: true, summary: 'compressed history' };
 

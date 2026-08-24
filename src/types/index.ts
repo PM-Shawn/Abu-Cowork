@@ -393,6 +393,14 @@ export interface Conversation {
     // which is what keeps a compacted conversation from being double-counted.
     // Absent only on a payload from an older publish — treated as "no tail".
     messageCountAtPublish?: number;
+    breakdown?: {
+      version: 1;
+      systemPrompt: number;
+      tools: number;
+      mcp: number;
+      skills: number;
+      conversation: number;
+    };
   };
   isCompressing?: boolean;  // True while compressContextIfNeeded is awaiting LLM
   /**

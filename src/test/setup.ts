@@ -11,6 +11,7 @@ import { cleanup } from '@testing-library/react';
 vi.mock('@tauri-apps/api/path', () => ({
   homeDir: vi.fn().mockResolvedValue('/Users/testuser'),
   appDataDir: vi.fn().mockResolvedValue('/Users/testuser/.abu'),
+  tempDir: vi.fn().mockResolvedValue('/tmp'),
   resolve: vi.fn((...args: string[]) => Promise.resolve(args.join('/'))),
   join: vi.fn((...args: string[]) => Promise.resolve(args.join('/'))),
 }));

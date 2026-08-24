@@ -54,6 +54,9 @@ import { askUserQuestionTool } from './definitions/askUserQuestionTool';
 import { computerTool } from './definitions/computerTools';
 export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/computerTools';
 
+// --- IM outbound tools ---
+import { sendFileTool } from './definitions/imTools';
+
 export function registerBuiltinTools(): void {
   toolRegistry.register(getSystemInfoTool);
   toolRegistry.register(readFileTool);
@@ -87,6 +90,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(clipboardReadTool);
   toolRegistry.register(clipboardWriteTool);
   toolRegistry.register(systemNotifyTool);
+  toolRegistry.register(sendFileTool);
   toolRegistry.register(computerTool);
   toolRegistry.register(requestWorkspaceTool);
   toolRegistry.register(askUserQuestionTool);

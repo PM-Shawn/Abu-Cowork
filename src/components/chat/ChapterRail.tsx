@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
@@ -22,18 +22,51 @@ import { CONDENSE_THRESHOLD, type Chapter } from './chapters';
  *  rail reads as an even scale rather than a ragged bar chart. State is carried
  *  by colour (current) and weight (hover) instead. */
 const TICK_BASE =
-  'relative block w-[22px] h-[10px] border-0 p-0 bg-transparent cursor-pointer ' +
+  'relative block w-[28px] h-[10px] border-0 p-0 bg-transparent cursor-pointer ' +
   "before:content-[''] before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 " +
   'before:w-[5px] before:h-[2px] before:rounded-[1px] before:bg-[var(--abu-text-placeholder)] ' +
-  'before:opacity-75 before:transition-all before:duration-150 ' +
-  'hover:before:w-[10px] hover:before:h-[3px] hover:before:bg-[var(--abu-text-primary)] hover:before:opacity-100 ' +
+  'before:opacity-75 before:transition-all before:duration-150 before:ease-out ' +
   'focus-visible:outline-2 focus-visible:outline-[var(--abu-clay)] focus-visible:outline-offset-2';
 
 /** Condensed rows tighten the pitch only — the tick keeps its length, so a long
  *  conversation still reads as the same scale, just a denser one. */
 const TICK_CONDENSED = 'h-[6px]';
 
+/**
+ * Fisheye ramp, indexed by distance from the tick under the pointer.
+ *
+ * A single tick lighting up on hover makes a 5x2px target feel like a dare: you
+ * get no feedback until you are already on it. Letting the neighbours swell by
+ * proximity — the macOS dock trick ChatGPT uses on the same control — turns the
+ * rail into something that reacts as the pointer approaches, so the eye leads
+ * the cursor onto the right one. The transition on every tick is what makes the
+ * whole column read as one soft wave rather than five independent flickers.
+ *
+ * Only the tick under the pointer takes colour. Tinting the neighbours too
+ * reads as three separate states rather than one target with a run-up, and it
+ * competes with the accent that means "the chapter you are reading". The
+ * neighbours carry the wave through length alone.
+ *
+ * The resting 5px is deliberately tiny — the rail has to sit beside the text
+ * without competing with it. That makes the swell do double duty: it is both
+ * the "you are on this one" signal and the target itself, so it goes to 24px,
+ * near five times the resting length. The button is 28px wide throughout, so
+ * the whole of the swollen line is clickable rather than just its first 5px.
+ *
+ * Distances past the end of this ramp keep the resting size.
+ */
+const TICK_RAMP = [
+  'before:w-[24px] before:h-[3px] before:bg-[var(--abu-clay)] before:opacity-100',
+  'before:w-[16px]',
+  'before:w-[10px]',
+];
+
+/** The chapter being read. Colour only — the ramp above owns the sizes, so a
+ *  current tick under the pointer still swells like any other. */
 const TICK_CURRENT = 'before:bg-[var(--abu-clay)] before:opacity-100';
+
+/** Breathing room kept between the preview card and the window edge. */
+const VIEWPORT_GUTTER = 16;
 
 export default function ChapterRail({
   chapters,
@@ -46,7 +79,14 @@ export default function ChapterRail({
 }) {
   const { t } = useI18n();
   const [peeked, setPeeked] = useState<{ index: number; top: number } | null>(null);
+  // Pixels to lift the preview card by so it stays inside the window. Measured
+  // rather than estimated: the card is one line or two depending on whether the
+  // chapter has a summary yet, so any hard-coded height would be wrong half the
+  // time.
+  const [peekShift, setPeekShift] = useState(0);
   const tickRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const ticksRef = useRef<HTMLDivElement>(null);
+  const peekRef = useRef<HTMLDivElement>(null);
 
   // The preview card is aligned to the tick under the cursor, so it is measured
   // from the live element rather than computed from an index: the condensed
@@ -55,8 +95,26 @@ export default function ChapterRail({
   const showPeek = useCallback((index: number) => {
     const tick = tickRefs.current[index];
     if (!tick) return;
+    setPeekShift(0);
     setPeeked({ index, top: tick.offsetTop - 10 });
   }, []);
+
+  // Keep the card on screen. It is anchored to a tick, and ticks near the foot
+  // of a long rail sit close enough to the composer that a two-line card would
+  // hang off the bottom of the window.
+  useLayoutEffect(() => {
+    if (!peeked) return;
+    const card = peekRef.current;
+    if (!card) return;
+    const overflow = card.getBoundingClientRect().bottom - (window.innerHeight - VIEWPORT_GUTTER);
+    if (overflow > 0) setPeekShift((current) => current + overflow);
+  }, [peeked]);
+
+  // Once the rail scrolls, the current tick can fall outside it — most visibly
+  // on open, which lands on the newest chapter at the very bottom of the list.
+  useEffect(() => {
+    tickRefs.current[currentIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [currentIndex, chapters.length]);
 
   if (chapters.length === 0) return null;
 
@@ -84,7 +142,19 @@ export default function ChapterRail({
           className="absolute left-1 -translate-y-1/2 py-1.5 px-1"
           onMouseLeave={() => setPeeked(null)}
         >
-          <div className="flex flex-col items-start">
+          {/* The rail's height is 10px per chapter (6px condensed), so it grows
+              without limit: 150 chapters already exceed a chat pane, and since
+              the rail is centred the overflow is clipped at BOTH ends — the
+              oldest and newest ticks silently become unreachable. Cap it and
+              let the excess scroll instead. The scrollbar is hidden because a
+              second one beside the transcript reads as chrome, not navigation;
+              the effect below keeps the current tick in view, which is what the
+              scrollbar would otherwise be for. */}
+          <div
+            ref={ticksRef}
+            className="flex flex-col items-start max-h-[60vh] overflow-y-auto
+                       [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {chapters.map((chapter, index) => (
               <button
                 key={chapter.messageId}
@@ -98,6 +168,9 @@ export default function ChapterRail({
                   // ends of the scale, and condensing them would make the rail's
                   // top and bottom drift as the conversation grows.
                   condensed && index > 0 && index < chapters.length - 1 && TICK_CONDENSED,
+                  peeked && TICK_RAMP[Math.abs(index - peeked.index)],
+                  // After the ramp, so the chapter being read keeps its colour
+                  // even while a neighbour is hovered.
                   index === currentIndex && TICK_CURRENT,
                 )}
                 onMouseEnter={() => showPeek(index)}
@@ -110,9 +183,10 @@ export default function ChapterRail({
 
           {preview && peeked && (
             <div
+              ref={peekRef}
               className="absolute left-[calc(100%+10px)] w-[300px] flex flex-col gap-1 px-3 py-2.5 pointer-events-none
                          rounded-xl bg-[var(--abu-bg-base)] border border-[var(--abu-border)] shadow-lg"
-              style={{ top: peeked.top }}
+              style={{ top: peeked.top - peekShift }}
             >
               <span className="text-h-xs text-[var(--abu-text-primary)] truncate">{preview.title}</span>
               {preview.summary && (

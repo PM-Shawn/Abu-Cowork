@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@/types';
 import { COMPACT_BOUNDARY_ID_PREFIX } from '@/core/context/compactBoundary';
-import { activeChapterIndex, deriveChapters, topVisibleGroup, type Chapter } from './chapters';
+import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter } from './chapters';
 
 const FALLBACK = '会话开始';
 
@@ -234,5 +234,23 @@ describe('topVisibleGroup', () => {
 
   it('falls back to the first chapter when nothing is rendered', () => {
     expect(topVisibleGroup([])).toBe(0);
+  });
+});
+
+describe('shouldShowRail', () => {
+  function chapters(n: number): Chapter[] {
+    return Array.from({ length: n }, (_, i) => ({ groupIndex: i, messageId: `m${i}`, title: `第 ${i}`, summary: '' }));
+  }
+
+  it('stays out of the way until scrubbing beats scrolling', () => {
+    expect(shouldShowRail(chapters(0))).toBe(false);
+    // A brand-new conversation: one turn, one tick, nothing to navigate.
+    expect(shouldShowRail(chapters(1))).toBe(false);
+    expect(shouldShowRail(chapters(2))).toBe(false);
+  });
+
+  it('appears from the third chapter on', () => {
+    expect(shouldShowRail(chapters(3))).toBe(true);
+    expect(shouldShowRail(chapters(40))).toBe(true);
   });
 });

@@ -505,6 +505,13 @@ export interface ToolExecutionContext {
    * the in-process fallback both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
+  /**
+   * IM reply target for the current run, set only when the loop was dispatched
+   * from an IM channel (channelRouter → agentLoop). Lets outbound tools like
+   * `send_file` know which platform + chat to deliver to. Absent in interactive
+   * desktop / scheduled / trigger runs, so `send_file` refuses outside IM.
+   */
+  imReplyTarget?: { platform: string; chatId: string };
 }
 
 export interface ToolDefinition {

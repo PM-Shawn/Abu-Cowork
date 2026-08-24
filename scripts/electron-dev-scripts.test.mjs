@@ -20,3 +20,22 @@ test('enterprise Electron dev launch rebuilds the enterprise sidecar and native 
     'npm run electron:dev:check && ABU_BUILD_TARGET=enterprise npm run build:sidecar && npm run build:native-helper && ABU_BUILD_TARGET=enterprise npm run build:electron:renderer',
   );
 });
+
+test('setup:electron-dev runs copy-resources so every browser-artifact digest gets stamped', () => {
+  // check:browser-artifacts 校验 4 个产物戳，setup 的构建步骤只写其中 3 个；
+  // src-tauri/browser-extension 的戳只有 copy-resources 写，缺了它新 worktree
+  // 首次 verify 必报 STALE。
+  const setupScript = readFileSync(path.join(repoRoot, 'scripts', 'setup-electron-dev.mjs'), 'utf8');
+  const browserRuntimeAt = setupScript.indexOf("'build:electron-browser-runtime'");
+  const sidecarAt = setupScript.indexOf("'build:sidecar'");
+  const copyResourcesAt = setupScript.indexOf("'copy-resources'");
+  assert.notEqual(copyResourcesAt, -1, 'setup:electron-dev must run copy-resources');
+  assert.ok(
+    copyResourcesAt > browserRuntimeAt && browserRuntimeAt !== -1,
+    'copy-resources needs abu-chrome-extension/dist built first',
+  );
+  assert.ok(
+    copyResourcesAt > sidecarAt && sidecarAt !== -1,
+    'copy-resources needs sidecar/index.mjs built first',
+  );
+});

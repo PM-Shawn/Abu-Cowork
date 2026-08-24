@@ -183,14 +183,43 @@ describe('SessionMapper', () => {
     expect(result.isNew).toBe(true);
   });
 
-  it('does not use maxRoundsPerSession for session cutoff', () => {
+  // maxRoundsPerSession used to be configurable but never enforced, so a chat
+  // that never idled long enough to expire piled every turn onto one
+  // conversation — slower, costlier, and polluted by long-stale context.
+  it('rolls the session over once maxRoundsPerSession is reached', () => {
     const msg = makeMessage();
     const channel = makeChannel({ maxRoundsPerSession: 2 });
     mapper.resolve(msg, channel, 'safe_tools');
 
     const store = useIMChannelStore.getState();
     const session = store.sessions['dchat:chat1:u1:window'] as { messageCount: number };
-    if (session) session.messageCount = 100;
+    if (session) session.messageCount = 2; // cap reached
+
+    const result = mapper.resolve(msg, channel, 'safe_tools');
+    expect(result.isNew).toBe(true);
+    expect(result.isRolledOver).toBe(true);
+    // archived (not discarded), so "继续上次" can still restore it
+    expect(result.archivedConversationId).toBeDefined();
+  });
+
+  it('keeps the session while it is under the round cap', () => {
+    const msg = makeMessage();
+    const channel = makeChannel({ maxRoundsPerSession: 5 });
+    mapper.resolve(msg, channel, 'safe_tools');
+
+    const result = mapper.resolve(msg, channel, 'safe_tools');
+    expect(result.isNew).toBe(false);
+    expect(result.isRolledOver).toBeFalsy();
+  });
+
+  it('treats maxRoundsPerSession=0 as unlimited', () => {
+    const msg = makeMessage();
+    const channel = makeChannel({ maxRoundsPerSession: 0 });
+    mapper.resolve(msg, channel, 'safe_tools');
+
+    const store = useIMChannelStore.getState();
+    const session = store.sessions['dchat:chat1:u1:window'] as { messageCount: number };
+    if (session) session.messageCount = 999;
 
     const result = mapper.resolve(msg, channel, 'safe_tools');
     expect(result.isNew).toBe(false);
@@ -240,17 +269,58 @@ describe('SessionMapper', () => {
     expect(recovered.isRecovered).toBe(true);
   });
 
-  it('resets session on "新对话"', () => {
+  it.each([
+    '新对话',
+    '开启新对话',
+    '开始新对话',
+    '新开对话',
+    '重新开始',
+    '清空对话',
+    '重置对话',
+    'new conversation',
+    'start over',
+  ])('resets session on "%s"', (text) => {
     const channel = makeChannel();
     mapper.resolve(makeMessage(), channel, 'safe_tools');
 
     const result = mapper.resolve(
-      makeMessage({ text: '新对话' }),
+      makeMessage({ text }),
       channel,
       'safe_tools',
     );
     expect(result.isNew).toBe(true);
     expect(result.isReset).toBe(true);
+  });
+
+  it.each([
+    '开启新对话，请忘记之前内容',
+    '新对话（请忘记之前内容）',
+    'start over please',
+  ])('resets when a command-prefix is followed by a clear boundary: "%s"', (text) => {
+    const channel = makeChannel();
+    mapper.resolve(makeMessage(), channel, 'safe_tools');
+
+    const result = mapper.resolve(makeMessage({ text }), channel, 'safe_tools');
+
+    expect(result.isNew).toBe(true);
+    expect(result.isReset).toBe(true);
+  });
+
+  it.each([
+    '我们换个新话题聊聊你怎么看',
+    '重新开始讲解这个概念',
+    '清空对话框里的草稿',
+    'start overtime tracking',
+    'reset-password for my account',
+    'new chat-widget design',
+  ])('does not reset when the phrase is not a standalone command: "%s"', (text) => {
+    const channel = makeChannel();
+    mapper.resolve(makeMessage(), channel, 'safe_tools');
+
+    const result = mapper.resolve(makeMessage({ text }), channel, 'safe_tools');
+
+    expect(result.isNew).toBe(false);
+    expect(result.isReset).toBeFalsy();
   });
 
   it('peekSessionKey returns key without side effects', () => {

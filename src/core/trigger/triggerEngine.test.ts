@@ -453,6 +453,23 @@ describe('TriggerEngine', () => {
       expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
     });
 
+    it('creates a full shell authorization scope for full-capability trigger runs', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-scope-full',
+        action: { prompt: 'Do full scoped work', capability: 'full' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      expect(createAuthorizationScopeMock).toHaveBeenCalledWith({ shell: 'full' });
+      expect(runAgentLoopMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ authorizationScopeId: 'scope-trigger-test' }),
+      );
+    });
+
     it('disposes the trigger-run scope when the agent runner throws', async () => {
       const trigger = makeTrigger({
         id: 'trigger-scope-throw',

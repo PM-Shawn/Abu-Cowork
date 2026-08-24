@@ -1,7 +1,14 @@
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
-import { checkReadPath, checkWritePath, checkListPath, authorizeWorkspace, scopedAuthorizeWorkspace } from './pathSafety';
+import {
+  checkReadPath,
+  checkWritePath,
+  checkListPath,
+  authorizeWorkspace,
+  scopedAuthorizeWorkspace,
+  hasFullShellAuthorizationScope,
+} from './pathSafety';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
@@ -16,7 +23,11 @@ import {
   normalizeBrowserOrigin,
 } from '../permissions/browserToolPolicy';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
-import { analyzeCommandBoundary, type CmdBoundary } from '../permissions/commandBoundary';
+import {
+  analyzeCommandBoundary,
+  resolveFullNoWorkspaceCommandWriteTargets,
+  type CmdBoundary,
+} from '../permissions/commandBoundary';
 import { commandWritableDirectories, isInsideWorkingDirs } from '../permissions/workingDirs';
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
@@ -361,31 +372,54 @@ async function resolveBrowserActionOrigin(
  * Why a scoped (unattended) run's non-read-only command was refused, so the
  * denial the model reads says what to change instead of just "no".
  *
- * `no-cwd` is the notable case: an unattended run with neither an explicit
- * `cwd` nor a trusted workspace path has NOTHING to judge the command's
- * implicit write location against, so it fails closed — including for the
- * `full` / `autonomous` tiers, and including writes that only touch `/tmp`.
- * That is deliberately strict (loosening it is a permission-granularity
- * decision, not a review fix), but it silently removes a capability those
- * tiers used to have, so the reason has to name the remedy: give the
- * trigger/task a workspace path, or pass an absolute `cwd`.
+ * `no-cwd` is the notable case: standard/smart runs fail closed and get an
+ * actionable remedy. A trusted full/autonomous scope receives the one narrow
+ * exception requested by the product decision; the distinct return value
+ * below keeps its hard-floor preflight from affecting scoped runs that do
+ * have a workspace.
  */
-type ScopedCwdDenial = 'no-cwd' | 'not-writable';
+type ScopedCwdDecision = 'full-no-cwd' | 'no-cwd' | 'not-writable' | null;
 
 async function scopedCommandCwdDenial(
   input: Record<string, unknown>,
   toolContext?: ToolExecutionContext,
-): Promise<ScopedCwdDenial | null> {
+): Promise<ScopedCwdDecision> {
   const scopeId = toolContext?.authorizationScopeId;
   if (scopeId === undefined) return null;
   const effectiveCwd = typeof input.cwd === 'string' && input.cwd.trim().length > 0
     ? input.cwd
     : toolContext?.workspacePath ?? undefined;
-  if (!effectiveCwd) return 'no-cwd';
+  if (!effectiveCwd) {
+    return hasFullShellAuthorizationScope(scopeId) ? 'full-no-cwd' : 'no-cwd';
+  }
   if (!isInsideWorkingDirs(effectiveCwd, commandWritableDirectories(scopeId))) {
     return 'not-writable';
   }
   return (await checkWritePath(effectiveCwd, scopeId)).allowed ? null : 'not-writable';
+}
+
+async function fullNoWorkspaceCommandTargetDenial(
+  command: string,
+  cwd: string | undefined,
+  scopeId: string | undefined,
+): Promise<string | null> {
+  if (!hasFullShellAuthorizationScope(scopeId)) return null;
+  const targets = resolveFullNoWorkspaceCommandWriteTargets(
+    command,
+    cwd,
+    await getCachedHomeDir(),
+  );
+
+  for (const target of targets) {
+    const check = await checkWritePath(target, scopeId);
+    // Autonomous approval is not a persistent path grant. Dialog-eligible
+    // targets continue to the command sandbox with an empty scoped map; hard
+    // blocks are the only path decisions enforced here.
+    if (check.allowed || check.needsPermission) continue;
+    return `Error: ${check.reason || getI18n().toolErrors.pathAccessDenied}`;
+  }
+
+  return null;
 }
 
 export async function checkToolApproval(
@@ -414,20 +448,28 @@ export async function checkToolApproval(
       }
 
       if (!analysis.readOnly) {
-        const cwdDenial = await scopedCommandCwdDenial(input, toolContext);
-        if (cwdDenial === 'no-cwd') {
+        const cwdDecision = await scopedCommandCwdDenial(input, toolContext);
+        if (cwdDecision === 'no-cwd') {
           return {
             decision: 'deny',
-            reason: 'Error: this unattended run has no write-authorized working directory, '
-              + 'so no writing command can run. Set the trigger/task workspace path, '
-              + 'or pass an absolute `cwd` inside an authorized directory.',
+            reason: t.toolErrors.scopedRunNoWorkspaceCommand,
           };
         }
-        if (cwdDenial === 'not-writable') {
+        if (cwdDecision === 'not-writable') {
           return {
             decision: 'deny',
             reason: 'Error: command working directory is not write-authorized for this scoped run',
           };
+        }
+        if (cwdDecision === 'full-no-cwd') {
+          const targetDenial = await fullNoWorkspaceCommandTargetDenial(
+            command,
+            undefined,
+            toolContext?.authorizationScopeId,
+          );
+          if (targetDenial) {
+            return { decision: 'deny', reason: targetDenial };
+          }
         }
       }
 

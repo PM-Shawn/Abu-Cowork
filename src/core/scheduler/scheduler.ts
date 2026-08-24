@@ -198,7 +198,11 @@ class SchedulerEngine {
       prompt = `/${task.skillName} ${prompt}`;
     }
 
-    const authorizationScopeId = createAuthorizationScope();
+    const authorizationScopeId = createAuthorizationScope(
+      resolveEffectivePermissionMode(task) === 'autonomous'
+        ? { shell: 'full' }
+        : undefined,
+    );
     const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
 
     try {

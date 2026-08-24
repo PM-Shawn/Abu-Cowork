@@ -217,6 +217,10 @@ function taskRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'task');
 }
 
+function quoteShellArgument(value: string): string {
+  return `'${value.replace(/'/g, "'\\\"'\\\"'")}'`;
+}
+
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
@@ -313,7 +317,7 @@ function makeTrigger(
   id: string,
   name: string,
   prompt: string,
-  workspacePath: string,
+  workspacePath: string | undefined,
   capability?: 'read_tools' | 'safe_tools' | 'full' | 'custom',
 ): Record<string, unknown> {
   return {
@@ -324,7 +328,7 @@ function makeTrigger(
     filter: { type: 'always' },
     action: {
       prompt,
-      workspacePath,
+      ...(workspacePath ? { workspacePath } : {}),
       ...(capability ? { capability } : {}),
     },
     debounce: { enabled: false, windowSeconds: 0 },
@@ -601,5 +605,48 @@ test.describe.serial('Electron infra hygiene batch', () => {
         return trigger?.action?.capability ?? null;
       }, managedTriggerName);
     }, { timeout: READY_TIMEOUT }).toBe(null);
+  });
+
+  test('lets a full trigger without a workspace write to an isolated temp path', async () => {
+    fixtureRoot = fs.mkdtempSync('/tmp/abu-infra-full-no-workspace-');
+    const triggerId = `trigger-full-no-workspace-${randomUUID()}`;
+    const triggerName = `Full no-workspace trigger ${randomUUID().slice(0, 8)}`;
+    const target = path.join(fixtureRoot, 'created-by-full-trigger.txt');
+    const command = `touch -- ${quoteShellArgument(target)}`;
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        toolName: 'run_command',
+        toolCallId: `call-full-no-workspace-${randomUUID()}`,
+        arguments: { command },
+      },
+      { kind: 'complete', responseText: `full no-workspace complete ${randomUUID()}` },
+    ]);
+
+    dataRoot = createElectronDataRoot();
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+    await seedAutomation(page, {
+      activeTab: 'trigger',
+      triggers: {
+        [triggerId]: makeTrigger(
+          triggerId,
+          triggerName,
+          'full no-workspace trigger $EVENT_DATA',
+          undefined,
+          'full',
+        ),
+      },
+    });
+
+    await openAutomationItem(page, /^(监听事件|Triggers)$/, triggerName);
+    await page.getByRole('button', { name: /^(测试触发|Test Trigger)$/ }).click();
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    expectToolResultMatches(taskRequests(mock)[1].body, 'run_command', /exit code: 0/);
+    await expect.poll(() => fs.existsSync(target), { timeout: READY_TIMEOUT }).toBe(true);
   });
 });

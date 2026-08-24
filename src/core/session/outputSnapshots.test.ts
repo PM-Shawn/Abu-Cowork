@@ -444,6 +444,123 @@ describe('outputSnapshots', () => {
     });
   });
 
+  describe('snapshotResultImage', () => {
+    it('copies a read_file image and records it as a result-image manifest entry', async () => {
+      const sourcePath = '/Users/testuser/Desktop/chart.png';
+      memFs.addUserFile(sourcePath, 256);
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_read', {
+        mediaType: 'image/png',
+        base64: 'aWdub3JlZA==',
+      }, sourcePath);
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      const entry = manifest.entries['tool-result://toolu_read'];
+      expect(entry).toMatchObject({
+        source: 'tool-output',
+        refKind: 'result-image',
+        refId: 'toolu_read',
+        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
+      });
+      expect(memFs.copyFile).toHaveBeenCalledWith(sourcePath, expect.stringMatching(/result\.png$/));
+    });
+
+    it('writes base64 screenshot bytes and records the manifest entry', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_screen', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/files\/.+\/result\.png$/),
+        expect.any(Uint8Array),
+      );
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_screen']).toMatchObject({
+        source: 'tool-output',
+        refKind: 'result-image',
+        refId: 'toolu_screen',
+        size: 3,
+      });
+    });
+
+    it('skips a repeated toolCallId without writing the image twice', async () => {
+      const image = { mediaType: 'image/png', base64: 'AQID' };
+      await mod.snapshotResultImage(CONV_ID, 'toolu_once', image);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_once', image);
+
+      expect(memFs.writeFile).toHaveBeenCalledOnce();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(Object.values(manifest.entries)).toHaveLength(1);
+    });
+
+    it('keeps separate identities when different tool calls read the same changing path', async () => {
+      const sourcePath = '/Users/testuser/Desktop/chart.png';
+      memFs.addUserFile(sourcePath, 100);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_first', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      }, sourcePath);
+
+      memFs.addUserFile(sourcePath, 200);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_second', {
+        mediaType: 'image/png',
+        base64: 'BAUG',
+      }, sourcePath);
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      const first = manifest.entries['tool-result://toolu_first'];
+      const second = manifest.entries['tool-result://toolu_second'];
+      expect(first).toMatchObject({ refId: 'toolu_first', size: 100 });
+      expect(second).toMatchObject({ refId: 'toolu_second', size: 200 });
+      expect(first.snapshotRelPath).not.toBe(second.snapshotRelPath);
+      expect(memFs.copyFile.mock.calls[0][1]).not.toBe(memFs.copyFile.mock.calls[1][1]);
+    });
+
+    it.each([
+      '../../../../../../Documents/owned',
+      '..\\..\\escape',
+      'nested/id',
+    ])('never uses provider toolCallId %s as a filesystem segment', async (toolCallId) => {
+      await mod.snapshotResultImage(CONV_ID, toolCallId, {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      const target = memFs.writeFile.mock.calls[0][0] as string;
+      expect(target).toMatch(new RegExp(`^${OUTPUTS_DIR}/files/[^/]+/result\\.png$`));
+      expect(target).not.toContain('..');
+      expect(target).not.toContain(toolCallId);
+    });
+
+    it.each([
+      ['image/bmp', 'bmp'],
+      ['image/svg+xml', 'svg'],
+      ['image/x-icon', 'ico'],
+    ])('preserves the %s payload extension', async (mediaType, extension) => {
+      await mod.snapshotResultImage(CONV_ID, `toolu_${extension}`, {
+        mediaType,
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`/result\\.${extension}$`)),
+        expect.any(Uint8Array),
+      );
+    });
+
+    it('does not write an unsupported image MIME type under a false extension', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_unknown', {
+        mediaType: 'image/x-unknown',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(Object.values(manifest.entries)).toHaveLength(0);
+    });
+  });
+
   // ──────────────────────────────────────────────────────────────────
   describe('snapshotUserUpload', () => {
     it('snapshots an uploaded image with source="user-upload"', async () => {

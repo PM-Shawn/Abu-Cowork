@@ -1,14 +1,28 @@
-import { useState, useMemo, useEffect } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink, Maximize2 } from 'lucide-react';
+import { useState, useMemo, useEffect, useRef, type ReactNode } from 'react';
+import { ChevronDown, ChevronRight, ExternalLink, ImageOff, Maximize2, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
 import type { DetailBlock } from '@/types/execution';
+import { useChatStore } from '@/stores/chatStore';
+import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
+import { loadLocalImage } from '@/utils/pathUtils';
 
 interface DetailBlockViewProps {
   block: DetailBlock;
   onToggle: () => void;
   onLoadMore?: () => void;
+}
+
+type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
+
+function formatImageSize(bytes: number | undefined): string | null {
+  if (bytes === undefined || bytes < 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 10 ? 0 : 1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
 /**
@@ -18,9 +32,19 @@ interface DetailBlockViewProps {
  */
 export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailBlockViewProps) {
   const { locale, t } = useI18n();
+  const outputRef = block.type === 'image' ? block.imageData?.outputRef : undefined;
+  const activeConversationId = useChatStore((state) => (
+    outputRef?.relPath ? state.activeConversationId : null
+  ));
   // Local expanded state — syncs with block.isExpanded from store when available
   const [localExpanded, setLocalExpanded] = useState(block.isExpanded);
   const [imageFullscreen, setImageFullscreen] = useState(false);
+  const [outputRefSrc, setOutputRefSrc] = useState<string | null>(null);
+  const [outputRefState, setOutputRefState] = useState<OutputRefImageState>(() => (
+    outputRef?.relPath ? 'loading' : 'idle'
+  ));
+  const [retryNonce, setRetryNonce] = useState(0);
+  const outputRefObjectUrlRef = useRef<string | null>(null);
 
   // Sync from external state changes (e.g. store updates during live execution)
   useEffect(() => {
@@ -37,10 +61,64 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
   // Build the data URL once per payload — the base64 can be megabytes, so it
   // must not be re-concatenated on every render.
-  const imageSrc = useMemo(
-    () => (block.imageData ? `data:${block.imageData.mediaType};base64,${block.imageData.base64}` : null),
+  const inlineImageSrc = useMemo(
+    () => (block.imageData?.base64 ? `data:${block.imageData.mediaType};base64,${block.imageData.base64}` : null),
     [block.imageData],
   );
+  const imageSrc = inlineImageSrc ?? outputRefSrc;
+
+  useEffect(() => {
+    if (block.type !== 'image' || inlineImageSrc || !outputRef?.relPath) {
+      setOutputRefState('idle');
+      if (outputRefObjectUrlRef.current) {
+        URL.revokeObjectURL(outputRefObjectUrlRef.current);
+        outputRefObjectUrlRef.current = null;
+      }
+      setOutputRefSrc(null);
+      return;
+    }
+
+    let cancelled = false;
+    let blobUrl: string | null = null;
+    setOutputRefState('loading');
+    if (outputRefObjectUrlRef.current) {
+      URL.revokeObjectURL(outputRefObjectUrlRef.current);
+      outputRefObjectUrlRef.current = null;
+    }
+    setOutputRefSrc(null);
+
+    resolveOutputRefSource(activeConversationId ?? undefined, outputRef.relPath)
+      .then(async (resolved) => {
+        if (cancelled) return;
+        if (resolved.status !== 'available') {
+          setOutputRefState('unavailable');
+          return;
+        }
+        blobUrl = await loadLocalImage(resolved.path);
+        if (cancelled) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        outputRefObjectUrlRef.current = blobUrl;
+        setOutputRefSrc(blobUrl);
+        setOutputRefState('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setOutputRefState('unavailable');
+      });
+
+    return () => {
+      cancelled = true;
+      if (blobUrl && outputRefObjectUrlRef.current !== blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [activeConversationId, block.type, inlineImageSrc, outputRef?.relPath, retryNonce]);
+
+  useEffect(() => () => {
+    if (outputRefObjectUrlRef.current) {
+      URL.revokeObjectURL(outputRefObjectUrlRef.current);
+      outputRefObjectUrlRef.current = null;
+    }
+  }, []);
 
   // Style based on block type
   const styles = useMemo(() => {
@@ -140,27 +218,69 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
   // Render image content (from read_file images, screenshots)
   const renderImageContent = () => {
-    // No payload (e.g. a restored snapshot whose tool call is gone) → keep the
-    // placeholder text rather than render a broken image.
-    if (!imageSrc) return renderTextContent();
+    const filename = outputRef?.basename || block.content || t.chat.imageExpired;
+    const size = formatImageSize(outputRef?.sizeBytes);
+    const metadata = size ? `${filename} · ${size}` : filename;
+
+    const renderImageFrame = (children: ReactNode, interactive: boolean) => (
+      <div className="p-2">
+        <div
+          className={cn(
+            'relative group w-[320px] h-[200px] rounded border border-[var(--abu-bg-hover)] overflow-hidden bg-[var(--abu-bg-muted)] flex items-center justify-center',
+            interactive && 'cursor-pointer',
+          )}
+          onClick={interactive ? () => setImageFullscreen(true) : undefined}
+        >
+          {children}
+          {interactive && (
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+              <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
+            </div>
+          )}
+        </div>
+        <div className="mt-1 text-caption text-[var(--abu-text-muted)] truncate max-w-[320px]">{metadata}</div>
+      </div>
+    );
+
+    if (!imageSrc) {
+      if (outputRef?.relPath && outputRefState === 'loading') {
+        return renderImageFrame(
+          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageLoading}</div>,
+          false,
+        );
+      }
+      return renderImageFrame(
+        <div className="flex flex-col items-center gap-2 px-4 text-center">
+          <ImageOff className="h-6 w-6 text-[var(--abu-text-muted)]" />
+          <div className="text-caption text-[var(--abu-text-muted)]">{t.chat.imageUnavailable}</div>
+          {outputRef?.relPath && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRetryNonce((value) => value + 1);
+              }}
+              className="inline-flex items-center gap-1 text-caption text-[var(--abu-link)] hover:text-[var(--abu-link-hover)]"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t.chat.imageRetry}
+            </button>
+          )}
+        </div>,
+        false,
+      );
+    }
+
     return (
       <>
-        <div className="p-2">
-          <div
-            className="relative group cursor-pointer inline-block"
-            onClick={() => setImageFullscreen(true)}
-          >
+        {renderImageFrame(
             <img
               src={imageSrc}
               alt={block.content || 'Image'}
-              className="rounded border border-[var(--abu-bg-hover)] max-w-[320px] max-h-[200px] object-contain"
-            />
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded flex items-center justify-center">
-              <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
-            </div>
-          </div>
-          <div className="mt-1 text-caption text-[var(--abu-text-muted)]">{block.content}</div>
-        </div>
+              className="max-w-full max-h-full object-contain"
+            />,
+            true,
+        )}
         {imageFullscreen && (
           <div
             data-electron-no-drag

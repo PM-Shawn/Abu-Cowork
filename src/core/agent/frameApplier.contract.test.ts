@@ -86,6 +86,16 @@ describe('frameApplier wire contract', () => {
   });
 
   describe('chat frames (generic dispatch)', () => {
+    it('covers setContextUsage frames both with and without a breakdown payload', () => {
+      const usageFixtures = CHAT_CONTRACT_FIXTURES
+        .filter(({ method }) => method === 'setContextUsage')
+        .map(({ args }) => args[1] as Record<string, unknown>);
+
+      expect(usageFixtures).toHaveLength(2);
+      expect(usageFixtures.some((usage) => 'breakdown' in usage)).toBe(true);
+      expect(usageFixtures.some((usage) => !('breakdown' in usage))).toBe(true);
+    });
+
     it.each(CHAT_CONTRACT_FIXTURES)('$method: frame.a is spread onto the real ChatDelta method in order', async ({ method, args }) => {
       await applyDeltaFrames([{ p: 'chat', m: method, a: args }]);
       const spyFn = (getChatDelta() as unknown as Record<string, ReturnType<typeof vi.fn>>)[method];
@@ -136,7 +146,7 @@ describe('frameApplier wire contract', () => {
     it('the shared fixture covers every generic-dispatch ChatDelta method (all of them, minus the special-cased ones)', () => {
       const realMethods = new Set(Object.keys(createInProcessChatDelta()));
       const expectedGenericMethods = [...realMethods].filter((m) => !CHAT_SPECIAL_CASED.has(m)).sort();
-      const fixtureMethods = CHAT_CONTRACT_FIXTURES.map((f) => f.method).sort();
+      const fixtureMethods = [...new Set(CHAT_CONTRACT_FIXTURES.map((f) => f.method))].sort();
       expect(fixtureMethods).toEqual(expectedGenericMethods);
     });
 

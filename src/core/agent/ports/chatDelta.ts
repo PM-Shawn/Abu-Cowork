@@ -118,11 +118,11 @@ export interface ChatDelta {
   /** Mirrors chatStore's `setConversationStatus`. */
   setConversationStatus(convId: string, status: ConversationStatus): void;
   /** Mirrors chatStore's `setAgentStatus`. */
-  setAgentStatus(status: AgentStatus, tool?: string, agentName?: string): void;
+  setAgentStatus(convId: string, status: AgentStatus, tool?: string, agentName?: string): void;
   /** Mirrors chatStore's `setCurrentUsage`. */
   setCurrentUsage(usage: TokenUsage | null): void;
   /** Mirrors chatStore's `setRetryInfo`. */
-  setRetryInfo(info: RetryInfo | null): void;
+  setRetryInfo(convId: string, info: RetryInfo | null): void;
   /** Mirrors chatStore's `setContextUsage`. */
   setContextUsage(convId: string, usage: NonNullable<Conversation['contextUsage']> | undefined): void;
   /** Mirrors chatStore's `setContextCache`. */
@@ -136,7 +136,7 @@ export interface ChatDelta {
   /** Mirrors chatStore's `setPendingProposalSignal`. */
   setPendingProposalSignal(convId: string, signal: ProposalSignal | undefined): void;
   /** Mirrors chatStore's `removeActiveAgent`. */
-  removeActiveAgent(agentName: string): void;
+  removeActiveAgent(convId: string, agentName: string): void;
 }
 
 /** Default in-process implementation over the Zustand store. This is the
@@ -196,9 +196,9 @@ export function createInProcessChatDelta(): ChatDelta {
     setPlannedStepsSnapshot: (convId, loopId, steps) =>
       useChatStore.getState().setPlannedStepsSnapshot(convId, loopId, steps),
     setConversationStatus: (convId, status) => useChatStore.getState().setConversationStatus(convId, status),
-    setAgentStatus: (status, tool, agentName) => useChatStore.getState().setAgentStatus(status, tool, agentName),
+    setAgentStatus: (convId, status, tool, agentName) => useChatStore.getState().setAgentStatus(convId, status, tool, agentName),
     setCurrentUsage: (usage) => useChatStore.getState().setCurrentUsage(usage),
-    setRetryInfo: (info) => useChatStore.getState().setRetryInfo(info),
+    setRetryInfo: (convId, info) => useChatStore.getState().setRetryInfo(convId, info),
     setContextUsage: (convId, usage) => useChatStore.getState().setContextUsage(convId, usage),
     setContextCache: (convId, cache) => useChatStore.getState().setContextCache(convId, cache),
     clearContextCache: (convId) => useChatStore.getState().clearContextCache(convId),
@@ -206,7 +206,7 @@ export function createInProcessChatDelta(): ChatDelta {
     setConversationModel: (convId, model) => useChatStore.getState().setConversationModel(convId, model),
     setPendingProposalSignal: (convId, signal) =>
       useChatStore.getState().setPendingProposalSignal(convId, signal),
-    removeActiveAgent: (agentName) => useChatStore.getState().removeActiveAgent(agentName),
+    removeActiveAgent: (convId, agentName) => useChatStore.getState().removeActiveAgent(convId, agentName),
   };
 }
 

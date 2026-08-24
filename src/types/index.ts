@@ -444,6 +444,14 @@ export interface Conversation {
     // which is what keeps a compacted conversation from being double-counted.
     // Absent only on a payload from an older publish — treated as "no tail".
     messageCountAtPublish?: number;
+    breakdown?: {
+      version: 1;
+      systemPrompt: number;
+      tools: number;
+      mcp: number;
+      skills: number;
+      conversation: number;
+    };
   };
   isCompressing?: boolean;  // True while compressContextIfNeeded is awaiting LLM
   /**
@@ -523,6 +531,12 @@ export interface ToolExecutionContext {
   /** Effective three-tier permission mode for this conversation. */
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
   /**
+   * Shell-created authorization scope for unattended runs. When present,
+   * path checks must read only that scoped grant set and never fall back to
+   * process-global interactive grants.
+   */
+  authorizationScopeId?: string;
+  /**
    * Whether the active model supports vision/image input, resolved from the
    * turn's model capabilities. When explicitly `false`, tools that would emit
    * image content (e.g. read_file on an image) must return a text note instead
@@ -558,6 +572,13 @@ export interface ToolExecutionContext {
    * the in-process fallback both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
+  /**
+   * IM reply target for the current run, set only when the loop was dispatched
+   * from an IM channel (channelRouter → agentLoop). Lets outbound tools like
+   * `send_file` know which platform + chat to deliver to. Absent in interactive
+   * desktop / scheduled / trigger runs, so `send_file` refuses outside IM.
+   */
+  imReplyTarget?: { platform: string; chatId: string };
 }
 
 export interface ToolDefinition {

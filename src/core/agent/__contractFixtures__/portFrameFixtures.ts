@@ -1,6 +1,6 @@
 /**
  * Shared wire-contract fixture for the `agent.delta` reverse channel
- * (sidecar → shell). One canonical, positional argument list per method,
+ * (sidecar → shell). One or more canonical positional argument lists per method,
  * used by BOTH ends of the wire:
  *
  * - `sidecar/src/portFrameSenders.contract.test.ts` calls the real sender
@@ -98,7 +98,27 @@ const sampleExecStepSnapshot = { id: 'step1', label: 'do thing', status: 'comple
 
 const samplePlannedStep = { id: 'p1', content: 'plan step 1', status: 'pending' as const };
 
-const sampleContextUsage = { used: 1000, limit: 200000, percent: 0.5 };
+const sampleContextUsage = {
+  percent: 50,
+  tokensUsed: 1000,
+  tokensMax: 2000,
+  messageCountAtPublish: 2,
+  breakdown: {
+    version: 1,
+    systemPrompt: 100,
+    tools: 150,
+    mcp: 50,
+    skills: 200,
+    conversation: 500,
+  },
+};
+
+const sampleLegacyContextUsage = {
+  percent: 25,
+  tokensUsed: 500,
+  tokensMax: 2000,
+  messageCountAtPublish: 1,
+};
 
 const sampleContextCache = { compressed: true, summary: 'compressed history' };
 
@@ -132,7 +152,8 @@ const sampleDetailBlock = {
   isExpanded: false,
 };
 
-/** All 28 generic-dispatch ChatDelta methods (29 total minus cancelStreaming). */
+/** All 28 generic-dispatch ChatDelta methods (29 total minus cancelStreaming),
+ * plus a second setContextUsage case for the legacy payload shape. */
 export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'appendText', args: ['conv-1', 'tok', 'msg-1'] },
   { port: 'chat', method: 'setLastMessageContent', args: ['conv-1', 'full content', 'msg-1'] },
@@ -161,16 +182,17 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'setExecutionStepsSnapshot', args: ['conv-1', 'loop-1', [sampleExecStepSnapshot]] },
   { port: 'chat', method: 'setPlannedStepsSnapshot', args: ['conv-1', 'loop-1', [samplePlannedStep]] },
   { port: 'chat', method: 'setConversationStatus', args: ['conv-1', 'running'] },
-  { port: 'chat', method: 'setAgentStatus', args: ['tool-calling', 'run_command', 'abu'] },
+  { port: 'chat', method: 'setAgentStatus', args: ['conv-1', 'tool-calling', 'run_command', 'abu'] },
   { port: 'chat', method: 'setCurrentUsage', args: [sampleUsage] },
-  { port: 'chat', method: 'setRetryInfo', args: [{ attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
+  { port: 'chat', method: 'setRetryInfo', args: ['conv-1', { attempt: 2, maxAttempts: 5, delayMs: 1000 }] },
   { port: 'chat', method: 'setContextUsage', args: ['conv-1', sampleContextUsage] },
+  { port: 'chat', method: 'setContextUsage', args: ['conv-legacy', sampleLegacyContextUsage] },
   { port: 'chat', method: 'setContextCache', args: ['conv-1', sampleContextCache] },
   { port: 'chat', method: 'clearContextCache', args: ['conv-1'] },
   { port: 'chat', method: 'setIsCompressing', args: ['conv-1', true] },
   { port: 'chat', method: 'setConversationModel', args: ['conv-1', sampleModel] },
   { port: 'chat', method: 'setPendingProposalSignal', args: ['conv-1', sampleProposalSignal] },
-  { port: 'chat', method: 'removeActiveAgent', args: ['agent-1'] },
+  { port: 'chat', method: 'removeActiveAgent', args: ['conv-1', 'agent-1'] },
 ];
 
 /** All 13 generic-dispatch ExecutionPort methods (14 total minus createExecution). */

@@ -17,7 +17,7 @@ import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
 import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from './FileAttachment';
 import SourcesSection from './SourcesSection';
-import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
@@ -458,8 +458,9 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
-  const agentStatus = useChatStore((s) => s.agentStatus);
   const activeConv = useActiveConversation();
+  const activeConversationId = activeConv?.id ?? null;
+  const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
 
   // Get loopId from messages (all messages in group share same loopId)
@@ -483,6 +484,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     // assistant message while the tool call that produced the image sits on an
     // earlier one, so the lookup must span the whole group, not just
     // msgWithSnapshot.
+    //
+    // `messages` is a fresh array every render (ChatView builds messageGroups
+    // unmemoized on purpose), so this memo does recompute often. That is kept
+    // deliberately: narrowing the dep to the snapshot array alone would miss a
+    // tool result that lands or changes after the snapshot exists, and a missed
+    // recompute brings the placeholder-instead-of-image bug back silently. The
+    // cost it would save is already gone — backfillDetailBlockImages hands back
+    // the SAME imageData object for an unchanged tool call (WeakMap), so the
+    // expensive part downstream (DetailBlockView's data-URL useMemo over a
+    // multi-MB base64) stays cached across these recomputes.
     return backfillDetailBlockImages(
       snapshotToExecutionSteps(msgWithSnapshot.executionSteps),
       messages,
@@ -576,8 +587,9 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const skillInfo = userMsg?.skill;
 
   // Extract workflow steps from all tool calls (legacy fallback)
-  // Only pass agentStatus to the currently streaming group — prevents the global
-  // 'thinking' status from injecting a phantom thinking step into completed groups
+  // Only pass the active conversation's agent status to the currently streaming
+  // group — prevents another running conversation from injecting a phantom
+  // thinking step into completed groups.
   const workflowSteps = extractWorkflowSteps(legacyWorkflowToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
 
   // Extract file outputs for attachments — deliverables semantics: only show

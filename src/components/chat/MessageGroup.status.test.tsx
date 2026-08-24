@@ -11,6 +11,20 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { Conversation, Message } from '@/types';
 import MessageGroup from './MessageGroup';
 
+function setConversationState(
+  conversation: Conversation,
+  agentStatus: 'idle' | 'tool-calling' = 'idle',
+) {
+  useChatStore.setState({
+    activeConversationId: conversation.id,
+    conversations: { [conversation.id]: conversation },
+    agentStates: new Map(),
+  });
+  if (agentStatus !== 'idle') {
+    useChatStore.getState().setAgentStatus(conversation.id, agentStatus);
+  }
+}
+
 describe('MessageGroup stopped terminal', () => {
   beforeEach(() => {
     initLanguage('en-US');
@@ -45,7 +59,7 @@ describe('MessageGroup stopped terminal', () => {
     useChatStore.setState({
       activeConversationId: conversation.id,
       conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
+      agentStates: new Map(),
     });
 
     render(<MessageGroup conversationId={conversation.id} messages={[userMessage]} isLastGroup />);
@@ -84,11 +98,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'idle',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
-    });
+    setConversationState(conversation);
     const store = useBatchProgressStore.getState();
     const identity = { conversationId: conversation.id, batchToolCallId: 'batch-tool-call' };
     store.initBatch(identity, ['inspect']);
@@ -150,11 +160,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'idle',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
-    });
+    setConversationState(conversation);
     const store = useBatchProgressStore.getState();
     const identity = { conversationId: conversation.id, batchToolCallId: 'folded-batch-tool-call' };
     store.initBatch(identity, ['inspect folded state']);
@@ -204,11 +210,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 2_000,
       status: 'running',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'tool-calling',
-    });
+    setConversationState(conversation, 'tool-calling');
     const identity = { conversationId: conversation.id, batchToolCallId: 'running-fold-batch' };
     useBatchProgressStore.getState().initBatch(identity, ['inspect running']);
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
@@ -263,11 +265,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'idle',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
-    });
+    setConversationState(conversation);
     const identity = { conversationId: conversation.id, batchToolCallId: 'success-manual-batch' };
     useBatchProgressStore.getState().initBatch(identity, ['inspect success']);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
@@ -322,11 +320,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'idle',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
-    });
+    setConversationState(conversation);
     const identity = { conversationId: conversation.id, batchToolCallId: 'failed-fold-batch' };
     useBatchProgressStore.getState().initBatch(identity, ['inspect failure']);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'failed', reason: 'error' });
@@ -378,11 +372,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'idle',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'idle',
-    });
+    setConversationState(conversation);
     const identity = { conversationId: conversation.id, batchToolCallId: `${label}-fold-batch` };
     useBatchProgressStore.getState().initBatch(identity, [`inspect ${label}`]);
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status, reason });
@@ -430,11 +420,7 @@ describe('MessageGroup stopped terminal', () => {
       updatedAt: 3_000,
       status: 'running',
     };
-    useChatStore.setState({
-      activeConversationId: conversation.id,
-      conversations: { [conversation.id]: conversation },
-      agentStatus: 'tool-calling',
-    });
+    setConversationState(conversation, 'tool-calling');
     const identity = { conversationId: conversation.id, batchToolCallId: 'focus-fold-batch' };
     const store = useBatchProgressStore.getState();
     store.initBatch(identity, ['inspect focus']);

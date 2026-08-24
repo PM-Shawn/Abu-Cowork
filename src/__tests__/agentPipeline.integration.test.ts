@@ -158,6 +158,9 @@ vi.mock('../core/context/autoCompact', () => ({
 vi.mock('../core/context/tokenEstimator', () => ({
   estimateToolSchemaTokens: vi.fn().mockReturnValue(500),
   estimateTokens: vi.fn().mockReturnValue(100),
+  estimateTextTokenWeight: vi.fn().mockImplementation(
+    (text: string) => (text === 'You are Abu' ? 100 : 0),
+  ),
   estimateMessageTokens: vi.fn().mockReturnValue(200),
   calibrateFromUsage: vi.fn(),
   setActiveModel: vi.fn(),
@@ -258,6 +261,7 @@ vi.mock('../core/tools/toolNames', () => ({
     DELEGATE_TO_AGENT: 'delegate_to_agent',
     SHOW_WIDGET: 'show_widget',
     TOOL_SEARCH: 'tool_search',
+    SEND_FILE: 'send_file',
   },
   // agentLoop calls this on every tool_use event — the real function, not a
   // stub, so hidden-marking semantics stay faithful in the pipeline test.
@@ -312,7 +316,15 @@ vi.mock('../core/skill/preprocessor', () => ({
 }));
 
 vi.mock('../core/skill/toolFilter', () => ({
-  matchesToolName: vi.fn().mockReturnValue(true),
+  // Exact-name match (with a minimal trailing-wildcard case) rather than a blanket
+  // `true`: the loop now passes a non-empty blockedTools (['send_file']) for
+  // non-IM runs, which exercises the deferred-tool filter — a blanket-true mock
+  // would drop every deferred tool instead of just the blocked one.
+  matchesToolName: vi.fn().mockImplementation((name: string, pattern: string) => {
+    if (pattern === '*') return true;
+    if (pattern?.endsWith('*')) return name.startsWith(pattern.slice(0, -1));
+    return name === pattern;
+  }),
   parseToolPatterns: vi.fn().mockReturnValue({ inputValidators: new Map() }),
 }));
 
@@ -357,11 +369,9 @@ describe('Agent Pipeline Integration', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     useTaskExecutionStore.setState({
       executions: {},
@@ -405,6 +415,24 @@ describe('Agent Pipeline Integration', () => {
 
     const assistantMsg = conv.messages.find((m) => m.role === 'assistant' && m.content !== '');
     expect(assistantMsg).toBeDefined();
+  });
+
+  it('estimates each published context component only once per turn', async () => {
+    mockClaudeChat.mockImplementation(
+      async (_msgs: unknown, _opts: unknown, onEvent: (e: StreamEvent) => void) => {
+        onEvent({ type: 'text', text: 'Done.' });
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+
+    const convId = useChatStore.getState().createConversation();
+    await runAgentLoop(convId, 'Measure this turn once');
+
+    const usage = useChatStore.getState().conversations[convId].contextUsage;
+    expect(usage?.tokensUsed).toBe(800);
+    expect(tokenEstimatorModule.estimateToolSchemaTokens).toHaveBeenCalledTimes(1);
+    expect(tokenEstimatorModule.estimateMessageTokens).toHaveBeenCalledTimes(1);
+    expect(tokenEstimatorModule.estimateTokens).not.toHaveBeenCalled();
   });
 
   it('handles missing API key gracefully', async () => {
@@ -1097,6 +1125,16 @@ describe('Agent Pipeline Integration', () => {
       expect(usage.messageCountAtPublish).toBeGreaterThanOrEqual(historyMsgs.length);
       expect(usage.messageCountAtPublish).toBeLessThanOrEqual(conv.messages.length);
       expect(usage.tokensUsed).toBeLessThan(180_000); // post-compression, not raw history
+
+      expect(usage.breakdown?.version).toBe(1);
+      const breakdown = usage.breakdown!;
+      expect(
+        breakdown.systemPrompt
+          + breakdown.tools
+          + breakdown.mcp
+          + breakdown.skills
+          + breakdown.conversation,
+      ).toBe(usage.tokensUsed);
     });
   });
 });

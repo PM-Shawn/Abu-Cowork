@@ -28,6 +28,9 @@ export interface NormalizedIMMessage {
   platform: IMPlatform;
   /** Context needed to reply back */
   replyContext: IMReplyContext;
+  /** Inbound image attachments (downloaded + decoded by the adapter), forwarded
+   *  to the agent as real vision content. Set post-parse in the dispatcher. */
+  images?: import('../../types').ImageAttachment[];
   /** Original raw payload for debugging */
   raw: unknown;
 }

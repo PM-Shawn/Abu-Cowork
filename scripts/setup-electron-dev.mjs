@@ -55,6 +55,10 @@ run(npmArgs('run', 'setup:electron-runtimes'), '准备内置 Node 和 Python');
 run(npmArgs('run', 'verify:electron-runtimes'), '校验内置运行时');
 run(npmArgs('run', 'build:electron-browser-runtime'), '构建浏览器能力');
 run(npmArgs('run', 'build:sidecar'), '构建 Agent sidecar');
+// src-tauri/browser-extension 的摘要戳只有 copy-resources 会写（.artifact-digests/
+// 不入 git），缺了它新 worktree 首次 verify 会在 check:browser-artifacts 报 STALE。
+// 须排在 sidecar 构建之后：copy-resources 还要同步 sidecar/index.mjs。
+run(npmArgs('run', 'copy-resources'), '同步 src-tauri 资源副本');
 run(npmArgs('run', 'build:native-helper'), '构建电脑操控辅助程序');
 run(npmArgs('run', 'build:sandbox-launcher'), '构建沙箱启动器');
 run(npmArgs('run', 'build:electron:renderer'), '构建 Electron 前端');

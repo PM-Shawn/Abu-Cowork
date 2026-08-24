@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import { current } from 'immer';
+import { current, enableMapSet } from 'immer';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
@@ -30,6 +30,8 @@ import {
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
+
+enableMapSet();
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -443,6 +445,59 @@ export function flushTokenBuffer(convId?: string, msgId?: string) {
   });
 }
 
+export interface ConversationAgentState {
+  status: AgentStatus;
+  currentTool: string | null;
+  retryInfo: RetryInfo | null;
+  thinkingStartTime: number | null;
+  activeAgentNames: string[];
+}
+
+export const IDLE_AGENT_STATE: ConversationAgentState = {
+  status: 'idle',
+  currentTool: null,
+  retryInfo: null,
+  thinkingStartTime: null,
+  activeAgentNames: [],
+};
+
+export function getConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string | null | undefined,
+): ConversationAgentState {
+  if (!conversationId) return IDLE_AGENT_STATE;
+  return agentStates.get(conversationId) ?? IDLE_AGENT_STATE;
+}
+
+function isIdleAgentState(state: ConversationAgentState): boolean {
+  return state.status === 'idle'
+    && state.currentTool === null
+    && state.retryInfo === null
+    && state.thinkingStartTime === null
+    && state.activeAgentNames.length === 0;
+}
+
+function removeConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string,
+): Map<string, ConversationAgentState> {
+  if (!agentStates.has(conversationId)) return agentStates;
+  const next = new Map(agentStates);
+  next.delete(conversationId);
+  return next;
+}
+
+function upsertConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string,
+  nextState: ConversationAgentState,
+): Map<string, ConversationAgentState> {
+  const next = new Map(agentStates);
+  if (isIdleAgentState(nextState)) next.delete(conversationId);
+  else next.set(conversationId, nextState);
+  return next;
+}
+
 // Note: Old localStorage persistence limits (MAX_CONVERSATIONS, MAX_MESSAGES_PER_CONVERSATION,
 // KEEP_FIRST_MESSAGES, stripImageDataForPersist) removed in v4.
 // Messages are now persisted to JSONL files — no localStorage size constraints.
@@ -455,10 +510,8 @@ interface ChatState {
    *  Only contains the active conversation + LRU cache of recent ones (~5). */
   conversations: Record<string, Conversation>;
   activeConversationId: string | null;
-  agentStatus: AgentStatus;
-  currentTool: string | null;
-  /** Live retry state (null when not retrying) — drives the "正在重试" strip. */
-  retryInfo: RetryInfo | null;
+  /** Per-conversation live agent state. Ephemeral; never persisted. */
+  agentStates: Map<string, ConversationAgentState>;
   // Token usage tracking
   currentUsage: TokenUsage | null;
   // Pending input for prefilling the chat input (REPLACES the current draft)
@@ -488,10 +541,6 @@ interface ChatState {
   // ChatInput drains it into its local files/images attachment state via
   // processFilePaths, then clears. NOT persisted.
   pendingAttachmentPaths: string[];
-  // Thinking timer
-  thinkingStartTime: number | null;
-  // Track multiple concurrent active agents
-  activeAgentNames: string[];
   /** Bumped whenever a conversation's outputs manifest materially changes
    *  from outside the snapshot hot path — currently: after
    *  installSharedAttachments writes newly imported files. FileAttachment
@@ -573,7 +622,7 @@ interface ChatActions {
    * "user enqueued more input while the turn ended without tool calls" rescue
    * path) — kept as a narrow, purpose-specific action rather than generalizing
    * `finishStreaming` because callers here intentionally do NOT want the
-   * disk-persistence / agentStatus/retryInfo side effects `finishStreaming` has.
+   * disk-persistence / per-conversation agent-state cleanup `finishStreaming` has.
    */
   setMessageStreamingFlag: (convId: string, messageId: string, streaming: boolean) => void;
   /**
@@ -626,9 +675,9 @@ interface ChatActions {
    */
   deactivateConversationSkills: (convId: string) => void;
 
-  setAgentStatus: (status: AgentStatus, tool?: string, agentName?: string) => void;
-  setRetryInfo: (info: RetryInfo | null) => void;
-  removeActiveAgent: (agentName: string) => void;
+  setAgentStatus: (convId: string, status: AgentStatus, tool?: string, agentName?: string) => void;
+  setRetryInfo: (convId: string, info: RetryInfo | null) => void;
+  removeActiveAgent: (convId: string, agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null) => void;
   setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
@@ -686,9 +735,7 @@ export const useChatStore = create<ChatStore>()(
       conversationIndex: {} as Record<string, ConversationMeta>,
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle' as AgentStatus,
-      currentTool: null,
-      retryInfo: null,
+      agentStates: new Map(),
       currentUsage: null,
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
@@ -698,8 +745,6 @@ export const useChatStore = create<ChatStore>()(
       pendingReferences: [],
       pendingAttachmentPaths: [],
       pendingPermissionMode: undefined,
-      thinkingStartTime: null,
-      activeAgentNames: [],
 
       createConversation: (workspacePath, options) => {
         const id = generateId();
@@ -956,9 +1001,11 @@ export const useChatStore = create<ChatStore>()(
         const nextActiveId = wasActive
           ? findNextActiveConversation(get().conversationIndex, id)
           : null;
+        const nextAgentStates = removeConversationAgentState(get().agentStates, id);
         set((state) => {
           delete state.conversations[id];
           delete state.conversationIndex[id];
+          state.agentStates = nextAgentStates;
           if (state.activeConversationId === id) {
             state.activeConversationId = nextActiveId;
           }
@@ -1129,15 +1176,14 @@ export const useChatStore = create<ChatStore>()(
       finishStreaming: (convId, msgId) => {
         // Flush any buffered tokens before marking streaming complete
         flushTokenBuffer(convId, msgId);
+        const nextAgentStates = removeConversationAgentState(get().agentStates, convId);
         set((state) => {
           const target = findTargetMessage(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
           if (target) target.isStreaming = false;
-          state.agentStatus = 'idle';
-          state.currentTool = null;
-          state.retryInfo = null;
+          state.agentStates = nextAgentStates;
         });
         // Persist the final completed message to disk.
         // When msgId is provided, we must replace by id (not "last line") because the
@@ -1746,6 +1792,8 @@ export const useChatStore = create<ChatStore>()(
           invoke('window_show').catch(() => {});
         }).catch(() => {});
 
+        const agentStateBeforeCancel = getConversationAgentState(get().agentStates, convId);
+        const nextAgentStates = removeConversationAgentState(get().agentStates, convId);
         let cancelledMsgId: string | null = null;
         set((state) => {
           const messages = state.conversations[convId]?.messages;
@@ -1781,7 +1829,7 @@ export const useChatStore = create<ChatStore>()(
             // thinkingDuration is the canonical "thinking done" signal in both
             // MessageGroup's synth path and workflowExtractor's legacy path.
             if (lastMsg.thinking && lastMsg.thinkingDuration === undefined) {
-              const start = state.thinkingStartTime;
+              const start = agentStateBeforeCancel.thinkingStartTime;
               lastMsg.thinkingDuration = start
                 ? Math.max(1, Math.round((Date.now() - start) / 1000))
                 : 1;
@@ -1799,10 +1847,7 @@ export const useChatStore = create<ChatStore>()(
             }
             if (mutated) cancelledMsgId = lastMsg.id;
           }
-          state.agentStatus = 'idle';
-          state.currentTool = null;
-          state.retryInfo = null;
-          state.thinkingStartTime = null;
+          state.agentStates = nextAgentStates;
         });
 
         // Persist the stop mutation (terminal + cancelled tool calls) — without
@@ -1850,40 +1895,55 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      setRetryInfo: (info) => {
-        set((state) => {
-          state.retryInfo = info;
+      setRetryInfo: (convId, info) => {
+        if (!get().conversations[convId]) return;
+        const currentAgentState = getConversationAgentState(get().agentStates, convId);
+        const nextAgentState: ConversationAgentState = {
+          ...currentAgentState,
+          activeAgentNames: [...currentAgentState.activeAgentNames],
+          retryInfo: info,
+        };
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
-      setAgentStatus: (status, tool, agentName) => {
-        set((state) => {
-          state.agentStatus = status;
-          state.currentTool = tool ?? null;
+      setAgentStatus: (convId, status, tool, agentName) => {
+        if (!get().conversations[convId]) return;
+        const currentAgentState = getConversationAgentState(get().agentStates, convId);
+        const activeAgentNames = [...currentAgentState.activeAgentNames];
+        if (agentName && status === 'tool-calling' && !activeAgentNames.includes(agentName)) {
+          activeAgentNames.push(agentName);
+        }
+
+        const nextAgentState: ConversationAgentState = {
+          status,
+          currentTool: tool ?? null,
           // A resumed stream (any non-retry status) means a prior retry
           // succeeded — clear the retry strip so it doesn't linger.
-          if (status !== 'rate-limited') {
-            state.retryInfo = null;
-          }
-          // Track concurrent active agents
-          if (agentName && status === 'tool-calling') {
-            if (!state.activeAgentNames.includes(agentName)) {
-              state.activeAgentNames.push(agentName);
-            }
-          }
-          // Track thinking start time
-          if (status === 'thinking') {
-            state.thinkingStartTime = Date.now();
-          } else if (status === 'idle') {
-            state.thinkingStartTime = null;
-            state.activeAgentNames = [];
-          }
+          retryInfo: status === 'rate-limited' ? currentAgentState.retryInfo : null,
+          thinkingStartTime: status === 'thinking'
+            ? Date.now()
+            : status === 'idle'
+              ? null
+              : currentAgentState.thinkingStartTime,
+          activeAgentNames: status === 'idle' ? [] : activeAgentNames,
+        };
+
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
-      removeActiveAgent: (agentName) => {
-        set((state) => {
-          state.activeAgentNames = state.activeAgentNames.filter(n => n !== agentName);
+      removeActiveAgent: (convId, agentName) => {
+        const currentAgentState = get().agentStates.get(convId);
+        if (!currentAgentState) return;
+        const nextAgentState: ConversationAgentState = {
+          ...currentAgentState,
+          activeAgentNames: currentAgentState.activeAgentNames.filter(n => n !== agentName),
+        };
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
@@ -1948,7 +2008,14 @@ export const useChatStore = create<ChatStore>()(
 
       setConversationStatus: (convId, status) => {
         let shouldReindex = false;
+        const isTerminal = status === 'completed' || status === 'error';
+        const nextAgentStates = isTerminal
+          ? removeConversationAgentState(get().agentStates, convId)
+          : get().agentStates;
         set((state) => {
+          if (isTerminal) {
+            state.agentStates = nextAgentStates;
+          }
           const conv = state.conversations[convId];
           if (conv) {
             const prevStatus = conv.status;
@@ -1956,7 +2023,6 @@ export const useChatStore = create<ChatStore>()(
             // partial assistant reply are already appended to messages.jsonl
             // by the time a turn ends in error, but without this the
             // conversation was never indexed until the next restart.
-            const isTerminal = status === 'completed' || status === 'error';
             // Fix #5: only fire when the conversation actually exists AND is
             // transitioning INTO a terminal state — not on a redundant
             // re-set of a status it's already in (e.g. a duplicate

@@ -12,9 +12,23 @@ import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import type { Trigger, TriggerEventPayload } from '../../types/trigger';
 
+const runAgentLoopMock = vi.hoisted(() => vi.fn().mockResolvedValue({ reason: 'completed' }));
+const createAuthorizationScopeMock = vi.hoisted(() => vi.fn(() => 'scope-trigger-test'));
+const disposeAuthorizationScopeMock = vi.hoisted(() => vi.fn());
+
 // Mock agentLoop to avoid full LLM execution
 vi.mock('../agent/agentLoop', () => ({
-  runAgentLoop: vi.fn().mockResolvedValue(undefined),
+  runAgentLoop: runAgentLoopMock,
+}));
+
+vi.mock('../agent/agentLoopRunner', () => ({
+  runAgentLoopDispatched: runAgentLoopMock,
+}));
+
+vi.mock('../tools/pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tools/pathSafety')>()),
+  createAuthorizationScope: createAuthorizationScopeMock,
+  disposeAuthorizationScope: disposeAuthorizationScopeMock,
 }));
 
 // Mock notifications
@@ -74,16 +88,19 @@ function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
 describe('TriggerEngine', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    runAgentLoopMock.mockClear();
+    runAgentLoopMock.mockResolvedValue({ reason: 'completed' });
+    createAuthorizationScopeMock.mockClear();
+    createAuthorizationScopeMock.mockReturnValue('scope-trigger-test');
+    disposeAuthorizationScopeMock.mockClear();
     // Reset stores
     useTriggerStore.setState({ triggers: {}, triggerOrder: [] });
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
   });
 
@@ -409,6 +426,47 @@ describe('TriggerEngine', () => {
       await triggerEngine.handleEvent(trigger.id, { data: { n: 3 } });
 
       expect(outputSender.send).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('authorization scope lifecycle', () => {
+    it('passes one trigger-run scope to permission resolution and the agent runner, then disposes it after completion', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-scope-complete',
+        action: { prompt: 'Do scoped work', workspacePath: '/Users/testuser/Projects/trigger' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { resolveTriggerCallbacks } = await import('./triggerPermission');
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      expect(createAuthorizationScopeMock).toHaveBeenCalledTimes(1);
+      expect(resolveTriggerCallbacks).toHaveBeenCalledWith(
+        expect.objectContaining({ workspacePath: '/Users/testuser/Projects/trigger' }),
+        { authorizationScopeId: 'scope-trigger-test' },
+      );
+      expect(runAgentLoopMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ authorizationScopeId: 'scope-trigger-test' }),
+      );
+      expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
+    });
+
+    it('disposes the trigger-run scope when the agent runner throws', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-scope-throw',
+        action: { prompt: 'Do scoped work', workspacePath: '/Users/testuser/Projects/trigger' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockRejectedValueOnce(new Error('agent exploded'));
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
+
+      expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
+      const run = useTriggerStore.getState().triggers[trigger.id]?.runs.at(-1);
+      expect(run?.status).toBe('error');
+      expect(run?.error).toContain('agent exploded');
     });
   });
 });

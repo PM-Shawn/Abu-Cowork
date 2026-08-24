@@ -86,16 +86,16 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     setExecutionStepsSnapshot: (convId, loopId, steps) => send('setExecutionStepsSnapshot', [convId, loopId, steps]),
     setPlannedStepsSnapshot: (convId, loopId, steps) => send('setPlannedStepsSnapshot', [convId, loopId, steps]),
     setConversationStatus: (convId, status) => send('setConversationStatus', [convId, status]),
-    setAgentStatus: (status, tool, agentName) => send('setAgentStatus', [status, tool, agentName]),
+    setAgentStatus: (convId, status, tool, agentName) => send('setAgentStatus', [convId, status, tool, agentName]),
     setCurrentUsage: (usage) => send('setCurrentUsage', [usage]),
-    setRetryInfo: (info) => send('setRetryInfo', [info]),
+    setRetryInfo: (convId, info) => send('setRetryInfo', [convId, info]),
     setContextUsage: (convId, usage) => send('setContextUsage', [convId, usage]),
     setContextCache: (convId, cache) => send('setContextCache', [convId, cache]),
     clearContextCache: (convId) => send('clearContextCache', [convId]),
     setIsCompressing: (convId, value) => send('setIsCompressing', [convId, value]),
     setConversationModel: (convId, model) => send('setConversationModel', [convId, model]),
     setPendingProposalSignal: (convId, signal) => send('setPendingProposalSignal', [convId, signal]),
-    removeActiveAgent: (agentName) => send('removeActiveAgent', [agentName]),
+    removeActiveAgent: (convId, agentName) => send('removeActiveAgent', [convId, agentName]),
   };
 }
 

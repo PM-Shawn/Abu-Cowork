@@ -233,9 +233,12 @@ export const delegateToAgentTool: ToolDefinition = {
     const loopCtx = toolExecContext?.loopId
       ? getLoopContext(toolExecContext.loopId)
       : getCurrentLoopContext();
+    const ownerConversationId = toolExecContext?.conversationId ?? loopCtx?.conversationId;
 
     // 4. Set agent status indicator
-    useChatStore.getState().setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, effectiveAgentName);
+    if (ownerConversationId) {
+      useChatStore.getState().setAgentStatus(ownerConversationId, 'tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, effectiveAgentName);
+    }
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
@@ -306,18 +309,22 @@ export const delegateToAgentTool: ToolDefinition = {
         allowedTools: loopCtx?.allowedTools,
         blockedTools: loopCtx?.blockedTools,
         imContext: loopCtx?.imContext,
-        ...getSubagentRunInheritance(loopCtx),
+        ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(effectiveAgentName);
+      if (ownerConversationId) {
+        useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
+      }
       toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
       return result.text;
     } catch (err) {
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(effectiveAgentName);
+      if (ownerConversationId) {
+        useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
+      }
       throw err;
     }
   },

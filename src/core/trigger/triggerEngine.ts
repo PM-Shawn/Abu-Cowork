@@ -14,6 +14,7 @@ import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { resolveTriggerCallbacks } from './triggerPermission';
+import { createAuthorizationScope, disposeAuthorizationScope } from '../tools/pathSafety';
 import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -317,6 +318,8 @@ class TriggerEngine {
       prompt = `/${trigger.action.skillName} ${prompt}`;
     }
 
+    const authorizationScopeId = createAuthorizationScope();
+
     try {
       // Resolve permission callbacks based on trigger's capability level.
       // Permissions are declared at creation time — no runtime dialogs.
@@ -324,12 +327,13 @@ class TriggerEngine {
       const actionWithWorkspace = workspacePath
         ? { ...trigger.action, workspacePath }
         : trigger.action;
-      const callbacks = resolveTriggerCallbacks(actionWithWorkspace);
+      const callbacks = resolveTriggerCallbacks(actionWithWorkspace, { authorizationScopeId });
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,
         blockedTools: callbacks.blockedTools,
         allowedTools: callbacks.allowedTools,
+        authorizationScopeId,
       });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall
@@ -389,6 +393,8 @@ class TriggerEngine {
         message: errorMsg.slice(0, 100),
       });
       console.error(`[Trigger] Error: ${trigger.name}`, err);
+    } finally {
+      disposeAuthorizationScope(authorizationScopeId);
     }
   }
 

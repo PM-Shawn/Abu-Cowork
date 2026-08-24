@@ -11,7 +11,11 @@ import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
 import type { PermissionMode } from '../permissions/permissionMode';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { authorizeWorkspace } from '../tools/pathSafety';
+import {
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  scopedAuthorizeWorkspace,
+} from '../tools/pathSafety';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
@@ -65,7 +69,7 @@ function permissionModeLabel(mode: PermissionMode): string {
  * "blocked on example.com, authorize it in Settings" message possible without
  * a separate accounting layer.
  */
-function resolveScheduledRunPermissions(task: ScheduledTask): {
+function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeId: string): {
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
@@ -78,7 +82,7 @@ function resolveScheduledRunPermissions(task: ScheduledTask): {
   // capping the workspace itself to read-only. Unlike the old TriggerCapability
   // tiers this model has no read-only rung, so there is nothing to restrict here.
   if (task.workspacePath) {
-    authorizeWorkspace(task.workspacePath);
+    scopedAuthorizeWorkspace(authorizationScopeId, task.workspacePath);
   }
 
   // Deduplicated: an agent retrying the same blocked action ten times should
@@ -194,13 +198,15 @@ class SchedulerEngine {
       prompt = `/${task.skillName} ${prompt}`;
     }
 
-    const permissions = resolveScheduledRunPermissions(task);
+    const authorizationScopeId = createAuthorizationScope();
+    const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
 
     try {
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: permissions.commandConfirmCallback,
         filePermissionCallback: permissions.filePermissionCallback,
         blockedTools: permissions.blockedTools,
+        authorizationScopeId,
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
@@ -272,6 +278,7 @@ class SchedulerEngine {
       });
       console.error(`[Scheduler] Task error: ${task.name}`, err);
     } finally {
+      disposeAuthorizationScope(authorizationScopeId);
       this.runningTasks.delete(task.id);
     }
   }

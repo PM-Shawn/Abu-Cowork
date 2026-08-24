@@ -60,6 +60,7 @@ export interface SubagentHostRunParams {
    *  subagentRunner.ts's SubagentRunParams doc: omitting it silently
    *  disarmed every blockedTools-only safety tier on the sidecar path). */
   blockedTools?: string[];
+  authorizationScopeId?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -164,6 +165,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
     (!Array.isArray(params.blockedTools) || params.blockedTools.some((entry) => typeof entry !== 'string'))
   ) {
     throw new RpcError(-32602, 'Invalid params: blockedTools must be a string array');
+  }
+  if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
+    throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -299,6 +303,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     imContext: params.imContext,
     allowedTools: params.allowedTools,
     blockedTools: params.blockedTools,
+    authorizationScopeId: params.authorizationScopeId,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 

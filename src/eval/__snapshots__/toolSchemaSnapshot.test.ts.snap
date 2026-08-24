@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `43`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `44`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -247,7 +247,6 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "allowed_commands",
       "allowed_paths",
       "allowed_tools",
-      "capability",
       "debounce_enabled",
       "debounce_seconds",
       "description",
@@ -401,6 +400,16 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     ],
     "requiredParams": [
       "pattern",
+      "path",
+    ],
+  },
+  {
+    "name": "send_file",
+    "paramNames": [
+      "caption",
+      "path",
+    ],
+    "requiredParams": [
       "path",
     ],
   },

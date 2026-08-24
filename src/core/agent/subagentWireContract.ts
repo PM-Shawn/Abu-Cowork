@@ -16,6 +16,7 @@ export const SUBAGENT_RUN_WIRE_FIELDS = [
   'imContext',
   'allowedTools',
   'blockedTools',
+  'authorizationScopeId',
   'locale',
   'uiStrings',
   'settingsSnapshot',

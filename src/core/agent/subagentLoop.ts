@@ -392,6 +392,8 @@ export interface SubagentLoopOptions {
   filePermissionCallback?: FilePermissionCallback;
   /** Parent-run tool whitelist inherited by delegated work. */
   allowedTools?: string[];
+  /** Parent-run path authorization scope inherited by delegated work. */
+  authorizationScopeId?: string;
   /**
    * Parent-run tool denylist inherited by delegated work — the twin of
    * `allowedTools`, and inherited for the same reason: a run-scoped
@@ -473,7 +475,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     const settings = settingsReader.getSnapshot();
 
     // 1. Build system prompt
-    const workspacePath = options.imContext?.workspacePath ?? workspaceReaderInst.getCurrentPath();
+    const workspacePath = options.imContext?.workspacePath
+      ?? (options.workspaceReader ? workspaceReaderInst.getCurrentPath() : (options.authorizationScopeId !== undefined ? null : workspaceReaderInst.getCurrentPath()));
     const now = new Date();
     const dateStr = now.toLocaleDateString('zh-CN', {
       year: 'numeric', month: 'long', day: 'numeric', weekday: 'long',
@@ -965,7 +968,17 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
           const toolStart = Date.now();
           try {
-            const subagentToolContext: ToolExecutionContext = { workspacePath, abortSignal: signal };
+            const subagentToolContext: ToolExecutionContext = {
+              workspacePath,
+              authorizationScopeId: options.authorizationScopeId,
+              abortSignal: signal,
+              // Forward the IM reply target so send_file works from a subagent
+              // delegated inside an IM run (without it the tool would falsely
+              // report "not in an IM channel").
+              imReplyTarget: options.imContext?.replyChatId
+                ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+                : undefined,
+            };
             const rawResult = await toolInvoker.executeAnyTool(
               tc.name,
               effectiveInput,

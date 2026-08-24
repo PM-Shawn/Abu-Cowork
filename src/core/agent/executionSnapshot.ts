@@ -1,6 +1,7 @@
 import type { Message, ToolCall } from '../../types';
 import type { DetailBlock, ExecutionStep } from '../../types/execution';
 import type { ExecutionStepSnapshot } from '../../types/execution';
+import { firstImageContent } from '../tools/toolResultContent';
 
 /**
  * Convert full ExecutionStep[] to compact ExecutionStepSnapshot[] for persistence.
@@ -85,15 +86,30 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
 
 type ImagePayload = NonNullable<DetailBlock['imageData']>;
 
-/** Key a detail block by its owning step, so ids stay unique across the tree. */
-function detailBlockKey(stepId: string, blockId: string): string {
-  return `${stepId}::${blockId}`;
-}
+/**
+ * Payload identity cache, keyed by the ToolCall object itself.
+ *
+ * This backfill re-runs on nearly every render: `messageGroups` in ChatView is
+ * deliberately not memoized, so MessageGroup gets a fresh `messages` array each
+ * time and its memo recomputes on every streaming tick. Returning a NEW payload
+ * object each run would change `block.imageData`'s identity, blowing the
+ * `useMemo` in DetailBlockView that builds the `data:` URL — re-concatenating a
+ * multi-megabyte base64 string for every finished group, on every tick.
+ *
+ * A WeakMap keyed on the ToolCall gives the same payload object back for an
+ * unchanged tool call, so that memo holds. Keying on identity is safe because
+ * the store updates through immer: a changed tool call is a NEW object, which
+ * simply misses the cache. Entries die with their ToolCall.
+ */
+const imagePayloadCache = new WeakMap<ToolCall, ImagePayload>();
 
 function readImagePayload(toolCall: ToolCall): ImagePayload | undefined {
-  const block = toolCall.resultContent?.find((c) => c.type === 'image');
-  if (!block || block.type !== 'image' || !block.source?.data) return undefined;
-  return { mediaType: block.source.media_type, base64: block.source.data };
+  const cached = imagePayloadCache.get(toolCall);
+  if (cached) return cached;
+  const payload = firstImageContent(toolCall.resultContent);
+  if (!payload) return undefined;
+  imagePayloadCache.set(toolCall, payload);
+  return payload;
 }
 
 function forEachStep(steps: ExecutionStep[], visit: (step: ExecutionStep) => void): void {
@@ -115,7 +131,7 @@ function applyImagePayloads(
 
     let blocksChanged = false;
     const candidateBlocks = step.detailBlocks.map((block) => {
-      const payload = resolved.get(detailBlockKey(step.id, block.id));
+      const payload = resolved.get(block.id);
       if (!payload) return block;
       blocksChanged = true;
       return { ...block, imageData: payload };
@@ -150,6 +166,13 @@ function applyImagePayloads(
  * when the counts don't line up — showing the placeholder is strictly better
  * than showing the wrong image.
  *
+ * Known limit of that legacy path: `snapshotStep` truncates persisted content at
+ * 500 chars and appends "...", so an old snapshot whose placeholder ran longer
+ * than that (a ~472+ char file path) can never match its tool call's untruncated
+ * `result` and stays a placeholder forever. Left as-is on purpose — it fails in
+ * the "give up" direction, and such snapshots have no toolCallId to fall back
+ * on. New snapshots carry toolCallId and are unaffected.
+ *
  * Returns the input array unchanged (same reference) when nothing is backfilled.
  */
 export function backfillDetailBlockImages(
@@ -158,18 +181,20 @@ export function backfillDetailBlockImages(
 ): ExecutionStep[] {
   if (steps.length === 0) return steps;
 
-  const byToolCallId = new Map<string, ImagePayload>();
-  const candidates: { toolCallId: string; result: string; payload: ImagePayload }[] = [];
+  // Insertion order is the tool calls' order of appearance, which the legacy
+  // text-match path below relies on for its positional pairing.
+  const imagesByToolCallId = new Map<string, { result: string; payload: ImagePayload }>();
   for (const message of messages) {
     for (const toolCall of message.toolCalls ?? []) {
       const payload = readImagePayload(toolCall);
       if (!payload) continue;
-      byToolCallId.set(toolCall.id, payload);
-      candidates.push({ toolCallId: toolCall.id, result: toolCall.result ?? '', payload });
+      imagesByToolCallId.set(toolCall.id, { result: toolCall.result ?? '', payload });
     }
   }
-  if (candidates.length === 0) return steps;
+  if (imagesByToolCallId.size === 0) return steps;
 
+  // Detail block ids embed their step id (`${stepId}-image`), so they are
+  // already unique across the tree and serve as the resolution key directly.
   const resolved = new Map<string, ImagePayload>();
   const consumedToolCallIds = new Set<string>();
   // Legacy snapshots (no toolCallId): group by placeholder text, resolve later.
@@ -178,27 +203,32 @@ export function backfillDetailBlockImages(
   forEachStep(steps, (step) => {
     for (const block of step.detailBlocks) {
       if (block.type !== 'image' || block.imageData) continue;
-      const key = detailBlockKey(step.id, block.id);
-      const direct = step.toolCallId ? byToolCallId.get(step.toolCallId) : undefined;
-      if (direct) {
-        resolved.set(key, direct);
-        if (step.toolCallId) consumedToolCallIds.add(step.toolCallId);
-        continue;
+      const toolCallId = step.toolCallId;
+      if (toolCallId) {
+        const direct = imagesByToolCallId.get(toolCallId);
+        if (direct) {
+          resolved.set(block.id, direct.payload);
+          consumedToolCallIds.add(toolCallId);
+          continue;
+        }
       }
       if (!block.content) continue;
       const bucket = pendingByContent.get(block.content);
-      if (bucket) bucket.push(key);
-      else pendingByContent.set(block.content, [key]);
+      if (bucket) bucket.push(block.id);
+      else pendingByContent.set(block.content, [block.id]);
     }
   });
 
-  for (const [content, keys] of pendingByContent) {
-    const matches = candidates.filter(
-      (c) => c.result === content && !consumedToolCallIds.has(c.toolCallId),
-    );
+  for (const [content, blockIds] of pendingByContent) {
+    const matches: ImagePayload[] = [];
+    for (const [toolCallId, entry] of imagesByToolCallId) {
+      if (entry.result === content && !consumedToolCallIds.has(toolCallId)) {
+        matches.push(entry.payload);
+      }
+    }
     // Ambiguous (or nothing to pair with) → leave the placeholder alone.
-    if (matches.length === 0 || matches.length !== keys.length) continue;
-    keys.forEach((key, i) => resolved.set(key, matches[i].payload));
+    if (matches.length === 0 || matches.length !== blockIds.length) continue;
+    blockIds.forEach((blockId, i) => resolved.set(blockId, matches[i]));
   }
 
   if (resolved.size === 0) return steps;

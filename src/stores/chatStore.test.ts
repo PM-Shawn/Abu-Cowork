@@ -84,12 +84,10 @@ describe('chatStore', () => {
       // from earlier tests would leak across cases.
       conversationIndex: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
       pendingInputAppend: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
   });
 
@@ -860,15 +858,22 @@ describe('chatStore', () => {
 
   // ── finishStreaming ──
   describe('finishStreaming', () => {
-    it('sets isStreaming to false and resets agent status', () => {
+    it('sets isStreaming to false and cleans up only that conversation agent state', () => {
       const id = useChatStore.getState().createConversation();
+      const otherId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'msg1', role: 'assistant', content: 'Hi', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
+      useChatStore.getState().setAgentStatus(id, 'tool-calling', 'read_file');
+      useChatStore.getState().setAgentStatus(otherId, 'tool-calling', 'write_file');
       useChatStore.getState().finishStreaming(id);
       const state = useChatStore.getState();
       expect(state.conversations[id].messages[0].isStreaming).toBe(false);
-      expect(state.agentStatus).toBe('idle');
+      expect(state.agentStates.has(id)).toBe(false);
+      expect(state.agentStates.get(otherId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'write_file',
+      });
     });
 
     // Regression: without msgId, finishStreaming flipped isStreaming on whatever
@@ -1154,7 +1159,7 @@ describe('chatStore', () => {
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
-      useChatStore.setState({ agentStatus: 'thinking' });
+      useChatStore.getState().setAgentStatus(id, 'thinking');
       const controller = useChatStore.getState().getAbortController(id);
 
       useChatStore.getState().cancelStreaming(id);
@@ -1168,7 +1173,7 @@ describe('chatStore', () => {
       const live = useChatStore.getState().conversations[id].messages[0];
       expect(live.content).toBe('部分输出');
       expect(live.isStreaming).toBe(true);
-      expect(useChatStore.getState().agentStatus).toBe('thinking');
+      expect(useChatStore.getState().agentStates.get(id)?.status).toBe('thinking');
     });
 
     it('frame-driven call (fromSidecarFrame: true) applies the FULL decoration even though a sidecar run still reads as active', () => {
@@ -1191,7 +1196,7 @@ describe('chatStore', () => {
       expect(live.content).toBe('部分输出');
       expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
     });
 
     it('direct call with NO active sidecar run: unchanged original full-decoration path', () => {
@@ -1208,7 +1213,7 @@ describe('chatStore', () => {
       expect(live.content).toBe('部分输出');
       expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
     });
   });
 
@@ -1217,7 +1222,7 @@ describe('chatStore', () => {
   // "user enqueued input while the turn ended without tool calls" rescue path)
   // as part of the chatStore write-side probe. Unlike finishStreaming, this
   // looks a message up by EXACT id (no FALLBACK_LAST) and has zero side effects
-  // beyond the flag flip — no disk persistence, no agentStatus/retryInfo reset.
+  // beyond the flag flip — no disk persistence, no agent-state cleanup.
   describe('setMessageStreamingFlag', () => {
     it('flips isStreaming on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
@@ -1228,14 +1233,14 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
     });
 
-    it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
+    it('does not touch agent state (unlike finishStreaming)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
-      useChatStore.getState().setAgentStatus('streaming');
+      useChatStore.getState().setAgentStatus(id, 'streaming');
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
-      expect(useChatStore.getState().agentStatus).toBe('streaming');
+      expect(useChatStore.getState().agentStates.get(id)?.status).toBe('streaming');
     });
 
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
@@ -1552,22 +1557,48 @@ describe('chatStore', () => {
 
   // ── setAgentStatus ──
   describe('setAgentStatus', () => {
-    it('sets thinking status with timestamp', () => {
-      useChatStore.getState().setAgentStatus('thinking');
+    it('sets thinking status with timestamp for one conversation', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setAgentStatus(id, 'thinking');
       const state = useChatStore.getState();
-      expect(state.agentStatus).toBe('thinking');
-      expect(state.thinkingStartTime).not.toBeNull();
+      expect(state.agentStates.get(id)).toMatchObject({ status: 'thinking' });
+      expect(state.agentStates.get(id)?.thinkingStartTime).not.toBeNull();
     });
 
-    it('clears thinking timestamp on idle', () => {
-      useChatStore.getState().setAgentStatus('thinking');
-      useChatStore.getState().setAgentStatus('idle');
-      expect(useChatStore.getState().thinkingStartTime).toBeNull();
+    it('clears only the addressed conversation on idle', () => {
+      const id = useChatStore.getState().createConversation();
+      const otherId = useChatStore.getState().createConversation();
+      useChatStore.getState().setAgentStatus(id, 'thinking');
+      useChatStore.getState().setAgentStatus(otherId, 'tool-calling', 'read_file');
+      useChatStore.getState().setAgentStatus(id, 'idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+      });
     });
 
-    it('sets tool name', () => {
-      useChatStore.getState().setAgentStatus('tool-calling', 'read_file');
-      expect(useChatStore.getState().currentTool).toBe('read_file');
+    it('isolates tool, retry, and active-agent state between concurrent conversations', () => {
+      const convA = useChatStore.getState().createConversation();
+      const convB = useChatStore.getState().createConversation();
+
+      useChatStore.getState().setAgentStatus(convA, 'tool-calling', 'read_file', 'agent-a');
+      useChatStore.getState().setRetryInfo(convA, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      useChatStore.getState().setAgentStatus(convB, 'idle');
+
+      expect(useChatStore.getState().agentStates.get(convA)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+        retryInfo: { attempt: 2, maxAttempts: 3, delayMs: 5000 },
+        activeAgentNames: ['agent-a'],
+      });
+      expect(useChatStore.getState().agentStates.has(convB)).toBe(false);
+    });
+
+    it('does not create orphan agent state for a missing conversation', () => {
+      useChatStore.getState().setAgentStatus('missing-conv', 'tool-calling', 'read_file');
+
+      expect(useChatStore.getState().agentStates.has('missing-conv')).toBe(false);
     });
   });
 
@@ -1667,6 +1698,58 @@ describe('chatStore', () => {
       await new Promise((r) => setTimeout(r, 20));
       const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
       expect(reindex).toBeUndefined();
+    });
+
+    it('cleans terminal agent state for an unloaded conversation without clobbering another row', () => {
+      const completedId = 'unloaded-completed-conv';
+      const errorId = 'unloaded-error-conv';
+      const otherId = 'other-running-conv';
+
+      useChatStore.setState({
+        agentStates: new Map([
+          [completedId, {
+            status: 'thinking',
+            currentTool: null,
+            retryInfo: null,
+            thinkingStartTime: FIXED_TIMESTAMP,
+            activeAgentNames: [],
+          }],
+          [errorId, {
+            status: 'tool-calling',
+            currentTool: 'read_file',
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }],
+          [otherId, {
+            status: 'streaming',
+            currentTool: null,
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }],
+        ]),
+      });
+      expect(useChatStore.getState().conversations[completedId]).toBeUndefined();
+      expect(useChatStore.getState().conversations[errorId]).toBeUndefined();
+
+      useChatStore.getState().setConversationStatus(completedId, 'completed');
+
+      expect(useChatStore.getState().agentStates.has(completedId)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(errorId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+      });
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'streaming',
+      });
+
+      useChatStore.getState().setConversationStatus(errorId, 'error');
+
+      expect(useChatStore.getState().agentStates.has(errorId)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'streaming',
+      });
     });
   });
 
@@ -2588,24 +2671,35 @@ describe('chatStore', () => {
 
   describe('retryInfo (Bug 1: 死寂期重试可见)', () => {
     beforeEach(() => {
-      useChatStore.setState({ retryInfo: null, agentStatus: 'idle', currentTool: null });
+      useChatStore.setState({ agentStates: new Map() });
     });
 
-    it('setRetryInfo stores the live retry state', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
-      expect(useChatStore.getState().retryInfo).toEqual({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+    it('setRetryInfo stores the live retry state for the addressed conversation only', () => {
+      const convA = useChatStore.getState().createConversation();
+      const convB = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).toEqual({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      expect(useChatStore.getState().agentStates.has(convB)).toBe(false);
     });
 
     it('a resumed stream clears the retry strip (retry succeeded)', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
-      useChatStore.getState().setAgentStatus('streaming');
-      expect(useChatStore.getState().retryInfo).toBeNull();
+      const convA = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 1, maxAttempts: 3, delayMs: 1000 });
+      useChatStore.getState().setAgentStatus(convA, 'streaming');
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).toBeNull();
     });
 
     it('rate-limited status does NOT clear retryInfo (still retrying)', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 5, delayMs: 2000 });
-      useChatStore.getState().setAgentStatus('rate-limited', '2s');
-      expect(useChatStore.getState().retryInfo).not.toBeNull();
+      const convA = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 1, maxAttempts: 5, delayMs: 2000 });
+      useChatStore.getState().setAgentStatus(convA, 'rate-limited', '2s');
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).not.toBeNull();
+    });
+
+    it('does not create orphan retry state for a missing conversation', () => {
+      useChatStore.getState().setRetryInfo('missing-conv', { attempt: 1, maxAttempts: 3, delayMs: 1000 });
+
+      expect(useChatStore.getState().agentStates.has('missing-conv')).toBe(false);
     });
   });
 

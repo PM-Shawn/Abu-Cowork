@@ -365,6 +365,22 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(result).toContain('approved');
     });
 
+    it('IM run: records the plan and asks for text approval instead of blocking on a card', async () => {
+      mockGetPlanMode.mockReturnValue('off');
+      const imCtx = { ...ctx, imReplyTarget: { platform: 'wechat', chatId: 'u@im.wechat' } };
+      const result = await reportPlanTool.execute(
+        { steps: [{ content: '扫描桌面文件' }, { content: '删除重复文件' }] },
+        imCtx,
+      );
+      // must NOT block on the desktop approval dialog the remote user can't answer
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      // plan is recorded as pending (writes stay gated), and the result instructs
+      // the model to ask for approval in text (contains "approv")
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
+      expect(String(result).toLowerCase()).toContain('approv');
+    });
+
     it('approves: sets mode to approved and reports approval', async () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('planning');

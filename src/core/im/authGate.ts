@@ -110,7 +110,13 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
  * - `safe_tools` / `full` are unchanged: `request_workspace` only.
  */
 export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
-  const blocked: string[] = [TOOL_NAMES.REQUEST_WORKSPACE];
+  // `ask_user_question` renders a blocking selection card that only the desktop
+  // UI can answer — in an IM run it would stall the turn until timeout while the
+  // remote user never sees it. Block it at every IM tier so the model instead
+  // asks in plain text and ends the turn; the user's next message resumes the
+  // conversation naturally (report_plan's approval gate is handled the same way,
+  // inside its own IM branch).
+  const blocked: string[] = [TOOL_NAMES.REQUEST_WORKSPACE, TOOL_NAMES.ASK_USER_QUESTION];
   if (level === 'read_tools' || level === 'chat_only') {
     blocked.push(...listAllBrowserToolPatterns());
   }

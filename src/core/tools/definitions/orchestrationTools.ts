@@ -525,7 +525,7 @@ export const runAgentBatchTool: ToolDefinition = {
               allowedTools: loopCtx?.allowedTools,
               blockedTools: loopCtx?.blockedTools,
               imContext: loopCtx?.imContext,
-              ...getSubagentRunInheritance(loopCtx),
+              ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
               onProgress: (event) => {
                 try {
                   const store = useBatchProgressStore.getState();

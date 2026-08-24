@@ -30,6 +30,10 @@ export interface SessionResolveResult {
   recoverableContext?: string;
   /** ConversationId of the previous session that was archived (for memory extraction) */
   archivedConversationId?: string;
+  /** Session rolled over because it hit `maxRoundsPerSession` (not a timeout and
+   *  not user-requested), so the caller can tell the user their context restarted
+   *  instead of letting the agent silently look like it forgot everything. */
+  isRolledOver?: boolean;
 }
 
 const CONTINUE_PATTERNS = [
@@ -44,9 +48,22 @@ const CONTINUE_PATTERNS = [
 const RESET_PATTERNS = [
   '新对话',
   '新话题',
+  '开启新对话',
+  '开始新对话',
+  '新开对话',
+  '重新开始',
+  '清空对话',
+  '重置对话',
   'new chat',
+  'new conversation',
+  'start over',
   'reset',
 ];
+
+// Preserve command-prefix matching without treating a longer word/phrase as
+// the command itself (`start overtime`, `清空对话框`). Free-form text after the
+// command must be separated by whitespace or punctuation.
+const RESET_COMMAND_BOUNDARY = /^[\s,，。.！!?？:：;；—（]/;
 
 export class SessionMapper {
   /**
@@ -102,19 +119,28 @@ export class SessionMapper {
     const existing = store.sessions[sessionKey];
     let archivedConvId: string | undefined;
 
+    let rolledOverForRounds = false;
     if (existing) {
       // Check if the underlying conversation still exists (user may have deleted it in Abu)
       const convExists = !!useChatStore.getState().conversationIndex[existing.conversationId];
       const timeoutMs = channel.sessionTimeoutMinutes * 60 * 1000;
       const isExpired = timeoutMs > 0 && (Date.now() - existing.lastActiveAt > timeoutMs);
+      // Round cap: a session that never idles long enough to expire would
+      // otherwise grow without bound — the channel's `maxRoundsPerSession` was
+      // configurable but never enforced, so a busy chat kept piling onto one
+      // conversation (slower, costlier, and polluted by long-stale turns).
+      const maxRounds = channel.maxRoundsPerSession;
+      const roundsExhausted = maxRounds > 0 && existing.messageCount >= maxRounds;
 
-      if (convExists && !isExpired) {
+      if (convExists && !isExpired && !roundsExhausted) {
         // Session still valid
         store.incrementSessionRound(sessionKey);
         return { session: { ...existing, messageCount: existing.messageCount + 1 }, isNew: false };
       }
 
-      // Session expired or conversation deleted — archive for potential recovery
+      // Session expired, hit its round cap, or its conversation was deleted —
+      // archive for potential recovery.
+      rolledOverForRounds = convExists && !isExpired && roundsExhausted;
       archivedConvId = existing.conversationId;
       store.archiveSession(this.buildWindowKey(message), existing);
       store.removeSession(sessionKey);
@@ -135,10 +161,16 @@ export class SessionMapper {
         hasRecoverableSession: true,
         recoverableContext: context,
         archivedConversationId: archivedConvId,
+        isRolledOver: rolledOverForRounds,
       };
     }
 
-    return { session: newSession, isNew: true, archivedConversationId: archivedConvId };
+    return {
+      session: newSession,
+      isNew: true,
+      archivedConversationId: archivedConvId,
+      isRolledOver: rolledOverForRounds,
+    };
   }
 
   /**
@@ -254,7 +286,11 @@ export class SessionMapper {
 
   private isResetRequest(text: string): boolean {
     const lower = text.toLowerCase().trim();
-    return RESET_PATTERNS.some((p) => lower === p || lower.startsWith(p));
+    return RESET_PATTERNS.some((pattern) => {
+      if (lower === pattern) return true;
+      if (!lower.startsWith(pattern)) return false;
+      return RESET_COMMAND_BOUNDARY.test(lower.slice(pattern.length));
+    });
   }
 
   /**

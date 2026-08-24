@@ -181,21 +181,72 @@ const ALWAYS_ALLOWED_PATHS = [
 // Workspace paths that user has explicitly authorized, with capability tracking
 // Each entry maps a normalized path to its authorized capabilities
 const authorizedWorkspaces: Map<string, Set<'read' | 'write'>> = new Map();
+const scopedAuthorizedWorkspaces: Map<string, Map<string, Set<'read' | 'write'>>> = new Map();
+let authorizationScopeCounter = 0;
+
+export type AuthorizationScopeId = string;
+
+export function createAuthorizationScope(): AuthorizationScopeId {
+  authorizationScopeCounter += 1;
+  const scopeId = `auth-scope-${Date.now().toString(36)}-${authorizationScopeCounter.toString(36)}`;
+  scopedAuthorizedWorkspaces.set(scopeId, new Map());
+  return scopeId;
+}
+
+export function disposeAuthorizationScope(scopeId: AuthorizationScopeId | undefined): void {
+  if (!scopeId) return;
+  scopedAuthorizedWorkspaces.delete(scopeId);
+}
+
+function normalizeWorkspacePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function isBlankWorkspaceGrant(path: string): boolean {
+  return path.trim().length === 0;
+}
+
+function getAuthorizationMap(scopeId: AuthorizationScopeId | undefined): Map<string, Set<'read' | 'write'>> | undefined {
+  if (scopeId === undefined) return authorizedWorkspaces;
+  return scopedAuthorizedWorkspaces.get(scopeId);
+}
+
+function addAuthorizedWorkspace(
+  target: Map<string, Set<'read' | 'write'>>,
+  path: string,
+  capabilities?: ('read' | 'write')[],
+): void {
+  if (isBlankWorkspaceGrant(path)) return;
+  const normalized = normalizeWorkspacePath(path);
+  const caps = capabilities ?? ['read', 'write'];
+  const existing = target.get(normalized);
+  if (existing) {
+    for (const c of caps) existing.add(c);
+  } else {
+    target.set(normalized, new Set(caps));
+  }
+}
 
 /**
  * Add a workspace path to the authorized list.
  * @param capabilities - defaults to ['read', 'write'] for backward compatibility (user-selected workspace).
  *   Pass ['read'] for read-only authorization (e.g., read_tools triggers).
  */
-export function authorizeWorkspace(path: string, capabilities?: ('read' | 'write')[]): void {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
-  const caps = capabilities ?? ['read', 'write'];
-  const existing = authorizedWorkspaces.get(normalized);
-  if (existing) {
-    for (const c of caps) existing.add(c);
-  } else {
-    authorizedWorkspaces.set(normalized, new Set(caps));
-  }
+export function authorizeWorkspace(
+  path: string,
+  capabilities?: ('read' | 'write')[],
+): void {
+  addAuthorizedWorkspace(authorizedWorkspaces, path, capabilities);
+}
+
+export function scopedAuthorizeWorkspace(
+  scopeId: AuthorizationScopeId,
+  path: string,
+  capabilities?: ('read' | 'write')[],
+): void {
+  const target = scopedAuthorizedWorkspaces.get(scopeId);
+  if (!target) return;
+  addAuthorizedWorkspace(target, path, capabilities);
 }
 
 /**
@@ -203,9 +254,12 @@ export function authorizeWorkspace(path: string, capabilities?: ('read' | 'write
  * Used by commandTools to forward authorized paths to the OS-level sandbox (Seatbelt),
  * so child processes (cp, python, etc.) can write to user-authorized directories.
  */
-export function getAuthorizedWritablePaths(): string[] {
+export function getAuthorizedWritablePaths(scopeId?: AuthorizationScopeId): string[] {
+  const target = getAuthorizationMap(scopeId);
+  if (!target) return [];
   const paths: string[] = [];
-  for (const [workspace, caps] of authorizedWorkspaces) {
+  for (const [workspace, caps] of target) {
+    if (isBlankWorkspaceGrant(workspace)) continue;
     if (caps.has('write')) paths.push(workspace);
   }
   return paths;
@@ -216,28 +270,36 @@ export function getAuthorizedWritablePaths(): string[] {
  * Used by the working-directory boundary (workingDirs.ts) to decide whether a
  * command operates inside the user's working set.
  */
-export function getAuthorizedDirs(): string[] {
-  return Array.from(authorizedWorkspaces.keys());
+export function getAuthorizedDirs(scopeId?: AuthorizationScopeId): string[] {
+  const target = getAuthorizationMap(scopeId);
+  return target ? Array.from(target.keys()).filter((path) => !isBlankWorkspaceGrant(path)) : [];
 }
 
 /**
  * Remove a workspace from the authorized list
  */
 export function revokeWorkspace(path: string): void {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalized = normalizeWorkspacePath(path);
   authorizedWorkspaces.delete(normalized);
 }
 
 /**
  * Check if a path is within an authorized workspace with the required capability
  */
-function isInAuthorizedWorkspace(path: string, capability: 'read' | 'write' = 'read'): boolean {
+function isInAuthorizedWorkspace(
+  path: string,
+  capability: 'read' | 'write' = 'read',
+  scopeId?: AuthorizationScopeId,
+): boolean {
+  const target = getAuthorizationMap(scopeId);
+  if (!target) return false;
   let normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   if (isWindows()) normalized = normalized.toLowerCase();
-  for (const [workspace, caps] of authorizedWorkspaces) {
+  for (const [workspace, caps] of target) {
+    if (isBlankWorkspaceGrant(workspace)) continue;
     const compareWs = isWindows() ? workspace.toLowerCase() : workspace;
     if (normalized === compareWs || normalized.startsWith(compareWs + '/')) {
-      return caps.has(capability);
+      if (caps.has(capability)) return true;
     }
   }
   return false;
@@ -582,7 +644,7 @@ export async function isCatastrophicDeleteTarget(path: string): Promise<boolean>
 /**
  * Check if a path is safe for reading
  */
-export async function checkReadPath(path: string): Promise<PathCheckResult> {
+export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -602,7 +664,7 @@ export async function checkReadPath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath, 'read')) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'read', scopeId)) {
     return { allowed: true };
   }
 
@@ -661,7 +723,7 @@ export async function checkReadPath(path: string): Promise<PathCheckResult> {
 /**
  * Check if a path is safe for writing
  */
-export async function checkWritePath(path: string): Promise<PathCheckResult> {
+export async function checkWritePath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -701,7 +763,7 @@ export async function checkWritePath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath, 'write')) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'write', scopeId)) {
     return { allowed: true };
   }
 
@@ -760,7 +822,7 @@ export async function checkWritePath(path: string): Promise<PathCheckResult> {
 /**
  * Check if a path is safe for listing (more permissive than read/write)
  */
-export async function checkListPath(path: string): Promise<PathCheckResult> {
+export async function checkListPath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -775,7 +837,7 @@ export async function checkListPath(path: string): Promise<PathCheckResult> {
   }
 
   // Check if in authorized workspace
-  if (isInAuthorizedWorkspace(normalizedPath, 'read')) {
+  if (isInAuthorizedWorkspace(normalizedPath, 'read', scopeId)) {
     return { allowed: true };
   }
 

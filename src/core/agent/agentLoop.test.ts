@@ -9,6 +9,8 @@ import {
   getCapabilityPrompt,
   resolveTools,
   buildVolatileContextTail,
+  buildDirectDelegateSubagentOptions,
+  resolveToolContextWorkspacePath,
 } from './agentLoop';
 import type { ToolDefinition } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
@@ -184,6 +186,73 @@ describe('resolveTools · per-run restrictions', () => {
 
     expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file', 'read_skill_file']);
     expect(resolved.deferredTools).toEqual([]);
+  });
+});
+
+describe('buildDirectDelegateSubagentOptions', () => {
+  it('carries the parent unattended authorization scope into direct @agent delegation', () => {
+    const controller = new AbortController();
+    const agent = {
+      name: 'researcher',
+      description: 'research',
+      systemPrompt: 'research',
+    };
+    const settingsReader = { getSnapshot: () => ({}) };
+
+    const params = buildDirectDelegateSubagentOptions({
+      agent,
+      task: 'look this up',
+      parentConversationSummary: 'parent context',
+      signal: controller.signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      onProgress: undefined,
+      imContext: undefined,
+      parentConversationId: 'conv-1',
+      settingsReader,
+    } as never, {
+      allowedTools: ['read_*'],
+      blockedTools: ['run_command'],
+      authorizationScopeId: 'scope-parent',
+    }, null);
+
+    expect(params).toEqual(expect.objectContaining({
+      agent,
+      task: 'look this up',
+      parentConversationId: 'conv-1',
+      settingsReader,
+      allowedTools: ['read_*'],
+      blockedTools: ['run_command'],
+      authorizationScopeId: 'scope-parent',
+      workspaceReader: expect.any(Object),
+    }));
+    expect(params.workspaceReader?.getCurrentPath()).toBeNull();
+  });
+});
+
+describe('resolveToolContextWorkspacePath', () => {
+  it('fails closed to null for scoped unattended runs with no IM or conversation workspace', () => {
+    expect(resolveToolContextWorkspacePath(
+      { authorizationScopeId: 'scope-1' },
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBeNull();
+  });
+
+  it('treats an empty authorization scope as explicit and still fails closed', () => {
+    expect(resolveToolContextWorkspacePath(
+      { authorizationScopeId: '' },
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBeNull();
+  });
+
+  it('keeps the legacy global fallback when no authorization scope is present', () => {
+    expect(resolveToolContextWorkspacePath(
+      {},
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBe('/Users/test/global-workspace');
   });
 });
 

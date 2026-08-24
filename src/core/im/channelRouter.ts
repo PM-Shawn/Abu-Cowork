@@ -20,12 +20,69 @@ import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import { tokenManager } from './tokenManager';
 import { consumeTriggerContext } from './triggerContextCache';
 import { getI18n, format } from '../../i18n';
+import { createLogger } from '../logging/logger';
+import type { IMAdapter } from './adapters/types';
 
 const MAX_CONCURRENT_IM = 5;
-/** Maximum time (ms) to wait for agentLoop before aborting */
-const AGENT_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+const WECHAT_TYPING_REFRESH_MS = 5_000;
+const WECHAT_TYPING_REQUEST_TIMEOUT_MS = 4_000;
+const imChannelLog = createLogger('im-channel');
+/**
+ * Maximum time (ms) to wait for agentLoop before aborting.
+ *
+ * Ten minutes, not three: an attachment turn routinely runs longer than three
+ * (a real 427KB image-only PDF took 3m53s — read it, found no text layer,
+ * extracted the embedded images, identified the document) and the old ceiling
+ * killed the notification while the work itself was succeeding, so the user was
+ * told "处理出错" about a task that had actually finished. An IM user is not
+ * watching a progress bar; waiting is cheap, a false failure is not.
+ */
+const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 const MAX_SESSION_QUEUE = 5;
+
+/** How long an image-only message waits for the caption that usually follows.
+ *
+ *  Sized for a human, not a network hop: the user picks the photo, sends it,
+ *  and only then types "what is this?" — several seconds of typing. A window
+ *  that expires mid-typing splits the pair back into two turns, which is the
+ *  whole failure this buffer exists to prevent.
+ *
+ *  The cost is paid ONLY by a photo sent with no caption at all: it waits this
+ *  long before the agent starts. A caption arriving inside the window merges
+ *  and dispatches immediately, so the common "photo + question" flow sees no
+ *  added latency at all. Tune here if that lone-photo wait feels too long. */
+const MEDIA_COALESCE_MS = 15_000;
+
+/** Placeholder markers the adapters emit for an attachment, so a message that
+ *  is *only* an attachment can be recognised as having no words of its own.
+ *  Covers files too — a file message's whole text is `[文件: name, 路径: …]`,
+ *  which is payload for the agent but not something the user "said". */
+const MEDIA_PLACEHOLDER_RE = /\[(图片|视频|文件[^\]]*)\]/g;
+
+/** True when the message is nothing but an attachment: an image with no words,
+ *  or a file/video whose text is only its placeholder. These are the messages
+ *  that get a caption in a SEPARATE follow-up message. */
+function isMediaOnly(message: NormalizedIMMessage): boolean {
+  // Fresh regex per call: MEDIA_PLACEHOLDER_RE is /g and would carry lastIndex.
+  const stripped = message.text.replace(MEDIA_PLACEHOLDER_RE, '').trim();
+  if (stripped !== '') return false;
+  return Boolean(message.images?.length) || message.text.trim() !== '';
+}
+
+/** Merge a buffered attachment with the follow-up that carries its caption.
+ *  Both texts are kept: an image contributes nothing (its block is the content)
+ *  while a file contributes the local path the agent needs to open it. */
+function mergeInboundMessages(
+  buffered: NormalizedIMMessage,
+  next: NormalizedIMMessage,
+): NormalizedIMMessage {
+  return {
+    ...next,
+    text: [buffered.text.trim(), next.text.trim()].filter(Boolean).join('\n') || next.text,
+    images: [...(buffered.images ?? []), ...(next.images ?? [])],
+  };
+}
 
 class IMChannelRouter {
   private runningCount = 0;
@@ -37,6 +94,15 @@ class IMChannelRouter {
   private activeSessions = new Set<string>();
   /** Per-session message queue — messages waiting for the active turn to finish */
   private sessionQueues = new Map<string, { message: NormalizedIMMessage; channel: IMChannel; capability: IMCapabilityLevel }[]>();
+  /** Per-chat image-only message awaiting the caption that usually follows it. */
+  private pendingMedia = new Map<string, { message: NormalizedIMMessage; timer: ReturnType<typeof setTimeout> }>();
+  /** Serialize typing operations per user so one turn's cancel cannot overtake
+   *  the next turn's start when same-session messages drain back-to-back. */
+  private typingOperations = new Map<string, Promise<void>>();
+  /** Active heartbeat cleanup functions, including turns still inside agentLoop. */
+  private activeTypingStops = new Set<() => void>();
+  /** Invalidates async continuations that started before the latest stop(). */
+  private typingLifecycleGeneration = 0;
 
   async start() {
     // IM inbound events are dispatched by inboundDispatcher (single dispatcher pattern).
@@ -58,6 +124,9 @@ class IMChannelRouter {
   }
 
   stop() {
+    this.typingLifecycleGeneration++;
+    for (const stopTyping of [...this.activeTypingStops]) stopTyping();
+    this.activeTypingStops.clear();
     if (this.cleanupInterval) {
       clearInterval(this.cleanupInterval);
       this.cleanupInterval = null;
@@ -67,6 +136,8 @@ class IMChannelRouter {
     this.recentMessageIds.clear();
     this.activeSessions.clear();
     this.sessionQueues.clear();
+    for (const { timer } of this.pendingMedia.values()) clearTimeout(timer);
+    this.pendingMedia.clear();
     console.log('[IMChannel] Router stopped');
   }
 
@@ -92,6 +163,35 @@ class IMChannelRouter {
     }
     this.recentMessageIds.set(dedupKey, now);
 
+    // Coalesce "photo, then caption" into ONE turn. IM clients (WeChat included)
+    // cannot send an image and its text together — the user must send two
+    // messages — but treating them as two turns makes the agent answer the photo
+    // with no question, then answer the question with no photo ("I didn't get an
+    // image this turn"). So an image-only message waits briefly for the caption
+    // that usually follows; the caption merges into it and dispatches one turn.
+    const chatKey = `${message.platform}:${message.chatId}`;
+    const pending = this.pendingMedia.get(chatKey);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pendingMedia.delete(chatKey);
+      message = mergeInboundMessages(pending.message, message);
+    }
+    if (isMediaOnly(message)) {
+      const buffered = message;
+      const timer = setTimeout(() => {
+        this.pendingMedia.delete(chatKey);
+        this.routeMessage(buffered);
+      }, MEDIA_COALESCE_MS);
+      this.pendingMedia.set(chatKey, { message: buffered, timer });
+      return;
+    }
+
+    this.routeMessage(message);
+  }
+
+  /** Channel resolution → auth → queueing → run. Split out of `handleMessage`
+   *  so the media-coalescing timer can dispatch a buffered message too. */
+  private routeMessage(message: NormalizedIMMessage) {
     // Find matching enabled channel for this platform
     const store = useIMChannelStore.getState();
     const channels = store.getChannelsByPlatform(message.platform).filter((c) => c.enabled);
@@ -145,6 +245,91 @@ class IMChannelRouter {
     this.processMessage(message, channel, authResult.capability);
   }
 
+  /** Queue a typing request behind earlier requests for the same user. */
+  private enqueueTyping(
+    adapter: IMAdapter,
+    token: string,
+    userId: string,
+    status: 1 | 2,
+  ): Promise<void> {
+    const sendTyping = adapter.sendTyping;
+    if (!sendTyping) return Promise.resolve();
+
+    const key = `${adapter.config.platform}:${userId}`;
+    const previous = this.typingOperations.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => {})
+      .then(() => new Promise<void>((resolve, reject) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`typing request timed out after ${WECHAT_TYPING_REQUEST_TIMEOUT_MS}ms`));
+        }, WECHAT_TYPING_REQUEST_TIMEOUT_MS);
+
+        Promise.resolve()
+          .then(() => sendTyping.call(adapter, token, userId, status, controller.signal))
+          .then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (err) => {
+              clearTimeout(timer);
+              reject(err);
+            },
+          );
+      }))
+      .catch((err) => {
+        // warn/error are the logger levels that reach the captured app log.
+        imChannelLog.warn('typing indicator lifecycle failed', {
+          platform: adapter.config.platform,
+          userId,
+          status,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+
+    const tracked = operation.finally(() => {
+      if (this.typingOperations.get(key) === tracked) {
+        this.typingOperations.delete(key);
+      }
+    });
+    this.typingOperations.set(key, tracked);
+    return tracked;
+  }
+
+  /** Start immediately, refresh while work continues, and return an idempotent stop. */
+  private startTypingHeartbeat(
+    adapter: IMAdapter,
+    token: string,
+    userId: string,
+  ): () => void {
+    let stopped = false;
+    let heartbeatInFlight: Promise<void> | null = null;
+
+    const heartbeat = () => {
+      if (stopped || heartbeatInFlight) return;
+      const current = this.enqueueTyping(adapter, token, userId, 1);
+      heartbeatInFlight = current;
+      void current.finally(() => {
+        if (heartbeatInFlight === current) heartbeatInFlight = null;
+      });
+    };
+
+    heartbeat();
+    const interval = setInterval(heartbeat, WECHAT_TYPING_REFRESH_MS);
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(interval);
+      this.activeTypingStops.delete(stop);
+      void this.enqueueTyping(adapter, token, userId, 2);
+    };
+    this.activeTypingStops.add(stop);
+    return stop;
+  }
+
   private async processMessage(
     message: NormalizedIMMessage,
     channel: IMChannel,
@@ -152,11 +337,37 @@ class IMChannelRouter {
   ) {
     this.runningCount++;
     let removeReaction: (() => Promise<void>) | null = null;
+    let stopTyping: (() => void) | null = null;
 
     try {
+      const typingGeneration = this.typingLifecycleGeneration;
+      const adapter = (await import('./adapters/registry')).getAdapter(message.platform);
+      if (
+        message.platform === 'wechat'
+        && adapter?.sendTyping
+        && typingGeneration === this.typingLifecycleGeneration
+      ) {
+        stopTyping = this.startTypingHeartbeat(
+          adapter,
+          channel.appSecret,
+          message.senderId,
+        );
+      }
+
       // 1. Session resolution
       const resolveResult = sessionMapper.resolve(message, channel, capability);
       const { session, isRecovered, hasRecoverableSession, recoverableContext } = resolveResult;
+
+      // 1a. Hydrate the conversation before any run touches it. Conversations are
+      // lazily loaded (and evicted by `unloadOldConversations`), so a message for
+      // a session the desktop hasn't opened recently finds no in-memory record:
+      // `buildAgentRunParams` then throws "no conversation record" and the
+      // in-process fallback silently skips upgrading the persisted user message —
+      // which drops inbound image attachments and leaves the message stuck in
+      // `pending` ("发送失败" in the UI). Loading first keeps both paths whole.
+      if (!useChatStore.getState().conversations[session.conversationId]) {
+        await useChatStore.getState().loadConversation(session.conversationId);
+      }
 
       // 1b. Auto-extract memories from archived session (non-blocking)
       if (resolveResult.archivedConversationId) {
@@ -197,7 +408,20 @@ class IMChannelRouter {
         return; // "继续上次" is not a real question — just confirm and wait for next message
       }
 
-      if (hasRecoverableSession) {
+      if (resolveResult.isRolledOver) {
+        // The round cap rolled the session over. Say so — otherwise the agent
+        // just looks like it forgot everything mid-conversation. (Checked before
+        // the recoverable hint below: the roll-over archived that very session,
+        // so both flags are set, but "expired" would be the wrong story.)
+        const rolledMsg: AbuMessage = {
+          content: format(getI18n().imChannel.sessionRolledOver, {
+            rounds: String(channel.maxRoundsPerSession),
+          }),
+        };
+        sendThinking(message.platform, message.replyContext)
+          .then((h) => sendFinal(h, rolledMsg))
+          .catch(() => {});
+      } else if (hasRecoverableSession) {
         // Hint the user that they can recover
         const hintMsg: AbuMessage = {
           content: getI18n().imChannel.sessionExpiredHint,
@@ -209,8 +433,6 @@ class IMChannelRouter {
       }
 
       // Add processing indicator: emoji reaction for Feishu/Slack, thinking message for others
-      const adapter = (await import('./adapters/registry')).getAdapter(message.platform);
-
       if (adapter?.config.supportsMessageUpdate) {
         // Feishu/Slack: add emoji reaction as processing indicator
         removeReaction = await addProcessingReaction(message.platform, message.replyContext);
@@ -238,6 +460,9 @@ class IMChannelRouter {
       const callbacks = getCallbacksForLevel(capability);
       await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
+          // Inbound images (e.g. a WeChat photo) forwarded as real vision content
+          // so the model actually sees them instead of a "[图片]" text marker.
+          images: message.images,
           commandConfirmCallback: callbacks.commandConfirmCallback,
           filePermissionCallback: callbacks.filePermissionCallback,
           // Tier-scoped, not a hard-coded single entry: the read-only tier
@@ -255,6 +480,9 @@ class IMChannelRouter {
             platform: message.platform,
             workspacePath: channel.workspacePaths[0] ?? null,
             capability,
+            // Reply target for outbound tools (send_file). The chatId is the
+            // same one sendFinal replies to.
+            replyChatId: message.replyContext.chatId,
           },
         }),
         AGENT_TIMEOUT_MS,
@@ -288,6 +516,10 @@ class IMChannelRouter {
       // Best-effort error reply to user
       this.sendErrorReply(message, errorMsg).catch(() => {});
     } finally {
+      // Stop the WeChat heartbeat before draining this session's next message.
+      // enqueueTyping serializes the cancel ahead of the next turn's start.
+      stopTyping?.();
+
       // Remove processing reaction (emoji) if it was added
       if (removeReaction) {
         removeReaction().catch(() => {});

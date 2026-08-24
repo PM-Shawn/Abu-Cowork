@@ -31,6 +31,7 @@ import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
 import { getToolLabel } from '../../utils/toolLabels';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { firstImageContent } from '../tools/toolResultContent';
 
 // --- Helper Functions ---
 
@@ -359,6 +360,7 @@ export class EventRouter {
     const newStep: ExecutionStep = {
       id: stepId,
       executionId: execution.id,
+      toolCallId: step.toolCallId,
       type: inferStepType(step.toolName),
       label,
       detail,
@@ -420,10 +422,11 @@ export class EventRouter {
       };
       this.deps.executionStore.addDetailBlock(execution.id, stepId, summaryBlock);
     } else {
-      // Add image block if resultContent contains images
+      // Add image block if resultContent contains images. Must use the SAME
+      // extraction rule as the snapshot-replay backfill — see firstImageContent.
       if (resultContent && Array.isArray(resultContent)) {
-        const imageBlock = resultContent.find(b => b.type === 'image');
-        if (imageBlock && imageBlock.type === 'image') {
+        const imageData = firstImageContent(resultContent);
+        if (imageData) {
           const isZh = this.locale.startsWith('zh');
           const imgDetailBlock: DetailBlock = {
             id: `${stepId}-image`,
@@ -432,7 +435,7 @@ export class EventRouter {
             label: isZh ? '图片' : 'Image',
             labelKey: 'image',
             content: result,
-            imageData: { mediaType: imageBlock.source.media_type, base64: imageBlock.source.data },
+            imageData,
             isTruncated: false,
             isExpanded: true,
           };

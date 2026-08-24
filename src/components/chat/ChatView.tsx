@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
-import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
@@ -14,7 +14,7 @@ import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
-import { activeChapterIndex, deriveChapters, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
+import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
@@ -503,8 +503,8 @@ export default function ChatView({
   // Optimistic feedback for the beat between submitting a question/plan answer
   // and the resumed loop producing anything (Bug 1: 点同意后无反应).
   const [resuming, setResuming] = useState(false);
-  const agentStatus = useChatStore((s) => s.agentStatus);
-  const retryInfo = useChatStore((s) => s.retryInfo);
+  const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).status);
+  const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, activeConvId).retryInfo);
 
   const handleSelectPrompt = useCallback((prompt: string) => {
     // Fill the prompt into the input via pendingInput
@@ -537,6 +537,8 @@ export default function ChatView({
   // unmemoized for the same reason.
   const chapters = deriveChapters(messageGroups, t.chat.chapters.sessionStart);
   const currentChapter = activeChapterIndex(chapters, firstVisibleGroup);
+  // One or two ticks navigate nothing — the conversation is already on screen.
+  const chapterNavVisible = shouldShowRail(chapters);
 
   // Same landing behaviour as a search hit: release the bottom lock (so a late
   // height measurement cannot yank the view back down) and flash the target so
@@ -716,7 +718,7 @@ export default function ChatView({
         )}
         {/* Chapter navigation moves into the header exactly when the gutter can
             no longer hold the rail, so the two never appear at once. */}
-        {!railFits && (
+        {chapterNavVisible && !railFits && (
           <ChapterMenu chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
       </div>
@@ -776,7 +778,7 @@ export default function ChatView({
           shift the content. Both were lost in the Virtuoso-list merge — do not
           drop them again. */}
       <div className="relative flex-1 min-h-0 overflow-y-scroll overlay-scroll" ref={setScrollParentEl}>
-        {railFits && (
+        {chapterNavVisible && railFits && (
           <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
         <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">

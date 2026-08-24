@@ -289,6 +289,9 @@ function ScreenshotThumbnail({ resultContent }: { resultContent: ToolResultConte
   const [expanded, setExpanded] = useState(false);
   if (!resultContent) return null;
 
+  // Same "first image" intent as firstImageContent (core/tools/toolResultContent),
+  // minus its empty-source.data guard. Kept local for now — migrating it would
+  // change what this thumbnail does with a zero-byte payload.
   const imageBlock = resultContent.find(b => b.type === 'image');
   if (!imageBlock || imageBlock.type !== 'image') return null;
 
@@ -408,6 +411,9 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
   const messages = useChatStore((s) => (conversationId ? s.conversations[conversationId]?.messages : undefined));
   const userRefs = useMemo(() => collectUserFileRefs(messages ?? []), [messages]);
 
+  // Collects EVERY image block, so it deliberately does not use
+  // firstImageContent (core/tools/toolResultContent) — different semantics, not
+  // a duplicate of it.
   const images: string[] = [];
   for (const tc of toolCalls) {
     // generate_image is excluded here: its saved file already renders once as a

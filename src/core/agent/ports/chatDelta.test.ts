@@ -17,12 +17,10 @@ describe('createInProcessChatDelta', () => {
       conversations: {},
       conversationIndex: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
       pendingInputAppend: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
   });
 
@@ -76,7 +74,7 @@ describe('createInProcessChatDelta', () => {
     });
     delta.finishStreaming(id, 'a1');
     expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
-    expect(useChatStore.getState().agentStatus).toBe('idle');
+    expect(useChatStore.getState().agentStates.has(id)).toBe(false);
   });
 
   it('cancelStreaming() forwards and records the stop terminal without changing content', () => {
@@ -112,8 +110,8 @@ describe('createInProcessChatDelta', () => {
     });
     delta.setMessageStreamingFlag(id, 'a1', false);
     expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
-    // no finishStreaming side effects — agentStatus untouched
-    expect(useChatStore.getState().agentStatus).toBe('idle');
+    // no finishStreaming side effects — agent state untouched
+    expect(useChatStore.getState().agentStates.has(id)).toBe(false);
   });
 
   it('reflects store updates on the next call (not cached at construction time)', () => {
@@ -220,8 +218,9 @@ describe('createInProcessChatDelta', () => {
 
     it('setAgentStatus() forwards to chatStore.setAgentStatus', () => {
       const delta = createInProcessChatDelta();
-      delta.setAgentStatus('thinking');
-      expect(useChatStore.getState().agentStatus).toBe('thinking');
+      const id = useChatStore.getState().createConversation();
+      delta.setAgentStatus(id, 'thinking');
+      expect(useChatStore.getState().agentStates.get(id)?.status).toBe('thinking');
     });
 
     it('setCurrentUsage() forwards to chatStore.setCurrentUsage', () => {
@@ -232,8 +231,9 @@ describe('createInProcessChatDelta', () => {
 
     it('setRetryInfo() forwards to chatStore.setRetryInfo', () => {
       const delta = createInProcessChatDelta();
-      delta.setRetryInfo({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
-      expect(useChatStore.getState().retryInfo).toEqual({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
+      const id = useChatStore.getState().createConversation();
+      delta.setRetryInfo(id, { attempt: 1, maxAttempts: 3, delayMs: 1000 });
+      expect(useChatStore.getState().agentStates.get(id)?.retryInfo).toEqual({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
     });
 
     it('setContextUsage() forwards to chatStore.setContextUsage', () => {
@@ -284,9 +284,11 @@ describe('createInProcessChatDelta', () => {
 
     it('removeActiveAgent() forwards to chatStore.removeActiveAgent', () => {
       const delta = createInProcessChatDelta();
-      useChatStore.setState({ activeAgentNames: ['agentA', 'agentB'] });
-      delta.removeActiveAgent('agentA');
-      expect(useChatStore.getState().activeAgentNames).toEqual(['agentB']);
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setAgentStatus(id, 'tool-calling', 'read_file', 'agentA');
+      useChatStore.getState().setAgentStatus(id, 'tool-calling', 'read_file', 'agentB');
+      delta.removeActiveAgent(id, 'agentA');
+      expect(useChatStore.getState().agentStates.get(id)?.activeAgentNames).toEqual(['agentB']);
     });
   });
 });

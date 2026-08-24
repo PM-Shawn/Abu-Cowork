@@ -59,6 +59,9 @@ export const TOOL_NAMES = {
   CLIPBOARD_WRITE: 'clipboard_write',
   SYSTEM_NOTIFY: 'system_notify',
 
+  // IM outbound (only usable inside an IM channel session)
+  SEND_FILE: 'send_file',
+
   // Computer use
   COMPUTER: 'computer',
 

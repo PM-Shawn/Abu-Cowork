@@ -49,6 +49,7 @@ import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { getWorkspaceReader } from './ports/workspaceReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
@@ -84,6 +85,7 @@ import {
   runAgentLoop,
   buildUserMessageContent,
   isInteractiveDesktop,
+  resolveToolContextWorkspacePath,
   type AgentLoopOptions,
   type AgentLoopResult,
 } from './agentLoop';
@@ -156,6 +158,8 @@ export interface AgentLoopRunOptions {
   blockedTools?: string[];
   allowedTools?: string[];
   imContext?: IMContext;
+  authorizationScopeId?: string;
+  workspacePathSnapshot?: string | null;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
@@ -346,14 +350,77 @@ export function __resetAgentLoopRunnerForTests(): void {
 
 // ── Reverse-channel handlers (registered ONCE at module init) ──────────
 
+function isPortFrame(value: unknown): value is PortFrame {
+  if (typeof value !== 'object' || value === null) return false;
+  const frame = value as { p?: unknown; m?: unknown; a?: unknown };
+  return (
+    (frame.p === 'chat' || frame.p === 'exec' || frame.p === 'scratchpad' || frame.p === 'session')
+    && typeof frame.m === 'string'
+    && Array.isArray(frame.a)
+  );
+}
+
+function frameConversationId(frame: PortFrame): string | undefined {
+  if (frame.p === 'chat') {
+    if (frame.m === 'setCurrentUsage') return undefined;
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'session') {
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'exec' && frame.m === 'createExecution') {
+    return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+  }
+  if (frame.p === 'scratchpad') {
+    const entry = frame.a[1] as { conversationId?: unknown } | undefined;
+    return typeof entry?.conversationId === 'string' ? entry.conversationId : undefined;
+  }
+  return undefined;
+}
+
+function frameLoopId(frame: PortFrame): string | undefined {
+  if (frame.p !== 'exec') return undefined;
+  if (frame.m === 'createExecution') {
+    return typeof frame.a[1] === 'string' ? frame.a[1] : undefined;
+  }
+  return typeof frame.a[0] === 'string' ? frame.a[0] : undefined;
+}
+
+function isDeltaFrameTrustedForSession(frame: PortFrame, session: RunSession): boolean {
+  switch (frame.p) {
+    case 'chat': {
+      if (frame.m === 'setCurrentUsage') return true;
+      return frameConversationId(frame) === session.conversationId;
+    }
+    case 'session':
+    case 'scratchpad':
+      return frameConversationId(frame) === session.conversationId;
+    case 'exec':
+      if (frame.m === 'createExecution') {
+        return frameConversationId(frame) === session.conversationId
+          && frameLoopId(frame) === session.loopId;
+      }
+      return frameLoopId(frame) === session.loopId;
+    default:
+      return false;
+  }
+}
+
+function trustedDeltaFramesForSession(session: RunSession, frames: PortFrame[]): PortFrame[] {
+  if (!useChatStore.getState().conversations[session.conversationId]) return [];
+  return frames.filter((frame) => isDeltaFrameTrustedForSession(frame, session));
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || !Array.isArray(params.frames)) return;
-  const frames = params.frames as PortFrame[];
+  const receivedFrames = params.frames.filter(isPortFrame);
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
   if (session.dropFrames) return; // terminal fence — late frames from an aborted run are stale
+  const frames = trustedDeltaFramesForSession(session, receivedFrames);
+  if (frames.length === 0) return;
   // P1-3B-3B fallback discipline: the first frame observed for this run is
   // an already-committed, observable side effect (text/thinking streamed to
   // the real chatStore) — see RunSession.committed's doc.
@@ -558,7 +625,7 @@ async function finalizeFailedRun(
         chatDelta.appendText(session.conversationId, `\n\n**Error:** ${displayMessage}`);
       }
       chatDelta.finishStreaming(session.conversationId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(session.conversationId, 'idle');
       chatDelta.setConversationStatus(session.conversationId, 'error');
     } catch (cleanupErr) {
       logger.warn('terminal UI finalization failed', {
@@ -663,7 +730,7 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
 
       chatDelta.cancelStreaming(session.conversationId, { fromSidecarFrame: true });
       chatDelta.deactivateSkills(session.conversationId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(session.conversationId, 'idle');
       chatDelta.setConversationStatus(session.conversationId, 'idle');
       getExecutionPort().cancelExecution(session.loopId);
         await waitForConversationPersistence(session.conversationId);
@@ -932,16 +999,39 @@ async function handleToolList(): Promise<unknown> {
  * side twin: `sidecar/src/shims/authorizedPathsReaderRun.ts`. Answers "what
  * paths has the user authorized for write access?" for a locally-executed
  * `run_command` (once slice 2b registers it in `localTools/index.ts`) —
- * `pathSafety.ts`'s `authorizedWorkspaces` map is shell-only state (populated
- * by `authorizeWorkspace()`, `registry.ts`/`triggerPermission.ts`), so this
- * is the same real `getAuthorizedWritablePaths()` the in-process
- * `AuthorizedPathsReader` default wraps — single source of truth, no
- * duplicated logic. Stateless (no runId/session lookup, mirroring
- * `handleToolList` above) since the authorized-paths set is global, not
- * per-run.
+ * `pathSafety.ts`'s authorization maps are shell-only state (populated by
+ * `authorizeWorkspace()` / `scopedAuthorizeWorkspace()`), so this is the same
+ * real `getAuthorizedWritablePaths()` the in-process `AuthorizedPathsReader`
+ * default wraps — single source of truth, no duplicated logic. The request
+ * includes a runId and the shell resolves the session-owned scope; unknown
+ * runs fail closed rather than falling back to global writable paths.
  */
-async function handleWorkspaceAuthorizedPaths(): Promise<unknown> {
-  return getAuthorizedWritablePaths();
+async function handleWorkspaceAuthorizedPaths(rawParams: unknown): Promise<unknown> {
+  const params = rawParams as { runId?: unknown } | null;
+  if (!params || typeof params.runId !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid workspace.authorizedWritablePaths params: runId must be a string');
+  }
+  const session = sessions.get(params.runId);
+  if (!session) {
+    throw new SidecarRequestError(-32000, `Unknown agent-loop runId: ${params.runId}`);
+  }
+  return getAuthorizedWritablePaths(session.options.authorizationScopeId);
+}
+
+function contextForSession(
+  session: RunSession,
+  incoming: ToolExecutionContext | undefined,
+): ToolExecutionContext {
+  return {
+    ...incoming,
+    conversationId: session.conversationId,
+    loopId: session.loopId,
+    authorizationScopeId: session.options.authorizationScopeId,
+    ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
+      ? { workspacePath: session.options.workspacePathSnapshot ?? null }
+      : {}),
+    abortSignal: session.shellAbortController.signal,
+  };
 }
 
 function findTrustedToolCall(
@@ -1062,8 +1152,7 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
     {
-      ...wireContext,
-      abortSignal: session.shellAbortController.signal,
+      ...contextForSession(session, wireContext),
       reportMetadata: (next) => {
         if (!trustedToolCallId) return;
         const normalized = normalizeTrustedToolMetadata(next, {
@@ -1149,7 +1238,7 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   const decision = await checkToolApproval(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
-    params.context as ToolExecutionContext | undefined,
+    contextForSession(session, params.context as ToolExecutionContext | undefined),
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
@@ -1222,18 +1311,19 @@ function assertRunToolAllowed(
  * runId → silent drop" discipline (3a), NOT `handleMainLoopToolInvoke`'s
  * hard-refuse-with-throw (there is no RPC response to fail here — silent
  * drop is the only sensible behavior for a fire-and-forget notification).
- * The real function is itself idempotent/self-guarding on a missing or
- * already-bound conversation (`defaultWorkspace.ts:119-122`), so this
- * lookup is a defense-in-depth consistency check, not the only thing
- * preventing a stale/deleted-conversation write from taking effect.
+ * The notification's conversationId must match the run-owned conversation;
+ * otherwise a delayed or forged sidecar notification could bind a different
+ * interactive conversation. The real function is itself idempotent and
+ * self-guarding on a missing or already-bound conversation
+ * (`defaultWorkspace.ts:119-122`).
  */
 function handleWorkspaceBindFromWrite(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; conversationId?: unknown; path?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || typeof params.path !== 'string') return;
   const session = sessions.get(params.runId);
   if (!session) return; // unknown/already-finished runId — silent drop
-  const conversationId = typeof params.conversationId === 'string' ? params.conversationId : undefined;
-  void bindWorkspaceFromWrite(conversationId, params.path).catch((err: unknown) => {
+  if (typeof params.conversationId === 'string' && params.conversationId !== session.conversationId) return;
+  void bindWorkspaceFromWrite(session.conversationId, params.path).catch((err: unknown) => {
     logger.warn('bindWorkspaceFromWrite threw', { error: err instanceof Error ? err.message : String(err) });
   });
 }
@@ -1680,6 +1770,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
     imContext: session.options.imContext,
+    authorizationScopeId: session.options.authorizationScopeId,
   });
 }
 
@@ -1710,6 +1801,8 @@ interface AgentRunParams {
     images?: ImageAttachment[];
     blockedTools?: string[];
     allowedTools?: string[];
+    authorizationScopeId?: string;
+    workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
   };
@@ -2064,6 +2157,11 @@ async function buildAgentRunParams(
   if (!conversationSnapshot) {
     throw new Error(`buildAgentRunParams: conversation "${conversationId}" disappeared before dispatch`);
   }
+  const workspacePathSnapshot = resolveToolContextWorkspacePath(
+    options,
+    conversationSnapshot,
+    getWorkspaceReader().getCurrentPath(),
+  );
 
   // Snapshot only internal system wake-ups for this conversation at dispatch
   // time. User follow-ups remain shell-side until the current run terminates.
@@ -2083,6 +2181,8 @@ async function buildAgentRunParams(
       images: options?.images,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot,
       imContext: options?.imContext,
     },
   }));
@@ -2097,6 +2197,8 @@ async function buildAgentRunParams(
       images: options?.images,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot,
       imContext: options?.imContext,
       prePersistedUserMessageId: clientMessageId,
     },
@@ -2106,6 +2208,7 @@ async function buildAgentRunParams(
     // not be combined with this run's already-resolved credentials.
     conversationSnapshot: {
       ...conversationSnapshot,
+      workspacePath: workspacePathSnapshot,
       model: settingsForModel.activeModel,
     } as Conversation,
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
@@ -2387,6 +2490,8 @@ async function runSingleAgentLoopDispatched(
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       imContext: options?.imContext,
+      authorizationScopeId: options?.authorizationScopeId,
+      workspacePathSnapshot: params.options.workspacePathSnapshot,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,
@@ -2790,6 +2895,13 @@ async function runSingleAgentLoopDispatched(
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
+    if (
+      !handedOffToLocal
+      && options?.authorizationScopeId !== undefined
+      && !shellAbortController.signal.aborted
+    ) {
+      shellAbortController.abort(new Error('Scoped agent run finished'));
+    }
     if (!handedOffToLocal) {
       // Ownership-checked: everything above the `finally` can outlive this
       // run's visible terminal (persistence, the Computer Use lease release

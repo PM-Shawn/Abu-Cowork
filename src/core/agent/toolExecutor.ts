@@ -160,7 +160,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
 
   // Execute tools in parallel using Promise.allSettled
-  chatDelta.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
+  chatDelta.setAgentStatus(conversationId, 'tool-calling', `${collectedToolCalls.length} tools`);
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
@@ -175,6 +175,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
     imContext: params.imContext,
+    authorizationScopeId: params.toolContext.authorizationScopeId,
   });
 
   let completedCount = 0;
@@ -299,7 +300,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus(conversationId, 'tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       // Extract string for display/hooks; keep rich content for LLM
       const resultStr = toolInvoker.toolResultToString(rawResult);
@@ -341,7 +342,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus(conversationId, 'tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
       // Emit postToolCall hook for errors too

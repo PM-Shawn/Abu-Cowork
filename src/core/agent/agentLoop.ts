@@ -44,7 +44,12 @@ import {
 } from '../context/compactBoundary';
 import { applyMicroCompaction } from '../context/microCompactor';
 import { AutoCompactTracker, getUsagePercent, getDisplayPercent } from '../context/autoCompact';
-import { estimateToolSchemaTokens, estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
+import { estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
+import {
+  computeBreakdownWeights,
+  computeToolBreakdownWeights,
+  distributeWithConservation,
+} from '../context/usageBreakdown';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
 import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
@@ -502,6 +507,8 @@ export interface AgentLoopOptions {
   /** Fail instead of staging into an already-running loop. Used by recovery
    * flows whose tool restrictions must apply from the first turn. */
   requireNewRun?: boolean;
+  /** Shell-created path authorization scope for unattended/background runs. */
+  authorizationScopeId?: string;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
@@ -545,6 +552,32 @@ export interface AgentLoopOptions {
     modelTier?: string;
     capabilitySource?: string;
   }) => void;
+}
+
+export function resolveToolContextWorkspacePath(
+  options: Pick<AgentLoopOptions, 'authorizationScopeId' | 'imContext'> | undefined,
+  conversation: { workspacePath?: string | null } | null | undefined,
+  globalWorkspacePath: string | null,
+): string | null {
+  return (
+    options?.imContext?.workspacePath ??
+    conversation?.workspacePath ??
+    (options?.authorizationScopeId !== undefined ? null : globalWorkspacePath)
+  );
+}
+
+export function buildDirectDelegateSubagentOptions(
+  baseOptions: Omit<Parameters<typeof runSubagent>[0], 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'workspaceReader'>,
+  parentOptions: Pick<AgentLoopOptions, 'allowedTools' | 'blockedTools' | 'authorizationScopeId'> | undefined,
+  trustedWorkspacePath: string | null,
+): Parameters<typeof runSubagent>[0] {
+  return {
+    ...baseOptions,
+    allowedTools: parentOptions?.allowedTools,
+    blockedTools: parentOptions?.blockedTools,
+    authorizationScopeId: parentOptions?.authorizationScopeId,
+    workspaceReader: { getCurrentPath: () => trustedWorkspacePath },
+  };
 }
 
 /** Exit reason returned by runAgentLoop so callers (scheduler, trigger) can
@@ -836,10 +869,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // first write. Headless contexts (IM / scheduled / trigger) are excluded —
   // they must not auto-create workspace directories.
   const toolContext: ToolExecutionContext = {
-    workspacePath:
-      options?.imContext?.workspacePath ??
-      _convForContext?.workspacePath ??
+    workspacePath: resolveToolContextWorkspacePath(
+      options,
+      _convForContext,
       getWorkspaceReader().getCurrentPath(),
+    ),
     loopId,
     conversationId,
     interactionMode: isInteractiveDesktop(options, _convForContext)
@@ -847,11 +881,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       : 'background',
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
+    authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(
       latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
     ),
+    // IM outbound target for tools like send_file. Only present when this run
+    // was dispatched from an IM channel and carries a reply chat id.
+    imReplyTarget:
+      options?.imContext?.replyChatId
+        ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+        : undefined,
   };
+  // send_file only makes sense with an IM reply target; keep it off the roster
+  // for every other run (desktop / scheduled / trigger) instead of letting the
+  // model discover it and hit the runtime refusal.
+  const effectiveBlockedTools = toolContext.imReplyTarget
+    ? options?.blockedTools
+    : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
   let computerUseTaskEndPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
     if (!computerUseTaskEndPromise) {
@@ -969,7 +1016,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const delegateAgent = route.delegateAgent;
     const taskText = route.cleanInput;
 
-    chatDelta.setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
+    chatDelta.setAgentStatus(conversationId, 'tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, delegateAgent.name);
 
     // Create a delegate step in the execution
     const delegateStepId = eventRouter.createStepForToolUse(loopId, {
@@ -1035,7 +1082,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
-      const result = await runSubagent({
+      const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
@@ -1046,15 +1093,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         imContext: options?.imContext,
         parentConversationId: conversationId,
         settingsReader: entrySettingsReader,
+      }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
-        // `delegate_to_agent`, so it never inherited either run-scoped tool
-        // restriction. An unattended tier is picked by the channel, but the
-        // prompt is user-authored — an IM message on a read-only channel
-        // beginning with `@researcher` delegated a subagent with no ceiling
-        // at all, which is the one hole a roster on the parent cannot see.
+        // `delegate_to_agent`, so it must inherit the parent run's effective
+        // restrictions as well as its authorization scope.
         allowedTools: options?.allowedTools,
-        blockedTools: options?.blockedTools,
-      });
+        blockedTools: effectiveBlockedTools,
+        authorizationScopeId: options?.authorizationScopeId,
+      }, toolContext.workspacePath ?? null));
       const delegateExitReason = mapSubagentStopReason(result.stopReason);
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
@@ -1065,8 +1111,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // completion (schedulers/triggers/isIncompleteReason depend on this).
       if (abortController.signal.aborted || delegateExitReason === 'aborted') {
         subagentCleanup();
-        chatDelta.removeActiveAgent(delegateAgent.name);
-        chatDelta.setAgentStatus('idle');
+        chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
+        chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.cancelStreaming(conversationId);
         abortRegistry.clearAbortController(conversationId);
         executionPort.cancelExecution(execution.id);
@@ -1076,7 +1122,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Complete the delegate step
       subagentCleanup();
-      chatDelta.removeActiveAgent(delegateAgent.name);
+      chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
       if (delegateStepId) {
         if (delegateExitReason === 'completed') {
           eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
@@ -1115,7 +1161,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (delegateExitReason === 'error') {
         eventRouter.route({ type: 'error', loopId, error: result.text });
         persistExecutionSnapshot(conversationId, loopId);
-        chatDelta.setAgentStatus('idle');
+        chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.setConversationStatus(conversationId, 'error');
         notifyTaskError(convTitle, conversationId);
         return { reason: 'error', error: result.text };
@@ -1127,7 +1173,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         reason: delegateExitReason === 'max_turns' ? 'max_turns' : 'delegate_complete',
       });
       persistExecutionSnapshot(conversationId, loopId);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.setAgentStatus(conversationId, 'idle');
       chatDelta.setConversationStatus(conversationId, 'completed');
       // A completed or turn-limited delegate made successful provider calls.
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
@@ -1135,8 +1181,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       return { reason: delegateExitReason };
     } catch (err) {
       subagentCleanup();
-      chatDelta.removeActiveAgent(delegateAgent.name);
-      chatDelta.setAgentStatus('idle');
+      chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
+      chatDelta.setAgentStatus(conversationId, 'idle');
       // Treat retry-layer cancellation sentinel (LLMError code='cancelled', thrown
       // from retry.ts's abort-aware sleep) as a user abort, not a user-facing error.
       const isUserAbort = err instanceof Error
@@ -1356,7 +1402,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       loopId,
     });
 
-    chatDelta.setAgentStatus('thinking');
+    chatDelta.setAgentStatus(conversationId, 'thinking');
 
     const collectedToolCalls: ToolCall[] = [];
     const toolCallToStepId: Map<string, string> = new Map();  // Map toolCallId -> stepId
@@ -1400,7 +1446,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
       const deferredTools = noTools ? [] : rawDeferredTools;
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
@@ -1427,7 +1473,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // real tool registry executes in the renderer; this name-only snapshot
       // safely crosses that boundary and is re-filtered by the shell registry.
       toolContext.deferredToolNames = deferredTools.map(tool => tool.name);
-      const toolTokens = estimateToolSchemaTokens(tools);
+      const toolBreakdownWeights = computeToolBreakdownWeights(tools);
+      const toolTokens = toolBreakdownWeights.tools + toolBreakdownWeights.mcp;
       const dynamicCapabilities = buildDynamicCapabilities(tools);
       const deferredToolsSummary = buildDeferredToolsSummary(deferredTools);
       const activeSkillContent = await loadActiveSkillContent(
@@ -1648,8 +1695,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
 
       // Step 2: Trim old screenshots dynamically based on context usage
-      const postCompressionTokens = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(messagesForContext) + toolTokens
-        + (volatileContextTail ? estimateTokens(volatileContextTail) : 0);
+      // The breakdown is the single estimation pass for the published payload.
+      // Deriving the total from these same weights prevents the header and its
+      // categories from drifting while avoiding a second full prompt/history scan.
+      const breakdownWeights = computeBreakdownWeights({
+        allSections,
+        toolWeights: toolBreakdownWeights,
+        deferredToolsSummary,
+        messagesForContext,
+        volatileContextTail,
+      });
+      const postCompressionTokens = Object.values(breakdownWeights)
+        .reduce((sum, value) => sum + value, 0);
       const usagePercent = getUsagePercent(postCompressionTokens, maxInputTokens);
       // NOTE: usage MUST be published on post-compression tokens. Pre-compression
       // tokens stay critically high in long conversations even after cache-hit
@@ -1668,11 +1725,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // AS COMPRESSED. The indicator estimates only the messages after that index
       // (the assistant reply currently streaming), so it stays live without
       // re-counting — and thereby un-compressing — the history behind the anchor.
+      const breakdown = distributeWithConservation(breakdownWeights, postCompressionTokens);
       chatDelta.setContextUsage(conversationId, {
         percent: getDisplayPercent(postCompressionTokens, contextWindowSize),
         tokensUsed: postCompressionTokens,
         tokensMax: contextWindowSize,
         messageCountAtPublish: historyMessages.length,
+        breakdown: { version: 1, ...breakdown },
       });
 
       // Step 2.1: Persistent compaction (long-conversation Part A). When the
@@ -1883,13 +1942,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // while the body text is already streaming, which looks broken.
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
                 }
               }
-              chatDelta.setAgentStatus('streaming');
+              chatDelta.setAgentStatus(conversationId, 'streaming');
               chatDelta.appendText(conversationId, event.text, assistantMsgId);
               break;
 
@@ -1906,7 +1965,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               // completed (same reason as the 'text' branch above).
               if (!thinkingEndTime && collectedThinking) {
                 thinkingEndTime = Date.now();
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.max(1, Math.round((thinkingEndTime - thinkingStartTime) / 1000));
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -1930,7 +1989,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 break;
               }
 
-              chatDelta.setAgentStatus('tool-calling', event.name);
+              chatDelta.setAgentStatus(conversationId, 'tool-calling', event.name);
 
               // Create step in TaskExecutionStore via EventRouter
               const stepId = eventRouter.createStepForToolUse(loopId, {
@@ -1979,7 +2038,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               }
               // Calculate and save thinking duration
               if (collectedThinking && thinkingEndTime) {
-                const thinkingStartTime = getConversationReader().getThinkingStartTime();
+                const thinkingStartTime = getConversationReader().getThinkingStartTime(conversationId);
                 if (thinkingStartTime) {
                   const thinkingDuration = Math.round((thinkingEndTime - thinkingStartTime) / 1000);
                   chatDelta.setThinkingDuration(conversationId, thinkingDuration, assistantMsgId);
@@ -2030,9 +2089,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             // provider isn't a silent dead wait. rate_limit gets 5 attempts in
             // retry.ts, others get 3.
             const maxAttempts = error.code === 'rate_limit' ? 5 : 3;
-            chatDelta.setRetryInfo({ attempt, maxAttempts, delayMs });
+            chatDelta.setRetryInfo(conversationId, { attempt, maxAttempts, delayMs });
             if (error.code === 'rate_limit') {
-              chatDelta.setAgentStatus('rate-limited', `${Math.round(delayMs / 1000)}s`);
+              chatDelta.setAgentStatus(conversationId, 'rate-limited', `${Math.round(delayMs / 1000)}s`);
             }
             // Clear any partial content written before the stream failed so
             // the retry starts with a clean message instead of appending to
@@ -2251,7 +2310,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           eventRouter,
           executionId: execution.id,
           inputValidators,
-          blockedTools: options?.blockedTools,
+          blockedTools: effectiveBlockedTools,
           allowedTools: options?.allowedTools,
           imContext: options?.imContext,
           confirmCb,
@@ -2313,7 +2372,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, options?.blockedTools, prefetchCtx, options?.allowedTools, conversationId);
+          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
@@ -2757,6 +2816,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
+  if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
+    abortController.abort(new Error('Scoped agent run finished'));
+  }
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return { reason: exitReason, error: exitError };

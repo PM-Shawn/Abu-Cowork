@@ -7,6 +7,7 @@ import {
 } from './contextManager';
 import { normalizeMessages } from '../llm/messageNormalizer';
 import { estimateMessageTokens, estimateTokens } from './tokenEstimator';
+import { clearLogs, getRecentLogs } from '../logging/logger';
 import type { Message } from '../../types';
 
 let messageSequence = 0;
@@ -384,12 +385,10 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(wire).not.toContain('screenshot(s) removed from history');
   });
 
-  // The strip indices come from msg.toolCalls but are reused against
-  // toolCallsForContext at the same position, and the two are built by different
-  // producers (request order vs eventRouter's completion order under
-  // Promise.allSettled). If they ever disagree, the note must stay quiet rather
-  // than tell the model "[0 screenshot(s) removed…]".
-  it('says nothing when the targeted call had no images', () => {
+  // Legacy toolCallsForContext entries can lack ids. In that case the whole
+  // context side stays untouched rather than guessing from request-order indices,
+  // and no bogus "[0 screenshot(s) removed…]" note reaches the model.
+  it('says nothing when legacy context calls cannot be matched safely', () => {
     const call = { id: 'tc-x', name: 'read_file', input: {}, result: 'file contents', resultContent: [] };
     const withImage = screenshotTurn('img', 'q');
     const mismatched = {
@@ -432,5 +431,95 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(raw).toContain('REAL_NEW');
     expect(raw).toContain('SUBAGENT_SHOT');
     expect(raw).not.toContain('screenshot(s) removed from history');
+  });
+
+  it('matches completion-order context calls by tool_use id', () => {
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'text' as const, text: marker },
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const textCall = { id: 'text', name: 'read_file', input: {}, result: 'text result', resultContent: [] };
+    const message: Message = {
+      ...makeMsg('assistant', 'Parallel tools finished'),
+      // Model request order: the oldest screenshot is "a" at index 1.
+      toolCalls: [textCall, imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+      // Completion order differs, putting "a" at index 2.
+      toolCallsForContext: [imageCall('c', 'c'), imageCall('b', 'b'), imageCall('a', 'a'), textCall],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+    const contextCalls = out[0].toolCallsForContext!;
+
+    expect(contextCalls[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(contextCalls[1].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(contextCalls[2].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(contextCalls[2].result).toContain('screenshot(s) removed from history');
+  });
+
+  it('retains a message context intact when legacy calls lack tool_use ids', () => {
+    clearLogs();
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const message: Message = {
+      ...makeMsg('assistant', 'Legacy context'),
+      toolCalls: [imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+      toolCallsForContext: [
+        { name: 'computer', input: {}, result: 'a', resultContent: imageCall('a', 'a').resultContent },
+        imageCall('b', 'b'),
+        imageCall('c', 'c'),
+      ],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+
+    expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
+    ]));
+  });
+
+  it('retains message context when the request-order side lacks a tool_use id', () => {
+    clearLogs();
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const legacyRequestCall = { ...imageCall('a', 'a'), id: undefined };
+    const message: Message = {
+      ...makeMsg('assistant', 'Legacy request call'),
+      toolCalls: [
+        legacyRequestCall as unknown as NonNullable<Message['toolCalls']>[number],
+        imageCall('b', 'b'),
+        imageCall('c', 'c'),
+      ],
+      toolCallsForContext: [imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+
+    expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
+    ]));
   });
 });

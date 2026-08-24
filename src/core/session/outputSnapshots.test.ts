@@ -1,6 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { exists, readTextFile, writeTextFile, mkdir, remove, stat, copyFile, rename, writeFile } from '@tauri-apps/plugin-fs';
 
+const base64ToUint8ArrayMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@/utils/base64', async () => {
+  const actual = await vi.importActual<typeof import('@/utils/base64')>('@/utils/base64');
+  return {
+    ...actual,
+    base64ToUint8Array: base64ToUint8ArrayMock,
+  };
+});
+
 // Extend the global plugin-fs mock with the symbols outputSnapshots needs
 // (stat, copyFile, rename, writeFile are not in the default test setup mock).
 vi.mock('@tauri-apps/plugin-fs', async () => {
@@ -138,6 +148,11 @@ describe('outputSnapshots', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    base64ToUint8ArrayMock.mockReset();
+    base64ToUint8ArrayMock.mockImplementation((base64: string) => {
+      const binary = atob(base64);
+      return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    });
     memFs = createMemoryFs();
     mod = await import('./outputSnapshots');
     mod.__testing.resetCaches();
@@ -441,6 +456,183 @@ describe('outputSnapshots', () => {
       });
       const manifest = await mod.__testing.loadManifest(CONV_ID);
       expect(Object.keys(manifest.entries)).toHaveLength(0);
+    });
+  });
+
+  describe('snapshotResultImage', () => {
+    it('copies a read_file image and records it as a result-image manifest entry', async () => {
+      const sourcePath = '/Users/testuser/Desktop/chart.png';
+      memFs.addUserFile(sourcePath, 256);
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_read', {
+        mediaType: 'image/png',
+        base64: 'aWdub3JlZA==',
+      }, sourcePath);
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      const entry = manifest.entries['tool-result://toolu_read'];
+      expect(entry).toMatchObject({
+        source: 'tool-output',
+        refKind: 'result-image',
+        refId: 'toolu_read',
+        basename: 'result.png',
+        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
+      });
+      expect(memFs.copyFile).toHaveBeenCalledWith(sourcePath, expect.stringMatching(/result\.png$/));
+    });
+
+    it('writes base64 screenshot bytes and records the manifest entry', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_screen', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/files\/.+\/result\.png$/),
+        expect.any(Uint8Array),
+      );
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_screen']).toMatchObject({
+        source: 'tool-output',
+        refKind: 'result-image',
+        refId: 'toolu_screen',
+        basename: 'result.png',
+        size: 3,
+      });
+    });
+
+    it('records an oversized base64 result without writing its bytes', async () => {
+      const oversized = mod.__testing.MAX_FILE_BYTES + 1;
+      base64ToUint8ArrayMock.mockReturnValueOnce({ byteLength: oversized } as Uint8Array);
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_oversized', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_oversized']).toMatchObject({
+        basename: 'result.png',
+        size: oversized,
+        snapshotRelPath: '',
+        skipReason: 'oversized',
+      });
+    });
+
+    it('records write-failed when decoded result bytes cannot be persisted', async () => {
+      memFs.writeFile.mockRejectedValueOnce(new Error('disk unavailable'));
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_write_failed', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_write_failed']).toMatchObject({
+        basename: 'result.png',
+        size: 3,
+        snapshotRelPath: '',
+        skipReason: 'write-failed',
+      });
+    });
+
+    it('records write-failed when result base64 decoding fails', async () => {
+      base64ToUint8ArrayMock.mockImplementationOnce(() => {
+        throw new Error('invalid base64');
+      });
+
+      await mod.snapshotResultImage(CONV_ID, 'toolu_decode_failed', {
+        mediaType: 'image/png',
+        base64: 'not-base64',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries['tool-result://toolu_decode_failed']).toMatchObject({
+        basename: 'result.png',
+        size: 0,
+        snapshotRelPath: '',
+        skipReason: 'write-failed',
+      });
+    });
+
+    it('skips a repeated toolCallId without writing the image twice', async () => {
+      const image = { mediaType: 'image/png', base64: 'AQID' };
+      await mod.snapshotResultImage(CONV_ID, 'toolu_once', image);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_once', image);
+
+      expect(memFs.writeFile).toHaveBeenCalledOnce();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(Object.values(manifest.entries)).toHaveLength(1);
+    });
+
+    it('keeps separate identities when different tool calls read the same changing path', async () => {
+      const sourcePath = '/Users/testuser/Desktop/chart.png';
+      memFs.addUserFile(sourcePath, 100);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_first', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      }, sourcePath);
+
+      memFs.addUserFile(sourcePath, 200);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_second', {
+        mediaType: 'image/png',
+        base64: 'BAUG',
+      }, sourcePath);
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      const first = manifest.entries['tool-result://toolu_first'];
+      const second = manifest.entries['tool-result://toolu_second'];
+      expect(first).toMatchObject({ refId: 'toolu_first', size: 100 });
+      expect(second).toMatchObject({ refId: 'toolu_second', size: 200 });
+      expect(first.snapshotRelPath).not.toBe(second.snapshotRelPath);
+      expect(memFs.copyFile.mock.calls[0][1]).not.toBe(memFs.copyFile.mock.calls[1][1]);
+    });
+
+    it.each([
+      '../../../../../../Documents/owned',
+      '..\\..\\escape',
+      'nested/id',
+    ])('never uses provider toolCallId %s as a filesystem segment', async (toolCallId) => {
+      await mod.snapshotResultImage(CONV_ID, toolCallId, {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+
+      const target = memFs.writeFile.mock.calls[0][0] as string;
+      expect(target).toMatch(new RegExp(`^${OUTPUTS_DIR}/files/[^/]+/result\\.png$`));
+      expect(target).not.toContain('..');
+      expect(target).not.toContain(toolCallId);
+    });
+
+    it.each([
+      ['image/bmp', 'bmp'],
+      ['image/svg+xml', 'svg'],
+      ['image/x-icon', 'ico'],
+    ])('preserves the %s payload extension', async (mediaType, extension) => {
+      await mod.snapshotResultImage(CONV_ID, `toolu_${extension}`, {
+        mediaType,
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(new RegExp(`/result\\.${extension}$`)),
+        expect.any(Uint8Array),
+      );
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(manifest.entries[`tool-result://toolu_${extension}`]?.basename).toBe(`result.${extension}`);
+    });
+
+    it('does not write an unsupported image MIME type under a false extension', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_unknown', {
+        mediaType: 'image/x-unknown',
+        base64: 'AQID',
+      });
+
+      expect(memFs.writeFile).not.toHaveBeenCalled();
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      expect(Object.values(manifest.entries)).toHaveLength(0);
     });
   });
 

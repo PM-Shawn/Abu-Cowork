@@ -507,6 +507,7 @@ export class EventRouter {
     // Sync to ChatStore for LLM context (preserve resultContent for images/screenshots)
     if (this.deps.appendToolCallContext) {
       this.deps.appendToolCallContext(loopId, {
+        id: step.toolCallId,
         name: step.toolName,
         input: step.toolInput,
         result,
@@ -543,6 +544,7 @@ export class EventRouter {
     // Sync to ChatStore for LLM context
     if (this.deps.appendToolCallContext) {
       this.deps.appendToolCallContext(loopId, {
+        id: step.toolCallId,
         name: step.toolName,
         input: step.toolInput,
         result: `Error: ${error}`,

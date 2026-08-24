@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   emitHook: vi.fn(),
   route: vi.fn(),
   setLoopContext: vi.fn(),
+  snapshotToolOutputs: vi.fn(),
+  snapshotResultImage: vi.fn(),
 }));
 
 vi.mock('./ports/chatDelta', () => ({
@@ -37,6 +39,11 @@ vi.mock('../session/sessionMemory', () => ({
     stored: result,
     offloaded: false,
   }),
+}));
+
+vi.mock('../session/outputSnapshots', () => ({
+  snapshotToolOutputs: (...args: unknown[]) => mocks.snapshotToolOutputs(...args),
+  snapshotResultImage: (...args: unknown[]) => mocks.snapshotResultImage(...args),
 }));
 
 vi.mock('../tools/builtins', () => ({
@@ -125,6 +132,8 @@ describe('executeToolBatch · hard run restrictions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.emitHook.mockResolvedValue({ blocked: false });
+    mocks.snapshotToolOutputs.mockResolvedValue(undefined);
+    mocks.snapshotResultImage.mockResolvedValue(undefined);
   });
 
   it('fails closed before invoking a tool on the per-run denylist', async () => {
@@ -491,6 +500,76 @@ describe('executeToolBatch · hard run restrictions', () => {
       resultContent: undefined,
     });
     expect(result.observations[0]).toEqual(expect.objectContaining({ error: false }));
+  });
+});
+
+describe('executeToolBatch · result image snapshots', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.emitHook.mockResolvedValue({ blocked: false });
+    mocks.snapshotToolOutputs.mockResolvedValue(undefined);
+    mocks.snapshotResultImage.mockResolvedValue(undefined);
+  });
+
+  it('does not await image persistence and absorbs a late snapshot rejection', async () => {
+    let rejectSnapshot!: (error: Error) => void;
+    mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((_resolve, reject) => {
+      rejectSnapshot = reject;
+    }));
+    const toolCall = makeToolCall('read_file', { path: '/Users/testuser/Desktop/chart.png' });
+    const imageResult = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, media_type: 'image/png', data: 'AQID' },
+    }];
+    const invoker = makeInvoker(vi.fn().mockResolvedValue(imageResult));
+
+    const result = await executeToolBatch(makeParams(toolCall, invoker));
+
+    // Reject only after the tool batch has completed. This constrains both
+    // halves of the fire-and-forget contract: no await, and a rejection handler
+    // is already attached before persistence settles.
+    rejectSnapshot(new Error('disk unavailable'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
+      'conv-1',
+      toolCall.id,
+      { mediaType: 'image/png', base64: 'AQID' },
+      '/Users/testuser/Desktop/chart.png',
+    );
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1', 'msg-1', toolCall.id, String(imageResult), imageResult, false, undefined, undefined,
+    );
+    expect(result.requiresUserRecovery).toBe(false);
+  });
+
+  it('does not duplicate an explicit computer screenshot that already has a saved path', async () => {
+    const toolCall = makeToolCall('computer', { action: 'screenshot' });
+    const imageResult = [
+      { type: 'text' as const, text: 'Screenshot saved to: /Users/testuser/Desktop/screenshot.png' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'AQID' } },
+    ];
+    const invoker = makeInvoker(vi.fn().mockResolvedValue(imageResult));
+
+    await executeToolBatch(makeParams(toolCall, invoker));
+
+    expect(mocks.snapshotResultImage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to base64 when an explicit computer screenshot was not saved', async () => {
+    const toolCall = makeToolCall('computer', { action: 'screenshot' });
+    const imageResult = [
+      { type: 'text' as const, text: 'Screenshot: 1280x720' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'AQID' } },
+    ];
+    const invoker = makeInvoker(vi.fn().mockResolvedValue(imageResult));
+
+    await executeToolBatch(makeParams(toolCall, invoker));
+
+    expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
+      'conv-1', toolCall.id, { mediaType: 'image/png', base64: 'AQID' }, undefined,
+    );
   });
 });
 

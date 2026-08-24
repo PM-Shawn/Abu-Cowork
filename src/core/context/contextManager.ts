@@ -91,14 +91,7 @@ function getMaxScreenshots(usagePercent?: number): number {
  * screenshots were dropped from history. Count comes from the recorded result,
  * so the same history always renders the same string.
  *
- * Silent when the call had no images. The strip indices are derived from
- * `msg.toolCalls` and reused against `msg.toolCallsForContext` at the same
- * position, but the two are built by different producers — toolCalls follows the
- * order the model requested, while toolCallsForContext is appended by
- * eventRouter as each tool *finishes*, and tools run through Promise.allSettled.
- * Nothing guarantees position j means the same call in both. That index sharing
- * predates this note and is not addressed here; the guard just keeps a
- * misalignment from putting "[0 screenshot(s) removed…]" in front of the model.
+ * Silent when the call had no images.
  */
 function appendScreenshotRemovedNote(result: string | undefined, imageCount: number): string {
   if (imageCount <= 0) return result ?? '';
@@ -115,8 +108,9 @@ function appendScreenshotRemovedNote(result: string | undefined, imageCount: num
  */
 export function trimOldScreenshots(messages: Message[], usagePercent?: number): Message[] {
   const maxScreenshots = getMaxScreenshots(usagePercent);
-  // Collect all screenshot image locations (message index + toolCall index)
-  const imageLocations: { msgIdx: number; tcIdx: number }[] = [];
+  // Collect all screenshot image locations (message index + tool_call id).
+  // `toolCallsForContext` is completion-ordered, so its indices cannot be used.
+  const imageLocations: { msgIdx: number; tcIdx: number; toolCallId: string }[] = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -129,7 +123,7 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
       // index sharing below aligned on real entries only.
       if (tc.fromSubagent) continue;
       if (tc.resultContent && Array.isArray(tc.resultContent) && tc.resultContent.some((b: ToolResultContent) => b.type === 'image')) {
-        imageLocations.push({ msgIdx: i, tcIdx: j });
+        imageLocations.push({ msgIdx: i, tcIdx: j, toolCallId: tc.id });
       }
     }
   }
@@ -139,8 +133,13 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
   // Strip images from older screenshots, keep only the most recent N
   const toStrip = imageLocations.slice(0, -maxScreenshots);
   const result = messages.map((msg, i) => {
-    const strippedTcIndices = toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.tcIdx);
-    if (strippedTcIndices.length === 0) return msg;
+    const strippedToolCallIds = new Set(
+      toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.toolCallId),
+    );
+    const strippedTcIndices = new Set(
+      toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.tcIdx),
+    );
+    if (strippedTcIndices.size === 0) return msg;
 
     // Clone message and strip images from old tool calls.
     //
@@ -159,7 +158,7 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
     // instead drops a whole message group, as compaction does, no note is
     // needed — nothing is left dangling.)
     const newToolCalls = msg.toolCalls!.map((tc, j) => {
-      if (!strippedTcIndices.includes(j)) return tc;
+      if (!strippedTcIndices.has(j)) return tc;
       const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
       const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
       return {
@@ -171,16 +170,29 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
 
     // Also strip from toolCallsForContext if present — this is the canonical
     // send representation when set, so it is the one that must carry the note.
-    const newToolCallsForContext = msg.toolCallsForContext?.map((tc, j) => {
-      if (!strippedTcIndices.includes(j)) return tc;
-      const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
-      const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
-      return {
-        ...tc,
-        result: appendScreenshotRemovedNote(tc.result, imageCount),
-        resultContent: textParts,
-      };
-    });
+    // Old persisted entries predate tool_use ids. Do not risk trimming the
+    // wrong completion-order call: retain every context image for this message.
+    const hasToolUseId = (toolCall: { id?: string }) =>
+      typeof toolCall.id === 'string' && toolCall.id.length > 0;
+    const canMatchContextCalls = msg.toolCallsForContext
+      && msg.toolCalls!.every(hasToolUseId)
+      && msg.toolCallsForContext.every(hasToolUseId);
+    const newToolCallsForContext = canMatchContextCalls
+      ? msg.toolCallsForContext?.map((tc) => {
+        if (!strippedToolCallIds.has(tc.id!)) return tc;
+        const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
+        const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
+        return {
+          ...tc,
+          result: appendScreenshotRemovedNote(tc.result, imageCount),
+          resultContent: textParts,
+        };
+      })
+      : msg.toolCallsForContext;
+
+    if (msg.toolCallsForContext && !canMatchContextCalls) {
+      logger.info('Skipped trimming tool call context without tool_use ids', { messageId: msg.id });
+    }
 
     return { ...msg, toolCalls: newToolCalls, toolCallsForContext: newToolCallsForContext || msg.toolCallsForContext };
   });

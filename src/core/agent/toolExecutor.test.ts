@@ -454,6 +454,39 @@ describe('executeToolBatch · result image snapshots', () => {
     expect(result.requiresUserRecovery).toBe(false);
   });
 
+  it('keeps a scoped read image pending and snapshots the returned bytes instead of rereading the source path', async () => {
+    let resolveSnapshot!: () => void;
+    mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    const toolCall = makeToolCall('read_file', { path: '/Users/testuser/Desktop/chart.png' });
+    const imageResult = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, media_type: 'image/png', data: 'AQID' },
+    }];
+    const params = makeParams(toolCall, makeInvoker(vi.fn().mockResolvedValue(imageResult)));
+    params.toolContext.authorizationScopeId = 'scope-trigger-run';
+
+    let batchSettled = false;
+    const batch = executeToolBatch(params).then((result) => {
+      batchSettled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(mocks.snapshotResultImage).toHaveBeenCalledOnce());
+
+    expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
+      'conv-1',
+      toolCall.id,
+      { mediaType: 'image/png', base64: 'AQID' },
+      undefined,
+    );
+    expect(batchSettled).toBe(false);
+
+    resolveSnapshot();
+    await batch;
+    expect(batchSettled).toBe(true);
+  });
+
   it('does not duplicate an explicit computer screenshot that already has a saved path', async () => {
     const toolCall = makeToolCall('computer', { action: 'screenshot' });
     const imageResult = [

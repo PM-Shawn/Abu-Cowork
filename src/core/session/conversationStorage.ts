@@ -46,7 +46,8 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
 import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } from './messageLedger';
-import type { Message, MessageContent, SandboxRecoveryAction } from '@/types';
+import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
+import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
 import { APP_VERSION } from '@/utils/version';
 
 // ════════════════════════════════════════════════════════════
@@ -524,8 +525,24 @@ function rememberPersistedMessage(message: Message): void {
  * every previous version wrote — nothing about a revised log looks new to an
  * older build. `pid` is written but never read (plan §3.2).
  */
-function serializeLedgerPut(message: Message, pid: string | undefined): string {
-  const line = stripForDisk(message) as LedgerLine;
+async function refreshOutputManifestForToolResultImages(convId: string): Promise<boolean> {
+  try {
+    await refreshOutputManifest(convId);
+    return true;
+  } catch {
+    // Temporal guard: if the cross-process manifest refresh fails, keep
+    // inline bytes for this write rather than risking a dangling outputRef.
+    return false;
+  }
+}
+
+function serializeLedgerPut(
+  convId: string,
+  message: Message,
+  pid: string | undefined,
+  allowToolResultDehydration = true,
+): string {
+  const line = stripForDisk(message, convId, { allowToolResultDehydration }) as LedgerLine;
   if (pid === undefined) delete line.pid;
   else line.pid = pid;
   return JSON.stringify(line) + '\n';
@@ -625,9 +642,12 @@ async function writeStreamSnapshot(
  */
 export async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
   await ensureBase();
+  const allowToolResultDehydration = hasInlineToolResultImages(message)
+    ? await refreshOutputManifestForToolResultImages(convId)
+    : true;
   const entries = streamSnapshots.get(convId) ?? new Map<string, StreamSnapshotEntry>();
   entries.set(message.id, {
-    message: stripForDisk(message),
+    message: stripForDisk(message, convId, { allowToolResultDehydration }),
     // RB-03 fix: how much of this conversation's ledger this process had
     // confirmed durable at the moment this revision was captured. See
     // `ledgerBytesByConv`'s doc comment and `loadMessages`' snapshot-merge
@@ -1012,13 +1032,19 @@ export async function flushStreamSnapshots(): Promise<void> {
     for (const { message } of entries.values()) {
       promotions.push({
         convId,
-        done: enqueueWrite(
-          messagesPath(convId),
-          serializeLedgerPut(message, parentIdByMessage.get(message.id)),
-          message.id,
-        ).then(() => {
+        done: (async () => {
+          const allowToolResultDehydration = hasInlineToolResultImages(message)
+            ? await refreshOutputManifestForToolResultImages(convId)
+            : true;
+          const line = serializeLedgerPut(
+            convId,
+            message,
+            parentIdByMessage.get(message.id),
+            allowToolResultDehydration,
+          );
+          await enqueueWrite(messagesPath(convId), line, message.id);
           writtenIds.add(message.id);
-        }),
+        })(),
       });
     }
     streamSnapshots.delete(convId);
@@ -1069,10 +1095,86 @@ export function isMessageWrittenToDisk(id: string): boolean {
  * - Clear image base64 data (filePath preserved for recovery)
  * - HTML/Mermaid/code blocks preserved intact
  */
-function stripForDisk(msg: Message): Message {
-  const stripped: Message = { ...msg };
+function cloneToolResultContentForDisk(
+  convId: string | undefined,
+  toolCallId: string | undefined,
+  resultContent: ToolResultContent[] | undefined,
+  allowToolResultDehydration: boolean,
+): ToolResultContent[] | undefined {
+  if (!resultContent) return undefined;
+  const imageCount = resultContent.filter((block) => block.type === 'image').length;
+  const snapshot = allowToolResultDehydration && imageCount === 1 && toolCallId
+    ? findToolResultImageSnapshot(convId, toolCallId)
+    : null;
+  return resultContent.map((block) => {
+    if (block.type !== 'image') return { ...block };
 
-  // 2. Clear image base64 data (preserve filePath for recovery)
+    const clonedSource = { ...block.source };
+    if (imageCount === 1 && block.source?.data && snapshot?.snapshotRelPath) {
+      clonedSource.data = '';
+      return {
+        ...block,
+        source: clonedSource,
+        outputRef: {
+          relPath: snapshot.snapshotRelPath,
+          basename: snapshot.basename,
+          sizeBytes: snapshot.size,
+        },
+      };
+    }
+
+    return {
+      ...block,
+      source: clonedSource,
+      ...(block.outputRef ? { outputRef: { ...block.outputRef } } : {}),
+    };
+  });
+}
+
+function cloneToolCallsForDisk(
+  convId: string | undefined,
+  calls: ToolCall[] | undefined,
+  allowToolResultDehydration: boolean,
+): ToolCall[] | undefined {
+  return calls?.map((call) => ({
+    ...call,
+    ...(call.resultContent
+      ? { resultContent: cloneToolResultContentForDisk(convId, call.id, call.resultContent, allowToolResultDehydration) }
+      : {}),
+  }));
+}
+
+function cloneContextToolCallsForDisk(
+  convId: string | undefined,
+  calls: ToolCallForContext[] | undefined,
+  allowToolResultDehydration: boolean,
+): ToolCallForContext[] | undefined {
+  return calls?.map((call) => ({
+    ...call,
+    ...(call.resultContent
+      ? { resultContent: cloneToolResultContentForDisk(convId, call.id, call.resultContent, allowToolResultDehydration) }
+      : {}),
+  }));
+}
+
+function hasInlineToolResultImages(message: Message): boolean {
+  const hasInlineImage = (call: ToolCall | ToolCallForContext): boolean =>
+    !!call.resultContent?.some((block) => block.type === 'image' && !!block.source.data);
+  return !!(
+    message.toolCalls?.some(hasInlineImage)
+    || message.toolCallsForContext?.some(hasInlineImage)
+  );
+}
+
+interface StripForDiskOptions {
+  allowToolResultDehydration?: boolean;
+}
+
+function stripForDisk(msg: Message, convId?: string, options: StripForDiskOptions = {}): Message {
+  const stripped: Message = { ...msg };
+  const allowToolResultDehydration = options.allowToolResultDehydration !== false;
+
+  // 2. Clear user-message image base64 data (preserve filePath for recovery)
   if (Array.isArray(stripped.content)) {
     stripped.content = (stripped.content as MessageContent[]).map((block) => {
       if (block.type === 'image' && block.source?.data) {
@@ -1085,7 +1187,21 @@ function stripForDisk(msg: Message): Message {
     });
   }
 
-  // 3. Clear streaming flags
+  // 3. Clear tool-result image base64 only when its PR-A snapshot definitely
+  // exists. Always clone the full nested tree so a disk projection never shares
+  // resultContent/image/source references with the live Zustand store.
+  if (stripped.toolCalls) {
+    stripped.toolCalls = cloneToolCallsForDisk(convId, stripped.toolCalls, allowToolResultDehydration);
+  }
+  if (stripped.toolCallsForContext) {
+    stripped.toolCallsForContext = cloneContextToolCallsForDisk(
+      convId,
+      stripped.toolCallsForContext,
+      allowToolResultDehydration,
+    );
+  }
+
+  // 4. Clear streaming flags
   if (stripped.isStreaming) {
     stripped.isStreaming = false;
   }
@@ -1381,7 +1497,10 @@ export async function appendMessage(
     const pid = lastMessageIdByConv.get(convId);
     lastMessageIdByConv.set(convId, message.id);
     if (pid !== undefined) parentIdByMessage.set(message.id, pid);
-    const line = serializeLedgerPut(message, pid);
+    const allowToolResultDehydration = hasInlineToolResultImages(message)
+      ? await refreshOutputManifestForToolResultImages(convId)
+      : true;
+    const line = serializeLedgerPut(convId, message, pid, allowToolResultDehydration);
     await enqueueWrite(messagesPath(convId), line, message.id);
 
     // Only claim the id after the append has actually succeeded. Marking it
@@ -1588,9 +1707,12 @@ async function replaceMessageByIdInternal(
       message,
       persistedSandboxActions.get(message.id),
     );
+    const allowToolResultDehydration = hasInlineToolResultImages(merged)
+      ? await refreshOutputManifestForToolResultImages(convId)
+      : true;
     await enqueueWrite(
       path,
-      serializeLedgerPut(merged, parentIdByMessage.get(message.id)),
+      serializeLedgerPut(convId, merged, parentIdByMessage.get(message.id), allowToolResultDehydration),
       message.id,
     );
     writtenIds.add(message.id);
@@ -1652,9 +1774,12 @@ export async function updateLastMessage(
       message,
       persistedSandboxActions.get(message.id),
     );
+    const allowToolResultDehydration = hasInlineToolResultImages(merged)
+      ? await refreshOutputManifestForToolResultImages(convId)
+      : true;
     await enqueueWrite(
       path,
-      serializeLedgerPut(merged, parentIdByMessage.get(message.id)),
+      serializeLedgerPut(convId, merged, parentIdByMessage.get(message.id), allowToolResultDehydration),
       message.id,
     );
     writtenIds.add(message.id);

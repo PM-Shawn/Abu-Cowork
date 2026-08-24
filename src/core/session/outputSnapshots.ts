@@ -161,6 +161,13 @@ function normalizePath(p: string): string {
   return normalizeSeparators(p).replace(/\/+$/, '');
 }
 
+function normalizeOutputRelPath(relPath: string): string | null {
+  const normalized = normalizeSeparators(relPath).replace(/^\/+/, '').replace(/\/+$/, '');
+  const segments = normalized.split('/');
+  if (!normalized || normalized.startsWith('/') || segments.some((segment) => segment === '.' || segment === '..')) return null;
+  return normalized;
+}
+
 /** Check if a path looks like an absolute filesystem path (Unix or Windows). */
 function isAbsolutePath(p: string): boolean {
   return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p);
@@ -225,10 +232,7 @@ async function safeStat(path: string) {
 // Manifest read/write (cached + atomic)
 // ────────────────────────────────────────────────────────────────────────────
 
-async function loadManifest(convId: string): Promise<OutputManifest> {
-  const cached = manifestCache.get(convId);
-  if (cached) return cached;
-
+async function readManifestFromDisk(convId: string): Promise<OutputManifest> {
   const dir = await getOutputsDir(convId);
   const path = joinPath(dir, 'manifest.json');
   let manifest: OutputManifest = { version: MANIFEST_VERSION, entries: {} };
@@ -245,6 +249,28 @@ async function loadManifest(convId: string): Promise<OutputManifest> {
     logger.warn('manifest load failed, falling back to empty', { convId, err: e });
   }
 
+  return manifest;
+}
+
+async function loadManifest(convId: string): Promise<OutputManifest> {
+  const cached = manifestCache.get(convId);
+  if (cached) return cached;
+
+  const manifest = await readManifestFromDisk(convId);
+  manifestCache.set(convId, manifest);
+  return manifest;
+}
+
+/**
+ * Bypass the process-local manifest cache and refresh it from disk.
+ *
+ * Sidecar snapshot writers and renderer storage writers do not share memory;
+ * conversationStorage calls this immediately before dehydrating inline
+ * tool-result images so a sidecar-written manifest entry can become visible
+ * without imposing disk I/O on every ordinary message write.
+ */
+export async function refreshOutputManifest(convId: string): Promise<OutputManifest> {
+  const manifest = await readManifestFromDisk(convId);
   manifestCache.set(convId, manifest);
   return manifest;
 }
@@ -464,6 +490,7 @@ export async function snapshotResultImage(
   sourcePath?: string,
 ): Promise<void> {
   if (!toolCallId || !imageBlock.base64) return;
+  const imageBase64 = imageBlock.base64;
 
   const extension = RESULT_IMAGE_EXTENSIONS[imageBlock.mediaType.toLowerCase()];
   if (!extension) {
@@ -504,7 +531,7 @@ export async function snapshotResultImage(
 
     let decodedSize = 0;
     try {
-      const bytes = base64ToUint8Array(imageBlock.base64);
+      const bytes = base64ToUint8Array(imageBase64);
       decodedSize = bytes.byteLength;
       if (decodedSize > MAX_FILE_BYTES) {
         logger.info('[snapshot] result image skipped: oversized', {
@@ -658,6 +685,61 @@ export async function resolveFileSource(
   return { status: 'missing', basename, originalPath };
 }
 
+/**
+ * Resolve a persisted tool-result outputRef by its path relative to outputs/.
+ * This is intentionally separate from manifest path lookup: outputRef is already
+ * the post-snapshot identity, so basename fallback would risk loading the wrong
+ * file when two tool images share a filename.
+ */
+export async function resolveOutputRefSource(
+  convId: string | undefined,
+  relPath: string,
+): Promise<ResolvedSource> {
+  const normalizedRelPath = normalizeOutputRelPath(relPath);
+  const basename = getBaseName(normalizedRelPath ?? relPath);
+  if (!convId || !normalizedRelPath) {
+    return { status: 'missing', basename, originalPath: relPath };
+  }
+
+  try {
+    const outputsDir = await getOutputsDir(convId);
+    const fullPath = joinPath(outputsDir, normalizedRelPath);
+    const normalizedFullPath = normalizePath(fullPath);
+    const normalizedOutputsDir = normalizePath(outputsDir);
+    if (!normalizedFullPath.startsWith(`${normalizedOutputsDir}/`)) {
+      return { status: 'missing', basename, originalPath: relPath };
+    }
+    if (await exists(fullPath)) {
+      return { status: 'available', path: fullPath, isFromSnapshot: true };
+    }
+  } catch {
+    // fall through to missing
+  }
+
+  return { status: 'missing', basename, originalPath: relPath };
+}
+
+/**
+ * Synchronous dehydration guard for conversationStorage. Storage refreshes the
+ * process-local manifest cache from disk before serializing inline tool-result
+ * images, then uses this exact-entry lookup while cloning the message for disk.
+ */
+export function findToolResultImageSnapshot(convId: string | undefined, toolCallId: string): SnapshotEntry | null {
+  if (!convId || !toolCallId) return null;
+  const manifest = manifestCache.get(convId);
+  const entry = manifest?.entries[`tool-result://${toolCallId}`];
+  if (
+    entry
+    && entry.source === 'tool-output'
+    && entry.refId === toolCallId
+    && entry.refKind === 'result-image'
+    && entry.snapshotRelPath
+  ) {
+    return entry;
+  }
+  return null;
+}
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // Cleanup
@@ -805,9 +887,14 @@ export async function installSharedAttachments(
 export const __testing = {
   hashPath,
   normalizePath,
+  normalizeOutputRelPath,
   isAbsolutePath,
   loadManifest,
+  refreshOutputManifest,
   saveManifest,
+  setManifest: (convId: string, manifest: OutputManifest) => {
+    manifestCache.set(convId, manifest);
+  },
   resetCaches: () => {
     manifestCache.clear();
     convLocks.clear();

@@ -634,6 +634,63 @@ describe('outputSnapshots', () => {
       const manifest = await mod.__testing.loadManifest(CONV_ID);
       expect(Object.values(manifest.entries)).toHaveLength(0);
     });
+
+    it('resolves an outputRef relative path exactly from outputs', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_screen', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      });
+      const entry = mod.findToolResultImageSnapshot(CONV_ID, 'toolu_screen');
+      expect(entry?.snapshotRelPath).toMatch(/^files\/.+\/result\.png$/);
+
+      const resolved = await mod.resolveOutputRefSource(CONV_ID, entry!.snapshotRelPath);
+
+      expect(resolved).toEqual({
+        status: 'available',
+        path: `${OUTPUTS_DIR}/${entry!.snapshotRelPath}`,
+        isFromSnapshot: true,
+      });
+    });
+
+    it('rejects outputRef paths that escape outputs', async () => {
+      const resolved = await mod.resolveOutputRefSource(CONV_ID, 'files/hash/../secret.png');
+      expect(resolved.status).toBe('missing');
+    });
+
+    it('only exposes successful result-image snapshots to the dehydration guard', async () => {
+      mod.__testing.setManifest(CONV_ID, {
+        version: 1,
+        entries: {
+          'tool-result://toolu_ok': {
+            originalPath: 'tool-result://toolu_ok',
+            basename: 'result.png',
+            snapshotRelPath: 'files/hash/result.png',
+            size: 3,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_ok',
+            refKind: 'result-image',
+          },
+          'tool-result://toolu_skipped': {
+            originalPath: 'tool-result://toolu_skipped',
+            basename: 'result.png',
+            snapshotRelPath: '',
+            size: 3,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_skipped',
+            refKind: 'result-image',
+            skipReason: 'write-failed',
+          },
+        },
+      });
+
+      expect(mod.findToolResultImageSnapshot(CONV_ID, 'toolu_ok')?.snapshotRelPath).toBe('files/hash/result.png');
+      expect(mod.findToolResultImageSnapshot(CONV_ID, 'toolu_skipped')).toBeNull();
+      expect(mod.findToolResultImageSnapshot(CONV_ID, 'toolu_missing')).toBeNull();
+    });
   });
 
   // ──────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
-import { useI18n } from '@/i18n';
+import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
@@ -11,6 +11,8 @@ import { remove } from '@tauri-apps/plugin-fs';
 import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+import { getAgentToolSummary } from '@/utils/agentToolPresentation';
+import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
@@ -70,6 +72,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   const [editorAgent, setEditorAgent] = useState<SubagentDefinition | 'new' | null>(null);
   const [menuAgent, setMenuAgent] = useState<string | null>(null);
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
+  const knownToolNames = getAllTools().map((tool) => tool.name);
 
   // Open blank editor when manual create is triggered from parent
   useEffect(() => {
@@ -142,14 +145,30 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
     return () => document.removeEventListener('click', handleClick);
   }, [menuAgent]);
 
-  const renderAgentCard = (agent: SubagentDefinition) => (
-    <ToolCard
-      key={agent.name}
-      item={{
+  const renderAgentCard = (agent: SubagentDefinition) => {
+    const toolSummary = getAgentToolSummary(agent.tools, agent.disallowedTools, knownToolNames);
+    const toolLabel = toolSummary.invalidField
+      ? t.toolbox.agentInvalidTools
+      : toolSummary.isUnrestricted
+        ? t.toolbox.agentAllTools
+        : format(t.toolbox.toolCount, { count: toolSummary.toolNames.length });
+
+    return (
+      <ToolCard
+        key={agent.name}
+        item={{
         id: agent.name,
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
         avatar: <AgentAvatar agent={agent} />,
+        badge: (
+          <span
+            className="rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+            title={toolSummary.invalidField ? t.toolbox.agentInvalidTools : toolSummary.toolNames.join(', ')}
+          >
+            {toolLabel}
+          </span>
+        ),
         toggle: (
           <span onClick={(e) => e.stopPropagation()}>
             <Toggle
@@ -162,8 +181,9 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
         ),
       }}
       onClick={() => setSelectedAgent(agent.name)}
-    />
-  );
+      />
+    );
+  };
 
   /** Start a chat with this agent — sets pendingInput so the @mention is
    *  picked up automatically, and pendingAgent so the welcome screen renders
@@ -285,6 +305,41 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
               <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
               <p className="text-body text-[var(--abu-text-primary)] leading-relaxed mt-1.5">{localizedDescription(selected, locale)}</p>
             </div>
+
+            {/* Tool access — the card's badge summarizes this; the detail view lists it. */}
+            {(() => {
+              const toolSummary = getAgentToolSummary(
+                selected.tools,
+                selected.disallowedTools,
+                knownToolNames,
+              );
+              return (
+                <div>
+                  <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.agentTools}</span>
+                  {toolSummary.invalidField ? (
+                    <p className="text-body text-[var(--abu-danger)] mt-1.5">{t.toolbox.agentInvalidTools}</p>
+                  ) : toolSummary.isUnrestricted ? (
+                    <p
+                      className="text-body text-[var(--abu-text-primary)] mt-1.5"
+                      title={toolSummary.toolNames.join(', ')}
+                    >
+                      {t.toolbox.agentAllTools}
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5 mt-1.5">
+                      {toolSummary.toolNames.map((toolName) => (
+                        <span
+                          key={toolName}
+                          className="rounded-full bg-[var(--abu-bg-active)] px-2 py-1 text-caption text-[var(--abu-text-secondary)]"
+                        >
+                          {toolName}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Intro — agent self-introduction shown when there's an intro paragraph */}
             {localizedIntro(selected, locale) && (

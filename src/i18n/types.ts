@@ -1527,6 +1527,10 @@ export interface TranslationDict {
     agentModelInherit: string;
     agentTools: string;
     agentDisallowedTools: string;
+    agentToolPatternsHint: string;
+    agentUnknownToolsWarning: string;
+    agentAllTools: string;
+    agentInvalidTools: string;
     agentSkills: string;
     agentMemory: string;
     agentMemorySession: string;

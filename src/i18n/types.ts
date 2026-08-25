@@ -339,6 +339,9 @@ export interface TranslationDict {
     saveAndResend: string;
     clickToViewFull: string;
     imageExpired: string;
+    imageLoading: string;
+    imageUnavailable: string;
+    imageRetry: string;
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;

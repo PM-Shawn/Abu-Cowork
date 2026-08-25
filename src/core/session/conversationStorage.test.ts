@@ -3,7 +3,7 @@ import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@ta
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
 import { APP_VERSION } from '@/utils/version';
-import type { Message } from '@/types';
+import type { Message, ToolResultContent } from '@/types';
 import { DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST } from './durableToolResultContent';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
@@ -108,6 +108,19 @@ function createMemoryFs() {
   return { files, dirs };
 }
 
+function writeOutputManifest(
+  memFs: ReturnType<typeof createMemoryFs>,
+  convId: string,
+  manifest: import('./outputSnapshots').OutputManifest,
+) {
+  const outputsDir = `/Users/testuser/.abu/conversations/${convId}/outputs`;
+  memFs.dirs.add('/Users/testuser/.abu');
+  memFs.dirs.add('/Users/testuser/.abu/conversations');
+  memFs.dirs.add(`/Users/testuser/.abu/conversations/${convId}`);
+  memFs.dirs.add(outputsDir);
+  memFs.files.set(`${outputsDir}/manifest.json`, JSON.stringify(manifest));
+}
+
 describe('conversationStorage', () => {
   let memFs: ReturnType<typeof createMemoryFs>;
 
@@ -116,6 +129,8 @@ describe('conversationStorage', () => {
     // Reset module-level state by re-importing
     vi.resetModules();
     storage = await import('./conversationStorage');
+    const outputSnapshots = await import('./outputSnapshots');
+    outputSnapshots.__testing.resetCaches();
   });
 
   describe('appendMessage + loadMessages', () => {
@@ -957,6 +972,218 @@ describe('conversationStorage', () => {
         source: { data: 'NORMAL_IMAGE' },
       });
     });
+
+    it('dehydrates tool result images to outputRef without polluting the live message object', async () => {
+      const outputSnapshots = await import('./outputSnapshots');
+      // Simulates a renderer process with a stale cache: the sidecar wrote the
+      // manifest to disk, and appendMessage must refresh before dehydration.
+      outputSnapshots.__testing.setManifest('conv-1', {
+        version: 1,
+        entries: {},
+      });
+      writeOutputManifest(memFs, 'conv-1', {
+        version: 1,
+        entries: {
+          'tool-result://toolu_img': {
+            originalPath: 'tool-result://toolu_img',
+            basename: 'result.png',
+            snapshotRelPath: 'files/hash/result.png',
+            size: 1234,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_img',
+            refKind: 'result-image',
+          },
+        },
+      });
+      const inlineBase64 = 'A'.repeat(4096);
+      const resultContent: ToolResultContent[] = [
+        { type: 'text', text: 'Image result' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: inlineBase64 } },
+      ];
+      const contextResultContent: ToolResultContent[] = [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: inlineBase64 } },
+      ];
+      const msg = makeMsg({
+        id: 'tool-img-1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{
+          id: 'toolu_img',
+          name: 'read_file',
+          input: { path: '/tmp/result.png' },
+          result: 'Image result',
+          resultContent,
+        }],
+        toolCallsForContext: [{
+          id: 'toolu_img',
+          name: 'read_file',
+          input: { path: '/tmp/result.png' },
+          result: 'Image result',
+          resultContent: contextResultContent,
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const liveImage = msg.toolCalls![0].resultContent![1];
+      const liveContextImage = msg.toolCallsForContext![0].resultContent![0];
+      expect(liveImage.type).toBe('image');
+      expect(liveContextImage.type).toBe('image');
+      if (liveImage.type === 'image') expect(liveImage.source.data).toBe(inlineBase64);
+      if (liveContextImage.type === 'image') expect(liveContextImage.source.data).toBe(inlineBase64);
+
+      const rawLine = memFs.files.get('/Users/testuser/.abu/conversations/conv-1/messages.jsonl') ?? '';
+      expect(rawLine.length).toBeLessThan(2000);
+      expect(rawLine).not.toContain(inlineBase64);
+
+      const loaded = await storage.loadMessages('conv-1');
+      const diskImage = loaded[0].toolCalls![0].resultContent![1];
+      const diskContextImage = loaded[0].toolCallsForContext![0].resultContent![0];
+      expect(diskImage.type).toBe('image');
+      expect(diskContextImage.type).toBe('image');
+      if (diskImage.type === 'image') {
+        expect(diskImage.source.data).toBe('');
+        expect(diskImage.outputRef).toEqual({
+          relPath: 'files/hash/result.png',
+          basename: 'result.png',
+          sizeBytes: 1234,
+        });
+      }
+      if (diskContextImage.type === 'image') {
+        expect(diskContextImage.source.data).toBe('');
+        expect(diskContextImage.outputRef?.relPath).toBe('files/hash/result.png');
+      }
+    });
+
+    it('keeps tool result images inline when the manifest entry is missing or has no snapshot path', async () => {
+      writeOutputManifest(memFs, 'conv-1', {
+        version: 1,
+        entries: {
+          'tool-result://toolu_oversized': {
+            originalPath: 'tool-result://toolu_oversized',
+            basename: 'result.png',
+            snapshotRelPath: '',
+            size: 6_000_000_000,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_oversized',
+            refKind: 'result-image',
+            skipReason: 'oversized',
+          },
+        },
+      });
+      const inlineBase64 = 'INLINE_IMAGE';
+      const makeImage = (): ToolResultContent[] => [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: inlineBase64 } },
+      ];
+      const msg = makeMsg({
+        id: 'tool-img-guard',
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'toolu_oversized', name: 'computer', input: {}, result: 'oversized', resultContent: makeImage() },
+          { id: 'toolu_missing', name: 'computer', input: {}, result: 'missing', resultContent: makeImage() },
+        ],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-1');
+      for (const call of loaded[0].toolCalls ?? []) {
+        const block = call.resultContent?.[0];
+        expect(block?.type).toBe('image');
+        if (block?.type === 'image') {
+          expect(block.source.data).toBe(inlineBase64);
+          expect(block.outputRef).toBeUndefined();
+        }
+      }
+    });
+
+    // Fixture strings must be base64-plausible (length % 4 !== 1): the durable
+    // bounding guard (isBase64Like) drops implausible image payloads before the
+    // dehydration pass ever sees them.
+    it('keeps multi-image tool result content inline on both carriers', async () => {
+      writeOutputManifest(memFs, 'conv-1', {
+        version: 1,
+        entries: {
+          'tool-result://toolu_multi': {
+            originalPath: 'tool-result://toolu_multi',
+            basename: 'first.png',
+            snapshotRelPath: 'files/hash/first.png',
+            size: 100,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_multi',
+            refKind: 'result-image',
+          },
+          'tool-result://toolu_multi_context': {
+            originalPath: 'tool-result://toolu_multi_context',
+            basename: 'context-first.png',
+            snapshotRelPath: 'files/hash/context-first.png',
+            size: 101,
+            originalMtime: 0,
+            snapshottedAt: 1_700_000_000_000,
+            source: 'tool-output',
+            refId: 'toolu_multi_context',
+            refKind: 'result-image',
+          },
+        },
+      });
+
+      const msg = makeMsg({
+        id: 'tool-img-multi',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{
+          id: 'toolu_multi',
+          name: 'read_file',
+          input: {},
+          result: 'two images',
+          resultContent: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'FIRST_INLINE' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'SECOND_INLINE1' } },
+          ],
+        }],
+        toolCallsForContext: [{
+          id: 'toolu_multi_context',
+          name: 'read_file',
+          input: {},
+          result: 'two context images',
+          resultContent: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CTX_FIRST_INLINE' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CTX_SECOND_INLINE1' } },
+          ],
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const loaded = await storage.loadMessages('conv-1');
+      const toolImages = loaded[0].toolCalls![0].resultContent!.filter((block) => block.type === 'image');
+      const contextImages = loaded[0].toolCallsForContext![0].resultContent!.filter((block) => block.type === 'image');
+      expect(toolImages).toHaveLength(2);
+      expect(contextImages).toHaveLength(2);
+      expect(toolImages.map((block) => block.type === 'image' ? block.source.data : '')).toEqual([
+        'FIRST_INLINE',
+        'SECOND_INLINE1',
+      ]);
+      expect(contextImages.map((block) => block.type === 'image' ? block.source.data : '')).toEqual([
+        'CTX_FIRST_INLINE',
+        'CTX_SECOND_INLINE1',
+      ]);
+      for (const block of [...toolImages, ...contextImages]) {
+        expect(block.type).toBe('image');
+        if (block.type === 'image') expect(block.outputRef).toBeUndefined();
+      }
+    });
+
 
     it('clears streaming flag', async () => {
       const msg = makeMsg({ id: 'stream-1', isStreaming: true });

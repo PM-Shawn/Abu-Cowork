@@ -172,6 +172,31 @@ describe('executionSnapshot', () => {
       expect(result[1].detailBlocks[0].imageData).toBeUndefined();
     });
 
+    it('backfills by exact toolCallId with an outputRef carrier when inline base64 was dehydrated', () => {
+      const steps = [step({ id: 'step-1', toolCallId: 'toolu_1' })];
+      const messages = [
+        assistantMessage('msg-a', [
+          imageToolCall('toolu_1', {
+            resultContent: [
+              {
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: '' },
+                outputRef: { relPath: 'files/hash/result.png', basename: 'result.png', sizeBytes: 1234 },
+              },
+            ],
+          }),
+        ]),
+      ];
+
+      const result = backfillDetailBlockImages(steps, messages);
+
+      expect(result[0].detailBlocks[0].imageData).toEqual({
+        mediaType: 'image/png',
+        outputRef: { relPath: 'files/hash/result.png', basename: 'result.png', sizeBytes: 1234 },
+      });
+      expect(steps[0].detailBlocks[0].imageData).toBeUndefined();
+    });
+
     it('finds the tool call on a different message than the snapshot', () => {
       // Real shape: snapshot rides the LAST assistant message, the tool call
       // with resultContent rides an earlier one.

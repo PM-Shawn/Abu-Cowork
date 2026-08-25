@@ -3,7 +3,12 @@ import type { ToolResultContent } from '@/types';
 /** Image payload of a tool result's first renderable image block. */
 export interface ToolResultImage {
   mediaType: string;
-  base64: string;
+  base64?: string;
+  outputRef?: {
+    relPath: string;
+    basename?: string;
+    sizeBytes?: number;
+  };
 }
 
 /**
@@ -28,8 +33,12 @@ export function firstImageContent(
   if (!resultContent) return undefined;
   for (const block of resultContent) {
     if (block.type !== 'image') continue;
-    if (!block.source?.data) continue;
-    return { mediaType: block.source.media_type, base64: block.source.data };
+    if (!block.source?.data && !block.outputRef?.relPath) continue;
+    return {
+      mediaType: block.source.media_type,
+      ...(block.source.data ? { base64: block.source.data } : {}),
+      ...(block.outputRef ? { outputRef: { ...block.outputRef } } : {}),
+    };
   }
   return undefined;
 }

@@ -11,13 +11,6 @@ import { getI18n, getLocale, format } from '../../../i18n';
 /** Locale tag for Date#toLocaleString, following the resolved UI locale. */
 const dateLocale = (): string => (getLocale() === 'zh-CN' ? 'zh-CN' : 'en-US');
 
-function filterNonBlankStringList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((item): item is string =>
-    typeof item === 'string' && item.trim().length > 0,
-  );
-}
-
 export const manageScheduledTaskTool: ToolDefinition = {
   name: TOOL_NAMES.MANAGE_SCHEDULED_TASK,
   description: 'Create, list, update, delete, pause, or resume scheduled tasks. Use when the user needs an operation to run automatically on a recurring or timed schedule.',
@@ -280,21 +273,14 @@ export const manageTriggerTool: ToolDefinition = {
       source_interval: { type: 'number', description: 'Polling interval in seconds (required when source_type=cron, minimum 10)' },
       debounce_enabled: { type: 'boolean', description: 'Whether to enable debounce (default: true)' },
       debounce_seconds: { type: 'number', description: 'Debounce time window in seconds (default: 300)' },
-      allowed_commands: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Command allowlist, glob patterns (used for triggers whose capability level is custom, e.g. ["npm run *", "git pull"])',
-      },
-      allowed_paths: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Path allowlist, auto-authorized at runtime (used for triggers whose capability level is custom)',
-      },
-      allowed_tools: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Tool allowlist (used for triggers whose capability level is custom, e.g. ["read_file", "http_fetch"])',
-      },
+      // allowed_commands / allowed_paths / allowed_tools are deliberately NOT
+      // exposed. A trigger's capability tier is already model-locked, but a
+      // legacy `custom` trigger's allowlist IS its ceiling: buildTriggerRun-
+      // PermissionCeiling() reads action.permissions verbatim, so letting the
+      // model rewrite those three fields let it widen its own unattended
+      // ceiling from e.g. {allowedTools:['read_file']} to ['*'] without ever
+      // touching `capability`. Host-owned means host-owned — these are edited
+      // in the trigger UI only.
       trigger_id: { type: 'string', description: 'Trigger ID (required for update/delete/pause/resume)' },
       status_filter: {
         type: 'string',
@@ -483,26 +469,18 @@ export const manageTriggerTool: ToolDefinition = {
         const hasActionUpdate =
           input.prompt !== undefined ||
           input.skill_name !== undefined ||
-          input.workspace_path !== undefined ||
-          input.allowed_commands !== undefined ||
-          input.allowed_paths !== undefined ||
-          input.allowed_tools !== undefined;
+          input.workspace_path !== undefined;
 
         if (hasActionUpdate) {
-          const existingCapability = existing.action.capability;
-          const allowedPaths = input.allowed_paths !== undefined
-            ? filterNonBlankStringList(input.allowed_paths)
-            : existing.action.permissions?.allowedPaths;
+          // capability AND permissions are both carried over untouched. The
+          // model may restate a trigger's prompt/skill/workspace; it may never
+          // restate the authority that trigger runs under.
           updateData.action = {
             prompt: (input.prompt as string) ?? existing.action.prompt,
             skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
             workspacePath: input.workspace_path !== undefined ? input.workspace_path : existing.action.workspacePath,
-            capability: existingCapability,
-            permissions: existingCapability === 'custom' ? {
-              allowedCommands: input.allowed_commands !== undefined ? input.allowed_commands : existing.action.permissions?.allowedCommands,
-              allowedPaths,
-              allowedTools: input.allowed_tools !== undefined ? input.allowed_tools : existing.action.permissions?.allowedTools,
-            } : existing.action.permissions,
+            capability: existing.action.capability,
+            permissions: existing.action.permissions,
           };
         }
         if (input.filter_type !== undefined || input.filter_keywords !== undefined || input.filter_pattern !== undefined || input.filter_field !== undefined) {

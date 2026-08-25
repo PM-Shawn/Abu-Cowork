@@ -3,8 +3,10 @@ import type { Message } from '../../types';
 
 // Mock the disk layer the rehydrator depends on.
 const mockResolveFileSource = vi.fn();
+const mockResolveOutputRefSource = vi.fn();
 vi.mock('../session/outputSnapshots', () => ({
   resolveFileSource: (...args: unknown[]) => mockResolveFileSource(...args),
+  resolveOutputRefSource: (...args: unknown[]) => mockResolveOutputRefSource(...args),
 }));
 
 const mockReadFile = vi.fn();
@@ -13,6 +15,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 import { rehydrateImageData, rehydrateForSend } from './imageRehydration';
+import { normalizeMessages } from './messageNormalizer';
 
 /** A user message whose image was stripped on persist (data:'' + filePath kept). */
 function strippedImageMessage(filePath = 'D:/abu/shot.png'): Message {
@@ -32,9 +35,41 @@ function imageBlock(m: Message) {
   return arr.find((b) => b.type === 'image') as { type: string; source: { data: string } } | undefined;
 }
 
+function assistantWithOutputRefToolImage(): Message {
+  return {
+    id: 'a1',
+    role: 'assistant',
+    timestamp: 1,
+    content: '',
+    toolCalls: [{
+      id: 'toolu_ui',
+      name: 'read_file',
+      input: {},
+      result: 'ui copy',
+      resultContent: [{
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: '' },
+        outputRef: { relPath: 'files/ui/result.png', basename: 'result.png', sizeBytes: 4 },
+      }],
+    }],
+    toolCallsForContext: [{
+      id: 'toolu_context',
+      name: 'read_file',
+      input: {},
+      result: 'context copy',
+      resultContent: [{
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: '' },
+        outputRef: { relPath: 'files/context/result.png', basename: 'result.png', sizeBytes: 4 },
+      }],
+    }],
+  } as Message;
+}
+
 describe('rehydrateImageData', () => {
   beforeEach(() => {
     mockResolveFileSource.mockReset();
+    mockResolveOutputRefSource.mockReset();
     mockReadFile.mockReset();
   });
 
@@ -84,6 +119,7 @@ describe('rehydrateImageData', () => {
     expect(out[0]).toBe(intact); // same reference — untouched
     expect(out[1]).toBe(textOnly);
     expect(mockResolveFileSource).not.toHaveBeenCalled();
+    expect(mockResolveOutputRefSource).not.toHaveBeenCalled();
   });
 
   it('reads each filePath from disk only once across turns when a cache is shared', async () => {
@@ -120,6 +156,56 @@ describe('rehydrateImageData', () => {
 
     expect(imageBlock(input)!.source.data).toBe(''); // original still stripped
   });
+
+  it('rehydrates outputRef tool result images on both tool-call carriers', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'available', path: '/snapshot/result.png', isFromSnapshot: true });
+    mockReadFile.mockResolvedValue(new Uint8Array([137, 80, 78, 71]));
+
+    const input = assistantWithOutputRefToolImage();
+    const out = await rehydrateImageData([input], 'conv1', null);
+
+    const uiBlock = out[0].toolCalls![0].resultContent![0];
+    const contextBlock = out[0].toolCallsForContext![0].resultContent![0];
+    expect(uiBlock.type).toBe('image');
+    expect(contextBlock.type).toBe('image');
+    if (uiBlock.type === 'image') expect(uiBlock.source.data).toBe('iVBORw==');
+    if (contextBlock.type === 'image') expect(contextBlock.source.data).toBe('iVBORw==');
+    expect(mockResolveOutputRefSource).toHaveBeenCalledWith('conv1', 'files/ui/result.png');
+    expect(mockResolveOutputRefSource).toHaveBeenCalledWith('conv1', 'files/context/result.png');
+
+    const originalUiBlock = input.toolCalls![0].resultContent![0];
+    const originalContextBlock = input.toolCallsForContext![0].resultContent![0];
+    if (originalUiBlock.type === 'image') expect(originalUiBlock.source.data).toBe('');
+    if (originalContextBlock.type === 'image') expect(originalContextBlock.source.data).toBe('');
+  });
+
+  it('degrades missing outputRef tool result images to reversible send-only text placeholders', async () => {
+    mockResolveOutputRefSource.mockResolvedValue({ status: 'missing', basename: 'result.png', originalPath: 'files/context/result.png' });
+
+    const input = assistantWithOutputRefToolImage();
+    const out = await rehydrateImageData([input], 'conv1', null);
+
+    const contextBlock = out[0].toolCallsForContext![0].resultContent![0];
+    expect(contextBlock).toBeUndefined();
+    expect(out[0].toolCallsForContext![0].result).toContain('path=files/context/result.png');
+    expect(out[0].toolCallsForContext![0].result).toContain('filename=result.png');
+    expect(out[0].toolCallsForContext![0].result).toContain('bytes=4');
+    expect(out[0].toolCallsForContext![0].result).toContain('media_type=image/png');
+
+    const turns = normalizeMessages(out, { supportsVision: true });
+    const assistantTurn = turns.find((turn) => turn.kind === 'assistant');
+    expect(assistantTurn?.kind).toBe('assistant');
+    if (assistantTurn?.kind === 'assistant') {
+      expect(assistantTurn.toolCalls[0].result).toContain('context copy');
+      expect(assistantTurn.toolCalls[0].result).toContain('path=files/context/result.png');
+      expect(assistantTurn.toolCalls[0].result).not.toContain('path=files/ui/result.png');
+      expect(assistantTurn.toolCalls[0].resultImages).toEqual([]);
+    }
+
+    const originalContextBlock = input.toolCallsForContext![0].resultContent![0];
+    expect(originalContextBlock.type).toBe('image');
+    expect(input.toolCallsForContext![0].result).toBe('context copy');
+  });
 });
 
 // The seam both agent-loop send sites (primary send + context_too_long recovery
@@ -128,6 +214,7 @@ describe('rehydrateImageData', () => {
 describe('rehydrateForSend (shared send-prep seam)', () => {
   beforeEach(() => {
     mockResolveFileSource.mockReset();
+    mockResolveOutputRefSource.mockReset();
     mockReadFile.mockReset();
   });
 

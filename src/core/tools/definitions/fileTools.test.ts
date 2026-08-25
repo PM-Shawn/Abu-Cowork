@@ -11,6 +11,11 @@ vi.mock('@/utils/aiEditSnapshots', () => ({
   snapshotBeforeAiEdit: (...args: unknown[]) => snapshotBeforeAiEditMock(...args),
 }));
 
+const bindWorkspaceFromWriteMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../agent/defaultWorkspace', () => ({
+  bindWorkspaceFromWrite: (...args: unknown[]) => bindWorkspaceFromWriteMock(...args),
+}));
+
 // Regression coverage for the shell-injection fixes in the PDF branch of
 // readFileTool. These tests prove the *interface contract* — the migrated
 // call sites must dispatch to `run_argv_command` with the raw filePath as
@@ -445,6 +450,8 @@ describe('AI edit pre-snapshot hook', () => {
     vi.mocked(exists).mockClear();
     snapshotBeforeAiEditMock.mockClear();
     snapshotBeforeAiEditMock.mockResolvedValue(undefined);
+    bindWorkspaceFromWriteMock.mockClear();
+    bindWorkspaceFromWriteMock.mockResolvedValue(undefined);
   });
 
   it('write_file snapshots before writing, passing loopId/conversationId', async () => {
@@ -461,6 +468,34 @@ describe('AI edit pre-snapshot hook', () => {
     // Snapshot must happen before the write.
     expect(snapshotBeforeAiEditMock.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(writeTextFile).mock.invocationCallOrder[0]
+    );
+  });
+
+  it('does not persist a managed workspace binding for a background write', async () => {
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+
+    const result = await writeFileTool.execute(
+      { path: '/Users/testuser/Abu/remote/out.txt', content: 'new' },
+      { conversationId: 'conv-im', interactionMode: 'background' },
+    );
+
+    expect(result).toContain('Successfully wrote');
+    expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps managed workspace binding for an explicitly foreground write', async () => {
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+
+    const result = await writeFileTool.execute(
+      { path: '/Users/testuser/Abu/desktop/out.txt', content: 'new' },
+      { conversationId: 'conv-desktop', interactionMode: 'foreground' },
+    );
+
+    expect(result).toContain('Successfully wrote');
+    expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith(
+      'conv-desktop',
+      '/Users/testuser/Abu/desktop/out.txt',
+      'foreground',
     );
   });
 

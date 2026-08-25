@@ -395,6 +395,8 @@ export interface TranslationDict {
     gatewayUnreachable: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
+    /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
+    sidecarUnavailable: string;
     messageSaveFailed: string;
     attachmentDuringRun: string;
     conversationBusy: string;
@@ -2109,6 +2111,17 @@ export interface TranslationDict {
     filterField: string;
     filterFieldPlaceholder: string;
     filter: string;
+    capability: string;
+    capabilityReadTools: string;
+    capabilityReadToolsDescription: string;
+    capabilitySafeTools: string;
+    capabilitySafeToolsDescription: string;
+    capabilityFull: string;
+    capabilityFullDescription: string;
+    capabilityCustomLegacy: string;
+    capabilityCustomLegacyDescription: string;
+    capabilityHint: string;
+    capabilityFullWarning: string;
     debounceEnabled: string;
     debounce: string;
     seconds: string;

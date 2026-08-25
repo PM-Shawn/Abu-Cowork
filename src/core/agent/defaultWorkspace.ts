@@ -10,8 +10,9 @@
  * first successful write under `~/Abu/`, which is when the folder actually
  * exists and the workspace becomes real (file tree / workspace card appear).
  *
- * Only interactive-desktop conversations get this — IM / scheduled / trigger
- * runs are headless. That gate lives at the call sites.
+ * Only foreground interactive-desktop conversations get this — IM / scheduled
+ * / trigger / file-watch runs are background. Callers propagate the trusted
+ * interaction mode and this module rechecks it before any persistent grant.
  */
 
 import { homeDir } from '@tauri-apps/api/path';
@@ -21,6 +22,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { getI18n } from '@/i18n';
+import type { ToolExecutionContext } from '@/types';
 
 /** Managed default-workspace root under the user's home directory. */
 const ABU_ROOT_DIR = 'Abu';
@@ -110,21 +112,22 @@ export async function prepareSuggestedWorkspace(conversationId: string): Promise
  * and the file was written under `~/Abu/`, bind `~/Abu/<top-level-folder>/` as
  * the conversation's workspace — this is the moment the default workspace
  * becomes real (the folder now exists), so the UI (file tree / workspace card)
- * can show it. No-op if already bound, or the write went elsewhere.
+ * can show it. No-op unless the trusted interaction mode is foreground, if
+ * already bound, or if the write went elsewhere.
  */
 export async function bindWorkspaceFromWrite(
   conversationId: string | undefined,
   writtenPath: string,
+  interactionMode: NonNullable<ToolExecutionContext['interactionMode']>,
 ): Promise<void> {
+  // Trusted callers must opt into this persistent, global side effect. Missing
+  // or background mode fails closed even when the conversation has no
+  // scheduledTaskId/triggerId marker (notably file-watch conversations).
+  if (interactionMode !== 'foreground') return;
   if (!conversationId) return;
   const chat = useChatStore.getState();
   const conv = chat.conversations[conversationId];
   if (!conv || conv.workspacePath) return;
-  // Headless runs (scheduled tasks / event triggers) must never auto-create or
-  // bind a workspace — matches the interactive-desktop gate on the suggestion
-  // side (orchestrator). IM runs never reach here unbound (they either have a
-  // preconfigured workspacePath or are told they can't do file ops).
-  if (conv.scheduledTaskId || conv.triggerId) return;
 
   const root = await getAbuRoot();
   if (!root) return;

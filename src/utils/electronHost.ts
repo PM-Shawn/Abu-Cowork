@@ -5,6 +5,7 @@
  */
 interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
+  canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   getPathForFile?: (file: File) => string;
   subscribeSidecarEvents?: (handler: (event: ElectronSidecarEvent) => void) => () => void;
   getSidecarBridgeSnapshot?: (afterSequence?: number) => Promise<ElectronSidecarBridgeSnapshot>;
@@ -71,6 +72,20 @@ export function hasElectronCommandHost(): boolean {
 /** Resolve the native path of a user-provided Electron File object. */
 export function getElectronFilePath(file: File): string {
   return getRuntime().__ABU_SHELL__?.getPathForFile?.(file) ?? '';
+}
+
+/**
+ * Return Electron main's canonical path for an authorization decision. `null`
+ * means the narrow Electron bridge is absent (legacy Tauri/Web), in which case
+ * callers retain their existing fail-closed path inspection. Bridge errors are
+ * intentionally not swallowed: a dangling/inaccessible symlink is unsafe.
+ */
+export async function canonicalizeElectronPathForPolicy(
+  path: string,
+  followFinalSymlink = true,
+): Promise<string | null> {
+  const canonicalize = getRuntime().__ABU_SHELL__?.canonicalizePathForPolicy;
+  return canonicalize ? await canonicalize(path, followFinalSymlink) : null;
 }
 
 export function subscribeElectronSidecarEvents(

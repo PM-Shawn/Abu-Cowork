@@ -79,7 +79,7 @@ import {
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
 import { getI18n, format } from '../../i18n';
-import { clearAllSkillHooks } from '../tools/builtins';
+import { clearSkillHooksByLoop } from '../tools/builtins';
 import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
@@ -104,6 +104,7 @@ import {
   hashComputerUseTaskSummary,
   latestUserTaskSummary,
 } from '../capabilityPlugins/computerUseResume';
+import { deriveRunInteractionMode } from './runInteractionMode';
 
 const logger = createLogger('agentLoop');
 
@@ -298,6 +299,7 @@ export function resolveTools(
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
   allowedTools?: string[],
   conversationId?: string,
+  allowedToolsAreExactSnapshot = false,
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
@@ -305,7 +307,11 @@ export function resolveTools(
 
   // Conditional tool loading: filter to core + prefetched tools
   // Non-core tools become "deferred" — name + description only in system prompt
-  if (prefetchContext && !route.skill?.allowedTools && !allowedTools?.length) {
+  if (
+    prefetchContext
+    && !route.skill?.allowedTools
+    && (!allowedTools?.length || allowedToolsAreExactSnapshot)
+  ) {
     const additionalToolNames = prefetchTools(prefetchContext);
     const prefetchedSet = new Set(additionalToolNames);
     const classified = classifyTools(tools, prefetchedSet, conversationId);
@@ -351,7 +357,11 @@ export function resolveTools(
   // Per-run whitelist (for example a custom trigger). This is mirrored by
   // toolExecutor's fail-closed check so the restriction is both model-visible
   // and authoritative at execution time.
-  if (allowedTools && allowedTools.length > 0) {
+  if (allowedToolsAreExactSnapshot) {
+    const allowedToolNames = new Set(allowedTools ?? []);
+    tools = tools.filter((tool) => allowedToolNames.has(tool.name));
+    deferredTools = deferredTools.filter((tool) => allowedToolNames.has(tool.name));
+  } else if (allowedTools && allowedTools.length > 0) {
     tools = tools.filter((tool) =>
       allowedTools.some((pattern) => matchesToolName(tool.name, pattern)),
     );
@@ -484,14 +494,15 @@ async function loadActiveSkillContent(
  * Deactivate all active skills for a conversation (single-turn lifecycle).
  * Called when the agent loop ends (complete, abort, or error).
  */
-function deactivateAllSkills(conversationId: string): void {
+function deactivateAllSkills(conversationId: string, loopId: string): void {
   const conv = getConversationReader().getConversation(conversationId);
-  if (!conv?.activeSkills || conv.activeSkills.length === 0) return;
+  if (conv?.activeSkills?.length) {
+    getChatDelta().deactivateSkills(conversationId);
+  }
 
-  getChatDelta().deactivateSkills(conversationId);
-
-  // Clean up skill-scoped hooks
-  clearAllSkillHooks();
+  // Cleanup is exact-run-owned. A retired sidecar run can finish unwinding
+  // after a newer run for the same conversation has activated its own hooks.
+  clearSkillHooksByLoop(loopId);
 }
 
 export interface AgentLoopOptions {
@@ -511,6 +522,19 @@ export interface AgentLoopOptions {
   requireNewRun?: boolean;
   /** Shell-created path authorization scope for unattended/background runs. */
   authorizationScopeId?: string;
+  /**
+   * Shell-local ownership handoff for callers that need to cancel this exact
+   * run (for example an IM timeout). Never serialized to the sidecar. The
+   * callback may be invoked again when the same dispatched call hands off to
+   * an in-process fallback or a queued continuation with a new controller.
+   */
+  onAbortControllerReady?: (controller: AbortController) => void;
+  /** Host-owned, immutable authority ceiling for unattended/background runs. */
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  /** Shell-only factory; deliberately omitted from every sidecar wire shape. */
+  skillCommandApprovalFactory?: (
+    context: ToolExecutionContext,
+  ) => import('../skill/preprocessor').SkillCommandApprovalCallback;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
@@ -569,8 +593,8 @@ export function resolveToolContextWorkspacePath(
 }
 
 export function buildDirectDelegateSubagentOptions(
-  baseOptions: Omit<Parameters<typeof runSubagent>[0], 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'workspaceReader'>,
-  parentOptions: Pick<AgentLoopOptions, 'allowedTools' | 'blockedTools' | 'authorizationScopeId'> | undefined,
+  baseOptions: Omit<Parameters<typeof runSubagent>[0], 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader'>,
+  parentOptions: Pick<AgentLoopOptions, 'allowedTools' | 'blockedTools' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
   trustedWorkspacePath: string | null,
 ): Parameters<typeof runSubagent>[0] {
   return {
@@ -578,6 +602,7 @@ export function buildDirectDelegateSubagentOptions(
     allowedTools: parentOptions?.allowedTools,
     blockedTools: parentOptions?.blockedTools,
     authorizationScopeId: parentOptions?.authorizationScopeId,
+    runPermissionCeiling: parentOptions?.runPermissionCeiling,
     workspaceReader: { getCurrentPath: () => trustedWorkspacePath },
   };
 }
@@ -627,6 +652,8 @@ export function buildInterruptedToolCallContext(
 export interface AgentLoopResult {
   reason: AgentLoopExitReason;
   error?: string;
+  /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
+  stopReason?: 'sidecar_unavailable';
 }
 
 /**
@@ -641,10 +668,16 @@ export interface AgentLoopResult {
  * callers don't need full AgentLoopOptions / Conversation objects.
  */
 export function isInteractiveDesktop(
-  options: Pick<AgentLoopOptions, 'imContext'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
 ): boolean {
-  return !options?.imContext && !conversation?.scheduledTaskId && !conversation?.triggerId;
+  return deriveRunInteractionMode({
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+    imContext: options?.imContext,
+    triggerId: conversation?.triggerId,
+    scheduledTaskId: conversation?.scheduledTaskId,
+  }) === 'foreground';
 }
 
 /**
@@ -666,7 +699,7 @@ export function isInteractiveDesktop(
  * Pure function, exported for testing.
  */
 export function shouldComputeProposalSignal(
-  options: Pick<AgentLoopOptions, 'imContext'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
   workspacePath: string | null | undefined,
 ): boolean {
@@ -810,6 +843,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Force-clear any stale controller first to avoid inheriting aborted state from a previous run.
   abortRegistry.clearAbortController(conversationId);
   const abortController = abortRegistry.getAbortController(conversationId);
+  options?.onAbortControllerReady?.(abortController);
 
   // Set conversation status to running
   chatDelta.setConversationStatus(conversationId, 'running');
@@ -828,6 +862,31 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let orchestration: Awaited<ReturnType<
     typeof import('./entryOrchestration').precomputeOrchestration
   >>;
+  const precomputeConversation = getConversationReader().getConversation(conversationId);
+  const precomputeWorkspacePath = resolveToolContextWorkspacePath(
+    options,
+    precomputeConversation,
+    getWorkspaceReader().getCurrentPath(),
+  );
+  const runInteractionMode = deriveRunInteractionMode({
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+    imContext: options?.imContext,
+    triggerId: precomputeConversation?.triggerId,
+    scheduledTaskId: precomputeConversation?.scheduledTaskId,
+  });
+  const precomputeToolContext: ToolExecutionContext = {
+    workspacePath: precomputeWorkspacePath,
+    conversationId,
+    loopId,
+    interactionMode: runInteractionMode,
+    permissionMode: precomputeConversation?.permissionMode
+      ?? getSettingsReader().getSnapshot().permissionMode,
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+  };
+  precomputeToolContext.skillCommandApproval =
+    options?.skillCommandApprovalFactory?.(precomputeToolContext);
   try {
     orchestration = options?.orchestration ?? await (
       await import('./entryOrchestration')
@@ -837,6 +896,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       options?.imContext,
       { settingsForModel },
       abortController.signal,
+      precomputeToolContext,
     );
   } catch (error) {
     // Routing runs BEFORE the user message is persisted (it produces the
@@ -876,7 +936,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Priority: IM-injected path > conversation's own stored path > global store fallback.
   // Using the conversation record rather than the global store prevents cross-conversation
   // workspace leakage when multiple conversations are open simultaneously.
-  const _convForContext = getConversationReader().getConversation(conversationId);
+  const _convForContext = precomputeConversation;
   // Interactive-desktop conversations with no workspace get a managed default
   // (~/Abu/<name>/) bound here so the agent saves files there instead of
   // improvising (e.g. onto the Desktop). The folder is created lazily on the
@@ -890,11 +950,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     ),
     loopId,
     conversationId,
-    interactionMode: isInteractiveDesktop(options, _convForContext)
-      ? 'foreground'
-      : 'background',
+    interactionMode: runInteractionMode,
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
+    runPermissionCeiling: options?.runPermissionCeiling,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(
@@ -907,6 +966,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
         : undefined,
   };
+  toolContext.skillCommandApproval = options?.skillCommandApprovalFactory?.(toolContext);
   // send_file only makes sense with an IM reply target; keep it off the roster
   // for every other run (desktop / scheduled / trigger) instead of letting the
   // model discover it and hit the runtime refusal.
@@ -1123,6 +1183,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         filePermissionCallback: filePermCb,
         onProgress,
         imContext: options?.imContext,
+        triggerId: _convForContext?.triggerId,
+        scheduledTaskId: _convForContext?.scheduledTaskId,
+        parentLoopId: loopId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
         settingsReader: entrySettingsReader,
@@ -1133,6 +1196,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         allowedTools: options?.allowedTools,
         blockedTools: effectiveBlockedTools,
         authorizationScopeId: options?.authorizationScopeId,
+        runPermissionCeiling: options?.runPermissionCeiling,
       }, toolContext.workspacePath ?? null));
       const delegateExitReason = mapSubagentStopReason(result.stopReason);
 
@@ -1331,7 +1395,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       chatDelta.cancelStreaming(conversationId);
       abortRegistry.clearAbortController(conversationId);
       executionPort.cancelExecution(execution.id);
-      deactivateAllSkills(conversationId);
+      deactivateAllSkills(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'idle');
       // Report the cancellation to callers — without this an abort between turns
       // falls through to the default 'completed', so scheduler/trigger would treat
@@ -1406,7 +1470,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // always finite this break is routinely reached, so skipping these would
       // leak an active skill into the next message, leave a phantom crash-recovery
       // checkpoint, and keep the Computer-Use overlay / AX session alive.
-      deactivateAllSkills(conversationId);
+      deactivateAllSkills(conversationId, loopId);
       // Pass conversationId so a stale/late deactivate can never clobber a
       // DIFFERENT conversation's now-active CU session (ownership guard in
       // computerUseStatus.ts — see that module's doc for the contamination
@@ -1479,7 +1543,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(
+        toolInvoker,
+        route,
+        !!builtinWebSearch,
+        effectiveBlockedTools,
+        prefetchCtx,
+        options?.allowedTools,
+        conversationId,
+        options?.runPermissionCeiling?.source === 'scheduler',
+      );
       const deferredTools = noTools ? [] : rawDeferredTools;
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
@@ -2405,7 +2478,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
+          const { tools: freshRawTools } = resolveTools(
+            toolInvoker,
+            route,
+            !!builtinWebSearch,
+            effectiveBlockedTools,
+            prefetchCtx,
+            options?.allowedTools,
+            conversationId,
+            options?.runPermissionCeiling?.source === 'scheduler',
+          );
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));
@@ -2564,7 +2646,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           reason: endReason,
         });
         // Auto-deactivate skills after loop completes (single-turn lifecycle)
-        deactivateAllSkills(conversationId);
+        deactivateAllSkills(conversationId, loopId);
         // Clean up Computer Use session (restore window, hide overlay). Pass
         // conversationId — see computerUseStatus.ts's ownership guard doc.
         import('./computerUseStatus').then(({ setComputerUseActive }) => {
@@ -2732,7 +2814,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Cancel the TaskExecution
         executionPort.cancelExecution(execution.id);
         // Auto-deactivate skills on abort
-        deactivateAllSkills(conversationId);
+        deactivateAllSkills(conversationId, loopId);
         // Clear crash recovery checkpoint — loop aborted by user
         import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
           clearCheckpointForLoop(conversationId, loopId);
@@ -2822,7 +2904,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       eventRouter.route({ type: 'error', loopId, error: errorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       // Auto-deactivate skills on error
-      deactivateAllSkills(conversationId);
+      deactivateAllSkills(conversationId, loopId);
       // Clean up Computer Use session. Pass conversationId — see
       // computerUseStatus.ts's ownership guard doc.
       import('./computerUseStatus').then(({ setComputerUseActive }) => {

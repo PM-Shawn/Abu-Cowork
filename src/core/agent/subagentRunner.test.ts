@@ -60,6 +60,11 @@ vi.mock('./ports/toolInvoker', () => ({
   }),
 }));
 
+const checkToolApprovalMock = vi.fn().mockResolvedValue({ decision: 'allow' });
+vi.mock('../tools/registry', () => ({
+  checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
+}));
+
 const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
 vi.mock('./ports/settingsReader', () => ({
   getSettingsReader: () => ({ getSnapshot: () => getSettingsSnapshotMock() }),
@@ -154,6 +159,8 @@ describe('subagentRunner', () => {
     runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
+    checkToolApprovalMock.mockReset();
+    checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
     getAllToolsMock.mockReset();
     getAllToolsMock.mockReturnValue([
       { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
@@ -185,10 +192,14 @@ describe('subagentRunner', () => {
         | 'context'
         | 'parentConversationSummary'
         | 'parentConversationId'
+        | 'persistParentToolImages'
         | 'imContext'
         | 'allowedTools'
         | 'blockedTools'
-        | 'authorizationScopeId';
+        | 'authorizationScopeId'
+        | 'runPermissionCeiling'
+        | 'triggerId'
+        | 'scheduledTaskId';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -205,6 +216,9 @@ describe('subagentRunner', () => {
         'allowedTools',
         'blockedTools',
         'authorizationScopeId',
+        'runPermissionCeiling',
+        'triggerId',
+        'scheduledTaskId',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -221,6 +235,8 @@ describe('subagentRunner', () => {
         'toolInvoker',
         'capsPort',
         'workspaceReader',
+        'skillCommandApprovalFactory',
+        'parentLoopId',
       ]);
     });
 
@@ -352,7 +368,11 @@ describe('subagentRunner', () => {
       const result = await runSubagent({ agent, task: 'do the thing' });
 
       expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
-      expect(runSubagentLoopMock).toHaveBeenCalledWith({ agent, task: 'do the thing' });
+      expect(runSubagentLoopMock).toHaveBeenCalledWith({
+        agent,
+        task: 'do the thing',
+        skillCommandApprovalFactory: expect.any(Function),
+      });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result.text).toBe('in-process result');
     });
@@ -501,6 +521,28 @@ describe('subagentRunner', () => {
       expect(params.blockedTools).toEqual(['run_command', 'abu-browser__*']);
     });
 
+    it('serializes the inherited run permission ceiling into subagent.run params', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 1 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+      const ceiling = { version: 1, source: 'trigger', capability: 'custom', allowedTools: ['read_file'] };
+
+      await runSubagent({
+        agent,
+        task: 'bounded work',
+        runPermissionCeiling: ceiling as never,
+      });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as { runPermissionCeiling?: unknown };
+      expect(params.runPermissionCeiling).toEqual(ceiling);
+    });
+
     it('treats an empty authorization scope as explicit and snapshots no global workspace for sidecar subagents', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({
@@ -554,17 +596,51 @@ describe('subagentRunner', () => {
       const { getSubagentRunInheritance, runSubagent } = await importFresh();
 
       expect(getSubagentRunInheritance({
+        loopId: 'loop-parent',
         conversationId: 'conv-parent',
         settingsReader: parentReader as never,
       }, 'scope-parent', null)).toEqual(expect.objectContaining({
         parentConversationId: 'conv-parent',
+        parentLoopId: 'loop-parent',
         settingsReader: parentReader,
         authorizationScopeId: 'scope-parent',
       }));
       expect(getSubagentRunInheritance({
+        loopId: 'loop-parent',
         conversationId: 'conv-parent',
         settingsReader: parentReader as never,
       }, 'scope-parent', null).workspaceReader?.getCurrentPath()).toBeNull();
+
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-trigger-parent',
+        conversationId: 'conv-trigger-parent',
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      } as never)).toEqual(expect.objectContaining({
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      }));
+
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-im-parent',
+        conversationId: 'conv-im-parent',
+        settingsReader: parentReader as never,
+        authorizationScopeId: 'scope-im',
+        runPermissionCeiling: {
+          version: 1,
+          source: 'im',
+          capability: 'safe_tools',
+        },
+        imReplyTarget: { platform: 'feishu', chatId: 'chat-trusted' },
+      } as never, 'scope-im', '/srv/im-workspace')).toEqual(expect.objectContaining({
+        imContext: {
+          platform: 'feishu',
+          replyChatId: 'chat-trusted',
+          workspacePath: '/srv/im-workspace',
+          capability: 'safe_tools',
+        },
+        parentLoopId: 'loop-im-parent',
+      }));
 
       await runSubagent({ agent, task: 'do the thing', settingsReader: parentReader as never });
 
@@ -628,6 +704,146 @@ describe('subagentRunner', () => {
         filePermCb,
         expect.objectContaining({ workspacePath: '/tmp/workspace', abortSignal: controller.signal }),
       );
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('overwrites a forged sidecar ceiling with the parent-owned subagent ceiling', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const ceiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'bounded work',
+        runPermissionCeiling: ceiling as never,
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: { path: 'x.txt' },
+        context: { runPermissionCeiling: { version: 1, source: 'trigger', capability: 'full' } },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
+        expect.objectContaining({ runPermissionCeiling: ceiling }),
+      );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('keeps a scope-only scheduled subagent background at the shell tool boundary', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'computer', description: 'computer use', inputSchema: { type: 'object', properties: {} }, execute: async () => 'screenshot' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'scheduled delegated work',
+        authorizationScopeId: 'scope-scheduled',
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'computer',
+        input: { action: 'screenshot' },
+        context: { interactionMode: 'foreground' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        authorizationScopeId: 'scope-scheduled',
+        interactionMode: 'background',
+      }));
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('overwrites a forged IM reply target with the parent-owned subagent target', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'send_file', description: 'send file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'sent' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'send the generated report',
+        imContext: {
+          platform: 'feishu',
+          workspacePath: '/tmp/workspace',
+          replyChatId: 'trusted-chat',
+        },
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'send_file',
+        input: { path: '/tmp/report.pdf' },
+        context: { imReplyTarget: { platform: 'feishu', chatId: 'attacker-chat' } },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        imReplyTarget: { platform: 'feishu', chatId: 'trusted-chat' },
+      }));
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('installs a parent-owned skill command approval bridge for delegated tools', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'use_skill', description: 'use skill', inputSchema: { type: 'object', properties: {} }, execute: async () => 'used' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const ceiling = { version: 1, source: 'trigger', capability: 'full' };
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'use the build skill',
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: ceiling as never,
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'use_skill',
+        input: { skill_name: 'build' },
+        context: { authorizationScopeId: 'scope-forged' },
+      });
+
+      const trustedContext = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        skillCommandApproval?: (request: unknown) => Promise<unknown>;
+      };
+      expect(trustedContext.skillCommandApproval).toEqual(expect.any(Function));
+      await trustedContext.skillCommandApproval?.({
+        toolName: 'run_command',
+        input: { command: 'git status', cwd: '/trusted/skill' },
+        context: { authorizationScopeId: 'scope-forged-again' },
+      });
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: ceiling,
+      }));
 
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
@@ -1108,6 +1324,44 @@ describe('subagentRunner', () => {
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toContain('任务已取消');
       expect(result.stopReason).toBe('aborted');
+    });
+
+    it('does not detach a scoped subagent owner after the abort grace period', async () => {
+      vi.useFakeTimers();
+      try {
+        getSidecarStatus.mockReturnValue('running');
+        const request = deferred<unknown>();
+        sidecarRequestMock.mockReturnValue(request.promise);
+        const { runSubagent } = await importFresh();
+        const controller = new AbortController();
+        let settled = false;
+
+        const runPromise = runSubagent({
+          agent,
+          task: 'scoped delegated work',
+          signal: controller.signal,
+          authorizationScopeId: 'scope-parent',
+        }).then((result) => {
+          settled = true;
+          return result;
+        });
+        await Promise.resolve();
+        controller.abort();
+        await vi.advanceTimersByTimeAsync(5_000);
+
+        expect(settled).toBe(false);
+        request.resolve({
+          text: 'cancelled after resources settled',
+          toolCallCount: 0,
+          turnCount: 0,
+          tokenUsage: { input: 0, output: 0 },
+          duration: 0,
+        });
+        await runPromise;
+        expect(settled).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

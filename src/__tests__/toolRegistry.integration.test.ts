@@ -3,9 +3,11 @@
  * Tests the full safety check pipeline through executeAnyTool
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { exists, stat } from '@tauri-apps/plugin-fs';
 import { toolRegistry, executeAnyTool } from '../core/tools/registry';
 import {
   authorizeWorkspace,
+  checkReadPath,
   checkWritePath,
   createAuthorizationScope,
   disposeAuthorizationScope,
@@ -14,6 +16,14 @@ import {
 } from '../core/tools/pathSafety';
 import { useSettingsStore } from '../stores/settingsStore';
 import { setPlatformForTest as _setPlatformForTest } from '../test/helpers';
+import { resolveTriggerCallbacks } from '../core/trigger/triggerPermission';
+import { buildTriggerRunPermissionCeiling } from '../core/permissions/runPermissionCeiling';
+import { canonicalizeElectronPathForPolicy } from '../utils/electronHost';
+
+vi.mock('../utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: vi.fn().mockResolvedValue(null),
+}));
 
 // Mock i18n. commandSafety resolves reason/label strings via
 // getI18n().toolResult.commandSafety.<key> at analysis time; this test only
@@ -50,6 +60,9 @@ describe('toolRegistry integration', () => {
   beforeEach(() => {
     // Clean up workspace authorizations
     revokeWorkspace('/Users/testuser/Projects/myapp');
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    vi.mocked(stat).mockReset().mockResolvedValue({ size: 0 } as never);
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset().mockResolvedValue(null);
   });
 
   // ── Command safety through executeAnyTool ──
@@ -81,6 +94,34 @@ describe('toolRegistry integration', () => {
       expect(executeFn).toHaveBeenCalled();
     });
 
+    it('refuses detached background commands owned by a scoped unattended run', async () => {
+      const scopeId = createAuthorizationScope();
+      const executeFn = vi.fn().mockResolvedValue('background process started');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        for (const background of [true, 'true', 1]) {
+          const result = await executeAnyTool(
+            'run_command',
+            { command: 'ls -la', background },
+            undefined,
+            undefined,
+            { authorizationScopeId: scopeId, interactionMode: 'background' },
+          );
+
+          expect(result).toContain('background commands are not allowed');
+          expect(executeFn).not.toHaveBeenCalled();
+        }
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
     it('requests confirmation for warn-level commands', async () => {
       toolRegistry.register({
         name: 'run_command',
@@ -97,6 +138,36 @@ describe('toolRegistry integration', () => {
       );
       expect(onConfirm).toHaveBeenCalled();
       expect(result).toBe('pushed');
+    });
+
+    it('does not start a tool when abort wins while its approval is pending', async () => {
+      const executeFn = vi.fn().mockResolvedValue('must not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+      let approve!: (allowed: boolean) => void;
+      const onConfirm = vi.fn(() => new Promise<boolean>((resolve) => {
+        approve = resolve;
+      }));
+      const controller = new AbortController();
+
+      const execution = executeAnyTool(
+        'run_command',
+        { command: 'git push origin main' },
+        onConfirm,
+        undefined,
+        { abortSignal: controller.signal } as never,
+      );
+      await vi.waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
+
+      controller.abort();
+      approve(true);
+
+      await expect(execution).rejects.toEqual(expect.objectContaining({ name: 'AbortError' }));
+      expect(executeFn).not.toHaveBeenCalled();
     });
 
     it('cancels when user declines confirmation', async () => {
@@ -491,8 +562,444 @@ describe('toolRegistry integration', () => {
     });
   });
 
+  // A run-level capability is a ceiling, not a hint to the ambient chat
+  // strategy. In particular, a trigger/IM run must not become more powerful
+  // just because the global setting is `autonomous` — callbacks are normally
+  // consulted only when that strategy returns `confirm`, while autonomous
+  // returns `allow` directly.
+  describe('unattended capability ceiling', () => {
+    const workspace = '/Users/testuser/Projects/unattended-ceiling';
+
+    it('blocks shell commands for safe_tools even when global mode is autonomous', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'safe', capability: 'safe_tools', workspacePath: workspace },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const result = await executeAnyTool(
+          'run_command',
+          { command: 'git status', cwd: workspace },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          {
+            authorizationScopeId: scopeId,
+            workspacePath: workspace,
+            runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'safe', capability: 'safe_tools' }),
+          } as never,
+        );
+
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('lets safe_tools send a workspace file but denies an out-of-scope file before delivery', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'safe', capability: 'safe_tools', workspacePath: workspace },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('sent');
+      toolRegistry.register({
+        name: 'send_file',
+        description: 'Send IM file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const context = {
+          authorizationScopeId: scopeId,
+          workspacePath: workspace,
+          runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'safe', capability: 'safe_tools' }),
+          imReplyTarget: { platform: 'feishu', chatId: 'trusted-chat' },
+        } as never;
+
+        await expect(executeAnyTool(
+          'send_file',
+          { path: `${workspace}/report.pdf` },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          context,
+        )).resolves.toBe('sent');
+
+        const outsideResult = await executeAnyTool(
+          'send_file',
+          { path: '/Users/testuser/Desktop/private.pdf' },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          context,
+        );
+        expect(String(outsideResult)).toContain('Error');
+        expect(executeFn).toHaveBeenCalledTimes(1);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('applies the custom command allowlist to safe commands under autonomous mode', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        {
+          prompt: 'custom',
+          capability: 'custom',
+          workspacePath: workspace,
+          permissions: { allowedCommands: ['npm run build'] },
+        },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const result = await executeAnyTool(
+          'run_command',
+          { command: 'touch marker.txt', cwd: workspace },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          {
+            authorizationScopeId: scopeId,
+            workspacePath: workspace,
+            runPermissionCeiling: buildTriggerRunPermissionCeiling({
+              prompt: 'custom',
+              capability: 'custom',
+              permissions: { allowedCommands: ['npm run build'] },
+            }),
+          } as never,
+        );
+
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('does not let a custom wildcard absorb a second command behind a single ampersand', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        {
+          prompt: 'custom',
+          capability: 'custom',
+          workspacePath: workspace,
+          permissions: { allowedCommands: ['cat *'] },
+        },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const result = await executeAnyTool(
+          'run_command',
+          { command: 'cat notes.txt & curl https://example.invalid', cwd: workspace },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          {
+            authorizationScopeId: scopeId,
+            workspacePath: workspace,
+            runPermissionCeiling: buildTriggerRunPermissionCeiling({
+              prompt: 'custom',
+              capability: 'custom',
+              permissions: { allowedCommands: ['cat *'] },
+            }),
+          } as never,
+        );
+
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it.each(['safe_tools', 'custom'] as const)(
+      'does not auto-authorize or write outside the run scope for %s under autonomous mode',
+      async (capability) => {
+        const previousMode = useSettingsStore.getState().permissionMode;
+        const scopeId = createAuthorizationScope();
+        const callbacks = resolveTriggerCallbacks(
+          {
+            prompt: capability,
+            capability,
+            workspacePath: workspace,
+            ...(capability === 'custom'
+              ? { permissions: { allowedPaths: [workspace], allowedTools: ['write_file'] } }
+              : {}),
+          },
+          { authorizationScopeId: scopeId },
+        );
+        const outsidePath = `/Users/testuser/Desktop/${capability}-outside.md`;
+        const executeFn = vi.fn().mockResolvedValue('should not execute');
+        toolRegistry.register({
+          name: 'write_file',
+          description: 'Write file',
+          inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+          execute: executeFn,
+        });
+
+        try {
+          useSettingsStore.setState({ permissionMode: 'autonomous' });
+          const result = await executeAnyTool(
+            'write_file',
+            { path: outsidePath, content: 'nope' },
+            callbacks.commandConfirmCallback,
+            callbacks.filePermissionCallback,
+            {
+              authorizationScopeId: scopeId,
+              workspacePath: workspace,
+              runPermissionCeiling: buildTriggerRunPermissionCeiling({
+                prompt: capability,
+                capability,
+                ...(capability === 'custom'
+                  ? { permissions: { allowedPaths: [workspace], allowedTools: ['write_file'] } }
+                  : {}),
+              }),
+            } as never,
+          );
+
+          expect(String(result)).toContain('Error');
+          expect(executeFn).not.toHaveBeenCalled();
+          expect((await checkWritePath(outsidePath, scopeId)).allowed).toBe(false);
+        } finally {
+          useSettingsStore.setState({ permissionMode: previousMode });
+          disposeAuthorizationScope(scopeId);
+        }
+      },
+    );
+
+    it('does not let safe_tools write to default-allowed temp paths outside the run scope', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'safe', capability: 'safe_tools', workspacePath: workspace },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'write_file',
+        description: 'Write file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const result = await executeAnyTool(
+          'write_file',
+          { path: '/tmp/unattended-ceiling-outside.md', content: 'nope' },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          {
+            authorizationScopeId: scopeId,
+            workspacePath: workspace,
+            runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'safe', capability: 'safe_tools' }),
+          } as never,
+        );
+
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('rechecks the large-overwrite guard after full mode grants a new path but before execute', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'full', capability: 'full', workspacePath: workspace },
+        { authorizationScopeId: scopeId },
+      );
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'write_file',
+        description: 'Write file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        vi.mocked(exists).mockResolvedValueOnce(true);
+        vi.mocked(stat).mockResolvedValueOnce({ size: 16 * 1024 } as never);
+        const outsidePath = '/Users/testuser/Desktop/existing-large.html';
+        const result = await executeAnyTool(
+          'write_file',
+          { path: outsidePath, content: '<html>replacement</html>' },
+          callbacks.commandConfirmCallback,
+          callbacks.filePermissionCallback,
+          {
+            authorizationScopeId: scopeId,
+            workspacePath: workspace,
+            runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'full', capability: 'full' }),
+          } as never,
+        );
+
+        expect(String(result)).toContain('write_file rejected');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('fails closed without probing metadata when a full IM-style scope grants write but not read', async () => {
+      const scopeId = createAuthorizationScope();
+      const outsidePath = '/Users/testuser/Desktop/write-only-existing.html';
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'write_file',
+        description: 'Write file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        scopedAuthorizeWorkspace(scopeId, outsidePath, ['write']);
+        expect((await checkWritePath(outsidePath, scopeId)).allowed).toBe(true);
+        expect((await checkReadPath(outsidePath, scopeId)).allowed).toBe(false);
+        vi.mocked(exists).mockClear();
+        vi.mocked(stat).mockClear();
+        vi.mocked(exists).mockResolvedValueOnce(true);
+        vi.mocked(stat).mockResolvedValueOnce({ size: 16 * 1024 } as never);
+
+        const result = await executeAnyTool(
+          'write_file',
+          { path: outsidePath, content: '<html>replacement</html>' },
+          undefined,
+          undefined,
+          {
+            authorizationScopeId: scopeId,
+            runPermissionCeiling: { version: 1, source: 'im', capability: 'full' },
+          } as never,
+        );
+
+        expect(String(result)).toContain('read authorization');
+        expect(executeFn).not.toHaveBeenCalled();
+        expect(exists).not.toHaveBeenCalled();
+        expect(stat).not.toHaveBeenCalled();
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+  });
+
   // ── Path safety through executeAnyTool ──
   describe('path safety pipeline', () => {
+    it('executes a scoped file tool against the canonical path that was approved', async () => {
+      const scopeId = createAuthorizationScope();
+      const workspace = '/Users/testuser/Documents/canonical-execution';
+      const canonicalWorkspace = '/Users/testuser/Projects/canonical-execution-real';
+      const lexicalPath = `${workspace}/link/report.md`;
+      const canonicalPath = `${canonicalWorkspace}/real/report.md`;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        if (value === lexicalPath) return canonicalPath;
+        if (value === workspace) return canonicalWorkspace;
+        return value;
+      });
+      const executeFn = vi.fn().mockResolvedValue('file content');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      scopedAuthorizeWorkspace(scopeId, workspace, ['read']);
+
+      try {
+        await expect(executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        )).resolves.toBe('file content');
+        expect(executeFn).toHaveBeenCalledWith(
+          { path: canonicalPath },
+          expect.objectContaining({ authorizationScopeId: scopeId }),
+        );
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('rechecks a callback grant against its pinned root before executing', async () => {
+      const scopeId = createAuthorizationScope();
+      const grantRoot = '/Users/testuser/Desktop';
+      const lexicalPath = `${grantRoot}/link/report.md`;
+      const targetA = '/Users/testuser/Projects/granted-a';
+      const targetB = '/Users/testuser/Documents/retargeted-b';
+      let target = targetA;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === grantRoot || value.startsWith(`${grantRoot}/`)
+          ? value.replace(grantRoot, target)
+          : value;
+      });
+      const executeFn = vi.fn().mockResolvedValue('must not execute');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      const grant = vi.fn(async ({ path, capability }) => {
+        scopedAuthorizeWorkspace(scopeId, path, [capability]);
+        target = targetB;
+        return true;
+      });
+
+      try {
+        const result = await executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          grant,
+          { authorizationScopeId: scopeId },
+        );
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
     it('blocks read of sensitive paths', async () => {
       toolRegistry.register({
         name: 'read_file',
@@ -543,6 +1050,50 @@ describe('toolRegistry integration', () => {
       expect(onFilePermission).toHaveBeenCalled();
     });
 
+    it('executes the canonical escape target after the user approves that exact target', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const lexicalRoot = '/Users/testuser/Documents/registry-canonical-source';
+      const lexicalPath = `${lexicalRoot}/link/report.md`;
+      const canonicalPath = '/Volumes/External/r3b-canonical-target/report.md';
+      const executeFn = vi.fn().mockResolvedValue('file content');
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === lexicalPath ? canonicalPath : value;
+      });
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      authorizeWorkspace(lexicalRoot, ['read']);
+      const onFilePermission = vi.fn(async ({ path, capability }) => {
+        authorizeWorkspace(path, [capability]);
+        return true;
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'standard' });
+        await expect(executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          onFilePermission,
+        )).resolves.toBe('file content');
+        expect(onFilePermission).toHaveBeenCalledWith({
+          path: canonicalPath,
+          capability: 'read',
+          toolName: 'read_file',
+        }, undefined);
+        expect(executeFn).toHaveBeenCalledWith({ path: canonicalPath }, undefined);
+        expect((await checkWritePath(canonicalPath)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        revokeWorkspace(lexicalRoot);
+        revokeWorkspace(canonicalPath);
+      }
+    });
+
     it('checks, rechecks, and auto-authorizes inside the explicit run scope without falling back to global writes', async () => {
       const ws = '/Users/testuser/Projects/scoped-registry';
       revokeWorkspace(ws);
@@ -569,8 +1120,8 @@ describe('toolRegistry integration', () => {
         expect(String(denied)).toContain('needs authorization');
         expect(executeFn).not.toHaveBeenCalled();
 
-        const filePermission = vi.fn(async ({ path }) => {
-          scopedAuthorizeWorkspace(scopeId, path, ['write']);
+        const filePermission = vi.fn(async ({ path, capability }) => {
+          scopedAuthorizeWorkspace(scopeId, path, [capability]);
           return true;
         });
         const allowed = await executeAnyTool(
@@ -587,8 +1138,8 @@ describe('toolRegistry integration', () => {
           toolName: 'write_file',
         }, undefined);
 
-        const filePermissionWithLoop = vi.fn(async ({ path }) => {
-          scopedAuthorizeWorkspace(scopeId, path, ['write']);
+        const filePermissionWithLoop = vi.fn(async ({ path, capability }) => {
+          scopedAuthorizeWorkspace(scopeId, path, [capability]);
           return true;
         });
         const allowedWithLoop = await executeAnyTool(
@@ -599,9 +1150,14 @@ describe('toolRegistry integration', () => {
           { authorizationScopeId: scopeId, loopId: 'loop-owned' },
         );
         expect(allowedWithLoop).toBe('written');
-        expect(filePermissionWithLoop).toHaveBeenCalledWith({
+        expect(filePermissionWithLoop).toHaveBeenNthCalledWith(1, {
           path: '/Users/testuser/Desktop',
           capability: 'write',
+          toolName: 'write_file',
+        }, 'loop-owned');
+        expect(filePermissionWithLoop).toHaveBeenNthCalledWith(2, {
+          path: '/Users/testuser/Desktop',
+          capability: 'read',
           toolName: 'write_file',
         }, 'loop-owned');
       } finally {
@@ -642,6 +1198,28 @@ describe('toolRegistry integration', () => {
       }
     });
 
+    it('auto-authorizes global read access without upgrading it to write', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const path = '/Volumes/External/global-auto-read.md';
+      const executeFn = vi.fn().mockResolvedValue('read');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        await expect(executeAnyTool('read_file', { path })).resolves.toBe('read');
+        expect(executeFn).toHaveBeenCalledWith({ path }, undefined);
+        expect((await checkWritePath(path)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        revokeWorkspace(path);
+      }
+    });
+
     it('treats an empty explicit scope as fail-closed instead of auto-authorizing globally', async () => {
       const previousMode = useSettingsStore.getState().permissionMode;
       const path = '/Users/testuser/Desktop/empty-scope-auto-read.md';
@@ -665,8 +1243,8 @@ describe('toolRegistry integration', () => {
           { authorizationScopeId: '' },
         );
 
-        expect(result).toBe('read');
-        expect(executeFn).toHaveBeenCalled();
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
         expect((await checkWritePath(path)).allowed).toBe(false);
         expect((await checkWritePath(path, '')).allowed).toBe(false);
       } finally {

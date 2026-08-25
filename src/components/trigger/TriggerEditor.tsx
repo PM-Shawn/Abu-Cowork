@@ -9,12 +9,14 @@ import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 import { outputSender } from '@/core/im/outputSender';
 import { getOutputPlatformOptions } from '@/core/im/platformLabels';
-import type { TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
+import type { TriggerCapability, TriggerFilterType, TriggerSourceType, OutputPlatform, OutputExtractMode } from '@/types/trigger';
 import type { IMListenScope } from '@/types/trigger';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
+import { normalizeTriggerCapability } from '@/core/trigger/triggerCapability';
 
 const SOURCE_TYPES: TriggerSourceType[] = ['http', 'file', 'cron', 'im'];
 const FILTER_TYPES: TriggerFilterType[] = ['always', 'keyword', 'regex'];
+const STANDARD_CAPABILITIES: Exclude<TriggerCapability, 'custom'>[] = ['read_tools', 'safe_tools', 'full'];
 
 export default function TriggerEditor() {
   const { t } = useI18n();
@@ -30,6 +32,7 @@ export default function TriggerEditor() {
   );
 
   const editingTrigger = editingTriggerId ? triggers[editingTriggerId] : null;
+  const editingCapability = normalizeTriggerCapability(editingTrigger?.action.capability);
 
   // Form state
   const [name, setName] = useState('');
@@ -52,6 +55,7 @@ export default function TriggerEditor() {
   const [quietHoursEnabled, setQuietHoursEnabled] = useState(false);
   const [quietHoursStart, setQuietHoursStart] = useState('22:00');
   const [quietHoursEnd, setQuietHoursEnd] = useState('08:00');
+  const [capability, setCapability] = useState<TriggerCapability>('read_tools');
 
   // IM source state — now references a channel
   const [imChannelId, setImChannelId] = useState('');
@@ -78,49 +82,53 @@ export default function TriggerEditor() {
 
   // Initialize form when editing
   useEffect(() => {
-    if (editingTrigger) {
-      setName(editingTrigger.name);
-      setDescription(editingTrigger.description ?? '');
-      setPrompt(editingTrigger.action.prompt);
-      setSourceType(editingTrigger.source.type);
-      if (editingTrigger.source.type === 'file') {
-        setFileWatchPath(editingTrigger.source.path);
-        setFileEvents(editingTrigger.source.events);
-        setFilePattern(editingTrigger.source.pattern ?? '');
+    const triggerToEdit = editingTriggerId
+      ? useTriggerStore.getState().triggers[editingTriggerId]
+      : null;
+    if (triggerToEdit) {
+      setName(triggerToEdit.name);
+      setDescription(triggerToEdit.description ?? '');
+      setPrompt(triggerToEdit.action.prompt);
+      setSourceType(triggerToEdit.source.type);
+      if (triggerToEdit.source.type === 'file') {
+        setFileWatchPath(triggerToEdit.source.path);
+        setFileEvents(triggerToEdit.source.events);
+        setFilePattern(triggerToEdit.source.pattern ?? '');
       }
-      if (editingTrigger.source.type === 'cron') {
-        setCronInterval(editingTrigger.source.intervalSeconds);
+      if (triggerToEdit.source.type === 'cron') {
+        setCronInterval(triggerToEdit.source.intervalSeconds);
       }
-      if (editingTrigger.source.type === 'im') {
-        setImChannelId(editingTrigger.source.channelId);
-        setImListenScope(editingTrigger.source.listenScope);
-        setImChatId(editingTrigger.source.chatId ?? '');
-        setImSenderMatch(editingTrigger.source.senderMatch ?? '');
+      if (triggerToEdit.source.type === 'im') {
+        setImChannelId(triggerToEdit.source.channelId);
+        setImListenScope(triggerToEdit.source.listenScope);
+        setImChatId(triggerToEdit.source.chatId ?? '');
+        setImSenderMatch(triggerToEdit.source.senderMatch ?? '');
       }
-      setFilterType(editingTrigger.filter.type);
-      setKeywords((editingTrigger.filter.keywords ?? []).join(', '));
-      setRegexPattern(editingTrigger.filter.pattern ?? '');
-      setFilterField(editingTrigger.filter.field ?? '');
-      setSkillName(editingTrigger.action.skillName ?? '');
-      setWorkspacePath(editingTrigger.action.workspacePath ?? '');
-      setProjectId(editingTrigger.projectId ?? '');
-      setDebounceEnabled(editingTrigger.debounce.enabled);
-      setDebounceSeconds(editingTrigger.debounce.windowSeconds);
-      setQuietHoursEnabled(editingTrigger.quietHours?.enabled ?? false);
-      setQuietHoursStart(editingTrigger.quietHours?.start ?? '22:00');
-      setQuietHoursEnd(editingTrigger.quietHours?.end ?? '08:00');
-      setOutputEnabled(editingTrigger.output?.enabled ?? false);
-      setOutputTarget(editingTrigger.output?.target ?? 'webhook');
-      setOutputPlatform(editingTrigger.output?.platform ?? 'dchat');
-      setOutputWebhookUrl(editingTrigger.output?.webhookUrl ?? '');
-      setOutputChannelId(editingTrigger.output?.outputChannelId ?? '');
-      setOutputChatIds(editingTrigger.output?.outputChatIds ?? '');
-      setOutputUserIds(editingTrigger.output?.outputUserIds ?? '');
-      setOutputExtractMode(editingTrigger.output?.extractMode ?? 'last_message');
-      setOutputCustomTemplate(editingTrigger.output?.customTemplate ?? '');
+      setFilterType(triggerToEdit.filter.type);
+      setKeywords((triggerToEdit.filter.keywords ?? []).join(', '));
+      setRegexPattern(triggerToEdit.filter.pattern ?? '');
+      setFilterField(triggerToEdit.filter.field ?? '');
+      setSkillName(triggerToEdit.action.skillName ?? '');
+      setWorkspacePath(triggerToEdit.action.workspacePath ?? '');
+      setProjectId(triggerToEdit.projectId ?? '');
+      setDebounceEnabled(triggerToEdit.debounce.enabled);
+      setDebounceSeconds(triggerToEdit.debounce.windowSeconds);
+      setQuietHoursEnabled(triggerToEdit.quietHours?.enabled ?? false);
+      setQuietHoursStart(triggerToEdit.quietHours?.start ?? '22:00');
+      setQuietHoursEnd(triggerToEdit.quietHours?.end ?? '08:00');
+      setCapability(normalizeTriggerCapability(triggerToEdit.action.capability));
+      setOutputEnabled(triggerToEdit.output?.enabled ?? false);
+      setOutputTarget(triggerToEdit.output?.target ?? 'webhook');
+      setOutputPlatform(triggerToEdit.output?.platform ?? 'dchat');
+      setOutputWebhookUrl(triggerToEdit.output?.webhookUrl ?? '');
+      setOutputChannelId(triggerToEdit.output?.outputChannelId ?? '');
+      setOutputChatIds(triggerToEdit.output?.outputChatIds ?? '');
+      setOutputUserIds(triggerToEdit.output?.outputUserIds ?? '');
+      setOutputExtractMode(triggerToEdit.output?.extractMode ?? 'last_message');
+      setOutputCustomTemplate(triggerToEdit.output?.customTemplate ?? '');
       setOutputCustomHeaders(
-        editingTrigger.output?.customHeaders
-          ? Object.entries(editingTrigger.output.customHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')
+        triggerToEdit.output?.customHeaders
+          ? Object.entries(triggerToEdit.output.customHeaders).map(([k, v]) => `${k}: ${v}`).join('\n')
           : ''
       );
     } else {
@@ -150,6 +158,7 @@ export default function TriggerEditor() {
       setQuietHoursEnabled(false);
       setQuietHoursStart('22:00');
       setQuietHoursEnd('08:00');
+      setCapability('read_tools');
       setOutputEnabled(false);
       setOutputTarget('webhook');
       setOutputPlatform('dchat');
@@ -163,7 +172,7 @@ export default function TriggerEditor() {
     }
     setTestPushStatus('idle');
     setTestPushError('');
-  }, [editingTrigger, showEditor, editorTemplateDefaults]);
+  }, [editingTriggerId, showEditor, editorTemplateDefaults]);
 
   // Close on Escape
   useEffect(() => {
@@ -187,6 +196,24 @@ export default function TriggerEditor() {
     keyword: t.trigger.filterKeyword,
     regex: t.trigger.filterRegex,
   };
+  const capabilityLabels: Record<TriggerCapability, string> = {
+    read_tools: t.trigger.capabilityReadTools,
+    safe_tools: t.trigger.capabilitySafeTools,
+    full: t.trigger.capabilityFull,
+    custom: t.trigger.capabilityCustomLegacy,
+  };
+  const capabilityDescriptions: Record<TriggerCapability, string> = {
+    read_tools: t.trigger.capabilityReadToolsDescription,
+    safe_tools: t.trigger.capabilitySafeToolsDescription,
+    full: t.trigger.capabilityFullDescription,
+    custom: t.trigger.capabilityCustomLegacyDescription,
+  };
+  const capabilityOptions = [
+    ...STANDARD_CAPABILITIES.map((cap) => ({ value: cap, label: capabilityLabels[cap] })),
+    ...(editingCapability === 'custom'
+      ? [{ value: 'custom', label: t.trigger.capabilityCustomLegacy }]
+      : []),
+  ];
 
   // Channel options for Select
   const channelOptions = imChannels.map((c) => ({
@@ -221,6 +248,8 @@ export default function TriggerEditor() {
       prompt: prompt.trim(),
       skillName: skillName || undefined,
       workspacePath: effectiveWorkspace || undefined,
+      capability,
+      permissions: capability === 'custom' ? editingTrigger?.action.permissions : undefined,
     };
 
     const debounce = {
@@ -554,6 +583,30 @@ export default function TriggerEditor() {
               className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
             />
             <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.trigger.promptHint}</p>
+          </div>
+
+          {/* Capability */}
+          <div>
+            <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
+              {t.trigger.capability}
+            </label>
+            <Select
+              value={capability}
+              onChange={(value) => setCapability(value as TriggerCapability)}
+              options={capabilityOptions}
+              ariaLabel={t.trigger.capability}
+            />
+            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
+              {capabilityDescriptions[capability]}
+            </p>
+            <p className="text-caption text-[var(--abu-text-muted)] mt-1">
+              {t.trigger.capabilityHint}
+            </p>
+            {capability === 'full' && (
+              <p className="text-caption text-[var(--abu-warning)] mt-1">
+                {t.trigger.capabilityFullWarning}
+              </p>
+            )}
           </div>
 
           {/* Filter type */}

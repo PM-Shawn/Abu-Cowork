@@ -39,7 +39,7 @@ describe('defaultWorkspaceRun shim', () => {
     const notifySpy = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
     const requestSpy = vi.spyOn(rpcClient, 'sendRequest');
     await agentRunContext.run(makeCtx({ runId: 'run-1' }), () =>
-      bindWorkspaceFromWrite('conv-1', '/Users/x/Abu/report/out.html'),
+      bindWorkspaceFromWrite('conv-1', '/Users/x/Abu/report/out.html', 'foreground'),
     );
     expect(notifySpy).toHaveBeenCalledWith('workspace.bindFromWrite', {
       runId: 'run-1',
@@ -54,7 +54,7 @@ describe('defaultWorkspaceRun shim', () => {
   it('forwards conversationId: undefined unchanged (writeFileTool may call this with no conversation context)', async () => {
     const spy = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
     await agentRunContext.run(makeCtx({ runId: 'run-1' }), () =>
-      bindWorkspaceFromWrite(undefined, '/tmp/out.txt'),
+      bindWorkspaceFromWrite(undefined, '/tmp/out.txt', 'background'),
     );
     expect(spy).toHaveBeenCalledWith('workspace.bindFromWrite', {
       runId: 'run-1',
@@ -64,6 +64,6 @@ describe('defaultWorkspaceRun shim', () => {
   });
 
   it('throws a clear wiring-bug error when called outside an active agentRunContext scope', async () => {
-    await expect(bindWorkspaceFromWrite('conv-1', '/tmp/x')).rejects.toThrow(/agent run context accessed outside/);
+    await expect(bindWorkspaceFromWrite('conv-1', '/tmp/x', 'foreground')).rejects.toThrow(/agent run context accessed outside/);
   });
 });

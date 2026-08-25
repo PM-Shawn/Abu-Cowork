@@ -52,6 +52,13 @@ export interface LoopContext {
   imContext?: IMContext;
   /** Run-local path authorization scope inherited by delegated work. */
   authorizationScopeId?: string;
+  /** Run-owned authority ceiling inherited by delegated work. */
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  /** Unattended provenance inherited by delegated work. */
+  triggerId?: string;
+  scheduledTaskId?: string;
+  /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
+  imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */
   agentName?: string;
 }
@@ -240,7 +247,7 @@ export async function requestFilePermission(request: {
     if (ctx?.authorizationScopeId !== undefined) {
       scopedAuthorizeWorkspace(ctx.authorizationScopeId, request.path, [request.capability]);
     } else {
-      authorizeWorkspace(request.path);
+      authorizeWorkspace(request.path, [request.capability]);
     }
     return true;
   }

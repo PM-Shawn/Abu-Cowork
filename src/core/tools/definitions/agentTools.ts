@@ -17,27 +17,38 @@ import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
-// Module-level map to track skill hook cleanup functions.
-// Key format: "conversationId:skillName" for per-conversation scoping.
-const skillHookCleanups = new Map<string, () => void>();
+interface SkillHookCleanupEntry {
+  cleanup: () => void;
+  conversationId?: string;
+  loopId?: string;
+}
+
+// Hook authority belongs to the run that activated it. Conversation-only
+// ownership is insufficient because a force-finalized sidecar run may still
+// unwind after a newer run for the same conversation has already started.
+const skillHookCleanups = new Set<SkillHookCleanupEntry>();
+
+function clearSkillHooksWhere(predicate: (entry: SkillHookCleanupEntry) => boolean): void {
+  for (const entry of skillHookCleanups) {
+    if (!predicate(entry)) continue;
+    entry.cleanup();
+    skillHookCleanups.delete(entry);
+  }
+}
 
 /** Clear all active skill hooks (called on agent loop end) */
 export function clearAllSkillHooks(): void {
-  for (const cleanup of skillHookCleanups.values()) {
-    cleanup();
-  }
-  skillHookCleanups.clear();
+  clearSkillHooksWhere(() => true);
 }
 
 /** Clear skill hooks for a specific conversation only */
 export function clearSkillHooksByConversation(conversationId: string): void {
-  const prefix = `${conversationId}:`;
-  for (const [key, cleanup] of skillHookCleanups) {
-    if (key.startsWith(prefix)) {
-      cleanup();
-      skillHookCleanups.delete(key);
-    }
-  }
+  clearSkillHooksWhere((entry) => entry.conversationId === conversationId);
+}
+
+/** Clear only hooks activated by one exact loop/run owner. */
+export function clearSkillHooksByLoop(loopId: string): void {
+  clearSkillHooksWhere((entry) => entry.loopId === loopId);
 }
 
 /**
@@ -61,7 +72,7 @@ export const useSkillTool: ToolDefinition = {
     },
     required: ['skill_name'],
   },
-  execute: async (input) => {
+  execute: async (input, toolExecContext) => {
     const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
 
@@ -80,7 +91,15 @@ export const useSkillTool: ToolDefinition = {
     // Dedup: if already active in this conversation, short-circuit to prevent
     // wasted tool calls. Skill instructions are already in the system prompt.
     const state = useChatStore.getState();
-    const activeId = state.activeConversationId;
+    // Tool execution context owns the activation. A scheduled/IM/sidecar run
+    // may execute while an unrelated desktop tab is active; borrowing the
+    // global activeConversationId would attach its skill state and hooks to the
+    // wrong conversation. Keep the fallback only for legacy callers that pass
+    // no context at all.
+    const contextConversationId = toolExecContext?.conversationId;
+    const activeId = contextConversationId && state.conversations[contextConversationId]
+      ? contextConversationId
+      : (toolExecContext === undefined ? state.activeConversationId : undefined);
     if (activeId) {
       const existing = state.conversations[activeId]?.activeSkills;
       if (existing?.includes(skillName)) {
@@ -112,10 +131,12 @@ export const useSkillTool: ToolDefinition = {
     // Activate skill-scoped hooks
     if (skill.hooks) {
       const { activateSkillHooks } = await import('../../skill/skillHooks');
-      const cleanup = activateSkillHooks(skill);
-      // Store cleanup keyed by conversation:skill for per-conversation scoping
-      const hookKey = activeId ? `${activeId}:${skillName}` : skillName;
-      skillHookCleanups.set(hookKey, cleanup);
+      const cleanup = activateSkillHooks(skill, toolExecContext);
+      skillHookCleanups.add({
+        cleanup,
+        conversationId: activeId ?? undefined,
+        loopId: toolExecContext?.loopId,
+      });
     }
 
     // Also load chain skills if defined

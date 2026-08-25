@@ -7,6 +7,12 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## Unreleased
+
+### ⚠️ Behavior change
+
+- **Legacy custom triggers now fail closed when their tool allowlist is absent or empty.** They run at the read-only tier instead of treating an empty `allowedTools` list as unrestricted; only an explicit `allowedTools: ["*"]` enables the wildcard. This version has no allowlist editor in the trigger UI, so migrate affected tasks by asking an administrator to update the trigger configuration data or editing it manually.
+
 ## v0.41.0 · 2026-08-22
 
 ### ✨ Features

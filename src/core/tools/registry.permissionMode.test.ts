@@ -1,9 +1,33 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { exists, stat } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
+import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
+import {
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  scopedAuthorizeWorkspace,
+} from './pathSafety';
+
+const policyMocks = vi.hoisted(() => ({
+  checkTool: vi.fn(() => ({ decision: 'allow' as const })),
+  showPolicyConfirm: vi.fn(async () => true),
+}));
+
+vi.mock('@/core/enterprise/policy/enforcer', () => ({
+  getCurrentPolicy: () => ({ mode: 'test-policy' }),
+}));
+
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkTool: (...args: unknown[]) => policyMocks.checkTool(...args),
+}));
+
+vi.mock('@/components/enterprise/policyConfirmQueue', () => ({
+  showPolicyConfirm: (...args: unknown[]) => policyMocks.showPolicyConfirm(...args),
+}));
 
 // Test the conversation-level permission mode resolution formula used in registry.ts.
 // We test the logic in isolation via store state rather than calling executeTool directly
@@ -321,6 +345,87 @@ describe('browser site permission verdicts', () => {
   });
 });
 
+// ── Enterprise policy confirm gate ──
+describe('enterprise policy confirm gate', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    policyMocks.showPolicyConfirm.mockResolvedValue(true);
+    policyMocks.showPolicyConfirm.mockClear();
+  });
+
+  it('fails closed instead of showing policy confirmation during background runs', async () => {
+    policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'requires approval' });
+
+    const decision = await checkToolApproval(
+      'get_system_info',
+      {},
+      { interactionMode: 'background' } as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('[policy]');
+    expect(policyMocks.showPolicyConfirm).not.toHaveBeenCalled();
+  });
+
+  it('preserves policy confirmation UI for foreground runs', async () => {
+    policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'requires approval' });
+
+    const decision = await checkToolApproval(
+      'get_system_info',
+      {},
+      { interactionMode: 'foreground' } as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(policyMocks.showPolicyConfirm).toHaveBeenCalledWith('requires approval');
+  });
+
+  it('denies by policy before the large-write guard probes file metadata', async () => {
+    const scopeId = createAuthorizationScope();
+    const path = '/Users/testuser/Projects/policy-denied-large.html';
+    try {
+      scopedAuthorizeWorkspace(scopeId, path, ['read', 'write']);
+      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked destination' });
+      vi.mocked(exists).mockClear();
+      vi.mocked(stat).mockClear();
+      vi.mocked(exists).mockResolvedValueOnce(true);
+      vi.mocked(stat).mockResolvedValueOnce({ size: 16 * 1024 } as never);
+
+      const decision = await checkToolApproval(
+        'write_file',
+        { path, content: 'replacement' },
+        { authorizationScopeId: scopeId, interactionMode: 'background' } as never,
+      );
+
+      expect(decision).toEqual({ decision: 'deny', reason: 'Error: [policy] blocked destination' });
+      expect(exists).not.toHaveBeenCalled();
+      expect(stat).not.toHaveBeenCalled();
+    } finally {
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+});
+
+describe('command confirmation channel', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+  });
+
+  it('fails closed when a command requires confirmation but no channel exists', async () => {
+    const decision = await checkToolApproval(
+      'run_command',
+      { command: 'git reset --hard' },
+      { interactionMode: 'background' } as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+});
+
 // ── Self-extension gate ──
 // Creating a subagent, installing an MCP server, or rewriting the persona all
 // write durable state that shapes every later turn. Each is confirmed on its
@@ -392,4 +497,54 @@ describe('self-extension approval gate', () => {
       expect(decision.decision).toBe('deny');
     }
   });
+
+  it.each([
+    ['manage_trigger', 'update'],
+    ['manage_scheduled_task', 'create'],
+    ['manage_file_watch', 'add'],
+  ])('does not let a custom wildcard trigger persist authority through %s(%s)', async (name, action) => {
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    const confirm = vi.fn(async () => true);
+    const decision = await checkToolApproval(
+      name,
+      { action },
+      {
+        conversationId: 'conv-1',
+        interactionMode: 'background',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({
+          prompt: 'legacy custom',
+          capability: 'custom',
+          permissions: { allowedTools: ['*'] },
+        }),
+      } as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['manage_trigger', 'manage_scheduled_task', 'manage_file_watch'])(
+    'keeps %s(list) available to a custom wildcard trigger',
+    async (name) => {
+      const confirm = vi.fn(async () => true);
+      const decision = await checkToolApproval(
+        name,
+        { action: 'list' },
+        {
+          conversationId: 'conv-1',
+          interactionMode: 'background',
+          runPermissionCeiling: buildTriggerRunPermissionCeiling({
+            prompt: 'legacy custom',
+            capability: 'custom',
+            permissions: { allowedTools: ['*'] },
+          }),
+        } as never,
+        confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).not.toHaveBeenCalled();
+    },
+  );
 });

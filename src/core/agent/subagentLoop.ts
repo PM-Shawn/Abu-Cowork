@@ -49,6 +49,7 @@ import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
 import {
   ActiveToolResultAdmission,
@@ -60,6 +61,21 @@ const logger = createLogger('subagentLoop');
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
 const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
+
+/**
+ * Host-owned unattended identity for every delegated execution path. A
+ * scheduler currently carries only an authorization scope, while trigger/IM
+ * runs also carry a ceiling/context; all three must stay background after a
+ * delegation boundary, including when the sidecar reconstructs tool context.
+ */
+export function resolveSubagentInteractionMode(
+  options: Pick<
+    SubagentLoopOptions,
+    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId'
+  >,
+): NonNullable<ToolExecutionContext['interactionMode']> {
+  return deriveRunInteractionMode(options);
+}
 
 // ─── Pure event-builder helpers (exported for unit-testing event shapes) ───
 
@@ -398,6 +414,12 @@ export interface SubagentLoopOptions {
   allowedTools?: string[];
   /** Parent-run path authorization scope inherited by delegated work. */
   authorizationScopeId?: string;
+  /** Parent-owned unattended authority ceiling. Delegation may not widen it. */
+  runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  /** Shell-only factory; omitted from subagent.run wire params. */
+  skillCommandApprovalFactory?: (
+    context: ToolExecutionContext,
+  ) => import('../skill/preprocessor').SkillCommandApprovalCallback;
   /**
    * Parent-run tool denylist inherited by delegated work — the twin of
    * `allowedTools`, and inherited for the same reason: a run-scoped
@@ -411,8 +433,13 @@ export interface SubagentLoopOptions {
   onProgress?: (event: SubagentProgressEvent) => void;
   /** IM context — provides correct workspace path in headless mode */
   imContext?: IMContext;
+  /** Parent unattended provenance, retained across delegation boundaries. */
+  triggerId?: string;
+  scheduledTaskId?: string;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
+  /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
+  parentLoopId?: string;
   /**
    * Whether image-bearing child tool results need a hidden parent-message
    * replay entry. Single-agent delegation has persisted execution child steps
@@ -949,6 +976,24 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             return { id: tc.id, result: `Error: tool "${tc.name}" is blocked for this agent run` };
           }
 
+          const subagentToolContext: ToolExecutionContext = {
+            workspacePath,
+            conversationId: options.parentConversationId,
+            loopId: options.parentLoopId,
+            interactionMode: resolveSubagentInteractionMode(options),
+            authorizationScopeId: options.authorizationScopeId,
+            runPermissionCeiling: options.runPermissionCeiling,
+            abortSignal: signal,
+            // Forward the IM reply target so send_file works from a subagent
+            // delegated inside an IM run (without it the tool would falsely
+            // report "not in an IM channel").
+            imReplyTarget: options.imContext?.replyChatId
+              ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
+              : undefined,
+          };
+          subagentToolContext.skillCommandApproval =
+            options.skillCommandApprovalFactory?.(subagentToolContext);
+
           // Emit preToolCall — may block or modify input
           const preEvent = await emitHook({
             type: 'preToolCall' as const,
@@ -956,6 +1001,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             toolName: tc.name,
             toolInput: tc.input,
             abortSignal: signal,
+            toolContext: subagentToolContext,
           } as PreToolCallEvent);
           if (preEvent.blocked) {
             if (preEvent.blockReason) {
@@ -984,17 +1030,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
           const toolStart = Date.now();
           try {
-            const subagentToolContext: ToolExecutionContext = {
-              workspacePath,
-              authorizationScopeId: options.authorizationScopeId,
-              abortSignal: signal,
-              // Forward the IM reply target so send_file works from a subagent
-              // delegated inside an IM run (without it the tool would falsely
-              // report "not in an IM channel").
-              imReplyTarget: options.imContext?.replyChatId
-                ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
-                : undefined,
-            };
             const rawResult = await toolInvoker.executeAnyTool(
               tc.name,
               effectiveInput,
@@ -1024,6 +1059,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               result,
               error: false,
               durationMs,
+              toolContext: subagentToolContext,
             });
             return { id: tc.id, result, resultContentToken };
           } catch (err) {
@@ -1039,6 +1075,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               result,
               error: true,
               durationMs,
+              toolContext: subagentToolContext,
             });
             return { id: tc.id, result };
           }

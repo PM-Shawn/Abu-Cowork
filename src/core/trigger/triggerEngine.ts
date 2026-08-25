@@ -2,6 +2,7 @@ import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
+import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import {
   notifyTriggerCompleted,
   notifyTriggerError,
@@ -338,6 +339,7 @@ class TriggerEngine {
         blockedTools: callbacks.blockedTools,
         allowedTools: callbacks.allowedTools,
         authorizationScopeId,
+        runPermissionCeiling: buildTriggerRunPermissionCeiling(actionWithWorkspace),
       });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall

@@ -39,7 +39,13 @@
 import { sendNotification } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 
-export async function bindWorkspaceFromWrite(conversationId: string | undefined, path: string): Promise<void> {
+export async function bindWorkspaceFromWrite(
+  conversationId: string | undefined,
+  path: string,
+  _interactionMode: 'foreground' | 'background',
+): Promise<void> {
   const { runId } = getCurrentAgentRunContext();
+  // Do not forward the caller-supplied mode: the shell handler derives it from
+  // the run-owned session and passes that trusted value to the real binder.
   sendNotification('workspace.bindFromWrite', { runId, conversationId, path });
 }

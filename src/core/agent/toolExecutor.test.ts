@@ -269,6 +269,40 @@ describe('executeToolBatch · hard run restrictions', () => {
     );
   });
 
+  it('installs the parent run permission ceiling for nested delegate tools', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+    const ceiling = {
+      version: 1,
+      source: 'trigger',
+      capability: 'custom',
+      allowedTools: ['delegate_to_agent'],
+    } as never;
+    params.toolContext.runPermissionCeiling = ceiling;
+
+    await executeToolBatch(params);
+
+    expect(mocks.setLoopContext).toHaveBeenCalledWith(
+      'loop-1',
+      expect.objectContaining({ runPermissionCeiling: ceiling }),
+    );
+  });
+
+  it('installs the trusted IM reply target for nested delegate tools', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+    params.toolContext.imReplyTarget = { platform: 'feishu', chatId: 'chat-trusted' };
+
+    await executeToolBatch(params);
+
+    expect(mocks.setLoopContext).toHaveBeenCalledWith(
+      'loop-1',
+      expect.objectContaining({
+        imReplyTarget: { platform: 'feishu', chatId: 'chat-trusted' },
+      }),
+    );
+  });
+
   it('fails closed before invoking a tool outside the per-run whitelist', async () => {
     const executeAnyTool = vi.fn();
     const toolCall = makeToolCall('write_file');
@@ -544,6 +578,39 @@ describe('executeToolBatch · result image snapshots', () => {
     expect(result.requiresUserRecovery).toBe(false);
   });
 
+  it('keeps a scoped read image pending and snapshots the returned bytes instead of rereading the source path', async () => {
+    let resolveSnapshot!: () => void;
+    mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    const toolCall = makeToolCall('read_file', { path: '/Users/testuser/Desktop/chart.png' });
+    const imageResult = [{
+      type: 'image' as const,
+      source: { type: 'base64' as const, media_type: 'image/png', data: 'AQID' },
+    }];
+    const params = makeParams(toolCall, makeInvoker(vi.fn().mockResolvedValue(imageResult)));
+    params.toolContext.authorizationScopeId = 'scope-trigger-run';
+
+    let batchSettled = false;
+    const batch = executeToolBatch(params).then((result) => {
+      batchSettled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(mocks.snapshotResultImage).toHaveBeenCalledOnce());
+
+    expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
+      'conv-1',
+      toolCall.id,
+      { mediaType: 'image/png', base64: 'AQID' },
+      undefined,
+    );
+    expect(batchSettled).toBe(false);
+
+    resolveSnapshot();
+    await batch;
+    expect(batchSettled).toBe(true);
+  });
+
   it('does not duplicate an explicit computer screenshot that already has a saved path', async () => {
     const toolCall = makeToolCall('computer', { action: 'screenshot' });
     const imageResult = [
@@ -570,6 +637,38 @@ describe('executeToolBatch · result image snapshots', () => {
     expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
       'conv-1', toolCall.id, { mediaType: 'image/png', base64: 'AQID' }, undefined,
     );
+  });
+});
+
+describe('executeToolBatch · scoped abort ownership', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.emitHook.mockResolvedValue({ blocked: false });
+  });
+
+  it('keeps a scoped batch pending until an already-started underlying tool really settles', async () => {
+    let settleTool!: (value: string) => void;
+    const underlying = new Promise<string>((resolve) => {
+      settleTool = resolve;
+    });
+    const executeAnyTool = vi.fn().mockReturnValue(underlying);
+    const params = makeParams(makeToolCall('server__slow_tool'), makeInvoker(executeAnyTool));
+    params.toolContext.authorizationScopeId = 'scope-im-run';
+
+    let batchSettled = false;
+    const batch = executeToolBatch(params).then((result) => {
+      batchSettled = true;
+      return result;
+    });
+    await vi.waitFor(() => expect(executeAnyTool).toHaveBeenCalledOnce());
+
+    params.abortController.abort();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    expect(batchSettled).toBe(false);
+    settleTool('late result');
+    await batch;
+    expect(batchSettled).toBe(true);
   });
 });
 

@@ -279,8 +279,8 @@ export const manageTriggerTool: ToolDefinition = {
       // PermissionCeiling() reads action.permissions verbatim, so letting the
       // model rewrite those three fields let it widen its own unattended
       // ceiling from e.g. {allowedTools:['read_file']} to ['*'] without ever
-      // touching `capability`. Host-owned means host-owned — these are edited
-      // in the trigger UI only.
+      // touching `capability`. Host-owned means host-owned. This version has
+      // no UI editor; changes require an administrator or manual config edit.
       trigger_id: { type: 'string', description: 'Trigger ID (required for update/delete/pause/resume)' },
       status_filter: {
         type: 'string',

@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { fsDispatch } = require('./fsHost.cjs');
+const { fsDispatch, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { fsWatchDispatch, cleanupFsWatchesForSender } = require('./fsWatchHost.cjs');
 
 const app = {};
@@ -105,6 +105,39 @@ test('symlinks whose canonical target remains in an allowed root keep working', 
 
   const bytes = fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: link } });
   assert.equal(bytes.toString('utf8'), 'allowed');
+});
+
+test('path-policy canonicalization resolves an allowed symlink and a missing write tail', (t) => {
+  const dir = tempDir(t);
+  const targetDir = tempDir(t);
+  const linkDir = path.join(dir, 'policy-link');
+  fs.symlinkSync(targetDir, linkDir);
+
+  assert.equal(
+    canonicalizeForPathPolicy(path.join(linkDir, 'nested', 'future.txt')),
+    path.join(fs.realpathSync.native(targetDir), 'nested', 'future.txt')
+  );
+});
+
+test('path-policy entry canonicalization resolves the parent without following the final symlink', (t) => {
+  const dir = tempDir(t);
+  const targetDir = tempDir(t);
+  const target = path.join(targetDir, 'target.txt');
+  const link = path.join(dir, 'entry-link.txt');
+  fs.writeFileSync(target, 'target');
+  fs.symlinkSync(target, link);
+
+  assert.equal(canonicalizeForPathPolicy(link, true), fs.realpathSync.native(target));
+  assert.equal(
+    canonicalizeForPathPolicy(link, false),
+    path.join(fs.realpathSync.native(dir), path.basename(link))
+  );
+});
+
+test('path-policy canonicalization rejects malformed renderer paths', () => {
+  assert.throws(() => canonicalizeForPathPolicy(''), /non-empty string/);
+  assert.throws(() => canonicalizeForPathPolicy('bad\0path'), /must not contain NUL/);
+  assert.throws(() => canonicalizeForPathPolicy('x'.repeat(33 * 1024)), /too long/);
 });
 
 test('remove deletes an escaping symlink entry without following its target', { skip: process.platform === 'win32' }, (t) => {

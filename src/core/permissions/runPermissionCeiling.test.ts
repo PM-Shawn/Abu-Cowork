@@ -50,7 +50,7 @@ describe('runPermissionCeiling', () => {
     })).toBe(true);
   });
 
-  it('gives scheduler runs an exact host-reviewed builtin roster without trusting MCP names', () => {
+  it('freezes the scheduler runtime tool snapshot without inventing or dropping tools', () => {
     const ceiling = buildScheduledRunPermissionCeiling([
       'read_file',
       'computer',
@@ -64,21 +64,17 @@ describe('runPermissionCeiling', () => {
       source: 'scheduler',
       capability: 'scheduled',
     }));
-    expect(ceiling.allowedTools).toContain('read_file');
-    expect(ceiling.allowedTools).toContain('get_system_info');
-    // MCP discovery does not carry trustworthy host-side consequence metadata.
-    // A read-looking name is not evidence, and accepting the connected service
-    // wholesale would admit destructive siblings such as delete_repository.
-    expect(ceiling.allowedTools).not.toContain('github__list_repositories');
-    expect(ceiling.allowedTools).not.toContain('github__delete_repository');
-    expect(ceiling.allowedTools).not.toContain('computer');
-    expect(ceiling.allowedTools).not.toContain('http_fetch');
-    expect(ceiling.allowedTools).not.toContain('generate_image');
-    expect(ceiling.allowedTools).not.toContain('process_image');
+    expect(ceiling.allowedTools).toEqual([
+      'read_file',
+      'computer',
+      'github__list_repositories',
+      'github__delete_repository',
+    ]);
+    expect(ceiling.allowedTools).not.toContain('get_system_info');
     expect(ceiling.allowedTools).not.toContain('*');
-    expect(decideToolUnderRunPermissionCeiling(ceiling, 'github__list_repositories', {}).decision).toBe('deny');
-    expect(decideToolUnderRunPermissionCeiling(ceiling, 'get_system_info', {}).decision).toBe('allow');
-    expect(decideToolUnderRunPermissionCeiling(ceiling, 'github__delete_repository', {}).decision).toBe('deny');
+    expect(decideToolUnderRunPermissionCeiling(ceiling, 'github__list_repositories', {}).decision).toBe('allow');
+    expect(decideToolUnderRunPermissionCeiling(ceiling, 'get_system_info', {}).decision).toBe('deny');
+    expect(decideToolUnderRunPermissionCeiling(ceiling, 'github__delete_repository', {}).decision).toBe('allow');
 
     // The scheduler ceiling owns only roster/self-extension boundaries. The
     // existing permissionMode + scoped callbacks still decide commands,

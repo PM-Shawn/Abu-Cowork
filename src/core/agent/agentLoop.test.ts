@@ -188,6 +188,38 @@ describe('resolveTools · per-run restrictions', () => {
     expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file', 'read_skill_file']);
     expect(resolved.deferredTools).toEqual([]);
   });
+
+  it('keeps conditional loading for an exact scheduler runtime snapshot', () => {
+    const tools = [
+      makeTool('read_file'),
+      makeTool('write_file'),
+      makeTool('github__list_repositories'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'summarize repositories' },
+      false,
+      undefined,
+      {
+        userInput: 'summarize repositories',
+        computerUseEnabled: false,
+        activeSkills: [],
+        turnCount: 1,
+      },
+      ['read_file', 'github__list_repositories'],
+      undefined,
+      true,
+    );
+
+    expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file']);
+    expect(resolved.deferredTools.map((tool) => tool.name)).toEqual(['github__list_repositories']);
+  });
 });
 
 describe('buildDirectDelegateSubagentOptions', () => {

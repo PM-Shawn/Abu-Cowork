@@ -297,6 +297,7 @@ export function resolveTools(
   prefetchContext?: { userInput: string; computerUseEnabled: boolean; activeSkills: import('../../types').Skill[]; turnCount: number },
   allowedTools?: string[],
   conversationId?: string,
+  allowedToolsAreExactSnapshot = false,
 ): { tools: ToolDefinition[]; deferredTools: ToolDefinition[]; inputValidators: Map<string, (input: Record<string, unknown>) => boolean> } {
   let tools = toolInvoker.getAllTools();
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
@@ -304,7 +305,11 @@ export function resolveTools(
 
   // Conditional tool loading: filter to core + prefetched tools
   // Non-core tools become "deferred" — name + description only in system prompt
-  if (prefetchContext && !route.skill?.allowedTools && !allowedTools?.length) {
+  if (
+    prefetchContext
+    && !route.skill?.allowedTools
+    && (!allowedTools?.length || allowedToolsAreExactSnapshot)
+  ) {
     const additionalToolNames = prefetchTools(prefetchContext);
     const prefetchedSet = new Set(additionalToolNames);
     const classified = classifyTools(tools, prefetchedSet, conversationId);
@@ -350,7 +355,11 @@ export function resolveTools(
   // Per-run whitelist (for example a custom trigger). This is mirrored by
   // toolExecutor's fail-closed check so the restriction is both model-visible
   // and authoritative at execution time.
-  if (allowedTools && allowedTools.length > 0) {
+  if (allowedToolsAreExactSnapshot) {
+    const allowedToolNames = new Set(allowedTools ?? []);
+    tools = tools.filter((tool) => allowedToolNames.has(tool.name));
+    deferredTools = deferredTools.filter((tool) => allowedToolNames.has(tool.name));
+  } else if (allowedTools && allowedTools.length > 0) {
     tools = tools.filter((tool) =>
       allowedTools.some((pattern) => matchesToolName(tool.name, pattern)),
     );
@@ -1445,7 +1454,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: activeSkillObjects,
         turnCount,
       };
-      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
+      const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(
+        toolInvoker,
+        route,
+        !!builtinWebSearch,
+        effectiveBlockedTools,
+        prefetchCtx,
+        options?.allowedTools,
+        conversationId,
+        options?.runPermissionCeiling?.source === 'scheduler',
+      );
       const deferredTools = noTools ? [] : rawDeferredTools;
       // tool_search is useful only when the host has an actual deferred catalog.
       // Hiding it when the catalog is empty prevents a weak model from spending
@@ -2370,7 +2388,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           // (line ~1304). Without it, freshTools is the full unfiltered catalog
           // while `tools` is the prefetched subset, so every deferred tool shows
           // up as falsely "added" in the injected tools-changed notification.
-          const { tools: freshRawTools } = resolveTools(toolInvoker, route, !!builtinWebSearch, effectiveBlockedTools, prefetchCtx, options?.allowedTools, conversationId);
+          const { tools: freshRawTools } = resolveTools(
+            toolInvoker,
+            route,
+            !!builtinWebSearch,
+            effectiveBlockedTools,
+            prefetchCtx,
+            options?.allowedTools,
+            conversationId,
+            options?.runPermissionCeiling?.source === 'scheduler',
+          );
           const freshTools = noTools ? [] : freshRawTools;
           const freshNames = new Set(freshTools.map(t => t.name));
           const added = freshTools.filter(t => !toolNames.has(t.name));

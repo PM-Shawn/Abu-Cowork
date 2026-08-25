@@ -233,7 +233,7 @@ describe('SchedulerEngine permission tier', () => {
     expect(useChatStore.getState().conversations[conversationId!]?.permissionMode).toBeUndefined();
   });
 
-  it('freezes an exact host-owned scheduler roster into both dispatch filters and the ceiling', async () => {
+  it('freezes the exact runtime tool snapshot into both dispatch filters and the ceiling', async () => {
     const task = makeTask({ id: 'task-roster', permissionMode: 'autonomous' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     let capturedOptions: Record<string, unknown> | undefined;
@@ -244,16 +244,13 @@ describe('SchedulerEngine permission tier', () => {
 
     await schedulerEngine.runNow(task.id);
 
-    expect(capturedOptions?.allowedTools).toEqual(expect.arrayContaining([
+    expect(capturedOptions?.allowedTools).toEqual([
       'read_file',
-      'get_system_info',
-    ]));
-    expect(capturedOptions?.allowedTools).not.toContain('github__list_repositories');
-    expect(capturedOptions?.allowedTools).not.toContain('github__delete_repository');
-    expect(capturedOptions?.allowedTools).not.toContain('computer');
-    expect(capturedOptions?.allowedTools).not.toContain('http_fetch');
-    expect(capturedOptions?.allowedTools).not.toContain('generate_image');
-    expect(capturedOptions?.allowedTools).not.toContain('process_image');
+      'github__list_repositories',
+      'github__delete_repository',
+      'computer',
+    ]);
+    expect(capturedOptions?.allowedTools).not.toContain('get_system_info');
     expect(capturedOptions?.allowedTools).not.toContain('*');
     expect(capturedOptions?.runPermissionCeiling).toEqual({
       version: 1,

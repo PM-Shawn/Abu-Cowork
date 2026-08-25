@@ -45,38 +45,6 @@ export const SAFE_TOOL_ALLOWLIST: readonly string[] = [
 
 export const DENY_ALL_TOOL_ALLOWLIST: readonly string[] = ['__run_permission_ceiling_no_tools__'];
 
-/**
- * Built-ins whose existing permissionMode/path/confirmation gates are valid
- * for an unattended scheduled task. Exact names are deliberate: a new
- * built-in must be reviewed before it becomes scheduler-reachable. MCP tools
- * are excluded until discovery exposes trustworthy host-side consequence
- * metadata; names and connection state are not authorization evidence.
- */
-export const SCHEDULER_CORE_TOOL_ALLOWLIST: readonly string[] = Object.freeze([
-  TOOL_NAMES.GET_SYSTEM_INFO,
-  TOOL_NAMES.READ_FILE,
-  TOOL_NAMES.WRITE_FILE,
-  TOOL_NAMES.EDIT_FILE,
-  TOOL_NAMES.DELETE_FILE,
-  TOOL_NAMES.LIST_DIRECTORY,
-  TOOL_NAMES.SEARCH_FILES,
-  TOOL_NAMES.FIND_FILES,
-  TOOL_NAMES.RUN_COMMAND,
-  TOOL_NAMES.WEB_SEARCH,
-  TOOL_NAMES.USE_SKILL,
-  TOOL_NAMES.READ_SKILL_FILE,
-  TOOL_NAMES.SKILL_VIEW,
-  TOOL_NAMES.DELEGATE_TO_AGENT,
-  TOOL_NAMES.RUN_AGENT_BATCH,
-  TOOL_NAMES.RECALL,
-  TOOL_NAMES.READ_MEMORY,
-  TOOL_NAMES.UPDATE_MEMORY,
-  TOOL_NAMES.LOG_TASK_COMPLETION,
-  TOOL_NAMES.SYSTEM_NOTIFY,
-  TOOL_NAMES.TOOL_SEARCH,
-  TOOL_NAMES.CAPABILITY_SNAPSHOT,
-]);
-
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -227,19 +195,19 @@ export function buildIMRunPermissionCeiling(level: unknown): RunPermissionCeilin
   });
 }
 
-/** Freeze the scheduler's host-reviewed builtin roster. */
+/**
+ * Freeze the tools that actually exist at dispatch time. This is a reachability
+ * snapshot, not a new grant: command, path, browser-site, enterprise-policy,
+ * and confirmation gates still decide whether a reachable tool may act.
+ */
 export function buildScheduledRunPermissionCeiling(
-  _availableToolNames: readonly string[],
+  availableToolNames: readonly string[],
 ): RunPermissionCeiling {
-  // Deliberately do not infer authority from MCP names such as `list_*`:
-  // discovery can expose a destructive sibling from the same connected
-  // server, and registry has no generic MCP consequence gate to catch it.
-  const allowedTools = [...SCHEDULER_CORE_TOOL_ALLOWLIST];
   return freezeCeiling({
     version: 1,
     source: 'scheduler',
     capability: 'scheduled',
-    allowedTools,
+    allowedTools: [...availableToolNames],
   });
 }
 

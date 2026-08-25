@@ -71,7 +71,7 @@ Content-Type: application/json
 
 `custom` 触发器的命令、路径和工具白名单保存在触发器配置数据中。当前版本没有
 白名单 UI 编辑入口；如需调整，请让用户联系管理员或手动修改配置。
-`manage_trigger` 不能读取、设置或改写这些白名单；不要声称已经替用户修改。
+`manage_trigger` 不能设置或改写这些白名单；不要声称已经替用户修改。
 存量 `custom` 触发器若缺少 `allowedTools` 或该列表为空，会按只读档运行；只有显式
 配置 `allowedTools: ["*"]` 才表示工具通配。
 

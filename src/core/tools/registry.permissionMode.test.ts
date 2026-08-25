@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { exists, stat } from '@tauri-apps/plugin-fs';
+import { tempDir } from '@tauri-apps/api/path';
+import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
+import { setPlatformForTest } from '../../test/helpers';
+import { TOOL_NAMES } from './toolNames';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
@@ -27,6 +31,11 @@ vi.mock('@/core/enterprise/policy/matcher', () => ({
 
 vi.mock('@/components/enterprise/policyConfirmQueue', () => ({
   showPolicyConfirm: (...args: unknown[]) => policyMocks.showPolicyConfirm(...args),
+}));
+
+vi.mock('../../utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: vi.fn().mockResolvedValue(null),
 }));
 
 // Test the conversation-level permission mode resolution formula used in registry.ts.
@@ -73,6 +82,50 @@ describe('permission mode resolution', () => {
     useChatStore.getState().setConversationPermissionMode(id, 'autonomous');
     useChatStore.getState().setConversationPermissionMode(id, undefined);
     expect(resolvePermissionMode(id)).toBe('smart');
+  });
+});
+
+// ── write_file overwrite-safety read-precheck must not dead-end on $TMPDIR ──
+// Regression for the R3.4 asymmetry: checkWritePath allows a macOS temp-dir
+// write via its implicit-root match, but the overwrite-safety read-precheck was
+// handed the CANONICAL resolved path (/private/var/folders/...), which breaks
+// checkReadPath's lexical implicit-root match — so the write dead-ended at a read
+// grant that no dialog could satisfy. The precheck must receive the lexical path.
+describe('write_file $TMPDIR overwrite-safety precheck', () => {
+  const runtimeTemp = '/var/folders/ab/cdef/T';
+
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    vi.mocked(tempDir).mockResolvedValue(runtimeTemp);
+    // macOS canonicalizes /var → /private/var; this is exactly the lexical↔canonical
+    // divergence that broke the precheck when the canonical form was passed in.
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+      const value = String(candidate);
+      return value.startsWith('/var/') ? `/private${value}` : value;
+    });
+    // Fresh, non-existent (or small) target: the large-write size guard is a no-op.
+    vi.mocked(exists).mockResolvedValue(false);
+  });
+
+  it('allows a temp-dir write instead of dead-ending at "requires read authorization"', async () => {
+    const cleanup = setPlatformForTest('macos');
+    // Fail the test loudly if any code path tries to raise a permission dialog:
+    // the temp dir is an implicit root, so no read grant should be needed.
+    const onRequireFilePermission = vi.fn(async () => false);
+    try {
+      const decision = await checkToolApproval(
+        TOOL_NAMES.WRITE_FILE,
+        { path: `${runtimeTemp}/scratch.txt`, content: 'abu-test-ok' },
+        { conversationId: 'conv-tmp' } as never,
+        undefined,
+        onRequireFilePermission as never,
+      );
+      expect(decision.decision).toBe('allow');
+      expect(onRequireFilePermission).not.toHaveBeenCalled();
+    } finally {
+      cleanup();
+    }
   });
 });
 

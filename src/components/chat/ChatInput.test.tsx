@@ -4,7 +4,10 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import ChatInput, { mergeComposerAppend, referenceDedupeKey, referenceChipLabel } from './ChatInput';
 import { createDocReference, createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { useChatStore } from '@/stores/chatStore';
-import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { clearAllComposerDrafts, writeComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
+import { usePreviewStore } from '@/stores/previewStore';
+import { getI18n } from '@/i18n';
+import type { ImageAttachment } from '@/types';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
 
@@ -96,6 +99,47 @@ describe('ChatInput per-conversation drafts', () => {
       });
     });
     expect(textarea.value).toBe('alice draft');
+  });
+});
+
+describe('ChatInput attachment image preview', () => {
+  beforeEach(() => {
+    clearAllComposerDrafts();
+    useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+    useChatStore.setState({
+      conversations: {},
+      conversationIndex: {},
+      activeConversationId: null,
+      pendingInput: null,
+      pendingInputAppend: null,
+      pendingReferences: [],
+      pendingAttachmentPaths: [],
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('opens the pending image in the preview panel when its thumbnail is clicked', () => {
+    const image: ImageAttachment = { id: 'img-1', data: 'aGVsbG8=', mediaType: 'image/png' };
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, {
+      text: '',
+      images: [image],
+      files: [],
+      references: [],
+      selectedSkill: null,
+      selectedAgent: null,
+    });
+    const openPreview = vi.fn();
+    usePreviewStore.setState({ openPreview });
+
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+
+    const thumbnail = screen.getByTitle(getI18n().chat.clickToViewFull);
+    fireEvent.click(thumbnail);
+    expect(openPreview).toHaveBeenCalledWith('data:image/png;base64,aGVsbG8=');
   });
 });
 

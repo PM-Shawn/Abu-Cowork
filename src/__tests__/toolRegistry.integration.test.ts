@@ -18,6 +18,12 @@ import { useSettingsStore } from '../stores/settingsStore';
 import { setPlatformForTest as _setPlatformForTest } from '../test/helpers';
 import { resolveTriggerCallbacks } from '../core/trigger/triggerPermission';
 import { buildTriggerRunPermissionCeiling } from '../core/permissions/runPermissionCeiling';
+import { canonicalizeElectronPathForPolicy } from '../utils/electronHost';
+
+vi.mock('../utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: vi.fn().mockResolvedValue(null),
+}));
 
 // Mock i18n. commandSafety resolves reason/label strings via
 // getI18n().toolResult.commandSafety.<key> at analysis time; this test only
@@ -56,6 +62,7 @@ describe('toolRegistry integration', () => {
     revokeWorkspace('/Users/testuser/Projects/myapp');
     vi.mocked(exists).mockReset().mockResolvedValue(false);
     vi.mocked(stat).mockReset().mockResolvedValue({ size: 0 } as never);
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset().mockResolvedValue(null);
   });
 
   // ── Command safety through executeAnyTool ──
@@ -914,6 +921,85 @@ describe('toolRegistry integration', () => {
 
   // ── Path safety through executeAnyTool ──
   describe('path safety pipeline', () => {
+    it('executes a scoped file tool against the canonical path that was approved', async () => {
+      const scopeId = createAuthorizationScope();
+      const workspace = '/Users/testuser/Documents/canonical-execution';
+      const canonicalWorkspace = '/Users/testuser/Projects/canonical-execution-real';
+      const lexicalPath = `${workspace}/link/report.md`;
+      const canonicalPath = `${canonicalWorkspace}/real/report.md`;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        if (value === lexicalPath) return canonicalPath;
+        if (value === workspace) return canonicalWorkspace;
+        return value;
+      });
+      const executeFn = vi.fn().mockResolvedValue('file content');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      scopedAuthorizeWorkspace(scopeId, workspace, ['read']);
+
+      try {
+        await expect(executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        )).resolves.toBe('file content');
+        expect(executeFn).toHaveBeenCalledWith(
+          { path: canonicalPath },
+          expect.objectContaining({ authorizationScopeId: scopeId }),
+        );
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('rechecks a callback grant against its pinned root before executing', async () => {
+      const scopeId = createAuthorizationScope();
+      const grantRoot = '/Users/testuser/Desktop';
+      const lexicalPath = `${grantRoot}/link/report.md`;
+      const targetA = '/Users/testuser/Projects/granted-a';
+      const targetB = '/Users/testuser/Documents/retargeted-b';
+      let target = targetA;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === grantRoot || value.startsWith(`${grantRoot}/`)
+          ? value.replace(grantRoot, target)
+          : value;
+      });
+      const executeFn = vi.fn().mockResolvedValue('must not execute');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      const grant = vi.fn(async ({ path, capability }) => {
+        scopedAuthorizeWorkspace(scopeId, path, [capability]);
+        target = targetB;
+        return true;
+      });
+
+      try {
+        const result = await executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          grant,
+          { authorizationScopeId: scopeId },
+        );
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
     it('blocks read of sensitive paths', async () => {
       toolRegistry.register({
         name: 'read_file',
@@ -962,6 +1048,50 @@ describe('toolRegistry integration', () => {
         onFilePermission
       );
       expect(onFilePermission).toHaveBeenCalled();
+    });
+
+    it('executes the canonical escape target after the user approves that exact target', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const lexicalRoot = '/Users/testuser/Documents/registry-canonical-source';
+      const lexicalPath = `${lexicalRoot}/link/report.md`;
+      const canonicalPath = '/Volumes/External/r3b-canonical-target/report.md';
+      const executeFn = vi.fn().mockResolvedValue('file content');
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === lexicalPath ? canonicalPath : value;
+      });
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      authorizeWorkspace(lexicalRoot, ['read']);
+      const onFilePermission = vi.fn(async ({ path, capability }) => {
+        authorizeWorkspace(path, [capability]);
+        return true;
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'standard' });
+        await expect(executeAnyTool(
+          'read_file',
+          { path: lexicalPath },
+          undefined,
+          onFilePermission,
+        )).resolves.toBe('file content');
+        expect(onFilePermission).toHaveBeenCalledWith({
+          path: canonicalPath,
+          capability: 'read',
+          toolName: 'read_file',
+        }, undefined);
+        expect(executeFn).toHaveBeenCalledWith({ path: canonicalPath }, undefined);
+        expect((await checkWritePath(canonicalPath)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        revokeWorkspace(lexicalRoot);
+        revokeWorkspace(canonicalPath);
+      }
     });
 
     it('checks, rechecks, and auto-authorizes inside the explicit run scope without falling back to global writes', async () => {
@@ -1068,6 +1198,28 @@ describe('toolRegistry integration', () => {
       }
     });
 
+    it('auto-authorizes global read access without upgrading it to write', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const path = '/Volumes/External/global-auto-read.md';
+      const executeFn = vi.fn().mockResolvedValue('read');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        await expect(executeAnyTool('read_file', { path })).resolves.toBe('read');
+        expect(executeFn).toHaveBeenCalledWith({ path }, undefined);
+        expect((await checkWritePath(path)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        revokeWorkspace(path);
+      }
+    });
+
     it('treats an empty explicit scope as fail-closed instead of auto-authorizing globally', async () => {
       const previousMode = useSettingsStore.getState().permissionMode;
       const path = '/Users/testuser/Desktop/empty-scope-auto-read.md';
@@ -1091,8 +1243,8 @@ describe('toolRegistry integration', () => {
           { authorizationScopeId: '' },
         );
 
-        expect(result).toBe('read');
-        expect(executeFn).toHaveBeenCalled();
+        expect(String(result)).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
         expect((await checkWritePath(path)).allowed).toBe(false);
         expect((await checkWritePath(path, '')).allowed).toBe(false);
       } finally {

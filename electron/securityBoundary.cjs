@@ -270,6 +270,14 @@ function assertTrustedIpcSender(event) {
   return result.record;
 }
 
+function assertTrustedMainIpcSender(event) {
+  const record = assertTrustedIpcSender(event);
+  if (record.label !== 'main') {
+    throw new Error(`Blocked privileged IPC: endpoint is restricted to the main window`);
+  }
+  return record;
+}
+
 function isPlainRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
@@ -479,6 +487,7 @@ module.exports = {
   registerPrivilegedWindow,
   validateTrustedIpcSender,
   assertTrustedIpcSender,
+  assertTrustedMainIpcSender,
   canonicalFilePage,
   isWindowsAbsolutePath,
   canonicalNavigatedFilePage,

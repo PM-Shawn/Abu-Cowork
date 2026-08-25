@@ -676,10 +676,57 @@ describe('agentLoopHost', () => {
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
     });
 
+    it('executes a local file tool only with the canonical path bound by shell approval', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      executeLocalToolMock.mockResolvedValue('local file');
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') {
+          return Promise.resolve({
+            decision: 'allow',
+            executionPath: '/canonical/workspace/report.md',
+          });
+        }
+        return Promise.resolve('unexpected fallback');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/workspace/link/report.md' }),
+      );
+
+      expect(result).toBe('local file');
+      expect(executeLocalToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/canonical/workspace/report.md' },
+        undefined,
+        undefined,
+      );
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+    });
+
+    it('does not execute a local file tool when an allow ACK omits its canonical path', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({ decision: 'allow' });
+        if (method === 'tool.invoke') return Promise.resolve('reverse result');
+        return Promise.resolve(undefined);
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/workspace/link/report.md' }),
+      );
+
+      expect(result).toBe('reverse result');
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'read_file', input: { path: '/workspace/link/report.md' } }),
+      );
+    });
+
     it('does not start a local tool when Stop wins after the allow ACK was requested', async () => {
       hasLocalToolMock.mockReturnValue(true);
       isLocalToolReadOnlyMock.mockReturnValue(false);
-      let approve!: (value: { decision: 'allow' }) => void;
+      let approve!: (value: { decision: 'allow'; executionPath: string }) => void;
       sendRequestMock.mockImplementation((method: unknown) => {
         if (method === 'approval.check') {
           return new Promise((resolve) => { approve = resolve; });
@@ -703,7 +750,7 @@ describe('agentLoopHost', () => {
       ));
 
       controller.abort();
-      approve({ decision: 'allow' });
+      approve({ decision: 'allow', executionPath: '/tmp/late.txt' });
 
       await expect(execution).rejects.toEqual(expect.objectContaining({ name: 'AbortError' }));
       expect(executeLocalToolMock).not.toHaveBeenCalled();

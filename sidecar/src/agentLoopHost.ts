@@ -62,6 +62,7 @@ import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPo
 import { createConversationRunMirror, type ConversationPatch } from './conversationRunMirror';
 import { seedSettingsMirrorIfEmpty, getSettingsMirrorReader, applySettingsSnapshot } from './settingsMirror';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './localTools';
+import { LOCAL_PATH_BOUND_TOOLS } from './localPathBoundTools';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
@@ -242,7 +243,10 @@ function parseAbortParams(params: unknown): { runId: string } {
  *     once-UI behavior — same fail-closed discipline as before, just no
  *     longer bucketed together with an explicit deny.
  */
-type LocalApprovalOutcome = { decision: 'allow' } | { decision: 'deny'; reason: string } | { decision: 'unavailable' };
+type LocalApprovalOutcome =
+  | { decision: 'allow'; executionPath?: string }
+  | { decision: 'deny'; reason: string }
+  | { decision: 'unavailable' };
 
 /**
  * P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3) — asks
@@ -283,7 +287,19 @@ async function checkLocalToolApproval(
     // never as an allow.
     return { decision: 'unavailable' };
   }
-  if (isRecord(result) && result.decision === 'allow') return { decision: 'allow' };
+  if (isRecord(result) && result.decision === 'allow') {
+    const executionPath = typeof result.executionPath === 'string' && result.executionPath.length > 0
+      ? result.executionPath
+      : undefined;
+    // File tools execute in this process, after shell-side path validation.
+    // Without the canonical path from that ACK, executing the original
+    // lexical path would reopen the symlink-retarget race. Treat the ACK as
+    // unusable and let the reverse path perform a fresh approval+execution.
+    if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && !executionPath) {
+      return { decision: 'unavailable' };
+    }
+    return executionPath ? { decision: 'allow', executionPath } : { decision: 'allow' };
+  }
   if (isRecord(result) && result.decision === 'deny') {
     // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
     // ?? \`Error: tool "${name}" was denied\``) so a deny surfaces the same
@@ -372,7 +388,15 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
             throw error;
           }
           try {
-            return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
+            const approvedInput = approval.executionPath
+              ? { ...input, path: approval.executionPath }
+              : input;
+            return await executeLocalTool(
+              name,
+              approvedInput,
+              context as ToolExecutionContext | undefined,
+              contextUsagePercent,
+            );
           } catch (err) {
             // A throw here means executeLocalTool's OWN dispatch layer failed
             // (NOT a normal tool-level error — those are already caught

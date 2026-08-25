@@ -3,12 +3,18 @@
  * Validates file paths to prevent access to sensitive locations
  */
 
-import { homeDir } from '@tauri-apps/api/path';
+import { homeDir, tempDir } from '@tauri-apps/api/path';
 import { lstat } from '@tauri-apps/plugin-fs';
-import { isWindows } from '../../utils/platform';
+import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
+import { isMacOS, isWindows } from '../../utils/platform';
+import { createLogger } from '../logging/logger';
+
+const logger = createLogger('pathSafety');
 
 export type PathCheckResult = {
   allowed: boolean;
+  /** Exact canonical path approved for the ensuing filesystem operation. */
+  resolvedPath?: string;
   needsPermission?: boolean;
   permissionPath?: string;    // Top-level directory that needs authorization
   capability?: 'read' | 'write';
@@ -180,8 +186,15 @@ const ALWAYS_ALLOWED_PATHS = [
 
 // Workspace paths that user has explicitly authorized, with capability tracking
 // Each entry maps a normalized path to its authorized capabilities
-const authorizedWorkspaces: Map<string, Set<'read' | 'write'>> = new Map();
-const scopedAuthorizedWorkspaces: Map<string, Map<string, Set<'read' | 'write'>>> = new Map();
+type WorkspaceCapability = 'read' | 'write';
+interface AuthorizedWorkspaceGrant {
+  capabilities: Set<WorkspaceCapability>;
+  /** Frozen when the grant is created; authority must not follow a retargeted link. */
+  canonicalRoot: Promise<string | null>;
+}
+
+const authorizedWorkspaces: Map<string, AuthorizedWorkspaceGrant> = new Map();
+const scopedAuthorizedWorkspaces: Map<string, Map<string, AuthorizedWorkspaceGrant>> = new Map();
 const authorizationScopePolicies: Map<string, AuthorizationScopePolicy> = new Map();
 let authorizationScopeCounter = 0;
 
@@ -222,24 +235,45 @@ function isBlankWorkspaceGrant(path: string): boolean {
   return path.trim().length === 0;
 }
 
-function getAuthorizationMap(scopeId: AuthorizationScopeId | undefined): Map<string, Set<'read' | 'write'>> | undefined {
+function getAuthorizationMap(
+  scopeId: AuthorizationScopeId | undefined,
+): Map<string, AuthorizedWorkspaceGrant> | undefined {
   if (scopeId === undefined) return authorizedWorkspaces;
   return scopedAuthorizedWorkspaces.get(scopeId);
 }
 
 function addAuthorizedWorkspace(
-  target: Map<string, Set<'read' | 'write'>>,
+  target: Map<string, AuthorizedWorkspaceGrant>,
   path: string,
-  capabilities?: ('read' | 'write')[],
+  capabilities?: WorkspaceCapability[],
 ): void {
   if (isBlankWorkspaceGrant(path)) return;
   const normalized = normalizeWorkspacePath(path);
   const caps = capabilities ?? ['read', 'write'];
   const existing = target.get(normalized);
   if (existing) {
-    for (const c of caps) existing.add(c);
+    for (const c of caps) existing.capabilities.add(c);
   } else {
-    target.set(normalized, new Set(caps));
+    // Start resolution immediately. The promise captures the root at grant
+    // time and is reused for the whole scope instead of following later
+    // symlink retargets.
+    const canonicalRoot = resolvePathForPolicy(normalized)
+      .then((resolved) => (resolved.ok ? resolved.canonicalPath : null))
+      .catch((error: unknown) => {
+        // An unexpected resolver rejection must not poison every future path
+        // check that awaits this pinned grant. The lexical fallback retains
+        // legacy-host behavior; each requested path is still independently
+        // canonicalized (or rejected) before this root can authorize it.
+        logger.warn('canonical workspace grant resolution rejected; using lexical root', {
+          path: normalized,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return normalized;
+      });
+    target.set(normalized, {
+      capabilities: new Set(caps),
+      canonicalRoot,
+    });
   }
 }
 
@@ -250,7 +284,7 @@ function addAuthorizedWorkspace(
  */
 export function authorizeWorkspace(
   path: string,
-  capabilities?: ('read' | 'write')[],
+  capabilities?: WorkspaceCapability[],
 ): void {
   addAuthorizedWorkspace(authorizedWorkspaces, path, capabilities);
 }
@@ -258,7 +292,7 @@ export function authorizeWorkspace(
 export function scopedAuthorizeWorkspace(
   scopeId: AuthorizationScopeId,
   path: string,
-  capabilities?: ('read' | 'write')[],
+  capabilities?: WorkspaceCapability[],
 ): void {
   const target = scopedAuthorizedWorkspaces.get(scopeId);
   if (!target) return;
@@ -274,9 +308,9 @@ export function getAuthorizedWritablePaths(scopeId?: AuthorizationScopeId): stri
   const target = getAuthorizationMap(scopeId);
   if (!target) return [];
   const paths: string[] = [];
-  for (const [workspace, caps] of target) {
+  for (const [workspace, grant] of target) {
     if (isBlankWorkspaceGrant(workspace)) continue;
-    if (caps.has('write')) paths.push(workspace);
+    if (grant.capabilities.has('write')) paths.push(workspace);
   }
   return paths;
 }
@@ -311,11 +345,11 @@ function isInAuthorizedWorkspace(
   if (!target) return false;
   let normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   if (isWindows()) normalized = normalized.toLowerCase();
-  for (const [workspace, caps] of target) {
+  for (const [workspace, grant] of target) {
     if (isBlankWorkspaceGrant(workspace)) continue;
     const compareWs = isWindows() ? workspace.toLowerCase() : workspace;
     if (normalized === compareWs || normalized.startsWith(compareWs + '/')) {
-      if (caps.has(capability)) return true;
+      if (grant.capabilities.has(capability)) return true;
     }
   }
   return false;
@@ -327,6 +361,10 @@ export function isInScopedAuthorizedWorkspace(
   scopeId?: AuthorizationScopeId,
 ): boolean {
   if (scopeId === undefined) return false;
+  // Deliberately lexical-only: this is a conservative early ceiling check,
+  // never the final filesystem authorization. A false result can only deny
+  // more work; every actual file operation later goes through check*Path(),
+  // which pins and revalidates canonical roots before returning resolvedPath.
   return isInAuthorizedWorkspace(normalizePath(path), capability, scopeId);
 }
 
@@ -352,8 +390,8 @@ function foldPath(path: string): string {
  * This allows file tools (read_file, write_file, edit_file) to operate
  * on memory files without triggering permission dialogs.
  */
-async function isAbuMemoryPath(rawPath: string): Promise<boolean> {
-  const home = await getHomeDir();
+async function isAbuMemoryPath(rawPath: string, homeOverride?: string): Promise<boolean> {
+  const home = homeOverride ?? await getHomeDir();
   const abuBase = foldPath(`${home}/.abu`);
   const normalizedPath = foldPath(rawPath);
 
@@ -412,8 +450,8 @@ function isAbuAppDataSegment(segment: string): boolean {
   return name === 'abu' || name.startsWith('abu-') || name.startsWith('com.abu.');
 }
 
-async function isAbuSelfManagedPath(normalizedPath: string): Promise<boolean> {
-  const home = await getHomeDir();
+async function isAbuSelfManagedPath(normalizedPath: string, homeOverride?: string): Promise<boolean> {
+  const home = homeOverride ?? await getHomeDir();
   // Folded, not just normalized: on a case-insensitive filesystem `~/.Abu` IS
   // `~/.abu`, and a case-sensitive prefix test would hand the whole red line
   // away for the price of one capital letter. See `foldPath`.
@@ -421,7 +459,7 @@ async function isAbuSelfManagedPath(normalizedPath: string): Promise<boolean> {
 
   const abuBase = foldPath(`${home}/.abu`);
   if (comparePath === abuBase || comparePath.startsWith(`${abuBase}/`)) {
-    return !(await isAbuMemoryPath(normalizedPath));
+    return !(await isAbuMemoryPath(normalizedPath, home));
   }
 
   const appDataRoot = foldPath(
@@ -486,20 +524,26 @@ function normalizeForCompare(path: string): string {
 }
 
 /**
- * Check if a normalized path is a UNC network path (\\server\share or //server/share).
- * These are blocked to prevent network path traversal.
+ * Check if a path uses a UNC network or Windows device namespace.
+ *
+ * Extended drive paths (`\\?\C:\...`) are ordinary local paths with a long-path
+ * spelling and remain supported. Every other Win32 namespace spelling is
+ * rejected before normalization: stripping `\\?\` from an extended UNC path
+ * would otherwise turn it into the misleading local-looking `/UNC/...`.
  */
 function isUNCPath(rawPath: string): boolean {
-  // Check original path for UNC patterns before normalization strips them
   const p = rawPath.replace(/\\/g, '/');
-  return p.startsWith('//') && !p.startsWith('//?/');
+  if (/^\/\/\?\/[a-zA-Z]:(?:\/|$)/.test(p)) return false;
+  if (p.startsWith('//?/') || p.startsWith('//./')) return true;
+  if (/^\/\?\?\//.test(p)) return true;
+  return p.startsWith('//');
 }
 
 /**
  * Check if a path matches any blocked pattern
  */
-async function isBlockedPath(path: string): Promise<{ blocked: boolean; reason?: string }> {
-  const home = await getHomeDir();
+async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blocked: boolean; reason?: string }> {
+  const home = homeOverride ?? await getHomeDir();
   const comparePath = normalizeForCompare(path);
 
   // Check absolute blocked paths for read
@@ -572,6 +616,7 @@ async function getTrustedSymlinkInspectionRoot(path: string): Promise<string | u
   const normalizedPath = normalizePath(path);
   const candidates = [
     await getHomeDir(),
+    await getRuntimeTempDir(),
     ...ALWAYS_ALLOWED_PATHS,
     '/Volumes',
     '/Applications',
@@ -591,14 +636,16 @@ async function getTrustedSymlinkInspectionRoot(path: string): Promise<string | u
  * such as `<workspace>/link/secret` escapes the run scope when `link` points
  * elsewhere even though `lstat(secret)` itself reports a regular file.
  */
-async function isSymlinkBypass(path: string): Promise<boolean> {
+async function isSymlinkBypass(path: string, followFinalSymlink = true): Promise<boolean> {
   // Electron's plugin-fs host deliberately cannot inspect ancestors above its
   // capability roots (for example `/Users` above `$HOME`). Treat the matched
   // host root as a trusted anchor and inspect every descendant component. The
   // host independently canonicalizes that root, while this layer still catches
   // a symlink that escapes a narrower run/workspace scope inside it.
   const trustedRoot = await getTrustedSymlinkInspectionRoot(path);
-  for (const componentPath of pathComponentPrefixes(path, trustedRoot)) {
+  const components = pathComponentPrefixes(path, trustedRoot);
+  const inspectedComponents = followFinalSymlink ? components : components.slice(0, -1);
+  for (const componentPath of inspectedComponents) {
     try {
       const info = await lstat(componentPath);
       if (info.isSymlink) return true;
@@ -609,6 +656,163 @@ async function isSymlinkBypass(path: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+function isPathWithin(candidate: string, root: string): boolean {
+  const compareCandidate = normalizeForCompare(candidate);
+  const compareRoot = normalizeForCompare(root);
+  if (compareRoot === '/') return compareCandidate.startsWith('/');
+  return compareCandidate === compareRoot || compareCandidate.startsWith(`${compareRoot}/`);
+}
+
+async function getRuntimeTempDir(): Promise<string> {
+  try {
+    const runtimeTemp = await tempDir();
+    if (typeof runtimeTemp === 'string' && runtimeTemp.trim().length > 0) {
+      return normalizePath(runtimeTemp);
+    }
+  } catch {
+    // The platform API should normally be available. Keep the legacy fallback
+    // deterministic and narrow if an old host cannot expose it.
+  }
+  if (isWindows()) return normalizePath(`${await getHomeDir()}/AppData/Local/Temp`);
+  return '/tmp';
+}
+
+async function canonicalizePolicyAnchor(path: string): Promise<string | null> {
+  try {
+    const canonical = await canonicalizeElectronPathForPolicy(path);
+    return normalizePath(canonical ?? path);
+  } catch {
+    return null;
+  }
+}
+
+type ResolvedPolicyPath =
+  | { ok: true; lexicalPath: string; canonicalPath: string }
+  | { ok: false; reason: string };
+
+async function resolvePathForPolicy(
+  path: string,
+  options: { followFinalSymlink?: boolean } = {},
+): Promise<ResolvedPolicyPath> {
+  const lexicalPath = normalizePath(path);
+  const followFinalSymlink = options.followFinalSymlink !== false;
+  try {
+    const hostCanonical = await canonicalizeElectronPathForPolicy(path, followFinalSymlink);
+    if (hostCanonical !== null) {
+      if (isUNCPath(hostCanonical)) {
+        return { ok: false, reason: 'UNC network paths are not supported' };
+      }
+      return {
+        ok: true,
+        lexicalPath,
+        canonicalPath: normalizePath(hostCanonical),
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `无法安全解析路径: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  // Legacy Tauri/Web has no canonicalization bridge. Retain the old
+  // fail-closed behavior there; the dynamic temp root keeps macOS /var's own
+  // symlink from being mistaken for a user-controlled descendant link.
+  if (await isSymlinkBypass(path, followFinalSymlink)) {
+    return { ok: false, reason: '检测到无法安全解析的符号链接路径，请使用实际路径。' };
+  }
+  return { ok: true, lexicalPath, canonicalPath: lexicalPath };
+}
+
+interface CanonicalMatch {
+  lexical: boolean;
+  canonical: boolean;
+}
+
+async function matchResolvedRoots(
+  lexicalPath: string,
+  canonicalPath: string,
+  roots: string[],
+): Promise<CanonicalMatch> {
+  const lexical = roots.some((root) => isPathWithin(lexicalPath, root));
+  if (!lexical) return { lexical: false, canonical: false };
+
+  for (const root of roots) {
+    const canonicalRoot = await canonicalizePolicyAnchor(root);
+    if (canonicalRoot && isPathWithin(canonicalPath, canonicalRoot)) {
+      return { lexical: true, canonical: true };
+    }
+  }
+  return { lexical: true, canonical: false };
+}
+
+async function matchAuthorizedWorkspaces(
+  lexicalPath: string,
+  canonicalPath: string,
+  capability: 'read' | 'write',
+  scopeId?: AuthorizationScopeId,
+): Promise<CanonicalMatch> {
+  const target = getAuthorizationMap(scopeId);
+  if (!target) return { lexical: false, canonical: false };
+  let lexical = false;
+  let canonical = false;
+  for (const [workspace, grant] of target) {
+    if (isBlankWorkspaceGrant(workspace) || !grant.capabilities.has(capability)) continue;
+    if (isPathWithin(lexicalPath, workspace)) lexical = true;
+    const canonicalRoot = await grant.canonicalRoot;
+    if (canonicalRoot && isPathWithin(canonicalPath, canonicalRoot)) {
+      canonical = true;
+    }
+    if (lexical && canonical) break;
+  }
+  return { lexical, canonical };
+}
+
+function isAuthorizedWorkspaceMatch(match: CanonicalMatch, scopeId?: AuthorizationScopeId): boolean {
+  // A foreground user may explicitly approve the real destination revealed by
+  // a canonical-escape prompt. Scoped/unattended runs have no prompt and must
+  // still remain lexically inside their per-run allowlist.
+  return match.canonical && (scopeId === undefined || match.lexical);
+}
+
+async function getImplicitRoots(): Promise<string[]> {
+  const roots = [...ALWAYS_ALLOWED_PATHS, await getRuntimeTempDir()];
+  if (isWindows()) roots.push(`${await getHomeDir()}/AppData/Local/Temp`);
+  return [...new Set(roots.map((root) => normalizePath(root)))];
+}
+
+function getWriteBlockedRoot(path: string): string | null {
+  const writeBlocked = isWindows()
+    ? [...SYSTEM_PATHS_WRITE_BLOCKED, ...WIN_SYSTEM_PATHS_WRITE_BLOCKED]
+    : SYSTEM_PATHS_WRITE_BLOCKED;
+  return writeBlocked.find((root) => isPathWithin(path, root)) ?? null;
+}
+
+function canonicalScopeEscapeResult(): PathCheckResult {
+  return { allowed: false, reason: '符号链接目标超出本次运行已授权的路径范围' };
+}
+
+async function isTrustedMacRuntimeTempWrite(
+  runtimeTemp: string,
+  lexicalPath: string,
+  canonicalPath: string,
+): Promise<boolean> {
+  if (!isMacOS()) return false;
+
+  const lexicalRoot = normalizePath(runtimeTemp);
+  if (!/^\/var\/folders\/[^/]+\/[^/]+\/T$/.test(lexicalRoot)) return false;
+
+  try {
+    const canonicalRootRaw = await canonicalizeElectronPathForPolicy(lexicalRoot);
+    if (canonicalRootRaw === null) return false;
+    const canonicalRoot = normalizePath(canonicalRootRaw);
+    if (!/^\/private\/var\/folders\/[^/]+\/[^/]+\/T$/.test(canonicalRoot)) return false;
+    return isPathWithin(lexicalPath, lexicalRoot) && isPathWithin(canonicalPath, canonicalRoot);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -743,35 +947,59 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
     return { allowed: false, reason: blockCheck.reason };
   }
 
-  // Check for symlink bypass — symlinks could point to blocked paths
-  if (await isSymlinkBypass(path)) {
-    return { allowed: false, reason: '检测到符号链接，出于安全原因拒绝访问。请使用实际路径。' };
+  const resolved = await resolvePathForPolicy(path);
+  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+
+  const home = await getHomeDir();
+  const canonicalHome = await canonicalizePolicyAnchor(home);
+  if (!canonicalHome) return { allowed: false, reason: '无法安全解析用户目录' };
+
+  const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
+  if (canonicalBlock.blocked) {
+    return { allowed: false, reason: canonicalBlock.reason };
   }
 
-  // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath, 'read', scopeId)) {
-    return { allowed: true };
+  // A lexical grant is only valid when the resolved target is also contained
+  // by a canonicalized grant in the same authorization map. This permits a
+  // top-level iCloud/external-volume alias while rejecting a nested escape.
+  const workspaceMatch = await matchAuthorizedWorkspaces(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    'read',
+    scopeId,
+  );
+  if (isAuthorizedWorkspaceMatch(workspaceMatch, scopeId)) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && workspaceMatch.lexical) return canonicalScopeEscapeResult();
 
   // Check Abu memory directories (~/.abu/memory/, ~/.abu/projects/*/memory/)
-  if (await isAbuMemoryPath(normalizedPath)) {
-    return { allowed: true };
+  const lexicalMemory = await isAbuMemoryPath(resolved.lexicalPath, home);
+  const canonicalMemory = await isAbuMemoryPath(resolved.canonicalPath, canonicalHome);
+  if (lexicalMemory && canonicalMemory) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && lexicalMemory) return canonicalScopeEscapeResult();
 
-  // Check always allowed paths (/tmp etc.)
-  for (const allowedPath of ALWAYS_ALLOWED_PATHS) {
-    if (normalizedPath.startsWith(allowedPath)) {
-      return { allowed: true };
-    }
+  const implicitMatch = await matchResolvedRoots(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    await getImplicitRoots(),
+  );
+  if (implicitMatch.lexical && implicitMatch.canonical) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && implicitMatch.lexical) return canonicalScopeEscapeResult();
 
-  // Windows temp directory whitelist
-  if (isWindows()) {
-    const home = await getHomeDir();
-    const tempPath = normalizePath(`${home}/AppData/Local/Temp`);
-    if (normalizedPath.startsWith(tempPath)) {
-      return { allowed: true };
-    }
+  // A foreground grant whose nested link resolves outside its canonical roots
+  // may request the real destination. Scoped runs never reach this branch.
+  if (scopeId === undefined && (workspaceMatch.lexical || lexicalMemory || implicitMatch.lexical)) {
+    return {
+      allowed: false,
+      needsPermission: true,
+      permissionPath: resolved.canonicalPath,
+      capability: 'read',
+    };
   }
 
   // Check if in home allowed locations — these need permission
@@ -808,7 +1036,11 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
 /**
  * Check if a path is safe for writing
  */
-export async function checkWritePath(path: string, scopeId?: AuthorizationScopeId): Promise<PathCheckResult> {
+export async function checkWritePath(
+  path: string,
+  scopeId?: AuthorizationScopeId,
+  options: { followFinalSymlink?: boolean } = {},
+): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
@@ -830,47 +1062,75 @@ export async function checkWritePath(path: string, scopeId?: AuthorizationScopeI
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
 
-  // Check for symlink bypass — symlinks could point to blocked paths
-  if (await isSymlinkBypass(path)) {
-    return { allowed: false, reason: '检测到符号链接，出于安全原因拒绝写入。请使用实际路径。' };
+  const resolved = await resolvePathForPolicy(path, options);
+  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+
+  const home = await getHomeDir();
+  const canonicalHome = await canonicalizePolicyAnchor(home);
+  if (!canonicalHome) return { allowed: false, reason: '无法安全解析用户目录' };
+
+  const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
+  if (canonicalBlock.blocked) {
+    return { allowed: false, reason: canonicalBlock.reason };
+  }
+  if (await isAbuSelfManagedPath(resolved.canonicalPath, canonicalHome)) {
+    return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
 
-  // Check system paths (extra strict for write)
-  const writeBlocked = isWindows()
-    ? [...SYSTEM_PATHS_WRITE_BLOCKED, ...WIN_SYSTEM_PATHS_WRITE_BLOCKED]
-    : SYSTEM_PATHS_WRITE_BLOCKED;
-  const comparePath = normalizeForCompare(path);
-  for (const sysPath of writeBlocked) {
-    const compareSys = normalizeForCompare(sysPath);
-    if (comparePath.startsWith(compareSys)) {
-      return { allowed: false, reason: `禁止写入系统目录: ${sysPath}` };
+  const runtimeTemp = await getRuntimeTempDir();
+  const safeRuntimeTemp = await isTrustedMacRuntimeTempWrite(
+    runtimeTemp,
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+  );
+
+  // `/var/folders/.../T` is the OS-provided macOS temp root and canonicalizes
+  // to `/private/var/...`; only that exact double-contained root is exempt from
+  // the broad `/var` write red line. `/var/tmp` remains blocked.
+  if (!safeRuntimeTemp) {
+    const writeBlockedRoot = getWriteBlockedRoot(resolved.lexicalPath)
+      ?? getWriteBlockedRoot(resolved.canonicalPath);
+    if (writeBlockedRoot) {
+      return { allowed: false, reason: `禁止写入系统目录: ${writeBlockedRoot}` };
     }
   }
 
-  // Check if in authorized workspace (already granted permission)
-  if (isInAuthorizedWorkspace(normalizedPath, 'write', scopeId)) {
-    return { allowed: true };
+  const workspaceMatch = await matchAuthorizedWorkspaces(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    'write',
+    scopeId,
+  );
+  if (isAuthorizedWorkspaceMatch(workspaceMatch, scopeId)) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && workspaceMatch.lexical) return canonicalScopeEscapeResult();
 
   // Check Abu memory directories (~/.abu/memory/, ~/.abu/projects/*/memory/)
-  if (await isAbuMemoryPath(normalizedPath)) {
-    return { allowed: true };
+  const lexicalMemory = await isAbuMemoryPath(resolved.lexicalPath, home);
+  const canonicalMemory = await isAbuMemoryPath(resolved.canonicalPath, canonicalHome);
+  if (lexicalMemory && canonicalMemory) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && lexicalMemory) return canonicalScopeEscapeResult();
 
-  // Check always allowed paths (/tmp etc.)
-  for (const allowedPath of ALWAYS_ALLOWED_PATHS) {
-    if (normalizedPath.startsWith(allowedPath)) {
-      return { allowed: true };
-    }
+  const implicitMatch = await matchResolvedRoots(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    await getImplicitRoots(),
+  );
+  if (implicitMatch.lexical && implicitMatch.canonical) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && implicitMatch.lexical) return canonicalScopeEscapeResult();
 
-  // Windows temp directory whitelist
-  if (isWindows()) {
-    const home = await getHomeDir();
-    const tempPath = normalizePath(`${home}/AppData/Local/Temp`);
-    if (normalizedPath.startsWith(tempPath)) {
-      return { allowed: true };
-    }
+  if (scopeId === undefined && (workspaceMatch.lexical || lexicalMemory || implicitMatch.lexical)) {
+    return {
+      allowed: false,
+      needsPermission: true,
+      permissionPath: resolved.canonicalPath,
+      capability: 'write',
+    };
   }
 
   // Check if in home allowed locations — these need permission
@@ -921,29 +1181,49 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     return { allowed: false, reason: blockCheck.reason };
   }
 
-  // Check if in authorized workspace
-  if (isInAuthorizedWorkspace(normalizedPath, 'read', scopeId)) {
-    return { allowed: true };
+  const resolved = await resolvePathForPolicy(path);
+  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+
+  const home = await getHomeDir();
+  const canonicalHome = await canonicalizePolicyAnchor(home);
+  if (!canonicalHome) return { allowed: false, reason: '无法安全解析用户目录' };
+
+  const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
+  if (canonicalBlock.blocked) {
+    return { allowed: false, reason: canonicalBlock.reason };
   }
 
-  // Check always allowed paths
-  for (const allowedPath of ALWAYS_ALLOWED_PATHS) {
-    if (normalizedPath.startsWith(allowedPath)) {
-      return { allowed: true };
-    }
+  const workspaceMatch = await matchAuthorizedWorkspaces(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    'read',
+    scopeId,
+  );
+  if (isAuthorizedWorkspaceMatch(workspaceMatch, scopeId)) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
+  if (scopeId !== undefined && workspaceMatch.lexical) return canonicalScopeEscapeResult();
 
-  // Windows temp directory whitelist
-  if (isWindows()) {
-    const homeTmp = await getHomeDir();
-    const tempPath = normalizePath(`${homeTmp}/AppData/Local/Temp`);
-    if (normalizedPath.startsWith(tempPath)) {
-      return { allowed: true };
-    }
+  const implicitMatch = await matchResolvedRoots(
+    resolved.lexicalPath,
+    resolved.canonicalPath,
+    await getImplicitRoots(),
+  );
+  if (implicitMatch.lexical && implicitMatch.canonical) {
+    return { allowed: true, resolvedPath: resolved.canonicalPath };
+  }
+  if (scopeId !== undefined && implicitMatch.lexical) return canonicalScopeEscapeResult();
+
+  if (scopeId === undefined && (workspaceMatch.lexical || implicitMatch.lexical)) {
+    return {
+      allowed: false,
+      needsPermission: true,
+      permissionPath: resolved.canonicalPath,
+      capability: 'read',
+    };
   }
 
   // For listing under home, require permission (but still block system-ish paths)
-  const home = await getHomeDir();
   const normalizedHome = normalizePath(home);
   if (normalizedPath.startsWith(normalizedHome)) {
     // Block system-ish paths under home

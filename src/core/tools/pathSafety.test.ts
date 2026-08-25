@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { tempDir } from '@tauri-apps/api/path';
 import { lstat } from '@tauri-apps/plugin-fs';
+import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import {
   checkReadPath,
   checkWritePath,
@@ -16,8 +18,17 @@ import {
 } from './pathSafety';
 import { setPlatformForTest } from '../../test/helpers';
 
+vi.mock('../../utils/electronHost', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/electronHost')>()),
+  canonicalizeElectronPathForPolicy: vi.fn().mockResolvedValue(null),
+}));
+
 describe('pathSafety', () => {
   beforeEach(() => {
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset();
+    vi.mocked(canonicalizeElectronPathForPolicy).mockResolvedValue(null);
+    vi.mocked(tempDir).mockReset();
+    vi.mocked(tempDir).mockResolvedValue('/tmp');
     vi.mocked(lstat).mockReset();
     vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as never);
     // Clear any authorized workspaces by revoking known ones
@@ -172,6 +183,282 @@ describe('pathSafety', () => {
         expect(lstat).not.toHaveBeenCalledWith('/Users');
       } finally {
         disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('allows an authorized iCloud-backed Documents symlink after canonical revalidation', async () => {
+      const documents = '/Users/testuser/Documents';
+      const iCloudDocuments = '/Users/testuser/Library/Mobile Documents/com~apple~CloudDocs/Documents';
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === documents || value.startsWith(`${documents}/`)
+          ? value.replace(documents, iCloudDocuments)
+          : value;
+      });
+      vi.mocked(lstat).mockImplementation(async (candidate) => ({
+        isSymlink: String(candidate) === documents,
+      }) as never);
+
+      const file = `${documents}/report.md`;
+      const initial = await checkReadPath(file);
+      expect(initial).toMatchObject({
+        allowed: false,
+        needsPermission: true,
+        permissionPath: documents,
+      });
+
+      authorizeWorkspace(documents, ['read', 'write']);
+      try {
+        expect((await checkReadPath(file)).allowed).toBe(true);
+        expect((await checkWritePath(file)).allowed).toBe(true);
+        expect((await checkListPath(documents)).allowed).toBe(true);
+      } finally {
+        revokeWorkspace(documents);
+      }
+    });
+
+    it('accepts an explicitly approved canonical escape target on the second check', async () => {
+      const lexicalRoot = '/Users/testuser/Documents/canonical-escape-source';
+      const readLexical = `${lexicalRoot}/read-link/report.md`;
+      const readCanonical = '/Users/testuser/Desktop/canonical-read-target/report.md';
+      const writeLexical = `${lexicalRoot}/write-link/report.md`;
+      const writeCanonical = '/Users/testuser/Desktop/canonical-write-target/report.md';
+      const listLexical = `${lexicalRoot}/list-link`;
+      const listCanonical = '/Users/testuser/Desktop/canonical-list-target';
+      const writeGrantRoot = '/Users/testuser/Desktop/canonical-write-target';
+
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        if (value === readLexical) return readCanonical;
+        if (value === writeLexical) return writeCanonical;
+        if (value === listLexical) return listCanonical;
+        return value;
+      });
+      authorizeWorkspace(lexicalRoot, ['read', 'write']);
+
+      try {
+        expect(await checkReadPath(readLexical)).toMatchObject({
+          allowed: false,
+          needsPermission: true,
+          permissionPath: readCanonical,
+          capability: 'read',
+        });
+        authorizeWorkspace(readCanonical, ['read']);
+        expect(await checkReadPath(readLexical)).toMatchObject({
+          allowed: true,
+          resolvedPath: readCanonical,
+        });
+        // A read-only approval must not silently authorize writes to the same
+        // canonical target.
+        expect((await checkWritePath(readLexical)).allowed).toBe(false);
+
+        expect(await checkWritePath(writeLexical)).toMatchObject({
+          allowed: false,
+          needsPermission: true,
+          permissionPath: writeCanonical,
+          capability: 'write',
+        });
+        // Parent-directory approval is valid too, and remains pinned to the
+        // canonical root captured when the grant was created.
+        authorizeWorkspace(writeGrantRoot, ['write']);
+        expect(await checkWritePath(writeLexical)).toMatchObject({
+          allowed: true,
+          resolvedPath: writeCanonical,
+        });
+
+        expect(await checkListPath(listLexical)).toMatchObject({
+          allowed: false,
+          needsPermission: true,
+          permissionPath: listCanonical,
+          capability: 'read',
+        });
+        authorizeWorkspace(listCanonical, ['read']);
+        expect(await checkListPath(listLexical)).toMatchObject({
+          allowed: true,
+          resolvedPath: listCanonical,
+        });
+      } finally {
+        for (const path of [
+          lexicalRoot,
+          readCanonical,
+          writeGrantRoot,
+          listCanonical,
+        ]) revokeWorkspace(path);
+      }
+    });
+
+    it('allows scoped symlinks that resolve inside the canonical scope and rejects escapes', async () => {
+      const workspace = '/Users/testuser/Projects/canonical-scope';
+      const inside = `${workspace}/real`;
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, workspace, ['read', 'write']);
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        if (value.includes('/inside-link')) return value.replace('/inside-link', '/real');
+        if (value.includes('/outside-link')) {
+          return value.replace(`${workspace}/outside-link`, '/Users/testuser/Desktop/outside');
+        }
+        return value;
+      });
+
+      try {
+        const insideFile = `${workspace}/inside-link/note.md`;
+        expect(await checkReadPath(insideFile, scopeId)).toMatchObject({
+          allowed: true,
+          resolvedPath: `${inside}/note.md`,
+        });
+        expect(await checkWritePath(insideFile, scopeId)).toMatchObject({
+          allowed: true,
+          resolvedPath: `${inside}/note.md`,
+        });
+        expect(await checkListPath(`${workspace}/inside-link`, scopeId)).toMatchObject({
+          allowed: true,
+          resolvedPath: inside,
+        });
+
+        const outsideFile = `${workspace}/outside-link/note.md`;
+        for (const result of [
+          await checkReadPath(outsideFile, scopeId),
+          await checkWritePath(outsideFile, scopeId),
+          await checkListPath(`${workspace}/outside-link`, scopeId),
+        ]) {
+          expect(result.allowed).toBe(false);
+          expect(result.needsPermission).toBeUndefined();
+        }
+        expect(inside).toContain(workspace);
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('pins a scoped grant canonical root instead of letting authority follow a retargeted link', async () => {
+      const workspace = '/Users/testuser/Documents/pinned-workspace';
+      const targetA = '/Users/testuser/Projects/pinned-a';
+      const targetB = '/Users/testuser/Desktop/retargeted-b';
+      let target = targetA;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value === workspace || value.startsWith(`${workspace}/`)
+          ? value.replace(workspace, target)
+          : value;
+      });
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, workspace, ['read', 'write']);
+
+      // The grant was made while the alias pointed at A. A later redirect to
+      // B must not move the authority along with the symlink.
+      target = targetB;
+      try {
+        for (const result of [
+          await checkReadPath(`${workspace}/notes.md`, scopeId),
+          await checkWritePath(`${workspace}/notes.md`, scopeId),
+          await checkListPath(workspace, scopeId),
+        ]) {
+          expect(result.allowed).toBe(false);
+          expect(result.needsPermission).toBeUndefined();
+        }
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('resolves only the parent for delete-style entry operations', async () => {
+      const workspace = '/Users/testuser/Documents/delete-entry';
+      const canonicalWorkspace = '/Users/testuser/Projects/delete-entry-real';
+      const link = `${workspace}/link-to-report`;
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate, followFinalSymlink = true) => {
+        const value = String(candidate);
+        if (value === link) {
+          return followFinalSymlink
+            ? '/Users/testuser/Desktop/report.txt'
+            : `${canonicalWorkspace}/link-to-report`;
+        }
+        return value === workspace || value.startsWith(`${workspace}/`)
+          ? value.replace(workspace, canonicalWorkspace)
+          : value;
+      });
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, workspace, ['write']);
+
+      try {
+        expect(await checkWritePath(link, scopeId, { followFinalSymlink: false })).toMatchObject({
+          allowed: true,
+          resolvedPath: `${canonicalWorkspace}/link-to-report`,
+        });
+      } finally {
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('rechecks canonical targets against sensitive-path red lines', async () => {
+      const workspace = '/Users/testuser/Documents';
+      authorizeWorkspace(workspace, ['read', 'write']);
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value.includes('/credential-link')
+          ? '/Users/testuser/.ssh/id_rsa'
+          : value;
+      });
+
+      try {
+        const result = await checkReadPath(`${workspace}/credential-link`);
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+      } finally {
+        revokeWorkspace(workspace);
+      }
+    });
+
+    it('treats the runtime temp directory as an implicit canonical root on macOS', async () => {
+      const cleanup = setPlatformForTest('macos');
+      const runtimeTemp = '/var/folders/ab/cdef/T';
+      vi.mocked(tempDir).mockResolvedValue(runtimeTemp);
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+        const value = String(candidate);
+        return value.startsWith('/var/') ? `/private${value}` : value;
+      });
+      vi.mocked(lstat).mockImplementation(async (candidate) => ({
+        isSymlink: String(candidate) === '/var',
+      }) as never);
+
+      try {
+        expect((await checkReadPath(`${runtimeTemp}/input.txt`)).allowed).toBe(true);
+        expect((await checkWritePath(`${runtimeTemp}/output.txt`)).allowed).toBe(true);
+        expect((await checkListPath(runtimeTemp)).allowed).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it.each([
+      '/var/tmp',
+      '/private/var/tmp',
+      '/var/folders/not-a-macos-temp-root',
+    ])('does not let an anomalous macOS tempDir override the /var write red line: %s', async (runtimeTemp) => {
+      const cleanup = setPlatformForTest('macos');
+      vi.mocked(tempDir).mockResolvedValue(runtimeTemp);
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => String(candidate));
+
+      try {
+        const result = await checkWritePath(`${runtimeTemp}/output.txt`);
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toContain('系统目录');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('does not let Windows Temp override the Windows system write red line', async () => {
+      const cleanup = setPlatformForTest('windows');
+      vi.mocked(tempDir).mockResolvedValue('C:/Windows/Temp');
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => String(candidate));
+
+      try {
+        const result = await checkWritePath('C:/Windows/Temp/output.txt');
+        expect(result.allowed).toBe(false);
+        expect(result.reason).toContain('系统目录');
+      } finally {
+        cleanup();
       }
     });
 
@@ -540,6 +827,52 @@ describe('pathSafety', () => {
       const result = await checkListPath('//server/share');
       expect(result.allowed).toBe(false);
       expect(result.reason).toContain('UNC');
+    });
+
+    it.each([
+      String.raw`\\?\UNC\server\share\file.txt`,
+      '//?/UNC/server/share/file.txt',
+    ])('blocks extended-length UNC paths before canonicalization: %s', async (path) => {
+      for (const result of [
+        await checkReadPath(path),
+        await checkWritePath(path),
+        await checkListPath(path),
+      ]) {
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+        expect(result.reason).toContain('UNC');
+      }
+      expect(canonicalizeElectronPathForPolicy).not.toHaveBeenCalled();
+    });
+
+    it('blocks a canonical target returned as extended-length UNC', async () => {
+      const cleanup = setPlatformForTest('windows');
+      const lexical = 'C:/Users/testuser/Documents/report.txt';
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => (
+        String(candidate) === lexical
+          ? String.raw`\\?\UNC\server\share\report.txt`
+          : String(candidate)
+      ));
+
+      try {
+        const result = await checkReadPath(lexical);
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+        expect(result.reason).toContain('UNC');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it.each([
+      String.raw`\\.\PhysicalDrive0`,
+      String.raw`\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\Windows\System32\config\SAM`,
+      String.raw`\??\C:\Windows\System32\config\SAM`,
+    ])('hard-blocks Windows device namespaces: %s', async (path) => {
+      const result = await checkReadPath(path);
+      expect(result.allowed).toBe(false);
+      expect(result.needsPermission).toBeUndefined();
+      expect(result.reason).toMatch(/UNC|device/i);
     });
   });
 

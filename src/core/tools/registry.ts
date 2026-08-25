@@ -9,6 +9,7 @@ import {
   scopedAuthorizeWorkspace,
   hasFullShellAuthorizationScope,
   isInScopedAuthorizedWorkspace,
+  type AuthorizationScopeId,
 } from './pathSafety';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
@@ -299,6 +300,8 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
 export interface ToolApprovalDecision {
   decision: 'allow' | 'deny';
   reason?: string;
+  /** Canonical file path that the executor must use for an approved file tool. */
+  executionPath?: string;
 }
 
 /**
@@ -469,6 +472,7 @@ export async function checkToolApproval(
     };
   }
   let largeWritePathAfterApproval: string | null = null;
+  let approvedExecutionPath: string | undefined;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -581,7 +585,11 @@ export async function checkToolApproval(
     if (pathInfo) {
       // Use the appropriate check function based on capability
       const checkFn = pathInfo.capability === 'write'
-        ? checkWritePath
+        ? (candidate: string, id?: AuthorizationScopeId) => checkWritePath(
+          candidate,
+          id,
+          { followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE },
+        )
         : (name === TOOL_NAMES.LIST_DIRECTORY ? checkListPath : checkReadPath);
 
       const scopeId = toolContext?.authorizationScopeId;
@@ -593,7 +601,7 @@ export async function checkToolApproval(
       if (fileCeilingDecision.decision === 'deny') {
         return fileCeilingDecision;
       }
-      const pathCheck = await checkFn(pathInfo.path, scopeId);
+      let pathCheck = await checkFn(pathInfo.path, scopeId);
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
@@ -628,9 +636,9 @@ export async function checkToolApproval(
                 return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
-              const recheck = await checkFn(pathInfo.path, scopeId);
-              if (!recheck.allowed) {
-                return { decision: 'deny', reason: `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}` };
+              pathCheck = await checkFn(pathInfo.path, scopeId);
+              if (!pathCheck.allowed) {
+                return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
               }
             } else {
               // No callback available (shouldn't happen in normal flow)
@@ -641,7 +649,14 @@ export async function checkToolApproval(
             if (scopeId !== undefined) {
               scopedAuthorizeWorkspace(scopeId, pathCheck.permissionPath, [cap]);
             } else {
-              authorizeWorkspace(pathCheck.permissionPath);
+              authorizeWorkspace(pathCheck.permissionPath, [cap]);
+            }
+            // Pin the target only after the newly-created grant has been
+            // checked against the path as it exists now. An auto-grant must
+            // not turn a retargeted symlink into an unchecked allow.
+            pathCheck = await checkFn(pathInfo.path, scopeId);
+            if (!pathCheck.allowed) {
+              return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
             }
           }
         } else {
@@ -650,8 +665,16 @@ export async function checkToolApproval(
         }
       }
 
+      if (!pathCheck.allowed || !pathCheck.resolvedPath) {
+        return {
+          decision: 'deny',
+          reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}`,
+        };
+      }
+      approvedExecutionPath = pathCheck.resolvedPath;
+
       if (name === TOOL_NAMES.WRITE_FILE) {
-        largeWritePathAfterApproval = pathInfo.path;
+        largeWritePathAfterApproval = approvedExecutionPath;
       }
     }
   }
@@ -719,12 +742,10 @@ export async function checkToolApproval(
     }
   }
 
-  // Self-extension: creating a subagent, installing an MCP server, or
-  // rewriting the persona all write durable state that shapes every later
-  // turn. Skills already require a draft + content scan + audited history;
-  // these took the same kind of write with no gate at all, so a single
-  // injected instruction could buy a persistent foothold. No per-conversation
-  // grant here — these are rare, deliberate acts, each worth its own ask.
+  // Self-extension: creating a subagent, installing an MCP server, rewriting
+  // the persona, or changing a persistent automation writes durable state that
+  // shapes later turns/runs. No per-conversation grant here — these are rare,
+  // deliberate acts, each worth its own ask.
   {
     const selfExtension = classifySelfExtension(name, input);
     if (selfExtension) {
@@ -814,7 +835,10 @@ export async function checkToolApproval(
     }
   }
 
-  return { decision: 'allow' };
+  return {
+    decision: 'allow',
+    ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
+  };
 }
 
 /**
@@ -850,11 +874,15 @@ export async function executeAnyTool(
   // starting a builtin/MCP side effect after the run crossed its abort fence.
   throwIfAborted();
 
+  const executionInput = approval.executionPath && FILE_TOOL_PATH_MAP[name]
+    ? { ...input, path: approval.executionPath }
+    : input;
+
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
-    const result = await toolRegistry.execute(name, input, toolContext);
+    const result = await toolRegistry.execute(name, executionInput, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
       // File-tool OS-permission errors get a friendly grant-guide (not
@@ -870,7 +898,7 @@ export async function executeAnyTool(
   if (name.includes('__')) {
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, input);
+      const result = await mcpManager.callTool(serverName, toolName, executionInput);
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

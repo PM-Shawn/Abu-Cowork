@@ -47,7 +47,7 @@ const {
   finalizeTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
-const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
+const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const {
   fsWatchDispatch,
   FS_WATCH_MISS,
@@ -63,6 +63,7 @@ const {
   getRuntimeDiagnostics,
   runtimeState,
 } = require('./runtimeObservability.cjs');
+const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
@@ -112,6 +113,7 @@ const {
 } = require('./globalShortcutHost.cjs');
 const {
   assertTrustedIpcSender,
+  assertTrustedMainIpcSender,
   validateInvokePayload,
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
@@ -1384,6 +1386,20 @@ function registerTauriHost(app, options = {}) {
     assertTrustedIpcSender(e);
     configureRuntimeObservability(app);
     return getRuntimeDiagnostics();
+  });
+
+  ipcMain.handle(FS_CANONICALIZE_FOR_POLICY_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (
+      request?.followFinalSymlink !== undefined
+      && typeof request.followFinalSymlink !== 'boolean'
+    ) {
+      throw new Error('fs: followFinalSymlink must be a boolean');
+    }
+    return canonicalizeForPathPolicy(
+      request?.path,
+      request?.followFinalSymlink !== false,
+    );
   });
 
   ipcMain.handle(SIDECAR_BRIDGE_STATE_CHANNEL, async (e, query = {}) => {

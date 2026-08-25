@@ -18,7 +18,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **Triggers have autonomy capability tiers.** The trigger editor exposes a read-only / custom / full capability level, defaults legacy records to read-only, and warns before granting full access. `manage_trigger` can no longer widen a trigger's own tool/command/path allowlist.
 - **Tool-result images survive the whole session.** A screenshot or read-file image no longer degrades to a text placeholder after the turn ends: images are snapshotted to disk, backfilled on replay, and rehydrated on conversation reload, with old inline history dehydrated to keep the ledger small.
 - **Context usage now breaks down by layer.** The usage indicator shows where the tokens went instead of a single opaque number.
-- **Click a composer image thumbnail to preview it full size.** The pre-send attachment strip now opens the same zoom/pan/rotate viewer that sent messages already use.
+- **A full-window lightbox for your own images.** Composer attachments and sent user-image thumbnails now open in a dedicated full-window viewer — save the image to disk via native Save As, step through the conversation's images with the arrow keys, and scroll tall images. Assistant, tool, and workspace images still open in the side preview panel.
 - **Chapter rail gains a fisheye hover.** Hovering the left-margin chapter scale magnifies nearby ticks for easier targeting in long conversations.
 - **Windows layout pass.** The workspace header lays out correctly on Windows, and the title bar no longer swallows clicks meant for the conversation.
 

@@ -11,7 +11,11 @@ import { runCommandTool } from './definitions/commandTools';
 // save_skill was deprecated in favor of skill_manage (Module E self-evolution).
 // save_agent is kept — no equivalent agent_manage yet.
 import { useSkillTool, delegateToAgentTool, readSkillFileTool, saveAgentTool, requestWorkspaceTool } from './definitions/agentTools';
-export { clearAllSkillHooks, clearSkillHooksByConversation } from './definitions/agentTools';
+export {
+  clearAllSkillHooks,
+  clearSkillHooksByConversation,
+  clearSkillHooksByLoop,
+} from './definitions/agentTools';
 
 // --- Automation tools ---
 import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from './definitions/automationTools';

@@ -20,6 +20,7 @@ const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
 const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
 const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
+const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
 const TAURI_STORE_KEYS = new Set([
   'abu-settings',
   'abu-chat',
@@ -326,6 +327,10 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // to fall back to running its own renderer heartbeat.
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
+  canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
+    FS_CANONICALIZE_FOR_POLICY_CHANNEL,
+    { path, followFinalSymlink },
+  ),
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),

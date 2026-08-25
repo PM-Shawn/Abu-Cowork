@@ -258,6 +258,32 @@ function canonicalizeForScope(resolvedPath, followFinalSymlink = true) {
   }
 }
 
+function resolveValidatedPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) {
+    throw new Error('fs: path must be a non-empty string');
+  }
+  if (rawPath.includes('\0')) throw new Error('fs: path must not contain NUL');
+  if (Buffer.byteLength(rawPath, 'utf8') > 32 * 1024) {
+    throw new Error('fs: path is too long');
+  }
+  return path.resolve(rawPath);
+}
+
+/**
+ * Resolve a renderer policy-check path through every existing symlink while
+ * preserving a missing write tail. The normal filesystem dispatcher still
+ * performs its own independent check at operation time; this endpoint only
+ * gives pathSafety the canonical value it needs to compare against the
+ * narrower run/workspace authorization scope.
+ */
+function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
+  const norm = resolveValidatedPath(rawPath);
+  // Windows capabilities intentionally remain broad, but policy decisions must
+  // still see junction/reparse-point targets rather than the lexical spelling.
+  if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
+  return assertAllowed(norm, { followFinalSymlink });
+}
+
 /**
  * Refuse a path that escapes the capability scope either lexically or after
  * resolving symlinks. Checking only path.resolve() is insufficient: an allowed
@@ -272,14 +298,7 @@ function canonicalizeForScope(resolvedPath, followFinalSymlink = true) {
  * @returns {string} normalized absolute path
  */
 function assertAllowed(resolvedPath, opts) {
-  if (typeof resolvedPath !== 'string' || resolvedPath.length === 0) {
-    throw new Error('fs: path must be a non-empty string');
-  }
-  if (resolvedPath.includes('\0')) throw new Error('fs: path must not contain NUL');
-  if (Buffer.byteLength(resolvedPath, 'utf8') > 32 * 1024) {
-    throw new Error('fs: path is too long');
-  }
-  const norm = path.resolve(resolvedPath);
+  const norm = resolveValidatedPath(resolvedPath);
   if (process.platform === 'win32') return norm; // windows-extras.json = ** (allow-all)
 
   const roots = allowedRoots();
@@ -603,5 +622,6 @@ module.exports = {
   FS_MISS,
   assertAllowed,
   canonicalizeForScope,
+  canonicalizeForPathPolicy,
   toFileInfo,
 };

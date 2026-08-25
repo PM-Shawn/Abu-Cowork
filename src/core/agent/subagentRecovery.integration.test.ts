@@ -478,6 +478,29 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(secondMaxTokens).toBe(firstMaxTokens);
   });
 
+  it('keeps a scope-only scheduled nested subagent background at the in-process tool boundary', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't-scheduled', name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'scheduled delegated work',
+      authorizationScopeId: 'scope-scheduled',
+    });
+
+    expect(mockExecuteAnyTool.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+      authorizationScopeId: 'scope-scheduled',
+      interactionMode: 'background',
+    }));
+  });
+
   // Bug #4 follow-up (review pass 2): a max_tokens turn whose tool call is MALFORMED
   // (_parse_error) is NOT progress — it must not be treated as a continuable tool turn
   // (which would spin a broken model), so the loop stops rather than re-prompting forever.

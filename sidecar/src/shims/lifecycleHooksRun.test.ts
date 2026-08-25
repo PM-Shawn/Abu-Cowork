@@ -77,6 +77,24 @@ describe('lifecycleHooksRun shim', () => {
         event: preToolEvent,
       });
     });
+
+    it('keeps the run-owned tool context local so the shell reattaches it by runId', async () => {
+      const event = {
+        ...preToolEvent,
+        toolContext: {
+          authorizationScopeId: 'scope-sidecar-copy',
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'safe_tools' },
+        },
+      } as never;
+      const spy = vi.spyOn(rpcClient, 'sendRequest').mockResolvedValue(preToolEvent);
+
+      await agentRunContext.run(makeAgentCtx(), () => emitHook(event));
+
+      expect(spy).toHaveBeenCalledWith('hook.emit', {
+        runId: 'main-run-1',
+        event: preToolEvent,
+      });
+    });
   });
 
   describe('subagent path (subagentRunContext fallback, unchanged from P1-3a)', () => {

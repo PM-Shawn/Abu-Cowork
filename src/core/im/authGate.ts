@@ -9,10 +9,8 @@
 
 import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { usePermissionStore } from '../../stores/permissionStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
-import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
+import { getReadOnlyRunToolAllowlist, getSafeRunToolAllowlist } from '../permissions/runPermissionCeiling';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 export type AuthResult =
@@ -64,21 +62,13 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
     case 'safe_tools':
       return {
         commandConfirmCallback: async (info) => {
-          // Only allow commands classified as 'safe' by commandSafety (same as trigger behavior)
-          const allowed = info.level === 'safe';
-          if (!allowed) {
-            console.log(`[IM] safe_tools: denied ${info.level} command "${info.command}"`);
-          }
-          return allowed;
-        },
-        filePermissionCallback: async (request) => {
-          const permStore = usePermissionStore.getState();
-          if (permStore.hasPermission(request.path, request.capability)) {
-            authorizeWorkspace(request.path);
-            return true;
-          }
+          console.log(`[IM] safe_tools: denied command "${info.command}"`);
           return false;
         },
+        // channelRouter pre-authorizes this run's declared workspace in its
+        // scoped map. Reaching the callback means the request is outside that
+        // scope; never import a standing desktop/global permission into IM.
+        filePermissionCallback: async () => false,
       };
     case 'full':
       return {
@@ -107,7 +97,8 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
  *   site grant — at tool-list level.
  * - `chat_only` also gets the patterns for consistency, though
  *   `getCallbacksForLevel` already disables tools entirely for it.
- * - `safe_tools` / `full` are unchanged: `request_workspace` only.
+ * - `safe_tools` needs no browser block patterns here because its positive
+ *   roster omits the whole browser namespace. `full` is unrestricted here.
  */
 export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
   // `ask_user_question` renders a blocking selection card that only the desktop
@@ -130,13 +121,15 @@ export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
  * `commandConfirmCallback` above is never consulted for a workspace-internal
  * command the strategy already resolved to 'allow'.
  *
- * Returns `undefined` — not `[]` — for the tiers that carry no allowlist:
+ * Returns `undefined` — not `[]` — for `full`, the one tier with no allowlist:
  * every enforcement point treats an EMPTY array as "no restriction"
- * (`allowedTools?.length &&  ...`), so an empty array would read as
- * unrestricted rather than as "nothing allowed". `chat_only` is deliberately
- * absent for the same reason: `getCallbacksForLevel` disables tools outright
- * for it, and handing it a read allowlist here could only ever widen that.
+ * (`allowedTools?.length && ...`), so an empty array would read as
+ * unrestricted rather than as "nothing allowed". `chat_only` therefore uses
+ * an explicit deny-all sentinel even though its callbacks also disable tools.
  */
 export function getAllowedToolsForLevel(level: IMCapabilityLevel): string[] | undefined {
-  return level === 'read_tools' ? [...READ_ONLY_TOOL_ALLOWLIST] : undefined;
+  if (level === 'chat_only') return ['__chat_only_no_tools__'];
+  if (level === 'read_tools') return getReadOnlyRunToolAllowlist();
+  if (level === 'safe_tools') return getSafeRunToolAllowlist();
+  return undefined;
 }

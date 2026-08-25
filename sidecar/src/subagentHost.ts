@@ -28,6 +28,7 @@ import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
+import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
@@ -63,6 +64,9 @@ export interface SubagentHostRunParams {
    *  disarmed every blockedTools-only safety tier on the sidecar path). */
   blockedTools?: string[];
   authorizationScopeId?: string;
+  runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
+  triggerId?: string;
+  scheduledTaskId?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -170,6 +174,18 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
+  }
+  if (
+    params.runPermissionCeiling !== undefined
+    && !isRunPermissionCeiling(params.runPermissionCeiling)
+  ) {
+    throw new RpcError(-32602, 'Invalid params: runPermissionCeiling must be a valid run permission ceiling');
+  }
+  if (params.triggerId !== undefined && typeof params.triggerId !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: triggerId must be a string');
+  }
+  if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
   }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
@@ -310,6 +326,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     allowedTools: params.allowedTools,
     blockedTools: params.blockedTools,
     authorizationScopeId: params.authorizationScopeId,
+    runPermissionCeiling: params.runPermissionCeiling,
+    triggerId: params.triggerId,
+    scheduledTaskId: params.scheduledTaskId,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 

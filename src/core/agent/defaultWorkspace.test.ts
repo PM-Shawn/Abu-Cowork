@@ -69,6 +69,7 @@ describe('prepareSuggestedWorkspace', () => {
     vi.mocked(homeDir).mockResolvedValue('/Users/test');
     useChatStore.setState({ conversations: {}, activeConversationId: null });
     useWorkspaceStore.setState({ currentPath: null, recentPaths: [] });
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
   });
 
   it('returns the existing workspace when one is bound', async () => {
@@ -108,32 +109,33 @@ describe('bindWorkspaceFromWrite', () => {
     vi.mocked(homeDir).mockResolvedValue('/Users/test');
     useChatStore.setState({ conversations: {}, activeConversationId: null });
     useWorkspaceStore.setState({ currentPath: null, recentPaths: [] });
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
   });
 
   it('binds ~/Abu/<top-folder>/ when the first write lands under ~/Abu/', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     useChatStore.setState({ activeConversationId: id });
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/折线图/index.html');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/折线图/index.html', 'foreground');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBe('/Users/test/Abu/折线图');
     expect(useWorkspaceStore.getState().currentPath).toBe('/Users/test/Abu/折线图');
   });
 
   it('does not touch the global path when the conversation is not active', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt', 'foreground');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBe('/Users/test/Abu/proj');
     expect(useWorkspaceStore.getState().currentPath).toBeNull();
   });
 
   it('is a no-op for writes outside ~/Abu/', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
-    await bindWorkspaceFromWrite(id, '/Users/test/Desktop/chart.html');
+    await bindWorkspaceFromWrite(id, '/Users/test/Desktop/chart.html', 'foreground');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBeFalsy();
   });
 
   it('is a no-op when the conversation already has a workspace', async () => {
     const id = useChatStore.getState().createConversation('/existing/ws', { skipActivate: true });
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/other/x.txt');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/other/x.txt', 'foreground');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBe('/existing/ws');
   });
 
@@ -141,7 +143,7 @@ describe('bindWorkspaceFromWrite', () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     useChatStore.setState({ activeConversationId: id });
     // Weaker model ignores the subfolder hint and writes ~/Abu/report.html.
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/report.html');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/report.html', 'foreground');
     // Must bind the ~/Abu directory, NEVER the file (readDir on a file fails).
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBe('/Users/test/Abu');
   });
@@ -149,14 +151,24 @@ describe('bindWorkspaceFromWrite', () => {
   it('is a no-op for headless scheduled runs (must not auto-create/bind ~/Abu)', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     markHeadless(id, 'scheduledTaskId');
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt', 'background');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBeFalsy();
   });
 
   it('is a no-op for headless trigger runs', async () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     markHeadless(id, 'triggerId');
-    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt');
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/proj/a.txt', 'background');
     expect(useChatStore.getState().conversations[id]?.workspacePath).toBeFalsy();
+  });
+
+  it('fails closed for a file-watch-like background conversation with no source marker fields', async () => {
+    const id = useChatStore.getState().createConversation(null, { skipActivate: true });
+
+    await bindWorkspaceFromWrite(id, '/Users/test/Abu/watched/out.txt', 'background');
+
+    expect(useChatStore.getState().conversations[id]?.workspacePath).toBeFalsy();
+    expect(useWorkspaceStore.getState().currentPath).toBeNull();
+    expect(Object.keys(usePermissionStore.getState().persistedGrants)).toHaveLength(0);
   });
 });

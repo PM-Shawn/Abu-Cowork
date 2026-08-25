@@ -11,6 +11,8 @@
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
+import { buildIMRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { createAuthorizationScope, disposeAuthorizationScope, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { NormalizedIMMessage } from './inboundRouter';
 import { resolveCapability, getCallbacksForLevel, getBlockedToolsForLevel, getAllowedToolsForLevel } from './authGate';
 import { sessionMapper } from './sessionMapper';
@@ -38,8 +40,25 @@ const imChannelLog = createLogger('im-channel');
  * watching a progress bar; waiting is cheap, a false failure is not.
  */
 const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+/**
+ * Give the dispatched runner time to acknowledge abort and run its 5-second
+ * force-finalize watchdog.  If it is still wedged after this bound, report the
+ * timeout but quarantine the session until the original promise really settles.
+ */
+const AGENT_ABORT_SETTLE_GRACE_MS = 6_000;
+
+class TimedOutRunStillActiveError extends Error {
+  readonly settlement: Promise<void>;
+
+  constructor(ms: number, settlement: Promise<void>) {
+    super(`Agent timed out after ${ms / 1000}s`);
+    this.name = 'TimedOutRunStillActiveError';
+    this.settlement = settlement;
+  }
+}
 
 const MAX_SESSION_QUEUE = 5;
+const MAX_GLOBAL_QUEUE = MAX_CONCURRENT_IM * MAX_SESSION_QUEUE;
 
 /** How long an image-only message waits for the caption that usually follows.
  *
@@ -86,7 +105,11 @@ function mergeInboundMessages(
 
 class IMChannelRouter {
   private runningCount = 0;
-  private queuedMessages: { message: NormalizedIMMessage; channelId: string }[] = [];
+  private queuedMessages: {
+    message: NormalizedIMMessage;
+    channelId: string;
+    sessionKey: string;
+  }[] = [];
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   /** Track recently processed message IDs with timestamps for TTL-based dedup */
   private recentMessageIds = new Map<string, number>();
@@ -132,9 +155,10 @@ class IMChannelRouter {
       this.cleanupInterval = null;
     }
     this.queuedMessages = [];
-    this.runningCount = 0;
     this.recentMessageIds.clear();
-    this.activeSessions.clear();
+    // In-flight runs keep their slot/session ownership until their promise
+    // settles. Clearing either here would let a restarted router overlap the
+    // same session and make the old finally callback corrupt new counters.
     this.sessionQueues.clear();
     for (const { timer } of this.pendingMedia.values()) clearTimeout(timer);
     this.pendingMedia.clear();
@@ -214,23 +238,22 @@ class IMChannelRouter {
     // Per-session queue: ensure same-session messages are processed sequentially
     const sessionKey = sessionMapper.peekSessionKey(message);
     if (this.activeSessions.has(sessionKey)) {
-      const queue = this.sessionQueues.get(sessionKey) ?? [];
-      if (queue.length >= MAX_SESSION_QUEUE) {
-        console.log('[IMChannel] Session queue full, dropping message');
-        sendThinking(message.platform, message.replyContext)
-          .then((h) => sendFinal(h, { content: getI18n().imChannel.sessionQueueFull }))
-          .catch(() => {});
-        return;
-      }
-      queue.push({ message, channel, capability: authResult.capability });
-      this.sessionQueues.set(sessionKey, queue);
+      this.enqueueSessionMessage(sessionKey, message, channel, authResult.capability);
       return;
     }
 
     // Global concurrency check
     if (this.runningCount >= MAX_CONCURRENT_IM) {
+      if (
+        this.sessionQueuedCount(sessionKey) >= MAX_SESSION_QUEUE
+        || this.queuedMessages.length >= MAX_GLOBAL_QUEUE
+      ) {
+        console.log('[IMChannel] Global queue full, dropping message');
+        this.notifyQueueFull(message);
+        return;
+      }
       console.log('[IMChannel] Concurrency limit reached, queueing message');
-      this.queuedMessages.push({ message, channelId: channel.id });
+      this.queuedMessages.push({ message, channelId: channel.id, sessionKey });
       const queuePos = this.queuedMessages.length;
       const queueMsg: AbuMessage = {
         content: `收到！当前有 ${this.runningCount} 个请求正在处理，你的请求已排队（第 ${queuePos} 位），请稍候。`,
@@ -241,8 +264,48 @@ class IMChannelRouter {
       return;
     }
 
+    this.startMessageRun(message, channel, authResult.capability, sessionKey);
+  }
+
+  private notifyQueueFull(message: NormalizedIMMessage): void {
+    sendThinking(message.platform, message.replyContext)
+      .then((h) => sendFinal(h, { content: getI18n().imChannel.sessionQueueFull }))
+      .catch(() => {});
+  }
+
+  private sessionQueuedCount(sessionKey: string): number {
+    const localCount = this.sessionQueues.get(sessionKey)?.length ?? 0;
+    return this.queuedMessages.reduce(
+      (count, queued) => count + (queued.sessionKey === sessionKey ? 1 : 0),
+      localCount,
+    );
+  }
+
+  private enqueueSessionMessage(
+    sessionKey: string,
+    message: NormalizedIMMessage,
+    channel: IMChannel,
+    capability: IMCapabilityLevel,
+  ): void {
+    const queue = this.sessionQueues.get(sessionKey) ?? [];
+    if (this.sessionQueuedCount(sessionKey) >= MAX_SESSION_QUEUE) {
+      console.log('[IMChannel] Session queue full, dropping message');
+      this.notifyQueueFull(message);
+      return;
+    }
+    queue.push({ message, channel, capability });
+    this.sessionQueues.set(sessionKey, queue);
+  }
+
+  /** Atomically acquire the per-session owner before an async run can yield. */
+  private startMessageRun(
+    message: NormalizedIMMessage,
+    channel: IMChannel,
+    capability: IMCapabilityLevel,
+    sessionKey = sessionMapper.peekSessionKey(message),
+  ): void {
     this.activeSessions.add(sessionKey);
-    this.processMessage(message, channel, authResult.capability);
+    void this.processMessage(message, channel, capability);
   }
 
   /** Queue a typing request behind earlier requests for the same user. */
@@ -334,18 +397,21 @@ class IMChannelRouter {
     message: NormalizedIMMessage,
     channel: IMChannel,
     capability: IMCapabilityLevel,
+    reuseGlobalSlot = false,
   ) {
-    this.runningCount++;
+    const lifecycleGeneration = this.typingLifecycleGeneration;
+    if (!reuseGlobalSlot) this.runningCount++;
     let removeReaction: (() => Promise<void>) | null = null;
     let stopTyping: (() => void) | null = null;
+    let authorizationScopeId: string | undefined;
+    let deferredRunSettlement: Promise<void> | null = null;
 
     try {
-      const typingGeneration = this.typingLifecycleGeneration;
       const adapter = (await import('./adapters/registry')).getAdapter(message.platform);
       if (
         message.platform === 'wechat'
         && adapter?.sendTyping
-        && typingGeneration === this.typingLifecycleGeneration
+        && lifecycleGeneration === this.typingLifecycleGeneration
       ) {
         stopTyping = this.startTypingHeartbeat(
           adapter,
@@ -457,14 +523,32 @@ class IMChannelRouter {
         }
       }
 
-      const callbacks = getCallbacksForLevel(capability);
+      authorizationScopeId = createAuthorizationScope();
+      const workspacePath = channel.workspacePaths[0] ?? null;
+      if (workspacePath && capability !== 'chat_only') {
+        scopedAuthorizeWorkspace(
+          authorizationScopeId,
+          workspacePath,
+          capability === 'read_tools' ? ['read'] : ['read', 'write'],
+        );
+      }
+      const baseCallbacks = getCallbacksForLevel(capability);
+      const filePermissionCallback = async (...args: Parameters<typeof baseCallbacks.filePermissionCallback>) => {
+        const [request] = args;
+        const granted = await baseCallbacks.filePermissionCallback(...args);
+        if (granted && capability === 'full') {
+          scopedAuthorizeWorkspace(authorizationScopeId!, request.path, [request.capability]);
+        }
+        return granted;
+      };
+      let ownedAbortController: AbortController | undefined;
       await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
           // Inbound images (e.g. a WeChat photo) forwarded as real vision content
           // so the model actually sees them instead of a "[图片]" text marker.
           images: message.images,
-          commandConfirmCallback: callbacks.commandConfirmCallback,
-          filePermissionCallback: callbacks.filePermissionCallback,
+          commandConfirmCallback: baseCallbacks.commandConfirmCallback,
+          filePermissionCallback,
           // Tier-scoped, not a hard-coded single entry: the read-only tier
           // must carry no browser capability at all (same rule
           // triggerPermission.ts enforces), and a standing per-site grant
@@ -476,9 +560,14 @@ class IMChannelRouter {
           // its own, so the roster — not the callback — is what keeps an
           // unattended read-only channel from writing.
           allowedTools: getAllowedToolsForLevel(capability),
+          authorizationScopeId,
+          onAbortControllerReady: (controller) => {
+            ownedAbortController = controller;
+          },
+          runPermissionCeiling: buildIMRunPermissionCeiling(capability),
           imContext: {
             platform: message.platform,
-            workspacePath: channel.workspacePaths[0] ?? null,
+            workspacePath,
             capability,
             // Reply target for outbound tools (send_file). The chatId is the
             // same one sendFinal replies to.
@@ -486,6 +575,11 @@ class IMChannelRouter {
           },
         }),
         AGENT_TIMEOUT_MS,
+        () => {
+          ownedAbortController?.abort(
+            new Error(`IM agent timed out after ${AGENT_TIMEOUT_MS / 1000}s`),
+          );
+        },
       );
 
       // 5. Extract and send reply
@@ -507,6 +601,13 @@ class IMChannelRouter {
       useIMChannelStore.getState().setChannelStatus(channel.id, 'connected');
       console.log(`[IMChannel] Completed: ${message.senderName} in ${message.platform}`);
     } catch (err) {
+      if (err instanceof TimedOutRunStillActiveError) {
+        // The timeout has a real upper bound, but the old run may still hold
+        // shell/sidecar state.  Keep this session active and its authorization
+        // scope alive until that exact promise settles; otherwise the queued
+        // turn could overlap it or lose cleanup authority mid-operation.
+        deferredRunSettlement = err.settlement;
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[IMChannel] Error processing message:`, errorMsg);
 
@@ -525,33 +626,94 @@ class IMChannelRouter {
         removeReaction().catch(() => {});
       }
 
-      // Drain per-session queue: process next message for same session
-      const sessionKey = sessionMapper.peekSessionKey(message);
-      const queue = this.sessionQueues.get(sessionKey);
-      if (queue && queue.length > 0) {
-        const next = queue.shift()!;
-        if (queue.length === 0) this.sessionQueues.delete(sessionKey);
-        // Reuse the same slot — don't decrement/increment runningCount
-        this.processMessage(next.message, next.channel, next.capability);
+      if (deferredRunSettlement) {
+        void deferredRunSettlement.then(() => {
+          this.releaseRunResources(message, authorizationScopeId);
+        });
       } else {
-        this.activeSessions.delete(sessionKey);
-        this.runningCount--;
-        this.processQueue();
+        this.releaseRunResources(message, authorizationScopeId);
       }
+    }
+  }
+
+  /** Release run-owned authority, then hand the per-session slot onward. */
+  private releaseRunResources(
+    message: NormalizedIMMessage,
+    authorizationScopeId?: string,
+  ): void {
+    disposeAuthorizationScope(authorizationScopeId);
+
+    // Drain per-session queue: process next message for same session
+    const sessionKey = sessionMapper.peekSessionKey(message);
+    const queue = this.sessionQueues.get(sessionKey);
+    if (queue && queue.length > 0) {
+      const next = queue.shift()!;
+      if (queue.length === 0) this.sessionQueues.delete(sessionKey);
+      // The session remains owned and the replacement turn reuses the exact
+      // same global concurrency slot.
+      void this.processMessage(next.message, next.channel, next.capability, true);
+    } else {
+      this.activeSessions.delete(sessionKey);
+      this.runningCount--;
+      this.processQueue();
     }
   }
 
   /**
    * Wrap a promise with a timeout. Rejects with a clear message if exceeded.
    */
-  private runWithTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Agent timed out after ${ms / 1000}s`)), ms);
-      promise.then(
-        (v) => { clearTimeout(timer); resolve(v); },
-        (e) => { clearTimeout(timer); reject(e); },
-      );
+  private async runWithTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    onTimeout?: () => void,
+    settleGraceMs = AGENT_ABORT_SETTLE_GRACE_MS,
+  ): Promise<T> {
+    const settled = promise.then(
+      (value) => ({ kind: 'fulfilled' as const, value }),
+      (error) => ({ kind: 'rejected' as const, error }),
+    );
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<{ kind: 'timeout' }>((resolve) => {
+      timer = setTimeout(() => {
+        try {
+          onTimeout?.();
+        } catch (error) {
+          console.warn('[IMChannel] Failed to cancel timed-out agent run:', error);
+        }
+        resolve({ kind: 'timeout' });
+      }, ms);
     });
+
+    const first = await Promise.race([settled, timeout]);
+    if (first.kind === 'fulfilled') {
+      clearTimeout(timer!);
+      return first.value;
+    }
+    if (first.kind === 'rejected') {
+      clearTimeout(timer!);
+      throw first.error;
+    }
+
+    const timeoutError = () => new Error(`Agent timed out after ${ms / 1000}s`);
+
+    // Without a cancellation hook, preserve this helper's generic hard-timeout
+    // behavior.  With one, allow a bounded grace period for normal abort
+    // cleanup; a run that outlives the grace is handed back to processMessage
+    // as a quarantine handle instead of blocking error reporting forever.
+    if (!onTimeout) throw timeoutError();
+
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const graceExpired = new Promise<{ kind: 'grace-expired' }>((resolve) => {
+      graceTimer = setTimeout(() => resolve({ kind: 'grace-expired' }), settleGraceMs);
+    });
+    const afterCancel = await Promise.race([settled, graceExpired]);
+    if (afterCancel.kind !== 'grace-expired') {
+      if (graceTimer) clearTimeout(graceTimer);
+      throw timeoutError();
+    }
+
+    const settlement = settled.then(() => undefined);
+    throw new TimedOutRunStillActiveError(ms, settlement);
   }
 
   /**
@@ -567,17 +729,24 @@ class IMChannelRouter {
   }
 
   private processQueue() {
-    if (this.queuedMessages.length === 0 || this.runningCount >= MAX_CONCURRENT_IM) return;
+    while (this.queuedMessages.length > 0 && this.runningCount < MAX_CONCURRENT_IM) {
+      const next = this.queuedMessages.shift()!;
+      const store = useIMChannelStore.getState();
+      const channel = store.channels[next.channelId];
+      if (!channel || !channel.enabled) continue;
 
-    const next = this.queuedMessages.shift()!;
-    const store = useIMChannelStore.getState();
-    const channel = store.channels[next.channelId];
-    if (!channel || !channel.enabled) return;
+      const authResult = resolveCapability(next.message.senderId, channel);
+      if (!authResult.allowed) continue;
 
-    const authResult = resolveCapability(next.message.senderId, channel);
-    if (!authResult.allowed) return;
+      const sessionKey = next.sessionKey;
+      if (this.activeSessions.has(sessionKey)) {
+        this.enqueueSessionMessage(sessionKey, next.message, channel, authResult.capability);
+        continue;
+      }
 
-    this.processMessage(next.message, channel, authResult.capability);
+      this.startMessageRun(next.message, channel, authResult.capability, sessionKey);
+      return;
+    }
   }
 
   /**

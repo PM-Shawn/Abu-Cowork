@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { substituteVariables, executeInlineCommands } from './preprocessor';
 import { parseArgs } from '../../utils/argsParser';
+import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 
 function setElectronMarker(enabled: boolean): void {
   const runtime = globalThis as typeof globalThis & {
@@ -124,6 +125,159 @@ describe('executeInlineCommands', () => {
     });
   });
 
+  it('still blocks hard-blocked inline commands under full unattended runs', async () => {
+    const result = await executeInlineCommands(
+      'Result: !`rm -rf /`',
+      '/tmp/example-skill',
+      {
+        runPermissionCeiling: {
+          version: 1,
+          source: 'trigger',
+          capability: 'full',
+        },
+      },
+    );
+
+    expect(result).toContain('[Command blocked:');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for full unattended inline commands without a trusted approval checker', async () => {
+    const result = await executeInlineCommands(
+      'Result: !`open /Applications/Calculator.app`',
+      '/tmp/example-skill',
+      {
+        interactionMode: 'background',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'full' }),
+      },
+    );
+
+    expect(result).toContain('[Command blocked: skill command approval is unavailable');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a full background inline command reaches registry confirmation', async () => {
+    const approvalSpy = vi.fn(
+      async ({ onRequireConfirmation }) => {
+        const confirmed = await onRequireConfirmation?.({
+          command: 'open /Applications/Calculator.app',
+          level: 'warn',
+          reason: 'requires confirmation',
+        });
+        return confirmed
+          ? { decision: 'allow' }
+          : { decision: 'deny', reason: 'confirmation denied' };
+      },
+    );
+
+    const result = await executeInlineCommands(
+      'Result: !`open /Applications/Calculator.app`',
+      '/tmp/example-skill',
+      {
+        interactionMode: 'background',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'full' }),
+        skillCommandApproval: approvalSpy,
+      },
+    );
+
+    expect(result).toContain('[Command blocked: confirmation denied]');
+    expect(approvalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'run_command',
+      input: { command: 'open /Applications/Calculator.app', cwd: '/tmp/example-skill' },
+      context: expect.objectContaining({ interactionMode: 'background' }),
+      onRequireConfirmation: expect.any(Function),
+      onRequireFilePermission: expect.any(Function),
+    }));
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('routes a scoped scheduled-run inline command through the trusted approval bridge', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'should-not-run\n', stderr: '' });
+    const approvalSpy = vi.fn().mockResolvedValue({
+      decision: 'deny',
+      reason: 'scheduled confirmation denied',
+    });
+
+    const result = await executeInlineCommands(
+      'Result: !`printf hello`',
+      '/tmp/example-skill',
+      {
+        interactionMode: 'background',
+        authorizationScopeId: 'scope-schedule',
+        skillCommandApproval: approvalSpy,
+      },
+    );
+
+    expect(result).toContain('[Command blocked: scheduled confirmation denied]');
+    expect(approvalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'run_command',
+      input: { command: 'printf hello', cwd: '/tmp/example-skill' },
+      context: expect.objectContaining({
+        interactionMode: 'background',
+        authorizationScopeId: 'scope-schedule',
+      }),
+    }));
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('routes a scheduler-ceiling inline command through permissionMode approval instead of trigger-tier blocking', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'scheduled\n', stderr: '' });
+    const approvalSpy = vi.fn().mockResolvedValue({ decision: 'allow' });
+
+    const result = await executeInlineCommands(
+      'Result: !`printf scheduled`',
+      '/tmp/example-skill',
+      {
+        interactionMode: 'background',
+        authorizationScopeId: 'scope-schedule',
+        runPermissionCeiling: {
+          version: 1,
+          source: 'scheduler',
+          capability: 'scheduled',
+          allowedTools: ['use_skill', 'run_command'],
+        } as never,
+        skillCommandApproval: approvalSpy,
+      },
+    );
+
+    expect(result).toBe('Result: scheduled');
+    expect(approvalSpy).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+
+  it('routes a legacy custom inline command through its trusted allowlist approval bridge', async () => {
+    setElectronMarker(true);
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'hello\n', stderr: '' });
+    const approvalSpy = vi.fn().mockResolvedValue({ decision: 'allow' });
+
+    const result = await executeInlineCommands(
+      'Result: !`printf hello`',
+      '/tmp/example-skill',
+      {
+        interactionMode: 'background',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({
+          prompt: 'x',
+          capability: 'custom',
+          permissions: {
+            allowedTools: ['run_command'],
+            allowedCommands: ['printf hello'],
+          },
+        }),
+        skillCommandApproval: approvalSpy,
+      },
+    );
+
+    expect(result).toBe('Result: hello');
+    expect(approvalSpy).toHaveBeenCalledWith(expect.objectContaining({
+      toolName: 'run_command',
+      input: { command: 'printf hello', cwd: '/tmp/example-skill' },
+    }));
+    expect(invoke).toHaveBeenCalledWith('run_shell_command', expect.objectContaining({
+      command: 'printf hello',
+      sandboxEnabled: true,
+    }));
+  });
+
   it('routes task cancellation to abort_command for a running Electron inline command', async () => {
     setElectronMarker(true);
     const controller = new AbortController();
@@ -161,5 +315,16 @@ describe('executeInlineCommands', () => {
     });
     resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
     await expect(running).resolves.toContain('[Command failed: [Command aborted]]');
+  });
+
+  it('blocks inline commands for non-full unattended runs before native execution', async () => {
+    const result = await executeInlineCommands(
+      'Result: !`printf hello`',
+      '/tmp/example-skill',
+      { runPermissionCeiling: buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'safe_tools' }) },
+    );
+
+    expect(result).toContain('[Command blocked:');
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

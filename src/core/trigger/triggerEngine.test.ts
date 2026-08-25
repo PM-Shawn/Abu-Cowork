@@ -448,7 +448,14 @@ describe('TriggerEngine', () => {
       expect(runAgentLoopMock).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
-        expect.objectContaining({ authorizationScopeId: 'scope-trigger-test' }),
+        expect.objectContaining({
+          authorizationScopeId: 'scope-trigger-test',
+          runPermissionCeiling: expect.objectContaining({
+            version: 1,
+            source: 'trigger',
+            capability: 'read_tools',
+          }),
+        }),
       );
       expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
     });
@@ -484,6 +491,35 @@ describe('TriggerEngine', () => {
       const run = useTriggerStore.getState().triggers[trigger.id]?.runs.at(-1);
       expect(run?.status).toBe('error');
       expect(run?.error).toContain('agent exploded');
+    });
+
+    it('disposes the trigger-run scope when sidecar recovery finite-settles as unavailable', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-scope-sidecar-unavailable',
+        action: { prompt: 'Do scoped work', workspacePath: '/Users/testuser/Projects/trigger' },
+        output: {
+          enabled: true,
+          target: 'webhook',
+          platform: 'custom',
+          webhookUrl: 'https://example.test/hook',
+          extractMode: 'last_message',
+        },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockResolvedValueOnce({
+        reason: 'error',
+        error: 'Sidecar run state remained unavailable during reattach',
+        stopReason: 'sidecar_unavailable',
+      });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 3 } });
+
+      expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('scope-trigger-test');
+      const run = useTriggerStore.getState().triggers[trigger.id]?.runs.at(-1);
+      expect(run?.status).toBe('error');
+      expect(run?.error).toContain('Sidecar run state remained unavailable');
+      expect(outputSender.send).not.toHaveBeenCalled();
     });
   });
 });

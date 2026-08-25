@@ -12,6 +12,8 @@
  * - turnEnd: At the end of each LLM turn
  */
 
+import type { ToolExecutionContext } from '../../types';
+
 /** Hook event types */
 export type HookEventType =
   | 'preToolCall'
@@ -37,6 +39,8 @@ export interface PreToolCallEvent extends BaseHookEvent {
   toolInput: Record<string, unknown>;
   /** Live task signal for in-process hooks; reverse-RPC bridges reattach it by runId. */
   abortSignal?: AbortSignal;
+  /** Trusted execution context for hook-owned side effects. */
+  toolContext?: ToolExecutionContext;
   /** Set to true to block the tool call */
   blocked?: boolean;
   /**
@@ -57,6 +61,8 @@ export interface PostToolCallEvent extends BaseHookEvent {
   toolInput: Record<string, unknown>;
   /** Live task signal for in-process hooks; reverse-RPC bridges reattach it by runId. */
   abortSignal?: AbortSignal;
+  /** Trusted execution context for hook-owned side effects. */
+  toolContext?: ToolExecutionContext;
   result: string;
   error: boolean;
   durationMs: number;

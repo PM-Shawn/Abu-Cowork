@@ -8,6 +8,8 @@ import {
   authorizeWorkspace,
   scopedAuthorizeWorkspace,
   hasFullShellAuthorizationScope,
+  isInScopedAuthorizedWorkspace,
+  type AuthorizationScopeId,
 } from './pathSafety';
 import { getI18n } from '../../i18n';
 import { truncateToolResult } from '../context/truncation';
@@ -36,6 +38,14 @@ import { TOOL_NAMES } from './toolNames';
 import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
 import { LABS_TODOS_INBOX } from '../labs/registry';
+import {
+  decideCommandUnderRunPermissionCeiling,
+  decideFileUnderRunPermissionCeiling,
+  decideStateChangingToolUnderRunPermissionCeiling,
+  decideToolUnderRunPermissionCeiling,
+  getRunPermissionCeilingFromContext,
+} from '../permissions/runPermissionCeiling';
+import { getLargeWriteBlockReason } from '../agent/hooks/largeWriteGuard';
 
 /**
  * Builtin tools whose availability is gated on a Labs experiment. A gated-off
@@ -275,6 +285,9 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
   [TOOL_NAMES.DELETE_FILE]:    (i) => typeof i.path === 'string' ? { path: i.path, capability: 'write' } : null,
   [TOOL_NAMES.SEARCH_FILES]:   (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
   [TOOL_NAMES.FIND_FILES]:     (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
+  // Uploading is a read of local data. It must pass the same path/scope gate as
+  // read_file before any IM network side effect occurs.
+  [TOOL_NAMES.SEND_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
 };
 
 /**
@@ -287,6 +300,8 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
 export interface ToolApprovalDecision {
   decision: 'allow' | 'deny';
   reason?: string;
+  /** Canonical file path that the executor must use for an approved file tool. */
+  executionPath?: string;
 }
 
 /**
@@ -435,6 +450,29 @@ export async function checkToolApproval(
     : undefined;
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
+  const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
+  const toolCeilingDecision = decideToolUnderRunPermissionCeiling(runPermissionCeiling, name, input);
+  if (toolCeilingDecision.decision === 'deny') {
+    return toolCeilingDecision;
+  }
+  // A background command returns after spawn, not after the OS child exits.
+  // Scoped unattended runs must not release their authorization scope while
+  // such a child can still be alive; abort_command is best-effort and has no
+  // join contract. Keep foreground chat behavior unchanged and fail closed at
+  // the shared approval boundary for every scoped execution venue.
+  if (
+    name === TOOL_NAMES.RUN_COMMAND
+    && input.background !== undefined
+    && input.background !== false
+    && toolContext?.authorizationScopeId !== undefined
+  ) {
+    return {
+      decision: 'deny',
+      reason: 'Error: background commands are not allowed in scoped unattended runs',
+    };
+  }
+  let largeWritePathAfterApproval: string | null = null;
+  let approvedExecutionPath: string | undefined;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -477,9 +515,23 @@ export async function checkToolApproval(
       // (risky commands already gate on content; autonomous never gates). Detects
       // commands that write outside the working dirs (e.g. `cp secret ~/Desktop/x`).
       let boundary: CmdBoundary = 'unknown';
-      if (!analysis.readOnly && analysis.level === 'safe' && permissionMode !== 'autonomous') {
+      if (
+        !analysis.readOnly &&
+        analysis.level === 'safe' &&
+        (permissionMode !== 'autonomous' || runPermissionCeiling !== null)
+      ) {
         const cwd = (input.cwd as string | undefined) || toolContext?.workspacePath || undefined;
         boundary = analyzeCommandBoundary(command, cwd, await getCachedHomeDir(), toolContext?.authorizationScopeId);
+      }
+
+      const commandCeilingDecision = decideCommandUnderRunPermissionCeiling(
+        runPermissionCeiling,
+        { command, level: analysis.level, reason: analysis.reason },
+        analysis.readOnly,
+        boundary,
+      );
+      if (commandCeilingDecision.decision === 'deny') {
+        return commandCeilingDecision;
       }
 
       // Decide how this command is gated. 'review' (smart tier) routes to the AI reviewer.
@@ -507,7 +559,13 @@ export async function checkToolApproval(
         // Surface the reviewer's reasoning so an escalated confirm explains itself.
         reviewReason = verdict.reason;
       }
-      if (outcome === 'confirm' && onRequireConfirmation) {
+      if (outcome === 'confirm') {
+        if (!onRequireConfirmation) {
+          return {
+            decision: 'deny',
+            reason: 'Error: command confirmation is unavailable for this run',
+          };
+        }
         const confirmed = await onRequireConfirmation({
           command,
           level: analysis.level,
@@ -527,11 +585,23 @@ export async function checkToolApproval(
     if (pathInfo) {
       // Use the appropriate check function based on capability
       const checkFn = pathInfo.capability === 'write'
-        ? checkWritePath
+        ? (candidate: string, id?: AuthorizationScopeId) => checkWritePath(
+          candidate,
+          id,
+          { followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE },
+        )
         : (name === TOOL_NAMES.LIST_DIRECTORY ? checkListPath : checkReadPath);
 
       const scopeId = toolContext?.authorizationScopeId;
-      const pathCheck = await checkFn(pathInfo.path, scopeId);
+      const fileCeilingDecision = decideFileUnderRunPermissionCeiling(
+        runPermissionCeiling,
+        pathInfo.capability,
+        isInScopedAuthorizedWorkspace(pathInfo.path, pathInfo.capability, scopeId),
+      );
+      if (fileCeilingDecision.decision === 'deny') {
+        return fileCeilingDecision;
+      }
+      let pathCheck = await checkFn(pathInfo.path, scopeId);
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
@@ -566,9 +636,9 @@ export async function checkToolApproval(
                 return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
-              const recheck = await checkFn(pathInfo.path, scopeId);
-              if (!recheck.allowed) {
-                return { decision: 'deny', reason: `Error: ${recheck.reason || t.toolErrors.pathAccessDenied}` };
+              pathCheck = await checkFn(pathInfo.path, scopeId);
+              if (!pathCheck.allowed) {
+                return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
               }
             } else {
               // No callback available (shouldn't happen in normal flow)
@@ -579,13 +649,32 @@ export async function checkToolApproval(
             if (scopeId !== undefined) {
               scopedAuthorizeWorkspace(scopeId, pathCheck.permissionPath, [cap]);
             } else {
-              authorizeWorkspace(pathCheck.permissionPath);
+              authorizeWorkspace(pathCheck.permissionPath, [cap]);
+            }
+            // Pin the target only after the newly-created grant has been
+            // checked against the path as it exists now. An auto-grant must
+            // not turn a retargeted symlink into an unchecked allow.
+            pathCheck = await checkFn(pathInfo.path, scopeId);
+            if (!pathCheck.allowed) {
+              return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
             }
           }
         } else {
           // Hard blocked — always enforced regardless of permission mode
           return { decision: 'deny', reason: `Error: ${pathCheck.reason}` };
         }
+      }
+
+      if (!pathCheck.allowed || !pathCheck.resolvedPath) {
+        return {
+          decision: 'deny',
+          reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}`,
+        };
+      }
+      approvedExecutionPath = pathCheck.resolvedPath;
+
+      if (name === TOOL_NAMES.WRITE_FILE) {
+        largeWritePathAfterApproval = approvedExecutionPath;
       }
     }
   }
@@ -601,6 +690,13 @@ export async function checkToolApproval(
   {
     const consequence = classifyBrowserTool(name);
     if (consequence === 'state-changing') {
+      const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
+        runPermissionCeiling,
+        'browser',
+      );
+      if (browserCeilingDecision.decision === 'deny') {
+        return browserCeilingDecision;
+      }
       const origin = await resolveBrowserActionOrigin(name, input);
       const siteVerdict = getSiteVerdict(
         origin,
@@ -646,15 +742,20 @@ export async function checkToolApproval(
     }
   }
 
-  // Self-extension: creating a subagent, installing an MCP server, or
-  // rewriting the persona all write durable state that shapes every later
-  // turn. Skills already require a draft + content scan + audited history;
-  // these took the same kind of write with no gate at all, so a single
-  // injected instruction could buy a persistent foothold. No per-conversation
-  // grant here — these are rare, deliberate acts, each worth its own ask.
+  // Self-extension: creating a subagent, installing an MCP server, rewriting
+  // the persona, or changing a persistent automation writes durable state that
+  // shapes later turns/runs. No per-conversation grant here — these are rare,
+  // deliberate acts, each worth its own ask.
   {
     const selfExtension = classifySelfExtension(name, input);
     if (selfExtension) {
+      const selfExtensionCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
+        runPermissionCeiling,
+        'self-extension',
+      );
+      if (selfExtensionCeilingDecision.decision === 'deny') {
+        return selfExtensionCeilingDecision;
+      }
       const decision = strategy.decideOtherTool('state-changing', false);
       if (decision !== 'allow') {
         if (!onRequireConfirmation) {
@@ -684,6 +785,9 @@ export async function checkToolApproval(
       return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
     }
     if (policyCheck.decision === 'confirm') {
+      if (toolContext?.interactionMode === 'background') {
+        return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason ?? 'confirmation unavailable in background run'}` }
+      }
       const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
       if (!allowed) {
         return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
@@ -691,7 +795,50 @@ export async function checkToolApproval(
     }
   }
 
-  return { decision: 'allow' };
+  if (largeWritePathAfterApproval) {
+    // The preToolCall guard cannot inspect a path before approval: that would
+    // turn exists/stat into a metadata oracle.  Enterprise policy must also
+    // win before any probe.  Finally require an actual read grant — scoped
+    // write and read capabilities are intentionally independent — and fail
+    // closed if the run has only write authority.
+    let readCheck = await checkReadPath(
+      largeWritePathAfterApproval,
+      toolContext?.authorizationScopeId,
+    );
+    if (
+      !readCheck.allowed
+      && readCheck.needsPermission
+      && readCheck.permissionPath
+      && onRequireFilePermission
+    ) {
+      const granted = await onRequireFilePermission({
+        path: readCheck.permissionPath,
+        capability: 'read',
+        toolName: TOOL_NAMES.WRITE_FILE,
+      }, toolContext?.loopId);
+      if (granted) {
+        readCheck = await checkReadPath(
+          largeWritePathAfterApproval,
+          toolContext?.authorizationScopeId,
+        );
+      }
+    }
+    if (!readCheck.allowed) {
+      return {
+        decision: 'deny',
+        reason: 'Error: write_file requires read authorization for its overwrite safety check; authorize read access to this path, then retry',
+      };
+    }
+    const blockReason = await getLargeWriteBlockReason(largeWritePathAfterApproval);
+    if (blockReason) {
+      return { decision: 'deny', reason: blockReason };
+    }
+  }
+
+  return {
+    decision: 'allow',
+    ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
+  };
 }
 
 /**
@@ -708,18 +855,34 @@ export async function executeAnyTool(
   /** Current context window usage (0-100). Scales truncation limits under pressure. */
   contextUsagePercent?: number
 ): Promise<ToolResult> {
+  const throwIfAborted = (): void => {
+    if (!toolContext?.abortSignal?.aborted) return;
+    const error = new Error('Tool execution aborted');
+    error.name = 'AbortError';
+    throw error;
+  };
+
+  throwIfAborted();
   // P1-3d-3: approval chain extracted to checkToolApproval — see its doc.
   // Behavior-preserving: same deny-reason strings, same order, same callbacks.
   const approval = await checkToolApproval(name, input, toolContext, onRequireConfirmation, onRequireFilePermission);
   if (approval.decision === 'deny') {
     return approval.reason ?? `Error: tool "${name}" was denied`;
   }
+  // Approval may await AI review, a user confirmation, or file permission.
+  // Stop can win during any of those awaits; never consume a stale allow by
+  // starting a builtin/MCP side effect after the run crossed its abort fence.
+  throwIfAborted();
+
+  const executionInput = approval.executionPath && FILE_TOOL_PATH_MAP[name]
+    ? { ...input, path: approval.executionPath }
+    : input;
 
   // First check builtin tools. A Labs-gated-off tool stays in the registry but
   // is treated as absent here too, so a stale/hallucinated tool_use falls
   // through to the "Unknown tool" fail-safe instead of silently executing.
   if (toolRegistry.has(name) && !isToolGatedOff(name)) {
-    const result = await toolRegistry.execute(name, input, toolContext);
+    const result = await toolRegistry.execute(name, executionInput, toolContext);
     // Only truncate string results; rich content (images) passes through
     if (typeof result === 'string') {
       // File-tool OS-permission errors get a friendly grant-guide (not
@@ -735,7 +898,7 @@ export async function executeAnyTool(
   if (name.includes('__')) {
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, input);
+      const result = await mcpManager.callTool(serverName, toolName, executionInput);
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

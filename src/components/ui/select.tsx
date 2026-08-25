@@ -30,15 +30,18 @@ export interface SelectProps {
   onChange: (value: string) => void;
   options: SelectOption[] | SelectOptionGroup[];
   placeholder?: string;
+  /** Programmatic field label for screen readers. */
+  ariaLabel?: string;
   /** 'default' = full-width form field, 'inline' = compact boxed settings row,
    *  'ghost' = borderless value + small chevron (iOS-style quick-setting row) */
   variant?: 'default' | 'inline' | 'ghost';
   className?: string;
 }
 
-export function Select({ value, onChange, options, placeholder, variant = 'default', className }: SelectProps) {
+export function Select({ value, onChange, options, placeholder, ariaLabel, variant = 'default', className }: SelectProps) {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
+  const dropdownId = React.useId();
 
   const allOptions = flattenOptions(options);
   const selectedOption = allOptions.find((opt) => opt.value === value);
@@ -101,6 +104,9 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
       {/* Trigger */}
       <button
         type="button"
+        aria-label={ariaLabel ? `${ariaLabel}: ${selectedOption?.label ?? placeholder ?? '...'}` : undefined}
+        aria-expanded={open}
+        aria-controls={dropdownId}
         onClick={() => setOpen(!open)}
         className={cn(
           'flex items-center text-body text-left transition-all',
@@ -134,7 +140,7 @@ export function Select({ value, onChange, options, placeholder, variant = 'defau
 
       {/* Dropdown */}
       {open && (
-        <div className={cn(
+        <div id={dropdownId} className={cn(
           'absolute z-50 top-full mt-1 py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
           (isInline || isGhost) ? 'right-0 min-w-[140px]' : 'left-0 right-0',
         )}>

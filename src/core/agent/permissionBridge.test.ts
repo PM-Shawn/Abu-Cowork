@@ -30,6 +30,7 @@ import {
   checkWritePath,
   createAuthorizationScope,
   disposeAuthorizationScope,
+  revokeWorkspace,
 } from '../tools/pathSafety';
 
 const MINIMAL_PAYLOAD: UserQuestionPayload = {
@@ -303,6 +304,30 @@ describe('permissionBridge — resolveFilePermission pending guard (F1 regressio
     } finally {
       clearLoopContext('loop-read-only');
       disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('syncs a global read grant without widening it to write', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-global-read/notes.md';
+
+    try {
+      usePermissionStore.getState().grantPermission(path, ['read'], 'session');
+      expect((await checkReadPath(path)).allowed).toBe(true);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+
+      // Simulate pathSafety state being rebuilt independently: the bridge's
+      // fast path must preserve the requested capability when it re-syncs.
+      revokeWorkspace(path);
+      await expect(requestFilePermission({
+        path,
+        capability: 'read',
+        toolName: 'read_file',
+      })).resolves.toBe(true);
+      expect((await checkReadPath(path)).allowed).toBe(true);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+    } finally {
+      usePermissionStore.getState().revokePermission(path);
+      revokeWorkspace(path);
     }
   });
 

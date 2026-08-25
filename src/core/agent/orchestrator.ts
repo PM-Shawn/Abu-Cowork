@@ -270,9 +270,9 @@ If the user's request involves writing files, executing commands, launching prog
 
     case 'safe_tools':
       return `\n## Current capability level: standard
-You can read and write files in authorized directories, and execute **safe commands** (e.g. ls, cat, grep, git status, npm run, and other read-only or standard development commands).
-You **cannot** execute dangerous commands (e.g. rm -rf, sudo, chmod 777, curl | sh, or other destructive or privilege-escalating operations).
-If the user's request involves a dangerous command, briefly explain that the current channel is in standard mode — you can execute safe commands but cannot execute this dangerous operation; if full permissions are needed, ask the user to contact an administrator to adjust the channel's permissions.`;
+You can read and write files in authorized directories through the available structured tools.
+You **cannot** execute shell commands or act outside the authorized directories.
+If the user's request requires command execution or access outside those directories, briefly explain that the current channel is in standard mode and ask the user to contact an administrator to adjust the channel's permissions.`;
 
     case 'full':
       return `\n## Current capability level: full
@@ -492,8 +492,13 @@ You are replying in an IM chat. Follow this style:
 - Keep the tone natural — like a colleague conversation, not a customer service document.
 - This channel has no interactive selection cards or approval dialogs. When you need the user to choose or approve something, ask the question plainly in your text reply (list the options), then STOP and end your turn — the user will answer in their next message and you continue from there. Never wait silently for a UI dialog.`, cacheable: true });
   } else {
-    // Interactive desktop mode
-    workspacePath = getWorkspaceReader().getCurrentPath();
+    // Non-IM runs still include unattended scheduler/trigger/watcher entries.
+    // Their trusted tool context owns the workspace snapshot; they must never
+    // inherit the mutable foreground workspace merely because IM is absent.
+    const headless = toolContext?.interactionMode === 'background';
+    workspacePath = headless
+      ? (toolContext?.workspacePath ?? null)
+      : getWorkspaceReader().getCurrentPath();
 
     if (workspacePath) {
       sections.push({ name: 'workspace', text: `\n## Current Workspace
@@ -505,9 +510,6 @@ You can use file tools to read and write files in this directory. When the user 
       // runs (which reach this else-branch because it's gated only on imContext)
       // must NOT auto-create/bind a ~/Abu workspace, so they fall back to the
       // hidden app-data session output dir just as before.
-      const { useChatStore: chatStoreForWs } = await import('../../stores/chatStore');
-      const convRecord = chatStoreForWs.getState().conversations[conversationId];
-      const headless = !!(convRecord?.scheduledTaskId || convRecord?.triggerId);
       const suggested = headless ? null : await prepareSuggestedWorkspace(conversationId);
       const defaultDir = suggested ?? (await getSessionOutputDir(conversationId));
       sections.push({ name: 'workspace-hint', text: `\n## Workspace Notice

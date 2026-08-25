@@ -157,6 +157,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   // (e.g. dynamically-registered MCP tools).
   const blockedTools = params.blockedTools ?? [];
   const allowedTools = params.allowedTools ?? [];
+  const isScopedRun = toolContext.authorizationScopeId !== undefined;
 
   // Update the assistant message with tool calls
   chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
@@ -178,6 +179,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     allowedTools: params.allowedTools,
     imContext: params.imContext,
     authorizationScopeId: params.toolContext.authorizationScopeId,
+    runPermissionCeiling: params.toolContext.runPermissionCeiling,
+    imReplyTarget: params.toolContext.imReplyTarget,
   });
 
   let completedCount = 0;
@@ -216,6 +219,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolInput: tc.input,
       abortSignal: abortController.signal,
+      toolContext,
     } as PreToolCallEvent);
 
     if (preEvent.blocked) {
@@ -263,8 +267,23 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
-      // Race tool execution against abort signal so stop button works during long-running tools (e.g. MCP)
-      const rawResult: ToolResult = await new Promise<ToolResult>((resolve, reject) => {
+      const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
+        ...toolContext,
+        toolCallId: tc.id,
+        assistantMessageId: assistantMsgId,
+        abortSignal: abortController.signal,
+        reportMetadata: checkpointMetadata,
+      }, contextUsagePercent);
+
+      // Foreground Stop keeps its long-standing responsive detach behavior.
+      // A scoped/background run is an authority owner, however: its caller
+      // must not release the scope or start the next session turn while the
+      // already-started MCP/HTTP/native operation is still alive. Keep the
+      // original promise joined in that case; UI terminalization is handled
+      // independently by the shell-side runner.
+      const rawResult: ToolResult = isScopedRun
+        ? await invokeTool()
+        : await new Promise<ToolResult>((resolve, reject) => {
         if (abortController.signal.aborted) {
           reject(new DOMException('Aborted', 'AbortError'));
           return;
@@ -277,13 +296,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
-          ...toolContext,
-          toolCallId: tc.id,
-          assistantMessageId: assistantMsgId,
-          abortSignal: abortController.signal,
-          reportMetadata: checkpointMetadata,
-        }, contextUsagePercent)
+        invokeTool()
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -298,7 +311,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
               reject(err);
             }
           });
-      });
+        });
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
@@ -324,6 +337,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         result: resultStr,
         error: isError,
         durationMs,
+        toolContext,
       });
       logger.info('Tool executed', { toolName: tc.name, durationMs, error: isError });
       toolSpan.end({ output: resultStr });
@@ -358,6 +372,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         result: `Error: ${errorMsg}`,
         error: true,
         durationMs,
+        toolContext,
       });
       logger.info('Tool executed', { toolName: tc.name, durationMs, error: true });
       toolSpan.end({ output: `Error: ${errorMsg}`, level: 'ERROR', statusMessage: errorMsg });
@@ -570,15 +585,27 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
         const image = firstImageContent(resultContent);
         if (image) {
-          const sourcePath = matchedTc.name === TOOL_NAMES.READ_FILE && typeof matchedTc.input.path === 'string'
+          // A scoped/background run must not re-read a user path after its
+          // authority owner can be released. Persist the immutable bytes the
+          // tool already returned and join that internal write before the
+          // batch settles. Foreground runs retain the existing non-blocking
+          // path-copy behavior.
+          const sourcePath = !isScopedRun
+            && matchedTc.name === TOOL_NAMES.READ_FILE
+            && typeof matchedTc.input.path === 'string'
             ? matchedTc.input.path
             : undefined;
           const isPersistedExplicitScreenshot = matchedTc.name === TOOL_NAMES.COMPUTER
             && matchedTc.input.action === 'screenshot'
             && resultContent?.some((block) => block.type === 'text' && block.text.includes('Screenshot saved to:'));
           if (!isPersistedExplicitScreenshot) {
-            void snapshotResultImage(conversationId, id, image, sourcePath)
+            const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
               .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
+            if (isScopedRun) {
+              await snapshotPromise;
+            } else {
+              void snapshotPromise;
+            }
           }
         }
       }

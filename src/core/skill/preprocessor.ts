@@ -8,7 +8,10 @@
 
 import { parseArgs } from '../../utils/argsParser';
 import type { ToolExecutionContext } from '../../types';
+import { analyzeCommand } from '../tools/commandSafety';
 import { invokeTaskCommand } from '../tools/helpers/scopedCommand';
+import { getRunPermissionCeilingFromContext } from '../permissions/runPermissionCeiling';
+import { TOOL_NAMES } from '../tools/toolNames';
 
 export { parseArgs };
 
@@ -16,6 +19,72 @@ interface CommandOutput {
   stdout: string;
   stderr: string;
   code: number;
+}
+
+export interface SkillCommandApprovalRequest {
+  toolName: typeof TOOL_NAMES.RUN_COMMAND;
+  input: { command: string; cwd: string };
+  context?: ToolExecutionContext;
+  onRequireConfirmation?: (request: {
+    command: string;
+    level: 'safe' | 'warn' | 'danger' | 'block';
+    reason?: string;
+  }) => Promise<boolean>;
+  onRequireFilePermission?: () => Promise<boolean>;
+}
+
+export type SkillCommandApprovalCallback = (
+  request: SkillCommandApprovalRequest,
+) => Promise<{ decision: 'allow' | 'deny'; reason?: string }>;
+
+declare module '../../types' {
+  interface ToolExecutionContext {
+    /**
+     * Shell-owned approval bridge for executable skill directives. Sidecar and
+     * unattended callers must not synthesize this; absence fails closed for
+     * every background run, including scheduler runs that use permissionMode
+     * rather than a trigger/IM capability ceiling.
+     */
+    skillCommandApproval?: SkillCommandApprovalCallback;
+  }
+}
+
+export async function explainBlockedSkillCommand(
+  command: string,
+  skillDir: string,
+  context?: ToolExecutionContext,
+): Promise<string | null> {
+  const ceiling = getRunPermissionCeilingFromContext(context);
+  const isBackgroundRun = context?.interactionMode === 'background';
+  if (!ceiling && !isBackgroundRun) return null;
+  if (
+    ceiling
+    && ceiling.capability !== 'full'
+    && ceiling.capability !== 'custom'
+    && ceiling.capability !== 'scheduled'
+  ) {
+    return 'skill command execution is disabled for this unattended run capability';
+  }
+  if (analyzeCommand(command).level === 'block') {
+    return 'command is blocked';
+  }
+  if (!context?.skillCommandApproval) {
+    return 'skill command approval is unavailable for this unattended run';
+  }
+  const onRequireConfirmation = context?.interactionMode === 'foreground'
+    ? undefined
+    : async () => false;
+  const approval = await context.skillCommandApproval({
+    toolName: TOOL_NAMES.RUN_COMMAND,
+    input: { command, cwd: skillDir },
+    context,
+    onRequireConfirmation,
+    onRequireFilePermission: async () => false,
+  });
+  if (approval.decision === 'deny') {
+    return approval.reason || 'command is blocked';
+  }
+  return null;
 }
 
 /**
@@ -87,6 +156,10 @@ export async function executeInlineCommands(
     matches.map(async (match) => {
       const command = match[1];
       try {
+        const blockedReason = await explainBlockedSkillCommand(command, skillDir, context);
+        if (blockedReason) {
+          return `[Command blocked: ${blockedReason}]`;
+        }
         const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
           command,
           cwd: skillDir,

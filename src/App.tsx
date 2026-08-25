@@ -25,7 +25,6 @@ import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidt
 import ToastContainer from '@/components/common/ToastContainer';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
-import { installLargeWriteGuard } from '@/core/agent/hooks/largeWriteGuard';
 import { initPlatform } from '@/utils/platform';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
@@ -431,7 +430,6 @@ function App() {
 
   useEffect(() => {
     registerBuiltinTools();
-    installLargeWriteGuard();
     refreshDiscovery();
     provisionFirstPartyMCPServers();
     initMCPStoreSync();

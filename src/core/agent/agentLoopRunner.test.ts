@@ -319,10 +319,14 @@ vi.mock('./computerUseStatus', () => ({
 const setComputerUseBatchModeMock = vi.fn();
 const setSkipAutoScreenshotMock = vi.fn();
 const clearAllSkillHooksMock = vi.fn();
+const clearSkillHooksByConversationMock = vi.fn();
+const clearSkillHooksByLoopMock = vi.fn();
 vi.mock('../tools/builtins', () => ({
   setComputerUseBatchMode: (...a: unknown[]) => setComputerUseBatchModeMock(...a),
   setSkipAutoScreenshot: (...a: unknown[]) => setSkipAutoScreenshotMock(...a),
   clearAllSkillHooks: (...a: unknown[]) => clearAllSkillHooksMock(...a),
+  clearSkillHooksByConversation: (...a: unknown[]) => clearSkillHooksByConversationMock(...a),
+  clearSkillHooksByLoop: (...a: unknown[]) => clearSkillHooksByLoopMock(...a),
 }));
 
 const drainCapabilitySetupRequestsMock = vi.fn();
@@ -419,6 +423,7 @@ vi.mock('../../i18n', () => ({
   getI18n: () => ({
     chat: {
       sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+      sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
       attachmentDuringRun: '请等待当前任务结束后再发送图片，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
@@ -453,18 +458,44 @@ function makeSession(
     loopId: string;
     terminalPublished: boolean;
     authorizationScopeId: string;
+    runPermissionCeiling: unknown;
     workspacePathSnapshot: string | null;
+    imReplyTarget: { platform: string; chatId: string };
+    interactionMode: 'foreground' | 'background';
+    triggerId: string;
+    scheduledTaskId: string;
   }> = {},
 ) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
+    interactionMode: overrides.interactionMode ?? (
+      Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
+      || Object.prototype.hasOwnProperty.call(overrides, 'runPermissionCeiling')
+      || Object.prototype.hasOwnProperty.call(overrides, 'imReplyTarget')
+      || Object.prototype.hasOwnProperty.call(overrides, 'triggerId')
+      || Object.prototype.hasOwnProperty.call(overrides, 'scheduledTaskId')
+        ? 'background'
+        : 'foreground'
+    ),
     options: {
       ...(Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
         ? { authorizationScopeId: overrides.authorizationScopeId }
         : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'runPermissionCeiling')
+        ? { runPermissionCeiling: overrides.runPermissionCeiling as never }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'triggerId')
+        ? { triggerId: overrides.triggerId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'scheduledTaskId')
+        ? { scheduledTaskId: overrides.scheduledTaskId }
+        : {}),
       ...(Object.prototype.hasOwnProperty.call(overrides, 'workspacePathSnapshot')
         ? { workspacePathSnapshot: overrides.workspacePathSnapshot }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'imReplyTarget')
+        ? { imReplyTarget: overrides.imReplyTarget }
         : {}),
     },
     shellAbortController: new AbortController(),
@@ -562,6 +593,8 @@ describe('agentLoopRunner', () => {
     capturedExecCb = undefined;
     taskExecState = { getExecutionByConversationId: () => undefined };
     clearAllSkillHooksMock.mockReset();
+    clearSkillHooksByConversationMock.mockReset();
+    clearSkillHooksByLoopMock.mockReset();
     drainCapabilitySetupRequestsMock.mockReset();
     clearCheckpointMock.mockReset();
     clearCheckpointMock.mockResolvedValue(undefined);
@@ -1088,10 +1121,11 @@ describe('agentLoopRunner', () => {
     ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
-        const { ensureHandlersRegistered } = await importFresh();
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
         ensureHandlersRegistered();
+        registerRunSession('run-native', makeSession());
         const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
-        const result = await handler({ cmd, args: { foo: 'bar' } });
+        const result = await handler({ runId: 'run-native', cmd, args: { foo: 'bar' } });
         expect(tauriInvokeMock).toHaveBeenCalledWith(cmd, { foo: 'bar' });
         expect(result).toEqual({ ok: true });
       },
@@ -1101,15 +1135,31 @@ describe('agentLoopRunner', () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
-      await expect(handler({ cmd: 'delete_everything', args: {} })).rejects.toThrow(MockSidecarRequestError);
+      await expect(handler({ runId: 'run-native', cmd: 'delete_everything', args: {} })).rejects.toThrow(MockSidecarRequestError);
       expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
 
-    it('rejects malformed params (missing cmd)', async () => {
+    it('rejects malformed params (missing runId/cmd)', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
       await expect(handler({})).rejects.toThrow(MockSidecarRequestError);
+    });
+
+    it('denies a new consequence-bearing native call after Stop', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession({ authorizationScopeId: 'scope-native' });
+      registerRunSession('run-native', session);
+      session.shellAbortController.abort();
+      const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+
+      await expect(handler({
+        runId: 'run-native',
+        cmd: 'run_shell_command',
+        args: { command: 'touch late' },
+      })).rejects.toThrow(/stopping/);
+      expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1165,6 +1215,114 @@ describe('agentLoopRunner', () => {
   });
 
   describe('sidecar context scope hardening', () => {
+    it('tool.invoke and approval.check use the shell-owned interaction mode', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ interactionMode: 'background' }));
+
+      const toolHandler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await toolHandler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'foreground' },
+      });
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
+      }));
+
+      const approvalHandler = handlerFor(onSidecarRequest, 'approval.check') as (p: unknown) => Promise<unknown>;
+      await approvalHandler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'foreground' },
+      });
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
+      }));
+    });
+
+    it('does not trust a forged background marker for a shell-owned foreground run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ interactionMode: 'foreground' }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'background' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        interactionMode: 'foreground',
+      }));
+    });
+
+    it('tool.invoke overwrites a sidecar-forged ceiling with the shell session ceiling', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const shellCeiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+      registerRunSession('run-1', makeSession({ runPermissionCeiling: shellCeiling }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'full' },
+        },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
+        expect.objectContaining({ runPermissionCeiling: shellCeiling }),
+      );
+    });
+
+    it('tool.invoke installs a shell-owned skill command approval bridge', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const shellCeiling = { version: 1, source: 'trigger', capability: 'full' };
+      registerRunSession('run-1', makeSession({
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: shellCeiling,
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'use_skill',
+        input: { skill_name: 'build' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'read_tools' },
+          interactionMode: 'foreground',
+        },
+      });
+
+      const trustedContext = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        skillCommandApproval?: (request: unknown) => Promise<unknown>;
+      };
+      expect(trustedContext.skillCommandApproval).toEqual(expect.any(Function));
+      await trustedContext.skillCommandApproval?.({
+        toolName: 'run_command',
+        input: { command: 'git status', cwd: '/trusted/skill' },
+        context: {
+          authorizationScopeId: 'scope-forged-again',
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'read_tools' },
+        },
+      });
+
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: shellCeiling,
+        interactionMode: 'background',
+      }));
+    });
+
     it('tool.invoke overwrites sidecar-supplied scope and identity with the shell session values', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1198,6 +1356,44 @@ describe('agentLoopRunner', () => {
           workspacePath: '/trusted/workspace',
         }),
       );
+    });
+
+    it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        imReplyTarget: { platform: 'feishu', chatId: 'trusted-chat' },
+      }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'send_file',
+        input: { path: '/tmp/report.pdf' },
+        context: { imReplyTarget: { platform: 'feishu', chatId: 'attacker-chat' } },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        imReplyTarget: { platform: 'feishu', chatId: 'trusted-chat' },
+      }));
+    });
+
+    it('tool.invoke strips a forged IM reply target from a non-IM shell session', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'send_file',
+        input: { path: '/tmp/report.pdf' },
+        context: { imReplyTarget: { platform: 'feishu', chatId: 'attacker-chat' } },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        imReplyTarget: undefined,
+      }));
     });
 
     it('tool.invoke overwrites a forged workspace with null when the shell session has no trusted workspace', async () => {
@@ -1258,6 +1454,27 @@ describe('agentLoopRunner', () => {
         }),
         expect.any(Function),
         expect.any(Function),
+      );
+    });
+
+    it('approval.check overwrites a sidecar-forged ceiling before registry approval', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const shellCeiling = { version: 1, source: 'trigger', capability: 'custom', allowedTools: ['read_file'] };
+      registerRunSession('run-1', makeSession({ runPermissionCeiling: shellCeiling }));
+      const handler = handlerFor(onSidecarRequest, 'approval.check') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'full' },
+        },
+      });
+
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(
+        expect.objectContaining({ runPermissionCeiling: shellCeiling }),
       );
     });
   });
@@ -1605,18 +1822,26 @@ describe('agentLoopRunner', () => {
       expect(ctx.filePermissionCallback).toBe(customFilePerm);
     });
 
-    it('installs the session imContext into the shell LoopContext for nested delegate tools', async () => {
+    it('installs shell-owned IM context and reply target for nested delegate tools', async () => {
       const { registerRunSession, installShellLoopContext } = await importFresh();
       const imContext = { platform: 'dchat' as const, workspacePath: '/im/workspace' };
       const session = {
-        ...makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }),
-        options: { imContext },
+        ...makeSession({
+          conversationId: 'conv-1',
+          loopId: 'loop-1',
+          imReplyTarget: { platform: 'feishu', chatId: 'chat-trusted' },
+        }),
+        options: {
+          imContext,
+          imReplyTarget: { platform: 'feishu', chatId: 'chat-trusted' },
+        },
       };
       registerRunSession('run-1', session);
 
       installShellLoopContext('run-1', session);
 
       const [, ctx] = setLoopContextMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(ctx.imReplyTarget).toEqual({ platform: 'feishu', chatId: 'chat-trusted' });
       expect(ctx.imContext).toBe(imContext);
     });
 
@@ -1686,25 +1911,30 @@ describe('agentLoopRunner', () => {
     });
   });
 
-  // ── skillHooks.clearAll handler (closes a P1-3B-3A escalation) ─────────
+  // ── skillHooks.clearAll handler (wire name retained; cleanup is run-scoped) ─
 
   describe('skillHooks.clearAll handler', () => {
-    it('calls the real clearAllSkillHooks', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
+    it('clears only the registered run loop hooks', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-old' }));
       const handler = handlerFor(onSidecarNotification, 'skillHooks.clearAll');
       handler({ runId: 'run-1' });
-      expect(clearAllSkillHooksMock).toHaveBeenCalledTimes(1);
+      expect(clearSkillHooksByLoopMock).toHaveBeenCalledWith('loop-old');
+      expect(clearSkillHooksByConversationMock).not.toHaveBeenCalled();
+      expect(clearAllSkillHooksMock).not.toHaveBeenCalled();
     });
 
-    it('drops malformed params without throwing or calling through', async () => {
+    it('drops malformed or unknown run params without calling through', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'skillHooks.clearAll');
       expect(() => handler(null)).not.toThrow();
       expect(() => handler({})).not.toThrow();
       expect(() => handler({ runId: 123 })).not.toThrow();
-      expect(clearAllSkillHooksMock).not.toHaveBeenCalled();
+      expect(() => handler({ runId: 'unknown-run' })).not.toThrow();
+      expect(clearSkillHooksByLoopMock).not.toHaveBeenCalled();
+      expect(clearSkillHooksByConversationMock).not.toHaveBeenCalled();
     });
   });
 
@@ -2083,6 +2313,52 @@ describe('agentLoopRunner', () => {
   // by `agentLoopHost.test.ts`'s "local tool dispatch" describe block.
 
   describe('approval.check handler', () => {
+    it('rejects a local sidecar approval before policy work when Stop already owns the run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-stopping', { ...makeSession(), abortRequested: true });
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      await expect(handler({
+        runId: 'run-stopping',
+        toolName: 'write_file',
+        input: { path: '/tmp/late.txt', content: 'late' },
+      })).rejects.toThrow(/stopping/);
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it('revokes an allow decision when Stop wins while approval is pending', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession() as ReturnType<typeof makeSession> & {
+        abortRequested?: boolean;
+        committed?: boolean;
+      };
+      registerRunSession('run-stopping', session);
+      getAllToolsMock.mockReturnValueOnce([{
+        name: 'write_file', description: 'writes', inputSchema: { type: 'object', properties: {} },
+        execute: async () => 'ok', isConcurrencySafe: false,
+      }]);
+      let resolveApproval!: (decision: { decision: 'allow' }) => void;
+      const pendingApproval = new Promise<{ decision: 'allow' }>((resolve) => {
+        resolveApproval = resolve;
+      });
+      checkToolApprovalMock.mockReturnValue(pendingApproval);
+
+      const handler = handlerFor(onSidecarRequest, 'approval.check');
+      const result = handler({
+        runId: 'run-stopping',
+        toolName: 'write_file',
+        input: { path: '/tmp/late.txt', content: 'late' },
+      });
+      await vi.waitFor(() => expect(checkToolApprovalMock).toHaveBeenCalledOnce());
+      session.abortRequested = true;
+      resolveApproval({ decision: 'allow' });
+
+      await expect(result).rejects.toThrow(/stopping/);
+      expect(session.committed).not.toBe(true);
+    });
+
     it('returns {decision:"allow"} from checkToolApproval, threading the session callbacks', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -2267,7 +2543,11 @@ describe('agentLoopRunner', () => {
       handler({ runId: 'run-1', conversationId: 'conv-1', path: '/Users/x/Abu/report/out.html' });
       await Promise.resolve();
 
-      expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith('conv-1', '/Users/x/Abu/report/out.html');
+      expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith(
+        'conv-1',
+        '/Users/x/Abu/report/out.html',
+        'foreground',
+      );
     });
 
     it('silently drops for an unknown/already-finished runId (3a discipline — same as agent.delta)', async () => {
@@ -2291,6 +2571,44 @@ describe('agentLoopRunner', () => {
         runId: 'run-1',
         conversationId: 'conv-forged',
         path: '/Users/x/Abu/report/out.html',
+      })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('silently drops workspace binding from a scoped background run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        conversationId: 'conv-im',
+        authorizationScopeId: 'scope-im',
+      }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({
+        runId: 'run-1',
+        conversationId: 'conv-im',
+        path: '/Users/testuser/Abu/remote/out.txt',
+      })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('silently drops an unscoped background run based on the shell-owned interaction mode', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        conversationId: 'conv-watch',
+        interactionMode: 'background',
+      }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({
+        runId: 'run-1',
+        conversationId: 'conv-watch',
+        path: '/Users/testuser/Abu/watched/out.txt',
       })).not.toThrow();
       await Promise.resolve();
 
@@ -2435,6 +2753,7 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
         runtimeEvent: expect.any(Function),
+        skillCommandApprovalFactory: expect.any(Function),
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
@@ -2527,6 +2846,78 @@ describe('agentLoopRunner', () => {
           expect.objectContaining({ content: 'second follow-up', loopId: payloads[2].runId }),
         ]),
       );
+    });
+
+    it('does not let a desktop queued follow-up inherit the unattended run authority owner', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      dequeueNextUserInputMock
+        .mockReturnValueOnce({ id: 'q1', text: 'follow-up', timestamp: 1 })
+        .mockReturnValue(undefined);
+      const ceiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+
+      await runAgentLoopDispatched('conv-1', 'original', {
+        images: [{ id: 'image-1', data: 'data', mediaType: 'image/png' }],
+        authorizationScopeId: 'scope-run',
+        runPermissionCeiling: ceiling as never,
+      });
+
+      const payloads = sidecarRequestMock.mock.calls.map((call) => call[1] as {
+        options: { images?: unknown[]; authorizationScopeId?: string; runPermissionCeiling?: unknown };
+      });
+      expect(payloads).toHaveLength(2);
+      expect(payloads[0].options.images).toHaveLength(1);
+      expect(payloads[1].options.images).toBeUndefined();
+      expect(payloads.map((payload) => payload.options.authorizationScopeId)).toEqual(['scope-run', undefined]);
+      expect(payloads.map((payload) => payload.options.runPermissionCeiling)).toEqual([ceiling, undefined]);
+    });
+
+    it('precomputes executable skills through a trusted shell approval bridge', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const ceiling = { version: 1, source: 'trigger', capability: 'full' };
+
+      await runAgentLoopDispatched('conv-1', 'run the skill', {
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: ceiling as never,
+      });
+
+      const precomputeContext = precomputeOrchestrationMock.mock.calls[0][5] as {
+        skillCommandApproval?: (request: unknown) => Promise<unknown>;
+      };
+      expect(precomputeContext.skillCommandApproval).toEqual(expect.any(Function));
+      await precomputeContext.skillCommandApproval?.({
+        toolName: 'run_command',
+        input: { command: 'git status', cwd: '/trusted/skill' },
+        context: {
+          authorizationScopeId: 'scope-forged',
+          runPermissionCeiling: { version: 1, source: 'trigger', capability: 'read_tools' },
+        },
+      });
+
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        conversationId: 'conv-1',
+        authorizationScopeId: 'scope-real',
+        runPermissionCeiling: ceiling,
+      }));
+    });
+
+    it('precomputes trigger and scheduled conversations as background without an explicit scope', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      getConversationMock.mockReturnValue({
+        id: 'conv-1',
+        title: 't',
+        messages: [],
+        status: 'idle',
+        triggerId: 'trigger-1',
+      });
+
+      await runAgentLoopDispatched('conv-1', 'run trigger');
+
+      expect(precomputeOrchestrationMock.mock.calls[0][5]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
+      }));
     });
 
     it('does not fan out the remaining queue after a handed-off run fails', async () => {
@@ -2663,6 +3054,43 @@ describe('agentLoopRunner', () => {
       await expect(running).resolves.toEqual({ reason: 'completed' });
       expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('settles a scoped accepted run after bounded unavailable recovery without replaying it locally', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched, __getActiveRunSessionCount } = await importFresh();
+      getSidecarStatusMock
+        .mockReturnValueOnce('running')
+        .mockReturnValue('stopped');
+      sidecarRequestMock.mockRejectedValueOnce(new Error('sidecar transport closed'));
+
+      const running = runAgentLoopDispatched('conv-1', 'scoped work', {
+        authorizationScopeId: 'scope-im',
+      });
+      const recoveryDeadline = new Promise<'deadline'>((resolve) => {
+        setTimeout(() => resolve('deadline'), 25_000);
+      });
+      await waitForCall(sidecarRequestMock);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(Promise.race([running, recoveryDeadline])).resolves.toEqual({
+        reason: 'error',
+        error: 'Sidecar run state remained unavailable during reattach',
+        stopReason: 'sidecar_unavailable',
+      });
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(chatDeltaAppendTextMock).toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('无法确认原任务是否仍在执行'),
+      );
+      expect(chatDeltaAppendTextMock).not.toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('Sidecar run state remained unavailable'),
+      );
+      expect(__getActiveRunSessionCount()).toBe(0);
+      expect(endComputerUseTaskMock).toHaveBeenCalledOnce();
+      expect(endComputerUseTaskMock).toHaveBeenCalledWith('conv-1', expect.any(String));
     });
 
     it('replays execution once after a pre-commit sidecar restart reports not_found', async () => {
@@ -2930,6 +3358,21 @@ describe('agentLoopRunner', () => {
       expect(params.options.allowedTools).toEqual(['read_*']);
     });
 
+    it('serializes the host-owned permission ceiling into agent.run options', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const ceiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+
+      await runAgentLoopDispatched('conv-1', 'bounded work', {
+        runPermissionCeiling: ceiling as never,
+      });
+
+      const params = sidecarRequestMock.mock.calls[0][1] as {
+        options: { runPermissionCeiling?: unknown };
+      };
+      expect(params.options.runPermissionCeiling).toEqual(ceiling);
+    });
+
     it('keeps the entry provider, model, and credentials atomic when the conversation model changes during persistence', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const p1Model = { providerId: 'p1', modelId: 'model-a' };
@@ -3002,6 +3445,18 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(clearAbortControllerMock).toHaveBeenLastCalledWith('conv-1');
       expect(chatDeltaSetConversationStatusMock).toHaveBeenLastCalledWith('conv-1', 'idle');
+    });
+
+    it('hands the exact shell abort controller to the run owner', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      const controller = new AbortController();
+      const onAbortControllerReady = vi.fn();
+      getAbortControllerMock.mockReturnValue(controller);
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello', { onAbortControllerReady });
+
+      expect(onAbortControllerReady).toHaveBeenCalledWith(controller);
     });
 
     it('propagates a durability failure for an interrupted run aborted during parameter construction', async () => {
@@ -3163,6 +3618,106 @@ describe('agentLoopRunner', () => {
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
     });
 
+    it('settles a scoped agent.run after visible Stop even when the sidecar transport never settles', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const shellController = new AbortController();
+      const runRpc = deferred<unknown>();
+      getAbortControllerMock.mockReturnValue(shellController);
+      sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+        if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+        return new Promise((resolve, reject) => {
+          runRpc.promise.then(resolve, reject);
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+      const running = runAgentLoopDispatched('conv-1', 'scoped work', {
+        authorizationScopeId: 'scope-im',
+      });
+      const stopDeadline = new Promise<'deadline'>((resolve) => {
+        setTimeout(() => resolve('deadline'), 5_500);
+      });
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1] as { runId: string }).runId;
+
+      shellController.abort();
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      await expect(Promise.race([running, stopDeadline])).resolves.toEqual({ reason: 'aborted' });
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalled();
+      expect(getRunSession(runId)).toBeUndefined();
+    });
+
+    it('waits for a scoped reverse tool invocation after the sidecar transport fails', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const runRpc = deferred<unknown>();
+      const toolExecution = deferred<string>();
+      sidecarRequestMock.mockReturnValue(runRpc.promise);
+      executeAnyToolMock.mockReturnValue(toolExecution.promise);
+      let settled = false;
+
+      const running = runAgentLoopDispatched('conv-1', 'scoped reverse tool', {
+        authorizationScopeId: 'scope-im',
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const toolInvokeHandler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const toolReply = toolInvokeHandler({ runId, toolName: 'read_file', input: { path: '/tmp/x' } });
+      await vi.waitFor(() => expect(executeAnyToolMock).toHaveBeenCalledOnce());
+
+      runRpc.reject(new Error('Sidecar process closed'));
+      await vi.waitFor(() => expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error'));
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
+      expect(settled).toBe(false);
+      expect(getRunSession(runId)).toBeDefined();
+      toolExecution.resolve('done');
+      await toolReply;
+      await running;
+      expect(settled).toBe(true);
+      expect(getRunSession(runId)).toBeUndefined();
+    });
+
+    it('waits for a scoped native reverse request after the sidecar transport fails', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const runRpc = deferred<unknown>();
+      const nativeExecution = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(runRpc.promise);
+      tauriInvokeMock.mockReturnValue(nativeExecution.promise);
+      let settled = false;
+
+      const running = runAgentLoopDispatched('conv-1', 'scoped native work', {
+        authorizationScopeId: 'scope-im',
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const nativeHandler = handlerFor(onSidecarRequest, 'native.invoke');
+      const nativeReply = nativeHandler({
+        runId,
+        cmd: 'run_shell_command',
+        args: { command: 'long-running-command' },
+      });
+      await vi.waitFor(() => expect(tauriInvokeMock).toHaveBeenCalledOnce());
+
+      runRpc.reject(new Error('Sidecar process closed'));
+      await vi.waitFor(() => expect(chatDeltaSetConversationStatusMock).toHaveBeenCalledWith('conv-1', 'error'));
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+
+      expect(settled).toBe(false);
+      expect(getRunSession(runId)).toBeDefined();
+      nativeExecution.resolve({ ok: true });
+      await nativeReply;
+      await running;
+      expect(settled).toBe(true);
+      expect(getRunSession(runId)).toBeUndefined();
+    });
+
     it('does not report Stop as settled when the interrupted lifecycle cannot be persisted', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       const shellController = new AbortController();
@@ -3214,6 +3769,47 @@ describe('agentLoopRunner', () => {
       await expect(running).resolves.toEqual({ reason: 'aborted' });
       expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
       expect(cancelExecutionMock).toHaveBeenCalledTimes(1);
+      expect(clearSkillHooksByLoopMock).toHaveBeenCalledWith(expect.stringMatching(/^agl-/));
+    });
+
+    it('keeps a force-finalizing run joinable until its conversation-wide abort cleanup finishes', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const shellController = new AbortController();
+      const pendingFrame = deferred<void>();
+      const neverAcknowledged = deferred<unknown>();
+      getAbortControllerMock.mockReturnValue(shellController);
+      applyDeltaFramesMock.mockReturnValueOnce(pendingFrame.promise);
+      sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+        if (method === 'agent.abort') return neverAcknowledged.promise;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+
+      const running = runAgentLoopDispatched('conv-1', 'hello');
+      await waitForCall(sidecarRequestMock);
+      const runId = (sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1] as { runId: string }).runId;
+      const deltaHandler = handlerFor(onSidecarNotification, 'agent.delta');
+      deltaHandler({
+        runId,
+        frames: [{ p: 'chat', m: 'appendText', a: ['conv-1', 'before-stop'] }],
+      });
+      await vi.waitFor(() => expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1));
+
+      shellController.abort();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      // While the old run is still waiting to apply an accepted frame, its
+      // finalizer has not yet performed conversation-wide cancel/status/skill
+      // mutations. Publishing the terminal here would allow a replacement run
+      // to start and then let those stale mutations cancel that new owner.
+      expect(getRunSession(runId)?.terminalPublished).not.toBe(true);
+      expect(chatDeltaCancelStreamingMock).not.toHaveBeenCalled();
+
+      pendingFrame.resolve();
+      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
     });
 
     it('finalizes immediately if agent.run fails after Stop, instead of clearing the watchdog and leaving thinking stuck', async () => {

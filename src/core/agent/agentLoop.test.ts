@@ -50,6 +50,11 @@ describe('isInteractiveDesktop', () => {
     expect(isInteractiveDesktop({}, { triggerId: 'trigger-7' })).toBe(false);
   });
 
+  it('scope-only and ceiling-only runs are background even without conversation metadata', () => {
+    expect(isInteractiveDesktop({ authorizationScopeId: 'scope-1' }, {})).toBe(false);
+    expect(isInteractiveDesktop({ runPermissionCeiling: {} as never }, {})).toBe(false);
+  });
+
   it('absent conversation record (shouldn’t happen, defensive) → falls through to options-only check', () => {
     // convRecord may be absent if the conversation was deleted mid-run.
     // The gate should not crash and should rely on options to decide.
@@ -189,6 +194,38 @@ describe('resolveTools · per-run restrictions', () => {
     expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file', 'read_skill_file']);
     expect(resolved.deferredTools).toEqual([]);
   });
+
+  it('keeps conditional loading for an exact scheduler runtime snapshot', () => {
+    const tools = [
+      makeTool('read_file'),
+      makeTool('write_file'),
+      makeTool('github__list_repositories'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'summarize repositories' },
+      false,
+      undefined,
+      {
+        userInput: 'summarize repositories',
+        computerUseEnabled: false,
+        activeSkills: [],
+        turnCount: 1,
+      },
+      ['read_file', 'github__list_repositories'],
+      undefined,
+      true,
+    );
+
+    expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file']);
+    expect(resolved.deferredTools.map((tool) => tool.name)).toEqual(['github__list_repositories']);
+  });
 });
 
 describe('buildDirectDelegateSubagentOptions', () => {
@@ -200,6 +237,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       systemPrompt: 'research',
     };
     const settingsReader = { getSnapshot: () => ({}) };
+    const runPermissionCeiling = { version: 1, source: 'trigger', capability: 'safe_tools' } as never;
 
     const params = buildDirectDelegateSubagentOptions({
       agent,
@@ -216,6 +254,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       allowedTools: ['read_*'],
       blockedTools: ['run_command'],
       authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
     }, null);
 
     expect(params).toEqual(expect.objectContaining({
@@ -226,6 +265,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
       allowedTools: ['read_*'],
       blockedTools: ['run_command'],
       authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
       workspaceReader: expect.any(Object),
     }));
     expect(params.workspaceReader?.getCurrentPath()).toBeNull();

@@ -47,6 +47,7 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import {
   createAgentRunTerminal,
   type AgentRunTerminal,
@@ -65,6 +66,7 @@ import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPo
 import { createConversationRunMirror, type ConversationPatch } from './conversationRunMirror';
 import { seedSettingsMirrorIfEmpty, getSettingsMirrorReader, applySettingsSnapshot } from './settingsMirror';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './localTools';
+import { LOCAL_PATH_BOUND_TOOLS } from './localPathBoundTools';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
@@ -93,6 +95,7 @@ export interface AgentRunParams {
     blockedTools?: string[];
     allowedTools?: string[];
     authorizationScopeId?: string;
+    runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
     workspacePathSnapshot?: string | null;
     imContext?: IMContext;
     prePersistedUserMessageId?: string;
@@ -150,6 +153,12 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   }
   if (options.authorizationScopeId !== undefined && (typeof options.authorizationScopeId !== 'string' || !options.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: options.authorizationScopeId must be a non-empty string');
+  }
+  if (
+    options.runPermissionCeiling !== undefined
+    && !isRunPermissionCeiling(options.runPermissionCeiling)
+  ) {
+    throw new RpcError(-32602, 'Invalid params: options.runPermissionCeiling must be a valid run permission ceiling');
   }
   if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
@@ -297,7 +306,10 @@ function parseAbortParams(params: unknown): { runId: string } {
  *     once-UI behavior — same fail-closed discipline as before, just no
  *     longer bucketed together with an explicit deny.
  */
-type LocalApprovalOutcome = { decision: 'allow' } | { decision: 'deny'; reason: string } | { decision: 'unavailable' };
+type LocalApprovalOutcome =
+  | { decision: 'allow'; executionPath?: string }
+  | { decision: 'deny'; reason: string }
+  | { decision: 'unavailable' };
 
 /**
  * P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3) — asks
@@ -338,7 +350,19 @@ async function checkLocalToolApproval(
     // never as an allow.
     return { decision: 'unavailable' };
   }
-  if (isRecord(result) && result.decision === 'allow') return { decision: 'allow' };
+  if (isRecord(result) && result.decision === 'allow') {
+    const executionPath = typeof result.executionPath === 'string' && result.executionPath.length > 0
+      ? result.executionPath
+      : undefined;
+    // File tools execute in this process, after shell-side path validation.
+    // Without the canonical path from that ACK, executing the original
+    // lexical path would reopen the symlink-retarget race. Treat the ACK as
+    // unusable and let the reverse path perform a fresh approval+execution.
+    if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && !executionPath) {
+      return { decision: 'unavailable' };
+    }
+    return executionPath ? { decision: 'allow', executionPath } : { decision: 'allow' };
+  }
   if (isRecord(result) && result.decision === 'deny') {
     // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
     // ?? \`Error: tool "${name}" was denied\``) so a deny surfaces the same
@@ -417,8 +441,25 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
           return approval.reason;
         }
         if (approval.decision === 'allow') {
+          // Stop can win in the microtask gap after the shell's allow ACK is
+          // received but before this local execute() begins. The shell's
+          // post-approval barrier protects ACK creation; this second,
+          // sidecar-local barrier protects ACK consumption.
+          if (context?.abortSignal?.aborted) {
+            const error = new Error('Tool execution aborted');
+            error.name = 'AbortError';
+            throw error;
+          }
           try {
-            return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
+            const approvedInput = approval.executionPath
+              ? { ...input, path: approval.executionPath }
+              : input;
+            return await executeLocalTool(
+              name,
+              approvedInput,
+              context as ToolExecutionContext | undefined,
+              contextUsagePercent,
+            );
           } catch (err) {
             // A throw here means executeLocalTool's OWN dispatch layer failed
             // (NOT a normal tool-level error — those are already caught
@@ -839,6 +880,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
       authorizationScopeId: params.options.authorizationScopeId,
+      runPermissionCeiling: params.options.runPermissionCeiling,
       imContext: params.options.imContext,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),

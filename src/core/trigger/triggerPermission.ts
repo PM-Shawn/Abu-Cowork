@@ -10,7 +10,13 @@
 import type { TriggerAction, TriggerCapability, TriggerPermissions } from '../../types/trigger';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
-import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
+import {
+  getReadOnlyRunToolAllowlist,
+  getSafeRunToolAllowlist,
+  normalizeCustomRunCommandAllowlist,
+  normalizeCustomRunToolAllowlist,
+  normalizeTriggerRunCapability,
+} from '../permissions/runPermissionCeiling';
 import { scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import { TOOL_NAMES } from '../tools/toolNames';
 
@@ -34,12 +40,27 @@ export interface TriggerCallbackOptions {
   authorizationScopeId: string;
 }
 
+type RuntimeTriggerPermissions = Omit<TriggerPermissions, 'allowedCommands' | 'allowedPaths' | 'allowedTools'> & {
+  allowedCommands?: unknown;
+  allowedPaths?: unknown;
+  allowedTools?: unknown;
+};
+
+function getRuntimePermissions(action: TriggerAction): RuntimeTriggerPermissions | undefined {
+  return (action as TriggerAction & { permissions?: RuntimeTriggerPermissions }).permissions;
+}
+
+function getStringArray(value: unknown): string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? [...value] : [];
+}
+
 /**
  * Resolve permission callbacks for a trigger based on its capability level.
  * Pre-authorizes workspace and allowed paths before execution.
  */
 export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerCallbackOptions): TriggerCallbacks {
-  const capability = action.capability ?? 'read_tools';
+  const capability = normalizeTriggerRunCapability((action as TriggerAction & { capability?: unknown }).capability);
+  const permissions = getRuntimePermissions(action);
   const authorizationScopeId = options.authorizationScopeId;
 
   // Pre-authorize the workspace path with the rights the tier actually
@@ -62,8 +83,8 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
   }
 
   // Pre-authorize custom allowed paths
-  if (capability === 'custom' && action.permissions?.allowedPaths) {
-    for (const p of action.permissions.allowedPaths) {
+  if (capability === 'custom') {
+    for (const p of getStringArray(permissions?.allowedPaths)) {
       scopedAuthorizeWorkspace(authorizationScopeId, p);
     }
   }
@@ -91,18 +112,14 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           return false;
         },
         blockedTools,
-        allowedTools: [...READ_ONLY_TOOL_ALLOWLIST],
+        allowedTools: getReadOnlyRunToolAllowlist(),
       };
 
     case 'safe_tools':
       return {
         commandConfirmCallback: async (info) => {
-          // Only allow commands classified as 'safe' by commandSafety
-          const allowed = info.level === 'safe';
-          if (!allowed) {
-            console.log(`[Trigger] safe_tools: denied ${info.level} command "${info.command}"`);
-          }
-          return allowed;
+          console.log(`[Trigger] safe_tools: denied command "${info.command}"`);
+          return false;
         },
         filePermissionCallback: async (req) => {
           // Workspace access is already present in this run's scope. Never
@@ -111,6 +128,7 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           return false;
         },
         blockedTools,
+        allowedTools: getSafeRunToolAllowlist(),
       };
 
     case 'full':
@@ -132,15 +150,15 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
       };
 
     case 'custom':
-      return buildCustomCallbacks(action.permissions, blockedTools);
+      return buildCustomCallbacks(permissions, blockedTools);
   }
 }
 
 function buildCustomCallbacks(
-  permissions: TriggerPermissions | undefined,
+  permissions: RuntimeTriggerPermissions | undefined,
   blockedTools: string[],
 ): TriggerCallbacks {
-  const allowedCommands = permissions?.allowedCommands;
+  const allowedCommands = normalizeCustomRunCommandAllowlist(permissions?.allowedCommands);
 
   return {
     commandConfirmCallback: async (info) => {
@@ -165,7 +183,7 @@ function buildCustomCallbacks(
       return false;
     },
     blockedTools,
-    allowedTools: permissions?.allowedTools,
+    allowedTools: normalizeCustomRunToolAllowlist(permissions?.allowedTools),
   };
 }
 

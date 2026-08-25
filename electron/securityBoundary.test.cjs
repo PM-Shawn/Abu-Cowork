@@ -12,6 +12,7 @@ const vm = require('node:vm');
 const {
   registerPrivilegedWebContents,
   assertTrustedIpcSender,
+  assertTrustedMainIpcSender,
   validateInvokePayload,
   assertResourceOwner,
   canonicalFilePage,
@@ -78,6 +79,22 @@ test('registered main-frame sender on exact file page is accepted, ignoring quer
   registerPrivilegedWebContents(wc, page);
 
   assert.doesNotThrow(() => assertTrustedIpcSender(trustedEvent(wc, `${page}?next=2#other`)));
+});
+
+test('main-only direct IPC accepts main and rejects other privileged windows', () => {
+  const mainPage = fileUrl('main.html');
+  const main = new FakeWebContents(mainPage);
+  registerPrivilegedWebContents(main, mainPage, { label: 'main' });
+
+  const petPage = fileUrl('pet.html');
+  const pet = new FakeWebContents(petPage);
+  registerPrivilegedWebContents(pet, petPage, { label: 'pet' });
+
+  assert.doesNotThrow(() => assertTrustedMainIpcSender(trustedEvent(main)));
+  assert.throws(
+    () => assertTrustedMainIpcSender(trustedEvent(pet)),
+    /main window/
+  );
 });
 
 test('Windows drive and UNC paths are recognized as file pages before URL parsing', () => {
@@ -468,6 +485,7 @@ test('resources cannot be released by another IPC sender', () => {
 test('preload exposes only narrow file, diagnostics, and receive-only sidecar bridges', async () => {
   const exposed = new Map();
   const sent = [];
+  const invoked = [];
   const ipcListeners = new Map();
   const nativeFile = { name: 'report.pdf' };
   const webUtils = {
@@ -478,6 +496,8 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
   };
   const ipcRenderer = {
     invoke: async (channel, payload) => {
+      invoked.push({ channel, payload });
+      if (channel === 'abu:fs-canonicalize-for-policy') return `/canonical${payload.path}`;
       if (channel === 'abu:runtime-diagnostics') return { schemaVersion: 1 };
       if (channel === 'abu:sidecar-bridge-state') {
         return { version: 1, lastSequence: payload.afterSequence };
@@ -509,6 +529,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
 
   const shellBridge = exposed.get('__ABU_SHELL__');
   assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'canonicalizePathForPolicy',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
@@ -516,6 +537,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'recordRuntimeEvent',
     'subscribeSidecarEvents',
   ]);
+  assert.equal(
+    await shellBridge.canonicalizePathForPolicy('/native/report.pdf'),
+    '/canonical/native/report.pdf',
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked[0])), {
+    channel: 'abu:fs-canonicalize-for-policy',
+    payload: { path: '/native/report.pdf', followFinalSymlink: true },
+  });
   assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
   shellBridge.recordRuntimeEvent({ event: 'renderer.test', runId: 'run-1' });
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{

@@ -64,8 +64,15 @@ export function emitHook<T extends HookEvent>(event: T): T | Promise<T> {
   const runId = resolveRunId();
   let wireEvent: HookEvent = event;
   if (event.type === 'preToolCall' || event.type === 'postToolCall') {
-    const { abortSignal: _abortSignal, ...withoutSignal } = event;
-    wireEvent = withoutSignal as unknown as HookEvent;
+    // Both values are run-owned, process-local authority. The shell resolves
+    // them again from runId; serializing either would let a sidecar frame
+    // forge or weaken the unattended ceiling.
+    const {
+      abortSignal: _abortSignal,
+      toolContext: _toolContext,
+      ...withoutLocalContext
+    } = event;
+    wireEvent = withoutLocalContext as unknown as HookEvent;
   }
 
   if (event.type === 'preToolCall') {

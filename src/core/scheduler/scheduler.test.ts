@@ -16,7 +16,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
-import { checkWritePath, revokeWorkspace } from '../tools/pathSafety';
+import { checkWritePath, hasFullShellAuthorizationScope, revokeWorkspace } from '../tools/pathSafety';
 
 const getSchedulerToolsMock = vi.fn(() => [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
@@ -191,6 +191,35 @@ describe('SchedulerEngine permission tier', () => {
     const conversationId = latestRun(task.id)?.conversationId;
     expect(conversationId).toBeDefined();
     expect(useChatStore.getState().conversations[conversationId!]?.permissionMode).toBe('autonomous');
+  });
+
+  it('creates a full shell authorization scope for autonomous tasks', async () => {
+    const task = makeTask({ id: 'task-full-scope', permissionMode: 'autonomous' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let scopeWasFull: boolean | undefined;
+    runWithProbe(async (options) => {
+      const scopeId = (options as { authorizationScopeId?: string }).authorizationScopeId;
+      scopeWasFull = hasFullShellAuthorizationScope(scopeId);
+    }, 'completed');
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(scopeWasFull).toBe(true);
+  });
+
+  it('creates a full shell scope when an unset task follows global autonomous mode', async () => {
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    const task = makeTask({ id: 'task-follow-full', permissionMode: undefined });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let scopeWasFull: boolean | undefined;
+    runWithProbe(async (options) => {
+      const scopeId = (options as { authorizationScopeId?: string }).authorizationScopeId;
+      scopeWasFull = hasFullShellAuthorizationScope(scopeId);
+    }, 'completed');
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(scopeWasFull).toBe(true);
   });
 
   it('leaves the conversation permissionMode unset when the task follows global settings', async () => {

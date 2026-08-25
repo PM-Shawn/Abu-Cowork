@@ -182,20 +182,36 @@ const ALWAYS_ALLOWED_PATHS = [
 // Each entry maps a normalized path to its authorized capabilities
 const authorizedWorkspaces: Map<string, Set<'read' | 'write'>> = new Map();
 const scopedAuthorizedWorkspaces: Map<string, Map<string, Set<'read' | 'write'>>> = new Map();
+const authorizationScopePolicies: Map<string, AuthorizationScopePolicy> = new Map();
 let authorizationScopeCounter = 0;
 
 export type AuthorizationScopeId = string;
+export type AuthorizationScopeShellPolicy = 'strict' | 'full';
+export interface AuthorizationScopePolicy {
+  /**
+   * Shell-only policy metadata attached by the trusted shell owner of a scoped
+   * unattended run. ToolExecutionContext deliberately does not carry this.
+   */
+  shell?: AuthorizationScopeShellPolicy;
+}
 
-export function createAuthorizationScope(): AuthorizationScopeId {
+export function createAuthorizationScope(policy: AuthorizationScopePolicy = {}): AuthorizationScopeId {
   authorizationScopeCounter += 1;
   const scopeId = `auth-scope-${Date.now().toString(36)}-${authorizationScopeCounter.toString(36)}`;
   scopedAuthorizedWorkspaces.set(scopeId, new Map());
+  authorizationScopePolicies.set(scopeId, { shell: policy.shell ?? 'strict' });
   return scopeId;
 }
 
 export function disposeAuthorizationScope(scopeId: AuthorizationScopeId | undefined): void {
   if (!scopeId) return;
   scopedAuthorizedWorkspaces.delete(scopeId);
+  authorizationScopePolicies.delete(scopeId);
+}
+
+export function hasFullShellAuthorizationScope(scopeId: AuthorizationScopeId | undefined): boolean {
+  if (!scopeId) return false;
+  return authorizationScopePolicies.get(scopeId)?.shell === 'full';
 }
 
 function normalizeWorkspacePath(path: string): string {

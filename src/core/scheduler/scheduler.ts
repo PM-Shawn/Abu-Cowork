@@ -200,7 +200,11 @@ class SchedulerEngine {
       prompt = `/${task.skillName} ${prompt}`;
     }
 
-    const authorizationScopeId = createAuthorizationScope();
+    const authorizationScopeId = createAuthorizationScope(
+      resolveEffectivePermissionMode(task) === 'autonomous'
+        ? { shell: 'full' }
+        : undefined,
+    );
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;

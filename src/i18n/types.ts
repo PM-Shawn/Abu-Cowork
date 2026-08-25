@@ -2409,6 +2409,7 @@ export interface TranslationDict {
     userDeniedAccess: string;
     pathAccessDenied: string;
     needsAuthorization: string;
+    scopedRunNoWorkspaceCommand: string;
   };
 
   // Mid-task queued-message staging strip above the composer

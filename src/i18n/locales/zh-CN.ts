@@ -2227,6 +2227,7 @@ const zhCN: TranslationDict = {
     userDeniedAccess: '用户拒绝了访问',
     pathAccessDenied: '路径访问被拒绝',
     needsAuthorization: '需要用户授权才能访问',
+    scopedRunNoWorkspaceCommand: 'Error: 当前无人值守任务没有可写授权工作目录，因此不能运行写入命令。请选择完全自主档、为此任务配置工作区路径，或传入已授权目录内的绝对 `cwd`。',
   },
 
   queueStrip: {

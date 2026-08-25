@@ -36,6 +36,7 @@ vi.mock('../i18n', () => ({
       userDeniedAccess: 'user denied access',
       pathAccessDenied: 'path access denied',
       needsAuthorization: 'needs authorization',
+      scopedRunNoWorkspaceCommand: 'Error: this unattended run has no write-authorized working directory. Choose Full Autonomy, configure a workspace path for this task, or pass an absolute cwd inside an authorized directory.',
     },
   }),
 }));
@@ -312,6 +313,241 @@ describe('toolRegistry integration', () => {
           { authorizationScopeId: scopeId, workspacePath: writableWs },
         )).resolves.toBe('executed');
         expect(executeFn).toHaveBeenCalledTimes(2);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('tells a workspace-less unattended run how to get a writable cwd instead of a bare refusal', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        // Most permissive tier an unattended run can have — the refusal below
+        // is about having no judgeable cwd at all, not about the tier.
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = String(await executeAnyTool(
+          'run_command',
+          { command: 'touch /tmp/report.json' },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        ));
+
+        expect(executeFn).not.toHaveBeenCalled();
+        // Distinct from the "cwd exists but is not writable" refusal, and it
+        // names both remedies so an unattended run fails loudly, not opaquely.
+        expect(result).toContain('no write-authorized working directory');
+        expect(result).toContain('workspace path');
+        expect(result).toContain('cwd');
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it.each(['standard', 'smart'] as const)(
+      'guides a workspace-less %s run to Full Autonomy or a workspace path',
+      async (permissionMode) => {
+        const previousMode = useSettingsStore.getState().permissionMode;
+        const scopeId = createAuthorizationScope();
+        const executeFn = vi.fn().mockResolvedValue('should not execute');
+        toolRegistry.register({
+          name: 'run_command',
+          description: 'Run shell command',
+          inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+          execute: executeFn,
+        });
+
+        try {
+          useSettingsStore.setState({ permissionMode });
+
+          const result = String(await executeAnyTool(
+            'run_command',
+            { command: 'touch /tmp/report.json' },
+            undefined,
+            undefined,
+            { authorizationScopeId: scopeId },
+          ));
+
+          expect(executeFn).not.toHaveBeenCalled();
+          expect(result).toContain('Full Autonomy');
+          expect(result).toContain('workspace path');
+        } finally {
+          useSettingsStore.setState({ permissionMode: previousMode });
+          disposeAuthorizationScope(scopeId);
+        }
+      },
+    );
+
+    it('allows a full scoped run without a workspace to write to temp paths', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope({ shell: 'full' });
+      const executeFn = vi.fn().mockResolvedValue('executed');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = await executeAnyTool(
+          'run_command',
+          { command: 'touch /tmp/report.json' },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        );
+
+        expect(result).toBe('executed');
+        expect(executeFn).toHaveBeenCalledOnce();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it('still blocks a full scoped run without a workspace from writing Abu self-managed paths', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope({ shell: 'full' });
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+
+        const result = String(await executeAnyTool(
+          'run_command',
+          { command: 'touch /Users/testuser/.AbU/mcp/config.json' },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        ));
+
+        expect(result).toContain('Error');
+        expect(result).toContain('阿布');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it.each([
+      'touch /Users/testuser && touch /Users/testuser/.AbU/mcp/config.json',
+      'Set-Content -Path "$HOME/.AbU/mcp/config.json" -Value x',
+    ])('keeps the Abu hard floor across compound and PowerShell writes: %s', async (command) => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope({ shell: 'full' });
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        const result = String(await executeAnyTool(
+          'run_command',
+          { command },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        ));
+
+        expect(result).toContain('禁止写入阿布');
+        expect(executeFn).not.toHaveBeenCalled();
+        expect((await checkWritePath('/Users/testuser/Documents/not-granted.txt', scopeId)).allowed).toBe(false);
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
+    it.each([
+      ['macos', 'Set-Content -Path "$HOME/.ssh/authorized_keys" -Value x', '/Users/testuser/.ssh/authorized_keys'],
+      ['macos', 'Set-Content -Path "$HOME/tmp/../.AbU/mcp/config.json" -Value x', '/Users/testuser/.AbU/mcp/config.json'],
+      ['windows', 'Set-Content -Path "$env:APPDATA/Abu/config.json" -Value x', '/Users/testuser/AppData/Roaming/Abu/config.json'],
+      ['windows', 'cmd /c echo x > %USERPROFILE%\\.ssh\\authorized_keys', '/Users/testuser/.ssh/authorized_keys'],
+    ] as const)('checks expanded %s hard-floor path for %s', async (platform, command, expectedTarget) => {
+      const restorePlatform = _setPlatformForTest(platform);
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope({ shell: 'full' });
+      const executeFn = vi.fn().mockResolvedValue('should not execute');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        expect((await checkWritePath(expectedTarget, scopeId)).allowed).toBe(false);
+        const result = String(await executeAnyTool(
+          'run_command',
+          { command },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId },
+        ));
+
+        expect(result).toContain('Error');
+        expect(executeFn).not.toHaveBeenCalled();
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+        restorePlatform();
+      }
+    });
+
+    it('does not extend the new target preflight to full scoped runs that have a workspace', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope({ shell: 'full' });
+      const workspace = '/Users/testuser/Projects/myapp';
+      const outsideTarget = '/Users/testuser/Documents/outside.txt';
+      const executeFn = vi.fn().mockResolvedValue('executed');
+      toolRegistry.register({
+        name: 'run_command',
+        description: 'Run shell command',
+        inputSchema: { type: 'object', properties: { command: { type: 'string', description: 'cmd' } } },
+        execute: executeFn,
+      });
+      scopedAuthorizeWorkspace(scopeId, workspace, ['read', 'write']);
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'autonomous' });
+        await expect(executeAnyTool(
+          'run_command',
+          { command: `touch ${outsideTarget}`, cwd: workspace },
+          undefined,
+          undefined,
+          { authorizationScopeId: scopeId, workspacePath: workspace },
+        )).resolves.toBe('executed');
+
+        expect(executeFn).toHaveBeenCalledOnce();
+        const outsideCheck = await checkWritePath(outsideTarget, scopeId);
+        expect(outsideCheck.allowed).toBe(false);
+        expect(outsideCheck.needsPermission).toBe(true);
       } finally {
         useSettingsStore.setState({ permissionMode: previousMode });
         disposeAuthorizationScope(scopeId);

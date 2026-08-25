@@ -105,6 +105,9 @@ const WRITE_INDICATORS: RegExp[] = [
   /\bmv\s/, /\bcp\s/, /\bchmod\s/, /\bchown\s/,
   /\bsudo\s/, /\bkill\s/, /\bpkill\s/, /\bkillall\s/,
   /\btee\s/, // tee writes to file
+  /\b(?:Set|Add|Clear)-Content\b/i,
+  /\b(?:New|Remove|Copy|Move)-Item\b/i,
+  /\bOut-File\b/i,
 
   // Package management (write operations)
   /\bnpm\s+install\b/, /\bnpm\s+uninstall\b/, /\bnpm\s+update\b/,

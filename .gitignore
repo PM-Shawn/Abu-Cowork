@@ -1,5 +1,7 @@
 # Dependencies
-node_modules/
+# No trailing slash: also match a node_modules *symlink* (a worktree once
+# symlinked it to save an install and `git add -A` committed the link).
+node_modules
 
 # Superpowers brainstorming visual companion sessions
 .superpowers/

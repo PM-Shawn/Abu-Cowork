@@ -1,12 +1,14 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
+import { usePreviewStore } from '@/stores/previewStore';
 
 vi.mock('./MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
@@ -36,6 +38,7 @@ function setConversation(message: Message, status: Conversation['status']): void
     createdAt: 0,
     updatedAt: 0,
     status,
+    workspacePath: '/workspace',
   };
   useChatStore.setState({
     activeConversationId: conversation.id,
@@ -46,9 +49,12 @@ function setConversation(message: Message, status: Conversation['status']): void
 describe('MessageBubble user run status', () => {
   beforeEach(() => {
     initLanguage('en-US');
+    useImageLightboxStore.getState().close();
+    usePreviewStore.setState(usePreviewStore.getInitialState(), true);
   });
 
   afterEach(() => {
+    useImageLightboxStore.getState().close();
     cleanup();
   });
 
@@ -73,5 +79,44 @@ describe('MessageBubble user run status', () => {
 
     expect(screen.getByText('Send failed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('opens the user message image group in the lightbox without a workspace preview', () => {
+    const message: Message = {
+      ...baseMessage,
+      content: [
+        { type: 'text', text: 'two screenshots' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'cG5n' },
+        },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/webp', data: 'd2VicA==' },
+          filePath: '/workspace/outputs/images/second.webp',
+        },
+      ],
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+    const thumbnails = screen.getAllByRole('button', { name: 'Click to view full image' });
+    fireEvent.click(thumbnails[1]);
+
+    const lightbox = useImageLightboxStore.getState();
+    expect(lightbox.isOpen).toBe(true);
+    expect(lightbox.activeIndex).toBe(1);
+    expect(lightbox.items).toEqual([
+      expect.objectContaining({ id: 'message-1:image:0', mediaType: 'image/png', data: 'cG5n' }),
+      expect.objectContaining({
+        id: 'message-1:image:1',
+        mediaType: 'image/webp',
+        filePath: '/workspace/outputs/images/second.webp',
+        conversationId: 'conversation-1',
+        workspacePath: '/workspace',
+      }),
+    ]);
+    expect(usePreviewStore.getState().tabs).toEqual([]);
+    expect(usePreviewStore.getState().previewFilePath).toBeNull();
   });
 });

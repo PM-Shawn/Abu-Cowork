@@ -18,6 +18,7 @@ import { routedComputerUseTaskSummary } from '@/core/capabilityPlugins/computerU
 import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 
 /**
  * Task-local capability onboarding. The originating tool call remains
@@ -37,6 +38,13 @@ export default function CapabilitySetupDialog() {
     const previousFocus = document.activeElement;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // The visible, full-window lightbox owns Escape while it is open. A
+        // capability request may arrive asynchronously underneath it; never
+        // turn that same keypress into a hidden permission denial.
+        if (useImageLightboxStore.getState().isOpen) {
+          useImageLightboxStore.getState().close();
+          return;
+        }
         event.preventDefault();
         event.stopImmediatePropagation();
         resolveCapabilitySetup(requestId, false);
@@ -46,9 +54,18 @@ export default function CapabilitySetupDialog() {
     closeButtonRef.current?.focus();
     return () => {
       document.removeEventListener('keydown', onKeyDown, true);
-      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+      if (
+        previousFocus instanceof HTMLElement
+        && previousFocus !== document.body
+        && previousFocus !== document.documentElement
+        && previousFocus.isConnected
+      ) {
         previousFocus.focus();
+        if (document.activeElement === previousFocus) return;
       }
+      document.querySelector<HTMLTextAreaElement>(
+        'textarea[data-chat-composer]:not(:disabled)',
+      )?.focus();
     };
   }, [request]);
 

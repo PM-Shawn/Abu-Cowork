@@ -6,6 +6,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useI18n } from '@/i18n';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -73,6 +74,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // App-global modals (close-window dialog) sit above the chat column but the
   // native webview would still paint over them — treat like a blocking approval.
   const appModalOpen = usePreviewStore((s) => s.appModalOpen);
+  const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const commandApproval = useSyncExternalStore(
     subscribeToCommandConfirmation,
@@ -123,6 +125,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const shownRef = useRef(false);   // is it currently shown?
   const desiredVisibleRef = useRef(false);
   const visibilityOperationRef = useRef<Promise<void> | null>(null);
+  const visibilityGenerationRef = useRef(0);
+  const overlayCapturePendingRef = useRef<number | null>(null);
   const createRetryCountRef = useRef(0);
   const createRetryTimerRef = useRef<number | null>(null);
   const navigationGenerationRef = useRef(0);
@@ -147,24 +151,37 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // the interval below retries instead of permanently believing the view moved.
   const reconcileNativeVisibility = useCallback(() => {
     if (!createdRef.current || visibilityOperationRef.current) return;
+    const generation = visibilityGenerationRef.current;
 
     const operation = (async () => {
-      while (createdRef.current) {
+      while (createdRef.current && generation === visibilityGenerationRef.current) {
         const desired = desiredVisibleRef.current;
         if (shownRef.current === desired) return;
         if (!desired) {
           if (hiddenForOverlayRef.current) {
             // Capture BEFORE hiding — a hidden view has no compositor frame.
             // Best-effort: a null capture just falls back to the blank pane.
+            overlayCapturePendingRef.current = generation;
             try {
               const frame = await invoke<string | null>('browser_capture', { id: tabId });
-              if (typeof frame === 'string' && frame.startsWith('data:image/')) {
+              if (
+                hiddenForOverlayRef.current
+                && typeof frame === 'string'
+                && frame.startsWith('data:image/')
+              ) {
                 setFreezeFrame(frame);
               }
             } catch {
               /* keep whatever frame we already have */
+            } finally {
+              if (overlayCapturePendingRef.current === generation) {
+                overlayCapturePendingRef.current = null;
+              }
             }
-            if (!createdRef.current) return;
+            if (
+              !createdRef.current
+              || generation !== visibilityGenerationRef.current
+            ) return;
             // Overlay may have closed while capturing — re-check before hiding.
             if (desiredVisibleRef.current !== desired) continue;
           } else {
@@ -178,7 +195,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
         } catch {
           return;
         }
-        if (!createdRef.current) return;
+        if (
+          !createdRef.current
+          || generation !== visibilityGenerationRef.current
+        ) return;
         shownRef.current = desired;
         if (desired) setFreezeFrame(null);
       }
@@ -200,13 +220,16 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     const r = el.getBoundingClientRect();
     // A CSS-hidden ancestor (inactive keep-alive tab) yields a zero rect; a
     // full-window modal should also force-hide even though the rect is valid.
-    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen;
+    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen;
     const onScreen = r.width >= 1 && r.height >= 1 && el.offsetParent !== null;
     const visible = onScreen && !overlayActive;
 
     // Record WHY we are hiding: only "on screen but covered by an overlay"
     // warrants the freeze-frame capture in reconcileNativeVisibility.
-    hiddenForOverlayRef.current = onScreen && overlayActive;
+    // The image lightbox is opaque and must become interactive immediately.
+    // Skip the pre-hide capture for it: a native WebContentsView paints above
+    // React and would otherwise keep receiving clicks while capturePage waits.
+    hiddenForOverlayRef.current = onScreen && overlayActive && !lightboxOpen;
     desiredVisibleRef.current = visible;
     reconcileNativeVisibility();
     if (!visible) {
@@ -223,6 +246,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     systemSettingsOpen,
     menuOpen,
     blockingApprovalOpen,
+    lightboxOpen,
     reconcileNativeVisibility,
   ]);
 
@@ -242,7 +266,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
             && el.offsetParent !== null
             && !systemSettingsOpen
             && !menuOpen
-            && !blockingApprovalOpen;
+            && !blockingApprovalOpen
+            && !lightboxOpen;
           const electronHost = hasElectronCommandHost();
           desiredVisibleRef.current = initiallyVisible;
           // Electron can create the native child view hidden, preventing even a
@@ -296,6 +321,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       systemSettingsOpen,
       menuOpen,
       blockingApprovalOpen,
+      lightboxOpen,
     ],
   );
 
@@ -406,11 +432,40 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     };
   }, [syncBounds, systemSettingsOpen, blockingApprovalOpen]);
 
+  // A menu/settings overlay may already be waiting on a slow capture when the
+  // opaque image lightbox takes over. Do not let that older freeze-frame
+  // operation keep the native WebContentsView above the lightbox: issue an
+  // immediate hide in parallel, then let the serial reconciler converge from
+  // the actual result.
   useEffect(() => {
-    if (!inspecting || !(systemSettingsOpen || menuOpen || blockingApprovalOpen)) return;
+    if (
+      !lightboxOpen
+      || !createdRef.current
+      || !shownRef.current
+      || overlayCapturePendingRef.current === null
+    ) return;
+
+    // The IPC promise itself cannot be cancelled. Supersede its state machine
+    // so a late capture result cannot hide/show the view after this handoff.
+    visibilityGenerationRef.current += 1;
+    visibilityOperationRef.current = null;
+    desiredVisibleRef.current = false;
+    hiddenForOverlayRef.current = false;
+    setFreezeFrame(null);
+    void invoke('browser_hide', { id: tabId }).then(() => {
+      if (!createdRef.current) return;
+      shownRef.current = false;
+      reconcileNativeVisibility();
+    }).catch(() => {
+      reconcileNativeVisibility();
+    });
+  }, [lightboxOpen, reconcileNativeVisibility, tabId]);
+
+  useEffect(() => {
+    if (!inspecting || !(systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen)) return;
     setInspecting(false);
     void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
-  }, [blockingApprovalOpen, inspecting, menuOpen, systemSettingsOpen, tabId]);
+  }, [blockingApprovalOpen, inspecting, lightboxOpen, menuOpen, systemSettingsOpen, tabId]);
 
   const toggleInspect = useCallback(async () => {
     const next = !inspecting;

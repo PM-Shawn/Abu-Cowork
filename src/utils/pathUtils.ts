@@ -84,13 +84,21 @@ export function isLocalFilePath(s: string): boolean {
 }
 
 /**
- * Load a local image file as a blob URL via Tauri readFile.
- * Caller is responsible for calling URL.revokeObjectURL() on the returned URL when done.
+ * Load a local image file into an immutable Blob via the scoped filesystem
+ * bridge. Keeping the Blob lets a viewer save the exact bytes it displayed
+ * instead of reopening a path that may have changed in the meantime.
  */
-export async function loadLocalImage(filePath: string): Promise<string> {
+export async function loadLocalImageBlob(filePath: string): Promise<Blob> {
   const { readFile } = await import('@tauri-apps/plugin-fs');
   const data = await readFile(filePath);
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const blob = new Blob([data], { type: IMAGE_MIME_MAP[ext] || 'image/png' });
-  return URL.createObjectURL(blob);
+  return new Blob([data], { type: IMAGE_MIME_MAP[ext] || 'image/png' });
+}
+
+/**
+ * Load a local image file as a blob URL via the scoped filesystem bridge.
+ * Caller is responsible for calling URL.revokeObjectURL() on the returned URL when done.
+ */
+export async function loadLocalImage(filePath: string): Promise<string> {
+  return URL.createObjectURL(await loadLocalImageBlob(filePath));
 }

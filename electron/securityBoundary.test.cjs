@@ -486,6 +486,8 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
   const exposed = new Map();
   const sent = [];
   const invoked = [];
+  let holdImageSave = false;
+  let resolveHeldImageSave;
   const ipcListeners = new Map();
   const nativeFile = { name: 'report.pdf' };
   const webUtils = {
@@ -501,6 +503,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
       if (channel === 'abu:runtime-diagnostics') return { schemaVersion: 1 };
       if (channel === 'abu:sidecar-bridge-state') {
         return { version: 1, lastSequence: payload.afterSequence };
+      }
+      if (channel === 'abu:save-image-attachment') {
+        if (holdImageSave) {
+          return new Promise((resolve) => {
+            resolveHeldImageSave = resolve;
+          });
+        }
+        return { saved: true, fileName: 'image.png' };
       }
       return undefined;
     },
@@ -535,6 +545,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'getSidecarBridgeSnapshot',
     'mainSupervisesSidecar',
     'recordRuntimeEvent',
+    'saveImageAttachment',
     'subscribeSidecarEvents',
   ]);
   assert.equal(
@@ -546,6 +557,62 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     payload: { path: '/native/report.pdf', followFinalSymlink: true },
   });
   assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
+  assert.deepEqual(
+    await shellBridge.saveImageAttachment({
+      data: new Uint8Array([1, 2, 3]),
+      mediaType: 'image/png',
+      suggestedName: 'image.png',
+    }),
+    { saved: true, fileName: 'image.png' },
+  );
+  assert.equal(invoked[1].channel, 'abu:save-image-attachment');
+  assert.equal(invoked[1].payload.mediaType, 'image/png');
+  assert.deepEqual(Array.from(invoked[1].payload.data), [1, 2, 3]);
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: new Uint8Array([1]),
+      mediaType: 'image/png',
+      destinationPath: '/renderer-chosen/path.png',
+    }),
+    /does not accept destinationPath/,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      sourcePath: '/renderer/reopen.png',
+      mediaType: 'image/png',
+    }),
+    /does not accept sourcePath/,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({ data: new Uint8Array(), mediaType: 'image/png' }),
+    /data is invalid/,
+  );
+
+  holdImageSave = true;
+  const firstPendingSave = shellBridge.saveImageAttachment({
+    data: new Uint8Array([1, 2, 3]),
+    mediaType: 'image/png',
+  });
+  const saveInvokeCount = invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length;
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: new Uint8Array([4, 5, 6]),
+      mediaType: 'image/png',
+    }),
+    /already in progress/,
+  );
+  assert.equal(invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length, saveInvokeCount);
+  resolveHeldImageSave({ saved: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(await firstPendingSave)), { saved: false });
+  holdImageSave = false;
+  await assert.doesNotReject(shellBridge.saveImageAttachment({
+    data: new Uint8Array([7, 8, 9]),
+    mediaType: 'image/png',
+  }));
   shellBridge.recordRuntimeEvent({ event: 'renderer.test', runId: 'run-1' });
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
     channel: 'abu:runtime-event',

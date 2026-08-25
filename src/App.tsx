@@ -9,6 +9,7 @@ import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
+import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
@@ -877,6 +878,8 @@ function App() {
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
         <ToastContainer />
+
+        <ImageLightbox />
 
         <ConversationSearchModal open={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
 

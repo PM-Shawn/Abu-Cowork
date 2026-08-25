@@ -7,10 +7,24 @@ interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   getPathForFile?: (file: File) => string;
+  saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   subscribeSidecarEvents?: (handler: (event: ElectronSidecarEvent) => void) => () => void;
   getSidecarBridgeSnapshot?: (afterSequence?: number) => Promise<ElectronSidecarBridgeSnapshot>;
   recordRuntimeEvent?: (event: Record<string, unknown>) => void;
   getRuntimeDiagnostics?: () => Promise<ElectronRuntimeDiagnostics>;
+}
+
+export interface ElectronImageSaveRequest {
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+  suggestedName?: string;
+  data: Uint8Array;
+}
+
+export const MAX_ELECTRON_IMAGE_SAVE_BYTES = 32 * 1024 * 1024;
+
+export interface ElectronImageSaveResult {
+  saved: boolean;
+  fileName?: string;
 }
 
 export interface ElectronSidecarEvent {
@@ -72,6 +86,18 @@ export function hasElectronCommandHost(): boolean {
 /** Resolve the native path of a user-provided Electron File object. */
 export function getElectronFilePath(file: File): string {
   return getRuntime().__ABU_SHELL__?.getPathForFile?.(file) ?? '';
+}
+
+export function hasElectronImageSaveHost(): boolean {
+  return typeof getRuntime().__ABU_SHELL__?.saveImageAttachment === 'function';
+}
+
+/** Save one image through Electron's user-mediated native save dialog. */
+export async function saveElectronImageAttachment(
+  request: ElectronImageSaveRequest,
+): Promise<ElectronImageSaveResult | null> {
+  const save = getRuntime().__ABU_SHELL__?.saveImageAttachment;
+  return save ? await save(request) : null;
 }
 
 /**

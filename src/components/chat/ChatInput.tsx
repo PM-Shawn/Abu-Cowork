@@ -20,7 +20,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
-import { usePreviewStore } from '@/stores/previewStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
@@ -995,16 +995,36 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           {/* Attachment Strip (images + file badges) */}
           {hasAttachments && (
             <div className={cn('flex items-center gap-2 overflow-x-auto', isWelcome ? 'pl-5 pt-3 pb-1' : 'pl-4 pt-3 pb-1')}>
-              {images.map((img) => (
+              {images.map((img, index) => (
                 <div key={img.id} className="relative group/img shrink-0">
-                  <img
-                    src={`data:${img.mediaType};base64,${img.data}`}
-                    alt=""
-                    className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)] cursor-pointer hover:border-[var(--abu-border-hover)] transition-colors"
-                    onClick={() => usePreviewStore.getState().openPreview(`data:${img.mediaType};base64,${img.data}`)}
-                    title={t.chat.clickToViewFull}
-                  />
                   <button
+                    type="button"
+                    className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+                    onClick={(event) => {
+                      useImageLightboxStore.getState().open(
+                        images.map((image) => ({
+                          id: image.id,
+                          data: image.data,
+                          mediaType: image.mediaType,
+                          filePath: image.filePath,
+                          conversationId: activeConv?.id,
+                          workspacePath: activeConv?.workspacePath,
+                        })),
+                        index,
+                        event.currentTarget,
+                      );
+                    }}
+                    title={t.chat.clickToViewFull}
+                    aria-label={t.chat.clickToViewFull}
+                  >
+                    <img
+                      src={`data:${img.mediaType};base64,${img.data}`}
+                      alt=""
+                      className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] transition-colors"
+                    />
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => removeImage(img.id)}
                     className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-[var(--abu-text-primary)] text-white flex items-center justify-center opacity-0 group-hover/img:opacity-100 transition-opacity"
                     title={t.chat.removeImage}
@@ -1087,6 +1107,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             )}
             <textarea
               ref={textareaRef}
+              data-chat-composer
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}

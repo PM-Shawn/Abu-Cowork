@@ -9,9 +9,33 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+## v0.42.0 · 2026-08-25
+
+### ✨ Features
+
+- **WeChat now carries images and files both ways.** The IM bridge can send images and files out to a WeChat user, shows a "typing…" status while the agent works, and — inbound — a photo and its caption arrive as a single turn instead of two. Inbound images actually reach the vision model now (three root causes fixed), and inbound files and videos are ones the agent can open. Questions and plan-approval requests are relayed to the WeChat user instead of stalling the run.
+- **Subagent runs open as workspace tabs.** A delegated or batched subagent gets its own tab alongside browser/preview/terminal, with live per-task progress (tool name, count, status) in the batch card, and its tool access is shown and enforced — the roster is frozen at launch and can't be widened mid-run.
+- **Triggers have autonomy capability tiers.** The trigger editor exposes a read-only / custom / full capability level, defaults legacy records to read-only, and warns before granting full access. `manage_trigger` can no longer widen a trigger's own tool/command/path allowlist.
+- **Tool-result images survive the whole session.** A screenshot or read-file image no longer degrades to a text placeholder after the turn ends: images are snapshotted to disk, backfilled on replay, and rehydrated on conversation reload, with old inline history dehydrated to keep the ledger small.
+- **Context usage now breaks down by layer.** The usage indicator shows where the tokens went instead of a single opaque number.
+- **Click a composer image thumbnail to preview it full size.** The pre-send attachment strip now opens the same zoom/pan/rotate viewer that sent messages already use.
+- **Chapter rail gains a fisheye hover.** Hovering the left-margin chapter scale magnifies nearby ticks for easier targeting in long conversations.
+- **Windows layout pass.** The workspace header lays out correctly on Windows, and the title bar no longer swallows clicks meant for the conversation.
+
+### 🐛 Fixes
+
+- **A failing WeChat message no longer strands the rest of its batch.** One message throwing mid-dispatch used to skip every later message in the same poll with no retry; each message is now isolated so the others still reach the agent.
+- **A relative `read_file` path no longer loses its result image.** The snapshot now falls back to embedding the bytes instead of silently persisting nothing, so the thumbnail survives eviction and replay.
+- **The updater stops claiming "up to date" when it is disabled.** The check result is three-state now, so a build without an updater no longer reports the same thing as a genuinely current one.
+- **Terminal copy and text selection work as expected.** Selection and copy in the terminal tab were fixed, along with the edit-field context menu and panel reopen.
+- **The work-process fold no longer hides the answer.** Collapsing the work-process group hides only process steps; assistant text and mid-loop user messages stay visible in every fold state, and narrate-first turns keep their fold.
+- **Chapter rail stays inside its pane** and doesn't render on short conversations.
+
 ### ⚠️ Behavior change
 
 - **Legacy custom triggers now fail closed when their tool allowlist is absent or empty.** They run at the read-only tier instead of treating an empty `allowedTools` list as unrestricted; only an explicit `allowedTools: ["*"]` enables the wildcard. This version has no allowlist editor in the trigger UI, so migrate affected tasks by asking an administrator to update the trigger configuration data or editing it manually.
+- **Scheduled tasks now run under a frozen snapshot of the tools available at launch**, applied as both the dispatch filter and the capability ceiling. A task's tool set no longer changes mid-run.
+- **File tool output and snapshots now carry canonical paths.** After a path is approved, it is resolved to its real location (e.g. `/private/var/...`, the real iCloud path) before the tool runs, closing the approval-to-execution gap — so `list_directory` / `find_files` / `search_files` output and write snapshots show the resolved path rather than the spelling you typed.
 
 ## v0.41.0 · 2026-08-22
 

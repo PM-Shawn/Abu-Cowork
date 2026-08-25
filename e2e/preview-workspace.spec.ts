@@ -33,8 +33,9 @@ async function seedBatchConversation(page: Page, scenario: BatchScenario): Promi
     ]);
 
     const conversationId = 'e2e-workspace-batch-conversation';
+    const assistantMessageId = 'e2e-batch-tool-message';
     const batchToolCallId = 'e2e-workspace-batch-call';
-    const identity = { conversationId, batchToolCallId };
+    const identity = { conversationId, assistantMessageId, batchToolCallId };
     const timestamp = 1_700_000_000_000;
     const batchToolCall = {
       id: batchToolCallId,
@@ -46,7 +47,7 @@ async function seedBatchConversation(page: Page, scenario: BatchScenario): Promi
     const assistantMessages = scenario === 'completed'
       ? [
         {
-          id: 'e2e-batch-tool-message',
+          id: assistantMessageId,
           role: 'assistant' as const,
           content: '',
           timestamp: timestamp + 1_000,
@@ -63,7 +64,7 @@ async function seedBatchConversation(page: Page, scenario: BatchScenario): Promi
         },
       ]
       : [{
-        id: 'e2e-batch-tool-message',
+        id: assistantMessageId,
         role: 'assistant' as const,
         content: '',
         timestamp: timestamp + 1_000,
@@ -174,6 +175,7 @@ async function workspaceState(page: Page) {
     ]);
     const identity = {
       conversationId: 'e2e-workspace-batch-conversation',
+      assistantMessageId: 'e2e-batch-tool-message',
       batchToolCallId: 'e2e-workspace-batch-call',
     };
     return {

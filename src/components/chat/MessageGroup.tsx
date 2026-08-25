@@ -423,18 +423,27 @@ export function buildRenderSegments(
 }
 
 // Index (exclusive) up to which segments fold into the collapsible "工作过程"
-// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. A fold is a
-// prefix-only affordance, so its boundary must stop before the first assistant
-// text or mid-loop user segment. Otherwise collapsing would silently remove
-// authored conversation content rather than only hiding process details.
+// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. When the
+// turn is done and ends in a text answer, the fold stops at that answer;
+// otherwise (streaming, text-first with no closing answer, process after the
+// last text) the whole group folds. Authored content is still never hidden:
+// the collapsed render branch filters segments by kind and keeps text/user
+// segments visible unconditionally — the swallow bug this replaced lived in
+// that filter, not in the fold range.
 // eslint-disable-next-line react-refresh/only-export-components
-export function computeWorkProcessFold(segments: RenderSegment[], _isDone: boolean): number | null {
+export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
   const hasProcess = segments.some((segment) =>
     segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
   if (!hasProcess) return null;
-  const firstAuthoredSegment = segments.findIndex((segment) =>
-    segment.kind === 'text' || segment.kind === 'user');
-  return firstAuthoredSegment > 0 ? firstAuthoredSegment : null;
+  let lastTextIdx = -1;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    if (segments[i].kind === 'text') { lastTextIdx = i; break; }
+  }
+  const hasProcessAfterLastText = lastTextIdx >= 0 && segments
+    .slice(lastTextIdx + 1)
+    .some((segment) => segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
+  if (isDone && lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
+  return segments.length;
 }
 
 /**
@@ -1100,8 +1109,15 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                   {workExpanded
                     ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
                     : segments.slice(0, workFoldEnd)
-                        .filter((seg) => seg.kind === 'widget')
-                        .map((seg, i) => renderSegment(seg, i))}
+                        /* Collapsing hides PROCESS segments only. Assistant text
+                           and mid-loop user messages are authored conversation
+                           content and must survive any fold state — hiding them
+                           here was the "collapse swallows the answer" bug. Keep
+                           the original segment index so keys stay stable across
+                           fold toggles. */
+                        .map((seg, i) => ({ seg, i }))
+                        .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
+                        .map(({ seg, i }) => renderSegment(seg, i))}
                 </div>
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>

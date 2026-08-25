@@ -48,7 +48,10 @@ test('saves validated inline bytes to the user-selected path', async () => {
 
   assert.deepEqual(result, { saved: true, fileName: 'export.png' });
   assert.equal(dialogs.length, 1);
-  assert.equal(dialogs[0][1].defaultPath, '/downloads/Abu image.png');
+  // defaultPath is built with path.join, so its separator is OS-native
+  // (backslash on Windows). Compare against the platform-joined form rather
+  // than a hardcoded POSIX string, which would fail the Windows release gate.
+  assert.equal(dialogs[0][1].defaultPath, path.join('/downloads', 'Abu image.png'));
   assert.deepEqual(dialogs[0][1].filters, [{ name: 'PNG image', extensions: ['png'] }]);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].target, '/chosen/export.png');

@@ -624,6 +624,37 @@ describe('IMChannelRouter', () => {
     expect((await checkWritePath(`${workspace}/out.md`, scopeId)).allowed).toBe(false);
   });
 
+  it('releases the IM scope and session slot after sidecar recovery finite-settles as unavailable', async () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const workspace = '/Users/testuser/Projects/im-sidecar-unavailable';
+    let scopeId = '';
+    internal.runningCount = 0;
+    internal.activeSessions.add(sessionKey);
+    mockRunAgentLoop.mockImplementationOnce(async (_convId: string, _text: string, options: {
+      authorizationScopeId: string;
+    }) => {
+      scopeId = options.authorizationScopeId;
+      expect((await checkWritePath(`${workspace}/during.md`, scopeId)).allowed).toBe(true);
+      return {
+        reason: 'error',
+        error: 'Sidecar run state remained unavailable during reattach',
+        stopReason: 'sidecar_unavailable',
+      };
+    });
+
+    await internal.processMessage(
+      makeMessage(),
+      makeChannel({ workspacePaths: [workspace] }),
+      'safe_tools',
+    );
+
+    expect(scopeId).toBeTruthy();
+    expect((await checkWritePath(`${workspace}/after.md`, scopeId)).allowed).toBe(false);
+    expect(internal.activeSessions.has(sessionKey)).toBe(false);
+    expect(internal.runningCount).toBe(0);
+  });
+
   it('keeps a timed-out session and scope quarantined until its stuck run actually settles', async () => {
     vi.useFakeTimers();
     const sessionKey = 'test:chat1:window';

@@ -645,6 +645,8 @@ export function buildInterruptedToolCallContext(
 export interface AgentLoopResult {
   reason: AgentLoopExitReason;
   error?: string;
+  /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
+  stopReason?: 'sidecar_unavailable';
 }
 
 /**

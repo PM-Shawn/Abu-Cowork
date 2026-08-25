@@ -140,6 +140,16 @@ const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
 const AGENT_FIRST_FRAME_STALL_MS = 30_000;
 const AGENT_START_ACK_TIMEOUT_MS = 3_000;
 const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
+const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
+
+class SidecarRunStateUnavailableError extends Error {
+  readonly stopReason = 'sidecar_unavailable' as const;
+
+  constructor() {
+    super('Sidecar run state remained unavailable during reattach');
+    this.name = 'SidecarRunStateUnavailableError';
+  }
+}
 
 function rendererRuntimeOptions(options?: AgentLoopOptions): AgentLoopOptions {
   return {
@@ -783,10 +793,9 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       // Reject only this run's never-ending RPC. This must happen even when
       // the durability barrier fails, while that persistence error still
       // propagates to the caller instead of being disguised as a settled run.
-      if (
-        session.options.authorizationScopeId === undefined
-        && !session.transportAbortController?.signal.aborted
-      ) {
+      // Scoped authority stays alive through `resourceSettlement` in the
+      // dispatcher's finally block; it does not require an immortal transport.
+      if (!session.transportAbortController?.signal.aborted) {
         const error = new Error(`agent.run transport closed after abort ${source}`);
         error.name = 'AbortError';
         session.transportAbortController?.abort(error);
@@ -2049,14 +2058,13 @@ async function waitForReattachedTerminal(
   params: AgentRunParams,
   session: RunSession,
 ): Promise<AgentRunTerminal> {
-  const scoped = session.options.authorizationScopeId !== undefined;
   let unavailableChecks = 0;
   while (true) {
     const tick = recoveryDelay(2_000).then(() => ({ kind: 'tick' as const }));
     const terminal = session.terminalPromise!.then((value) => ({ kind: 'terminal' as const, value }));
     const outcome = await Promise.race([terminal, tick]);
     if (outcome.kind === 'terminal') return outcome.value;
-    if (session.shellAbortController.signal.aborted && !scoped) {
+    if (session.shellAbortController.signal.aborted) {
       throw session.shellAbortController.signal.reason ?? new Error('Agent run aborted while reattaching');
     }
     const recovery = await queryRunForTransportRecovery(params);
@@ -2069,8 +2077,8 @@ async function waitForReattachedTerminal(
     }
     if (recovery.action === 'unavailable') {
       unavailableChecks += 1;
-      if (unavailableChecks >= 3 && !scoped) {
-        throw new Error('Sidecar run state remained unavailable during reattach');
+      if (unavailableChecks >= MAX_REATTACH_UNAVAILABLE_CHECKS) {
+        throw new SidecarRunStateUnavailableError();
       }
     } else {
       unavailableChecks = 0;
@@ -2728,6 +2736,7 @@ async function runSingleAgentLoopDispatched(
     return raw;
   } catch (err) {
     let transportError = err;
+    let acceptedExecutionStateUnknown = false;
     // A failing RPC can still have flushed committed frames immediately
     // before its error response. Land those frames before deciding fallback
     // or applying the shell-owned error finalization.
@@ -2739,7 +2748,7 @@ async function runSingleAgentLoopDispatched(
     if (session.terminal) {
       return await settleFromTerminal(session.terminal);
     }
-    if (shellAbortController.signal.aborted && !scopedRun) {
+    if (shellAbortController.signal.aborted) {
       await finalizeAbortedRun(session, 'run-terminal');
       traceRuntimeEvent('renderer.agent_run_aborted', {
         runId,
@@ -2764,6 +2773,7 @@ async function runSingleAgentLoopDispatched(
         return await settleFromTerminal(recovery.terminal);
       }
       if (recovery.action === 'reattach') {
+        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -2771,6 +2781,7 @@ async function runSingleAgentLoopDispatched(
         }
       }
       if (recovery.action === 'unavailable' && scopedRun) {
+        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -2834,7 +2845,11 @@ async function runSingleAgentLoopDispatched(
         }
       }
     }
-    if (!session.committed) {
+    if (shellAbortController.signal.aborted) {
+      await finalizeAbortedRun(session, 'run-terminal');
+      return { reason: 'aborted' };
+    }
+    if (!session.committed && !acceptedExecutionStateUnknown) {
       // Release the shell-side ownership before entering the in-process loop.
       // Otherwise its concurrency guard sees this still-live controller/session
       // and enqueues the original prompt instead of actually retrying it.
@@ -2879,7 +2894,9 @@ async function runSingleAgentLoopDispatched(
         ? String((errData as { message: unknown }).message)
         : transportError instanceof Error ? transportError.message : String(transportError);
     const displayMessage =
-      realMessage === 'Sidecar process closed'
+      transportError instanceof SidecarRunStateUnavailableError
+        ? getI18n().chat.sidecarUnavailable
+        : realMessage === 'Sidecar process closed'
         ? getI18n().chat.sidecarInterrupted
         : realMessage;
     logger.warn('agent-loop transport failed after commit — surfacing error, no rerun', {
@@ -2915,7 +2932,13 @@ async function runSingleAgentLoopDispatched(
       displayMessage,
       isConnectionFailure ? 'connection-failed' : 'failed',
     );
-    return { reason: 'error', error: realMessage };
+    return {
+      reason: 'error',
+      error: realMessage,
+      ...(transportError instanceof SidecarRunStateUnavailableError
+        ? { stopReason: transportError.stopReason }
+        : {}),
+    };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
     // From here the dispatcher, not the UI, owns teardown. Remove the Stop

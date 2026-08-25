@@ -421,6 +421,7 @@ vi.mock('../../i18n', () => ({
   getI18n: () => ({
     chat: {
       sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+      sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
       attachmentDuringRun: '请等待当前任务结束后再发送图片，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
@@ -2735,6 +2736,43 @@ describe('agentLoopRunner', () => {
       expect(sidecarRequestMock).toHaveBeenCalledTimes(1);
     });
 
+    it('settles a scoped accepted run after bounded unavailable recovery without replaying it locally', async () => {
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched, __getActiveRunSessionCount } = await importFresh();
+      getSidecarStatusMock
+        .mockReturnValueOnce('running')
+        .mockReturnValue('stopped');
+      sidecarRequestMock.mockRejectedValueOnce(new Error('sidecar transport closed'));
+
+      const running = runAgentLoopDispatched('conv-1', 'scoped work', {
+        authorizationScopeId: 'scope-im',
+      });
+      const recoveryDeadline = new Promise<'deadline'>((resolve) => {
+        setTimeout(() => resolve('deadline'), 25_000);
+      });
+      await waitForCall(sidecarRequestMock);
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(Promise.race([running, recoveryDeadline])).resolves.toEqual({
+        reason: 'error',
+        error: 'Sidecar run state remained unavailable during reattach',
+        stopReason: 'sidecar_unavailable',
+      });
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(chatDeltaAppendTextMock).toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('无法确认原任务是否仍在执行'),
+      );
+      expect(chatDeltaAppendTextMock).not.toHaveBeenCalledWith(
+        'conv-1',
+        expect.stringContaining('Sidecar run state remained unavailable'),
+      );
+      expect(__getActiveRunSessionCount()).toBe(0);
+      expect(endComputerUseTaskMock).toHaveBeenCalledOnce();
+      expect(endComputerUseTaskMock).toHaveBeenCalledWith('conv-1', expect.any(String));
+    });
+
     it('replays execution once after a pre-commit sidecar restart reports not_found', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock
@@ -3260,7 +3298,8 @@ describe('agentLoopRunner', () => {
       expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
     });
 
-    it('keeps a scoped agent.run owner alive after visible Stop until the sidecar run settles', async () => {
+    it('settles a scoped agent.run after visible Stop even when the sidecar transport never settles', async () => {
+      vi.useFakeTimers();
       const { runAgentLoopDispatched, getRunSession } = await importFresh();
       const shellController = new AbortController();
       const runRpc = deferred<unknown>();
@@ -3272,25 +3311,20 @@ describe('agentLoopRunner', () => {
           signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
         });
       });
-      let settled = false;
-
       const running = runAgentLoopDispatched('conv-1', 'scoped work', {
         authorizationScopeId: 'scope-im',
-      }).then((result) => {
-        settled = true;
-        return result;
+      });
+      const stopDeadline = new Promise<'deadline'>((resolve) => {
+        setTimeout(() => resolve('deadline'), 5_500);
       });
       await waitForCall(sidecarRequestMock);
       const runId = (sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1] as { runId: string }).runId;
 
       shellController.abort();
-      await vi.waitFor(() => expect(chatDeltaCancelStreamingMock).toHaveBeenCalled());
-      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(6_000);
 
-      expect(settled).toBe(false);
-      expect(getRunSession(runId)).toBeDefined();
-      runRpc.resolve({ reason: 'aborted' });
-      await expect(running).resolves.toEqual({ reason: 'aborted' });
+      await expect(Promise.race([running, stopDeadline])).resolves.toEqual({ reason: 'aborted' });
+      expect(chatDeltaCancelStreamingMock).toHaveBeenCalled();
       expect(getRunSession(runId)).toBeUndefined();
     });
 

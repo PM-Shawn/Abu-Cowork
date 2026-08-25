@@ -392,6 +392,7 @@ const zhCN: TranslationDict = {
     skillMissingTools: '这个技能需要一些工具但当前不可用哦：{missing}。检查一下相关 MCP 服务器是否已连接～',
     gatewayUnreachable: '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。',
     sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+    sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
     messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
     attachmentDuringRun: '请等待当前任务结束后再发送图片，草稿已为你保留。',
     conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',

@@ -392,6 +392,8 @@ export interface TranslationDict {
     gatewayUnreachable: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
+    /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
+    sidecarUnavailable: string;
     messageSaveFailed: string;
     attachmentDuringRun: string;
     conversationBusy: string;

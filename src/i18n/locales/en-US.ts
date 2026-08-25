@@ -392,6 +392,7 @@ const enUS: TranslationDict = {
     skillMissingTools: 'This skill needs some tools that aren\'t available right now: {missing}. Check whether the related MCP servers are connected.',
     gatewayUnreachable: 'Cannot reach the enterprise AI gateway. Check your network connection, or contact your administrator.\n\nThe client will not fall back to a personal API key (to prevent budget bypass).',
     sidecarInterrupted: 'The background service was interrupted and is recovering automatically. Please resend your request in a moment.',
+    sidecarUnavailable: 'The background service could not confirm this task\'s state during recovery. Abu stopped waiting and will not replay it automatically, but cannot confirm whether the original task is still running. Check the existing result before deciding to retry.',
     messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',
     attachmentDuringRun: 'Wait for the current task to finish before sending an image. Your draft is still here.',
     conversationBusy: 'This conversation already has a running task. Wait for it to finish before starting another.',

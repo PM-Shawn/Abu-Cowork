@@ -108,6 +108,20 @@ describe('BatchProgress', () => {
     expect(screen.getByRole('button', { name: /Open Write summary.*Unknown/ })).toBeInTheDocument();
   });
 
+  it('infers terminal rows from a legacy result without rendering unknown status', () => {
+    render(<BatchProgress
+      identity={identity}
+      toolCall={toolCall(undefined, {
+        result: '2 sub-tasks total: 2 succeeded, 0 failed',
+      })}
+    />);
+
+    expect(screen.getByText('✓ 2 sub-tasks completed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open Inspect page.*Succeeded/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open Write summary.*Succeeded/ })).toBeInTheDocument();
+    expect(screen.queryByText('Unknown')).toBeNull();
+  });
+
   it('opens persisted rows as deduped workspace tabs without dialog or backdrop', () => {
     render(<BatchProgress
       identity={identity}
@@ -130,10 +144,11 @@ describe('BatchProgress', () => {
     expect(usePreviewStore.getState().tabs.filter((tab) => tab.kind === 'subagent')).toHaveLength(1);
   });
 
-  it('rejects malformed persisted summaries and falls back to unknown bounded input rows', () => {
-    render(<BatchProgress
+  it('rejects malformed terminal metadata and leaves generic rendering to the caller', () => {
+    const view = render(<BatchProgress
       identity={identity}
       toolCall={toolCall(undefined, {
+        result: 'unrecognized legacy result',
         batchTerminalSummary: {
           version: 1,
           batch: identity,
@@ -144,8 +159,7 @@ describe('BatchProgress', () => {
       })}
     />);
 
-    expect(screen.getByText('2 sub-tasks recorded')).toBeInTheDocument();
-    expect(screen.getAllByText('Unknown')).toHaveLength(2);
+    expect(view.container).toBeEmptyDOMElement();
   });
 
   it('clamps untrusted input task fallback rows to the UI task cap', () => {
@@ -153,6 +167,8 @@ describe('BatchProgress', () => {
       identity={identity}
       toolCall={toolCall(undefined, {
         input: { tasks: Array.from({ length: 100 }, (_, i) => ({ task: `Task ${i + 1}` })) },
+        result: undefined,
+        isExecuting: true,
       })}
     />);
 

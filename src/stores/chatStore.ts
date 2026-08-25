@@ -30,6 +30,8 @@ import {
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
+import { useBatchProgressStore } from './batchProgressStore';
+import { usePreviewStore } from './previewStore';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 
 enableMapSet();
@@ -956,6 +958,11 @@ export const useChatStore = create<ChatStore>()(
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
         useWorkProcessFoldStore.getState().clearConversation(id);
+        // Workspace subagent tabs are conversation-owned. Close them before
+        // clearing their ephemeral batches so the active view lease is
+        // released synchronously and no clickable dead tab survives deletion.
+        usePreviewStore.getState().closeSubagentTabsForConversation(id);
+        useBatchProgressStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,
           getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode),

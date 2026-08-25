@@ -477,7 +477,7 @@ function buildSubagentRunParams(
     resolvedCreds,
     tools,
     workspacePathSnapshot,
-  };
+  } satisfies SubagentRunParams & Record<typeof SUBAGENT_RUN_WIRE_FIELDS[number], unknown>;
 }
 
 function reconstructSubagentResult(raw: unknown): SubagentResult {

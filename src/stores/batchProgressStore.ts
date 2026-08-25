@@ -103,6 +103,7 @@ interface BatchProgressActions {
   scheduleClearBatch: (identity: BatchIdentity, delayMs: number) => void;
   cancelScheduledClear: (identity: BatchIdentity) => void;
   clearBatch: (identity: BatchIdentity) => void;
+  clearConversation: (conversationId: string) => void;
   getTerminalSummary: (identity: BatchIdentity) => BatchTerminalSummary | undefined;
 }
 
@@ -776,6 +777,13 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
         if (state.activeVisibleBatchKey === batchKey) state.activeVisibleBatchKey = undefined;
         refreshDiagnostics(state);
       });
+    },
+
+    clearConversation: (conversationId) => {
+      const identities = Object.values(get().batches)
+        .filter((entry) => entry.identity.conversationId === conversationId)
+        .map((entry) => entry.identity);
+      for (const identity of identities) get().clearBatch(identity);
     },
 
     getTerminalSummary: (identity) => {

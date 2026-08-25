@@ -49,6 +49,9 @@ function makeExecStep(id: string): ExecutionStep {
 }
 
 function makeToolCall(id: string, name: string): NonNullable<Message['toolCalls']>[number] {
+  if (name === 'run_agent_batch') {
+    return { id, name, input: { tasks: [{ task: id }] }, isExecuting: true };
+  }
   return { id, name, input: {}, result: 'ok' };
 }
 
@@ -652,8 +655,8 @@ describe('computeWorkProcessFold', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const seg = (kind: string): any => (kind === 'text' ? { kind, text: 'x', message: { id: 't' }, isLastTurn: true } : { kind, executionSteps: [], legacySteps: [], isLastGroup: false, stepsMsgs: [] });
 
-  it('allows running work to be manually folded', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(2);
+  it('allows running work to be manually folded without folding streamed text', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(1);
   });
   it('folds everything before the final text answer', () => {
     // [thinking, plan, tool, text] → foldEnd = 3
@@ -663,16 +666,20 @@ describe('computeWorkProcessFold', () => {
   it('returns null when the only/first segment is the answer (nothing to fold)', () => {
     expect(computeWorkProcessFold([seg('text')], true)).toBeNull();
   });
-  it('folds all process segments when there is no final text answer', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBe(2);
+  it('does not fold process-only output with no final answer', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBeNull();
   });
-  it('intermediate text folds in; only the last text stays outside', () => {
-    // [thinking, text(mid), tool, text(final)] → foldEnd = 3
-    expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
+  it('clamps the fold before intermediate assistant text', () => {
+    // [thinking, text(mid), tool, text(final)] → only the leading thinking folds.
+    expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(1);
   });
-  it('does not treat preamble text as a final answer when process work follows it', () => {
+  it('does not fold text-first output when process work has no closing answer', () => {
     const batch = { kind: 'batch', toolCall: { id: 'b', name: 'run_agent_batch', input: {} }, message: { id: 'm' } } as Extract<Segment, { kind: 'batch' }>;
-    expect(computeWorkProcessFold([seg('steps'), seg('text'), batch], true)).toBe(3);
+    expect(computeWorkProcessFold([seg('text'), batch], true)).toBeNull();
+  });
+  it('clamps the fold before a mid-loop user message', () => {
+    const user = { kind: 'user', message: { id: 'u' } } as Extract<Segment, { kind: 'user' }>;
+    expect(computeWorkProcessFold([seg('steps'), user, seg('steps'), seg('text')], true)).toBe(1);
   });
 });
 

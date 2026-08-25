@@ -61,6 +61,123 @@ export function taskInputLabels(toolCall: ToolCall, t: TranslationDict): string[
   });
 }
 
+type LegacyBatchTerminalStatus = Extract<BatchTaskTerminalStatus, 'succeeded' | 'failed'>;
+
+function legacyTaskCount(toolCall: ToolCall): number | undefined {
+  if (!Array.isArray(toolCall.input?.tasks)) return undefined;
+  const count = Math.min(toolCall.input.tasks.length, BATCH_PROGRESS_MAX_UI_TASK_ROWS);
+  return count > 0 ? count : undefined;
+}
+
+function structuredLegacyStatuses(
+  result: string,
+  expectedTaskCount: number,
+): LegacyBatchTerminalStatus[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length !== expectedTaskCount) return undefined;
+  const statuses: LegacyBatchTerminalStatus[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null || typeof (entry as { ok?: unknown }).ok !== 'boolean') {
+      return undefined;
+    }
+    statuses.push((entry as { ok: boolean }).ok ? 'succeeded' : 'failed');
+  }
+  return statuses;
+}
+
+function aggregateHeaderCounts(result: string): {
+  total: number;
+  succeeded: number;
+  failed: number;
+} | undefined {
+  const header = result.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  const english = header.match(/^(\d+) sub-tasks total: (\d+) succeeded, (\d+) failed$/);
+  const chinese = header.match(/^共 (\d+) 个子任务，成功 (\d+)，失败 (\d+)$/);
+  const match = english ?? chinese;
+  if (!match) return undefined;
+  return {
+    total: Number(match[1]),
+    succeeded: Number(match[2]),
+    failed: Number(match[3]),
+  };
+}
+
+function sectionedLegacyStatuses(
+  result: string,
+  expectedTaskCount: number,
+): LegacyBatchTerminalStatus[] | undefined {
+  const counts = aggregateHeaderCounts(result);
+  if (
+    !counts
+    || counts.total !== expectedTaskCount
+    || counts.succeeded + counts.failed !== counts.total
+  ) {
+    return undefined;
+  }
+  if (counts.failed === 0) return Array.from({ length: counts.total }, () => 'succeeded');
+  if (counts.succeeded === 0) return Array.from({ length: counts.total }, () => 'failed');
+
+  const sectionPattern = /^### (?:Sub-task|子任务) (\d+):[^\r\n]*(?:\r?\n|$)/gm;
+  const sections = [...result.matchAll(sectionPattern)];
+  if (sections.length !== counts.total) return undefined;
+  const statuses: Array<LegacyBatchTerminalStatus | undefined> = Array(counts.total);
+  for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+    const section = sections[sectionIndex];
+    const taskIndex = Number(section[1]) - 1;
+    if (!Number.isInteger(taskIndex) || taskIndex < 0 || taskIndex >= counts.total || statuses[taskIndex]) {
+      return undefined;
+    }
+    const bodyStart = (section.index ?? 0) + section[0].length;
+    const bodyEnd = sections[sectionIndex + 1]?.index ?? result.length;
+    const body = result.slice(bodyStart, bodyEnd).trimStart();
+    statuses[taskIndex] = /^\[(?:Failed|失败)\](?:\s|$)/.test(body) ? 'failed' : 'succeeded';
+  }
+  if (statuses.some((status) => status === undefined)) return undefined;
+  const terminalStatuses = statuses as LegacyBatchTerminalStatus[];
+  const inferredFailed = terminalStatuses.filter((status) => status === 'failed').length;
+  return inferredFailed === counts.failed ? terminalStatuses : undefined;
+}
+
+function legacyTerminalStatuses(toolCall: ToolCall): LegacyBatchTerminalStatus[] | undefined {
+  const expectedTaskCount = legacyTaskCount(toolCall);
+  if (toolCall.isExecuting || expectedTaskCount === undefined || typeof toolCall.result !== 'string') {
+    return undefined;
+  }
+  return structuredLegacyStatuses(toolCall.result, expectedTaskCount)
+    ?? sectionedLegacyStatuses(toolCall.result, expectedTaskCount);
+}
+
+/**
+ * Infer the terminal rows written before batchTerminalSummary existed. Only
+ * the two historical run_agent_batch output contracts are accepted: the
+ * localized aggregate report and the structured `{ ok }[]` projection.
+ * Arbitrary tool text intentionally falls back to the generic tool-result UI.
+ */
+export function rowsFromLegacyResult(toolCall: ToolCall, t: TranslationDict): BatchTaskRow[] | undefined {
+  const statuses = legacyTerminalStatuses(toolCall);
+  if (!statuses) return undefined;
+  const labels = taskInputLabels(toolCall, t);
+  return statuses.map((status, taskIndex) => ({
+    taskIndex,
+    label: labels[taskIndex] ?? format(t.batch.taskFallback, { n: taskIndex + 1 }),
+    status,
+    terminalReason: status === 'succeeded' ? 'completed' : 'error',
+    isLive: false,
+  }));
+}
+
+/** Whether this call has validated state for the dedicated batch card. */
+export function shouldRenderBatchProgressCard(toolCall: ToolCall, identity?: BatchIdentity): boolean {
+  if (toolCall.isExecuting === true || legacyTerminalStatuses(toolCall) !== undefined) return true;
+  return identity !== undefined
+    && normalizeBatchTerminalSummary(toolCall.batchTerminalSummary, identity) !== undefined;
+}
+
 export function rowsFromLiveBatch(batch: BatchEntry, now: number): BatchTaskRow[] {
   return batch.tasks.map((task, taskIndex) => ({
     taskIndex,

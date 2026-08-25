@@ -495,6 +495,24 @@ describe('batchProgressStore', () => {
       expect(batch(id)).toBeUndefined();
     });
 
+    it('clears every batch owned by one conversation without touching matching ids elsewhere', () => {
+      const first = identity('conv-delete-batches', 'shared');
+      const second = identity('conv-delete-batches', 'other');
+      const survivor = identity('conv-surviving-batches', 'shared');
+      const store = useBatchProgressStore.getState();
+      store.initBatch(first, ['A']);
+      store.initBatch(second, ['B']);
+      store.initBatch(survivor, ['C']);
+      store.setActiveVisibleBatch(first);
+
+      store.clearConversation('conv-delete-batches');
+
+      expect(batch(first)).toBeUndefined();
+      expect(batch(second)).toBeUndefined();
+      expect(batch(survivor)).toBeDefined();
+      expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBeUndefined();
+    });
+
     it('cleans terminal batches after the bounded TTL even if the UI unmounted', () => {
       const fixedNow = 1_700_000_000_000;
       vi.useFakeTimers();

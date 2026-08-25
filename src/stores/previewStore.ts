@@ -58,21 +58,18 @@ function activeSubagentIdentity(tabs: WorkspaceTab[], activeTabId: string | null
   return active?.kind === 'subagent' ? active.identity : undefined;
 }
 
-function reconcileSubagentLeases(oldTabs: WorkspaceTab[], nextTabs: WorkspaceTab[]): void {
-  const oldSubagentIds = new Set(oldTabs.filter((tab) => tab.kind === 'subagent').map((tab) => tab.id));
-  const nextSubagentTabs = nextTabs.filter((tab): tab is Extract<WorkspaceTab, { kind: 'subagent' }> => tab.kind === 'subagent');
-  const nextSubagentIds = new Set(nextSubagentTabs.map((tab) => tab.id));
+function reconcileSubagentLeases(
+  oldTabs: WorkspaceTab[],
+  oldActiveTabId: string | null,
+  nextTabs: WorkspaceTab[],
+  nextActiveTabId: string | null,
+): void {
+  const oldActive = oldTabs.find((tab) => tab.id === oldActiveTabId && tab.kind === 'subagent');
+  const nextActive = nextTabs.find((tab) => tab.id === nextActiveTabId && tab.kind === 'subagent');
+  if (oldActive?.id === nextActive?.id) return;
   const batchStore = useBatchProgressStore.getState();
-  for (const tab of oldTabs) {
-    if (tab.kind === 'subagent' && !nextSubagentIds.has(tab.id)) {
-      batchStore.releaseViewLease(tab.identity);
-    }
-  }
-  for (const tab of nextSubagentTabs) {
-    if (!oldSubagentIds.has(tab.id)) {
-      batchStore.acquireViewLease(tab.identity);
-    }
-  }
+  if (oldActive?.kind === 'subagent') batchStore.releaseViewLease(oldActive.identity);
+  if (nextActive?.kind === 'subagent') batchStore.acquireViewLease(nextActive.identity);
 }
 
 interface PreviewState {
@@ -134,6 +131,9 @@ interface PreviewState {
   closeOtherTabs: (id: string) => void;
   // Close every tab.
   closeAllTabs: () => void;
+  // Close subagent tabs owned by one conversation. Other workspace tabs stay
+  // open; used by chatStore's synchronous delete cascade.
+  closeSubagentTabsForConversation: (conversationId: string) => void;
   // Drag-reorder: move the tab with id `fromId` to `toId`'s position.
   reorderTabs: (fromId: string, toId: string) => void;
   // Commit a new URL for a browser tab (address-bar navigation).
@@ -170,7 +170,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     options: { focusTabId?: string | null } = {},
   ): void => {
     const prev = get();
-    reconcileSubagentLeases(prev.tabs, nextTabs);
+    reconcileSubagentLeases(prev.tabs, prev.activeTabId, nextTabs, nextActiveId);
     const previewFilePath = computePreviewFilePath(nextTabs, nextActiveId);
     set({
       tabs: nextTabs,
@@ -311,6 +311,23 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   closeAllTabs: () => {
     commitTabs([], null);
+  },
+
+  closeSubagentTabsForConversation: (conversationId) => {
+    const { tabs, activeTabId } = get();
+    const matches = (tab: WorkspaceTab): boolean =>
+      tab.kind === 'subagent' && tab.identity.conversationId === conversationId;
+    if (!tabs.some(matches)) return;
+    const nextTabs = tabs.filter((tab) => !matches(tab));
+    let nextActiveId = activeTabId;
+    if (activeTabId && !nextTabs.some((tab) => tab.id === activeTabId)) {
+      const oldIdx = tabs.findIndex((tab) => tab.id === activeTabId);
+      const survives = (tab: WorkspaceTab): boolean => nextTabs.some((next) => next.id === tab.id);
+      const after = tabs.slice(oldIdx + 1).find(survives);
+      const before = tabs.slice(0, oldIdx).reverse().find(survives);
+      nextActiveId = (after ?? before)?.id ?? null;
+    }
+    commitTabs(nextTabs, nextActiveId);
   },
 
   reorderTabs: (fromId, toId) => {

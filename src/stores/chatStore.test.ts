@@ -21,6 +21,9 @@ import {
   writePersistedComposerText,
 } from './composerDraftStore';
 import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
+import { useBatchProgressStore } from './batchProgressStore';
+import { subagentTabId, usePreviewStore } from './previewStore';
+import { makeBatchKey } from '@/types';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -70,6 +73,10 @@ const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 describe('chatStore', () => {
   beforeEach(() => {
+    usePreviewStore.getState().closeAllTabs();
+    for (const entry of Object.values(useBatchProgressStore.getState().batches)) {
+      useBatchProgressStore.getState().clearBatch(entry.identity);
+    }
     clearAllComposerDrafts();
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
@@ -196,6 +203,64 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().deleteConversation(id);
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
+    });
+
+    it('cascades subagent tab leases and batch entries for the deleted conversation only', () => {
+      const deletedId = useChatStore.getState().createConversation();
+      const survivorId = useChatStore.getState().createConversation();
+      const deletedBatch = { conversationId: deletedId, batchToolCallId: 'shared-batch' };
+      const survivorBatch = { conversationId: survivorId, batchToolCallId: 'shared-batch' };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(deletedBatch, ['Deleted worker']);
+      batchStore.initBatch(survivorBatch, ['Surviving worker']);
+      const deletedTab = usePreviewStore.getState().openSubagent(deletedBatch, 0, 'Deleted worker');
+      const survivorTab = usePreviewStore.getState().openSubagent(survivorBatch, 0, 'Surviving worker');
+      usePreviewStore.getState().activateTab(deletedTab);
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]?.viewLeaseCount).toBe(1);
+
+      useChatStore.getState().deleteConversation(deletedId);
+
+      expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([survivorTab]);
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(deletedBatch, 0) }),
+      );
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]).toBeUndefined();
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(survivorBatch)]).toBeDefined();
+    });
+
+    it('does not resurrect deleted batch state when in-flight progress settles late', async () => {
+      const conversationId = useChatStore.getState().createConversation();
+      const identity = {
+        conversationId,
+        assistantMessageId: 'assistant-in-flight',
+        batchToolCallId: 'batch-in-flight',
+      };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(identity, ['In-flight worker']);
+      batchStore.setTaskRunning(identity, 0);
+      usePreviewStore.getState().openSubagent(identity, 0, 'In-flight worker');
+
+      useChatStore.getState().deleteConversation(conversationId);
+      await Promise.resolve();
+      batchStore.setTaskActivity(identity, 0, 'late activity', 1);
+      batchStore.startTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        toolInput: { path: '/late' },
+      });
+      batchStore.finishTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        result: 'late result',
+        resultContent: [{ type: 'text', text: 'late result' }],
+        error: false,
+      });
+      batchStore.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(identity)]).toBeUndefined();
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(identity, 0) }),
+      );
     });
 
     it('clears the deleted conversation draft', () => {

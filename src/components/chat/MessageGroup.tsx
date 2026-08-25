@@ -40,8 +40,10 @@ import {
   rollupBatchRows,
   compactBatchRollupSummary,
   rowsFromLiveBatch,
+  rowsFromLegacyResult,
   rowsFromPersistedSummary,
   rowsFromUnknown,
+  shouldRenderBatchProgressCard,
   type BatchRowsRollup,
 } from './batchProgressViewModel';
 
@@ -262,6 +264,8 @@ export function buildRenderSegments(
   messages: Message[],
   allExecSteps: ExecutionStep[],
   allLegacySteps: WorkflowStep[],
+  hasBatchCardState: (message: Message, toolCall: ToolCall) => boolean = (_message, toolCall) =>
+    shouldRenderBatchProgressCard(toolCall),
 ): RenderSegment[] {
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   if (assistantMsgs.length === 0) return [];
@@ -270,12 +274,8 @@ export function buildRenderSegments(
   // renders in true chronological position; any thinking-typed step from
   // upstream (synth or eventRouter) is discarded here.
   const toolExecSteps = allExecSteps.filter((s) => s.type !== 'thinking');
-  const seenLegacyBatchStepIds = new Set<string>();
   const toolLegacySteps = allLegacySteps.filter((s) => {
     if (s.type === 'thinking' || typeof s.toolName !== 'string') return false;
-    if (s.toolName !== TOOL_NAMES.RUN_AGENT_BATCH) return true;
-    if (seenLegacyBatchStepIds.has(s.id)) return false;
-    seenLegacyBatchStepIds.add(s.id);
     return true;
   });
 
@@ -377,11 +377,24 @@ export function buildRenderSegments(
       }
 
       if (isBatchToolCall(toolCall)) {
-        if (!seenBatchKeys.has(batchKey)) {
+        if (hasBatchCardState(msg, toolCall) && !seenBatchKeys.has(batchKey)) {
           flushSteps();
           segments.push({ kind: 'batch', toolCall, message: msg });
           seenBatchKeys.add(batchKey);
+          continue;
         }
+        // A terminal legacy call whose result does not match either historical
+        // batch contract falls back to the generic tool step. This keeps its
+        // actual result text visible instead of manufacturing "unknown" rows.
+        if (execStep && !isDisplayHiddenStepBackedTool(execStep.toolName)) {
+          pendingExecSteps.push(execStep);
+          addPendingStepsMessage();
+        }
+        if (legacyStep && !isDisplayHiddenStepBackedTool(legacyStep.toolName)) {
+          pendingLegacySteps.push(legacyStep);
+          addPendingStepsMessage();
+        }
+        seenBatchKeys.add(batchKey);
         continue;
       }
 
@@ -410,23 +423,18 @@ export function buildRenderSegments(
 }
 
 // Index (exclusive) up to which segments fold into the collapsible "工作过程"
-// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline (the final
-// answer when present). Running work can still be manually folded, so groups
-// with process segments but no final answer return segments.length.
+// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. A fold is a
+// prefix-only affordance, so its boundary must stop before the first assistant
+// text or mid-loop user segment. Otherwise collapsing would silently remove
+// authored conversation content rather than only hiding process details.
 // eslint-disable-next-line react-refresh/only-export-components
-export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
+export function computeWorkProcessFold(segments: RenderSegment[], _isDone: boolean): number | null {
   const hasProcess = segments.some((segment) =>
     segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
   if (!hasProcess) return null;
-  let lastTextIdx = -1;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].kind === 'text') { lastTextIdx = i; break; }
-  }
-  const hasProcessAfterLastText = lastTextIdx >= 0 && segments
-    .slice(lastTextIdx + 1)
-    .some((segment) => segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
-  if (isDone && lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
-  return segments.length;
+  const firstAuthoredSegment = segments.findIndex((segment) =>
+    segment.kind === 'text' || segment.kind === 'user');
+  return firstAuthoredSegment > 0 ? firstAuthoredSegment : null;
 }
 
 /**
@@ -522,14 +530,15 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     [assistantMsgs]
   );
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
-    const seenBatchIds = new Set<string>();
-    return allToolCalls.filter((toolCall) => {
+    const seenBatchKeys = new Set<string>();
+    return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
       if (!isBatchToolCall(toolCall)) return true;
-      if (seenBatchIds.has(toolCall.id)) return false;
-      seenBatchIds.add(toolCall.id);
+      const batchKey = `${message.id}\u0000${toolCall.id}`;
+      if (seenBatchKeys.has(batchKey)) return false;
+      seenBatchKeys.add(batchKey);
       return true;
-    });
-  }, [allToolCalls]);
+    }));
+  }, [assistantMsgs]);
   // Extract search results: prefer structured data from tool calls, fallback to text parsing
   const searchResults = useMemo(() => {
     const fromTools = messages
@@ -709,16 +718,25 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       : persistedExecutionSteps ?? [];
   }, [executionSteps, persistedExecutionSteps]);
 
+  const liveBatches = useBatchProgressStore((s) => s.batches);
+
   // Build render segments: text and merged step groups
   const segments = useMemo(
-    () => buildRenderSegments(messages, activeExecSteps, workflowSteps),
-    [messages, activeExecSteps, workflowSteps]
+    () => buildRenderSegments(messages, activeExecSteps, workflowSteps, (message, toolCall) => {
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: message.id,
+        batchToolCallId: toolCall.id,
+      };
+      return liveBatches[makeBatchKey(identity)] !== undefined
+        || shouldRenderBatchProgressCard(toolCall, identity);
+    }),
+    [messages, activeExecSteps, workflowSteps, conversationId, liveBatches]
   );
   const batchSegments = useMemo(
     () => segments.filter((seg): seg is Extract<RenderSegment, { kind: 'batch' }> => seg.kind === 'batch'),
     [segments],
   );
-  const liveBatches = useBatchProgressStore((s) => s.batches);
   const batchRollup = useMemo(() => {
     return batchSegments.reduce<BatchRowsRollup>((rollup, segment) => {
       const identity: BatchIdentity = {
@@ -729,7 +747,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       const liveBatch = liveBatches[makeBatchKey(identity)];
       const rows = liveBatch
         ? rowsFromLiveBatch(liveBatch, Date.now())
-        : rowsFromPersistedSummary(identity, segment.toolCall, t) ?? rowsFromUnknown(segment.toolCall, t);
+        : rowsFromPersistedSummary(identity, segment.toolCall, t)
+          ?? rowsFromLegacyResult(segment.toolCall, t)
+          ?? (segment.toolCall.isExecuting ? rowsFromUnknown(segment.toolCall, t) : undefined);
+      if (!rows) return rollup;
       return addBatchRollup(rollup, rollupBatchRows(rows));
     }, emptyBatchRollup());
   }, [batchSegments, conversationId, liveBatches, t]);

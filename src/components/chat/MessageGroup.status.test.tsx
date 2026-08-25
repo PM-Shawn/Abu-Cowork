@@ -67,7 +67,7 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getByText('You stopped after 2s')).toBeInTheDocument();
   });
 
-  it('keeps a terminal batch card visible while its ephemeral progress entry exists', () => {
+  it('keeps a terminal batch card visible and falls back to its legacy result after live eviction', () => {
     const userMessage: Message = {
       id: 'user-batch',
       role: 'user',
@@ -113,12 +113,225 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getByText('✓ 1 sub-tasks completed')).toBeInTheDocument();
     store.clearBatch(identity);
     view.rerender(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
-    expect(screen.queryByText('✓ 1 sub-tasks completed')).toBeNull();
-    expect(screen.getByText('1 sub-tasks recorded')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Open inspect.*Unknown/ })).toBeInTheDocument();
+    expect(screen.getByText('✓ 1 sub-tasks completed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open inspect.*Succeeded/ })).toBeInTheDocument();
   });
 
-  it('renders two batches when separate assistant messages reuse the same provider tool-call id', () => {
+  it('keeps text-first output visible when process work has no closing answer', () => {
+    const userMessage: Message = {
+      id: 'user-text-first',
+      role: 'user',
+      content: 'inspect this',
+      timestamp: 1_000,
+      loopId: 'loop-text-first',
+      runState: 'completed',
+      runEndedAt: 3_000,
+    };
+    const introMessage: Message = {
+      id: 'assistant-text-first-intro',
+      role: 'assistant',
+      content: 'I will inspect the workspace first.',
+      timestamp: 1_500,
+      loopId: 'loop-text-first',
+    };
+    const batchMessage: Message = {
+      id: 'assistant-text-first-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 2_000,
+      loopId: 'loop-text-first',
+      toolCalls: [{
+        id: 'text-first-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect workspace' }] },
+        result: '1 sub-tasks total: 1 succeeded, 0 failed',
+      }],
+    };
+    const conversation: Conversation = {
+      id: 'conversation-text-first',
+      title: 'Text first',
+      messages: [userMessage, introMessage, batchMessage],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    const foldButton = screen.queryByRole('button', { name: /Worked for/ });
+    if (foldButton?.getAttribute('aria-expanded') === 'true') fireEvent.click(foldButton);
+    expect(screen.getByText('I will inspect the workspace first.')).toBeInTheDocument();
+  });
+
+  it('keeps streaming assistant text visible after manually collapsing preceding work', () => {
+    const userMessage: Message = {
+      id: 'user-streaming-text',
+      role: 'user',
+      content: 'stream progress',
+      timestamp: 1_000,
+      loopId: 'loop-streaming-text',
+      runState: 'running',
+    };
+    const batchMessage: Message = {
+      id: 'assistant-streaming-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_500,
+      loopId: 'loop-streaming-text',
+      toolCalls: [{
+        id: 'streaming-text-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect live state' }] },
+        isExecuting: true,
+      }],
+    };
+    const streamingMessage: Message = {
+      id: 'assistant-streaming-text',
+      role: 'assistant',
+      content: 'The first result is already available.',
+      timestamp: 2_000,
+      loopId: 'loop-streaming-text',
+      isStreaming: true,
+    };
+    const conversation: Conversation = {
+      id: 'conversation-streaming-text',
+      title: 'Streaming text',
+      messages: [userMessage, batchMessage, streamingMessage],
+      createdAt: 1_000,
+      updatedAt: 2_000,
+      status: 'running',
+    };
+    setConversationState(conversation, 'tool-calling');
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'streaming-text-batch',
+    };
+    useBatchProgressStore.getState().initBatch(identity, ['inspect live state']);
+    useBatchProgressStore.getState().setTaskRunning(identity, 0);
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    const foldButton = screen.getByRole('button', { name: /1 agents: 1 running/ });
+    fireEvent.click(foldButton);
+    expect(foldButton).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('The first result is already available.')).toBeInTheDocument();
+  });
+
+  it('keeps a mid-loop user message visible after collapsing preceding work', () => {
+    const userMessage: Message = {
+      id: 'user-mid-loop-fold',
+      role: 'user',
+      content: 'start the batch',
+      timestamp: 1_000,
+      loopId: 'loop-mid-user-fold',
+      runState: 'completed',
+      runEndedAt: 3_000,
+    };
+    const batchMessage: Message = {
+      id: 'assistant-mid-user-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_500,
+      loopId: 'loop-mid-user-fold',
+      toolCalls: [{
+        id: 'mid-user-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect before follow-up' }] },
+        result: '1 sub-tasks total: 1 succeeded, 0 failed',
+      }],
+    };
+    const midUserMessage: Message = {
+      id: 'user-mid-loop-follow-up',
+      role: 'user',
+      content: 'Also include the follow-up details.',
+      timestamp: 2_000,
+      loopId: 'loop-mid-user-fold',
+    };
+    const finalMessage: Message = {
+      id: 'assistant-mid-user-final',
+      role: 'assistant',
+      content: 'The batch and follow-up are complete.',
+      timestamp: 2_500,
+      loopId: 'loop-mid-user-fold',
+    };
+    const conversation: Conversation = {
+      id: 'conversation-mid-user-fold',
+      title: 'Mid-loop user fold',
+      messages: [userMessage, batchMessage, midUserMessage, finalMessage],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'mid-user-batch',
+    };
+    useBatchProgressStore.getState().initBatch(identity, ['inspect before follow-up']);
+    useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    const foldButton = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    if (foldButton.getAttribute('aria-expanded') === 'true') fireEvent.click(foldButton);
+    expect(foldButton).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Also include the follow-up details.')).toBeInTheDocument();
+    expect(screen.getByText('The batch and follow-up are complete.')).toBeInTheDocument();
+  });
+
+  it('infers a legacy result-only batch and auto-collapses without unknown rows', async () => {
+    const userMessage: Message = {
+      id: 'user-legacy-result-fold',
+      role: 'user',
+      content: 'run the legacy batch',
+      timestamp: 1_000,
+      loopId: 'loop-legacy-result-fold',
+      runState: 'completed',
+      runEndedAt: 3_000,
+    };
+    const batchMessage: Message = {
+      id: 'assistant-legacy-result-batch',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_500,
+      loopId: 'loop-legacy-result-fold',
+      toolCalls: [{
+        id: 'legacy-result-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect legacy state' }] },
+        result: '1 sub-tasks total: 1 succeeded, 0 failed',
+      }],
+    };
+    const finalMessage: Message = {
+      id: 'assistant-legacy-result-final',
+      role: 'assistant',
+      content: 'Legacy batch finished.',
+      timestamp: 2_500,
+      loopId: 'loop-legacy-result-fold',
+    };
+    const conversation: Conversation = {
+      id: 'conversation-legacy-result-fold',
+      title: 'Legacy result fold',
+      messages: [userMessage, batchMessage, finalMessage],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+    });
+    expect(screen.queryByText('Unknown')).toBeNull();
+    expect(screen.getByText('Legacy batch finished.')).toBeInTheDocument();
+  });
+
+  it('keeps the live reused-id batch card and renders an unrecognized legacy result generically', () => {
     const userMessage: Message = {
       id: 'user-reused-batch-id',
       role: 'user',
@@ -174,12 +387,65 @@ describe('MessageGroup stopped terminal', () => {
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
     expect(screen.getByText('✓ 1 sub-tasks completed')).toBeInTheDocument();
-    expect(screen.getAllByText('1 sub-tasks recorded')).toHaveLength(1);
     expect(screen.getByRole('button', { name: /Open first live batch.*Succeeded/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Open second batch.*Unknown/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Open second batch/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Called tool' })).toBeInTheDocument();
   });
 
-  it('folds terminal batch process details while keeping the final answer outside', async () => {
+  it('renders the raw result generically when persisted batch metadata is malformed', () => {
+    const userMessage: Message = {
+      id: 'user-malformed-batch-summary',
+      role: 'user',
+      content: 'replay malformed batch metadata',
+      timestamp: 1_000,
+      loopId: 'loop-malformed-batch-summary',
+      runState: 'completed',
+      runEndedAt: 3_000,
+    };
+    const assistantMessage: Message = {
+      id: 'assistant-malformed-batch-summary',
+      role: 'assistant',
+      content: '',
+      timestamp: 2_000,
+      loopId: 'loop-malformed-batch-summary',
+      toolCalls: [{
+        id: 'malformed-batch-summary',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect malformed state' }] },
+        result: 'unrecognized legacy batch output',
+        batchTerminalSummary: {
+          version: 1,
+          batch: {
+            conversationId: 'wrong-conversation',
+            assistantMessageId: 'wrong-message',
+            batchToolCallId: 'malformed-batch-summary',
+          },
+          taskCount: 1,
+          counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+        },
+      }],
+    };
+    const conversation: Conversation = {
+      id: 'conversation-malformed-batch-summary',
+      title: 'Malformed batch summary',
+      messages: [userMessage, assistantMessage],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+
+    render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
+
+    const genericTool = screen.getByRole('button', { name: 'Called tool' });
+    expect(screen.queryByRole('button', { name: /Open inspect malformed state/ })).toBeNull();
+    fireEvent.click(genericTool);
+    fireEvent.click(screen.getByRole('button', { name: 'Result' }));
+    expect(screen.getByText('unrecognized legacy batch output')).toBeInTheDocument();
+  });
+
+  it('keeps authored preamble text visible when process work follows it', () => {
     const userMessage: Message = {
       id: 'user-folded-batch',
       role: 'user',
@@ -237,19 +503,13 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Worked for 2s · 1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
-    });
-    expect(screen.queryByText('Preparing the batch.')).toBeNull();
-    expect(screen.getByText('Batch finished.')).toBeInTheDocument();
-    expect(screen.queryByText('✓ 1 sub-tasks completed')).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: /Worked for 2s · 1 agents: 1 succeeded/ }));
+    expect(screen.queryByRole('button', { name: /Worked for 2s · 1 agents: 1 succeeded/ })).toBeNull();
     expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
+    expect(screen.getByText('Batch finished.')).toBeInTheDocument();
     expect(screen.getAllByText('✓ 1 sub-tasks completed')).toHaveLength(1);
   });
 
-  it('keeps manual collapse stable across rerender while the batch is running', () => {
+  it('keeps process-only running work visible without offering a destructive fold', () => {
     const userMessage: Message = {
       id: 'user-running-fold',
       role: 'user',
@@ -289,15 +549,13 @@ describe('MessageGroup stopped terminal', () => {
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    const foldButton = screen.getByRole('button', { name: /1 agents: 1 running/ });
-    expect(foldButton).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(foldButton);
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByRole('button', { name: /Open inspect running/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
   });
 
   it('does not re-auto-collapse after the user manually expands a successful fold', async () => {

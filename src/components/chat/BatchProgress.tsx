@@ -14,6 +14,7 @@ import {
   isLiveRowStatus,
   rollupBatchRows,
   rowsFromLiveBatch,
+  rowsFromLegacyResult,
   rowsFromPersistedSummary,
   rowsFromUnknown,
   type BatchTaskRow,
@@ -83,9 +84,13 @@ export default function BatchProgress({
   }, [hasLiveTask]);
   const rows = useMemo(() => {
     if (batch) return rowsFromLiveBatch(batch, now);
-    return rowsFromPersistedSummary(identity, toolCall, t) ?? rowsFromUnknown(toolCall, t);
+    return rowsFromPersistedSummary(identity, toolCall, t)
+      ?? rowsFromLegacyResult(toolCall, t)
+      ?? (toolCall.isExecuting ? rowsFromUnknown(toolCall, t) : undefined);
   }, [batch, identity, toolCall, t, now]);
-  const isAnyRunning = batch !== undefined && rows.some((row) => isLiveRowStatus(row.status));
+  const isAnyRunning = batch !== undefined && (rows?.some((row) => isLiveRowStatus(row.status)) ?? false);
+
+  if (!rows) return null;
 
   return (
     <section className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">

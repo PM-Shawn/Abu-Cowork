@@ -191,11 +191,11 @@ describe('previewStore', () => {
         subagentTabId(a, 0),
         subagentTabId(b, 0),
       ]);
-      expect(batch(a).viewLeaseCount).toBe(1);
+      expect(batch(a).viewLeaseCount).toBe(0);
       expect(batch(b).viewLeaseCount).toBe(1);
     });
 
-    it('balances view leases across closeTab, closeOtherTabs, closeAllTabs and conversation-switch clear', () => {
+    it('holds a view lease only for the active subagent tab across tab lifecycle actions', () => {
       const a = identity('conv-close-a', 'batch');
       const b = identity('conv-close-b', 'batch');
       const c = identity('conv-close-c', 'batch');
@@ -207,7 +207,7 @@ describe('previewStore', () => {
       usePreviewStore.getState().openSubagent(c, 0, 'C');
 
       usePreviewStore.getState().closeTab(bTab);
-      expect(batch(a).viewLeaseCount).toBe(1);
+      expect(batch(a).viewLeaseCount).toBe(0);
       expect(batch(b).viewLeaseCount).toBe(0);
       expect(batch(c).viewLeaseCount).toBe(1);
 
@@ -223,6 +223,23 @@ describe('previewStore', () => {
       expect(batch(a).viewLeaseCount).toBe(0);
     });
 
+    it('closes only subagent tabs owned by a deleted conversation and releases its active lease', () => {
+      const deleted = identity('conv-deleted', 'shared');
+      const survivor = identity('conv-survivor', 'shared');
+      initBatch(deleted);
+      initBatch(survivor);
+      const deletedTab = usePreviewStore.getState().openSubagent(deleted, 0, 'Deleted');
+      const survivorTab = usePreviewStore.getState().openSubagent(survivor, 0, 'Survivor');
+      usePreviewStore.getState().activateTab(deletedTab);
+
+      usePreviewStore.getState().closeSubagentTabsForConversation(deleted.conversationId);
+
+      expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([survivorTab]);
+      expect(usePreviewStore.getState().activeTabId).toBe(survivorTab);
+      expect(batch(deleted).viewLeaseCount).toBe(0);
+      expect(batch(survivor).viewLeaseCount).toBe(1);
+    });
+
     it('updates active protection on subagent/non-subagent transitions without changing run state', () => {
       const idn = identity('conv-protect', 'batch');
       initBatch(idn);
@@ -232,12 +249,14 @@ describe('previewStore', () => {
 
       usePreviewStore.getState().openBrowser('https://example.com');
       expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBeUndefined();
+      expect(batch(idn).viewLeaseCount).toBe(0);
       expect(batch(idn).runLeaseCount).toBe(1);
       expect(batch(idn).tasks[0].status).toBe('running');
 
       const subagentId = subagentTabId(idn, 0);
       usePreviewStore.getState().activateTab(subagentId);
       expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBe(makeBatchKey(idn));
+      expect(batch(idn).viewLeaseCount).toBe(1);
     });
 
     it('does not treat reorder as a rich-access event', () => {

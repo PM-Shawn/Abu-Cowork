@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
   removeElectronDataRoot,
@@ -24,6 +25,16 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEST_API_KEY = 'abu-e2e-infra-hygiene-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-infra-hygiene-model';
 const PROVIDER_ID = 'abu-e2e-infra-hygiene-provider';
+const LOCAL_MOCK_PROVIDER_OPTIONS = {
+  apiKey: TEST_API_KEY,
+  modelId: TEST_MODEL_ID,
+  modelLabel: 'Abu E2E infra hygiene model',
+  permissionMode: 'standard',
+  providerId: PROVIDER_ID,
+  providerName: 'Abu E2E infra hygiene loopback provider',
+  supportsReasoning: null,
+  supportsTools: true,
+} as const;
 
 interface MockRequest {
   authorization: string | undefined;
@@ -226,48 +237,6 @@ async function waitForApp(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-async function configureLocalMockProvider(page: Page, baseUrl: string): Promise<void> {
-  await page.evaluate(({ baseUrl, testApiKey, testModelId, providerId }) => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const state = persisted.state;
-
-    state.providers = [{
-      id: providerId,
-      source: 'custom',
-      name: 'Abu E2E infra hygiene loopback provider',
-      enabled: true,
-      apiFormat: 'openai-compatible',
-      baseUrl,
-      apiKey: testApiKey,
-      models: [{
-        id: testModelId,
-        label: 'Abu E2E infra hygiene model',
-        isCustom: true,
-        declaredCapabilities: { supportsTools: true },
-      }],
-      defaultModelId: testModelId,
-      status: 'verified',
-      sortOrder: 0,
-      userAdded: true,
-      declaredCapabilities: { supportsTools: true },
-    }];
-    state.activeModel = { providerId, modelId: testModelId };
-    state.recentModels = [];
-    state.favoriteModels = [];
-    state.permissionMode = 'standard';
-    state.guideShown = true;
-    state.guideOpen = false;
-    state.hasAcknowledgedDisclaimer = true;
-    state.hasRunSensitiveAudit_v015 = true;
-
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
-  }, { baseUrl, testApiKey: TEST_API_KEY, testModelId: TEST_MODEL_ID, providerId: PROVIDER_ID });
-  await page.reload();
-  await waitForApp(page);
-}
-
 async function seedAutomation(page: Page, seed: {
   activeTab: 'schedule' | 'trigger';
   schedules?: Record<string, unknown>;
@@ -439,7 +408,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
     await seedAutomation(page, {
       activeTab: 'schedule',
       schedules: {
@@ -533,7 +502,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
     await seedAutomation(page, {
       activeTab: 'trigger',
       triggers: {
@@ -629,7 +598,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
     await seedAutomation(page, {
       activeTab: 'trigger',
       triggers: {

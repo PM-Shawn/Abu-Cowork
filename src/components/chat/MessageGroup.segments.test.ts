@@ -655,8 +655,8 @@ describe('computeWorkProcessFold', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const seg = (kind: string): any => (kind === 'text' ? { kind, text: 'x', message: { id: 't' }, isLastTurn: true } : { kind, executionSteps: [], legacySteps: [], isLastGroup: false, stepsMsgs: [] });
 
-  it('allows running work to be manually folded without folding streamed text', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(1);
+  it('allows running work to be manually folded (streamed text stays visible via the collapsed-render filter)', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(2);
   });
   it('folds everything before the final text answer', () => {
     // [thinking, plan, tool, text] → foldEnd = 3
@@ -666,20 +666,23 @@ describe('computeWorkProcessFold', () => {
   it('returns null when the only/first segment is the answer (nothing to fold)', () => {
     expect(computeWorkProcessFold([seg('text')], true)).toBeNull();
   });
-  it('does not fold process-only output with no final answer', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBeNull();
+  it('folds all process segments when there is no final text answer', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('steps')], true)).toBe(2);
   });
-  it('clamps the fold before intermediate assistant text', () => {
-    // [thinking, text(mid), tool, text(final)] → only the leading thinking folds.
-    expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(1);
+  it('intermediate text folds in; only the last text stays outside', () => {
+    // [thinking, text(mid), tool, text(final)] → foldEnd = 3; the mid text
+    // inside the fold survives collapse via the collapsed-render filter.
+    expect(computeWorkProcessFold([seg('steps'), seg('text'), seg('steps'), seg('text')], true)).toBe(3);
   });
-  it('does not fold text-first output when process work has no closing answer', () => {
+  it('folds text-first output whose process work has no closing answer', () => {
     const batch = { kind: 'batch', toolCall: { id: 'b', name: 'run_agent_batch', input: {} }, message: { id: 'm' } } as Extract<Segment, { kind: 'batch' }>;
-    expect(computeWorkProcessFold([seg('text'), batch], true)).toBeNull();
+    // The leading text is inside the fold range but the collapsed-render
+    // filter keeps it visible; only the batch card hides on collapse.
+    expect(computeWorkProcessFold([seg('text'), batch], true)).toBe(2);
   });
-  it('clamps the fold before a mid-loop user message', () => {
+  it('keeps a mid-loop user message inside the fold range (visibility owned by the render filter)', () => {
     const user = { kind: 'user', message: { id: 'u' } } as Extract<Segment, { kind: 'user' }>;
-    expect(computeWorkProcessFold([seg('steps'), user, seg('steps'), seg('text')], true)).toBe(1);
+    expect(computeWorkProcessFold([seg('steps'), user, seg('steps'), seg('text')], true)).toBe(3);
   });
 });
 

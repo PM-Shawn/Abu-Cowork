@@ -501,6 +501,30 @@ describe('outputSnapshots', () => {
       });
     });
 
+    it('materializes base64 under a stable manifest identity when the read_file source path is relative', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_relative', {
+        mediaType: 'image/png',
+        base64: 'AQID',
+      }, 'assets/chart.png');
+
+      expect(memFs.copyFile).not.toHaveBeenCalled();
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/files\/.+\/result\.png$/),
+        expect.any(Uint8Array),
+      );
+
+      const manifest = await mod.__testing.loadManifest(CONV_ID);
+      const entry = manifest.entries['tool-result://toolu_relative'];
+      expect(entry).toMatchObject({
+        source: 'tool-output',
+        refKind: 'result-image',
+        refId: 'toolu_relative',
+        basename: 'result.png',
+        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
+        size: 3,
+      });
+    });
+
     it('records an oversized base64 result without writing its bytes', async () => {
       const oversized = mod.__testing.MAX_FILE_BYTES + 1;
       base64ToUint8ArrayMock.mockReturnValueOnce({ byteLength: oversized } as Uint8Array);

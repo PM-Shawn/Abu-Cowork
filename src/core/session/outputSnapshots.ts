@@ -522,11 +522,10 @@ export async function snapshotResultImage(
       const normalized = normalizePath(expanded);
       if (!isAbsolutePath(normalized)) {
         logger.warn('[snapshot] rejected non-absolute result image path', { sourcePath, normalized });
+      } else {
+        await snapshotFileNormalized(convId, normalized, meta, originalPath, basename);
         return;
       }
-
-      await snapshotFileNormalized(convId, normalized, meta, originalPath, basename);
-      return;
     }
 
     let decodedSize = 0;

@@ -235,6 +235,8 @@ describe('subagentRunner', () => {
         'toolInvoker',
         'capsPort',
         'workspaceReader',
+        'skillCommandApprovalFactory',
+        'parentLoopId',
       ]);
     });
 

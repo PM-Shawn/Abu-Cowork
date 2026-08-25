@@ -231,6 +231,8 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   'toolInvoker',
   'capsPort',
   'workspaceReader',
+  'skillCommandApprovalFactory',
+  'parentLoopId',
 ] as const satisfies readonly (keyof SubagentLoopOptions)[];
 
 export type SubagentLoopOptionsWireExhaustive = AssertNever<

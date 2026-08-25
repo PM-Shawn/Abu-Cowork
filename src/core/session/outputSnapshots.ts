@@ -30,6 +30,7 @@ import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
+import { RESULT_IMAGE_EXTENSIONS } from '@/utils/imageMediaTypes';
 import type { ToolCall } from '@/types';
 import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
@@ -45,19 +46,6 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 
 /** Manifest schema version */
 const MANIFEST_VERSION = 1 as const;
-
-/** Safe on-disk extension for rich tool-result image MIME types. */
-const RESULT_IMAGE_EXTENSIONS: Readonly<Record<string, string>> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/bmp': 'bmp',
-  'image/svg+xml': 'svg',
-  'image/x-icon': 'ico',
-  'image/vnd.microsoft.icon': 'ico',
-};
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types

@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { expect } from '@playwright/test';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 
 /**
@@ -21,6 +22,8 @@ export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
+const READY_TIMEOUT = 45_000;
+const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
 export interface ElectronDataRoot {
   rootDir: string;
@@ -88,6 +91,121 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
     timeout: 60_000,
   });
   return { app, ...dataRoot };
+}
+
+async function reloadAndWaitForApp(page: Page): Promise<void> {
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+}
+
+/** Persist the common first-run acknowledgements used by Electron E2E journeys. */
+export async function dismissFirstRunOverlays(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    Object.assign(persisted.state, {
+      guideShown: true,
+      guideOpen: false,
+      hasAcknowledgedDisclaimer: true,
+      hasRunSensitiveAudit_v015: true,
+    });
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  });
+  await reloadAndWaitForApp(page);
+}
+
+export interface LocalMockProviderOptions {
+  apiKey?: string;
+  contextWindowSize?: number;
+  maxOutputTokens?: number;
+  modelId?: string;
+  modelLabel?: string;
+  permissionMode?: 'standard' | null;
+  providerId?: string;
+  providerName?: string;
+  supportsReasoning?: boolean | null;
+  supportsTools?: boolean;
+}
+
+/** Configure an isolated loopback provider while preserving each spec's metadata. */
+export async function configureLocalMockProvider(
+  page: Page,
+  baseUrl: string,
+  options: LocalMockProviderOptions = {},
+): Promise<void> {
+  const {
+    apiKey = 'abu-e2e-test-key-not-a-real-secret',
+    contextWindowSize,
+    maxOutputTokens,
+    modelId = 'abu-e2e-local-model',
+    modelLabel = 'Abu E2E deterministic model',
+    permissionMode = null,
+    providerId = 'abu-e2e-local-provider',
+    providerName = 'Abu E2E loopback mock',
+    supportsReasoning = false,
+    supportsTools = false,
+  } = options;
+
+  await page.evaluate((configuration) => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    const state = persisted.state;
+    const declaredCapabilities = configuration.supportsReasoning === null
+      ? { supportsTools: configuration.supportsTools }
+      : {
+          supportsReasoning: configuration.supportsReasoning,
+          supportsTools: configuration.supportsTools,
+        };
+
+    state.providers = [{
+      id: configuration.providerId,
+      source: 'custom',
+      name: configuration.providerName,
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: configuration.baseUrl,
+      apiKey: configuration.apiKey,
+      models: [{
+        id: configuration.modelId,
+        label: configuration.modelLabel,
+        isCustom: true,
+        declaredCapabilities,
+      }],
+      defaultModelId: configuration.modelId,
+      status: 'verified',
+      sortOrder: 0,
+      userAdded: true,
+      declaredCapabilities,
+    }];
+    state.activeModel = { providerId: configuration.providerId, modelId: configuration.modelId };
+    state.recentModels = [];
+    state.favoriteModels = [];
+    state.guideShown = true;
+    state.guideOpen = false;
+    state.hasAcknowledgedDisclaimer = true;
+    state.hasRunSensitiveAudit_v015 = true;
+    if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
+    if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
+    if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
+
+    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
+  }, {
+    apiKey,
+    baseUrl,
+    contextWindowSize,
+    maxOutputTokens,
+    modelId,
+    modelLabel,
+    permissionMode,
+    providerId,
+    providerName,
+    supportsReasoning,
+    supportsTools,
+  });
+  await reloadAndWaitForApp(page);
 }
 
 /**

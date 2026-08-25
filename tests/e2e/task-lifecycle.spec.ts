@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  configureLocalMockProvider,
   crashAbuSidecarForE2E,
   createElectronDataRoot,
   launchAbuElectron,
@@ -412,64 +413,6 @@ function diskContainsInterruptedUserMessage(rootDir: string, expectedContent: st
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
-async function configureLocalMockProvider(
-  page: Page,
-  baseUrl: string,
-  options: {
-    contextWindowSize?: number;
-    maxOutputTokens?: number;
-    supportsTools?: boolean;
-  } = {},
-): Promise<void> {
-  await page.evaluate(({ baseUrl, contextWindowSize, maxOutputTokens, supportsTools, testApiKey, testModelId }) => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const state = persisted.state;
-
-    state.providers = [{
-      id: 'abu-e2e-local-provider',
-      source: 'custom',
-      name: 'Abu E2E loopback mock',
-      enabled: true,
-      apiFormat: 'openai-compatible',
-      baseUrl,
-      apiKey: testApiKey,
-      models: [{
-        id: testModelId,
-        label: 'Abu E2E deterministic model',
-        isCustom: true,
-        declaredCapabilities: { supportsReasoning: false, supportsTools },
-      }],
-      defaultModelId: testModelId,
-      status: 'verified',
-      sortOrder: 0,
-      userAdded: true,
-      declaredCapabilities: { supportsReasoning: false, supportsTools },
-    }];
-    state.activeModel = { providerId: 'abu-e2e-local-provider', modelId: testModelId };
-    state.recentModels = [];
-    state.favoriteModels = [];
-    state.guideShown = true;
-    state.guideOpen = false;
-    state.hasAcknowledgedDisclaimer = true;
-    state.hasRunSensitiveAudit_v015 = true;
-    if (contextWindowSize !== undefined) state.contextWindowSize = contextWindowSize;
-    if (maxOutputTokens !== undefined) state.maxOutputTokens = maxOutputTokens;
-
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
-  }, {
-    baseUrl,
-    contextWindowSize: options.contextWindowSize,
-    maxOutputTokens: options.maxOutputTokens,
-    supportsTools: options.supportsTools ?? false,
-    testApiKey: TEST_API_KEY,
-    testModelId: TEST_MODEL_ID,
-  });
-  await page.reload();
-  await waitForApp(page);
 }
 
 let app: ElectronApplication | undefined;

@@ -22,6 +22,7 @@ import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
 import { snapshotBeforeAiEdit } from '@/utils/aiEditSnapshots';
+import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 
 /**
@@ -58,12 +59,6 @@ const PDFPLUMBER_SCRIPT = `import sys, pdfplumber
 pdf = pdfplumber.open(sys.argv[1])
 print(chr(10).join((p.extract_text() or '') for p in pdf.pages))
 pdf.close()`;
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
 
 export const readFileTool: ToolDefinition = {
   name: TOOL_NAMES.READ_FILE,
@@ -167,7 +162,7 @@ export const readFileTool: ToolDefinition = {
         // Still read a small portion to count total lines via a fast heuristic
         const fullContent = await readTextFile(filePath);
         const totalLines = fullContent.split('\n').length;
-        return `File is too large to read at once (${formatSize(fileSize)}, ${totalLines} lines). ` +
+        return `File is too large to read at once (${formatFileSize(fileSize)}, ${totalLines} lines). ` +
           `Use offset and limit parameters to read specific portions, or use search_files to find relevant content.\n` +
           `Example: read_file(path, offset=0, limit=${DEFAULT_LINE_LIMIT}) to read the first ${DEFAULT_LINE_LIMIT} lines.`;
       }
@@ -182,7 +177,7 @@ export const readFileTool: ToolDefinition = {
         const lineCount = limit ?? DEFAULT_LINE_LIMIT;
         const sliced = allLines.slice(startLine, startLine + lineCount);
         const numLines = sliced.length;
-        const header = `[File: ${filePath} | ${formatSize(fileSize)} | Lines ${startLine}-${startLine + numLines - 1} of ${totalLines} total]`;
+        const header = `[File: ${filePath} | ${formatFileSize(fileSize)} | Lines ${startLine}-${startLine + numLines - 1} of ${totalLines} total]`;
         return `${header}\n${sliced.join('\n')}`;
       }
 

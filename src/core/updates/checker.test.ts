@@ -46,6 +46,12 @@ vi.mock('@/core/notice/bus', () => ({ publish: vi.fn() }));
 import { checkForUpdate, downloadAndInstallUpdate, refreshUpdateNotes } from './checker';
 import { publish } from '@/core/notice/bus';
 
+function requireUpdateInfo(result: Awaited<ReturnType<typeof checkForUpdate>>) {
+  expect(result.kind).toBe('update');
+  if (result.kind !== 'update') throw new Error(`Expected update result, received ${result.kind}`);
+  return result.info;
+}
+
 // The updater's own body — last-resort fallback (empty in real Electron builds).
 const EN_BODY = 'Updater body fallback for v0.32.0 — shown only if the feed is unusable.';
 // The release-metadata feed's per-locale notes (electron/latest-release.json).
@@ -97,7 +103,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('zh-CN user gets the Chinese notes from the release-metadata feed', async () => {
     mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES, 'en-US': EN_META } });
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(info?.releaseNotes).toBe(ZH_NOTES);
@@ -108,7 +114,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
     mockLocale = 'en-US';
     mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES, 'en-US': EN_META } });
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     // The Electron feed carries no notes, so English MUST come from the metadata
     // feed now — a bare updater body would be empty for real builds.
@@ -119,7 +125,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('falls back to the updater body when the metadata fetch fails', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(EN_BODY);
   });
@@ -127,7 +133,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('falls back to the feed English notes when the user locale is missing', async () => {
     mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: { 'en-US': EN_META } }); // no zh-CN, zh-CN user
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(EN_META);
   });
@@ -135,7 +141,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('falls back to the updater body when the feed has no usable notes', async () => {
     mockFeed({ schema_version: 1, version: 'v0.32.0', notes_i18n: {} });
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(EN_BODY);
   });
@@ -146,7 +152,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
     // a zh-CN user offered vNEW must not read vOLD's notes → fall back.
     mockFeed({ schema_version: 1, version: 'v0.30.0', notes_i18n: { 'zh-CN': ZH_NOTES } });
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(EN_BODY);
   });
@@ -154,7 +160,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('ignores feed notes on an unexpected schema_version', async () => {
     mockFeed({ schema_version: 2, version: 'v0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES } });
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(EN_BODY);
   });
@@ -162,7 +168,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('still uses feed notes when it omits a version (backward compat)', async () => {
     mockFeed({ schema_version: 1, notes_i18n: { 'zh-CN': ZH_NOTES } }); // no version field
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(ZH_NOTES);
   });
@@ -170,7 +176,7 @@ describe('checkForUpdate — locale-aware release notes', () => {
   it('accepts feed notes when the version matches without the v prefix', async () => {
     mockFeed({ schema_version: 1, version: '0.32.0', notes_i18n: { 'zh-CN': ZH_NOTES } }); // no leading v
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.releaseNotes).toBe(ZH_NOTES);
   });
@@ -228,7 +234,7 @@ describe('checkForUpdate — silent option (background/observer callers)', () =>
   });
 
   it('silent: still records updateInfo so observer callers can read the result', async () => {
-    const info = await checkForUpdate(true, { silent: true });
+    const info = requireUpdateInfo(await checkForUpdate(true, { silent: true }));
     expect(info?.version).toBe('0.32.0');
     expect(useSettingsStore.getState().updateInfo?.version).toBe('0.32.0');
   });
@@ -264,12 +270,12 @@ describe('checkForUpdate — disabled marker (updater never armed in this build)
     vi.unstubAllGlobals();
   });
 
-  it('marker → null result, updaterUnsupported=true, and NOT "up to date"', async () => {
+  it('marker → disabled result, updaterUnsupported=true, and NOT "up to date"', async () => {
     mockCheck.mockResolvedValue({ status: 'disabled', reason: 'unofficial-build' });
 
-    const info = await checkForUpdate(true);
+    const result = await checkForUpdate(true);
 
-    expect(info).toBeNull();
+    expect(result).toEqual({ kind: 'disabled' });
     const state = useSettingsStore.getState();
     expect(state.updaterUnsupported).toBe(true);
     expect(state.updateInfo).toBeNull();
@@ -283,9 +289,9 @@ describe('checkForUpdate — disabled marker (updater never armed in this build)
   it('a real feed answer of null marks the updater supported and up to date', async () => {
     mockCheck.mockResolvedValue(null);
 
-    const info = await checkForUpdate(true);
+    const result = await checkForUpdate(true);
 
-    expect(info).toBeNull();
+    expect(result).toEqual({ kind: 'up-to-date' });
     const state = useSettingsStore.getState();
     expect(state.updaterUnsupported).toBe(false);
     expect(state.lastUpdateCheck).toBeGreaterThan(0);
@@ -294,7 +300,7 @@ describe('checkForUpdate — disabled marker (updater never armed in this build)
   it('an offered update also marks the updater supported', async () => {
     mockCheck.mockResolvedValue(fakeUpdate());
 
-    const info = await checkForUpdate(true);
+    const info = requireUpdateInfo(await checkForUpdate(true));
 
     expect(info?.version).toBe('0.32.0');
     expect(useSettingsStore.getState().updaterUnsupported).toBe(false);
@@ -303,13 +309,34 @@ describe('checkForUpdate — disabled marker (updater never armed in this build)
   it('a thrown check leaves the unsupported flag unknown (not false)', async () => {
     mockCheck.mockRejectedValue(new Error('feed unreachable'));
 
-    const info = await checkForUpdate(true);
+    const result = await checkForUpdate(true);
 
-    expect(info).toBeNull();
-    // Offline ≠ unsupported: the flag must stay null so the UI keeps the
-    // ordinary "check failed" presentation instead of the unsupported caption.
+    expect(result).toEqual({ kind: 'error', updaterUnsupported: null });
+    // Offline ≠ unsupported: the flag stays unknown and is carried in the
+    // result so callers can preserve their existing presentation without a
+    // second store read.
     expect(useSettingsStore.getState().updaterUnsupported).toBeNull();
     expect(useSettingsStore.getState().lastUpdateCheck).toBe(0);
+  });
+});
+
+describe('checkForUpdate — throttled result', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-25T00:00:00Z'));
+    mockCheck.mockReset();
+    useSettingsStore.setState({ lastUpdateCheck: Date.parse('2026-08-24T23:00:00Z') });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns throttled without invoking the updater inside the check interval', async () => {
+    const result = await checkForUpdate();
+
+    expect(result).toEqual({ kind: 'throttled' });
+    expect(mockCheck).not.toHaveBeenCalled();
   });
 });
 

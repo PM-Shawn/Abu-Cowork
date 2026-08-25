@@ -77,13 +77,21 @@ export default function AboutSection() {
     setCheckResult('idle');
     try {
       const result = await checkForUpdate(true);
-      // "just-checked" means a real feed comparison happened. The disabled
-      // marker also resolves null, so guard here at the assignment — not only
-      // in render order — reading the store directly (empty-deps callback, the
-      // hook value would be a stale closure).
-      if (!result && !useSettingsStore.getState().updaterUnsupported) {
-        setCheckResult('just-checked');
-        setTimeout(() => setCheckResult('idle'), 3000);
+      switch (result.kind) {
+        case 'up-to-date':
+          setCheckResult('just-checked');
+          setTimeout(() => setCheckResult('idle'), 3000);
+          break;
+        case 'error':
+          if (!result.updaterUnsupported) {
+            setCheckResult('just-checked');
+            setTimeout(() => setCheckResult('idle'), 3000);
+          }
+          break;
+        case 'update':
+        case 'disabled':
+        case 'throttled':
+          break;
       }
     } catch {
       setCheckResult('error');

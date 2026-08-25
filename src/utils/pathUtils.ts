@@ -4,6 +4,10 @@
  * On macOS these are essentially no-ops.
  */
 
+import { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
+
+export { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
+
 /**
  * Normalize backslashes to forward slashes.
  * macOS paths never contain backslashes, so this is a no-op on macOS.
@@ -78,13 +82,6 @@ const WIN_DRIVE_RE = /^[A-Za-z]:[/\\]/;
 export function isLocalFilePath(s: string): boolean {
   return s.startsWith('/') || WIN_DRIVE_RE.test(s);
 }
-
-/** MIME types for common image extensions */
-export const IMAGE_MIME_MAP: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
-  bmp: 'image/bmp', ico: 'image/x-icon',
-};
 
 /**
  * Load a local image file as a blob URL via Tauri readFile.

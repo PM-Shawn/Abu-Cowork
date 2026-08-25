@@ -17,6 +17,7 @@ import { writeFile } from '@tauri-apps/plugin-fs';
 import { readFile } from '../../tools/fsBridge';
 import { authorizeWorkspace } from '../../tools/pathSafety';
 import { getBaseName } from '../../../utils/pathUtils';
+import { uint8ArrayToBase64 } from '@/utils/base64';
 import { homeDir } from '@tauri-apps/api/path';
 import { isWindows } from '../../../utils/platform';
 import type { ImageAttachment } from '../../../types';
@@ -399,16 +400,6 @@ async function downloadAndDecryptMedia(
   return { path, bytes: decrypted };
 }
 
-// Encode raw bytes to a base64 string (no data: prefix) for ImageAttachment.data.
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000; // avoid call-stack limits on large inputs
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
 // Map a WeChat image file extension to an ImageAttachment media type.
 function imageMediaTypeFor(ext: string): ImageAttachment['mediaType'] {
   switch (ext.toLowerCase()) {
@@ -664,7 +655,7 @@ export class WeChatInboundAdapter implements InboundAdapter {
               );
               images.push({
                 id: `wechat-img-${msg.message_id}-ref-${images.length}`,
-                data: bytesToBase64(bytes),
+                data: uint8ArrayToBase64(bytes),
                 mediaType: imageMediaTypeFor('jpg'),
               });
               wechatLog.warn('inbound quoted image decoded ok', { bytes: bytes.length });
@@ -708,7 +699,7 @@ export class WeChatInboundAdapter implements InboundAdapter {
             );
             images.push({
               id: `wechat-img-${msg.message_id}-${images.length}`,
-              data: bytesToBase64(bytes),
+              data: uint8ArrayToBase64(bytes),
               mediaType: imageMediaTypeFor('jpg'),
             });
             wechatLog.debug('inbound image decoded ok', { bytes: images[images.length - 1]?.data.length ?? 0 });

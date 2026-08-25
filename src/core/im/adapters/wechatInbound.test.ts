@@ -12,6 +12,7 @@ import { WeChatInboundAdapter } from './wechat';
 import type { WeChatCredentials } from './wechat';
 import type { InboundMessage } from './types';
 import { checkReadPath, getAuthorizedDirs } from '../../tools/pathSafety';
+import { clearLogs, getRecentLogs } from '../../logging/logger';
 
 // Build a CDN payload the adapter can decrypt: AES-128-ECB + PKCS7 over known bytes.
 const KEY = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
@@ -91,6 +92,7 @@ describe('WeChatInboundAdapter inbound image', () => {
     getUpdatesCalls = 0;
     fakeFetch.mockClear();
     localStorage.clear();
+    clearLogs();
   });
 
   /** Collect the first `n` non-system inbound messages, in arrival order. */
@@ -121,7 +123,98 @@ describe('WeChatInboundAdapter inbound image', () => {
     // No "[图片]" placeholder on success — the image block is the content, and a
     // literal marker beside it reads to the model as a failed attachment.
     expect(msg.message.content).toBe('');
+
+    const warnings = getRecentLogs({ module: 'wechat-im', level: 'warn' });
+    expect(warnings.map((entry) => entry.message)).not.toContain('inbound image_item shape');
+    expect(warnings.map((entry) => entry.message)).not.toContain('inbound image decoded ok');
+    expect(getRecentLogs({ module: 'wechat-im', level: 'debug' }).map((entry) => entry.message))
+      .toContain('inbound image decoded ok');
   }, 10000);
+
+  it('retains an error log when an inbound image cannot be loaded', async () => {
+    getUpdatesCalls = 99;
+    fakeFetch.mockImplementationOnce(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ret: 0,
+        msgs: [{
+          message_id: 424244,
+          from_user_id: 'user@im.wechat',
+          message_type: 1,
+          context_token: 'ctx',
+          item_list: [{ type: 2, image_item: {} }],
+        }],
+      }),
+    } as unknown as Response));
+
+    const adapter = new WeChatInboundAdapter();
+    const received = collect(adapter, 1);
+    await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
+    const [msg] = await received;
+    await adapter.disconnect();
+
+    expect(msg.message.content).toBe('[图片（加载失败）]');
+    expect(getRecentLogs({ module: 'wechat-im', level: 'error' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'inbound image download failed' }),
+    ]));
+  });
+
+  it('isolates a callback failure so later messages in the same batch are still dispatched', async () => {
+    vi.useFakeTimers();
+    const adapter = new WeChatInboundAdapter();
+
+    try {
+      getUpdatesCalls = 99; // skip the default image batch; serve the three-message regression batch
+      fakeFetch.mockImplementationOnce(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          ret: 0,
+          get_updates_buf: 'cursor-after-batch',
+          msgs: [9001, 9002, 9003].map((messageId) => ({
+            message_id: messageId,
+            from_user_id: 'user@im.wechat',
+            message_type: 1,
+            context_token: 'ctx',
+            item_list: [{ type: 1, text_item: { text: `message-${messageId}` } }],
+          })),
+        }),
+      } as unknown as Response));
+
+      const attempted: number[] = [];
+      let resolveFirst!: () => void;
+      const firstAttempted = new Promise<void>((resolve) => { resolveFirst = resolve; });
+      adapter.onMessage((message) => {
+        const messageId = (message.raw as { message_id: number }).message_id;
+        attempted.push(messageId);
+        if (messageId === 9001) {
+          resolveFirst();
+          throw new Error('intentional first-message callback failure');
+        }
+      });
+
+      await adapter.connect({ appId: 'ch1', appSecret: JSON.stringify(CREDS) });
+      await firstAttempted;
+      // Each awaited handleMessage continuation consumes one microtask. Flush a
+      // bounded number of turns so this checks the current batch without using
+      // wall-clock sleeps or advancing the outer polling backoff.
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      await adapter.disconnect();
+
+      expect(attempted).toEqual([9001, 9002, 9003]);
+      expect(getRecentLogs({ module: 'wechat-im', level: 'error' })).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: 'inbound message processing failed',
+          data: expect.objectContaining({ message_id: 9001 }),
+        }),
+      ]));
+    } finally {
+      await adapter.disconnect();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 
   it('grants read on an inbound file so the agent can actually open it', async () => {
     // Regression: files land in the system temp dir, which no IM channel has

@@ -503,9 +503,17 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.queryByRole('button', { name: /Worked for 2s · 1 agents: 1 succeeded/ })).toBeNull();
+    // The whole work process (intro + batch) folds behind the header, and the
+    // successful batch auto-collapses — but authored text must survive the
+    // collapsed state: only the batch card itself hides.
+    const foldHeader = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    expect(foldHeader).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
     expect(screen.getByText('Batch finished.')).toBeInTheDocument();
+    expect(screen.queryByText('✓ 1 sub-tasks completed')).toBeNull();
+
+    fireEvent.click(foldHeader);
+    expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
     expect(screen.getAllByText('✓ 1 sub-tasks completed')).toHaveLength(1);
   });
 
@@ -549,12 +557,14 @@ describe('MessageGroup stopped terminal', () => {
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    // Running work offers a manual fold but never auto-collapses: the live
+    // batch card must stay visible by default, across remounts.
+    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
   });
 

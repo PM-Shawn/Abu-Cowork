@@ -107,6 +107,16 @@ describe('i18n', () => {
         free: 'Free',
       });
     });
+
+    it('provides scoped no-workspace command guidance in both locales', () => {
+      setLanguage('zh-CN');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('完全自主');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('工作区路径');
+
+      setLanguage('en-US');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('Full Autonomy');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('workspace path');
+    });
   });
 
   // ── getLocale ──

@@ -203,6 +203,20 @@ describe('readOnlyDetector', () => {
       expect(isReadOnlyCommand('Get-Process | Format-Table -AutoSize')).toBe(true);
     });
 
+    it.each([
+      'Set-Content -Path file.txt -Value x',
+      'Add-Content -Path file.txt -Value x',
+      'Clear-Content -Path file.txt',
+      'New-Item -Path file.txt -ItemType File',
+      'Remove-Item -Path file.txt',
+      'Copy-Item a.txt b.txt',
+      'Move-Item a.txt b.txt',
+      'Out-File -FilePath file.txt',
+    ])('[Windows] "%s" → NOT read-only', (command) => {
+      cleanup = setPlatformForTest('windows');
+      expect(isReadOnlyCommand(command)).toBe(false);
+    });
+
     // Windows commands that should NOT be read-only
     it('[Windows] Windows read-only cmds are rejected on macOS', () => {
       cleanup = setPlatformForTest('macos');

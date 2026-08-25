@@ -1794,6 +1794,43 @@ describe('chatStore', () => {
         status: 'streaming',
       });
     });
+
+    it('drops agent state for conversations the LRU cache evicts, keeping running ones', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) ids.push(useChatStore.getState().createConversation());
+
+      // Give every conversation a live agent state, and mark one eviction
+      // candidate as still running so the "don't unload a running
+      // conversation" guard is exercised alongside the cleanup.
+      const runningId = ids[0];
+      useChatStore.setState((state) => {
+        const running = state.conversations[runningId];
+        if (running) running.status = 'running';
+        state.agentStates = new Map(
+          ids.map((id) => [id, {
+            status: 'tool-calling' as const,
+            currentTool: 'read_file',
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }]),
+        );
+      });
+
+      useChatStore.getState().unloadOldConversations();
+
+      const { conversations, agentStates } = useChatStore.getState();
+      const evicted = ids.filter((id) => !conversations[id]);
+      expect(evicted.length).toBeGreaterThan(0);
+      expect(conversations[runningId]).toBeDefined();
+      // Evicted rows must not keep a live agent state — no writer can ever
+      // clear it again, so it would leak and resurrect a stale status strip.
+      for (const id of evicted) expect(agentStates.has(id)).toBe(false);
+      // Still-loaded rows (including the protected running one) keep theirs.
+      for (const id of ids.filter((id) => conversations[id])) {
+        expect(agentStates.get(id)).toMatchObject({ status: 'tool-calling' });
+      }
+    });
   });
 
   // ── export/import ──

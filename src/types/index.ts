@@ -442,10 +442,23 @@ export interface RetryInfo {
 
 // --- Tool Results ---
 
+export interface ToolResultOutputRef {
+  /** Path relative to conversations/{convId}/outputs/. */
+  relPath: string;
+  /** Display filename from the manifest, used when the file cannot be loaded. */
+  basename?: string;
+  /** Snapshot size in bytes, used for fixed-size downgrade UI and send placeholder. */
+  sizeBytes?: number;
+}
+
 // Rich content blocks for tool results (images, text)
 export type ToolResultContent =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+  | {
+    type: 'image';
+    source: { type: 'base64'; media_type: string; data: string };
+    outputRef?: ToolResultOutputRef;
+  };
 
 // Tool execute return type: simple string or rich content array
 export type ToolResult = string | ToolResultContent[];

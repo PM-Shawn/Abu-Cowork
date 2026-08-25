@@ -674,7 +674,15 @@ export async function checkToolApproval(
       approvedExecutionPath = pathCheck.resolvedPath;
 
       if (name === TOOL_NAMES.WRITE_FILE) {
-        largeWritePathAfterApproval = approvedExecutionPath;
+        // The overwrite-safety read-precheck below calls checkReadPath, which
+        // is designed to receive the ORIGINAL (lexical) path and do its own
+        // dual lexical+canonical resolution internally. Passing the already-
+        // canonicalized resolvedPath (e.g. macOS $TMPDIR /var/folders/... →
+        // /private/var/folders/...) breaks its lexical implicit-root match, so
+        // a temp-dir write — allowed by checkWritePath's implicit-root match —
+        // would dead-end at a read grant that can never be satisfied. Keep the
+        // canonical form only for actual execution (approvedExecutionPath).
+        largeWritePathAfterApproval = pathInfo.path;
       }
     }
   }

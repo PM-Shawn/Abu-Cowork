@@ -83,13 +83,21 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     setCheckedResult('idle');
     try {
       const result = await checkForUpdate(true);
-      // 'up-to-date' means a real feed comparison happened. The disabled
-      // marker also resolves null, so guard at the assignment — not only via
-      // updateRow's branch order — reading the store directly (empty-deps
-      // callback, the hook value would be a stale closure).
-      if (!result && !useSettingsStore.getState().updaterUnsupported) {
-        setCheckedResult('up-to-date');
-        setTimeout(() => setCheckedResult('idle'), 3000);
+      switch (result.kind) {
+        case 'up-to-date':
+          setCheckedResult('up-to-date');
+          setTimeout(() => setCheckedResult('idle'), 3000);
+          break;
+        case 'error':
+          if (!result.updaterUnsupported) {
+            setCheckedResult('up-to-date');
+            setTimeout(() => setCheckedResult('idle'), 3000);
+          }
+          break;
+        case 'update':
+        case 'disabled':
+        case 'throttled':
+          break;
       }
     } catch {
       // checker surfaces its own error state; nothing extra to do here

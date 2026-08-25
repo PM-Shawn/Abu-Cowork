@@ -125,7 +125,9 @@ export function normalizeIMRunCapability(value: unknown): IMCapabilityLevel {
 export function normalizeCustomRunToolAllowlist(value: unknown): string[] {
   const sanitized = sanitizeStringArray(value);
   if (sanitized.status === 'malformed') return [...DENY_ALL_TOOL_ALLOWLIST];
-  if (sanitized.status === 'missing' || sanitized.value.length === 0) return ['*'];
+  if (sanitized.status === 'missing' || sanitized.value.length === 0) {
+    return [...READ_ONLY_TOOL_ALLOWLIST];
+  }
   return sanitized.value;
 }
 
@@ -157,6 +159,10 @@ export function isRunPermissionCeiling(value: unknown): value is RunPermissionCe
   if (capability !== 'custom' && candidate.allowedCommands !== undefined) return false;
   if (candidate.allowedTools !== undefined && !isStringArray(candidate.allowedTools)) return false;
   if (candidate.allowedCommands !== undefined && !isStringArray(candidate.allowedCommands)) return false;
+  if (
+    capability === 'custom'
+    && (!isStringArray(candidate.allowedTools) || candidate.allowedTools.length === 0)
+  ) return false;
   if (capability === 'scheduled' && !isStringArray(candidate.allowedTools)) return false;
   return true;
 }
@@ -299,7 +305,7 @@ export function decideToolUnderRunPermissionCeiling(
     ceiling.capability === 'read_tools'
       ? READ_ONLY_TOOL_ALLOWLIST
       : ceiling.capability === 'custom'
-        ? (ceiling.allowedTools?.length ? ceiling.allowedTools : ['*'])
+        ? (ceiling.allowedTools?.length ? ceiling.allowedTools : READ_ONLY_TOOL_ALLOWLIST)
         : SAFE_TOOL_ALLOWLIST;
 
   if (!allowedTools.some((pattern) => matchesToolPattern(toolName, pattern, input))) {

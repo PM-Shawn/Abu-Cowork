@@ -2209,8 +2209,8 @@ const enUS: TranslationDict = {
     browserAction: 'Browser action',
     browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
     browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
-    selfExtensionReason: 'This adds or rewrites a long-lived capability (subagent / MCP server / persona) that shapes every later conversation.',
-    selfExtensionDenied: 'Adding a capability needs confirmation, but no confirmation channel is available',
+    selfExtensionReason: 'This adds or rewrites long-lived agent or automation state (subagent / MCP server / persona / scheduled run) that shapes later conversations or unattended runs.',
+    selfExtensionDenied: 'Changing long-lived agent or automation state needs confirmation, but no confirmation channel is available',
     browserTitle: 'Confirm browser action',
     browserDescription: 'Abu wants to run this action inside your logged-in browser:',
     browserSiteDenied: 'You have blocked automation on this site (change it in Settings → Capabilities)',
@@ -2219,7 +2219,7 @@ const enUS: TranslationDict = {
     browserAlwaysAllowSite: 'Always allow this site',
     browserBlockSite: 'Block this site',
     selfExtensionTitle: 'Confirm new capability',
-    selfExtensionDescription: 'Abu wants to add or rewrite one of its own long-lived capabilities:',
+    selfExtensionDescription: 'Abu wants to add or rewrite long-lived agent or automation state:',
   },
 
   toolErrors: {
@@ -2592,7 +2592,7 @@ const enUS: TranslationDict = {
       capFull: 'Fully autonomous',
       capCustom: 'Custom allowlist',
       capLevelLine: 'Capability level: {label}',
-      triggerCapabilityUiNotice: 'The model cannot change the capability level, nor a custom level\'s command/path/tool allowlists — those are edited in the trigger UI only. New triggers use Read Only; updates keep the existing level and allowlists.',
+      triggerCapabilityUiNotice: 'The model cannot change the capability level or a custom level\'s command/path/tool allowlists. Allowlists live in trigger configuration data, and this version has no UI editor for them; contact an administrator or edit the configuration manually. New triggers use Read Only; updates keep the existing level and allowlists.',
       filterLine: 'Filter: {filter}',
       debounceLine: 'Debounce: {value}',
       debounceSeconds: '{seconds}s',

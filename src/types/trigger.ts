@@ -101,7 +101,7 @@ export interface TriggerPermissions {
   allowedCommands?: string[];
   /** Path whitelist — auto-authorized at execution time (e.g. "/Users/xx/project/src") */
   allowedPaths?: string[];
-  /** Tool whitelist — if empty, no restriction (e.g. ["read_file", "http_fetch"]) */
+  /** Tool whitelist — only an explicit ["*"] is unrestricted; missing/empty uses the read-only default. */
   allowedTools?: string[];
 }
 

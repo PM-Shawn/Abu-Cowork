@@ -67,13 +67,13 @@ Content-Type: application/json
 
 **不要向 `manage_trigger` 传 `capability`。** 这个字段不会被工具接受，也不能用来设置触发器能力档位。
 
-### custom 模式的额外参数
+### custom 模式
 
-当已有触发器的档位是 `custom` 时，可通过以下参数更新该触发器的白名单：
-
-- `allowed_commands`: 命令白名单，支持 glob 模式（如 `["npm run *", "git pull", "curl *"]`）
-- `allowed_paths`: 路径白名单，运行时自动授权（如 `["/Users/xx/project/src"]`）
-- `allowed_tools`: 工具白名单（如 `["read_file", "write_file", "http_fetch"]`）
+`custom` 触发器的命令、路径和工具白名单保存在触发器配置数据中。当前版本没有
+白名单 UI 编辑入口；如需调整，请让用户联系管理员或手动修改配置。
+`manage_trigger` 不能读取、设置或改写这些白名单；不要声称已经替用户修改。
+存量 `custom` 触发器若缺少 `allowedTools` 或该列表为空，会按只读档运行；只有显式
+配置 `allowedTools: ["*"]` 才表示工具通配。
 
 ### 选择能力等级的原则
 
@@ -81,7 +81,7 @@ Content-Type: application/json
 
 - 只需要分析、汇总、通知 → 默认 `read_tools` 足够
 - 需要写文件、跑命令或完全自主 → 明确说明 `manage_trigger` 不能提升档位，不要声称已放开权限
-- 已有 `custom` 触发器 → 可按用户明确要求更新它的白名单
+- 已有 `custom` 触发器 → 告知用户当前没有 UI 编辑入口，需联系管理员或手动修改配置
 
 ## 重要：必须使用 manage_trigger 工具
 

@@ -2210,8 +2210,8 @@ const zhCN: TranslationDict = {
     browserAction: '浏览器操作',
     browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
     browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
-    selfExtensionReason: '将为阿布新增或改写一项长期能力（子代理 / MCP 服务 / 人格设定），它会影响之后的每一次对话。',
-    selfExtensionDenied: '新增能力需要确认，但当前没有可用的确认入口',
+    selfExtensionReason: '将新增或改写长期的代理或自动化状态（子代理 / MCP 服务 / 人格设定 / 定时运行），它会影响后续对话或无人值守运行。',
+    selfExtensionDenied: '修改长期代理或自动化状态需要确认，但当前没有可用的确认入口',
     browserTitle: '浏览器操作确认',
     browserDescription: '阿布要在你已登录的浏览器里执行下面这个操作：',
     browserSiteDenied: '该网站已被你设为禁止操作（可在 设置 → 能力 中修改）',
@@ -2220,7 +2220,7 @@ const zhCN: TranslationDict = {
     browserAlwaysAllowSite: '此网站以后都允许',
     browserBlockSite: '禁止此网站',
     selfExtensionTitle: '新增能力确认',
-    selfExtensionDescription: '阿布要为自己新增或改写一项长期能力：',
+    selfExtensionDescription: '阿布要新增或改写长期的代理或自动化状态：',
   },
 
   toolErrors: {
@@ -2593,7 +2593,7 @@ const zhCN: TranslationDict = {
       capFull: '完全自主',
       capCustom: '自定义白名单',
       capLevelLine: '能力等级: {label}',
-      triggerCapabilityUiNotice: '模型不能更改能力档位，也不能改自定义档位的命令/路径/工具白名单——这些只能在触发器界面里改。新建触发器默认为只读；更新时保留现有档位与白名单。',
+      triggerCapabilityUiNotice: '模型不能更改能力档位，也不能改自定义档位的命令/路径/工具白名单。白名单保存在触发器配置数据中，当前版本没有界面编辑入口；如需调整，请联系管理员或手动修改配置。新建触发器默认为只读；更新时保留现有档位与白名单。',
       filterLine: '过滤: {filter}',
       debounceLine: '防抖: {value}',
       debounceSeconds: '{seconds}秒',

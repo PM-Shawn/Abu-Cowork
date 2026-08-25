@@ -13,6 +13,7 @@ import {
   normalizeRunCapability,
   normalizeTriggerRunCapability,
 } from './runPermissionCeiling';
+import { READ_ONLY_TOOL_ALLOWLIST } from './readOnlyToolPolicy';
 
 describe('runPermissionCeiling', () => {
   it('normalizes unknown capability values to read_tools', () => {
@@ -39,6 +40,14 @@ describe('runPermissionCeiling', () => {
     expect(isRunPermissionCeiling({ version: 1, source: 'trigger', capability: 'chat_only' })).toBe(false);
     expect(isRunPermissionCeiling({ version: 1, source: 'im', capability: 'custom', allowedTools: ['*'] })).toBe(false);
     expect(isRunPermissionCeiling({ ...ceiling, allowedTools: ['*'] })).toBe(false);
+    expect(isRunPermissionCeiling({ version: 1, source: 'trigger', capability: 'custom' })).toBe(false);
+    expect(isRunPermissionCeiling({ version: 1, source: 'trigger', capability: 'custom', allowedTools: [] })).toBe(false);
+    expect(isRunPermissionCeiling({
+      version: 1,
+      source: 'trigger',
+      capability: 'custom',
+      allowedTools: ['read_file'],
+    })).toBe(true);
   });
 
   it('gives scheduler runs an exact host-reviewed builtin roster without trusting MCP names', () => {
@@ -103,13 +112,24 @@ describe('runPermissionCeiling', () => {
     expect(getRunPermissionCeilingFromContext({ runPermissionCeiling: { capability: 'full' } })?.capability).toBe('read_tools');
   });
 
-  it('encodes legacy custom empty tool allowlists as explicit unrestricted rosters', () => {
-    expect(buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'custom' }).allowedTools).toEqual(['*']);
+  it('defaults missing and empty legacy custom tool allowlists to the restricted read-only roster', () => {
+    expect(buildTriggerRunPermissionCeiling({ prompt: 'x', capability: 'custom' }).allowedTools).toEqual(READ_ONLY_TOOL_ALLOWLIST);
     expect(buildTriggerRunPermissionCeiling({
       prompt: 'x',
       capability: 'custom',
       permissions: { allowedTools: [] },
-    }).allowedTools).toEqual(['*']);
+    }).allowedTools).toEqual(READ_ONLY_TOOL_ALLOWLIST);
+  });
+
+  it('keeps only an explicitly persisted wildcard unrestricted', () => {
+    const ceiling = buildTriggerRunPermissionCeiling({
+      prompt: 'x',
+      capability: 'custom',
+      permissions: { allowedTools: ['*'] },
+    });
+
+    expect(ceiling.allowedTools).toEqual(['*']);
+    expect(decideToolUnderRunPermissionCeiling(ceiling, 'manage_scheduled_task', { action: 'create' }).decision).toBe('allow');
   });
 
   it('fails closed for malformed persisted custom allowlist arrays', () => {

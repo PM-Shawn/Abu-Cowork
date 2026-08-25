@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
+import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
 import {
   createAuthorizationScope,
@@ -496,4 +497,54 @@ describe('self-extension approval gate', () => {
       expect(decision.decision).toBe('deny');
     }
   });
+
+  it.each([
+    ['manage_trigger', 'update'],
+    ['manage_scheduled_task', 'create'],
+    ['manage_file_watch', 'add'],
+  ])('does not let a custom wildcard trigger persist authority through %s(%s)', async (name, action) => {
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    const confirm = vi.fn(async () => true);
+    const decision = await checkToolApproval(
+      name,
+      { action },
+      {
+        conversationId: 'conv-1',
+        interactionMode: 'background',
+        runPermissionCeiling: buildTriggerRunPermissionCeiling({
+          prompt: 'legacy custom',
+          capability: 'custom',
+          permissions: { allowedTools: ['*'] },
+        }),
+      } as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it.each(['manage_trigger', 'manage_scheduled_task', 'manage_file_watch'])(
+    'keeps %s(list) available to a custom wildcard trigger',
+    async (name) => {
+      const confirm = vi.fn(async () => true);
+      const decision = await checkToolApproval(
+        name,
+        { action: 'list' },
+        {
+          conversationId: 'conv-1',
+          interactionMode: 'background',
+          runPermissionCeiling: buildTriggerRunPermissionCeiling({
+            prompt: 'legacy custom',
+            capability: 'custom',
+            permissions: { allowedTools: ['*'] },
+          }),
+        } as never,
+        confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).not.toHaveBeenCalled();
+    },
+  );
 });

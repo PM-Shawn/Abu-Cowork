@@ -98,8 +98,17 @@ export interface ChatDelta {
     hideScreenshot?: boolean,
     metadata?: ToolExecutionMetadata,
   ): void;
+  /** Mirrors chatStore's `checkpointToolCallMetadata`. */
+  checkpointToolCallMetadata(
+    convId: string,
+    messageId: string,
+    toolCallId: string,
+    metadata: ToolExecutionMetadata,
+  ): void;
   /** Mirrors chatStore's `appendToolCallContext`. */
   appendToolCallContext(convId: string, loopId: string, context: ToolCallForContext): void;
+  /** Mirrors chatStore's `appendMessageToolCall` (subagent image persistence — see that action's doc). */
+  appendMessageToolCall(convId: string, loopId: string, toolCall: ToolCall): void;
   /** Mirrors chatStore's `updateMessageUsage`. */
   updateMessageUsage(convId: string, usage: TokenUsage, msgId?: string): void;
   /** Mirrors chatStore's `setExecutionStepsSnapshot`. */
@@ -174,8 +183,12 @@ export function createInProcessChatDelta(): ChatDelta {
         hideScreenshot,
         metadata,
       ),
+    checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) =>
+      useChatStore.getState().checkpointToolCallMetadata(convId, messageId, toolCallId, metadata),
     appendToolCallContext: (convId, loopId, context) =>
       useChatStore.getState().appendToolCallContext(convId, loopId, context),
+    appendMessageToolCall: (convId, loopId, toolCall) =>
+      useChatStore.getState().appendMessageToolCall(convId, loopId, toolCall),
     updateMessageUsage: (convId, usage, msgId) =>
       useChatStore.getState().updateMessageUsage(convId, usage, msgId),
     setExecutionStepsSnapshot: (convId, loopId, steps) =>

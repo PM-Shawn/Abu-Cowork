@@ -20,6 +20,10 @@ import {
   useComposerDraftStore,
   writePersistedComposerText,
 } from './composerDraftStore';
+import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
+import { useBatchProgressStore } from './batchProgressStore';
+import { subagentTabId, usePreviewStore } from './previewStore';
+import { makeBatchKey } from '@/types';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -69,6 +73,10 @@ const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 describe('chatStore', () => {
   beforeEach(() => {
+    usePreviewStore.getState().closeAllTabs();
+    for (const entry of Object.values(useBatchProgressStore.getState().batches)) {
+      useBatchProgressStore.getState().clearBatch(entry.identity);
+    }
     clearAllComposerDrafts();
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
@@ -195,6 +203,64 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().deleteConversation(id);
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
+    });
+
+    it('cascades subagent tab leases and batch entries for the deleted conversation only', () => {
+      const deletedId = useChatStore.getState().createConversation();
+      const survivorId = useChatStore.getState().createConversation();
+      const deletedBatch = { conversationId: deletedId, batchToolCallId: 'shared-batch' };
+      const survivorBatch = { conversationId: survivorId, batchToolCallId: 'shared-batch' };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(deletedBatch, ['Deleted worker']);
+      batchStore.initBatch(survivorBatch, ['Surviving worker']);
+      const deletedTab = usePreviewStore.getState().openSubagent(deletedBatch, 0, 'Deleted worker');
+      const survivorTab = usePreviewStore.getState().openSubagent(survivorBatch, 0, 'Surviving worker');
+      usePreviewStore.getState().activateTab(deletedTab);
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]?.viewLeaseCount).toBe(1);
+
+      useChatStore.getState().deleteConversation(deletedId);
+
+      expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([survivorTab]);
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(deletedBatch, 0) }),
+      );
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]).toBeUndefined();
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(survivorBatch)]).toBeDefined();
+    });
+
+    it('does not resurrect deleted batch state when in-flight progress settles late', async () => {
+      const conversationId = useChatStore.getState().createConversation();
+      const identity = {
+        conversationId,
+        assistantMessageId: 'assistant-in-flight',
+        batchToolCallId: 'batch-in-flight',
+      };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(identity, ['In-flight worker']);
+      batchStore.setTaskRunning(identity, 0);
+      usePreviewStore.getState().openSubagent(identity, 0, 'In-flight worker');
+
+      useChatStore.getState().deleteConversation(conversationId);
+      await Promise.resolve();
+      batchStore.setTaskActivity(identity, 0, 'late activity', 1);
+      batchStore.startTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        toolInput: { path: '/late' },
+      });
+      batchStore.finishTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        result: 'late result',
+        resultContent: [{ type: 'text', text: 'late result' }],
+        error: false,
+      });
+      batchStore.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(identity)]).toBeUndefined();
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(identity, 0) }),
+      );
     });
 
     it('clears the deleted conversation draft', () => {
@@ -1287,6 +1353,102 @@ describe('chatStore', () => {
     });
   });
 
+  // ── appendMessageToolCall (subagent image persistence) ──
+  describe('appendMessageToolCall', () => {
+    const subagentToolCall = {
+      id: 'toolu_sub_1',
+      name: 'computer',
+      input: { action: 'screenshot' },
+      result: 'Image: /tmp/shot.png (37KB, image/png)',
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+      ],
+      hidden: true,
+      fromSubagent: true,
+    };
+
+    function setupLoopMessage() {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+        toolCalls: [{ id: 'toolu_delegate', name: 'delegate_to_agent', input: {} }],
+      });
+      return id;
+    }
+
+    it('appends the entry to the last assistant message of the loop, after existing tool calls', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toHaveLength(2);
+      expect(msg.toolCalls![1]).toEqual(subagentToolCall);
+    });
+
+    it('creates the toolCalls array when the message has none yet', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+      });
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toEqual([subagentToolCall]);
+    });
+
+    it('is idempotent per tool call id (sidecar frame path can re-deliver)', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(2);
+    });
+
+    it('keeps identical provider ids from separate scoped subagent runs', () => {
+      const id = setupLoopMessage();
+      const first = { ...subagentToolCall, id: 'subagent-v1:run-a:call_1' };
+      const second = {
+        ...subagentToolCall,
+        id: 'subagent-v1:run-b:call_1',
+        resultContent: [{
+          type: 'image' as const,
+          source: { type: 'base64' as const, media_type: 'image/png', data: 'SECOND' },
+        }],
+      };
+
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', first);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', second);
+
+      const appended = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(appended.map((toolCall) => toolCall.id)).toEqual([first.id, second.id]);
+      expect(appended.map((toolCall) => toolCall.resultContent?.[0])).toEqual([
+        first.resultContent[0],
+        second.resultContent[0],
+      ]);
+    });
+
+    it('bounds retained subagent images before snapshotting the parent message', () => {
+      const id = setupLoopMessage();
+      for (let index = 0; index <= DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST; index++) {
+        useChatStore.getState().appendMessageToolCall(id, 'loop-1', {
+          ...subagentToolCall,
+          id: `subagent-v1:run-${index}:call_1`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: `IMAGE_${index}` },
+          }],
+        });
+      }
+
+      const childCalls = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(childCalls).toHaveLength(DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST + 1);
+      expect(childCalls[0].resultContent).toBeUndefined();
+      expect(childCalls.slice(1).every((toolCall) => toolCall.resultContent?.[0]?.type === 'image')).toBe(true);
+    });
+
+    it('is a no-op when no assistant message carries the loopId', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'other-loop', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(1);
+    });
+  });
+
   // ── deactivateConversationSkills ──
   // Extracted from an agentLoop.ts `useChatStore.setState` escape hatch inside
   // deactivateAllSkills() as part of the chatStore write-side probe. Only the
@@ -2172,6 +2334,151 @@ describe('chatStore', () => {
     function getToolCall(convId: string) {
       return useChatStore.getState().conversations[convId]?.messages[0]?.toolCalls?.[0];
     }
+
+    it('persists the trusted subagent terminal reason and derives isError from it', () => {
+      const convId = seedToolCall('delegate_to_agent');
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'partial result without an error prefix',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'max_turns' },
+      );
+
+      expect(getToolCall(convId)).toEqual(expect.objectContaining({
+        subagentStopReason: 'max_turns',
+        isError: true,
+      }));
+    });
+
+    it('checkpoints a legal minimal batch summary without storing rich task details', () => {
+      const convId = seedToolCall('run_agent_batch');
+
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 2,
+            counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+            prompt: 'do not persist',
+            resultContent: [{ type: 'image', source: { data: 'base64' } }],
+            tasks: [
+              { taskIndex: 0, status: 'succeeded', terminalReason: 'completed', output: 'do not persist' },
+              { taskIndex: 1, status: 'stopped', terminalReason: 'aborted', steps: ['do not persist'] },
+            ],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('prompt');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('output');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('resultContent');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('steps');
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('does not let a late all-success response regress a stopped batch checkpoint', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      );
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late success',
+        undefined,
+        false,
+        undefined,
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary?.counts.stopped).toBe(1);
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('merges cumulative partial batch summaries and keeps coarse completed from clearing non-success state', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+        },
+      });
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      });
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late completed envelope',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'completed' },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(getToolCall(convId)?.isError).toBe(true);
+      expect(getToolCall(convId)?.subagentStopReason).toBe('completed');
+    });
 
     it('lifts a skill-proposal notice_card from JSON result onto the tool call', () => {
       const convId = seedToolCall();

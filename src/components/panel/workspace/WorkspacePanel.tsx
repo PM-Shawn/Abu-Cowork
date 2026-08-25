@@ -1,11 +1,12 @@
 import { ListChecks, AppWindow, SquareTerminal } from 'lucide-react';
-import { usePreviewStore } from '@/stores/previewStore';
+import { usePreviewStore, workspaceTabButtonId, workspaceTabPanelId } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
 import SummaryBody from './SummaryBody';
 import PreviewPanel from '../PreviewPanel';
 import TerminalTab from './TerminalTab';
 import BrowserTab from './BrowserTab';
+import SubagentTab from './SubagentTab';
 
 /**
  * Empty state shown when every tab is closed (TRAE "从这里开始"): a launcher
@@ -61,15 +62,24 @@ export default function WorkspacePanel() {
       ) : (
         <div className="flex-1 min-h-0 relative">
           {tabs.map((tab) => (
-            <div key={tab.id} hidden={tab.id !== activeTabId} className="h-full">
+            <div
+              key={tab.id}
+              id={workspaceTabPanelId(tab.id)}
+              role="tabpanel"
+              aria-labelledby={workspaceTabButtonId(tab.id)}
+              hidden={tab.id !== activeTabId}
+              className="h-full"
+            >
               {tab.kind === 'summary' ? (
                 <SummaryBody />
               ) : tab.kind === 'preview' ? (
                 <PreviewPanel filePath={tab.filePath} tabId={tab.id} embedded />
               ) : tab.kind === 'terminal' ? (
                 <TerminalTab tabId={tab.id} />
-              ) : (
+              ) : tab.kind === 'browser' ? (
                 <BrowserTab tabId={tab.id} url={tab.url} />
+              ) : (
+                <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
               )}
             </div>
           ))}

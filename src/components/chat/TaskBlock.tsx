@@ -39,7 +39,7 @@ export type UnifiedStep = {
   type: StepType | ExecStepType;
   label: string;
   detail?: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
   duration?: number;
   toolName?: string;
   toolInput?: Record<string, unknown>;
@@ -47,6 +47,8 @@ export type UnifiedStep = {
   completionMessage?: string;
   // New: detail blocks from ExecutionStep
   detailBlocks?: DetailBlock[];
+  /** Batch-progress steps may show a rich image block alongside legacy input/result details. */
+  showLegacyDetailsWithDetailBlocks?: boolean;
   // Reference to original execution for toggle actions
   executionId?: string;
   // Delegate (subagent) support
@@ -500,18 +502,21 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
 /**
  * Individual step item with vertical timeline connector
  */
-function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
+export interface TaskStepItemProps {
   step: UnifiedStep;
   showConnector: boolean;
   hasLaterToolStep: boolean;
   locale: string;
   t: TranslationDict;
-}) {
+}
+
+export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: TaskStepItemProps) {
   const Icon = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
   const isCompleted = step.status === 'completed';
   const isError = step.status === 'error';
+  const isCancelled = step.status === 'cancelled';
   const isThinking = step.type === 'thinking';
   const isWaitingForAnswer = isRunning && step.toolName === TOOL_NAMES.ASK_USER_QUESTION;
 
@@ -672,7 +677,7 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
 
   // Render legacy collapsible details (backward compatibility)
   const renderLegacyDetails = () => {
-    if (step.detailBlocks && step.detailBlocks.length > 0) {
+    if (step.detailBlocks && step.detailBlocks.length > 0 && !step.showLegacyDetailsWithDetailBlocks) {
       return null; // Use new detail blocks instead
     }
 
@@ -710,13 +715,15 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
       <div className="flex flex-col items-center">
         <div className="w-3.5 h-3.5 mt-0.5 flex items-center justify-center shrink-0">
           {isWaitingForAnswer ? (
-            <MessageSquare className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
+            <MessageSquare aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)]" />
           ) : isRunning ? (
-            <Loader2 className="h-3.5 w-3.5 text-[var(--abu-clay)] animate-spin" />
+            <Loader2 aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)] motion-safe:animate-spin" />
           ) : isError ? (
-            <AlertCircle className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
+            <AlertCircle aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
+          ) : isCancelled ? (
+            <CircleStop aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
           ) : (
-            <Icon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
+            <Icon aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
           )}
         </div>
         {showConnector && (
@@ -730,10 +737,23 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
         <div
           className={cn(
             'text-body leading-5',
-            isRunning ? 'text-[var(--abu-text-tertiary)]' : isError ? 'text-[var(--abu-danger)]' : 'text-[var(--abu-text-muted)]'
+            isRunning
+              ? 'text-[var(--abu-text-tertiary)]'
+              : isError
+                ? 'text-[var(--abu-danger)]'
+                : 'text-[var(--abu-text-muted)]'
           )}
         >
           {stepLabel}
+          {isCancelled && (
+            <span
+              role="status"
+              aria-label={t.task.cancelled}
+              className="ml-1.5 inline-flex items-center rounded bg-[var(--abu-bg-hover)] px-1.5 py-0 text-caption text-[var(--abu-text-muted)]"
+            >
+              {t.task.cancelled}
+            </span>
+          )}
           {/* Token warning for large tool outputs */}
           {isCompleted && step.toolResult && step.toolResult.length > 10000 && (
             <span className="ml-1.5 inline-flex items-center gap-0.5 px-1.5 py-0 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)] text-caption" title={`${Math.round(step.toolResult.length / 1000)}K chars`}>
@@ -747,7 +767,8 @@ function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t }: {
         {renderThinkingDetail()}
 
         {/* Detail blocks - prefer new architecture */}
-        {renderDetailBlocks() || renderLegacyDetails()}
+        {renderDetailBlocks()}
+        {renderLegacyDetails()}
 
         {/* Completion message */}
         {isCompleted && completionMsg && (

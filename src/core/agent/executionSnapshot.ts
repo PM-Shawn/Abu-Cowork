@@ -184,10 +184,24 @@ export function backfillDetailBlockImages(
   // Insertion order is the tool calls' order of appearance, which the legacy
   // text-match path below relies on for its positional pairing.
   const imagesByToolCallId = new Map<string, { result: string; payload: ImagePayload }>();
+  const rawToolCallIdCounts = new Map<string, number>();
+  for (const message of messages) {
+    for (const toolCall of message.toolCalls ?? []) {
+      rawToolCallIdCounts.set(toolCall.id, (rawToolCallIdCounts.get(toolCall.id) ?? 0) + 1);
+    }
+  }
   for (const message of messages) {
     for (const toolCall of message.toolCalls ?? []) {
       const payload = readImagePayload(toolCall);
       if (!payload) continue;
+      // A duplicate raw id remains ambiguous even when one duplicate lost its
+      // payload to eviction. Do not let the surviving payload be reused by
+      // every legacy block with the same placeholder.
+      if ((rawToolCallIdCounts.get(toolCall.id) ?? 0) !== 1) continue;
+      // Legacy data may contain provider-run-local ids without an app scope.
+      // A duplicate is ambiguous: dropping both candidates to placeholders is
+      // strictly safer than the old last-write-wins behavior, which displayed
+      // a different child agent's screenshot as if it belonged to this step.
       imagesByToolCallId.set(toolCall.id, { result: toolCall.result ?? '', payload });
     }
   }

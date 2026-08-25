@@ -49,6 +49,7 @@ import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } f
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
 import { APP_VERSION } from '@/utils/version';
+import { boundMessageToolResultContentForDisk } from './durableToolResultContent';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -1171,7 +1172,11 @@ interface StripForDiskOptions {
 }
 
 function stripForDisk(msg: Message, convId?: string, options: StripForDiskOptions = {}): Message {
-  const stripped: Message = { ...msg };
+  // Tool-result rich content is a different persistence surface from
+  // Message.content. Bound both tool projections before every ledger/snapshot
+  // serialization so no alternate writer can bypass the admission guard; the
+  // dehydration pass below then operates on the bounded projections.
+  const stripped: Message = { ...boundMessageToolResultContentForDisk(msg) };
   const allowToolResultDehydration = options.allowToolResultDehydration !== false;
 
   // 2. Clear user-message image base64 data (preserve filePath for recovery)

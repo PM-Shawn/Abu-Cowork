@@ -3,7 +3,7 @@ import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { extractParentConversationSummary } from '../../agent/subagentLoop';
+import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
@@ -163,7 +163,7 @@ const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string;
   executor: {
     description: 'Executing complex operational tasks',
     systemPrompt: 'You are an efficient execution assistant. Able to use various tools to complete file operations, command execution, and other tasks.',
-    tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
+    tools: [], // Empty = all tools allowed except nested delegation and user prompts.
   },
 };
 
@@ -186,7 +186,7 @@ export const delegateToAgentTool: ToolDefinition = {
     type: 'object',
     properties: {
       agent_name: { type: 'string', description: 'User-defined agent name (mutually exclusive with type)' },
-      type: { type: 'string', description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
+      type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
     },
@@ -265,20 +265,22 @@ export const delegateToAgentTool: ToolDefinition = {
             const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
               loopCtx.loopId,
               capturedParentStepId,
-              { toolName: event.toolName, toolInput: event.toolInput }
+              { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
             );
             if (childStepId) {
               childIdMap.set(event.id, childStepId);
             }
           } else if (event.type === 'tool-end') {
             const childStepId = childIdMap.get(event.id);
+            childIdMap.delete(event.id);
             if (childStepId) {
               loopCtx.eventRouter.completeChildStep(
                 loopCtx.loopId,
                 capturedParentStepId,
                 childStepId,
                 event.result,
-                event.error
+                event.error,
+                event.resultContent
               );
             }
           }
@@ -287,16 +289,7 @@ export const delegateToAgentTool: ToolDefinition = {
     }
 
     // 6. Extract parent conversation summary for context injection
-    let parentConversationSummary: string | undefined;
-    try {
-      const chatState = useChatStore.getState();
-      if (ownerConversationId) {
-        const messages = chatState.conversations[ownerConversationId]?.messages ?? [];
-        parentConversationSummary = extractParentConversationSummary(messages);
-      }
-    } catch {
-      // Non-critical: proceed without parent context
-    }
+    const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // 7. Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
@@ -316,6 +309,8 @@ export const delegateToAgentTool: ToolDefinition = {
         filePermissionCallback: loopCtx?.filePermissionCallback,
         allowedTools: loopCtx?.allowedTools,
         blockedTools: loopCtx?.blockedTools,
+        imContext: loopCtx?.imContext,
+        persistParentToolImages: true,
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
@@ -325,6 +320,7 @@ export const delegateToAgentTool: ToolDefinition = {
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }
+      toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
       return result.text;
     } catch (err) {
       subagentCleanup();

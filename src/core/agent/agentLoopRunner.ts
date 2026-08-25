@@ -30,7 +30,7 @@
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ImageAttachment, ToolExecutionContext, Conversation } from '../../types';
+import type { ImageAttachment, ToolExecutionContext, Conversation, ToolExecutionMetadata } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -54,6 +54,7 @@ import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createEventRouter, type EventRouter } from './eventRouter';
+import { normalizeBatchTerminalSummary } from './batchTerminalSummary';
 import {
   requestCommandConfirmation,
   requestFilePermission,
@@ -156,6 +157,7 @@ export interface AgentLoopRunOptions {
   requestFilePermission?: FilePermissionCallback;
   blockedTools?: string[];
   allowedTools?: string[];
+  imContext?: IMContext;
   authorizationScopeId?: string;
   workspacePathSnapshot?: string | null;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
@@ -1032,6 +1034,36 @@ function contextForSession(
   };
 }
 
+function findTrustedToolCall(
+  conversation: Conversation | undefined,
+  assistantMessageId: string | undefined,
+  toolCallId: string | undefined,
+  toolName: string,
+): boolean {
+  if (!conversation || !assistantMessageId || !toolCallId) return false;
+  if (!Array.isArray(conversation.messages)) return false;
+  const message = conversation.messages.find((msg) => msg.id === assistantMessageId);
+  if (!message || message.role !== 'assistant' || !Array.isArray(message.toolCalls)) return false;
+  const toolCall = message.toolCalls.find((tc) => tc.id === toolCallId);
+  return !!toolCall && toolCall.name === toolName && toolCall.isExecuting === true;
+}
+
+function normalizeTrustedToolMetadata(
+  next: ToolExecutionMetadata,
+  expected: { conversationId: string; assistantMessageId?: string; batchToolCallId: string },
+): ToolExecutionMetadata | undefined {
+  const metadata: ToolExecutionMetadata = { ...next };
+  if (next.batchTerminalSummary !== undefined) {
+    const summary = normalizeBatchTerminalSummary(next.batchTerminalSummary, expected);
+    if (!summary) {
+      delete metadata.batchTerminalSummary;
+    } else {
+      metadata.batchTerminalSummary = summary;
+    }
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 /**
  * `tool.invoke` (REQUEST) for a MAIN-LOOP run — the main-loop twin of
  * subagentRunner.ts's `handleToolInvoke`. Registered as a named source with
@@ -1097,13 +1129,61 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   session.committed = true;
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process main-loop run.
-  return await invoker.executeAnyTool(
+  let metadata: ToolExecutionMetadata | undefined;
+  const wireContext = (params.context as ToolExecutionContext | undefined) ?? {};
+  const trustedConversationId = session.conversationId;
+  const trustedAssistantMessageId = typeof wireContext.assistantMessageId === 'string'
+    ? wireContext.assistantMessageId
+    : undefined;
+  const trustedToolCallId = typeof wireContext.toolCallId === 'string'
+    ? wireContext.toolCallId
+    : undefined;
+  const canCheckpointMetadata =
+    wireContext.conversationId === trustedConversationId
+    && findTrustedToolCall(
+      useChatStore.getState().conversations[trustedConversationId],
+      trustedAssistantMessageId,
+      trustedToolCallId,
+      params.toolName,
+    );
+  const result = await invoker.executeAnyTool(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
-    contextForSession(session, params.context as ToolExecutionContext | undefined),
+    {
+      ...contextForSession(session, wireContext),
+      reportMetadata: (next) => {
+        if (!trustedToolCallId) return;
+        const normalized = normalizeTrustedToolMetadata(next, {
+          conversationId: trustedConversationId,
+          assistantMessageId: trustedAssistantMessageId,
+          batchToolCallId: trustedToolCallId,
+        });
+        if (!normalized) return;
+        metadata = {
+          ...metadata,
+          ...normalized,
+        };
+        if (
+          canCheckpointMetadata
+          && trustedAssistantMessageId
+          && useChatStore.getState().conversations[trustedConversationId]
+        ) {
+          getChatDelta().checkpointToolCallMetadata(
+            trustedConversationId,
+            trustedAssistantMessageId,
+            trustedToolCallId,
+            metadata,
+          );
+        }
+      },
+    },
   );
+  // Keep the generic ToolResult wire unchanged. Only subagent tools need a
+  // tiny envelope so the sidecar parent loop can restore trusted terminal
+  // metadata onto its original ToolExecutionContext.
+  return metadata ? { result, metadata } : result;
 }
 
 /**
@@ -1654,6 +1734,9 @@ export function createShellEventRouterForRun(runId: string): EventRouter {
       appendToolCallContext: (loopId, context) => {
         getChatDelta().appendToolCallContext(session.conversationId, loopId, context);
       },
+      appendMessageToolCall: (loopId, toolCall) => {
+        getChatDelta().appendMessageToolCall(session.conversationId, loopId, toolCall);
+      },
       addScratchpadEntry: (entry) => {
         getScratchpadPort().addEntry(entry);
       },
@@ -1687,6 +1770,7 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     toolCallToStepId: session.toolCallToStepId,
     blockedTools: session.options.blockedTools,
     allowedTools: session.options.allowedTools,
+    imContext: session.options.imContext,
     authorizationScopeId: session.options.authorizationScopeId,
   });
 }
@@ -2406,6 +2490,7 @@ async function runSingleAgentLoopDispatched(
       requestFilePermission: options?.filePermissionCallback,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
+      imContext: options?.imContext,
       authorizationScopeId: options?.authorizationScopeId,
       workspacePathSnapshot: params.options.workspacePathSnapshot,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },

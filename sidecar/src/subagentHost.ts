@@ -27,11 +27,14 @@ import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
-import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
+import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
+import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
+import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
 
 interface SerializableToolDefinition {
   name: string;
@@ -45,15 +48,19 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
   return wireContext;
 }
 
-interface SubagentRunParams {
+export interface SubagentHostRunParams {
   runId: string;
   agent: SubagentDefinition;
   task: string;
   context?: string;
   parentConversationSummary?: string;
   parentConversationId?: string;
+  persistParentToolImages?: boolean;
   imContext?: IMContext;
   allowedTools?: string[];
+  /** Run-scoped denylist — must mirror allowedTools across the wire (see
+   *  subagentRunner.ts's SubagentRunParams doc: omitting it silently
+   *  disarmed every blockedTools-only safety tier on the sidecar path). */
   blockedTools?: string[];
   authorizationScopeId?: string;
   locale: string;
@@ -64,11 +71,65 @@ interface SubagentRunParams {
   workspacePathSnapshot: string | null;
 }
 
+export const SUBAGENT_HOST_RUN_WIRE_FIELDS =
+  SHARED_SUBAGENT_RUN_WIRE_FIELDS satisfies readonly (keyof SubagentHostRunParams)[];
+
+type AssertNever<T extends never> = T;
+
+type SubagentWireBackedLoopOptionField = Extract<
+  typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number],
+  keyof SubagentLoopOptions
+>;
+
+type SubagentHostOnlyRunWireField = Exclude<
+  typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number],
+  keyof SubagentLoopOptions
+>;
+
+export const SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS = [
+  'runId',
+  'locale',
+  'uiStrings',
+  'settingsSnapshot',
+  'resolvedCreds',
+  'tools',
+  'workspacePathSnapshot',
+] as const satisfies readonly SubagentHostOnlyRunWireField[];
+
+/** Runtime form of `SUBAGENT_RUN_WIRE_FIELDS ∩ keyof SubagentLoopOptions`.
+ * The reverse exhaustiveness gate below makes a newly-added host-only field
+ * fail typecheck until it is classified here; every other canonical wire
+ * field is therefore a loop option and enters this derived list automatically.
+ */
+const hostOnlyRunWireFieldSet = new Set<string>(SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS);
+export const SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS = SUBAGENT_HOST_RUN_WIRE_FIELDS.filter(
+  (field): field is SubagentWireBackedLoopOptionField => !hostOnlyRunWireFieldSet.has(field),
+);
+
+/** Reverse exhaustiveness gate in production code; sidecar tests are not a
+ * substitute for `tsc` checking newly-added host params against the wire. */
+export type SubagentHostRunParamsWireExhaustive = AssertNever<
+  Exclude<keyof SubagentHostRunParams, typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number]>
+>;
+
+export type SubagentHostOnlyRunWireFieldsExhaustive = AssertNever<
+  Exclude<SubagentHostOnlyRunWireField, typeof SUBAGENT_HOST_ONLY_RUN_WIRE_FIELDS[number]>
+>;
+
+interface SerializableSubagentResult {
+  text: string;
+  toolCallCount: number;
+  turnCount: number;
+  tokenUsage: { input: number; output: number };
+  duration: number;
+  stopReason: SubagentStopReason;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function parseSubagentRunParams(params: unknown): SubagentRunParams {
+function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (!isRecord(params)) throw new RpcError(-32602, 'Invalid params: expected object');
   const { runId, agent, task, tools, settingsSnapshot, resolvedCreds, uiStrings, locale } = params;
   if (typeof runId !== 'string' || !runId) {
@@ -110,11 +171,14 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
   if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
   }
+  if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
+    throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
+  }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: workspacePathSnapshot must be a string or null');
   }
-  return params as unknown as SubagentRunParams;
+  return params as unknown as SubagentHostRunParams;
 }
 
 /**
@@ -221,6 +285,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const toolInvoker = createReverseToolInvoker(runId, params.tools);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();
+  // tool-start inputs, cached so the tool-end image-persistence path below can
+  // record the call with its real input (tool-end events don't carry it).
+  const toolInputById = new Map<string, Record<string, unknown>>();
 
   const runCtx: SubagentRunContext = {
     runId,
@@ -229,13 +296,25 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     resolvedCreds: params.resolvedCreds,
   };
 
-  const options: SubagentLoopOptions = {
+  // Record<> is intentional: optional loop fields still have to be present in
+  // this projection (while preserving their `undefined` value type) so adding
+  // a canonical wire-backed option cannot compile until the host forwards it.
+  const wireBackedLoopOptions = {
     agent: params.agent,
     task: params.task,
     context: params.context,
     parentConversationSummary: params.parentConversationSummary,
     parentConversationId: params.parentConversationId,
+    persistParentToolImages: params.persistParentToolImages,
     imContext: params.imContext,
+    allowedTools: params.allowedTools,
+    blockedTools: params.blockedTools,
+    authorizationScopeId: params.authorizationScopeId,
+  } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
+    & Record<SubagentWireBackedLoopOptionField, unknown>;
+
+  const options: SubagentLoopOptions = {
+    ...wireBackedLoopOptions,
     signal: controller.signal,
     settingsReader,
     toolInvoker,
@@ -253,15 +332,14 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     //
     // Serializability: every SubagentProgressEvent variant is already
     // JSON-safe. tool-start's `toolInput` is the parsed tool_use JSON
-    // object (always JSON-safe — it came FROM parsed JSON). tool-end's
-    // `result` is NOT a raw ToolResult (which could carry an
-    // image-content variant) — by the time subagentLoop.ts builds this
-    // event it has already been run through
-    // `toolInvoker.toolResultToString()` into a plain string (see
-    // subagentLoop.ts's `toolResultEntries` map, right where this event is
-    // built) — so no extra faithful-projection layer is needed here,
-    // unlike tool.invoke's raw ToolResult return value. turn-complete is
-    // two numbers. Verified by reading, not assumed.
+    // object (always JSON-safe — it came FROM parsed JSON). tool-end
+    // carries the stringified `result` plus an optional `resultContent`
+    // (the raw ToolResultContent[] blocks, for child-step image
+    // rendering) — both plain data: resultContent is the same JSON-safe
+    // array the tool.invoke response already carried in this direction's
+    // mirror, so forwarding it back is a second copy of known-serializable
+    // data, not a new projection concern. turn-complete is two numbers.
+    // Verified by reading, not assumed.
     //
     // Ordering: progress notifications and the final subagent.run RESPONSE
     // travel the same single ordered NDJSON stdout pipe (one JSON-RPC
@@ -273,12 +351,45 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     // BEFORE that run's final response. Not asserted anywhere (pipe
     // ordering is a platform guarantee, not app logic to test) — documented
     // here per the follow-up card's instruction.
+    //
+    // Image persistence (sidecar-authoritative when the PARENT loop is also
+    // sidecar-run): a tool-end whose resultContent carries an image is
+    // additionally recorded onto the parent message via the parent run's
+    // frame ChatDelta — mirror + shell in frame order — so the entry
+    // survives the parent run's ledger checkpoint. The shell's own
+    // eventRouter append (completeChildStep) still fires when it processes
+    // this same event; both writers are idempotent per tool-call id
+    // (chatStore + conversationRunMirror dedup), so double delivery is
+    // harmless. When the parent loop is NOT sidecar-run there is no active
+    // run here and the shell-side append is the (sufficient) authority.
     onProgress: (event: SubagentProgressEvent) => {
+      if (event.type === 'tool-start') {
+        toolInputById.set(event.id, event.toolInput);
+      } else if (event.type === 'tool-end') {
+        const toolInput = toolInputById.get(event.id) ?? {};
+        toolInputById.delete(event.id);
+        if (
+          params.persistParentToolImages === true
+          && params.parentConversationId
+          && event.resultContent?.some((b) => b.type === 'image')
+        ) {
+          const parentRun = findActiveRunDeltaForConversation(params.parentConversationId);
+          if (parentRun) {
+            parentRun.chatDelta.appendMessageToolCall(params.parentConversationId, parentRun.loopId, {
+              id: makeSubagentProgressToolCallId(runId, event.id),
+              name: event.toolName,
+              input: toolInput,
+              result: event.result,
+              resultContent: event.resultContent,
+              isError: event.error || undefined,
+              hidden: true,
+              fromSubagent: true,
+            });
+          }
+        }
+      }
       sendNotification('subagent.progress', { runId, event });
     },
-    allowedTools: params.allowedTools,
-    blockedTools: params.blockedTools,
-    authorizationScopeId: params.authorizationScopeId,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL
@@ -296,7 +407,8 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       turnCount: result.turnCount,
       tokenUsage: result.tokenUsage,
       duration: result.duration,
-    };
+      stopReason: result.stopReason,
+    } satisfies SerializableSubagentResult;
   } finally {
     activeRuns.delete(runId);
   }

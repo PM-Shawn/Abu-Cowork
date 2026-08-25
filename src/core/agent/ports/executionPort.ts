@@ -30,11 +30,11 @@ import { createPortSlot } from './portSlot';
  *    straight through — no more separate `taskExecutionStore` local, no more
  *    dual-use split.
  *  - `eventRouter.ts` does NOT need every `TaskExecutionStore` method — only
- *    the 13 it actually calls (verified by grep, not assumed:
+ *    the 14 it actually calls (verified by grep, not assumed:
  *    `createExecution`/`getExecutionByLoopId` already existed here;
  *    `appendThinking`/`setThinkingDuration`/`addStep`/`setStepResult`/
- *    `setStepError`/`addDetailBlock`/`setUsage`/`completeExecution`/
- *    `errorExecution`/`addChildStep`/`updateChildStep` are the 11 new ones
+ *    `setStepError`/`addDetailBlock`/`releaseDetailBlockImage`/`setUsage`/`completeExecution`/
+ *    `errorExecution`/`addChildStep`/`updateChildStep` are the 12 new ones
  *    below). `updateStepStatus`/`updateStepProgress`/`toggleDetailExpanded`/
  *    `updateDetailBlockContent`/`setThinking`/`setPlannedSteps`/
  *    `markPlanParsed`/the query family beyond `getExecutionByLoopId`/
@@ -73,9 +73,11 @@ export interface ExecutionPort {
   /** Mirrors taskExecutionStore's `addChildStep`. */
   addChildStep(execId: string, parentStepId: string, childStep: ExecutionStep): void;
   /** Mirrors taskExecutionStore's `updateChildStep`. */
-  updateChildStep(execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean): void;
+  updateChildStep(execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean, detailBlocks?: DetailBlock[]): void;
   /** Mirrors taskExecutionStore's `addDetailBlock`. */
   addDetailBlock(execId: string, stepId: string, block: DetailBlock): void;
+  /** Mirrors taskExecutionStore's `releaseDetailBlockImage`. */
+  releaseDetailBlockImage(execId: string, stepId: string, blockId: string): void;
   /** Mirrors taskExecutionStore's `appendThinking`. */
   appendThinking(execId: string, content: string): void;
   /** Mirrors taskExecutionStore's `setThinkingDuration`. */
@@ -104,9 +106,11 @@ export function createInProcessExecutionPort(): ExecutionPort {
     setStepError: (execId, stepId, error) => useTaskExecutionStore.getState().setStepError(execId, stepId, error),
     addChildStep: (execId, parentStepId, childStep) =>
       useTaskExecutionStore.getState().addChildStep(execId, parentStepId, childStep),
-    updateChildStep: (execId, parentStepId, childStepId, result, error) =>
-      useTaskExecutionStore.getState().updateChildStep(execId, parentStepId, childStepId, result, error),
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) =>
+      useTaskExecutionStore.getState().updateChildStep(execId, parentStepId, childStepId, result, error, detailBlocks),
     addDetailBlock: (execId, stepId, block) => useTaskExecutionStore.getState().addDetailBlock(execId, stepId, block),
+    releaseDetailBlockImage: (execId, stepId, blockId) =>
+      useTaskExecutionStore.getState().releaseDetailBlockImage(execId, stepId, blockId),
     appendThinking: (execId, content) => useTaskExecutionStore.getState().appendThinking(execId, content),
     setThinkingDuration: (execId, duration) => useTaskExecutionStore.getState().setThinkingDuration(execId, duration),
     setUsage: (execId, usage) => useTaskExecutionStore.getState().setUsage(execId, usage),

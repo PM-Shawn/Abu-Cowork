@@ -27,6 +27,8 @@
  */
 import type {
   ImageAttachment,
+  SubagentStopReason,
+  ToolExecutionMetadata,
   ToolDefinition,
   ToolResult,
   ToolExecutionContext,
@@ -38,6 +40,7 @@ import type { PromptSection } from '@/core/llm/promptSections';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { ExecutionPort } from '@/core/agent/ports/executionPort';
+import type { ChatDelta } from '@/core/agent/ports/chatDelta';
 import type { AbortRegistry } from '@/core/agent/ports/abortRegistry';
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
@@ -48,6 +51,7 @@ import {
   createAgentRunTerminal,
   type AgentRunTerminal,
 } from '@/core/agent/agentRunTerminal';
+import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -174,6 +178,65 @@ function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecu
     ...wireContext
   } = context;
   return wireContext;
+}
+
+function isSubagentStopReason(value: unknown): value is SubagentStopReason {
+  return value === 'completed' || value === 'aborted' || value === 'error' || value === 'max_turns';
+}
+
+function parseToolExecutionMetadata(
+  value: unknown,
+  expectedBatchIdentity?: { conversationId?: string; batchToolCallId?: string },
+): ToolExecutionMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
+  const metadata: ToolExecutionMetadata = {};
+  if (value.subagentStopReason !== undefined) {
+    if (!isSubagentStopReason(value.subagentStopReason)) {
+      throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
+    }
+    metadata.subagentStopReason = value.subagentStopReason;
+  }
+  if (value.batchTerminalSummary !== undefined) {
+    const summary = normalizeBatchTerminalSummary(value.batchTerminalSummary, expectedBatchIdentity);
+    if (!summary) {
+      throw new RpcError(-32603, 'Invalid tool.invoke batch summary envelope');
+    }
+    metadata.batchTerminalSummary = summary;
+  }
+  if (value.sandboxRecovery !== undefined) {
+    if (!isRecord(value.sandboxRecovery) || value.sandboxRecovery.kind !== 'app-automation') {
+      throw new RpcError(-32603, 'Invalid tool.invoke sandbox recovery envelope');
+    }
+    metadata.sandboxRecovery = typeof value.sandboxRecovery.targetApp === 'string'
+      ? { kind: 'app-automation', targetApp: value.sandboxRecovery.targetApp }
+      : { kind: 'app-automation' };
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function unwrapToolInvokeResult(response: unknown, context: ToolExecutionContext | undefined): ToolResult {
+  if (!isRecord(response)) return response as ToolResult;
+  if (!('result' in response)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
+  }
+  const result = response.result;
+  if (typeof result !== 'string' && !Array.isArray(result)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke result in subagent metadata envelope');
+  }
+  const metadata = parseToolExecutionMetadata(
+    response.metadata ?? (
+      response.subagentStopReason !== undefined
+        ? { subagentStopReason: response.subagentStopReason }
+        : undefined
+    ),
+    {
+      conversationId: context?.conversationId,
+      batchToolCallId: context?.toolCallId,
+    },
+  );
+  if (metadata) context?.reportMetadata?.(metadata);
+  return result as ToolResult;
 }
 
 function parseAbortParams(params: unknown): { runId: string } {
@@ -378,12 +441,13 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
         // path below is always safe (nothing to double-execute, and no UI
         // has fired yet for this call).
       }
-      const result = (await sendRequest('tool.invoke', {
+      const response = await sendRequest('tool.invoke', {
         runId,
         toolName: name,
         input,
         context: toWireToolContext(context as ToolExecutionContext | undefined),
-      })) as ToolResult;
+      });
+      const result = unwrapToolInvokeResult(response, context as ToolExecutionContext | undefined);
       if (name === TOOL_NAMES.MANAGE_MCP_SERVER) refreshInBackground();
       return result;
     },
@@ -393,6 +457,15 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
 
 interface ActiveRun {
   conversationId: string;
+  /** The loop's internal loopId — identical to the runId by the P1-3B-3B
+   *  convention (see handleAgentRun's `loopId: runId` option). Stored so
+   *  cross-surface writers (subagentHost's image persistence) can target
+   *  the loop's message without re-deriving the convention. */
+  loopId: string;
+  /** This run's frame-sender ChatDelta — writes through it reach the run's
+   *  conversation mirror AND the shell, in frame order, so they survive the
+   *  ledger checkpoint (a shell-only write would be clobbered by it). */
+  chatDelta: ChatDelta;
   controllers: Map<string, AbortController>;
   coalescer: ReturnType<typeof createPortFrameCoalescer>;
   applyConvPatch: (patch: ConversationPatch) => void;
@@ -400,6 +473,30 @@ interface ActiveRun {
 }
 
 const activeRuns = new Map<string, ActiveRun>();
+
+/**
+ * Find the ACTIVE main-loop run for a conversation, exposing just the pieces
+ * a cross-surface writer needs: its frame ChatDelta and loopId.
+ *
+ * Consumer: subagentHost's image persistence. A delegate's subagent runs via
+ * its OWN subagent.run RPC while the parent loop runs here — for the
+ * subagent's image-bearing tool call to survive the parent run's ledger
+ * checkpoint, the `appendMessageToolCall` write must originate on THIS side
+ * (mirror + frame), not shell-only. The one-live-run-per-conversation
+ * invariant (agentLoopRunner's concurrency guard) makes the first match the
+ * only match. Returns undefined when the parent loop is not sidecar-run —
+ * the shell-side append is authoritative there.
+ */
+export function findActiveRunDeltaForConversation(
+  conversationId: string,
+): { chatDelta: ChatDelta; loopId: string } | undefined {
+  for (const run of activeRuns.values()) {
+    if (run.conversationId === conversationId) {
+      return { chatDelta: run.chatDelta, loopId: run.loopId };
+    }
+  }
+  return undefined;
+}
 
 export interface AgentStartAck {
   version: 1;
@@ -722,6 +819,8 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 
   activeRuns.set(runId, {
     conversationId,
+    loopId: runId,
+    chatDelta,
     controllers,
     coalescer,
     applyConvPatch: mirror.applyConvPatch,

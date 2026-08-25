@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ArrowLeft, Save, Play } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { serializeAgentMd } from '@/core/agent/registry';
+import { getAllTools } from '@/core/tools/registry';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
@@ -10,6 +11,7 @@ import { navigateToChatWithInput } from '@/utils/navigation';
 import { useItemName } from '@/hooks/useItemName';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
+import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 
 interface AgentEditorProps {
@@ -41,6 +43,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [skillsStr, setSkillsStr] = useState((agent?.skills ?? []).join(', '));
   const [memory, setMemory] = useState<'session' | 'project' | 'user'>(agent?.memory ?? 'session');
   const [background, setBackground] = useState(agent?.background ?? false);
+  const knownToolNames = getAllTools().map((tool) => tool.name);
+  const unmatchedTools = getUnmatchedAgentToolPatterns(toolsStr, knownToolNames);
+  const unmatchedDisallowedTools = getUnmatchedAgentToolPatterns(disallowedToolsStr, knownToolNames);
 
   // Display-only fields rendered in toolbox detail panel + chat welcome.
   // All optional; users can leave them blank and the agent still works.
@@ -229,9 +234,15 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               type="text"
               value={toolsStr}
               onChange={(e) => setToolsStr(e.target.value)}
-              placeholder="web_search, read_file, write_file"
+              placeholder="web_search, read_file, abu-browser__*"
               className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
+            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            {unmatchedTools.length > 0 && (
+              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
+                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedTools.join(', ') })}
+              </p>
+            )}
           </div>
 
           {/* Disallowed Tools */}
@@ -241,9 +252,15 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               type="text"
               value={disallowedToolsStr}
               onChange={(e) => setDisallowedToolsStr(e.target.value)}
-              placeholder="execute_command"
+              placeholder="execute_command, abu-browser__*"
               className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
             />
+            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            {unmatchedDisallowedTools.length > 0 && (
+              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
+                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedDisallowedTools.join(', ') })}
+              </p>
+            )}
           </div>
 
           {/* Skills */}

@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
 import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import type { SubagentHostRunParams } from './subagentHost';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -17,7 +18,20 @@ vi.mock('./rpcClient', () => ({
   sendNotification: (...a: unknown[]) => sendNotificationMock(...a),
 }));
 
-import { handleSubagentRun, handleSubagentAbort, __getActiveSubagentRunCount } from './subagentHost';
+// agentLoopHost drags the whole agentLoop import graph — mock the single
+// lookup subagentHost consumes (image persistence's parent-run resolution).
+const findActiveRunDeltaMock = vi.fn();
+vi.mock('./agentLoopHost', () => ({
+  findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
+}));
+
+import {
+  handleSubagentRun,
+  handleSubagentAbort,
+  __getActiveSubagentRunCount,
+  SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS,
+  SUBAGENT_HOST_RUN_WIRE_FIELDS,
+} from './subagentHost';
 
 // Unique default runId per call — `activeRuns` is real module-level state
 // that persists across tests within this file (no reset hook exists for
@@ -53,7 +67,7 @@ function baseParams(overrides: Record<string, unknown> = {}) {
 }
 
 function resultShape(text: string) {
-  return { text, toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 0 };
+  return { text, toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'completed' as const };
 }
 
 // handleSubagentRun's return type is deliberately `Promise<unknown>` at the
@@ -64,7 +78,9 @@ function resultShape(text: string) {
 // (subagentHost.ts:266-272), which is exactly `resultShape`'s shape — so
 // tests narrow the awaited value to this type rather than changing the
 // production return type.
-type SubagentRunResult = ReturnType<typeof resultShape>;
+type SubagentRunResult = ReturnType<typeof resultShape> & {
+  stopReason: 'completed' | 'aborted' | 'error' | 'max_turns';
+};
 
 describe('subagentHost', () => {
   beforeEach(() => {
@@ -72,9 +88,36 @@ describe('subagentHost', () => {
     sendRequestMock.mockReset();
     sendRequestMock.mockResolvedValue('tool output');
     sendNotificationMock.mockReset();
+    findActiveRunDeltaMock.mockReset();
   });
 
   describe('param validation', () => {
+    it('keeps the sidecar-side SubagentRunParams field list explicit and exhaustive', () => {
+      type HostWireField = typeof SUBAGENT_HOST_RUN_WIRE_FIELDS[number];
+      type MissingHostRunParam = Exclude<keyof SubagentHostRunParams, HostWireField>;
+      expectTypeOf<MissingHostRunParam>().toEqualTypeOf<never>();
+
+      expect(SUBAGENT_HOST_RUN_WIRE_FIELDS).toEqual([
+        'runId',
+        'agent',
+        'task',
+        'context',
+        'parentConversationSummary',
+        'parentConversationId',
+        'persistParentToolImages',
+        'imContext',
+        'allowedTools',
+        'blockedTools',
+        'authorizationScopeId',
+        'locale',
+        'uiStrings',
+        'settingsSnapshot',
+        'resolvedCreds',
+        'tools',
+        'workspacePathSnapshot',
+      ]);
+    });
+
     it.each([
       ['non-object params', 42],
       ['missing runId', { ...baseParams(), runId: undefined }],
@@ -155,6 +198,17 @@ describe('subagentHost', () => {
       expect(result.text).toBe('file contents');
     });
 
+    it('returns the structured subagent stopReason across the sidecar boundary', async () => {
+      runSubagentLoopMock.mockResolvedValueOnce({
+        ...resultShape('failed before completion'),
+        stopReason: 'error',
+      });
+
+      const result = (await handleSubagentRun(baseParams({ runId: 'stop-reason-run' }))) as SubagentRunResult;
+
+      expect(result.stopReason).toBe('error');
+    });
+
     it('parses and restores blockedTools into the sidecar SubagentLoopOptions', async () => {
       let capturedOptions: { allowedTools?: string[]; blockedTools?: string[] } | undefined;
       runSubagentLoopMock.mockImplementation(async (options: { allowedTools?: string[]; blockedTools?: string[] }) => {
@@ -190,7 +244,7 @@ describe('subagentHost', () => {
       const events: SubagentProgressEvent[] = [
         { type: 'tool-start', id: 't1', toolName: 'read_file', toolInput: { path: 'x.txt' } },
         { type: 'tool-end', id: 't1', toolName: 'read_file', result: 'file contents', error: false },
-        { type: 'turn-complete', turn: 1, totalTurns: 200 },
+        { type: 'turn-complete', turn: 1, totalTurns: 200, usage: { inputTokens: 120, outputTokens: 45 } },
       ];
       runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
         for (const e of events) options.onProgress?.(e);
@@ -228,6 +282,179 @@ describe('subagentHost', () => {
       const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
       const roundTripped = JSON.parse(JSON.stringify(notifiedParams));
       expect(roundTripped).toEqual({ runId: 'roundtrip-run', event: toolEndEvent });
+    });
+
+    it('serializability: cumulative turn usage round-trips through the progress notification unchanged', async () => {
+      const turnEvent: SubagentProgressEvent = {
+        type: 'turn-complete',
+        turn: 2,
+        totalTurns: 200,
+        usage: { inputTokens: 120, outputTokens: 45 },
+      };
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.(turnEvent);
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ runId: 'usage-roundtrip-run' }));
+
+      const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
+      expect(JSON.parse(JSON.stringify(notifiedParams))).toEqual({ runId: 'usage-roundtrip-run', event: turnEvent });
+    });
+  });
+
+  describe('run-scoped tool restrictions across the wire', () => {
+    it('forwards BOTH allowedTools and blockedTools from wire params into SubagentLoopOptions', async () => {
+      // blockedTools used to be dropped at this boundary, silently re-arming
+      // every blockedTools-only safety tier (scheduler/trigger/IM) whenever
+      // the subagent ran in the sidecar.
+      runSubagentLoopMock.mockResolvedValue(resultShape('ok'));
+
+      await handleSubagentRun(baseParams({
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*', 'request_workspace'],
+      }));
+
+      expect(runSubagentLoopMock).toHaveBeenCalledWith(expect.objectContaining({
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*', 'request_workspace'],
+      }));
+    });
+
+    it('reconstructs every wire-backed SubagentLoopOptions field from one request', async () => {
+      runSubagentLoopMock.mockResolvedValue(resultShape('ok'));
+      const agentOverride = {
+        name: 'wire-agent',
+        description: 'wire description',
+        systemPrompt: 'wire prompt',
+        filePath: '__preset__',
+      };
+      const imContext = { platform: 'dchat', workspacePath: '/im/workspace' };
+
+      const request = baseParams({
+        agent: agentOverride,
+        task: 'wire task',
+        context: 'wire context',
+        parentConversationSummary: 'wire summary',
+        parentConversationId: 'parent-conversation',
+        imContext,
+        allowedTools: ['read_*'],
+        blockedTools: ['write_*'],
+        authorizationScopeId: 'scope-wire',
+      });
+
+      await handleSubagentRun(request);
+
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as Record<string, unknown>;
+      const wireRequest = request as Record<string, unknown>;
+
+      for (const field of SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS) {
+        expect(loopOptions, `runSubagentLoop options should contain wire field "${field}"`)
+          .toHaveProperty(field);
+        expect(loopOptions[field], `runSubagentLoop option "${field}" should preserve its wire value`)
+          .toEqual(wireRequest[field]);
+      }
+    });
+
+    it('rejects a malformed blockedTools param (type validation symmetric with allowedTools)', async () => {
+      await expect(handleSubagentRun(baseParams({ blockedTools: 'not-an-array' })))
+        .rejects.toMatchObject({ code: -32602 });
+    });
+
+    it('rejects a malformed persistParentToolImages flag', async () => {
+      await expect(handleSubagentRun(baseParams({ persistParentToolImages: 'yes' })))
+        .rejects.toMatchObject({ code: -32602 });
+    });
+  });
+
+  describe('subagent image persistence (sidecar-authoritative when parent loop is sidecar-run)', () => {
+    const imageContent = [
+      { type: 'text' as const, text: 'Image: /tmp/shot.png' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+    ];
+
+    function emitScreenshotRun(overrides: Record<string, unknown> = {}) {
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({ type: 'tool-start', id: 'sub-t1', toolName: 'computer', toolInput: { action: 'screenshot' } });
+        options.onProgress?.({ type: 'tool-end', id: 'sub-t1', toolName: 'computer', result: 'Image: /tmp/shot.png', error: false, resultContent: imageContent });
+        return resultShape('ok');
+      });
+      return handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', ...overrides }));
+    }
+
+    it('appends the image-bearing tool call through the PARENT run\'s frame ChatDelta (mirror + shell, survives ledger checkpoint)', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+
+      await emitScreenshotRun({ runId: 'image-persist-run', persistParentToolImages: true });
+
+      expect(findActiveRunDeltaMock).toHaveBeenCalledWith('conv-parent');
+      expect(appendMessageToolCall).toHaveBeenCalledTimes(1);
+      expect(appendMessageToolCall).toHaveBeenCalledWith('conv-parent', 'parent-loop-1', {
+        id: 'subagent-v1:image-persist-run:sub-t1',
+        name: 'computer',
+        input: { action: 'screenshot' },
+        result: 'Image: /tmp/shot.png',
+        resultContent: imageContent,
+        isError: undefined,
+        hidden: true,
+        fromSubagent: true,
+      });
+      // The progress notification still goes out for both events.
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not copy batch-only progress images into the durable parent message', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+
+      await emitScreenshotRun({ persistParentToolImages: false });
+
+      expect(findActiveRunDeltaMock).not.toHaveBeenCalled();
+      expect(appendMessageToolCall).not.toHaveBeenCalled();
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does nothing when the parent loop is not sidecar-run (shell-side append is the authority)', async () => {
+      findActiveRunDeltaMock.mockReturnValue(undefined);
+      await emitScreenshotRun({ persistParentToolImages: true });
+      expect(sendNotificationMock).toHaveBeenCalledTimes(2); // forwarding unaffected
+    });
+
+    it('does not even resolve the parent run for a text-only tool-end', async () => {
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall: vi.fn() }, loopId: 'parent-loop-1' });
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({ type: 'tool-end', id: 't1', toolName: 'read_file', result: 'plain', error: false, resultContent: [{ type: 'text', text: 'plain' }] });
+        return resultShape('ok');
+      });
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', persistParentToolImages: true }));
+      expect(findActiveRunDeltaMock).not.toHaveBeenCalled();
+    });
+
+    it('releases a completed tool input instead of reusing it for a duplicate late end', async () => {
+      const appendMessageToolCall = vi.fn();
+      findActiveRunDeltaMock.mockReturnValue({ chatDelta: { appendMessageToolCall }, loopId: 'parent-loop-1' });
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: unknown) => void }) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'reused-id',
+          toolName: 'computer',
+          toolInput: { hostile: 'x'.repeat(1024) },
+        });
+        options.onProgress?.({
+          type: 'tool-end', id: 'reused-id', toolName: 'computer', result: 'first', error: false, resultContent: imageContent,
+        });
+        options.onProgress?.({
+          type: 'tool-end', id: 'reused-id', toolName: 'computer', result: 'duplicate', error: false, resultContent: imageContent,
+        });
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ parentConversationId: 'conv-parent', persistParentToolImages: true }));
+
+      expect(appendMessageToolCall).toHaveBeenCalledTimes(2);
+      expect(appendMessageToolCall.mock.calls[0][2].input).toEqual({ hostile: 'x'.repeat(1024) });
+      expect(appendMessageToolCall.mock.calls[1][2].input).toEqual({});
     });
   });
 

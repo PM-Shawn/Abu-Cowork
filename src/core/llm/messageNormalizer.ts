@@ -225,9 +225,12 @@ export function normalizeMessages(
     } else if (msg.role === 'assistant') {
       const text = getTextContent(msg.content);
 
-      // Prefer toolCallsForContext over toolCalls for LLM history
+      // Prefer toolCallsForContext over toolCalls for LLM history. The
+      // fallback filters subagent-recorded entries (display/backfill-only,
+      // see ToolCall.fromSubagent) — they have no tool_use counterpart in
+      // this LLM's own history and must never be sent as one.
       const toolCallsSource: (ToolCall | ToolCallForContext)[] =
-        msg.toolCallsForContext || msg.toolCalls || [];
+        msg.toolCallsForContext || msg.toolCalls?.filter((tc) => !tc.fromSubagent) || [];
 
       const preparedToolCalls: PreparedToolCall[] = toolCallsSource.map((tc, i) => {
         const result = 'result' in tc ? tc.result : undefined;

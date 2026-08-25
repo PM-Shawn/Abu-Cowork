@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
 import { APP_VERSION } from '@/utils/version';
 import type { Message, ToolResultContent } from '@/types';
+import { DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST } from './durableToolResultContent';
 
 // Must import AFTER vi.mock (global mock in setup.ts handles @tauri-apps/plugin-fs)
 // We re-import the module fresh for each test to reset module-level state
@@ -907,6 +908,71 @@ describe('conversationStorage', () => {
       expect(imageBlock.filePath).toBe('/path/to/image.png'); // filePath preserved
     });
 
+    it('bounds nested tool-result images in both durable projections', async () => {
+      const oversized = 'x'.repeat(DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST + 1);
+      const image = {
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: 'image/png', data: oversized },
+      };
+      const msg = makeMsg({
+        id: 'tool-rich-oversized',
+        role: 'assistant',
+        toolCalls: [{
+          id: 'subagent-v1:run-a:call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [image],
+          hidden: true,
+          fromSubagent: true,
+        }],
+        toolCallsForContext: [{
+          id: 'call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [image],
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const [loaded] = await storage.loadMessages('conv-1');
+      expect(loaded.toolCalls?.[0].resultContent).toBeUndefined();
+      expect(loaded.toolCalls?.[0].result).toContain('storage budget');
+      expect(loaded.toolCallsForContext?.[0].resultContent).toBeUndefined();
+      expect(loaded.toolCallsForContext?.[0].result).toContain('storage budget');
+    });
+
+    it('keeps a normal bounded subagent screenshot available for restart replay', async () => {
+      const msg = makeMsg({
+        id: 'tool-rich-normal',
+        role: 'assistant',
+        toolCalls: [{
+          id: 'subagent-v1:run-a:call_1',
+          name: 'computer',
+          input: {},
+          result: 'Screenshot attached',
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'NORMAL_IMAGE' },
+          }],
+          hidden: true,
+          fromSubagent: true,
+        }],
+      });
+
+      await storage.appendMessage('conv-1', msg);
+      await storage.flushWrites();
+
+      const [loaded] = await storage.loadMessages('conv-1');
+      expect(loaded.toolCalls?.[0].resultContent?.[0]).toMatchObject({
+        type: 'image',
+        source: { data: 'NORMAL_IMAGE' },
+      });
+    });
+
     it('dehydrates tool result images to outputRef without polluting the live message object', async () => {
       const outputSnapshots = await import('./outputSnapshots');
       // Simulates a renderer process with a stale cache: the sidecar wrote the
@@ -1038,6 +1104,9 @@ describe('conversationStorage', () => {
       }
     });
 
+    // Fixture strings must be base64-plausible (length % 4 !== 1): the durable
+    // bounding guard (isBase64Like) drops implausible image payloads before the
+    // dehydration pass ever sees them.
     it('keeps multi-image tool result content inline on both carriers', async () => {
       writeOutputManifest(memFs, 'conv-1', {
         version: 1,
@@ -1078,7 +1147,7 @@ describe('conversationStorage', () => {
           result: 'two images',
           resultContent: [
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'FIRST_INLINE' } },
-            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'SECOND_INLINE' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'SECOND_INLINE1' } },
           ],
         }],
         toolCallsForContext: [{
@@ -1088,7 +1157,7 @@ describe('conversationStorage', () => {
           result: 'two context images',
           resultContent: [
             { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CTX_FIRST_INLINE' } },
-            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CTX_SECOND_INLINE' } },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'CTX_SECOND_INLINE1' } },
           ],
         }],
       });
@@ -1103,17 +1172,18 @@ describe('conversationStorage', () => {
       expect(contextImages).toHaveLength(2);
       expect(toolImages.map((block) => block.type === 'image' ? block.source.data : '')).toEqual([
         'FIRST_INLINE',
-        'SECOND_INLINE',
+        'SECOND_INLINE1',
       ]);
       expect(contextImages.map((block) => block.type === 'image' ? block.source.data : '')).toEqual([
         'CTX_FIRST_INLINE',
-        'CTX_SECOND_INLINE',
+        'CTX_SECOND_INLINE1',
       ]);
       for (const block of [...toolImages, ...contextImages]) {
         expect(block.type).toBe('image');
         if (block.type === 'image') expect(block.outputRef).toBeUndefined();
       }
     });
+
 
     it('clears streaming flag', async () => {
       const msg = makeMsg({ id: 'stream-1', isStreaming: true });

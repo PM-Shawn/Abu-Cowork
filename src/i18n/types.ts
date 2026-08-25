@@ -436,6 +436,20 @@ export interface TranslationDict {
       hookBlocked: string;
       /** Subagent produced no content. */
       noContent: string;
+      /** Required MCP tools are unavailable before delegation. {agentName} {requirements} {servers} */
+      mcpRequiredUnavailable: string;
+      /** Agent tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidToolDeclarations: string;
+      /** Agent tools frontmatter is not an array. {agentName} */
+      invalidToolsField: string;
+      /** Agent tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidDisallowedToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter is not an array. {agentName} */
+      invalidDisallowedToolsField: string;
+      /** Agent disallowed-tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyDisallowedToolDeclarations: string;
     };
     // Work-process fold label (Codex-style turn collapse). {duration} = e.g. "1m 4s"
     workedFor: string;
@@ -631,10 +645,34 @@ export interface TranslationDict {
     turnLabel: string;
     /** "✓ {n} 个子任务完成" — completion summary */
     completionSummary: string;
+    /** "⚠ {done} 个完成，{failed} 个失败" */
+    completionWithErrors: string;
+    /** Mixed terminal summary. {summary} */
+    mixedSummary: string;
+    /** Persisted summary unavailable/partial. */
+    unknownSummary: string;
+    /** Fallback row title. */
+    taskFallback: string;
+    /** Unknown task status. */
+    statusUnknown: string;
+    /** Open child agent task row accessible label. */
+    openTaskLabel: string;
+    /** Fold header aggregate for child agents. {total} {summary} */
+    foldBatchAggregate: string;
+    batchStatusSucceededCount: string;
+    batchStatusFailedCount: string;
+    batchStatusStoppedCount: string;
+    batchStatusIncompleteCount: string;
+    batchStatusRunningCount: string;
+    batchStatusUnknownCount: string;
     /** "展开" */
     expand: string;
     /** "收起" */
     collapse: string;
+    /** "{n} 个工具" */
+    toolCount: string;
+    /** "{n} tokens" */
+    tokenCount: string;
   };
 
   // Settings Modal
@@ -1519,6 +1557,10 @@ export interface TranslationDict {
     agentModelInherit: string;
     agentTools: string;
     agentDisallowedTools: string;
+    agentToolPatternsHint: string;
+    agentUnknownToolsWarning: string;
+    agentAllTools: string;
+    agentInvalidTools: string;
     agentSkills: string;
     agentMemory: string;
     agentMemorySession: string;
@@ -1892,15 +1934,32 @@ export interface TranslationDict {
     newBrowserTab: string;
     newTerminalTab: string;
     closeTab: string;
+    closeTabLabel: string;
     closeOtherTabs: string;
     closeAllTabs: string;
+    tabListLabel: string;
     newTabPage: string;
     terminalTitle: string;
     browserTitle: string;
+    agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
     browserDesc: string;
     terminalDesc: string;
+    agentStatusQueued: string;
+    agentStatusRunning: string;
+    agentStatusSucceeded: string;
+    agentStatusFailed: string;
+    agentStatusStopped: string;
+    agentStatusIncomplete: string;
+    agentStatusDone: string;
+    agentStatusError: string;
+    agentTools: string;
+    agentTokens: string;
+    agentNoSteps: string;
+    agentFullProcessUnavailable: string;
+    agentRichContentReleased: string;
+    agentRichContentPartiallyRetained: string;
     startHere: string;
     terminalProcessExited: string;
     terminalStartFailed: string;

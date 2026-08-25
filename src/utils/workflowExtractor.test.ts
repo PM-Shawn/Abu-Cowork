@@ -106,6 +106,28 @@ describe('workflowExtractor', () => {
       expect(steps[0].status).toBe('error');
     });
 
+    it('uses structured subagentStopReason for parent delegate tool calls instead of Error-prefixed text', () => {
+      const toolCalls: ToolCall[] = [
+        {
+          id: 'tc1', name: 'delegate_to_agent',
+          input: { task: 'report' },
+          result: 'Error: literal first line in a completed report',
+          subagentStopReason: 'completed',
+        },
+        {
+          id: 'tc2', name: 'run_agent_batch',
+          input: { tasks: [] },
+          result: 'plain incomplete batch output',
+          subagentStopReason: 'max_turns',
+        },
+      ];
+
+      const steps = extractWorkflowSteps(toolCalls);
+
+      expect(steps[0].status).toBe('completed');
+      expect(steps[1].status).toBe('error');
+    });
+
     it('maps pending tool (no result, not executing)', () => {
       const toolCalls: ToolCall[] = [{
         id: 'tc1', name: 'read_file',

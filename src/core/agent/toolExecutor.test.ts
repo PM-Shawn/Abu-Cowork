@@ -5,6 +5,7 @@ import type { ToolInvoker } from './ports/toolInvoker';
 
 const mocks = vi.hoisted(() => ({
   updateToolCall: vi.fn(),
+  checkpointToolCallMetadata: vi.fn(),
   setMessageToolCalls: vi.fn(),
   setAgentStatus: vi.fn(),
   executeAnyTool: vi.fn(),
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./ports/chatDelta', () => ({
   getChatDelta: () => ({
     updateToolCall: mocks.updateToolCall,
+    checkpointToolCallMetadata: mocks.checkpointToolCallMetadata,
     setMessageToolCalls: mocks.setMessageToolCalls,
     setAgentStatus: mocks.setAgentStatus,
   }),
@@ -249,7 +251,11 @@ describe('executeToolBatch · hard run restrictions', () => {
 
   it('installs the frozen parent settings reader for nested delegate tools', async () => {
     const executeAnyTool = vi.fn().mockResolvedValue('ok');
-    const params = makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool));
+    const imContext = { platform: 'dchat' as const, workspacePath: '/im/workspace' };
+    const params = {
+      ...makeParams(makeToolCall('delegate_to_agent'), makeInvoker(executeAnyTool)),
+      imContext,
+    };
 
     await executeToolBatch(params);
 
@@ -258,6 +264,7 @@ describe('executeToolBatch · hard run restrictions', () => {
       expect.objectContaining({
         conversationId: 'conv-1',
         settingsReader: params.settingsReader,
+        imContext,
       }),
     );
   });
@@ -376,6 +383,123 @@ describe('executeToolBatch · hard run restrictions', () => {
         error: true,
       }],
     });
+  });
+
+  it('persists structured subagent failure metadata and routes the delegate step as an error', async () => {
+    const executeAnyTool = vi.fn(async (
+      _name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePermission: unknown,
+      context?: ToolExecutionContext,
+    ) => {
+      context?.reportMetadata?.({ subagentStopReason: 'max_turns' });
+      return 'partial report without an Error prefix';
+    });
+    const toolCall = makeToolCall('delegate_to_agent');
+    const params = makeParams(toolCall, makeInvoker(executeAnyTool));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'partial report without an Error prefix',
+      undefined,
+      true,
+      undefined,
+      { subagentStopReason: 'max_turns' },
+    );
+    expect(mocks.route).toHaveBeenCalledWith({
+      type: 'step-error',
+      loopId: 'loop-1',
+      stepId: 'step-1',
+      error: 'partial report without an Error prefix',
+    });
+    expect(result.observations[0]).toEqual(expect.objectContaining({ error: true }));
+  });
+
+  it('treats a non-success batch terminal summary as a tool execution error even without a coarse failure reason', async () => {
+    const toolCall = makeToolCall('run_agent_batch');
+    const summary = {
+      version: 1 as const,
+      batch: { conversationId: 'conv-1', batchToolCallId: toolCall.id },
+      taskCount: 1,
+      counts: { succeeded: 0, failed: 1, stopped: 0, incomplete: 0 },
+      tasks: [{ taskIndex: 0, status: 'failed' as const, terminalReason: 'invalid_structured' as const }],
+    };
+    const executeAnyTool = vi.fn(async (
+      _name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePermission: unknown,
+      context?: ToolExecutionContext,
+    ) => {
+      context?.reportMetadata?.({ batchTerminalSummary: summary });
+      context?.reportMetadata?.({ subagentStopReason: 'completed' });
+      return 'schema-invalid aggregate';
+    });
+    const params = makeParams(toolCall, makeInvoker(executeAnyTool));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'schema-invalid aggregate',
+      undefined,
+      true,
+      undefined,
+      { batchTerminalSummary: summary, subagentStopReason: 'completed' },
+    );
+    expect(mocks.route).toHaveBeenCalledWith({
+      type: 'step-error',
+      loopId: 'loop-1',
+      stepId: 'step-1',
+      error: 'schema-invalid aggregate',
+    });
+    expect(result.observations[0]).toEqual(expect.objectContaining({ error: true }));
+  });
+
+  it('routes a completed delegate through step-end even when its report starts with Error:', async () => {
+    const executeAnyTool = vi.fn(async (
+      _name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePermission: unknown,
+      context?: ToolExecutionContext,
+    ) => {
+      context?.reportMetadata?.({ subagentStopReason: 'completed' });
+      return 'Error: quoted heading from the completed report';
+    });
+    const toolCall = makeToolCall('delegate_to_agent');
+    const params = makeParams(toolCall, makeInvoker(executeAnyTool));
+    params.toolCallToStepId.set(toolCall.id, 'step-1');
+
+    const result = await executeToolBatch(params);
+
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      'Error: quoted heading from the completed report',
+      undefined,
+      false,
+      undefined,
+      { subagentStopReason: 'completed' },
+    );
+    expect(mocks.route).toHaveBeenCalledWith({
+      type: 'step-end',
+      loopId: 'loop-1',
+      stepId: 'step-1',
+      result: 'Error: quoted heading from the completed report',
+      resultContent: undefined,
+    });
+    expect(result.observations[0]).toEqual(expect.objectContaining({ error: false }));
   });
 });
 
@@ -629,5 +753,47 @@ describe('executeToolBatch · concurrency-aware scheduling (isConcurrencySafe)',
 
     expect(executeAnyTool).toHaveBeenCalledTimes(2);
     expect(result.observations.map((o) => o.name)).toEqual(['read_file', 'mystery_tool']);
+  });
+
+  it('checkpoints trusted metadata even when it arrives after parent abort wins the race', async () => {
+    vi.useFakeTimers();
+    const toolCall = makeToolCall('run_agent_batch');
+    const params = makeParams(
+      toolCall,
+      makeInvoker(async (_name, _input, _confirm, _filePerm, context) => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        context?.reportMetadata?.({
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: 'conv-1', batchToolCallId: toolCall.id },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        });
+        return 'late response';
+      }),
+    );
+
+    const run = executeToolBatch(params);
+    await Promise.resolve();
+    params.abortController.abort();
+    await run;
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(mocks.checkpointToolCallMetadata).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      toolCall.id,
+      {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: 'conv-1', batchToolCallId: toolCall.id },
+          taskCount: 1,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      },
+    );
   });
 });

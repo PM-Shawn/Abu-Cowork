@@ -855,7 +855,12 @@ export default function ChatView({
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider message={group[0]} />
               ) : (
-                <MessageGroup messages={group} isLastGroup={index === messageGroups.length - 1} highlightMessageId={highlightedMessageId} />
+                <MessageGroup
+                  conversationId={activeConv.id}
+                  messages={group}
+                  isLastGroup={index === messageGroups.length - 1}
+                  highlightMessageId={highlightedMessageId}
+                />
               )
             }
           />

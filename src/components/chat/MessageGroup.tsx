@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
-import type { Message, MessageContent, ToolCall } from '@/types';
+import type { BatchIdentity, Message, MessageContent, ToolCall } from '@/types';
+import { makeBatchKey } from '@/types';
 import { TOOL_NAMES, isDisplayHiddenStepBackedTool } from '@/core/tools/toolNames';
 import type { ExecutionStep } from '@/types/execution';
 import type { WorkflowStep } from '@/utils/workflowExtractor';
@@ -23,6 +24,8 @@ import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { computeRewindImpact } from '@/utils/rewindImpact';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { useBatchProgressStore } from '@/stores/batchProgressStore';
+import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
@@ -33,8 +36,19 @@ import { cn } from '@/lib/utils';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
+import {
+  rollupBatchRows,
+  compactBatchRollupSummary,
+  rowsFromLiveBatch,
+  rowsFromLegacyResult,
+  rowsFromPersistedSummary,
+  rowsFromUnknown,
+  shouldRenderBatchProgressCard,
+  type BatchRowsRollup,
+} from './batchProgressViewModel';
 
 interface MessageGroupProps {
+  conversationId: string;
   messages: Message[];
   isLastGroup?: boolean;
   // When set and this group contains that message, briefly ring-highlight the
@@ -100,6 +114,22 @@ function formatWorkDuration(ms: number): string {
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}m ${s}s`;
+}
+
+function emptyBatchRollup(): BatchRowsRollup {
+  return { total: 0, succeeded: 0, failed: 0, stopped: 0, incomplete: 0, running: 0, queued: 0, unknown: 0 };
+}
+
+function addBatchRollup(target: BatchRowsRollup, source: BatchRowsRollup): BatchRowsRollup {
+  target.total += source.total;
+  target.succeeded += source.succeeded;
+  target.failed += source.failed;
+  target.stopped += source.stopped;
+  target.incomplete += source.incomplete;
+  target.running += source.running;
+  target.queued += source.queued;
+  target.unknown += source.unknown;
+  return target;
 }
 
 // Helper to get text content from Message
@@ -168,7 +198,56 @@ type RenderSegment =
   | { kind: 'steps'; executionSteps: ExecutionStep[]; legacySteps: WorkflowStep[]; isLastGroup: boolean; stepsMsgs: Message[] }
   | { kind: 'plan'; toolCall: ToolCall }
   | { kind: 'widget'; toolCall: ToolCall }
+  | { kind: 'batch'; toolCall: ToolCall; message: Message }
   | { kind: 'user'; message: Message };
+
+function isBatchToolCall(toolCall: ToolCall): boolean {
+  return toolCall.name === TOOL_NAMES.RUN_AGENT_BATCH;
+}
+
+function isStepBackedToolCall(toolCall: ToolCall): boolean {
+  return !toolCall.hidden || isDisplayHiddenStepBackedTool(toolCall.name);
+}
+
+function claimExecutionStepIndex(
+  toolCall: ToolCall,
+  steps: ExecutionStep[],
+  claimed: Set<number>,
+  nominalIndex: number,
+): number | undefined {
+  const exactIndex = steps.findIndex((step, index) =>
+    !claimed.has(index) && step.toolCallId === toolCall.id);
+  if (exactIndex >= 0) {
+    claimed.add(exactIndex);
+    return exactIndex;
+  }
+
+  const positional = steps[nominalIndex];
+  if (
+    positional
+    && !claimed.has(nominalIndex)
+    && positional.toolCallId === undefined
+    && positional.toolName === toolCall.name
+  ) {
+    claimed.add(nominalIndex);
+    return nominalIndex;
+  }
+  return undefined;
+}
+
+function claimLegacyStepIndex(
+  toolCall: ToolCall,
+  steps: WorkflowStep[],
+  claimed: Set<number>,
+): number | undefined {
+  const exactIndex = steps.findIndex((step, index) =>
+    !claimed.has(index) && step.id === toolCall.id && step.toolName === toolCall.name);
+  if (exactIndex >= 0) {
+    claimed.add(exactIndex);
+    return exactIndex;
+  }
+  return undefined;
+}
 
 /**
  * Build render segments from assistant messages and their steps.
@@ -185,6 +264,8 @@ export function buildRenderSegments(
   messages: Message[],
   allExecSteps: ExecutionStep[],
   allLegacySteps: WorkflowStep[],
+  hasBatchCardState: (message: Message, toolCall: ToolCall) => boolean = (_message, toolCall) =>
+    shouldRenderBatchProgressCard(toolCall),
 ): RenderSegment[] {
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   if (assistantMsgs.length === 0) return [];
@@ -193,7 +274,10 @@ export function buildRenderSegments(
   // renders in true chronological position; any thinking-typed step from
   // upstream (synth or eventRouter) is discarded here.
   const toolExecSteps = allExecSteps.filter((s) => s.type !== 'thinking');
-  const toolLegacySteps = allLegacySteps.filter((s) => s.type !== 'thinking');
+  const toolLegacySteps = allLegacySteps.filter((s) => {
+    if (s.type === 'thinking' || typeof s.toolName !== 'string') return false;
+    return true;
+  });
 
   const segments: RenderSegment[] = [];
   let pendingExecSteps: ExecutionStep[] = [];
@@ -215,10 +299,12 @@ export function buildRenderSegments(
     }
   };
 
-  let execOffset = 0;
-  let legacyOffset = 0;
+  let nominalStepIndex = 0;
   let passedFirstAssistant = false;
   let assistantIdx = 0;
+  const seenBatchKeys = new Set<string>();
+  const claimedExecStepIndices = new Set<number>();
+  const claimedLegacyStepIndices = new Set<number>();
 
   for (const msg of messages) {
     if (msg.role === 'user') {
@@ -241,24 +327,11 @@ export function buildRenderSegments(
       pendingExecSteps.push(buildThinkingStep(msg));
     }
 
-    // Slice this message's tool steps. Counted by step-backed calls, not
-    // visible calls: report_plan is hidden AND creates no execution step
-    // (agentLoop breaks before createStepForToolUse — see plan segment),
-    // while display-hidden step-backed tools (show_widget) go through full
-    // step bookkeeping (so planned-step advance counts them) and their steps
-    // are filtered from the timeline below because they render as widget
-    // segments instead.
-    const stepBackedCount = (msg.toolCalls || []).filter(
-      (tc) => !tc.hidden || isDisplayHiddenStepBackedTool(tc.name),
-    ).length;
-    const turnExecSteps = toolExecSteps
-      .slice(execOffset, execOffset + stepBackedCount)
-      .filter((s) => !isDisplayHiddenStepBackedTool(s.toolName));
-    execOffset += stepBackedCount;
-    const turnLegacySteps = toolLegacySteps
-      .slice(legacyOffset, legacyOffset + stepBackedCount)
-      .filter((s) => !isDisplayHiddenStepBackedTool(s.toolName));
-    legacyOffset += stepBackedCount;
+    // Match this message's tool calls against the global raw step streams.
+    // Exact toolCallId matches can be anywhere still unclaimed; old snapshots
+    // without toolCallId only fall back to the same absolute declared position
+    // and same tool name, so a missing earlier step cannot shift later tools.
+    const toolCalls = msg.toolCalls || [];
 
     // 2. Text — flush accumulated tool steps, then emit text.
     const text = getTextContent(msg.content);
@@ -267,30 +340,73 @@ export function buildRenderSegments(
       segments.push({ kind: 'text', text, message: msg, isLastTurn });
     }
 
-    // 3. Plan — a report_plan call becomes a dedicated collapsed plan card at its real position.
-    const planCall = (msg.toolCalls || []).find(
-      (tc) => tc.name === TOOL_NAMES.REPORT_PLAN && parsePlanSteps(tc).length > 0,
-    );
-    if (planCall) {
-      flushSteps();
-      segments.push({ kind: 'plan', toolCall: planCall });
-    }
+    // 3. Tool calls — consume every raw step-backed position first, then route
+    // special UI calls (plan/widget/batch) at their exact call site. Generic
+    // steps exclude raw slots claimed by those special calls, preventing a
+    // duplicate generic row plus the dedicated card.
+    const addPendingStepsMessage = () => {
+      if (!pendingStepsMsgs.some((pendingMsg) => pendingMsg.id === msg.id)) {
+        pendingStepsMsgs.push(msg);
+      }
+    };
+    for (const toolCall of toolCalls) {
+      if (!isStepBackedToolCall(toolCall)) {
+        if (toolCall.name === TOOL_NAMES.REPORT_PLAN && parsePlanSteps(toolCall).length > 0) {
+          flushSteps();
+          segments.push({ kind: 'plan', toolCall });
+        }
+        continue;
+      }
 
-    // 3b. Widgets — each display-hidden step-backed call (show_widget)
-    // becomes a dedicated inline card at its real position (text → widget →
-    // text), same hidden-from-generic-list treatment as the plan card above.
-    // A single turn can call show_widget more than once (multiple visuals),
-    // so unlike planCall this iterates every match instead of taking the first.
-    const widgetCalls = (msg.toolCalls || []).filter((tc) => isDisplayHiddenStepBackedTool(tc.name));
-    for (const widgetCall of widgetCalls) {
-      flushSteps();
-      segments.push({ kind: 'widget', toolCall: widgetCall });
-    }
+      const batchKey = `${msg.id}\u0000${toolCall.id}`;
+      if (isBatchToolCall(toolCall) && seenBatchKeys.has(batchKey)) {
+        continue;
+      }
 
-    // 4. Accumulate this message's tool steps (merges with adjacent tool-only turns).
-    pendingExecSteps.push(...turnExecSteps);
-    pendingLegacySteps.push(...turnLegacySteps);
-    if (stepBackedCount > 0) pendingStepsMsgs.push(msg);
+      const currentNominalIndex = nominalStepIndex;
+      nominalStepIndex++;
+      const execStepIndex = claimExecutionStepIndex(toolCall, toolExecSteps, claimedExecStepIndices, currentNominalIndex);
+      const legacyStepIndex = claimLegacyStepIndex(toolCall, toolLegacySteps, claimedLegacyStepIndices);
+      const execStep = execStepIndex === undefined ? undefined : toolExecSteps[execStepIndex];
+      const legacyStep = legacyStepIndex === undefined ? undefined : toolLegacySteps[legacyStepIndex];
+
+      if (isDisplayHiddenStepBackedTool(toolCall.name)) {
+        flushSteps();
+        segments.push({ kind: 'widget', toolCall });
+        continue;
+      }
+
+      if (isBatchToolCall(toolCall)) {
+        if (hasBatchCardState(msg, toolCall) && !seenBatchKeys.has(batchKey)) {
+          flushSteps();
+          segments.push({ kind: 'batch', toolCall, message: msg });
+          seenBatchKeys.add(batchKey);
+          continue;
+        }
+        // A terminal legacy call whose result does not match either historical
+        // batch contract falls back to the generic tool step. This keeps its
+        // actual result text visible instead of manufacturing "unknown" rows.
+        if (execStep && !isDisplayHiddenStepBackedTool(execStep.toolName)) {
+          pendingExecSteps.push(execStep);
+          addPendingStepsMessage();
+        }
+        if (legacyStep && !isDisplayHiddenStepBackedTool(legacyStep.toolName)) {
+          pendingLegacySteps.push(legacyStep);
+          addPendingStepsMessage();
+        }
+        seenBatchKeys.add(batchKey);
+        continue;
+      }
+
+      if (execStep && !isDisplayHiddenStepBackedTool(execStep.toolName)) {
+        pendingExecSteps.push(execStep);
+        addPendingStepsMessage();
+      }
+      if (legacyStep && !isDisplayHiddenStepBackedTool(legacyStep.toolName)) {
+        pendingLegacySteps.push(legacyStep);
+        addPendingStepsMessage();
+      }
+    }
   }
 
   flushSteps();
@@ -307,18 +423,18 @@ export function buildRenderSegments(
 }
 
 // Index (exclusive) up to which segments fold into the collapsible "工作过程"
-// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline (the final
-// answer). Returns null when nothing should fold: group not done, no final
-// text answer, or the answer is the first/only segment.
+// group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. A fold is a
+// prefix-only affordance, so its boundary must stop before the first assistant
+// text or mid-loop user segment. Otherwise collapsing would silently remove
+// authored conversation content rather than only hiding process details.
 // eslint-disable-next-line react-refresh/only-export-components
-export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
-  if (!isDone) return null;
-  let lastTextIdx = -1;
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (segments[i].kind === 'text') { lastTextIdx = i; break; }
-  }
-  if (lastTextIdx <= 0) return null;
-  return lastTextIdx;
+export function computeWorkProcessFold(segments: RenderSegment[], _isDone: boolean): number | null {
+  const hasProcess = segments.some((segment) =>
+    segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
+  if (!hasProcess) return null;
+  const firstAuthoredSegment = segments.findIndex((segment) =>
+    segment.kind === 'text' || segment.kind === 'user');
+  return firstAuthoredSegment > 0 ? firstAuthoredSegment : null;
 }
 
 /**
@@ -346,7 +462,7 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  * User messages render standalone, assistant messages share one avatar.
  * Renders text → merged tool steps, with consecutive tool-only turns combined.
  */
-export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = false, highlightMessageId = null }: MessageGroupProps) {
+export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, highlightMessageId = null }: MessageGroupProps) {
   const { t } = useI18n();
   // Separate user and assistant messages
   const userMsg = messages.find((m) => m.role === 'user');
@@ -413,7 +529,16 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
     () => assistantMsgs.flatMap((m) => m.toolCalls || []),
     [assistantMsgs]
   );
-
+  const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
+    const seenBatchKeys = new Set<string>();
+    return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
+      if (!isBatchToolCall(toolCall)) return true;
+      const batchKey = `${message.id}\u0000${toolCall.id}`;
+      if (seenBatchKeys.has(batchKey)) return false;
+      seenBatchKeys.add(batchKey);
+      return true;
+    }));
+  }, [assistantMsgs]);
   // Extract search results: prefer structured data from tool calls, fallback to text parsing
   const searchResults = useMemo(() => {
     const fromTools = messages
@@ -441,6 +566,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Highlighted source index for citation click
   const [highlightedSource, setHighlightedSource] = useState<number | null>(null);
   const groupRef = useRef<HTMLDivElement>(null);
+  const workProcessRef = useRef<HTMLDivElement>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
@@ -474,7 +600,7 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Only pass the active conversation's agent status to the currently streaming
   // group — prevents another running conversation from injecting a phantom
   // thinking step into completed groups.
-  const workflowSteps = extractWorkflowSteps(allToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
+  const workflowSteps = extractWorkflowSteps(legacyWorkflowToolCalls, thinkingContent, isStreaming ? agentStatus : undefined, skillInfo, thinkingDuration);
 
   // Extract file outputs for attachments — deliverables semantics: only show
   // what the AI actually produced this turn. extractFileOutputs (deliverables
@@ -592,11 +718,42 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       : persistedExecutionSteps ?? [];
   }, [executionSteps, persistedExecutionSteps]);
 
+  const liveBatches = useBatchProgressStore((s) => s.batches);
+
   // Build render segments: text and merged step groups
   const segments = useMemo(
-    () => buildRenderSegments(messages, activeExecSteps, workflowSteps),
-    [messages, activeExecSteps, workflowSteps]
+    () => buildRenderSegments(messages, activeExecSteps, workflowSteps, (message, toolCall) => {
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: message.id,
+        batchToolCallId: toolCall.id,
+      };
+      return liveBatches[makeBatchKey(identity)] !== undefined
+        || shouldRenderBatchProgressCard(toolCall, identity);
+    }),
+    [messages, activeExecSteps, workflowSteps, conversationId, liveBatches]
   );
+  const batchSegments = useMemo(
+    () => segments.filter((seg): seg is Extract<RenderSegment, { kind: 'batch' }> => seg.kind === 'batch'),
+    [segments],
+  );
+  const batchRollup = useMemo(() => {
+    return batchSegments.reduce<BatchRowsRollup>((rollup, segment) => {
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: segment.message.id,
+        batchToolCallId: segment.toolCall.id,
+      };
+      const liveBatch = liveBatches[makeBatchKey(identity)];
+      const rows = liveBatch
+        ? rowsFromLiveBatch(liveBatch, Date.now())
+        : rowsFromPersistedSummary(identity, segment.toolCall, t)
+          ?? rowsFromLegacyResult(segment.toolCall, t)
+          ?? (segment.toolCall.isExecuting ? rowsFromUnknown(segment.toolCall, t) : undefined);
+      if (!rows) return rollup;
+      return addBatchRollup(rollup, rollupBatchRows(rows));
+    }, emptyBatchRollup());
+  }, [batchSegments, conversationId, liveBatches, t]);
 
   // Typing-dots gate: track the message that is actually streaming, NOT the
   // whole group. agentLoop spawns a fresh empty assistant message per turn, so a
@@ -609,7 +766,15 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   // Codex-style turn collapse: once a turn is done and has a final text answer,
   // fold all intermediate segments (thinking/plan/steps) behind a single row.
   const workFoldEnd = useMemo(() => computeWorkProcessFold(segments, isGroupDone), [segments, isGroupDone]);
-  const [workExpanded, setWorkExpanded] = useState(false);
+  const foldKey = useMemo(
+    () => makeWorkProcessFoldKey(conversationId, loopId, userMsg?.id, assistantMsgs[0]?.id),
+    [conversationId, loopId, userMsg?.id, assistantMsgs],
+  );
+  const foldEntry = useWorkProcessFoldStore((s) => s.entries[foldKey]);
+  const [foldFocusVersion, setFoldFocusVersion] = useState(0);
+  useEffect(() => {
+    useWorkProcessFoldStore.getState().touch(conversationId, foldKey);
+  }, [conversationId, foldKey]);
   // Fold header label: Codex-style duration + completed/aborted variant. Prefer
   // the execution's start/end timing; fall back to message timestamps when the
   // execution has been evicted (older groups). Aborted = execution cancelled.
@@ -631,6 +796,37 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   const workLabel = isStopped
     ? stoppedLabel
     : format(t.chat.workedFor, { duration: formatWorkDuration(workDurationMs) });
+  const batchAggregateLabel = batchRollup.total > 0
+    ? format(t.batch.foldBatchAggregate, {
+      total: batchRollup.total,
+      summary: compactBatchRollupSummary(batchRollup, t),
+    })
+    : '';
+  const foldHeaderLabel = batchAggregateLabel ? `${workLabel} · ${batchAggregateLabel}` : workLabel;
+  const foldMode = foldEntry?.mode ?? 'auto';
+  const workExpanded = foldMode === 'expanded' || (foldMode === 'auto' && !(foldEntry?.autoCollapseHandled ?? false));
+  const hasFinalAnswerOutsideFold = workFoldEnd !== null && workFoldEnd < segments.length && segments[workFoldEnd]?.kind === 'text';
+  const canAutoCollapseFold =
+    foldMode === 'auto'
+    && !(foldEntry?.autoCollapseHandled ?? false)
+    && isGroupDone
+    && !isStopped
+    && userMsg?.runState !== 'failed'
+    && userMsg?.runState !== 'connection-failed'
+    && userMsg?.runState !== 'interrupted'
+    && hasFinalAnswerOutsideFold
+    && batchRollup.failed === 0
+    && batchRollup.stopped === 0
+    && batchRollup.incomplete === 0
+    && batchRollup.running === 0
+    && batchRollup.queued === 0
+    && batchRollup.unknown === 0;
+
+  useEffect(() => {
+    if (!canAutoCollapseFold) return;
+    if (workProcessRef.current?.contains(document.activeElement)) return;
+    useWorkProcessFoldStore.getState().markAutoCollapsed(conversationId, foldKey);
+  }, [canAutoCollapseFold, conversationId, foldKey, foldFocusVersion]);
 
   // Per-segment render callback — extracted from the map so it can be reused
   // against two slices (folded + tail) without duplicating logic. Closes over
@@ -705,6 +901,22 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
       );
     }
 
+    if (seg.kind === 'batch') {
+      const identity: BatchIdentity = {
+        conversationId,
+        assistantMessageId: seg.message.id,
+        batchToolCallId: seg.toolCall.id,
+      };
+      return (
+        <MessageErrorBoundary key={`batch-${makeBatchKey(identity)}`}>
+          <BatchProgress
+            identity={identity}
+            toolCall={seg.toolCall}
+          />
+        </MessageErrorBoundary>
+      );
+    }
+
     // kind === 'steps' — merged TaskBlock
     const hasExecSteps = seg.executionSteps.length > 0;
     const hasLegacySteps = seg.legacySteps.length > 0;
@@ -755,12 +967,6 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
           .filter((tc) => tc.name === TOOL_NAMES.ASK_USER_QUESTION && tc.userQuestionAnswers)
       : [];
 
-    // Live run_agent_batch progress cards for this steps segment (tc.id = LLM
-    // call id, matches the batchProgressStore key set by the tool's execute)
-    const segActiveBatches = seg.stepsMsgs
-      .flatMap((m) => m.toolCalls ?? [])
-      .filter((tc) => tc.name === TOOL_NAMES.RUN_AGENT_BATCH && tc.isExecuting && tc.result === undefined);
-
     return (
       <div key={`steps-${segIdx}`}>
         {hasExecSteps ? (
@@ -778,9 +984,6 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
           />
         )}
-        {segActiveBatches.map((tc) => (
-          <BatchProgress key={`batch-${tc.id}`} toolCallId={tc.id} />
-        ))}
         {segSettledUQCards.map((tc) => (
           <UserQuestionCard key={`uq-${tc.id}`} toolCall={tc} />
         ))}
@@ -791,6 +994,9 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
   return (
     <div
       ref={groupRef}
+      onBlur={() => {
+        queueMicrotask(() => setFoldFocusVersion((version) => version + 1));
+      }}
       className={cn(
         // transition-colors lives on the base class so the highlight fades both
         // in AND out (a conditional transition class vanishes with the bg and
@@ -865,28 +1071,38 @@ export default function MessageGroup({ messages, isLastGroup: isLastGroupProp = 
                 intermediate segments (thinking/plan/steps) are folded
                 behind a single collapsible "工作过程" row (Codex-style). */}
             {workFoldEnd == null ? (
-              segments.map(renderSegment)
+              <>
+                {segments.map(renderSegment)}
+              </>
             ) : (
               <>
-                {/* Lightweight fold header — matches the thinking/step block
-                    style (muted text + trailing chevron, no card background). */}
-                <button
-                  onClick={() => setWorkExpanded((v) => !v)}
-                  className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] transition-colors mb-2"
-                >
-                  <span>{workLabel}</span>
-                  <ChevronDown
-                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
-                  />
-                </button>
-                {/* Widgets are content, not work-process auxiliary — they stay
-                    visible even when the fold is collapsed (unlike thinking/
-                    steps/plan, which the toggle is actually for). */}
-                {workExpanded
-                  ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
-                  : segments.slice(0, workFoldEnd)
-                      .filter((seg) => seg.kind === 'widget')
-                      .map((seg, i) => renderSegment(seg, i))}
+                <div ref={workProcessRef}>
+                  {/* Lightweight fold header — matches the thinking/step block
+                      style (muted text + trailing chevron, no card background). */}
+                  <button
+                    type="button"
+                    aria-expanded={workExpanded}
+                    onClick={() => {
+                      useWorkProcessFoldStore.getState().setMode(
+                        conversationId,
+                        foldKey,
+                        workExpanded ? 'collapsed' : 'expanded',
+                      );
+                    }}
+                    className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
+                  >
+                    <span>{foldHeaderLabel}</span>
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                    />
+                  </button>
+                  {workExpanded
+                    ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
+                    : segments.slice(0, workFoldEnd)
+                        .filter((seg) => seg.kind === 'widget')
+                        .map((seg, i) => renderSegment(seg, i))}
+                </div>
                 {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
               </>
             )}

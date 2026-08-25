@@ -18,6 +18,7 @@ import type {
   StepStartPayload,
   ToolCallContext,
 } from '../../types/execution';
+import type { ToolCall, ToolResultContent } from '../../types';
 import type { ExecutionPort } from './ports/executionPort';
 import type { ScratchpadEntry } from '../../stores/scratchpadStore';
 import {
@@ -31,6 +32,10 @@ import { isToolResultError } from '../../utils/workflowExtractor';
 import { getToolLabel } from '../../utils/toolLabels';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { firstImageContent } from '../tools/toolResultContent';
+import {
+  ActiveToolResultAdmission,
+  type ActiveToolResultToken,
+} from './activeToolResultContent';
 
 // --- Helper Functions ---
 
@@ -46,7 +51,7 @@ const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
 const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SEARCH_TOOLS: string[] = ['search', 'grep', 'find', TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.FIND_FILES];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
-const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT];
+const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH];
 
 /**
  * Check if a tool is an MCP tool (format: serverName__toolName)
@@ -243,16 +248,52 @@ export interface EventRouterDeps {
    *  in-process wiring). Signature mirrors `ScratchpadStore.addEntry`'s
    *  actual parameter shape. */
   addScratchpadEntry?: (entry: Omit<ScratchpadEntry, 'id' | 'timestamp' | 'isViewed'>) => void;
+  /** Callback to persist an image-bearing SUBAGENT tool call onto the parent
+   *  message's `toolCalls` (hidden + `fromSubagent`), so the image survives
+   *  reload for child-step backfill — see `completeChildStep`. Wired to
+   *  `chatDelta.appendMessageToolCall` by both router constructions
+   *  (agentLoop.ts and agentLoopRunner.ts's shell router). */
+  appendMessageToolCall?: (loopId: string, toolCall: ToolCall) => void;
 }
 
 export class EventRouter {
   private deps: EventRouterDeps;
   private locale: string;
   private thinkingStartTime: number | null = null;
+  private readonly activeRichResults = new ActiveToolResultAdmission();
+  private readonly activeRichResultOwners = new Map<string, ActiveToolResultToken>();
 
   constructor(deps: EventRouterDeps, locale: string = 'zh') {
     this.deps = deps;
     this.locale = locale;
+  }
+
+  private releaseRichResultOwner(ownerKey: string): void {
+    const previous = this.activeRichResultOwners.get(ownerKey);
+    if (!previous) return;
+    this.activeRichResults.release(previous);
+    // A bound callback normally removes itself. Keep this fallback for a
+    // token replaced before its owner callback was attached.
+    if (this.activeRichResultOwners.get(ownerKey) === previous) {
+      this.activeRichResultOwners.delete(ownerKey);
+    }
+  }
+
+  private bindRichResultOwner(
+    ownerKey: string,
+    token: ActiveToolResultToken | undefined,
+    release: () => void,
+  ): void {
+    if (!token) return;
+    this.activeRichResultOwners.set(ownerKey, token);
+    this.activeRichResults.bindRelease(token, () => {
+      // Explicit replacement and automatic LRU eviction are synchronous, but
+      // guard the identity anyway: an obsolete callback must never clear the
+      // payload installed by a newer event for this same detail-block owner.
+      if (this.activeRichResultOwners.get(ownerKey) !== token) return;
+      this.activeRichResultOwners.delete(ownerKey);
+      release();
+    });
   }
 
   /**
@@ -388,13 +429,17 @@ export class EventRouter {
     const step = execution.steps.find((s) => s.id === stepId);
     if (!step) return;
 
+    const imageOwnerKey = JSON.stringify([execution.id, stepId, `${stepId}-image`]);
+    this.releaseRichResultOwner(imageOwnerKey);
+    const resultContentToken = this.activeRichResults.admit(resultContent);
+    const admittedResultContent = this.activeRichResults.get(resultContentToken);
+
     // Update step result
     this.deps.executionStore.setStepResult(execution.id, stepId, result);
 
     // Add result block for delegate steps — show summary instead of hiding content
     if (step.type === 'delegate') {
       const isZh = this.locale.startsWith('zh');
-      const isError = isToolResultError(result);
       // Truncate delegate result to a readable summary (first 500 chars)
       const maxSummaryLen = 500;
       const summary = result.length > maxSummaryLen
@@ -403,19 +448,23 @@ export class EventRouter {
       const summaryBlock: DetailBlock = {
         id: `${stepId}-result`,
         stepId,
-        type: isError ? 'error' : 'result',
-        label: isError ? (isZh ? '错误' : 'Error') : (isZh ? '执行摘要' : 'Result Summary'),
-        labelKey: isError ? 'error' : 'summary',
+        // A step-end event is already the structured success channel.
+        // Delegate failures are routed through step-error by toolExecutor
+        // (or the direct @agent branch), so result text must not be parsed
+        // again here — a valid report may legitimately begin with "Error:".
+        type: 'result',
+        label: isZh ? '执行摘要' : 'Result Summary',
+        labelKey: 'summary',
         content: summary,
         isTruncated: result.length > maxSummaryLen,
-        isExpanded: isError,
+        isExpanded: false,
       };
       this.deps.executionStore.addDetailBlock(execution.id, stepId, summaryBlock);
     } else {
       // Add image block if resultContent contains images. Must use the SAME
       // extraction rule as the snapshot-replay backfill — see firstImageContent.
-      if (resultContent && Array.isArray(resultContent)) {
-        const imageData = firstImageContent(resultContent);
+      if (admittedResultContent) {
+        const imageData = firstImageContent(admittedResultContent);
         if (imageData) {
           const isZh = this.locale.startsWith('zh');
           const imgDetailBlock: DetailBlock = {
@@ -430,6 +479,9 @@ export class EventRouter {
             isExpanded: true,
           };
           this.deps.executionStore.addDetailBlock(execution.id, stepId, imgDetailBlock);
+          this.bindRichResultOwner(imageOwnerKey, resultContentToken, () => {
+            this.deps.executionStore.releaseDetailBlockImage(execution.id, stepId, imgDetailBlock.id);
+          });
         }
       }
       const resultBlock = createResultBlock(stepId, result, step.toolName, this.locale);
@@ -459,7 +511,7 @@ export class EventRouter {
         name: step.toolName,
         input: step.toolInput,
         result,
-        ...(resultContent ? { resultContent } : {}),
+        ...(admittedResultContent ? { resultContent: admittedResultContent } : {}),
       });
     }
   }
@@ -548,6 +600,7 @@ export class EventRouter {
     const childStep: ExecutionStep = {
       id: childId,
       executionId: execution.id,
+      toolCallId: payload.toolCallId,
       type: inferStepType(payload.toolName),
       label,
       detail,
@@ -564,12 +617,78 @@ export class EventRouter {
   }
 
   /**
-   * Complete a child step with result or error
+   * Complete a child step with result or error.
+   *
+   * When `resultContent` carries an image block (subagent screenshot /
+   * read_file image), the child step gets the same image + result detail
+   * blocks a top-level step gets in `handleStepEnd`, and the image-bearing
+   * tool call is persisted onto the parent message (hidden, `fromSubagent`)
+   * so `backfillDetailBlockImages` can re-attach the payload after the live
+   * execution is evicted or the app restarts.
    */
-  completeChildStep(loopId: string, parentStepId: string, childStepId: string, result: string, error: boolean): void {
+  completeChildStep(
+    loopId: string,
+    parentStepId: string,
+    childStepId: string,
+    result: string,
+    error: boolean,
+    resultContent?: ToolResultContent[],
+  ): void {
     const execution = this.deps.executionStore.getExecutionByLoopId(loopId);
     if (!execution) return;
-    this.deps.executionStore.updateChildStep(execution.id, parentStepId, childStepId, result, error);
+
+    const childStep = execution.steps
+      .find((s) => s.id === parentStepId)
+      ?.childSteps?.find((s) => s.id === childStepId);
+
+    const imageBlockId = `${childStepId}-image`;
+    const imageOwnerKey = JSON.stringify([execution.id, childStepId, imageBlockId]);
+    this.releaseRichResultOwner(imageOwnerKey);
+    const resultContentToken = this.activeRichResults.admit(resultContent);
+    const admittedResultContent = this.activeRichResults.get(resultContentToken);
+    const imageData = firstImageContent(admittedResultContent);
+
+    let detailBlocks: DetailBlock[] | undefined;
+    if (imageData && childStep) {
+      const isZh = this.locale.startsWith('zh');
+      detailBlocks = [
+        {
+          id: imageBlockId,
+          stepId: childStepId,
+          type: 'image',
+          label: isZh ? '图片' : 'Image',
+          labelKey: 'image',
+          content: result,
+          imageData,
+          isTruncated: false,
+          isExpanded: true,
+        },
+        createResultBlock(childStepId, result, childStep.toolName, this.locale),
+      ];
+    }
+
+    this.deps.executionStore.updateChildStep(execution.id, parentStepId, childStepId, result, error, detailBlocks);
+    if (imageData) {
+      this.bindRichResultOwner(imageOwnerKey, resultContentToken, () => {
+        this.deps.executionStore.releaseDetailBlockImage(execution.id, childStepId, imageBlockId);
+      });
+    }
+
+    // Persist the image payload's home: without a `Message.toolCalls[]` entry
+    // keyed by this child step's toolCallId, the snapshot restore path has
+    // nothing to backfill from (snapshots deliberately drop imageData).
+    if (imageData && childStep?.toolCallId && this.deps.appendMessageToolCall) {
+      this.deps.appendMessageToolCall(loopId, {
+        id: childStep.toolCallId,
+        name: childStep.toolName,
+        input: childStep.toolInput,
+        result,
+        resultContent: admittedResultContent,
+        isError: error || undefined,
+        hidden: true,
+        fromSubagent: true,
+      });
+    }
   }
 
   /**

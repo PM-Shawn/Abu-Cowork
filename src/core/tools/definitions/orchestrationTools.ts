@@ -8,15 +8,25 @@
  * `delegate_to_agent async:true` path — it blocks until all sub-agents finish.
  */
 
-import type { ToolDefinition, ToolExecutionContext, SubagentDefinition } from '../../../types';
+import type {
+  BatchIdentity,
+  BatchTaskTerminalReason,
+  BatchTaskTerminalStatus,
+  BatchTerminalSummary,
+  ToolDefinition,
+  ToolExecutionContext,
+  SubagentDefinition,
+  SubagentStopReason,
+} from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
-import { extractParentConversationSummary } from '../../agent/subagentLoop';
-import { useChatStore } from '../../../stores/chatStore';
+import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
+import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
+import { subagentStopReasonFromBatchSummary } from '../../agent/batchTerminalSummary';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { getI18n, format } from '../../../i18n';
 
@@ -211,6 +221,84 @@ export function aggregateStructuredResults(
   return JSON.stringify(entries, null, 2);
 }
 
+export function resolveBatchStopReason(summary: BatchTerminalSummary): SubagentStopReason {
+  return subagentStopReasonFromBatchSummary(summary);
+}
+
+function terminalForSettledResult(
+  result: PromiseSettledResult<SubagentResult>,
+  structuredOk: boolean | undefined,
+): { status: BatchTaskTerminalStatus; reason: BatchTaskTerminalReason } {
+  if (result.status === 'rejected') {
+    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    const timeoutMessage = getI18n().toolResult.orchestration.errTimeout;
+    const cancelledMessage = getI18n().toolResult.orchestration.errCancelled;
+    if (message === timeoutMessage) return { status: 'failed', reason: 'timeout' };
+    if (message === cancelledMessage) return { status: 'stopped', reason: 'aborted' };
+    return { status: 'failed', reason: 'error' };
+  }
+  switch (result.value.stopReason) {
+    case 'completed':
+      if (structuredOk === false) return { status: 'failed', reason: 'invalid_structured' };
+      return { status: 'succeeded', reason: 'completed' };
+    case 'aborted':
+      return { status: 'stopped', reason: 'aborted' };
+    case 'max_turns':
+      return { status: 'incomplete', reason: 'max_turns' };
+    case 'error':
+      return { status: 'failed', reason: 'error' };
+  }
+}
+
+type StructuredEntry = { task: string; ok: boolean; data?: Record<string, unknown>; error?: string };
+
+function structuredEntryForSettledResult(
+  result: PromiseSettledResult<SubagentResult>,
+  task: string,
+  schema: Record<string, unknown>,
+): StructuredEntry {
+  if (result.status === 'rejected') {
+    const errMsg =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    return { task, ok: false, error: errMsg };
+  }
+  if (isSubagentResultError(result.value)) {
+    return { task, ok: false, error: result.value.text };
+  }
+  const extracted = extractJsonObject(result.value.text);
+  if (extracted === null) {
+    return { task, ok: false, error: getI18n().toolResult.orchestration.errJsonParseFailed };
+  }
+  const validation = validateStructured(extracted, schema);
+  if (!validation.ok) {
+    return {
+      task,
+      ok: false,
+      error: format(getI18n().toolResult.orchestration.errMissingFields, { fields: validation.missing.join(', ') }),
+    };
+  }
+  return { task, ok: true, data: extracted };
+}
+
+export function aggregateSubagentTextResults(
+  settled: PromiseSettledResult<SubagentResult>[],
+  labels: string[],
+): string {
+  const entries = settled.map((result, i) => {
+    const label = labels[i];
+    if (result.status === 'fulfilled') {
+      return {
+        label,
+        status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
+        text: result.value.text,
+      };
+    }
+    const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    return { label, status: 'error' as const, text: errMsg };
+  });
+  return aggregateBatchResults(entries);
+}
+
 // ─── Task item type ────────────────────────────────────────────────────────
 
 interface BatchTaskItem {
@@ -243,7 +331,7 @@ export const runAgentBatchTool: ToolDefinition = {
           properties: {
             type: {
               type: 'string',
-              description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name; defaults to research when neither is provided',
+              description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name; defaults to research when neither is provided',
               enum: ['research', 'writer', 'executor'],
             },
             agent_name: {
@@ -306,20 +394,16 @@ export const runAgentBatchTool: ToolDefinition = {
       : getCurrentLoopContext();
 
     // ── Tool call ID for batch progress tracking ──────────────────────────
-    const batchId = toolExecContext?.toolCallId ?? `batch-${Date.now()}`;
+    const batchIdentity: BatchIdentity = {
+      conversationId: toolExecContext?.conversationId ?? '__unknown_conversation__',
+      ...(toolExecContext?.assistantMessageId
+        ? { assistantMessageId: toolExecContext.assistantMessageId }
+        : {}),
+      batchToolCallId: toolExecContext?.toolCallId ?? `batch-${Date.now()}`,
+    };
 
     // ── 3. Extract parent conversation summary ─────────────────────────────
-    let parentConversationSummary: string | undefined;
-    try {
-      const chatState = useChatStore.getState();
-      const activeConvId = chatState.activeConversationId;
-      if (activeConvId) {
-        const messages = chatState.conversations[activeConvId]?.messages ?? [];
-        parentConversationSummary = extractParentConversationSummary(messages);
-      }
-    } catch {
-      // Non-critical
-    }
+    const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };
@@ -365,9 +449,49 @@ export const runAgentBatchTool: ToolDefinition = {
 
     // Initialize batch progress (best-effort — store failure must never break the batch)
     try {
-      useBatchProgressStore.getState().initBatch(batchId, resolvedTasks.map((r) => r.label));
+      useBatchProgressStore.getState().initBatch(batchIdentity, resolvedTasks.map((r) => r.label));
     } catch {
       // Best-effort
+    }
+
+    const structuredEntries: StructuredEntry[] | undefined = schema === undefined
+      ? undefined
+      : new Array(resolvedTasks.length);
+    let latestTerminalSummary: BatchTerminalSummary | undefined;
+    const claimedTaskIndices = new Set<number>();
+
+    const reportTerminalSummary = (summary: BatchTerminalSummary | undefined): void => {
+      if (!summary) return;
+      latestTerminalSummary = summary;
+      toolExecContext?.reportMetadata?.({ batchTerminalSummary: summary });
+      if (summary.tasks.length === summary.taskCount) {
+        toolExecContext?.reportMetadata?.({ subagentStopReason: resolveBatchStopReason(summary) });
+      }
+    };
+
+    const terminalizeTask = (
+      idx: number,
+      terminal: { status: BatchTaskTerminalStatus; reason: BatchTaskTerminalReason },
+    ): void => {
+      try {
+        reportTerminalSummary(useBatchProgressStore.getState().setTaskTerminal(batchIdentity, idx, terminal));
+      } catch {
+        // Best-effort: progress state must never break the batch.
+      }
+    };
+
+    const terminalizeUnclaimedAbort = (): void => {
+      for (let i = 0; i < resolvedTasks.length; i++) {
+        if (!claimedTaskIndices.has(i)) {
+          terminalizeTask(i, { status: 'stopped', reason: 'aborted' });
+        }
+      }
+    };
+
+    if (loopCtx?.signal?.aborted) {
+      terminalizeUnclaimedAbort();
+    } else {
+      loopCtx?.signal?.addEventListener('abort', terminalizeUnclaimedAbort, { once: true });
     }
 
     const settled = await runWithConcurrency(
@@ -377,97 +501,116 @@ export const runAgentBatchTool: ToolDefinition = {
         // Belt-and-suspenders: if we raced the abort check in the worker loop,
         // bail before starting a fresh sub-agent run.
         if (loopCtx?.signal?.aborted) throw new Error(getI18n().toolResult.orchestration.errCancelled);
+        claimedTaskIndices.add(idx);
+        // A task can spend its whole run answering directly without calling a
+        // tool. Mark it running at worker admission, not at its first
+        // tool-start event, so those tasks never appear queued until done.
+        try {
+          useBatchProgressStore.getState().setTaskRunning(batchIdentity, idx);
+        } catch {
+          // Best-effort: progress state must never break the batch.
+        }
         const effectiveTask =
           schema !== undefined
             ? resolved.task + buildSchemaInstruction(schema)
             : resolved.task;
         let currentTurn = 0;
-        return runWithTimeout(
-          (sig) => runSubagent({
-            agent: resolved.agent,
-            task: effectiveTask,
-            context: resolved.context,
-            parentConversationSummary,
-            signal: sig,
-            commandConfirmCallback: loopCtx?.commandConfirmCallback,
-            filePermissionCallback: loopCtx?.filePermissionCallback,
-            allowedTools: loopCtx?.allowedTools,
-            blockedTools: loopCtx?.blockedTools,
-            ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
-            onProgress: (event) => {
-              try {
-                const store = useBatchProgressStore.getState();
-                if (event.type === 'tool-start') {
-                  if (store.batches[batchId]?.tasks[idx]?.status === 'queued') {
-                    store.setTaskRunning(batchId, idx);
+        try {
+          const result = await runWithTimeout(
+            (sig) => runSubagent({
+              agent: resolved.agent,
+              task: effectiveTask,
+              context: resolved.context,
+              parentConversationSummary,
+              signal: sig,
+              commandConfirmCallback: loopCtx?.commandConfirmCallback,
+              filePermissionCallback: loopCtx?.filePermissionCallback,
+              allowedTools: loopCtx?.allowedTools,
+              blockedTools: loopCtx?.blockedTools,
+              imContext: loopCtx?.imContext,
+              ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
+              onProgress: (event) => {
+                try {
+                  const store = useBatchProgressStore.getState();
+                  if (event.type === 'tool-start') {
+                    store.startTaskStep(batchIdentity, idx, event);
+                    store.setTaskActivity(batchIdentity, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
+                  } else if (event.type === 'tool-end') {
+                    // Preserve rich blocks verbatim: BatchProgress turns image
+                    // blocks into DetailBlockView input while this in-memory
+                    // batch card remains open.
+                    store.finishTaskStep(batchIdentity, idx, {
+                      id: event.id,
+                      toolName: event.toolName,
+                      result: event.result,
+                      resultContent: event.resultContent,
+                      error: event.error,
+                    });
+                  } else if (event.type === 'turn-complete') {
+                    currentTurn = event.turn;
+                    store.setTaskActivity(batchIdentity, idx, '', currentTurn);
+                    if (event.usage) {
+                      store.setTaskTokenUsage(batchIdentity, idx, event.usage);
+                    }
                   }
-                  store.setTaskActivity(batchId, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
-                } else if (event.type === 'turn-complete') {
-                  currentTurn = event.turn;
-                  store.setTaskActivity(batchId, idx, '', currentTurn);
+                } catch {
+                  // Best-effort: never let store errors break the batch
                 }
-              } catch {
-                // Best-effort: never let store errors break the batch
-              }
-            },
-          }),
-          SUBAGENT_WALLCLOCK_TIMEOUT_MS,
-          loopCtx?.signal,
-        );
+              },
+            }),
+            SUBAGENT_WALLCLOCK_TIMEOUT_MS,
+            loopCtx?.signal,
+          );
+          const settledResult = { status: 'fulfilled', value: result } as const satisfies PromiseSettledResult<SubagentResult>;
+          if (structuredEntries !== undefined && schema !== undefined) {
+            structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);
+          }
+          try {
+            useBatchProgressStore.getState().setTaskFinalStats(batchIdentity, idx, {
+              toolCallCount: result.toolCallCount,
+              tokenUsage: {
+                inputTokens: result.tokenUsage.input,
+                outputTokens: result.tokenUsage.output,
+              },
+            });
+          } catch {
+            // Best-effort
+          }
+          terminalizeTask(idx, terminalForSettledResult(settledResult, structuredEntries?.[idx]?.ok));
+          return result;
+        } catch (err) {
+          const settledResult = { status: 'rejected', reason: err } as const satisfies PromiseSettledResult<SubagentResult>;
+          if (structuredEntries !== undefined && schema !== undefined) {
+            structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);
+          }
+          terminalizeTask(idx, terminalForSettledResult(settledResult, structuredEntries?.[idx]?.ok));
+          throw err;
+        }
       },
       loopCtx?.signal,
     );
+    loopCtx?.signal?.removeEventListener('abort', terminalizeUnclaimedAbort);
 
-    // Mark all tasks done in store (best-effort)
-    try {
-      const store = useBatchProgressStore.getState();
+    if (structuredEntries !== undefined && schema !== undefined) {
       settled.forEach((result, i) => {
-        const isError = result.status === 'rejected'
-          || (result.status === 'fulfilled' && result.value.text.startsWith('Error:'));
-        store.setTaskDone(batchId, i, isError);
+        structuredEntries[i] ??= structuredEntryForSettledResult(result, resolvedTasks[i].label, schema);
       });
-    } catch {
-      // Best-effort
+    }
+
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      if (result.status === 'rejected' && !latestTerminalSummary?.tasks.some((task) => task.taskIndex === i)) {
+        terminalizeTask(i, terminalForSettledResult(result, structuredEntries?.[i]?.ok));
+      }
     }
 
     // ── 6. Aggregate results ───────────────────────────────────────────────
-    if (schema !== undefined) {
-      // Structured path: extract + validate JSON from each sub-agent's output
-      const structuredEntries = settled.map((result, i) => {
-        const task = resolvedTasks[i].label;
-        if (result.status === 'rejected') {
-          const errMsg =
-            result.reason instanceof Error ? result.reason.message : String(result.reason);
-          return { task, ok: false, error: errMsg };
-        }
-        const extracted = extractJsonObject(result.value.text);
-        if (extracted === null) {
-          return { task, ok: false, error: getI18n().toolResult.orchestration.errJsonParseFailed };
-        }
-        const validation = validateStructured(extracted, schema);
-        if (!validation.ok) {
-          return {
-            task,
-            ok: false,
-            error: format(getI18n().toolResult.orchestration.errMissingFields, { fields: validation.missing.join(', ') }),
-          };
-        }
-        return { task, ok: true, data: extracted };
-      });
+    if (structuredEntries !== undefined) {
       return aggregateStructuredResults(structuredEntries);
     }
 
     // Text aggregation path (behavior-preserving, schema absent)
-    const entries = settled.map((result, i) => {
-      const label = resolvedTasks[i].label;
-      if (result.status === 'fulfilled') {
-        return { label, status: 'ok' as const, text: result.value.text };
-      }
-      const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-      return { label, status: 'error' as const, text: errMsg };
-    });
-
-    return aggregateBatchResults(entries);
+    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label));
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

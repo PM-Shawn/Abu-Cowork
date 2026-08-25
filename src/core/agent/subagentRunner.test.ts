@@ -351,6 +351,16 @@ describe('subagentRunner', () => {
       }, 'scope-parent', null).workspaceReader?.getCurrentPath()).toBeNull();
 
       expect(getSubagentRunInheritance({
+        loopId: 'loop-trigger-parent',
+        conversationId: 'conv-trigger-parent',
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      } as never)).toEqual(expect.objectContaining({
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      }));
+
+      expect(getSubagentRunInheritance({
         loopId: 'loop-im-parent',
         conversationId: 'conv-im-parent',
         settingsReader: parentReader as never,

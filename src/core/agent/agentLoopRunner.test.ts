@@ -459,17 +459,35 @@ function makeSession(
     runPermissionCeiling: unknown;
     workspacePathSnapshot: string | null;
     imReplyTarget: { platform: string; chatId: string };
+    interactionMode: 'foreground' | 'background';
+    triggerId: string;
+    scheduledTaskId: string;
   }> = {},
 ) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
     loopId: overrides.loopId ?? 'loop-1',
+    interactionMode: overrides.interactionMode ?? (
+      Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
+      || Object.prototype.hasOwnProperty.call(overrides, 'runPermissionCeiling')
+      || Object.prototype.hasOwnProperty.call(overrides, 'imReplyTarget')
+      || Object.prototype.hasOwnProperty.call(overrides, 'triggerId')
+      || Object.prototype.hasOwnProperty.call(overrides, 'scheduledTaskId')
+        ? 'background'
+        : 'foreground'
+    ),
     options: {
       ...(Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
         ? { authorizationScopeId: overrides.authorizationScopeId }
         : {}),
       ...(Object.prototype.hasOwnProperty.call(overrides, 'runPermissionCeiling')
         ? { runPermissionCeiling: overrides.runPermissionCeiling as never }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'triggerId')
+        ? { triggerId: overrides.triggerId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'scheduledTaskId')
+        ? { scheduledTaskId: overrides.scheduledTaskId }
         : {}),
       ...(Object.prototype.hasOwnProperty.call(overrides, 'workspacePathSnapshot')
         ? { workspacePathSnapshot: overrides.workspacePathSnapshot }
@@ -1194,6 +1212,52 @@ describe('agentLoopRunner', () => {
   });
 
   describe('sidecar context scope hardening', () => {
+    it('tool.invoke and approval.check use the shell-owned interaction mode', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ interactionMode: 'background' }));
+
+      const toolHandler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await toolHandler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'foreground' },
+      });
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
+      }));
+
+      const approvalHandler = handlerFor(onSidecarRequest, 'approval.check') as (p: unknown) => Promise<unknown>;
+      await approvalHandler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'foreground' },
+      });
+      expect(checkToolApprovalMock.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
+      }));
+    });
+
+    it('does not trust a forged background marker for a shell-owned foreground run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ interactionMode: 'foreground' }));
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { interactionMode: 'background' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        interactionMode: 'foreground',
+      }));
+    });
+
     it('tool.invoke overwrites a sidecar-forged ceiling with the shell session ceiling', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -2281,7 +2345,11 @@ describe('agentLoopRunner', () => {
       handler({ runId: 'run-1', conversationId: 'conv-1', path: '/Users/x/Abu/report/out.html' });
       await Promise.resolve();
 
-      expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith('conv-1', '/Users/x/Abu/report/out.html');
+      expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith(
+        'conv-1',
+        '/Users/x/Abu/report/out.html',
+        'foreground',
+      );
     });
 
     it('silently drops for an unknown/already-finished runId (3a discipline — same as agent.delta)', async () => {
@@ -2324,6 +2392,25 @@ describe('agentLoopRunner', () => {
         runId: 'run-1',
         conversationId: 'conv-im',
         path: '/Users/testuser/Abu/remote/out.txt',
+      })).not.toThrow();
+      await Promise.resolve();
+
+      expect(bindWorkspaceFromWriteMock).not.toHaveBeenCalled();
+    });
+
+    it('silently drops an unscoped background run based on the shell-owned interaction mode', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({
+        conversationId: 'conv-watch',
+        interactionMode: 'background',
+      }));
+
+      const handler = handlerFor(onSidecarNotification, 'workspace.bindFromWrite');
+      expect(() => handler({
+        runId: 'run-1',
+        conversationId: 'conv-watch',
+        path: '/Users/testuser/Abu/watched/out.txt',
       })).not.toThrow();
       await Promise.resolve();
 
@@ -2597,6 +2684,24 @@ describe('agentLoopRunner', () => {
         conversationId: 'conv-1',
         authorizationScopeId: 'scope-real',
         runPermissionCeiling: ceiling,
+      }));
+    });
+
+    it('precomputes trigger and scheduled conversations as background without an explicit scope', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      getConversationMock.mockReturnValue({
+        id: 'conv-1',
+        title: 't',
+        messages: [],
+        status: 'idle',
+        triggerId: 'trigger-1',
+      });
+
+      await runAgentLoopDispatched('conv-1', 'run trigger');
+
+      expect(precomputeOrchestrationMock.mock.calls[0][5]).toEqual(expect.objectContaining({
+        interactionMode: 'background',
       }));
     });
 

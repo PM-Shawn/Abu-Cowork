@@ -1,7 +1,15 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { isNoProgressTurn, shouldRecoverMaxTokens, appendTurnText, buildSubagentStartEvent, buildSubagentEndEvent } from './subagentLoop';
+import { isNoProgressTurn, shouldRecoverMaxTokens, appendTurnText, buildSubagentStartEvent, buildSubagentEndEvent, resolveSubagentInteractionMode } from './subagentLoop';
 import { registerHook, clearAllHooks, getHookCount } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent } from './lifecycleHooks';
+
+describe('resolveSubagentInteractionMode', () => {
+  it('retains trigger and scheduled provenance across delegation', () => {
+    expect(resolveSubagentInteractionMode({ triggerId: 'trigger-1' })).toBe('background');
+    expect(resolveSubagentInteractionMode({ scheduledTaskId: 'task-1' })).toBe('background');
+    expect(resolveSubagentInteractionMode({})).toBe('foreground');
+  });
+});
 
 describe('isNoProgressTurn', () => {
   it('flags a turn where every tool call is unparseable', () => {

@@ -12,6 +12,12 @@ import { ensureParentDir, joinPath, getBaseName } from '../../utils/pathUtils';
 import { runAgentLoopDispatched } from './agentLoopRunner';
 import { useChatStore } from '../../stores/chatStore';
 import { format, getI18n } from '../../i18n';
+import {
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  scopedAuthorizeWorkspace,
+} from '../tools/pathSafety';
+import { TOOL_NAMES } from '../tools/toolNames';
 
 export interface FileWatchRule {
   id: string;
@@ -72,7 +78,7 @@ function matchPattern(fileName: string, pattern?: string): boolean {
 /**
  * Handle a file watch event — create a background conversation and run Agent.
  */
-async function handleWatchTrigger(rule: FileWatchRule, filePath: string) {
+export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) {
   // Debounce
   const now = Date.now();
   const last = lastTriggerTime.get(rule.id) ?? 0;
@@ -93,14 +99,21 @@ async function handleWatchTrigger(rule: FileWatchRule, filePath: string) {
     format(getI18n().chatDefaults.watcherConversationTitle, { file: fileName, time: timeStr }),
   );
 
+  const authorizationScopeId = createAuthorizationScope();
   try {
+    scopedAuthorizeWorkspace(authorizationScopeId, rule.path, ['read', 'write']);
     await runAgentLoopDispatched(conversationId, prompt, {
       // Auto-deny dangerous commands in background mode
       commandConfirmCallback: async () => false,
+      filePermissionCallback: async () => false,
+      blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+      authorizationScopeId,
     });
     console.log(`[FileWatcher] Task completed for rule ${rule.id}: ${fileName}`);
   } catch (err) {
     console.error(`[FileWatcher] Task failed for rule ${rule.id}:`, err);
+  } finally {
+    disposeAuthorizationScope(authorizationScopeId);
   }
 }
 

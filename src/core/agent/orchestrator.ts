@@ -453,8 +453,13 @@ You are replying in an IM chat. Follow this style:
 - Keep the tone natural — like a colleague conversation, not a customer service document.
 - This channel has no interactive selection cards or approval dialogs. When you need the user to choose or approve something, ask the question plainly in your text reply (list the options), then STOP and end your turn — the user will answer in their next message and you continue from there. Never wait silently for a UI dialog.`, cacheable: true });
   } else {
-    // Interactive desktop mode
-    workspacePath = getWorkspaceReader().getCurrentPath();
+    // Non-IM runs still include unattended scheduler/trigger/watcher entries.
+    // Their trusted tool context owns the workspace snapshot; they must never
+    // inherit the mutable foreground workspace merely because IM is absent.
+    const headless = toolContext?.interactionMode === 'background';
+    workspacePath = headless
+      ? (toolContext?.workspacePath ?? null)
+      : getWorkspaceReader().getCurrentPath();
 
     if (workspacePath) {
       sections.push({ name: 'workspace', text: `\n## Current Workspace
@@ -466,9 +471,6 @@ You can use file tools to read and write files in this directory. When the user 
       // runs (which reach this else-branch because it's gated only on imContext)
       // must NOT auto-create/bind a ~/Abu workspace, so they fall back to the
       // hidden app-data session output dir just as before.
-      const { useChatStore: chatStoreForWs } = await import('../../stores/chatStore');
-      const convRecord = chatStoreForWs.getState().conversations[conversationId];
-      const headless = !!(convRecord?.scheduledTaskId || convRecord?.triggerId);
       const suggested = headless ? null : await prepareSuggestedWorkspace(conversationId);
       const defaultDir = suggested ?? (await getSessionOutputDir(conversationId));
       sections.push({ name: 'workspace-hint', text: `\n## Workspace Notice

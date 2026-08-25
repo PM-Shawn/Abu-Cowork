@@ -49,6 +49,11 @@ describe('isInteractiveDesktop', () => {
     expect(isInteractiveDesktop({}, { triggerId: 'trigger-7' })).toBe(false);
   });
 
+  it('scope-only and ceiling-only runs are background even without conversation metadata', () => {
+    expect(isInteractiveDesktop({ authorizationScopeId: 'scope-1' }, {})).toBe(false);
+    expect(isInteractiveDesktop({ runPermissionCeiling: {} as never }, {})).toBe(false);
+  });
+
   it('absent conversation record (shouldn’t happen, defensive) → falls through to options-only check', () => {
     // convRecord may be absent if the conversation was deleted mid-run.
     // The gate should not crash and should rely on options to decide.

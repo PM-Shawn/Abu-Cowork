@@ -50,6 +50,7 @@ import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { deriveRunInteractionMode } from './runInteractionMode';
 
 const logger = createLogger('subagentLoop');
 
@@ -64,13 +65,12 @@ const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
  * delegation boundary, including when the sidecar reconstructs tool context.
  */
 export function resolveSubagentInteractionMode(
-  options: Pick<SubagentLoopOptions, 'authorizationScopeId' | 'runPermissionCeiling' | 'imContext'>,
+  options: Pick<
+    SubagentLoopOptions,
+    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId'
+  >,
 ): NonNullable<ToolExecutionContext['interactionMode']> {
-  return options.authorizationScopeId !== undefined
-    || options.runPermissionCeiling !== undefined
-    || options.imContext !== undefined
-    ? 'background'
-    : 'foreground';
+  return deriveRunInteractionMode(options);
 }
 
 // ─── Pure event-builder helpers (exported for unit-testing event shapes) ───
@@ -241,6 +241,9 @@ export interface SubagentLoopOptions {
   onProgress?: (event: SubagentProgressEvent) => void;
   /** IM context — provides correct workspace path in headless mode */
   imContext?: IMContext;
+  /** Parent unattended provenance, retained across delegation boundaries. */
+  triggerId?: string;
+  scheduledTaskId?: string;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */

@@ -103,6 +103,7 @@ import {
   hashComputerUseTaskSummary,
   latestUserTaskSummary,
 } from '../capabilityPlugins/computerUseResume';
+import { deriveRunInteractionMode } from './runInteractionMode';
 
 const logger = createLogger('agentLoop');
 
@@ -661,10 +662,16 @@ export interface AgentLoopResult {
  * callers don't need full AgentLoopOptions / Conversation objects.
  */
 export function isInteractiveDesktop(
-  options: Pick<AgentLoopOptions, 'imContext'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
 ): boolean {
-  return !options?.imContext && !conversation?.scheduledTaskId && !conversation?.triggerId;
+  return deriveRunInteractionMode({
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+    imContext: options?.imContext,
+    triggerId: conversation?.triggerId,
+    scheduledTaskId: conversation?.scheduledTaskId,
+  }) === 'foreground';
 }
 
 /**
@@ -686,7 +693,7 @@ export function isInteractiveDesktop(
  * Pure function, exported for testing.
  */
 export function shouldComputeProposalSignal(
-  options: Pick<AgentLoopOptions, 'imContext'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
   workspacePath: string | null | undefined,
 ): boolean {
@@ -852,11 +859,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     precomputeConversation,
     getWorkspaceReader().getCurrentPath(),
   );
+  const runInteractionMode = deriveRunInteractionMode({
+    authorizationScopeId: options?.authorizationScopeId,
+    runPermissionCeiling: options?.runPermissionCeiling,
+    imContext: options?.imContext,
+    triggerId: precomputeConversation?.triggerId,
+    scheduledTaskId: precomputeConversation?.scheduledTaskId,
+  });
   const precomputeToolContext: ToolExecutionContext = {
     workspacePath: precomputeWorkspacePath,
     conversationId,
     loopId,
-    interactionMode: isInteractiveDesktop(options, precomputeConversation) ? 'foreground' : 'background',
+    interactionMode: runInteractionMode,
     permissionMode: precomputeConversation?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     authorizationScopeId: options?.authorizationScopeId,
@@ -927,9 +941,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     ),
     loopId,
     conversationId,
-    interactionMode: isInteractiveDesktop(options, _convForContext)
-      ? 'foreground'
-      : 'background',
+    interactionMode: runInteractionMode,
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     runPermissionCeiling: options?.runPermissionCeiling,
@@ -1124,6 +1136,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         filePermissionCallback: filePermCb,
         onProgress,
         imContext: options?.imContext,
+        triggerId: _convForContext?.triggerId,
+        scheduledTaskId: _convForContext?.scheduledTaskId,
         parentLoopId: loopId,
         parentConversationId: conversationId,
         settingsReader: entrySettingsReader,

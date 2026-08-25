@@ -208,6 +208,19 @@ describe('buildSystemPrompt - structure', () => {
     expect(prompt).toContain('/test/workspace');
   });
 
+  it('uses the trusted background workspace snapshot instead of the foreground store', async () => {
+    const prompt = await buildSystemPrompt(
+      generalRoute,
+      basePrompt,
+      'test-conv',
+      undefined,
+      undefined,
+      { interactionMode: 'background', workspacePath: '/watched/root' },
+    );
+    expect(prompt).toContain('/watched/root');
+    expect(prompt).not.toContain('/test/workspace');
+  });
+
   it('keeps generated previews inside Abu unless the user explicitly requests an external browser', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain("let Abu's side preview/file card handle it");

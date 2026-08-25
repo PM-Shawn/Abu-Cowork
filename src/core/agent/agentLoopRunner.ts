@@ -113,6 +113,7 @@ import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
 import { snapshotBeforeAiEdit } from '../../utils/aiEditSnapshots';
 import { getAuthorizedWritablePaths } from '../tools/pathSafety';
+import { deriveRunInteractionMode } from './runInteractionMode';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
 import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
@@ -185,6 +186,8 @@ export interface AgentLoopRunOptions {
   allowedTools?: string[];
   authorizationScopeId?: string;
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  triggerId?: string;
+  scheduledTaskId?: string;
   workspacePathSnapshot?: string | null;
   /** Shell-owned outbound identity for IM tools; never accepted from sidecar context. */
   imReplyTarget?: { platform: string; chatId: string };
@@ -197,6 +200,8 @@ export interface RunSession {
   loopId: string;
   options: AgentLoopRunOptions;
   shellAbortController: AbortController;
+  /** Trusted shell-owned mode; sidecar reverse requests cannot override it. */
+  interactionMode: NonNullable<ToolExecutionContext['interactionMode']>;
   /** Live map the tool.invoke handler will append to in 3b-3 (stored on the session now, per the design doc's LoopContext-lite wiring). */
   toolCallToStepId: Map<string, string>;
   /** Lazily constructed by createShellEventRouterForRun/installShellLoopContext — cached so a run's EventRouter identity is stable across calls. */
@@ -1090,10 +1095,7 @@ function contextForSession(
     conversationId: session.conversationId,
     loopId: session.loopId,
     authorizationScopeId: session.options.authorizationScopeId,
-    interactionMode:
-      session.options.runPermissionCeiling || session.options.authorizationScopeId !== undefined
-        ? 'background'
-        : (incoming?.interactionMode ?? 'foreground'),
+    interactionMode: session.interactionMode,
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
@@ -1343,8 +1345,11 @@ function handleWorkspaceBindFromWrite(rawParams: unknown): void {
   // The shell session, not the sidecar notification, owns interaction mode.
   // Scoped/ceiling runs are background runs whose grants must die with the
   // run; never promote their writes into a persistent managed workspace.
+  if (session.interactionMode !== 'foreground') return;
+  // Defense in depth against a malformed future session whose derived mode
+  // disagrees with its unattended-run authority markers.
   if (session.options.runPermissionCeiling || session.options.authorizationScopeId !== undefined) return;
-  void bindWorkspaceFromWrite(session.conversationId, params.path).catch((err: unknown) => {
+  void bindWorkspaceFromWrite(session.conversationId, params.path, session.interactionMode).catch((err: unknown) => {
     logger.warn('bindWorkspaceFromWrite threw', { error: err instanceof Error ? err.message : String(err) });
   });
 }
@@ -1797,6 +1802,8 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     allowedTools: session.options.allowedTools,
     authorizationScopeId: session.options.authorizationScopeId,
     runPermissionCeiling: session.options.runPermissionCeiling,
+    triggerId: session.options.triggerId,
+    scheduledTaskId: session.options.scheduledTaskId,
     imReplyTarget: session.options.imReplyTarget
       ? { ...session.options.imReplyTarget }
       : undefined,
@@ -2141,7 +2148,13 @@ async function buildAgentRunParams(
     ),
     conversationId,
     loopId: runId,
-    interactionMode: options?.authorizationScopeId === undefined && !options?.imContext ? 'foreground' : 'background',
+    interactionMode: deriveRunInteractionMode({
+      authorizationScopeId: options?.authorizationScopeId,
+      runPermissionCeiling: options?.runPermissionCeiling,
+      imContext: options?.imContext,
+      triggerId: initialConversationSnapshot.triggerId,
+      scheduledTaskId: initialConversationSnapshot.scheduledTaskId,
+    }),
     permissionMode: initialConversationSnapshot.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     authorizationScopeId: options?.authorizationScopeId,
@@ -2532,6 +2545,13 @@ async function runSingleAgentLoopDispatched(
   const session: RunSession = {
     conversationId,
     loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.
+    interactionMode: deriveRunInteractionMode({
+      authorizationScopeId: options?.authorizationScopeId,
+      runPermissionCeiling: options?.runPermissionCeiling,
+      imContext: options?.imContext,
+      triggerId: params.conversationSnapshot.triggerId,
+      scheduledTaskId: params.conversationSnapshot.scheduledTaskId,
+    }),
     clientMessageId,
     userMessageId: clientMessageId,
     payloadDigest: params.payloadDigest,
@@ -2542,6 +2562,8 @@ async function runSingleAgentLoopDispatched(
       allowedTools: options?.allowedTools,
       authorizationScopeId: options?.authorizationScopeId,
       runPermissionCeiling: options?.runPermissionCeiling,
+      triggerId: params.conversationSnapshot.triggerId,
+      scheduledTaskId: params.conversationSnapshot.scheduledTaskId,
       workspacePathSnapshot: params.options.workspacePathSnapshot,
       imReplyTarget: options?.imContext?.replyChatId
         ? {

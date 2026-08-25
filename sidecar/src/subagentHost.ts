@@ -58,6 +58,8 @@ interface SubagentRunParams {
   blockedTools?: string[];
   authorizationScopeId?: string;
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
+  triggerId?: string;
+  scheduledTaskId?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -117,6 +119,12 @@ function parseSubagentRunParams(params: unknown): SubagentRunParams {
     && !isRunPermissionCeiling(params.runPermissionCeiling)
   ) {
     throw new RpcError(-32602, 'Invalid params: runPermissionCeiling must be a valid run permission ceiling');
+  }
+  if (params.triggerId !== undefined && typeof params.triggerId !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: triggerId must be a string');
+  }
+  if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -288,6 +296,8 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     blockedTools: params.blockedTools,
     authorizationScopeId: params.authorizationScopeId,
     runPermissionCeiling: params.runPermissionCeiling,
+    triggerId: params.triggerId,
+    scheduledTaskId: params.scheduledTaskId,
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
     // shell's tool.invoke handler, which threads the SESSION's REAL

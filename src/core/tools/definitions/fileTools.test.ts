@@ -495,6 +495,7 @@ describe('AI edit pre-snapshot hook', () => {
     expect(bindWorkspaceFromWriteMock).toHaveBeenCalledWith(
       'conv-desktop',
       '/Users/testuser/Abu/desktop/out.txt',
+      'foreground',
     );
   });
 

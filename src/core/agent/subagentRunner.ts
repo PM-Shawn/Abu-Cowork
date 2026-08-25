@@ -97,10 +97,10 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId'> {
   const imReplyTarget = loopContext?.imReplyTarget;
   const runPermissionCeiling = loopContext?.runPermissionCeiling;
   const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
@@ -117,6 +117,10 @@ export function getSubagentRunInheritance(
     settingsReader: loopContext?.settingsReader,
     authorizationScopeId: authorizationScopeId ?? loopContext?.authorizationScopeId,
     runPermissionCeiling,
+    ...(loopContext?.triggerId !== undefined ? { triggerId: loopContext.triggerId } : {}),
+    ...(loopContext?.scheduledTaskId !== undefined
+      ? { scheduledTaskId: loopContext.scheduledTaskId }
+      : {}),
     ...(imContext ? { imContext } : {}),
     ...(workspacePath !== undefined
       ? { workspaceReader: { getCurrentPath: () => workspacePath } }
@@ -160,6 +164,8 @@ export interface SubagentRunParams {
   blockedTools?: string[];
   authorizationScopeId?: string;
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  triggerId?: string;
+  scheduledTaskId?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -409,6 +415,8 @@ function buildSubagentRunParams(runId: string, options: SubagentLoopOptions): Su
     blockedTools: options.blockedTools,
     authorizationScopeId: options.authorizationScopeId,
     runPermissionCeiling: options.runPermissionCeiling,
+    triggerId: options.triggerId,
+    scheduledTaskId: options.scheduledTaskId,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,

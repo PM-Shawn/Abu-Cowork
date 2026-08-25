@@ -273,7 +273,7 @@ export const writeFileTool: ToolDefinition = {
       // authority into a global read/write/execute workspace grant.
       if (context?.interactionMode === 'foreground') {
         // Fire-and-forget — workspace bookkeeping must never affect the write.
-        void bindWorkspaceFromWrite(context.conversationId, path);
+        void bindWorkspaceFromWrite(context.conversationId, path, context.interactionMode);
       }
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {

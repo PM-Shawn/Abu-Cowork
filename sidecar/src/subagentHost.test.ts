@@ -188,6 +188,27 @@ describe('subagentHost', () => {
       expect(capturedOptions?.runPermissionCeiling).toEqual(ceiling);
     });
 
+    it('validates and restores unattended provenance into SubagentLoopOptions', async () => {
+      let capturedOptions: { triggerId?: string; scheduledTaskId?: string } | undefined;
+      runSubagentLoopMock.mockImplementation(async (options: { triggerId?: string; scheduledTaskId?: string }) => {
+        capturedOptions = options;
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      }));
+
+      expect(capturedOptions).toEqual(expect.objectContaining({
+        triggerId: 'trigger-1',
+        scheduledTaskId: 'task-1',
+      }));
+      await expect(handleSubagentRun(baseParams({ triggerId: 7 as never }))).rejects.toThrow(
+        /triggerId must be a string/,
+      );
+    });
+
     it('the sidecar-local ToolDefinition.execute stub throws if ever called directly (it never should be)', async () => {
       let capturedTools: Array<{ execute: () => Promise<unknown> }> = [];
       runSubagentLoopMock.mockImplementation(async (options: { toolInvoker: { getAllTools: () => Array<{ execute: () => Promise<unknown> }> } }) => {

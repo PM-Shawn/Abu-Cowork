@@ -19,6 +19,7 @@ import type { PermissionDuration } from '../../stores/permissionStore';
 import { authorizeWorkspace, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { EventRouter } from './eventRouter';
 import type { SettingsReader } from './ports/settingsReader';
+import type { IMContext } from './orchestrator';
 import * as approvalBridge from './ports/approvalBridge';
 
 // The file-permission queue's dequeue-time re-check ("another tool call may
@@ -47,6 +48,8 @@ export interface LoopContext {
   blockedTools?: string[];
   /** Execution whitelist inherited by tools that may create nested work. */
   allowedTools?: string[];
+  /** Headless IM context inherited by nested subagent runs. */
+  imContext?: IMContext;
   /** Run-local path authorization scope inherited by delegated work. */
   authorizationScopeId?: string;
   /** Run-owned authority ceiling inherited by delegated work. */

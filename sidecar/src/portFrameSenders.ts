@@ -78,7 +78,10 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
         hideScreenshot,
         metadata,
       ]),
+    checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) =>
+      send('checkpointToolCallMetadata', [convId, messageId, toolCallId, metadata]),
     appendToolCallContext: (convId, loopId, context) => send('appendToolCallContext', [convId, loopId, context]),
+    appendMessageToolCall: (convId, loopId, toolCall) => send('appendMessageToolCall', [convId, loopId, toolCall]),
     updateMessageUsage: (convId, usage, msgId) => send('updateMessageUsage', [convId, usage, msgId]),
     setExecutionStepsSnapshot: (convId, loopId, steps) => send('setExecutionStepsSnapshot', [convId, loopId, steps]),
     setPlannedStepsSnapshot: (convId, loopId, steps) => send('setPlannedStepsSnapshot', [convId, loopId, steps]),
@@ -254,7 +257,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
       push({ p: 'exec', m: 'addChildStep', a: [execId, parentStepId, childStep] });
     },
 
-    updateChildStep: (execId, parentStepId, childStepId, result, error) => {
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) => {
       const exec = executions.get(execId);
       const parent = exec ? findStep(exec, parentStepId) : undefined;
       const child = parent?.childSteps?.find((s) => s.id === childStepId);
@@ -264,15 +267,36 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         if (error) child.errorMessage = result;
         child.endTime = Date.now();
         if (child.startTime) child.duration = (child.endTime - child.startTime) / 1000;
+        if (detailBlocks?.length) {
+          for (const block of detailBlocks) {
+            const existingIndex = child.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+            if (existingIndex >= 0) child.detailBlocks[existingIndex] = block;
+            else child.detailBlocks.push(block);
+          }
+        }
       }
-      push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error] });
+      push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error, detailBlocks] });
     },
 
     addDetailBlock: (execId, stepId, block: DetailBlock) => {
       const exec = executions.get(execId);
       const step = exec ? findStep(exec, stepId) : undefined;
-      if (step) step.detailBlocks.push(block);
+      if (step) {
+        const existingIndex = step.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+        if (existingIndex >= 0) step.detailBlocks[existingIndex] = block;
+        else step.detailBlocks.push(block);
+      }
       push({ p: 'exec', m: 'addDetailBlock', a: [execId, stepId, block] });
+    },
+
+    releaseDetailBlockImage: (execId, stepId, blockId) => {
+      const exec = executions.get(execId);
+      const step = exec?.steps.find((candidate) => candidate.id === stepId)
+        ?? exec?.steps.flatMap((candidate) => candidate.childSteps ?? [])
+          .find((candidate) => candidate.id === stepId);
+      const block = step?.detailBlocks.find((candidate) => candidate.id === blockId);
+      if (block) delete block.imageData;
+      push({ p: 'exec', m: 'releaseDetailBlockImage', a: [execId, stepId, blockId] });
     },
 
     appendThinking: (execId, content) => {

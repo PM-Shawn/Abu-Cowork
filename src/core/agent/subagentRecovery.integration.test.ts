@@ -22,8 +22,9 @@ vi.mock('../llm/claude', () => ({ ClaudeAdapter: class { chat = mockClaudeChat; 
 vi.mock('../llm/openai-compatible', () => ({ OpenAICompatibleAdapter: class { chat = vi.fn(); } }));
 
 const mockExecuteAnyTool = vi.fn();
+const mockGetAllTools = vi.fn().mockReturnValue([]);
 vi.mock('../tools/registry', () => ({
-  getAllTools: vi.fn().mockReturnValue([]),
+  getAllTools: () => mockGetAllTools(),
   executeAnyTool: (...args: unknown[]) => mockExecuteAnyTool(...args),
   toolResultToString: (r: unknown) => String(r),
 }));
@@ -42,11 +43,19 @@ vi.mock('../context/contextManager', () => ({
     safetyMarginTokens: 1000,
     strategy: 'unchanged',
   })),
+  // Pass-through — the real screenshot-budget behavior is covered by
+  // contextManager.test.ts; here it must simply not disturb the pipeline.
+  trimOldScreenshots: vi.fn((msgs: unknown[]) => msgs),
 }));
 vi.mock('../context/contextCompressor', () => ({
   compressContextIfNeeded: vi.fn().mockResolvedValue({ compressed: false, messages: [] }),
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
+
+const mockEmitHook = vi.fn((event: unknown) => event);
+vi.mock('./lifecycleHooks', () => ({
+  emitHook: (event: unknown) => mockEmitHook(event),
+}));
 
 const mockGetActiveProvider = vi.fn(
   (..._args: unknown[]): Partial<ProviderInstance> | undefined => ({
@@ -80,6 +89,7 @@ vi.mock('../enterprise/llm-resolver', () => ({
 }));
 
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
+import { agentRegistry } from './registry';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
 function emits(events: StreamEvent[]) {
@@ -95,8 +105,258 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockClaudeChat.mockReset();
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockEmitHook.mockReset();
+    mockEmitHook.mockImplementation((event: unknown) => event);
+    mockGetAllTools.mockReset();
+    mockGetAllTools.mockReturnValue(
+      ['noop', 'do_work', 'computer', 'read_file'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object', properties: {} },
+        execute: vi.fn(),
+      })),
+    );
     mockGetActiveProvider.mockReset();
     mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
+  });
+
+  it('uses the IM workspace inherited by a delegate instead of the global workspace reader', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'do the thing',
+      imContext: { platform: 'dchat', workspacePath: '/im/workspace' },
+      workspaceReader: { getCurrentPath: () => '/global/workspace' },
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(chatOptions.systemPrompt).toContain('Path: /im/workspace');
+    expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
+  });
+
+  it('informs subagents that their tool and permission boundary is fixed', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'do the thing' });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(chatOptions.systemPrompt).toContain('## Tool and Permission Boundaries');
+    expect(chatOptions.systemPrompt).toContain('fixed when this run started and cannot be expanded in this session');
+    expect(chatOptions.systemPrompt).toContain('tell the parent agent exactly what is missing');
+    expect(chatOptions.systemPrompt).toContain('Do not work around a missing tool by simulating it or installing alternative software');
+  });
+
+  it('applies wildcard matching to agent.tools and warns when an entry matches no known tool', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runSubagentLoop({
+        agent: { ...agent, tools: ['abu-browser__*', 'missing_tool'] },
+        task: 'do the thing',
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('tools entries matched no known tools: missing_tool'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['abu-browser__screenshot']);
+  });
+
+  it('expands the senior engineer builtin browser wildcard into browser tools', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    // Builtins are normally registered during application discovery. This
+    // isolated loop test deliberately bypasses discovery's filesystem work.
+    (agentRegistry as unknown as { registerBuiltins: () => void }).registerBuiltins();
+    const seniorEngineer = agentRegistry.getAgent('高级开发工程师');
+    expect(seniorEngineer).toBeDefined();
+    await runSubagentLoop({ agent: seniorEngineer!, task: 'inspect the page' });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((tool) => tool.name)).toContain('abu-browser__screenshot');
+  });
+
+  it('fails before the model starts when a declared MCP tool is unavailable', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'notion-researcher', tools: ['notion__query', 'slack__*'] },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('notion-researcher');
+    expect(result.text).toContain('notion__query');
+    expect(result.text).not.toContain('slack__*');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured config error for non-string AGENT.md tools entries', async () => {
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'malformed-agent', tools: ['read_file', null, 42] as never },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('malformed-agent');
+    expect(result.text).toContain('2, 3');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before the model when an AGENT.md tools entry is blank', async () => {
+    const result = await runSubagentLoop({
+      agent: { ...agent, name: 'blank-agent', tools: ['   '] },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('blank-agent');
+    expect(result.text).toContain('1');
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+  });
+
+  it.each(['notion__query', { server: 'notion' }])(
+    'returns a structured config error when AGENT.md tools is the non-array value %j',
+    async (tools) => {
+      const result = await runSubagentLoop({
+        agent: { ...agent, name: 'malformed-agent', tools: tools as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('tools');
+      expect(mockClaudeChat).not.toHaveBeenCalled();
+      expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['write_file', ['read_file', null], ['   ']])(
+    'fails closed for malformed AGENT.md disallowed-tools value %j',
+    async (disallowedTools) => {
+      const result = await runSubagentLoop({
+        agent: { ...agent, name: 'malformed-agent', disallowedTools: disallowedTools as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('disallowed-tools');
+      expect(mockClaudeChat).not.toHaveBeenCalled();
+      expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('applies wildcard matching to agent.disallowedTools and warns when an entry matches no known tool', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__screenshot', description: 'shot', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'abu-browser__click', description: 'click', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runSubagentLoop({
+        agent: { ...agent, disallowedTools: ['abu-browser__*', 'missing_tool'] },
+        task: 'do the thing',
+      });
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disallowedTools entries matched no known tools: missing_tool'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file']);
+  });
+
+  it('keeps exact agent.tools names working under the shared matcher', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { ...agent, tools: ['read_file'] },
+      task: 'do the thing',
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file']);
+  });
+
+  it('keeps exact disallowedTools matching narrow', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'read_file_v2', description: 'read v2', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { ...agent, disallowedTools: ['read_file'] },
+      task: 'do the thing',
+    });
+
+    const chatOptions = mockClaudeChat.mock.calls[0][1] as { tools?: Array<{ name: string }> };
+    expect(chatOptions.tools?.map((t) => t.name)).toEqual(['read_file_v2']);
+  });
+
+  it('marks adapter failures with structured stopReason=error', async () => {
+    mockClaudeChat.mockRejectedValueOnce(new Error('adapter failed'));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.text).toContain('adapter failed');
+    expect(result.stopReason).toBe('error');
+  });
+
+  it('marks a normal end_turn with no text or tools as no-content error', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.text).toContain('no content');
+    expect(result.stopReason).toBe('error');
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
   });
 
   it('recovers from an empty truncation without emitting consecutive user messages', async () => {
@@ -124,6 +384,8 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     // The resumed answer is returned.
     expect(result.text).toContain('the final answer');
+    expect(result.stopReason).toBe('completed');
+    expect(result.turnCount).toBe(2);
   });
 
   // Contract that agentLoop's @agent delegate branch depends on: when the user
@@ -150,6 +412,22 @@ describe('subagent max_tokens recovery (integration)', () => {
 
     // Returned (not thrown) as a SubagentResult, and did not start another turn.
     expect(result).toBeInstanceOf(SubagentResult);
+    expect(result.stopReason).toBe('aborted');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies an adapter rejection caused by a mid-stream abort as aborted, not error', async () => {
+    const ac = new AbortController();
+    mockClaudeChat.mockImplementationOnce(async () => {
+      ac.abort();
+      throw new DOMException('The operation was aborted', 'AbortError');
+    });
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing', signal: ac.signal });
+
+    expect(result).toBeInstanceOf(SubagentResult);
+    expect(result.stopReason).toBe('aborted');
+    expect(result.text).toContain('cancelled');
     expect(mockClaudeChat).toHaveBeenCalledTimes(1);
   });
 
@@ -239,6 +517,7 @@ describe('subagent max_tokens recovery (integration)', () => {
     // Did not run away to the 200-turn cap.
     expect(mockClaudeChat.mock.calls.length).toBeLessThan(10);
     expect(result).toBeTruthy();
+    expect(result.stopReason).toBe('error');
   });
 
   it('stops re-prompting once the recovery limit is exhausted and marks the result incomplete', async () => {
@@ -250,6 +529,22 @@ describe('subagent max_tokens recovery (integration)', () => {
     // 1 initial + 3 recovery attempts = 4 calls, then it stops (does not spin to maxTurns).
     expect(mockClaudeChat).toHaveBeenCalledTimes(4);
     expect(result.text).toContain('output token limit');
+    expect(result.stopReason).toBe('error');
+  });
+
+  it('marks a run that consumes all configured turns as max_turns', async () => {
+    mockClaudeChat.mockImplementation(emits([
+      { type: 'tool_use', id: 't1', name: 'do_work', input: { x: 1 } } as StreamEvent,
+      { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+    ]));
+
+    const result = await runSubagentLoop({
+      agent: { ...agent, maxTurns: 1 },
+      task: 'do the thing',
+    });
+
+    expect(result.stopReason).toBe('max_turns');
+    expect(result.turnCount).toBe(1);
   });
 
   // Gap fix: subagentLoop previously never called applyDeclaredCapabilities/resolveModelDeclared,
@@ -287,5 +582,280 @@ describe('subagent max_tokens recovery (integration)', () => {
     const declaredOpts = mockClaudeChat.mock.calls[1][1] as Opts;
     expect(declaredOpts.declaredCapabilities?.supportsReasoning).toBe(false);
     expect(declaredOpts.enableThinking).toBeUndefined();
+  });
+
+  // Subagent image visibility: a tool that returns rich content (screenshot /
+  // read_file image) must surface the raw blocks on the tool-end progress
+  // event — the parent's child-step visualization renders images from exactly
+  // this field, and it used to be silently dropped by the stringification.
+  it('tool-end progress event carries resultContent for rich tool results, omits it for strings', async () => {
+    const imageResult = [
+      { type: 'text', text: 'Image: /tmp/shot.png (37KB, image/png)' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
+    ];
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool
+      .mockResolvedValueOnce(imageResult)   // t1: rich result
+      .mockResolvedValueOnce('plain text'); // t2: string result
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'tool_use', id: 't2', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; resultContent?: unknown }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (e) => events.push(e) });
+
+    const toolEnds = events.filter((e) => e.type === 'tool-end');
+    expect(toolEnds).toHaveLength(2);
+    const byId = Object.fromEntries(toolEnds.map((e) => [e.id!, e]));
+    expect(byId.t1.resultContent).toEqual(imageResult);
+    expect(byId.t2.resultContent).toBeUndefined();
+  });
+
+  it('attaches cumulative token usage to a completed tool turn progress event', async () => {
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce('ok');
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } } as StreamEvent,
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/a' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 0, outputTokens: 5 } } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; usage?: { inputTokens: number; outputTokens: number } }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (event) => events.push(event) });
+
+    expect(events.find((event) => event.type === 'turn-complete')).toMatchObject({
+      usage: { inputTokens: 100, outputTokens: 25 },
+    });
+  });
+
+  it.each([
+    ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
+    ['agent denylist', { tools: [], disallowedTools: ['write_file'] }, 'write_file'],
+    ['always-blocked orchestration tool', { tools: [] }, 'run_agent_batch'],
+  ])('rejects a hostile model call outside the frozen %s roster', async (_label, boundary, toolName) => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'hostile-tool', name: toolName, input: { path: '/tmp/x' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent: { ...agent, ...boundary },
+      task: 'attempt an unavailable tool',
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'hostile-tool',
+      error: true,
+      result: expect.stringContaining('fixed tool boundary'),
+    }));
+  });
+
+  it('rechecks constrained tool input after a preToolCall hook modifies it', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockEmitHook.mockImplementation((event: unknown) => {
+      const hookEvent = event as { type?: string };
+      return hookEvent.type === 'preToolCall'
+        ? { ...hookEvent, modifiedInput: { command: 'rm -rf /tmp/forbidden' } }
+        : event;
+    });
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'hook-mutated', name: 'run_command', input: { command: 'npm run test:unit' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent: { ...agent, tools: ['run_command(npm run *)'] },
+      task: 'run a safe command',
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'hook-mutated',
+      error: true,
+      result: expect.stringContaining('fixed tool boundary'),
+    }));
+  });
+
+  it('rechecks the parent run constraint after a preToolCall hook modifies input', async () => {
+    mockGetAllTools.mockReturnValue([
+      { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+    ]);
+    mockEmitHook.mockImplementation((event: unknown) => {
+      const hookEvent = event as { type?: string };
+      return hookEvent.type === 'preToolCall'
+        ? { ...hookEvent, modifiedInput: { command: 'rm -rf /tmp/forbidden' } }
+        : event;
+    });
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 'parent-hook-mutated', name: 'run_command', input: { command: 'npm run test:unit' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'reported boundary failure' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; result?: string; error?: boolean }> = [];
+    await runSubagentLoop({
+      agent,
+      task: 'run a safe command',
+      allowedTools: ['run_command(npm run *)'],
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool-end',
+      id: 'parent-hook-mutated',
+      error: true,
+      result: expect.stringContaining('not allowed for this agent run'),
+    }));
+  });
+
+  it('keeps the generic Error-prefix contract for child tool progress', async () => {
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce('Error: permission denied');
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/ok' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const events: Array<{ type: string; id?: string; error?: boolean; result?: string }> = [];
+    await runSubagentLoop({ agent, task: 'do the thing', onProgress: (e) => events.push(e) });
+
+    const toolEnds = events.filter((e) => e.type === 'tool-end');
+    expect(toolEnds).toEqual([
+      expect.objectContaining({ id: 't1', result: 'Error: permission denied', error: true }),
+    ]);
+  });
+
+  it('bounds the canonical long-run history while preserving every tool pairing and the newest images', async () => {
+    // Deliberately repeat the first raw provider id. Owner release must bind by
+    // array position, not `.find(id)`, or both evicted tokens clear only the
+    // first call and the second rich payload leaks in both history projections.
+    const toolIds = ['duplicate', 'duplicate', ...Array.from({ length: 8 }, (_, index) => `t${index + 2}`)];
+    const imageResults = Array.from({ length: 10 }, (_, index) => ([
+      { type: 'text', text: `Screenshot ${index}` },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: index.toString(36).padStart(4, 'A') },
+      },
+    ]));
+    mockExecuteAnyTool.mockReset();
+    for (const result of imageResults) mockExecuteAnyTool.mockResolvedValueOnce(result);
+    for (let index = 0; index < imageResults.length; index++) {
+      mockClaudeChat.mockImplementationOnce(emits([
+        { type: 'tool_use', id: toolIds[index], name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]));
+    }
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'done' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'take ten screenshots' });
+
+    type HistoryCall = { id: string; result?: string; resultContent?: unknown[] };
+    type HistoryMessage = { toolCalls?: HistoryCall[]; toolCallsForContext?: HistoryCall[] };
+    const finalHistory = mockClaudeChat.mock.calls.at(-1)?.[0] as HistoryMessage[];
+    const primaryCalls = finalHistory.flatMap((message) => message.toolCalls ?? []);
+    const contextCalls = finalHistory.flatMap((message) => message.toolCallsForContext ?? []);
+    const primaryWithImages = primaryCalls.filter((call) => call.resultContent?.some((block) => (
+      block as { type?: string }
+    ).type === 'image'));
+    const contextWithImages = contextCalls.filter((call) => call.resultContent?.some((block) => (
+      block as { type?: string }
+    ).type === 'image'));
+
+    expect(primaryCalls.map((call) => call.id)).toEqual(toolIds);
+    expect(contextCalls.map((call) => call.id)).toEqual(toolIds);
+    expect(primaryWithImages.map((call) => call.id)).toEqual(toolIds.slice(2));
+    expect(contextWithImages.map((call) => call.id)).toEqual(toolIds.slice(2));
+    expect(primaryCalls.every((call) => call.result !== undefined)).toBe(true);
+    expect(contextCalls.every((call) => call.result !== undefined)).toBe(true);
+  });
+
+  // The subagent's OWN eyes: a vision-capable model must receive its tool
+  // results' image blocks back in its next-turn context (it used to be sent
+  // text-only with supportsVision hardcoded false — a subagent that took a
+  // screenshot could never look at it).
+  it('feeds tool-result images back into the subagent\'s own next-turn context, with vision resolved per model', async () => {
+    const imageResult = [
+      { type: 'text', text: 'Image: /tmp/shot.png' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
+    ];
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValueOnce(imageResult);
+
+    mockClaudeChat
+      .mockImplementationOnce(emits([
+        { type: 'tool_use', id: 't1', name: 'computer', input: { action: 'screenshot' } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+      ]))
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'looks good' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    await runSubagentLoop({ agent, task: 'screenshot and verify' });
+
+    // supportsVision resolved from the model's real capabilities (claude-opus-4-8
+    // per this harness's resolveAgentModel mock), not hardcoded false.
+    const firstOpts = mockClaudeChat.mock.calls[0][1] as { supportsVision?: boolean };
+    expect(firstOpts.supportsVision).toBe(true);
+
+    // The second turn's history carries the image blocks for the adapter's
+    // normalizer to turn into vision content.
+    type CtxMessage = { toolCallsForContext?: Array<{ id?: string; resultContent?: unknown }> };
+    const secondMessages = mockClaudeChat.mock.calls[1][0] as CtxMessage[];
+    const withCtx = secondMessages.find((m) => m.toolCallsForContext?.length);
+    expect(withCtx).toBeDefined();
+    expect(withCtx!.toolCallsForContext![0].id).toBe('t1');
+    expect(withCtx!.toolCallsForContext![0].resultContent).toEqual(imageResult);
   });
 });

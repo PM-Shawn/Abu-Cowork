@@ -35,7 +35,7 @@
  *
  * TODO (not yet covered by either contract test — tracked here, not
  * silently dropped): none for chat/exec — this fixture + the 3 dedicated
- * special-case tests cover all 28 ChatDelta + all 14 ExecutionPort methods.
+ * special-case tests cover all 29 ChatDelta + all 14 ExecutionPort methods.
  * The `session` port's one method (`replaceMessageById`) is covered
  * separately, on BOTH sides: sender in
  * `sidecar/src/shims/conversationStorageRun.contract.test.ts` (its sender
@@ -79,6 +79,18 @@ const sampleToolCall = {
 const sampleToolResultContent = [{ type: 'text' as const, text: 'result text' }];
 
 const sampleToolCallForContext = { toolCallId: 'tc1', name: 'read_file', input: {} };
+
+const sampleSubagentToolCall = {
+  id: 'sub-tc1',
+  name: 'computer',
+  input: { action: 'screenshot' },
+  result: 'Image: /tmp/shot.png (37KB, image/png)',
+  resultContent: [
+    { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+  ],
+  hidden: true,
+  fromSubagent: true,
+};
 
 const sampleUsage = { inputTokens: 10, outputTokens: 20 };
 
@@ -140,7 +152,7 @@ const sampleDetailBlock = {
   isExpanded: false,
 };
 
-/** All 27 generic-dispatch ChatDelta methods (28 total minus cancelStreaming),
+/** All 28 generic-dispatch ChatDelta methods (29 total minus cancelStreaming),
  * plus a second setContextUsage case for the legacy payload shape. */
 export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'appendText', args: ['conv-1', 'tok', 'msg-1'] },
@@ -159,7 +171,13 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
     method: 'updateToolCall',
     args: ['conv-1', 'msg-1', 'tc-1', 'tool result', sampleToolResultContent, true, false, sampleToolExecutionMetadata],
   },
+  {
+    port: 'chat',
+    method: 'checkpointToolCallMetadata',
+    args: ['conv-1', 'msg-1', 'tc-1', sampleToolExecutionMetadata],
+  },
   { port: 'chat', method: 'appendToolCallContext', args: ['conv-1', 'loop-1', sampleToolCallForContext] },
+  { port: 'chat', method: 'appendMessageToolCall', args: ['conv-1', 'loop-1', sampleSubagentToolCall] },
   { port: 'chat', method: 'updateMessageUsage', args: ['conv-1', sampleUsage, 'msg-1'] },
   { port: 'chat', method: 'setExecutionStepsSnapshot', args: ['conv-1', 'loop-1', [sampleExecStepSnapshot]] },
   { port: 'chat', method: 'setPlannedStepsSnapshot', args: ['conv-1', 'loop-1', [samplePlannedStep]] },
@@ -177,7 +195,7 @@ export const CHAT_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'chat', method: 'removeActiveAgent', args: ['conv-1', 'agent-1'] },
 ];
 
-/** All 13 generic-dispatch ExecutionPort methods (14 total minus createExecution). */
+/** All 14 generic-dispatch ExecutionPort methods (15 total minus createExecution). */
 export const EXEC_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'exec', method: 'cancelExecution', args: ['loop-1'] },
   { port: 'exec', method: 'evictExecution', args: ['loop-1'] },
@@ -187,8 +205,9 @@ export const EXEC_CONTRACT_FIXTURES: ContractFixtureEntry[] = [
   { port: 'exec', method: 'setStepResult', args: ['loop-1', 'step-1', 'step result'] },
   { port: 'exec', method: 'setStepError', args: ['loop-1', 'step-1', 'step error'] },
   { port: 'exec', method: 'addChildStep', args: ['loop-1', 'parent-1', sampleExecutionStep] },
-  { port: 'exec', method: 'updateChildStep', args: ['loop-1', 'parent-1', 'child-1', 'child result', false] },
+  { port: 'exec', method: 'updateChildStep', args: ['loop-1', 'parent-1', 'child-1', 'child result', false, [sampleDetailBlock]] },
   { port: 'exec', method: 'addDetailBlock', args: ['loop-1', 'step-1', sampleDetailBlock] },
+  { port: 'exec', method: 'releaseDetailBlockImage', args: ['loop-1', 'step-1', sampleDetailBlock.id] },
   { port: 'exec', method: 'appendThinking', args: ['loop-1', 'exec thinking chunk'] },
   { port: 'exec', method: 'setThinkingDuration', args: ['loop-1', 4.2] },
   { port: 'exec', method: 'setUsage', args: ['loop-1', sampleUsage] },

@@ -8,8 +8,10 @@
  * exactly once" / "capture the ONE registered tool.invoke handler" tests
  * need that isolation.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeAll, beforeEach } from 'vitest';
 import type { SubagentDefinition } from '../../types';
+import type { SubagentLoopOptions } from './subagentLoop';
+import type { SubagentRunParams } from './subagentRunner';
 
 // ── Mocked dependencies (thin forwarding factories over stable outer
 // vi.fn() proxies — survives vi.resetModules() per-test re-import, same
@@ -101,10 +103,19 @@ vi.mock('../../i18n', () => ({
         cancelled: '已取消',
         hookBlocked: '被拦截',
         noContent: '无内容',
+        mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
+        invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        invalidDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
       },
       errorEmptyBody: '空响应',
     },
   }),
+  format: (template: string, values: Record<string, string | number>) =>
+    template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? `{${key}}`)),
 }));
 
 const agent: SubagentDefinition = {
@@ -145,7 +156,7 @@ describe('subagentRunner', () => {
     onSidecarRequest.mockReset();
     onSidecarNotification.mockReset();
     runSubagentLoopMock.mockReset();
-    runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+    runSubagentLoopMock.mockResolvedValue({ text: 'in-process result', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
@@ -163,7 +174,191 @@ describe('subagentRunner', () => {
     emitHookMock.mockClear();
   });
 
+  describe('wire projection contract', () => {
+    it('keeps SubagentRunParams and SubagentLoopOptions projection fields explicit and exhaustive', async () => {
+      const {
+        SUBAGENT_RUN_WIRE_FIELDS,
+        SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS,
+      } = await importFresh();
+
+      type WireField = typeof SUBAGENT_RUN_WIRE_FIELDS[number];
+      type MissingRunParam = Exclude<keyof SubagentRunParams, WireField>;
+      expectTypeOf<MissingRunParam>().toEqualTypeOf<never>();
+
+      type LocalOnlyField = typeof SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS[number];
+      type WireOptionField =
+        | 'agent'
+        | 'task'
+        | 'context'
+        | 'parentConversationSummary'
+        | 'parentConversationId'
+        | 'persistParentToolImages'
+        | 'imContext'
+        | 'allowedTools'
+        | 'blockedTools'
+        | 'authorizationScopeId'
+        | 'runPermissionCeiling'
+        | 'triggerId'
+        | 'scheduledTaskId';
+      type CoveredOptionField = WireOptionField | LocalOnlyField;
+      type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
+      expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
+
+      expect(SUBAGENT_RUN_WIRE_FIELDS).toEqual([
+        'runId',
+        'agent',
+        'task',
+        'context',
+        'parentConversationSummary',
+        'parentConversationId',
+        'persistParentToolImages',
+        'imContext',
+        'allowedTools',
+        'blockedTools',
+        'authorizationScopeId',
+        'runPermissionCeiling',
+        'triggerId',
+        'scheduledTaskId',
+        'locale',
+        'uiStrings',
+        'settingsSnapshot',
+        'resolvedCreds',
+        'tools',
+        'workspacePathSnapshot',
+      ]);
+      expect(SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS).toEqual([
+        'signal',
+        'commandConfirmCallback',
+        'filePermissionCallback',
+        'onProgress',
+        'settingsReader',
+        'toolInvoker',
+        'capsPort',
+        'workspaceReader',
+      ]);
+    });
+
+    it('serializes every shell-side wire field onto subagent.run params and omits per-run ports', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'completed',
+      });
+      const { SUBAGENT_RUN_WIRE_FIELDS, SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS, runSubagent } = await importFresh();
+      const signal = new AbortController().signal;
+      const commandConfirmCallback = vi.fn();
+      const filePermissionCallback = vi.fn();
+      const onProgress = vi.fn();
+
+      await runSubagent({
+        agent,
+        task: 'wire everything serializable',
+        context: 'ctx',
+        parentConversationSummary: 'summary',
+        parentConversationId: 'conv-1',
+        persistParentToolImages: true,
+        imContext: { workspacePath: '/im/ws' } as never,
+        allowedTools: ['read_*'],
+        blockedTools: ['abu-browser__*'],
+        authorizationScopeId: 'scope-wire',
+        signal,
+        commandConfirmCallback,
+        filePermissionCallback,
+        onProgress,
+        settingsReader: { getSnapshot: () => ({ agentMaxTurns: 5 }) } as never,
+        toolInvoker: {
+          getAllTools: () => [],
+          executeAnyTool: vi.fn(),
+          toolResultToString: String,
+        } as never,
+        capsPort: { get: () => undefined, recordMaxOutputTokens: vi.fn(), recordContextWindow: vi.fn(), recordReasoningObserved: vi.fn() } as never,
+        workspaceReader: { getCurrentPath: () => '/explicit/ws' } as never,
+      });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(Object.keys(wireParams).sort()).toEqual([...SUBAGENT_RUN_WIRE_FIELDS].sort());
+      expect(wireParams.workspacePathSnapshot).toBe('/im/ws');
+      expect(wireParams.persistParentToolImages).toBe(true);
+      for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
+        expect(wireParams).not.toHaveProperty(localField);
+      }
+    });
+  });
+
   describe('routing', () => {
+    it.each(['stopped', 'running'])('fails before %s runtime dispatch when a required MCP tool is unavailable', async (sidecarStatus) => {
+      getSidecarStatus.mockReturnValue(sidecarStatus);
+      getAllToolsMock.mockReturnValue([
+        { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
+      ]);
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'notion-researcher', tools: ['notion__query'] },
+        task: 'research the workspace',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('notion-researcher');
+      expect(result.text).toContain('notion__query');
+      expect(result.text).toContain('notion');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+      expect(onSidecarRequest).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching malformed tools frontmatter', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'malformed-agent', tools: ['read_file', null] as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('2');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching a blank tools entry', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'blank-agent', tools: ['   '] },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('blank-agent');
+      expect(result.text).toContain('1');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('returns a structured error instead of dispatching scalar tools frontmatter', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, name: 'malformed-agent', tools: 'notion__query' as never },
+        task: 'do the thing',
+      });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.text).toContain('malformed-agent');
+      expect(result.text).toContain('tools');
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).not.toHaveBeenCalled();
+    });
+
     it('runs in-process (runSubagentLoop) when the sidecar is not running', async () => {
       getSidecarStatus.mockReturnValue('stopped');
       const { runSubagent } = await importFresh();
@@ -178,6 +373,27 @@ describe('subagentRunner', () => {
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result.text).toBe('in-process result');
+    });
+
+    it('namespaces in-process progress ids before exposing them to the parent', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'call_1',
+          toolName: 'read_file',
+          toolInput: {},
+        });
+        return { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      });
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      await runSubagent({ agent, task: 'do the thing', onProgress });
+
+      expect(onProgress).toHaveBeenCalledWith(expect.objectContaining({
+        id: expect.stringMatching(/^subagent-v1:sar-.*:call_1$/),
+      }));
     });
 
     it('aborts a scoped in-process subagent signal when the subagent run settles', async () => {
@@ -212,6 +428,7 @@ describe('subagentRunner', () => {
         turnCount: 3,
         tokenUsage: { input: 10, output: 20 },
         duration: 5,
+        stopReason: 'completed',
       });
       const { runSubagent } = await importFresh();
 
@@ -233,7 +450,48 @@ describe('subagentRunner', () => {
       expect(result.toolCallCount).toBe(2);
       expect(result.turnCount).toBe(3);
       expect(result.tokenUsage).toEqual({ input: 10, output: 20 });
+      expect(result.stopReason).toBe('completed');
     });
+
+    it('defaults a legacy sidecar result with no stopReason to completed', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'legacy sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('legacy sidecar result');
+      expect(result.stopReason).toBe('completed');
+    });
+
+    it(
+      'rejects a sidecar result with an unknown stopReason instead of defaulting it to completed',
+      async () => {
+        getSidecarStatus.mockReturnValue('running');
+        sidecarRequestMock.mockResolvedValue({
+          text: 'ambiguous result',
+          toolCallCount: 0,
+          turnCount: 1,
+          tokenUsage: { input: 0, output: 0 },
+          duration: 1,
+          stopReason: 'mystery',
+        });
+        const { runSubagent } = await importFresh();
+
+        const result = await runSubagent({ agent, task: 'do the thing' });
+
+        expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+        expect(result.text).toBe('in-process result');
+        expect(result.stopReason).toBe('completed');
+      },
+    );
 
     it('serializes blockedTools into subagent.run params alongside allowedTools', async () => {
       getSidecarStatus.mockReturnValue('running');
@@ -313,6 +571,7 @@ describe('subagentRunner', () => {
         turnCount: 1,
         tokenUsage: { input: 1, output: 1 },
         duration: 1,
+        stopReason: 'completed',
       });
       const parentSettings = {
         activeModel: { providerId: 'parent-provider', modelId: 'parent-model' },
@@ -479,6 +738,9 @@ describe('subagentRunner', () => {
 
     it('keeps a scope-only scheduled subagent background at the shell tool boundary', async () => {
       getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'computer', description: 'computer use', inputSchema: { type: 'object', properties: {} }, execute: async () => 'screenshot' },
+      ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
@@ -508,6 +770,9 @@ describe('subagentRunner', () => {
 
     it('overwrites a forged IM reply target with the parent-owned subagent target', async () => {
       getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'send_file', description: 'send file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'sent' },
+      ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
@@ -540,6 +805,9 @@ describe('subagentRunner', () => {
 
     it('installs a parent-owned skill command approval bridge for delegated tools', async () => {
       getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'use_skill', description: 'use skill', inputSchema: { type: 'object', properties: {} }, execute: async () => 'used' },
+      ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
@@ -581,6 +849,9 @@ describe('subagentRunner', () => {
 
     it('aborts the shell-side tool signal after a scoped sidecar subagent settles without sending a late subagent.abort', async () => {
       getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'run_command', description: 'runs a command', inputSchema: { type: 'object', properties: {} }, execute: async () => 'command' },
+      ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
@@ -613,6 +884,9 @@ describe('subagentRunner', () => {
 
     it('overwrites a forged sidecar workspace with null when the subagent session has no trusted workspace', async () => {
       getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'run_command', description: 'runs a command', inputSchema: { type: 'object', properties: {} }, execute: async () => 'command' },
+      ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
@@ -636,7 +910,7 @@ describe('subagentRunner', () => {
         expect.objectContaining({ workspacePath: null }),
       );
 
-      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
@@ -666,31 +940,84 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/not allowed/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
-      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
-    it('refuses a delegated tool call matching inherited blockedTools even if the sidecar explicitly asks for it', async () => {
+    it.each([
+      ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
+      ['agent denylist', { disallowedTools: ['write_file'] }, 'write_file'],
+      ['always-blocked orchestration roster', {}, 'run_agent_batch'],
+    ])('refuses a reverse tool.invoke outside the frozen %s', async (_label, boundary, toolName) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
+        { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: async () => 'write' },
+        { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: async () => 'batch' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent: { ...agent, ...boundary }, task: 'hostile call' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(
+        toolInvokeHandler({ runId, toolName, input: { path: '/tmp/x' } }),
+      ).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    // The denylist is a safety boundary (scheduler / trigger / IM tiers are
+    // blockedTools-ONLY) — it must hold on the reverse tool.invoke channel
+    // exactly like the whitelist above, or a sidecar-run subagent gets back
+    // every tool the unattended tier removed.
+    it('refuses delegated tool calls matching inherited blockedTools (exact and wildcard) even if the sidecar explicitly asks', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
       const { runSubagent } = await importFresh();
-      const runPromise = runSubagent({ agent, task: 'read only', blockedTools: ['run_command', 'abu-browser__*'] });
+      const runPromise = runSubagent({
+        agent,
+        task: 'restricted work',
+        blockedTools: ['run_command', 'abu-browser__*', 'request_workspace'],
+      });
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
 
       await expect(
         toolInvokeHandler({ runId, toolName: 'abu-browser__screenshot', input: {} }),
       ).rejects.toThrow(/blocked/);
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'echo nope' } }),
+      ).rejects.toThrow(/blocked/);
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'request_workspace', input: {} }),
+      ).rejects.toThrow(/blocked/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
-      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
+    });
+
+    it('serializes blockedTools onto the subagent.run wire params, symmetric with allowedTools', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'restricted', allowedTools: ['read_*'], blockedTools: ['abu-browser__*'] });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as { allowedTools?: string[]; blockedTools?: string[] };
+      expect(wireParams.allowedTools).toEqual(['read_*']);
+      expect(wireParams.blockedTools).toEqual(['abu-browser__*']);
     });
 
     it('run-session lifecycle: the session is removed once the run settles — a LATE tool.invoke for the same (finished) runId is rejected as unknown', async () => {
       getSidecarStatus.mockReturnValue('running');
-      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       const { runSubagent } = await importFresh();
 
       await runSubagent({ agent, task: 'do the thing' });
@@ -702,6 +1029,68 @@ describe('subagentRunner', () => {
   });
 
   describe('subagent.progress reverse-channel handler', () => {
+    it('gives parallel runs distinct parent-visible ids when providers both emit call_1', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const firstDone = deferred<unknown>();
+      const secondDone = deferred<unknown>();
+      sidecarRequestMock
+        .mockReturnValueOnce(firstDone.promise)
+        .mockReturnValueOnce(secondDone.promise);
+      const { runSubagent } = await importFresh();
+      const firstProgress = vi.fn();
+      const secondProgress = vi.fn();
+
+      const firstRun = runSubagent({ agent, task: 'first', onProgress: firstProgress });
+      const secondRun = runSubagent({ agent, task: 'second', onProgress: secondProgress });
+      const firstRunId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const secondRunId = (sidecarRequestMock.mock.calls[1][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const event = { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} };
+
+      progressHandler({ runId: firstRunId, event });
+      progressHandler({ runId: secondRunId, event });
+
+      expect(firstProgress).not.toHaveBeenCalled();
+      expect(secondProgress).not.toHaveBeenCalled();
+
+      const done = { text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      firstDone.resolve(done);
+      secondDone.resolve(done);
+      await Promise.all([firstRun, secondRun]);
+
+      const firstId = firstProgress.mock.calls[0][0].id as string;
+      const secondId = secondProgress.mock.calls[0][0].id as string;
+      expect(firstId).not.toBe(secondId);
+      expect(firstId).toContain(firstRunId);
+      expect(secondId).toContain(secondRunId);
+    });
+
+    it('buffers progress until the first tool.invoke commits the sidecar run', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const event = { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} };
+
+      progressHandler({ runId, event });
+      expect(onProgress).not.toHaveBeenCalled();
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      expect(onProgress).toHaveBeenCalledWith({
+        ...event,
+        id: `subagent-v1:${encodeURIComponent(runId)}:call_1`,
+      });
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
     it('dispatches an incoming subagent.progress notification to the ORIGINAL session\'s onProgress callback', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -715,13 +1104,39 @@ describe('subagentRunner', () => {
       const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
 
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
       const event = { type: 'tool-end', id: 't1', toolName: 'read_file', result: 'contents', error: false };
       progressHandler({ runId, event });
 
       expect(onProgress).toHaveBeenCalledTimes(1);
-      expect(onProgress).toHaveBeenCalledWith(event);
+      expect(onProgress).toHaveBeenCalledWith({
+        ...event,
+        id: `subagent-v1:${encodeURIComponent(runId)}:t1`,
+      });
 
-      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      // tool-end may now carry resultContent (subagent image rendering) —
+      // the handler must forward it verbatim, not project it away.
+      const richEvent = {
+        type: 'tool-end', id: 't2', toolName: 'computer', result: 'shot', error: false,
+        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+      };
+      progressHandler({ runId, event: richEvent });
+      expect(onProgress).toHaveBeenLastCalledWith({
+        ...richEvent,
+        id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+      });
+
+      const usageEvent = {
+        type: 'turn-complete' as const,
+        turn: 1,
+        totalTurns: 200,
+        usage: { inputTokens: 120, outputTokens: 45 },
+      };
+      progressHandler({ runId, event: usageEvent });
+      expect(onProgress).toHaveBeenLastCalledWith(usageEvent);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
 
@@ -768,6 +1183,75 @@ describe('subagentRunner', () => {
       expect(result.text).toBe('in-process result');
     });
 
+    it('drops pre-invoke sidecar progress and gives the local fallback a fresh scope', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        options.onProgress?.({
+          type: 'tool-start',
+          id: 'call_1',
+          toolName: 'read_file',
+          toolInput: {},
+        });
+        return { text: 'fallback', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' };
+      });
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      progressHandler({
+        runId,
+        event: { type: 'tool-start', id: 'call_1', toolName: 'read_file', toolInput: {} },
+      });
+
+      expect(onProgress).not.toHaveBeenCalled();
+      d.reject(new Error('Sidecar process closed'));
+      const result = await runPromise;
+
+      expect(result.text).toBe('fallback');
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      const fallbackId = onProgress.mock.calls[0][0].id as string;
+      expect(fallbackId).toMatch(/^subagent-v1:sar-.*:call_1$/);
+      expect(fallbackId).not.toBe(`subagent-v1:${encodeURIComponent(runId)}:call_1`);
+    });
+
+    it('does not commit or publish progress for a rejected reverse tool request', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'read only',
+        allowedTools: ['read_*'],
+        onProgress,
+      });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+
+      progressHandler({
+        runId,
+        event: { type: 'tool-start', id: 'call_1', toolName: 'write_file', toolInput: { path: 'x' } },
+      });
+      await expect(
+        toolInvokeHandler({ runId, toolName: 'write_file', input: { path: 'x' } }),
+      ).rejects.toThrow(/not allowed/);
+      expect(onProgress).not.toHaveBeenCalled();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+
+      d.reject(new Error('Sidecar process closed'));
+      const result = await runPromise;
+      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(onProgress).not.toHaveBeenCalled();
+    });
+
     it('a transport failure AFTER ≥1 tool.invoke arrived surfaces an error SubagentResult — NO rerun', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -784,6 +1268,7 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toContain('sidecar crashed mid-run');
+      expect(result.stopReason).toBe('error');
       expect(result.toolCallCount).toBe(0);
       expect(result.turnCount).toBe(0);
     });
@@ -815,6 +1300,7 @@ describe('subagentRunner', () => {
 
         expect(runSubagentLoopMock).not.toHaveBeenCalled();
         expect(result.text).toContain('任务已取消');
+        expect(result.stopReason).toBe('aborted');
       } finally {
         vi.useRealTimers();
       }
@@ -835,6 +1321,7 @@ describe('subagentRunner', () => {
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toContain('任务已取消');
+      expect(result.stopReason).toBe('aborted');
     });
 
     it('does not detach a scoped subagent owner after the abort grace period', async () => {
@@ -879,7 +1366,7 @@ describe('subagentRunner', () => {
   describe('handler registration', () => {
     it('registers tool.invoke/hook.emit/hook.notify/subagent.progress handlers exactly once, no matter how many runs are dispatched', async () => {
       getSidecarStatus.mockReturnValue('running');
-      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      sidecarRequestMock.mockResolvedValue({ text: 'ok', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       const { runSubagent } = await importFresh();
 
       await runSubagent({ agent, task: 'first' });

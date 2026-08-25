@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { fireEvent, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { initLanguage } from '@/i18n';
-import { usePreviewStore, type WorkspaceTab } from '@/stores/previewStore';
+import { makeBatchKey, type BatchIdentity } from '@/types';
+import {
+  BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
+  useBatchProgressStore,
+} from '@/stores/batchProgressStore';
+import { subagentTabId, usePreviewStore, workspaceTabPanelId, type WorkspaceTab } from '@/stores/previewStore';
 import TabStrip from './TabStrip';
 
 const SUMMARY_ID = 'summary-tab';
@@ -18,9 +23,31 @@ function seedTabs(activeTabId = TERMINAL_ID) {
   usePreviewStore.setState({
     tabs,
     activeTabId,
+    focusTabId: null,
     menuOpen: false,
+    appModalOpen: false,
     previewFilePath: null,
   });
+}
+
+function resetBatchStore() {
+  useBatchProgressStore.setState({
+    batches: {},
+    activeVisibleBatchKey: undefined,
+    richAccessClock: 0,
+    richContentDiagnostics: {
+      totalRetainedRichBytes: 0,
+      retainedRichBytesCap: BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
+      overageBytes: 0,
+      evictionCount: 0,
+      releasedBatchCount: 0,
+      lastEvictedKey: undefined,
+    },
+  });
+}
+
+function identity(conversationId: string): BatchIdentity {
+  return { conversationId, batchToolCallId: 'batch' };
 }
 
 function renderTabs() {
@@ -36,7 +63,16 @@ describe('TabStrip pointer interactions', () => {
     initLanguage('en-US');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+    resetBatchStore();
     seedTabs();
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('treats a normal press as a click without entering drag mode', () => {
@@ -102,5 +138,118 @@ describe('TabStrip pointer interactions', () => {
 
     expect(screen.getByRole('tab', { name: /Image Preview/ })).toBeInTheDocument();
     expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
+  });
+
+  it('exposes a real tablist with roving tabIndex and aria tabpanel linkage', () => {
+    renderTabs();
+
+    const tablist = screen.getByRole('tablist', { name: 'Workspace tabs' });
+    const summary = screen.getByRole('tab', { name: /Task Summary/ });
+    const terminal = screen.getByRole('tab', { name: /Terminal/ });
+
+    expect(tablist).toContainElement(summary);
+    expect(tablist).not.toContainElement(screen.getByRole('button', { name: 'New tab' }));
+    expect(tablist).not.toContainElement(screen.getByRole('button', { name: 'Hide panel' }));
+    expect(Array.from(tablist.children).every((child) => child.getAttribute('role') === 'presentation')).toBe(true);
+    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
+    expect(summary).toHaveAttribute('tabIndex', '-1');
+    expect(terminal).toHaveAttribute('tabIndex', '0');
+    expect(Array.from(tablist.querySelectorAll<HTMLElement>('[tabindex="0"]'))).toEqual([terminal]);
+    expect(terminal).toHaveAttribute('aria-controls', workspaceTabPanelId(TERMINAL_ID));
+
+    fireEvent.keyDown(terminal, { key: 'ArrowLeft' });
+    expect(usePreviewStore.getState().activeTabId).toBe(SUMMARY_ID);
+    expect(summary).toHaveFocus();
+
+    fireEvent.keyDown(summary, { key: 'End' });
+    expect(usePreviewStore.getState().activeTabId).toBe(TERMINAL_ID);
+    expect(terminal).toHaveFocus();
+
+    fireEvent.keyDown(terminal, { key: 'Home' });
+    expect(usePreviewStore.getState().activeTabId).toBe(SUMMARY_ID);
+    expect(summary).toHaveFocus();
+  });
+
+  it('closes the focused tab with Delete while preserving the single roving tab stop', () => {
+    renderTabs();
+    const tablist = screen.getByRole('tablist', { name: 'Workspace tabs' });
+    const terminal = screen.getByRole('tab', { name: /Terminal/ });
+    terminal.focus();
+
+    fireEvent.keyDown(terminal, { key: 'Delete' });
+
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([SUMMARY_ID]);
+    const summary = screen.getByRole('tab', { name: /Task Summary/ });
+    expect(summary).toHaveFocus();
+    expect(Array.from(tablist.querySelectorAll<HTMLElement>('[tabindex="0"]'))).toEqual([summary]);
+  });
+
+  it('renders the close control as an adjacent named button', () => {
+    renderTabs();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Task Summary' }));
+
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([TERMINAL_ID]);
+  });
+
+  it('focuses the resulting active neighbor when the close control removes the focused active tab', () => {
+    renderTabs();
+    const terminal = screen.getByRole('tab', { name: /Terminal/ });
+    terminal.focus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close Terminal' }));
+
+    expect(usePreviewStore.getState().activeTabId).toBe(SUMMARY_ID);
+    expect(screen.getByRole('tab', { name: /Task Summary/ })).toHaveFocus();
+  });
+
+  it('focuses the active tab when closing a focused inactive tab via its close control', () => {
+    renderTabs();
+    const summaryClose = screen.getByRole('button', { name: 'Close Task Summary' });
+    summaryClose.focus();
+
+    fireEvent.click(summaryClose);
+
+    expect(usePreviewStore.getState().activeTabId).toBe(TERMINAL_ID);
+    expect(screen.getByRole('tab', { name: /Terminal/ })).toHaveFocus();
+  });
+
+  it('does not steal focus for programmatic file-deletion closes', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'external-preview', kind: 'preview', filePath: '/tmp/delete.md' },
+        { id: TERMINAL_ID, kind: 'terminal' },
+      ],
+      activeTabId: 'external-preview',
+      previewFilePath: '/tmp/delete.md',
+      focusTabId: null,
+    });
+    render(
+      <TooltipProvider>
+        <button type="button">Outside control</button>
+        <TabStrip />
+      </TooltipProvider>,
+    );
+    const outside = screen.getByRole('button', { name: 'Outside control' });
+    outside.focus();
+
+    usePreviewStore.getState().closePreviewTabsForPath('/tmp/delete.md');
+
+    expect(usePreviewStore.getState().activeTabId).toBe(TERMINAL_ID);
+    expect(outside).toHaveFocus();
+  });
+
+  it('shows an Agent tab and focuses it after openSubagent dedupe/open requests', () => {
+    const idn = identity('conv-tab-focus');
+    useBatchProgressStore.getState().initBatch(idn, ['Worker']);
+    const id = usePreviewStore.getState().openSubagent(idn, 0, 'Worker A');
+
+    renderTabs();
+
+    const tab = screen.getByRole('tab', { name: 'Worker A' });
+    expect(tab).toHaveFocus();
+    expect(usePreviewStore.getState().focusTabId).toBeNull();
+    expect(id).toBe(subagentTabId(idn, 0));
+    expect(useBatchProgressStore.getState().activeVisibleBatchKey).toBe(makeBatchKey(idn));
   });
 });

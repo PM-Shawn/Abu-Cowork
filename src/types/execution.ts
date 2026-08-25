@@ -2,7 +2,7 @@
 // ABU — Task Execution Type Definitions
 // ============================================================
 
-import type { TokenUsage } from './index';
+import type { TokenUsage, ToolResultOutputRef } from './index';
 import type { DetailBlockLabelKey } from '@/utils/toolLabels';
 
 // --- Step Types ---
@@ -87,7 +87,11 @@ export interface DetailBlock {
   tableData?: TableData;
 
   // Extended fields for image type
-  imageData?: { mediaType: string; base64: string };
+  imageData?: {
+    mediaType: string;
+    base64?: string;
+    outputRef?: ToolResultOutputRef;
+  };
 
   // Long content handling
   isTruncated: boolean;

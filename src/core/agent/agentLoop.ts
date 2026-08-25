@@ -1,4 +1,4 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, ToolExecutionContext } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
 import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
@@ -57,6 +57,7 @@ import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
 import { createSubagentController } from './subagentAbort';
+import { ActiveToolResultAdmission } from './activeToolResultContent';
 import {
   allToolsUnparseable,
   MAX_NO_PROGRESS_TURNS,
@@ -631,6 +632,11 @@ export function isIncompleteReason(reason: AgentLoopExitReason): boolean {
   return reason === 'max_turns' || reason === 'no_progress' || reason === 'awaiting_user';
 }
 
+/** Keep the direct @agent entry aligned with delegate_to_agent/batch. */
+export function mapSubagentStopReason(reason: SubagentStopReason): Extract<AgentLoopExitReason, 'completed' | 'aborted' | 'error' | 'max_turns'> {
+  return reason;
+}
+
 /** Build the context row used to close an in-flight tool call after user Stop. */
 export function buildInterruptedToolCallContext(
   toolCall: Pick<ToolCall, 'id' | 'name' | 'input'>,
@@ -789,6 +795,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     executionStore: executionPort,
     appendToolCallContext: (loopId, context) => {
       chatDelta.appendToolCallContext(conversationId, loopId, context);
+    },
+    appendMessageToolCall: (loopId, toolCall) => {
+      chatDelta.appendMessageToolCall(conversationId, loopId, toolCall);
     },
     addScratchpadEntry: (entry) => {
       getScratchpadPort().addEntry(entry);
@@ -1094,6 +1103,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     // Build onProgress to visualize subagent tools
     const childIdMap = new Map<string, string>();
+    const childInputById = new Map<string, Record<string, unknown>>();
+    // Image-bearing subagent tool calls, collected for post-hoc persistence:
+    // on THIS route the assistant message is only created AFTER the delegate
+    // completes, so completeChildStep's own appendMessageToolCall (which
+    // targets the loop's last assistant message) silently no-ops during the
+    // run — these are re-appended once the message exists (dedup by id makes
+    // the double call safe if that ever changes).
+    const pendingSubagentToolCalls: ToolCall[] = [];
+    const pendingRichResults = new ActiveToolResultAdmission();
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
     if (delegateStepId) {
       onProgress = (event) => {
@@ -1101,13 +1119,42 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const childStepId = eventRouter.addChildStepToDelegate(
             loopId,
             delegateStepId,
-            { toolName: event.toolName, toolInput: event.toolInput }
+            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
           );
-          if (childStepId) childIdMap.set(event.id, childStepId);
+          if (childStepId) {
+            childIdMap.set(event.id, childStepId);
+            childInputById.set(event.id, event.toolInput);
+          }
         } else if (event.type === 'tool-end') {
           const childStepId = childIdMap.get(event.id);
+          const childInput = childInputById.get(event.id) ?? {};
+          // A completed child no longer needs either lookup. Delete before
+          // downstream rendering/persistence so even a thrown consumer cannot
+          // pin a hostile tool input for the remainder of a long delegate run.
+          childIdMap.delete(event.id);
+          childInputById.delete(event.id);
           if (childStepId) {
-            eventRouter.completeChildStep(loopId, delegateStepId, childStepId, event.result, event.error);
+            eventRouter.completeChildStep(loopId, delegateStepId, childStepId, event.result, event.error, event.resultContent);
+            const token = pendingRichResults.admit(event.resultContent);
+            const resultContent = pendingRichResults.get(token);
+            if (resultContent?.some((block) => block.type === 'image')) {
+              const pendingCall: ToolCall = {
+                id: event.id,
+                name: event.toolName,
+                input: childInput,
+                result: event.result,
+                resultContent,
+                isError: event.error || undefined,
+                hidden: true,
+                fromSubagent: true,
+              };
+              pendingSubagentToolCalls.push(pendingCall);
+              pendingRichResults.bindRelease(token, () => {
+                // Keep the hidden call's identity/result/input for replay
+                // pairing; only the budgeted rich payload is releasable.
+                delete pendingCall.resultContent;
+              });
+            }
           }
         }
       };
@@ -1140,6 +1187,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         scheduledTaskId: _convForContext?.scheduledTaskId,
         parentLoopId: loopId,
         parentConversationId: conversationId,
+        persistParentToolImages: true,
         settingsReader: entrySettingsReader,
       }, {
         // The `@agent` route reaches runSubagent WITHOUT passing through
@@ -1150,6 +1198,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         authorizationScopeId: options?.authorizationScopeId,
         runPermissionCeiling: options?.runPermissionCeiling,
       }, toolContext.workspacePath ?? null));
+      const delegateExitReason = mapSubagentStopReason(result.stopReason);
 
       // runSubagentLoop RETURNS a (partial/cancelled) SubagentResult on abort
       // rather than throwing — deliberate for its structured-result contract, but
@@ -1157,7 +1206,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // delegate run. Re-check the abort signal here so a user Stop during an
       // @agent delegation is reported as {reason:'aborted'}, not a successful
       // completion (schedulers/triggers/isIncompleteReason depend on this).
-      if (abortController.signal.aborted) {
+      if (abortController.signal.aborted || delegateExitReason === 'aborted') {
         subagentCleanup();
         chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
         chatDelta.setAgentStatus(conversationId, 'idle');
@@ -1172,7 +1221,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       subagentCleanup();
       chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
       if (delegateStepId) {
-        eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
+        if (delegateExitReason === 'completed') {
+          eventRouter.route({ type: 'step-end', loopId, stepId: delegateStepId, result: result.text });
+        } else {
+          eventRouter.route({ type: 'step-error', loopId, stepId: delegateStepId, error: result.text });
+        }
       }
 
       // Add result as assistant message
@@ -1185,6 +1238,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         loopId,
       });
 
+      // Now that the loop's assistant message exists, land the subagent's
+      // image-bearing tool calls on it (see pendingSubagentToolCalls above) —
+      // before persistExecutionSnapshot below, whose grafted/snapshotted
+      // child steps join on these entries by toolCallId during replay.
+      for (const tc of pendingSubagentToolCalls) {
+        chatDelta.appendMessageToolCall(conversationId, loopId, tc);
+      }
+
       // Pass msgId so finishStreaming uses replaceMessageById (precise) instead
       // of updateLastMessage (blind last-line replace). Without this, the
       // delegate path could race against the appendMessage batch queue and
@@ -1193,16 +1254,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // the queue) — leaving the user bubble missing after reload.
       chatDelta.finishStreaming(conversationId, delegateAssistantId);
       abortRegistry.clearAbortController(conversationId);
-      eventRouter.route({ type: 'done', loopId, reason: 'delegate_complete' });
+      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
+      if (delegateExitReason === 'error') {
+        eventRouter.route({ type: 'error', loopId, error: result.text });
+        persistExecutionSnapshot(conversationId, loopId);
+        chatDelta.setAgentStatus(conversationId, 'idle');
+        chatDelta.setConversationStatus(conversationId, 'error');
+        notifyTaskError(convTitle, conversationId);
+        return { reason: 'error', error: result.text };
+      }
+
+      eventRouter.route({
+        type: 'done',
+        loopId,
+        reason: delegateExitReason === 'max_turns' ? 'max_turns' : 'delegate_complete',
+      });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setAgentStatus(conversationId, 'idle');
       chatDelta.setConversationStatus(conversationId, 'completed');
-      // Delegate run completed without an LLMError → provider is healthy; clears
-      // any stale config-failure recorded for it (mirrors the main-loop path).
+      // A completed or turn-limited delegate made successful provider calls.
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
-
-      const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskCompleted(convTitle, conversationId);
+      return { reason: delegateExitReason };
     } catch (err) {
       subagentCleanup();
       chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
@@ -2345,6 +2418,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           inputValidators,
           blockedTools: effectiveBlockedTools,
           allowedTools: options?.allowedTools,
+          imContext: options?.imContext,
           confirmCb,
           filePermCb,
           toolContext,

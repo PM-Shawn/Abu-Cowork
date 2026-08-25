@@ -791,6 +791,154 @@ describe('agentLoopHost', () => {
       );
     });
 
+    it('replays a validated subagent stopReason envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'max_turns' },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'delegate_to_agent',
+          { task: 'work' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('partial report');
+      expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
+    });
+
+    it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const summary = {
+        version: 1 as const,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        prompt: 'do not persist',
+        resultContent: [{ type: 'image', source: { data: 'base64' } }],
+        tasks: [{ taskIndex: 0, status: 'stopped' as const, terminalReason: 'aborted' as const, output: 'do not persist' }],
+      };
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', metadata: { batchTerminalSummary: summary } },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'run_agent_batch',
+          { tasks: [] },
+          undefined,
+          undefined,
+          { conversationId: 'conv-wire', toolCallId: 'tc-batch', reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('partial report');
+      expect(reportMetadata).toHaveBeenCalledWith({
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+          taskCount: 1,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      });
+    });
+
+    it('rejects a malformed subagent metadata envelope instead of guessing', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'mystery' },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('delegate_to_agent', { task: 'work' }),
+      )).rejects.toThrow(/Invalid tool\.invoke subagent metadata envelope/);
+    });
+
+    it('rejects an invalid batch summary metadata envelope instead of guessing', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'partial report',
+          metadata: {
+            batchTerminalSummary: {
+              version: 1,
+              batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+              taskCount: 1,
+              counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+              tasks: [{ taskIndex: 0, status: 'mystery', terminalReason: 'completed' }],
+            },
+          },
+        },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_agent_batch', { tasks: [] }),
+      )).rejects.toThrow(/Invalid tool\.invoke batch summary envelope/);
+    });
+
+    it.each([
+      ['forged identity', {
+        version: 1,
+        batch: { conversationId: 'other-conv', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['malformed counts', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['duplicate task index', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 2,
+        counts: { succeeded: 0, failed: 0, stopped: 2, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'stopped', terminalReason: 'aborted' },
+          { taskIndex: 0, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      }],
+      ['out-of-range task index', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['illegal status-reason pair', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'completed' }],
+      }],
+    ])('rejects %s in a batch summary metadata envelope', async (_label, batchTerminalSummary) => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', metadata: { batchTerminalSummary } },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'run_agent_batch',
+          { tasks: [] },
+          undefined,
+          undefined,
+          { conversationId: 'conv-wire', toolCallId: 'tc-batch', reportMetadata: vi.fn() },
+        ),
+      )).rejects.toThrow(/Invalid tool\.invoke batch summary envelope/);
+    });
+
     // ── P1-3d-3/3d-4 SAFETY-CRITICAL: approval.check deny (terminal, no
     // fallback) vs. transport failure / malformed response (fall back) ──
 

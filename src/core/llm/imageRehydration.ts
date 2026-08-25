@@ -1,5 +1,5 @@
-import type { Message, MessageContent } from '../../types';
-import { resolveFileSource } from '../session/outputSnapshots';
+import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent, ToolResultOutputRef } from '../../types';
+import { resolveFileSource, resolveOutputRefSource } from '../session/outputSnapshots';
 import { uint8ArrayToBase64 } from '../../utils/base64';
 import { getBaseName } from '../../utils/pathUtils';
 import { createLogger } from '../logging/logger';
@@ -7,7 +7,7 @@ import { enforceImageBudget } from './imageBudget';
 
 const logger = createLogger('imageRehydration');
 
-/** Cache of filePath → base64 (or null when unrecoverable) for the lifetime of
+/** Cache of image identity → base64 (or null when unrecoverable) for the lifetime of
  *  a single user request. A tool-use loop re-sends the whole history every turn;
  *  the store's `source.data` stays stripped, so without this every iteration
  *  would re-read + re-encode every image from disk. */
@@ -24,7 +24,8 @@ async function readImageAsBase64(
   workspacePath: string | null,
   cache?: ImageBase64Cache,
 ): Promise<string | null> {
-  if (cache?.has(filePath)) return cache.get(filePath) ?? null;
+  const cacheKey = `file:${filePath}`;
+  if (cache?.has(cacheKey)) return cache.get(cacheKey) ?? null;
   let result: string | null = null;
   try {
     const resolved = await resolveFileSource(conversationId, filePath, workspacePath);
@@ -37,8 +38,105 @@ async function readImageAsBase64(
     logger.warn('image rehydrate failed', { filePath, err: String(e) });
     result = null;
   }
-  cache?.set(filePath, result);
+  cache?.set(cacheKey, result);
   return result;
+}
+
+async function readOutputRefAsBase64(
+  conversationId: string | undefined,
+  outputRef: ToolResultOutputRef,
+  cache?: ImageBase64Cache,
+): Promise<string | null> {
+  const cacheKey = `output:${conversationId ?? ''}:${outputRef.relPath}`;
+  if (cache?.has(cacheKey)) return cache.get(cacheKey) ?? null;
+  let result: string | null = null;
+  try {
+    const resolved = await resolveOutputRefSource(conversationId, outputRef.relPath);
+    if (resolved.status === 'available') {
+      const { readFile } = await import('@tauri-apps/plugin-fs');
+      const bytes = await readFile(resolved.path);
+      result = uint8ArrayToBase64(bytes);
+    }
+  } catch (e) {
+    logger.warn('tool result image rehydrate failed', { relPath: outputRef.relPath, err: String(e) });
+    result = null;
+  }
+  cache?.set(cacheKey, result);
+  return result;
+}
+
+function formatOutputRefPlaceholder(outputRef: ToolResultOutputRef, mediaType: string): string {
+  const metadata = [
+    `path=${outputRef.relPath}`,
+    outputRef.basename ? `filename=${outputRef.basename}` : null,
+    outputRef.sizeBytes !== undefined ? `bytes=${outputRef.sizeBytes}` : null,
+    `media_type=${mediaType}`,
+  ].filter(Boolean).join(', ');
+  return `[Tool result image could not be loaded for send (${metadata}).]`;
+}
+
+async function rehydrateToolResultContent(
+  resultContent: ToolResultContent[] | undefined,
+  conversationId: string | undefined,
+  cache?: ImageBase64Cache,
+): Promise<{ content: ToolResultContent[] | undefined; changed: boolean; missingNotes: string[] }> {
+  if (!resultContent?.some((block) => block.type === 'image' && !block.source.data && !!block.outputRef?.relPath)) {
+    return { content: resultContent, changed: false, missingNotes: [] };
+  }
+
+  let changed = false;
+  const missingNotes: string[] = [];
+  const content = (await Promise.all(
+    resultContent.map(async (block): Promise<ToolResultContent | null> => {
+      if (block.type !== 'image' || block.source.data || !block.outputRef?.relPath) return block;
+      changed = true;
+      const data = await readOutputRefAsBase64(conversationId, block.outputRef, cache);
+      if (data) {
+        return { ...block, source: { ...block.source, data }, outputRef: { ...block.outputRef } };
+      }
+      missingNotes.push(formatOutputRefPlaceholder(block.outputRef, block.source.media_type));
+      return null;
+    }),
+  )).filter((block): block is ToolResultContent => block !== null);
+
+  return { content, changed, missingNotes };
+}
+
+function appendSendOnlyNotes(result: string | undefined, notes: string[]): string | undefined {
+  if (notes.length === 0) return result;
+  const noteText = notes.join('\n');
+  return result ? `${result}\n\n${noteText}` : noteText;
+}
+
+// messageNormalizer sends `toolCallsForContext || toolCalls`; hydrate both
+// carriers so whichever copy wins that outbound priority has equivalent image
+// bytes or the same reversible missing-file note in `result`.
+async function rehydrateToolCalls<T extends ToolCall | ToolCallForContext>(
+  calls: T[] | undefined,
+  conversationId: string | undefined,
+  cache?: ImageBase64Cache,
+): Promise<{ calls: T[] | undefined; changed: boolean }> {
+  if (!calls?.some((call) => call.resultContent?.some(
+    (block) => block.type === 'image' && !block.source.data && !!block.outputRef?.relPath,
+  ))) {
+    return { calls, changed: false };
+  }
+
+  let changed = false;
+  const nextCalls = await Promise.all(
+    calls.map(async (call): Promise<T> => {
+      const result = await rehydrateToolResultContent(call.resultContent, conversationId, cache);
+      if (!result.changed) return call;
+      changed = true;
+      return {
+        ...call,
+        result: appendSendOnlyNotes(call.result, result.missingNotes),
+        resultContent: result.content,
+      } as T;
+    }),
+  );
+
+  return { calls: nextCalls, changed };
 }
 
 /**
@@ -52,9 +150,11 @@ async function readImageAsBase64(
  * since the whole history is re-sent each turn). See
  * project-image-empty-base64-after-reload-bug.
  *
- * This mirrors WorkBuddy's `rehydrateItem`: for each image block whose base64
- * was stripped, re-read it from `filePath` (or its snapshot); if unrecoverable,
- * replace the block with a text placeholder so we NEVER send empty base64.
+ * User attachments are re-read from `filePath` (or its snapshot) and degrade to
+ * a text content block when missing. Tool-result images are re-read from their
+ * exact `outputRef`; a missing file removes the unsendable image and appends a
+ * send-only note to the tool call's `result`, which is the carrier consumed by
+ * `normalizeMessages`. Neither path can emit an empty base64 image.
  *
  * Only call this for vision-capable models — non-vision models strip images in
  * `normalizeMessages` anyway, so rehydrating would just waste disk reads.
@@ -71,32 +171,55 @@ export async function rehydrateImageData(
   // Fast path — skip the async fan-out unless some image was actually stripped.
   const needsWork = messages.some(
     (m) =>
-      Array.isArray(m.content) &&
-      m.content.some((b) => b.type === 'image' && !b.source.data && !!b.filePath),
+      (Array.isArray(m.content) &&
+        m.content.some((b) => b.type === 'image' && !b.source.data && !!b.filePath))
+      || m.toolCalls?.some((call) => call.resultContent?.some(
+        (b) => b.type === 'image' && !b.source.data && !!b.outputRef?.relPath,
+      ))
+      || m.toolCallsForContext?.some((call) => call.resultContent?.some(
+        (b) => b.type === 'image' && !b.source.data && !!b.outputRef?.relPath,
+      )),
   );
   if (!needsWork) return messages;
 
   return Promise.all(
     messages.map(async (m) => {
-      if (!Array.isArray(m.content)) return m;
       let changed = false;
-      const newContent = await Promise.all(
-        m.content.map(async (block): Promise<MessageContent> => {
-          if (block.type !== 'image' || block.source.data || !block.filePath) return block;
-          changed = true;
-          const data = await readImageAsBase64(conversationId, block.filePath, workspacePath, cache);
-          if (data) {
-            return { ...block, source: { ...block.source, data } };
-          }
-          // Unrecoverable — degrade to text so we never emit an empty image.
-          // LLM-facing, so English like the other agent-loop prompts.
-          return {
-            type: 'text',
-            text: `[Attached image could not be loaded (expired or missing): ${getBaseName(block.filePath)}]`,
-          };
-        }),
-      );
-      return changed ? { ...m, content: newContent } : m;
+      let next: Message = m;
+
+      if (Array.isArray(m.content)) {
+        const newContent = await Promise.all(
+          m.content.map(async (block): Promise<MessageContent> => {
+            if (block.type !== 'image' || block.source.data || !block.filePath) return block;
+            changed = true;
+            const data = await readImageAsBase64(conversationId, block.filePath, workspacePath, cache);
+            if (data) {
+              return { ...block, source: { ...block.source, data } };
+            }
+            // Unrecoverable — degrade to text so we never emit an empty image.
+            // LLM-facing, so English like the other agent-loop prompts.
+            return {
+              type: 'text',
+              text: `[Attached image could not be loaded (expired or missing): ${getBaseName(block.filePath)}]`,
+            };
+          }),
+        );
+        if (changed) next = { ...next, content: newContent };
+      }
+
+      const toolCalls = await rehydrateToolCalls(m.toolCalls, conversationId, cache);
+      if (toolCalls.changed) {
+        next = { ...next, toolCalls: toolCalls.calls as ToolCall[] };
+        changed = true;
+      }
+
+      const toolCallsForContext = await rehydrateToolCalls(m.toolCallsForContext, conversationId, cache);
+      if (toolCallsForContext.changed) {
+        next = { ...next, toolCallsForContext: toolCallsForContext.calls as ToolCallForContext[] };
+        changed = true;
+      }
+
+      return changed ? next : m;
     }),
   );
 }

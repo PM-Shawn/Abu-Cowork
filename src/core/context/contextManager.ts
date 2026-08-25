@@ -117,6 +117,11 @@ export function trimOldScreenshots(messages: Message[], usagePercent?: number): 
     if (msg.role !== 'assistant' || !msg.toolCalls) continue;
     for (let j = 0; j < msg.toolCalls.length; j++) {
       const tc = msg.toolCalls[j];
+      // Subagent-recorded entries never reach the LLM (no toolCallsForContext
+      // counterpart), so they neither count against the screenshot budget nor
+      // need stripping — and skipping them keeps the tcIdx↔toolCallsForContext
+      // index sharing below aligned on real entries only.
+      if (tc.fromSubagent) continue;
       if (tc.resultContent && Array.isArray(tc.resultContent) && tc.resultContent.some((b: ToolResultContent) => b.type === 'image')) {
         imageLocations.push({ msgIdx: i, tcIdx: j, toolCallId: tc.id });
       }
@@ -210,7 +215,9 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
     if (msg.role !== 'assistant') return msg;
     // If toolCalls exist but all results are missing, strip them
     // (they were likely orphaned by truncation)
-    const tc = msg.toolCallsForContext || msg.toolCalls;
+    const tc = (msg.toolCallsForContext || msg.toolCalls)?.filter(
+      (toolCall) => !('fromSubagent' in toolCall && toolCall.fromSubagent),
+    );
     if (!tc || tc.length === 0) return msg;
 
     const allMissing = tc.every((t) => {
@@ -248,7 +255,9 @@ function compressAssistantMessage(msg: Message): Message {
   // Summarize tool calls
   const toolSummary = msg.toolCallsForContext?.map(
     (tc: ToolCallForContext) => `[${tc.name}]`
-  ).join(', ') || msg.toolCalls?.map(
+  ).join(', ') || msg.toolCalls?.filter(
+    (tc) => !tc.fromSubagent
+  ).map(
     (tc) => `[${tc.name}]`
   ).join(', ') || '';
 

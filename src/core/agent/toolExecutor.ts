@@ -32,10 +32,12 @@ import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
+import type { IMContext } from './orchestrator';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
+import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
 import { firstImageContent } from '../tools/toolResultContent';
 import { snapshotResultImage } from '../session/outputSnapshots';
 
@@ -83,6 +85,8 @@ export interface ToolBatchParams {
   /** Per-run execution whitelist. Pattern matching follows skill allowedTools
    * semantics and is enforced before hooks or tool invocation. */
   allowedTools?: string[];
+  /** Headless IM context to pass through delegate tools into subagent runs. */
+  imContext?: IMContext;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -173,6 +177,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
+    imContext: params.imContext,
     authorizationScopeId: params.toolContext.authorizationScopeId,
     runPermissionCeiling: params.toolContext.runPermissionCeiling,
     imReplyTarget: params.toolContext.imReplyTarget,
@@ -252,19 +257,22 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
     const startTime = Date.now();
     let metadata: ToolExecutionMetadata | undefined;
+    const checkpointMetadata = (next: ToolExecutionMetadata): void => {
+      metadata = {
+        ...metadata,
+        ...next,
+      };
+      chatDelta.checkpointToolCallMetadata(conversationId, assistantMsgId, tc.id, metadata);
+    };
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
       const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
         ...toolContext,
         toolCallId: tc.id,
+        assistantMessageId: assistantMsgId,
         abortSignal: abortController.signal,
-        reportMetadata: (next) => {
-          metadata = {
-            ...metadata,
-            ...next,
-          };
-        },
+        reportMetadata: checkpointMetadata,
       }, contextUsagePercent);
 
       // Foreground Stop keeps its long-standing responsive detach behavior.
@@ -314,6 +322,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const resultContent: ToolResultContent[] | undefined =
         typeof rawResult !== 'string' ? rawResult : undefined;
       const requiresUserRecovery = Boolean(metadata?.sandboxRecovery);
+      const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
+        && metadata.subagentStopReason !== 'completed';
+      const batchTerminalFailure = batchSummaryHasNonSuccess(metadata?.batchTerminalSummary);
+      const isError = requiresUserRecovery || structuredSubagentFailure || batchTerminalFailure;
       // Emit postToolCall hook
       await emitHook({
         type: 'postToolCall',
@@ -323,17 +335,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         toolInput: effectiveInput,
         abortSignal: abortController.signal,
         result: resultStr,
-        error: requiresUserRecovery,
+        error: isError,
         durationMs,
         toolContext,
       });
-      logger.info('Tool executed', { toolName: tc.name, durationMs, error: requiresUserRecovery });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: isError });
       toolSpan.end({ output: resultStr });
       return {
         id: tc.id,
         result: resultStr,
         resultContent,
-        error: requiresUserRecovery,
+        error: isError,
         duration: durationMs / 1000,
         metadata,
       };

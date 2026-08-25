@@ -22,6 +22,8 @@
 import { getChatDelta } from './ports/chatDelta';
 import { getExecutionPort, applyExecutionWithId } from './ports/executionPort';
 import { applyScratchpadEntryWithId } from './ports/scratchpadPort';
+import { snapshotExecutionSteps } from './executionSnapshot';
+import type { ExecutionStepSnapshot } from '../../types/execution';
 import { createLogger } from '../logging/logger';
 import { waitForConversationPersistence } from '../../stores/chatStore';
 
@@ -48,7 +50,7 @@ export interface PortFrame {
 // contract — see executionPort.ts's/scratchpadPort.ts's `applyXWithId` doc
 // comments).
 
-/** All 28 ChatDelta methods (chatDelta.ts) — every one is fire-and-forget/void, so generic reflection dispatch is safe for all of them. */
+/** All 29 ChatDelta methods (chatDelta.ts) — every one is fire-and-forget/void, so generic reflection dispatch is safe for all of them. */
 const CHAT_METHODS = new Set<string>([
   'appendText',
   'setLastMessageContent',
@@ -63,7 +65,9 @@ const CHAT_METHODS = new Set<string>([
   'addMessage',
   'deleteMessagesFrom',
   'updateToolCall',
+  'checkpointToolCallMetadata',
   'appendToolCallContext',
+  'appendMessageToolCall',
   'updateMessageUsage',
   'setExecutionStepsSnapshot',
   'setPlannedStepsSnapshot',
@@ -93,6 +97,7 @@ const EXEC_METHODS = new Set<string>([
   'addChildStep',
   'updateChildStep',
   'addDetailBlock',
+  'releaseDetailBlockImage',
   'appendThinking',
   'setThinkingDuration',
   'setUsage',
@@ -126,6 +131,32 @@ async function applyChatFrame(m: string, a: unknown[]): Promise<void> {
     // doc and docs/2026-07-21-phase1-p3c-conversation-authority-design.md §3).
     const [convId] = a as [string];
     delta.cancelStreaming(convId, { fromSidecarFrame: true });
+    return;
+  }
+  if (m === 'setExecutionStepsSnapshot') {
+    // Known-method special case (same discipline as cancelStreaming above):
+    // graft SHELL-side child steps into the sidecar's snapshot before it is
+    // stored. A sidecar-run loop snapshots its own execution mirror, but
+    // delegate_to_agent executes in the SHELL (tool.invoke reverse channel)
+    // and its subagent child steps are created by the shell EventRouter on
+    // the shell store only — the sidecar mirror never sees them, so its
+    // snapshot arrives with bare delegate steps and the whole child-step
+    // timeline (including subagent images) used to vanish on replay. The
+    // frame order guarantees the shell execution still exists here: the
+    // evictExecution frame is sent (and therefore applied) strictly after
+    // this one (agentLoop.ts's persistExecutionSnapshot).
+    const [convId, loopId, steps] = a as [string, string, ExecutionStepSnapshot[]];
+    const shellExec = getExecutionPort().getExecutionByLoopId(loopId);
+    let grafted = steps;
+    if (shellExec && Array.isArray(steps)) {
+      grafted = steps.map((snap) => {
+        if (snap.childSteps?.length) return snap;
+        const shellStep = shellExec.steps.find((s) => s.id === snap.id);
+        if (!shellStep?.childSteps?.length) return snap;
+        return { ...snap, childSteps: snapshotExecutionSteps(shellStep.childSteps) };
+      });
+    }
+    delta.setExecutionStepsSnapshot(convId, loopId, grafted);
     return;
   }
   delta[m](...a);

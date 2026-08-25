@@ -207,6 +207,35 @@ describe('messageNormalizer', () => {
         expect(JSON.stringify(second)).toBe(JSON.stringify(first));
       });
 
+      it('filters subagent-recorded entries out of the toolCalls fallback', () => {
+        // A fromSubagent entry has no tool_use counterpart in this LLM's own
+        // history — sending it would fabricate a call the model never made.
+        const messages: Message[] = [
+          makeMessage({
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 'tc1', name: 'delegate_to_agent', input: { agent_name: 'r' }, result: 'done' },
+              {
+                id: 'toolu_sub_1',
+                name: 'computer',
+                input: { action: 'screenshot' },
+                result: 'Image: /tmp/shot.png',
+                hidden: true,
+                fromSubagent: true,
+              },
+            ],
+            // No toolCallsForContext — forces the fallback path.
+          }),
+        ];
+
+        const turns = normalizeMessages(messages);
+        if (turns[0].kind === 'assistant') {
+          expect(turns[0].toolCalls).toHaveLength(1);
+          expect(turns[0].toolCalls[0].name).toBe('delegate_to_agent');
+        }
+      });
+
       it('prefers toolCallsForContext over toolCalls', () => {
         const messages: Message[] = [
           makeMessage({

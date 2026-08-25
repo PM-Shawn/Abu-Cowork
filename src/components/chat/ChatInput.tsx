@@ -20,6 +20,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
+import { usePreviewStore } from '@/stores/previewStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
@@ -999,7 +1000,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   <img
                     src={`data:${img.mediaType};base64,${img.data}`}
                     alt=""
-                    className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)]"
+                    className="w-12 h-12 rounded-lg object-cover border border-[var(--abu-border-subtle)] cursor-pointer hover:border-[var(--abu-border-hover)] transition-colors"
+                    onClick={() => usePreviewStore.getState().openPreview(`data:${img.mediaType};base64,${img.data}`)}
+                    title={t.chat.clickToViewFull}
                   />
                   <button
                     onClick={() => removeImage(img.id)}

@@ -18,12 +18,21 @@ import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
+import {
+  batchSummaryHasNonSuccess,
+  mergeBatchTerminalSummaries,
+  normalizeBatchTerminalSummary,
+} from '../core/agent/batchTerminalSummary';
 import { resetSessionPromotions } from '../core/tools/toolSearch';
 import {
   clearConversationComposerDraft,
   getComposerDraftScopeForEnterpriseMode,
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
+import { useWorkProcessFoldStore } from './workProcessFoldStore';
+import { useBatchProgressStore } from './batchProgressStore';
+import { usePreviewStore } from './previewStore';
+import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 
 enableMapSet();
 
@@ -38,6 +47,11 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'connection-failed',
   'interrupted',
 ]);
+
+function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
+  return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
+    || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+}
 
 function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
@@ -563,6 +577,7 @@ interface ChatActions {
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
   updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean, metadata?: ToolExecutionMetadata) => void;
+  checkpointToolCallMetadata: (convId: string, messageId: string, toolCallId: string, metadata: ToolExecutionMetadata) => void;
   /**
    * Persist the user's click on an interactive notice card attached to a
    * tool call (see `ToolCall.noticeCardAction`). Called from the card
@@ -625,6 +640,14 @@ interface ChatActions {
    */
   setMessageToolCalls: (convId: string, messageId: string, toolCalls: ToolCall[]) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
+  /**
+   * Append one EXTRA tool call entry to the last assistant message of the
+   * given loop — used to persist a subagent's image-bearing tool call
+   * (`hidden` + `fromSubagent`, see the ToolCall type doc) so child-step
+   * image backfill has a payload to join on after reload. Same
+   * loopId-targeting as `appendToolCallContext`.
+   */
+  appendMessageToolCall: (convId: string, loopId: string, toolCall: ToolCall) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
 
@@ -934,6 +957,12 @@ export const useChatStore = create<ChatStore>()(
         clearSkillHooksByConversation(id);
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
+        useWorkProcessFoldStore.getState().clearConversation(id);
+        // Workspace subagent tabs are conversation-owned. Close them before
+        // clearing their ephemeral batches so the active view lease is
+        // released synchronously and no clickable dead tab survives deletion.
+        usePreviewStore.getState().closeSubagentTabsForConversation(id);
+        useBatchProgressStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,
           getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode),
@@ -1202,6 +1231,23 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+              if (
+                metadata?.subagentStopReason
+                && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+              ) {
+                tc.subagentStopReason = metadata.subagentStopReason;
+                tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+              }
+              const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
+                conversationId: convId,
+                assistantMessageId: messageId,
+                batchToolCallId: toolCallId,
+              });
+              if (incomingSummary) {
+                tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+                if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+                else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+              }
 
               // Lift notice_card out of the tool's JSON result into a
               // first-class field on the tool call so the chat renderer
@@ -1236,6 +1282,41 @@ export const useChatStore = create<ChatStore>()(
         // every earlier result, so appending here would cost O(N²) bytes within
         // a single tool-heavy turn. The turn-boundary checkpoint in agentLoop is
         // what commits the batch to the ledger.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (
+            metadata.subagentStopReason
+            && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+          ) {
+            tc.subagentStopReason = metadata.subagentStopReason;
+            tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+          }
+          const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
+            conversationId: convId,
+            assistantMessageId: messageId,
+            batchToolCallId: toolCallId,
+          });
+          if (incomingSummary) {
+            tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+            if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+            else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+          }
+          if (tc.name === TOOL_NAMES.RUN_COMMAND && metadata.sandboxRecovery) {
+            tc.sandboxRecovery = metadata.sandboxRecovery;
+            tc.isError = true;
+          }
+        });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
@@ -1558,6 +1639,46 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
+      },
+
+      appendMessageToolCall: (convId, loopId, toolCall) => {
+        let targetMsgId: string | undefined;
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (!conv) return;
+          // Same backward loopId scan as appendToolCallContext above.
+          for (let i = conv.messages.length - 1; i >= 0; i--) {
+            const m = conv.messages[i];
+            if (m.role === 'assistant' && m.loopId === loopId) {
+              // Canonical admission boundary: the sidecar frame path can
+              // re-deliver, and image-bearing child steps can otherwise grow
+              // this repeatedly-snapshotted message without bound. The helper
+              // deduplicates by the app-scoped id and retains only the newest
+              // bounded rich payloads while leaving ordinary parent calls
+              // untouched.
+              const appended = appendBoundedSubagentToolCall(
+                m.toolCalls as ToolCall[] | undefined,
+                toolCall,
+              );
+              if (appended.appended) {
+                m.toolCalls = appended.toolCalls;
+                targetMsgId = m.id;
+              }
+              break;
+            }
+          }
+        });
+        // Persist immediately — same crash-safety rationale (and same stream-
+        // snapshot channel) as updateToolCall above: this fires mid-turn,
+        // before any turn-boundary checkpoint would carry it to disk.
+        if (targetMsgId) {
+          const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
+          if (msg) {
+            import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+              snapshotMessageRevision(convId, msg).catch(() => {});
+            });
+          }
+        }
       },
 
       setExecutionStepsSnapshot: (convId, loopId, steps) => {

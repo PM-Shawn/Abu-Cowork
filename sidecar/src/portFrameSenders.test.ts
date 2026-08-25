@@ -58,6 +58,9 @@ describe('createFrameChatDelta', () => {
       false,
       { sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' } },
     );
+    delta.checkpointToolCallMetadata('c1', 'm1', 'tc1', {
+      sandboxRecovery: { kind: 'app-automation', targetApp: 'Notes' },
+    });
     delta.appendToolCallContext('c1', 'loop1', { toolCallId: 'tc1' } as never);
     delta.updateMessageUsage('c1', { inputTokens: 1, outputTokens: 2 }, 'm1');
     delta.setExecutionStepsSnapshot('c1', 'loop1', []);
@@ -74,7 +77,7 @@ describe('createFrameChatDelta', () => {
     delta.setPendingProposalSignal('c1', undefined);
     delta.removeActiveAgent('c1', 'agent1');
 
-    expect(frames).toHaveLength(28);
+    expect(frames).toHaveLength(29);
     for (const f of frames) {
       expect(f.p).toBe('chat');
       expect(typeof f.m).toBe('string');

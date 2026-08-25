@@ -4,6 +4,7 @@ import {
   isInteractiveDesktop,
   shouldComputeProposalSignal,
   isIncompleteReason,
+  mapSubagentStopReason,
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
@@ -424,6 +425,15 @@ describe('isIncompleteReason', () => {
   it('is false for error', () => {
     expect(isIncompleteReason('error')).toBe(false);
   });
+});
+
+describe('mapSubagentStopReason', () => {
+  it.each(['completed', 'aborted', 'error', 'max_turns'] as const)(
+    'preserves the structured @agent terminal reason %s',
+    (reason) => {
+      expect(mapSubagentStopReason(reason)).toBe(reason);
+    },
+  );
 });
 
 describe('getCapabilityPrompt — visual-output variant selection', () => {

@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { useSettingsStore } from './settingsStore';
+import { useBatchProgressStore } from './batchProgressStore';
+import { makeBatchKey, type BatchIdentity } from '@/types';
 
 /**
  * Opening workspace content is an explicit "show me this" intent, so it must
@@ -22,7 +24,24 @@ export type WorkspaceTab =
   | { id: string; kind: 'summary' }
   | { id: string; kind: 'preview'; filePath: string }
   | { id: string; kind: 'browser'; url: string }
-  | { id: string; kind: 'terminal' };
+  | { id: string; kind: 'terminal' }
+  | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string };
+
+export function subagentTabId(identity: BatchIdentity, taskIndex: number): string {
+  return `subagent:${makeBatchKey(identity)}:${taskIndex}`;
+}
+
+function safeDomId(id: string): string {
+  return encodeURIComponent(id).replace(/%/g, '_');
+}
+
+export function workspaceTabButtonId(id: string): string {
+  return `workspace-tab-${safeDomId(id)}`;
+}
+
+export function workspaceTabPanelId(id: string): string {
+  return `workspace-tabpanel-${safeDomId(id)}`;
+}
 
 function genId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
@@ -34,11 +53,31 @@ function computePreviewFilePath(tabs: WorkspaceTab[], activeTabId: string | null
   return active && active.kind === 'preview' ? active.filePath : null;
 }
 
+function activeSubagentIdentity(tabs: WorkspaceTab[], activeTabId: string | null): BatchIdentity | undefined {
+  const active = tabs.find((t) => t.id === activeTabId);
+  return active?.kind === 'subagent' ? active.identity : undefined;
+}
+
+function reconcileSubagentLeases(
+  oldTabs: WorkspaceTab[],
+  oldActiveTabId: string | null,
+  nextTabs: WorkspaceTab[],
+  nextActiveTabId: string | null,
+): void {
+  const oldActive = oldTabs.find((tab) => tab.id === oldActiveTabId && tab.kind === 'subagent');
+  const nextActive = nextTabs.find((tab) => tab.id === nextActiveTabId && tab.kind === 'subagent');
+  if (oldActive?.id === nextActive?.id) return;
+  const batchStore = useBatchProgressStore.getState();
+  if (oldActive?.kind === 'subagent') batchStore.releaseViewLease(oldActive.identity);
+  if (nextActive?.kind === 'subagent') batchStore.acquireViewLease(nextActive.identity);
+}
+
 interface PreviewState {
   // All open workspace tabs (preview/browser/terminal), in display order.
   tabs: WorkspaceTab[];
   // Currently active tab id, or null when there are no tabs.
   activeTabId: string | null;
+  focusTabId: string | null;
   // True while a workspace popover (tab-strip `+` / context menu) is open. The
   // native browser webview paints OVER React, so it must hide while a menu is
   // up or the menu is occluded. Ephemeral UI signal.
@@ -80,16 +119,21 @@ interface PreviewState {
   openBrowser: (url?: string, requestedId?: string) => string;
   // Open a new terminal tab (terminals are never deduped — each is its own session).
   openTerminal: () => void;
+  openSubagent: (identity: BatchIdentity, taskIndex: number, title: string) => string;
   // Make an existing tab the active one. No-op if the id doesn't exist.
   activateTab: (id: string) => void;
+  consumeFocusTabRequest: (id: string) => void;
   // Close a tab, activating a neighbor (prefer the next tab, else the
   // previous one) if the closed tab was active. Empty afterwards ⇒
   // activeTabId becomes null.
-  closeTab: (id: string) => void;
+  closeTab: (id: string, options?: { focusAfterClose?: boolean }) => void;
   // Close every tab except `id`, which becomes (or stays) active.
   closeOtherTabs: (id: string) => void;
   // Close every tab.
   closeAllTabs: () => void;
+  // Close subagent tabs owned by one conversation. Other workspace tabs stay
+  // open; used by chatStore's synchronous delete cascade.
+  closeSubagentTabsForConversation: (conversationId: string) => void;
   // Drag-reorder: move the tab with id `fromId` to `toId`'s position.
   reorderTabs: (fromId: string, toId: string) => void;
   // Commit a new URL for a browser tab (address-bar navigation).
@@ -119,9 +163,29 @@ interface PreviewState {
   setAppModalOpen: (open: boolean) => void;
 }
 
-export const usePreviewStore = create<PreviewState>((set, get) => ({
+export const usePreviewStore = create<PreviewState>((set, get) => {
+  const commitTabs = (
+    nextTabs: WorkspaceTab[],
+    nextActiveId: string | null,
+    options: { focusTabId?: string | null } = {},
+  ): void => {
+    const prev = get();
+    reconcileSubagentLeases(prev.tabs, prev.activeTabId, nextTabs, nextActiveId);
+    const previewFilePath = computePreviewFilePath(nextTabs, nextActiveId);
+    set({
+      tabs: nextTabs,
+      activeTabId: nextActiveId,
+      previewFilePath,
+      focusTabId: options.focusTabId ?? null,
+      ...(nextTabs.length === 0 ? { chatWidth: null } : {}),
+    });
+    useBatchProgressStore.getState().setActiveVisibleBatch(activeSubagentIdentity(nextTabs, nextActiveId));
+  };
+
+  return ({
   tabs: [],
   activeTabId: null,
+  focusTabId: null,
   menuOpen: false,
   appModalOpen: false,
   chatWidth: null,
@@ -133,26 +197,26 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { tabs } = get();
     const existing = tabs.find((t) => t.kind === 'summary');
     if (existing) {
-      set({ activeTabId: existing.id, previewFilePath: null });
+      commitTabs(tabs, existing.id);
       return;
     }
     const id = genId();
     // Summary is the default tab — put it first so it stays leftmost.
     const nextTabs: WorkspaceTab[] = [{ id, kind: 'summary' }, ...tabs];
-    set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    commitTabs(nextTabs, id);
   },
 
   openPreview: (filePath) => {
     const { tabs } = get();
     const existing = tabs.find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
-      set({ activeTabId: existing.id, previewFilePath: filePath });
+      commitTabs(tabs, existing.id);
       expandRightPanel();
       return;
     }
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath }];
-    set({ tabs: nextTabs, activeTabId: id, previewFilePath: filePath });
+    commitTabs(nextTabs, id);
     expandRightPanel();
   },
 
@@ -161,7 +225,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     if (requestedId) {
       const requested = tabs.find((t) => t.id === requestedId);
       if (requested) {
-        set({ activeTabId: requested.id, previewFilePath: null });
+        commitTabs(tabs, requested.id);
         return requested.id;
       }
       const nextTabs: WorkspaceTab[] = [...tabs, {
@@ -169,18 +233,18 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
         kind: 'browser',
         url,
       }];
-      set({ tabs: nextTabs, activeTabId: requestedId, previewFilePath: null });
+      commitTabs(nextTabs, requestedId);
       return requestedId;
     }
     const existing = tabs.find((t) => t.kind === 'browser' && t.url === url);
     if (existing) {
-      set({ activeTabId: existing.id, previewFilePath: null });
+      commitTabs(tabs, existing.id);
       expandRightPanel();
       return existing.id;
     }
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'browser', url }];
-    set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    commitTabs(nextTabs, id);
     // User-invoked only: the `requestedId` branch above (agent browser-view
     // adoption) intentionally keeps the current collapse state.
     expandRightPanel();
@@ -191,17 +255,36 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     const { tabs } = get();
     const id = genId();
     const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'terminal' }];
-    set({ tabs: nextTabs, activeTabId: id, previewFilePath: null });
+    commitTabs(nextTabs, id);
     expandRightPanel();
+  },
+
+  openSubagent: (identity, taskIndex, title) => {
+    const { tabs } = get();
+    const id = subagentTabId(identity, taskIndex);
+    const existing = tabs.find((tab) => tab.id === id);
+    if (existing) {
+      commitTabs(tabs, id, { focusTabId: id });
+      expandRightPanel();
+      return id;
+    }
+    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'subagent', identity, taskIndex, title }];
+    commitTabs(nextTabs, id, { focusTabId: id });
+    expandRightPanel();
+    return id;
   },
 
   activateTab: (id) => {
     const { tabs } = get();
     if (!tabs.some((t) => t.id === id)) return;
-    set({ activeTabId: id, previewFilePath: computePreviewFilePath(tabs, id) });
+    commitTabs(tabs, id);
   },
 
-  closeTab: (id) => {
+  consumeFocusTabRequest: (id) => {
+    if (get().focusTabId === id) set({ focusTabId: null });
+  },
+
+  closeTab: (id, options) => {
     const { tabs, activeTabId } = get();
     const idx = tabs.findIndex((t) => t.id === id);
     if (idx === -1) return;
@@ -213,23 +296,38 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       const neighbor = tabs[idx + 1] ?? tabs[idx - 1] ?? null;
       nextActiveId = neighbor ? neighbor.id : null;
     }
-    set({
-      tabs: nextTabs,
-      activeTabId: nextActiveId,
-      previewFilePath: computePreviewFilePath(nextTabs, nextActiveId),
-      ...(nextTabs.length === 0 ? { chatWidth: null } : {}),
-    });
+    const focusTabId = options?.focusAfterClose && nextActiveId && nextTabs.some((tab) => tab.id === nextActiveId)
+      ? nextActiveId
+      : null;
+    commitTabs(nextTabs, nextActiveId, { focusTabId });
   },
 
   closeOtherTabs: (id) => {
     const { tabs } = get();
     if (!tabs.some((t) => t.id === id)) return;
     const nextTabs = tabs.filter((t) => t.id === id);
-    set({ tabs: nextTabs, activeTabId: id, previewFilePath: computePreviewFilePath(nextTabs, id) });
+    commitTabs(nextTabs, id);
   },
 
   closeAllTabs: () => {
-    set({ tabs: [], activeTabId: null, previewFilePath: null, chatWidth: null });
+    commitTabs([], null);
+  },
+
+  closeSubagentTabsForConversation: (conversationId) => {
+    const { tabs, activeTabId } = get();
+    const matches = (tab: WorkspaceTab): boolean =>
+      tab.kind === 'subagent' && tab.identity.conversationId === conversationId;
+    if (!tabs.some(matches)) return;
+    const nextTabs = tabs.filter((tab) => !matches(tab));
+    let nextActiveId = activeTabId;
+    if (activeTabId && !nextTabs.some((tab) => tab.id === activeTabId)) {
+      const oldIdx = tabs.findIndex((tab) => tab.id === activeTabId);
+      const survives = (tab: WorkspaceTab): boolean => nextTabs.some((next) => next.id === tab.id);
+      const after = tabs.slice(oldIdx + 1).find(survives);
+      const before = tabs.slice(0, oldIdx).reverse().find(survives);
+      nextActiveId = (after ?? before)?.id ?? null;
+    }
+    commitTabs(nextTabs, nextActiveId);
   },
 
   reorderTabs: (fromId, toId) => {
@@ -265,12 +363,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       const before = tabs.slice(0, oldIdx).reverse().find(survives);
       nextActiveId = (after ?? before)?.id ?? null;
     }
-    set({
-      tabs: nextTabs,
-      activeTabId: nextActiveId,
-      previewFilePath: computePreviewFilePath(nextTabs, nextActiveId),
-      ...(nextTabs.length === 0 ? { chatWidth: null } : {}),
-    });
+    commitTabs(nextTabs, nextActiveId);
   },
 
   retargetPreviewPath: (oldPath, newPath) => {
@@ -289,7 +382,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
       return t;
     });
     if (!changed) return;
-    set({ tabs: nextTabs, previewFilePath: computePreviewFilePath(nextTabs, activeTabId) });
+    commitTabs(nextTabs, activeTabId);
   },
 
   closePreview: () => {
@@ -315,7 +408,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
   setAppModalOpen: (open) => {
     set({ appModalOpen: open });
   },
-}));
+  });
+});
 
 /** True while the workspace has at least one open tab. */
 export function useHasTabs(): boolean {

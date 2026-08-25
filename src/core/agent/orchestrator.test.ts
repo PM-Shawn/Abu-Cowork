@@ -77,9 +77,10 @@ vi.mock('../skill/preprocessor', () => ({
   executeInlineCommands: vi.fn((content: string) => content),
 }));
 
-import { buildSystemPrompt, buildSystemPromptSections, routeInput } from './orchestrator';
+import { buildSystemPrompt, buildSystemPromptSections, formatAvailableAgentTools, routeInput } from './orchestrator';
 import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
+import { agentRegistry } from './registry';
 
 const mockLoadAllRules = vi.mocked(loadAllRules);
 const mockLoadMemoryIndex = vi.mocked(loadMemoryIndex);
@@ -309,6 +310,45 @@ describe('buildSystemPrompt - structure', () => {
     // Note: safety anchor may reference tag names, but no actual tagged content blocks
     expect(prompt).not.toContain('## Project Rules');
     expect(prompt).not.toContain('## Your Long-term Memory');
+  });
+});
+
+describe('Available Agents tool boundaries', () => {
+  it('formats unrestricted, declared, and long declared tool lists', () => {
+    expect(formatAvailableAgentTools({})).toBe('(Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
+    expect(formatAvailableAgentTools({ tools: [] })).toBe('(Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
+    expect(formatAvailableAgentTools({ tools: ['read_file', 'web_search'] })).toBe('(Tools: read_file, web_search)');
+    expect(formatAvailableAgentTools({ tools: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }))
+      .toBe('(Tools: 9 tools incl. a, b, c…)');
+    expect(formatAvailableAgentTools({ disallowedTools: ['abu-browser__*'] }))
+      .toBe('(Tools: all tools except nested delegation, user prompts, and abu-browser__*)');
+    expect(formatAvailableAgentTools({ tools: ['read_file'], disallowedTools: ['write_file'] }))
+      .toBe('(Tools: read_file; excludes write_file)');
+  });
+
+  it('keeps malformed agent metadata isolated instead of dropping the whole section', () => {
+    expect(formatAvailableAgentTools({ tools: 'read_file' } as never))
+      .toBe('(Tools: invalid tools declaration)');
+    expect(formatAvailableAgentTools({ tools: { name: 'read_file' } } as never))
+      .toBe('(Tools: invalid tools declaration)');
+    expect(formatAvailableAgentTools({ tools: ['read_file', 42] } as never))
+      .toBe('(Tools: invalid tools declaration)');
+    expect(formatAvailableAgentTools({ tools: ['   '] }))
+      .toBe('(Tools: invalid tools declaration)');
+  });
+
+  it('adds tool boundaries and the non-authorization warning to the delegation prompt', async () => {
+    vi.mocked(agentRegistry.getAvailableAgents).mockReturnValueOnce([
+      { name: 'unrestricted', description: 'full access', systemPrompt: '', filePath: '__test__' },
+      { name: 'narrow', description: 'limited access', systemPrompt: '', filePath: '__test__', tools: ['read_file'] },
+    ] as never);
+
+    const prompt = await buildSystemPrompt(routeInput('delegate this'), 'base prompt', 'test-conv');
+
+    expect(prompt).toContain('- unrestricted: full access (Tools: all tools except nested delegation and user prompts, including browser / image / MCP)');
+    expect(prompt).toContain('- narrow: limited access (Tools: read_file)');
+    expect(prompt).toContain('they do not authorize any operation');
+    expect(prompt).toContain('Tool approval and permission controls remain authoritative');
   });
 });
 

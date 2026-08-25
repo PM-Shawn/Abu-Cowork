@@ -26,7 +26,7 @@ import { applyDeltaFrames } from './frameApplier';
 const CHAT_METHOD_NAMES: (keyof ChatDelta)[] = [
   'appendText', 'setLastMessageContent', 'appendThinking', 'setThinkingDuration', 'flushTokens',
   'finishStreaming', 'cancelStreaming', 'deactivateSkills', 'setMessageStreamingFlag', 'setMessageToolCalls',
-  'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'appendToolCallContext', 'updateMessageUsage',
+  'addMessage', 'deleteMessagesFrom', 'updateToolCall', 'checkpointToolCallMetadata', 'appendToolCallContext', 'appendMessageToolCall', 'updateMessageUsage',
   'setExecutionStepsSnapshot', 'setPlannedStepsSnapshot', 'setConversationStatus', 'setAgentStatus',
   'setCurrentUsage', 'setRetryInfo', 'setContextUsage', 'setContextCache', 'clearContextCache',
   'setIsCompressing', 'setConversationModel', 'setPendingProposalSignal', 'removeActiveAgent',
@@ -35,7 +35,7 @@ const CHAT_METHOD_NAMES: (keyof ChatDelta)[] = [
 const EXEC_METHOD_NAMES: (keyof ExecutionPort)[] = [
   'createExecution', 'cancelExecution', 'getExecutionByLoopId', 'getExecutionByConversationId', 'evictExecution',
   'completeExecution', 'errorExecution', 'addStep', 'setStepResult', 'setStepError', 'addChildStep',
-  'updateChildStep', 'addDetailBlock', 'appendThinking', 'setThinkingDuration', 'setUsage',
+  'updateChildStep', 'addDetailBlock', 'releaseDetailBlockImage', 'appendThinking', 'setThinkingDuration', 'setUsage',
 ];
 
 /** Methods with their own dedicated special-case test above (id-preserving

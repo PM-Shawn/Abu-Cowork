@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2, MessageSquare } from 'lucide-react';
+import { Wrench, ChevronDown, ChevronRight, CheckCircle2, Loader2, Circle, Maximize2, MessageSquare, ImageOff, RefreshCw } from 'lucide-react';
 import type { ToolCall, ToolResultContent, Message } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
-import { getBaseName } from '@/utils/pathUtils';
+import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
+import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
 import { cn } from '@/lib/utils';
 
 /** True when an ask_user_question tool call is parked waiting on the user. */
@@ -14,13 +15,17 @@ function isAwaitingUser(tc: ToolCall): boolean {
 
 interface ToolCallsGroupProps {
   toolCalls: ToolCall[];
+  conversationId?: string;
 }
+
+type ToolResultImageBlock = Extract<ToolResultContent, { type: 'image' }>;
+type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
 
 /**
  * Compact tool calls display - collapsed by default showing a single line
  * with scrolling tool execution status, expandable to show details.
  */
-export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
+export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsGroupProps) {
   // Filter out hidden tool calls (like report_plan)
   const visibleToolCalls = toolCalls.filter((tc) => !tc.hidden);
 
@@ -143,7 +148,12 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
       {expanded && (
         <div className="border-t border-[var(--abu-border-subtle)]">
           {visibleToolCalls.map((tc, index) => (
-            <ToolCallItem key={tc.id} toolCall={tc} isLast={index === visibleToolCalls.length - 1} />
+            <ToolCallItem
+              key={tc.id}
+              toolCall={tc}
+              isLast={index === visibleToolCalls.length - 1}
+              conversationId={conversationId}
+            />
           ))}
         </div>
       )}
@@ -155,7 +165,15 @@ export default function ToolCallsGroup({ toolCalls }: ToolCallsGroupProps) {
 /**
  * Individual tool call item in expanded view
  */
-function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolean }) {
+function ToolCallItem({
+  toolCall,
+  isLast,
+  conversationId,
+}: {
+  toolCall: ToolCall;
+  isLast: boolean;
+  conversationId?: string;
+}) {
   const { t } = useI18n();
   const [showDetails, setShowDetails] = useState(false);
   const awaitingUser = isAwaitingUser(toolCall);
@@ -253,7 +271,7 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
                   {toolCall.name === TOOL_NAMES.COMPUTER
                     && toolCall.resultContent?.some(b => b.type === 'image')
                     && !toolCall.hideScreenshot && (
-                    <ScreenshotThumbnail resultContent={toolCall.resultContent} />
+                    <ScreenshotThumbnail resultContent={toolCall.resultContent} conversationId={conversationId} />
                   )}
                   {toolCall.result.includes('[sandbox-blocked]') ? (
                     <div className="space-y-1.5">
@@ -285,28 +303,124 @@ function ToolCallItem({ toolCall, isLast }: { toolCall: ToolCall; isLast: boolea
  * Renders a clickable screenshot thumbnail from tool result image content.
  * Click to expand to full size in a modal overlay.
  */
-function ScreenshotThumbnail({ resultContent }: { resultContent: ToolResultContent[] | undefined }) {
+function ToolResultImagePreview({
+  block,
+  conversationId,
+  alt,
+  thumbnailClassName,
+  frameClassName,
+}: {
+  block: ToolResultImageBlock;
+  conversationId?: string;
+  alt: string;
+  thumbnailClassName: string;
+  frameClassName: string;
+}) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  if (!resultContent) return null;
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(null);
+  const [state, setState] = useState<OutputRefImageState>(() => (
+    block.outputRef?.relPath && !block.source.data ? 'loading' : 'idle'
+  ));
+  const [retryNonce, setRetryNonce] = useState(0);
+  const objectUrlRef = useRef<string | null>(null);
 
-  // Same "first image" intent as firstImageContent (core/tools/toolResultContent),
-  // minus its empty-source.data guard. Kept local for now — migrating it would
-  // change what this thumbnail does with a zero-byte payload.
-  const imageBlock = resultContent.find(b => b.type === 'image');
-  if (!imageBlock || imageBlock.type !== 'image') return null;
+  const inlineSrc = block.source.data
+    ? `data:${block.source.media_type};base64,${block.source.data}`
+    : null;
+  const src = inlineSrc ?? resolvedSrc;
 
-  const src = `data:${imageBlock.source.media_type};base64,${imageBlock.source.data}`;
+  useEffect(() => {
+    if (inlineSrc || !block.outputRef?.relPath) {
+      setState('idle');
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+      setResolvedSrc(null);
+      return;
+    }
+
+    let cancelled = false;
+    let createdUrl: string | null = null;
+    setState('loading');
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setResolvedSrc(null);
+
+    resolveOutputRefSource(conversationId, block.outputRef.relPath)
+      .then(async (resolved) => {
+        if (cancelled) return;
+        if (resolved.status !== 'available') {
+          setState('unavailable');
+          return;
+        }
+        createdUrl = await loadLocalImage(resolved.path);
+        if (cancelled) {
+          URL.revokeObjectURL(createdUrl);
+          return;
+        }
+        objectUrlRef.current = createdUrl;
+        setResolvedSrc(createdUrl);
+        setState('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setState('unavailable');
+      });
+
+    return () => {
+      cancelled = true;
+      if (createdUrl && objectUrlRef.current !== createdUrl) URL.revokeObjectURL(createdUrl);
+    };
+  }, [block.outputRef?.relPath, conversationId, inlineSrc, retryNonce]);
+
+  useEffect(() => () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+  }, []);
+
+  const unavailable = state === 'unavailable';
+  if (!src) {
+    return (
+      <div className={cn(frameClassName, 'flex items-center justify-center bg-[var(--abu-bg-muted)]')}>
+        {state === 'loading' ? (
+          <Loader2 className="h-5 w-5 animate-spin text-[var(--abu-text-muted)]" />
+        ) : unavailable ? (
+          <div className="flex flex-col items-center gap-1 px-3 text-center text-caption text-[var(--abu-text-muted)]">
+            <ImageOff className="h-5 w-5" />
+            <span>{t.chat.imageUnavailable}</span>
+            {block.outputRef?.basename && <span className="max-w-full truncate">{block.outputRef.basename}</span>}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRetryNonce((value) => value + 1);
+              }}
+              className="inline-flex items-center gap-1 text-[var(--abu-link)] hover:text-[var(--abu-link-hover)]"
+            >
+              <RefreshCw className="h-3 w-3" />
+              {t.chat.imageRetry}
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <>
       <div
-        className="relative group cursor-pointer mb-2 inline-block"
+        className={cn('relative group cursor-pointer inline-block', frameClassName)}
         onClick={() => setExpanded(true)}
       >
         <img
           src={src}
-          alt="Screenshot"
-          className="rounded border border-white/20 max-w-[280px] max-h-[180px] object-contain"
+          alt={alt}
+          className={thumbnailClassName}
         />
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors rounded flex items-center justify-center">
           <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
@@ -320,7 +434,7 @@ function ScreenshotThumbnail({ resultContent }: { resultContent: ToolResultConte
         >
           <img
             src={src}
-            alt="Screenshot (full)"
+            alt={`${alt} (full)`}
             className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
           />
         </div>
@@ -329,38 +443,26 @@ function ScreenshotThumbnail({ resultContent }: { resultContent: ToolResultConte
   );
 }
 
-/** A single inline image (from a non-computer tool result) — sized for viewing/scanning, click to expand. */
-function InlineImage({ src }: { src: string }) {
-  const [expanded, setExpanded] = useState(false);
+function ScreenshotThumbnail({ resultContent, conversationId }: {
+  resultContent: ToolResultContent[] | undefined;
+  conversationId?: string;
+}) {
+  if (!resultContent) return null;
+
+  // Same "first image" intent as firstImageContent (core/tools/toolResultContent),
+  // minus its empty-source.data guard. Kept local for now — migrating it would
+  // change what this thumbnail does with a zero-byte payload.
+  const imageBlock = resultContent.find(b => b.type === 'image');
+  if (!imageBlock || imageBlock.type !== 'image') return null;
+
   return (
-    <>
-      <div
-        className="relative group cursor-pointer inline-block rounded-lg overflow-hidden border border-[var(--abu-border)] bg-[var(--abu-bg-base)]"
-        onClick={() => setExpanded(true)}
-      >
-        <img
-          src={src}
-          alt="Image"
-          className="block w-auto max-w-[240px] max-h-[240px] object-contain"
-        />
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <Maximize2 className="h-5 w-5 text-white opacity-0 group-hover:opacity-90 transition-opacity drop-shadow" />
-        </div>
-      </div>
-      {expanded && (
-        <div
-          data-electron-no-drag
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-8 cursor-pointer"
-          onClick={() => setExpanded(false)}
-        >
-          <img
-            src={src}
-            alt="Image (full)"
-            className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-          />
-        </div>
-      )}
-    </>
+    <ToolResultImagePreview
+      block={imageBlock}
+      conversationId={conversationId}
+      alt="Screenshot"
+      frameClassName="mb-2 rounded border border-white/20 max-w-[280px] max-h-[180px] min-w-[120px] min-h-[80px] overflow-hidden"
+      thumbnailClassName="rounded max-w-[280px] max-h-[180px] object-contain"
+    />
   );
 }
 
@@ -414,7 +516,7 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
   // Collects EVERY image block, so it deliberately does not use
   // firstImageContent (core/tools/toolResultContent) — different semantics, not
   // a duplicate of it.
-  const images: string[] = [];
+  const images: ToolResultImageBlock[] = [];
   for (const tc of toolCalls) {
     // generate_image is excluded here: its saved file already renders once as a
     // rich ImagePreviewCard (from fileOutputs), so surfacing its resultContent
@@ -427,8 +529,8 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
     const base = path ? getBaseName(path) : '';
     if (base && isUserProvided(base, userRefs)) continue;
     for (const block of tc.resultContent) {
-      if (block.type === 'image') {
-        images.push(`data:${block.source.media_type};base64,${block.source.data}`);
+      if (block.type === 'image' && (block.source.data || block.outputRef?.relPath)) {
+        images.push(block);
       }
     }
   }
@@ -436,8 +538,15 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
 
   return (
     <div className="mt-2 flex flex-wrap gap-2">
-      {images.map((src, i) => (
-        <InlineImage key={i} src={src} />
+      {images.map((block, i) => (
+        <ToolResultImagePreview
+          key={`${block.outputRef?.relPath ?? block.source.data.slice(0, 24)}:${i}`}
+          block={block}
+          conversationId={conversationId}
+          alt="Image"
+          frameClassName="rounded-lg overflow-hidden border border-[var(--abu-border)] bg-[var(--abu-bg-base)] min-w-[96px] min-h-[96px]"
+          thumbnailClassName="block w-auto max-w-[240px] max-h-[240px] object-contain"
+        />
       ))}
     </div>
   );

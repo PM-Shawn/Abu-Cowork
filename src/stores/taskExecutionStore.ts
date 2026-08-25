@@ -73,12 +73,14 @@ interface TaskExecutionActions {
   /** Add a child step to a delegate parent step */
   addChildStep: (execId: string, parentStepId: string, childStep: ExecutionStep) => void;
   /** Update a child step with result or error */
-  updateChildStep: (execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean) => void;
+  updateChildStep: (execId: string, parentStepId: string, childStepId: string, result: string, error?: boolean, detailBlocks?: DetailBlock[]) => void;
 
   // --- Detail Block Management ---
 
   /** Add a detail block to a step */
   addDetailBlock: (execId: string, stepId: string, block: DetailBlock) => void;
+  /** Release only a live image payload while preserving its replay placeholder. */
+  releaseDetailBlockImage: (execId: string, stepId: string, blockId: string) => void;
   /** Toggle detail block expanded state */
   toggleDetailExpanded: (execId: string, stepId: string, blockId: string) => void;
   /** Update detail block content (for streaming results) */
@@ -306,7 +308,7 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
       });
     },
 
-    updateChildStep: (execId, parentStepId, childStepId, result, error) => {
+    updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) => {
       set((state) => {
         const exec = state.executions[execId];
         const parentStep = exec?.steps.find((s) => s.id === parentStepId);
@@ -321,6 +323,13 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
           if (childStep.startTime) {
             childStep.duration = (childStep.endTime - childStep.startTime) / 1000;
           }
+          if (detailBlocks?.length) {
+            for (const block of detailBlocks) {
+              const existingIndex = childStep.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+              if (existingIndex >= 0) childStep.detailBlocks[existingIndex] = block;
+              else childStep.detailBlocks.push(block);
+            }
+          }
         }
       });
     },
@@ -332,15 +341,31 @@ export const useTaskExecutionStore = create<TaskExecutionStore>()(
         const exec = state.executions[execId];
         const step = exec?.steps.find((s) => s.id === stepId);
         if (step) {
-          step.detailBlocks.push(block);
+          const existingIndex = step.detailBlocks.findIndex((candidate) => candidate.id === block.id);
+          if (existingIndex >= 0) step.detailBlocks[existingIndex] = block;
+          else step.detailBlocks.push(block);
         }
+      });
+    },
+
+    releaseDetailBlockImage: (execId, stepId, blockId) => {
+      set((state) => {
+        const exec = state.executions[execId];
+        const step = exec?.steps.find((candidate) => candidate.id === stepId)
+          ?? exec?.steps.flatMap((candidate) => candidate.childSteps ?? [])
+            .find((candidate) => candidate.id === stepId);
+        const block = step?.detailBlocks.find((candidate) => candidate.id === blockId);
+        if (block) delete block.imageData;
       });
     },
 
     toggleDetailExpanded: (execId, stepId, blockId) => {
       set((state) => {
         const exec = state.executions[execId];
-        const step = exec?.steps.find((s) => s.id === stepId);
+        // Child steps carry detail blocks too (subagent images) — search one
+        // level down when the id doesn't match a top-level step.
+        const step = exec?.steps.find((s) => s.id === stepId)
+          ?? exec?.steps.flatMap((s) => s.childSteps ?? []).find((s) => s.id === stepId);
         const block = step?.detailBlocks.find((b) => b.id === blockId);
         if (block) {
           block.isExpanded = !block.isExpanded;

@@ -244,9 +244,6 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "manage_trigger",
     "paramNames": [
       "action",
-      "allowed_commands",
-      "allowed_paths",
-      "allowed_tools",
       "debounce_enabled",
       "debounce_seconds",
       "description",

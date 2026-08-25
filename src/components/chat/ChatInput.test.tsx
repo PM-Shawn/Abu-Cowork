@@ -6,6 +6,7 @@ import { createDocReference, createDomElementReference, type BrowserElementPaylo
 import { useChatStore } from '@/stores/chatStore';
 import { clearAllComposerDrafts, writeComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { getI18n } from '@/i18n';
 import type { ImageAttachment } from '@/types';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -40,9 +41,11 @@ describe('ChatInput per-conversation drafts', () => {
       pendingReferences: [],
       pendingAttachmentPaths: [],
     });
+    useImageLightboxStore.getState().close();
   });
 
   afterEach(() => {
+    useImageLightboxStore.getState().close();
     cleanup();
     vi.restoreAllMocks();
   });
@@ -115,18 +118,23 @@ describe('ChatInput attachment image preview', () => {
       pendingReferences: [],
       pendingAttachmentPaths: [],
     });
+    useImageLightboxStore.getState().close();
   });
 
   afterEach(() => {
+    useImageLightboxStore.getState().close();
     cleanup();
     vi.restoreAllMocks();
   });
 
-  it('opens the pending image in the preview panel when its thumbnail is clicked', () => {
-    const image: ImageAttachment = { id: 'img-1', data: 'aGVsbG8=', mediaType: 'image/png' };
+  it('opens pending images in the lightbox without changing the preview panel', () => {
+    const images: ImageAttachment[] = [
+      { id: 'img-1', data: 'aGVsbG8=', mediaType: 'image/png' },
+      { id: 'img-2', data: 'd29ybGQ=', mediaType: 'image/webp' },
+    ];
     writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, {
       text: '',
-      images: [image],
+      images,
       files: [],
       references: [],
       selectedSkill: null,
@@ -137,9 +145,20 @@ describe('ChatInput attachment image preview', () => {
 
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
 
-    const thumbnail = screen.getByTitle(getI18n().chat.clickToViewFull);
-    fireEvent.click(thumbnail);
-    expect(openPreview).toHaveBeenCalledWith('data:image/png;base64,aGVsbG8=');
+    const thumbnails = screen.getAllByTitle(getI18n().chat.clickToViewFull);
+    fireEvent.click(thumbnails[1]);
+
+    const lightbox = useImageLightboxStore.getState();
+    expect(lightbox.isOpen).toBe(true);
+    expect(lightbox.activeIndex).toBe(1);
+    expect(lightbox.items.map((item) => item.id)).toEqual(['img-1', 'img-2']);
+    expect(lightbox.returnFocus).toBe(thumbnails[1]);
+    expect(openPreview).not.toHaveBeenCalled();
+
+    useImageLightboxStore.getState().close();
+    fireEvent.click(screen.getAllByTitle(getI18n().chat.removeImage)[0]);
+    expect(useImageLightboxStore.getState().isOpen).toBe(false);
+    expect(screen.getAllByTitle(getI18n().chat.clickToViewFull)).toHaveLength(1);
   });
 });
 

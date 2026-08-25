@@ -21,6 +21,7 @@ const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
 const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
+const SAVE_IMAGE_ATTACHMENT_CHANNEL = 'abu:save-image-attachment';
 const TAURI_STORE_KEYS = new Set([
   'abu-settings',
   'abu-chat',
@@ -109,6 +110,67 @@ const MAX_PENDING_SIDECAR_CHARS = 16 * 1024 * 1024;
 let pendingSidecarChars = 0;
 const MAX_ARGS_JSON_CHARS = 8 * 1024 * 1024;
 const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
+const MAX_IMAGE_SAVE_BYTES = 32 * 1024 * 1024;
+const IMAGE_SAVE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const IMAGE_SAVE_REQUEST_KEYS = new Set(['data', 'mediaType', 'suggestedName']);
+let imageSavePending = false;
+
+function utf8ByteLength(value) {
+  let bytes = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 0x7f) bytes += 1;
+    else if (codePoint <= 0x7ff) bytes += 2;
+    else if (codePoint <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
+function invokeSaveImageAttachment(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('saveImageAttachment request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !IMAGE_SAVE_REQUEST_KEYS.has(key));
+  if (unknownKey) throw new Error(`saveImageAttachment does not accept ${unknownKey}`);
+  if (!IMAGE_SAVE_MEDIA_TYPES.has(request.mediaType)) {
+    throw new Error('saveImageAttachment media type is unsupported');
+  }
+
+  if (request.data === undefined) {
+    throw new Error('saveImageAttachment requires image data');
+  }
+  const payload = { mediaType: request.mediaType };
+  const data = request.data;
+  const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
+  if (!isBinary || data.byteLength <= 0 || data.byteLength > MAX_IMAGE_SAVE_BYTES) {
+    throw new Error('saveImageAttachment data is invalid');
+  }
+  payload.data = data;
+
+  if (request.suggestedName !== undefined) {
+    if (
+      typeof request.suggestedName !== 'string'
+      || request.suggestedName.includes('\0')
+      || utf8ByteLength(request.suggestedName) > 512
+    ) {
+      throw new Error('saveImageAttachment suggested name is invalid');
+    }
+    payload.suggestedName = request.suggestedName;
+  }
+  if (imageSavePending) {
+    throw new Error('saveImageAttachment is already in progress');
+  }
+  imageSavePending = true;
+  try {
+    return ipcRenderer.invoke(SAVE_IMAGE_ATTACHMENT_CHANNEL, payload).finally(() => {
+      imageSavePending = false;
+    });
+  } catch (error) {
+    imageSavePending = false;
+    throw error;
+  }
+}
 
 // Guard against exotic/non-JSON-serializable args (functions, DOM nodes, etc.)
 // so the structured-clone IPC boundary doesn't throw before we even dispatch.
@@ -334,6 +396,7 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   // Chromium no longer exposes File.path. Keep the bridge deliberately narrow:
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  saveImageAttachment: invokeSaveImageAttachment,
   subscribeSidecarEvents: (callback) => {
     if (typeof callback !== 'function') {
       throw new Error('subscribeSidecarEvents requires a callback');

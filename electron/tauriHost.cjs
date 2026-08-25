@@ -49,6 +49,10 @@ const {
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const {
+  SAVE_IMAGE_ATTACHMENT_CHANNEL,
+  saveImageAttachment,
+} = require('./imageSaveHost.cjs');
+const {
   fsWatchDispatch,
   FS_WATCH_MISS,
   cleanupFsWatchesForSender,
@@ -1400,6 +1404,11 @@ function registerTauriHost(app, options = {}) {
       request?.path,
       request?.followFinalSymlink !== false,
     );
+  });
+
+  ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return saveImageAttachment(app, e, request, { dialog, BrowserWindow });
   });
 
   ipcMain.handle(SIDECAR_BRIDGE_STATE_CHANNEL, async (e, query = {}) => {

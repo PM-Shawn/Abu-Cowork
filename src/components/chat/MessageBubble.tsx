@@ -8,6 +8,7 @@ import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
@@ -38,9 +39,20 @@ function extractAttachments(text: string): { cleanText: string; attachmentPaths:
 }
 
 /** Image thumbnail that loads from base64 data, disk filePath, or snapshot fallback */
-function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 'image' }> }) {
+type UserImageBlock = Extract<MessageContent, { type: 'image' }>;
+
+function UserImageThumbnail({
+  image,
+  images,
+  index,
+  messageId,
+}: {
+  image: UserImageBlock;
+  images: UserImageBlock[];
+  index: number;
+  messageId: string;
+}) {
   const { t } = useI18n();
-  const openPreview = usePreviewStore.getState().openPreview;
   const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
   const workspacePath = useChatStore((s) => {
     const id = s.activeConversationId;
@@ -48,7 +60,6 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   });
   const hasData = !!image.source.data;
   const [diskSrc, setDiskSrc] = useState<string | null>(null);
-  const [effectivePath, setEffectivePath] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
 
   useEffect(() => {
@@ -65,7 +76,6 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
         setExpired(true);
         return;
       }
-      setEffectivePath(resolved.path);
       try {
         const url = await loadLocalImage(resolved.path);
         if (cancelled) { URL.revokeObjectURL(url); return; }
@@ -101,13 +111,28 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   }
 
   return (
-    <div
-      className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] cursor-pointer hover:border-[var(--abu-border-hover)] transition-colors"
-      onClick={() => openPreview(effectivePath || image.filePath || src)}
+    <button
+      type="button"
+      className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+      onClick={(event) => {
+        useImageLightboxStore.getState().open(
+          images.map((item, imageIndex) => ({
+            id: `${messageId}:image:${imageIndex}`,
+            data: item.source.data,
+            mediaType: item.source.media_type,
+            filePath: item.filePath,
+            conversationId,
+            workspacePath,
+          })),
+          index,
+          event.currentTarget,
+        );
+      }}
       title={t.chat.clickToViewFull}
+      aria-label={t.chat.clickToViewFull}
     >
       <img src={src} alt="" className="w-full h-full object-cover" />
-    </div>
+    </button>
   );
 }
 
@@ -604,7 +629,13 @@ export default function MessageBubble({
           {imageBlocks.length > 0 && !isEditing && (
             <div className="flex flex-wrap justify-end gap-1.5">
               {imageBlocks.map((img, idx) => (
-                <UserImageThumbnail key={idx} image={img} />
+                <UserImageThumbnail
+                  key={`${message.id}:image:${idx}`}
+                  image={img}
+                  images={imageBlocks}
+                  index={idx}
+                  messageId={message.id}
+                />
               ))}
             </div>
           )}

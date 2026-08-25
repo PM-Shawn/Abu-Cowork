@@ -8,6 +8,7 @@ import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import * as approvalBridge from '@/core/agent/ports/approvalBridge';
 import {
   drainCapabilitySetupRequests,
@@ -54,6 +55,7 @@ describe('BrowserTab native overlay visibility', () => {
     useChatStore.setState({ activeConversationId: 'active-conversation' });
     useSettingsStore.setState({ systemSettingsOpen: false });
     usePreviewStore.setState({ menuOpen: false });
+    useImageLightboxStore.getState().close();
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
       bottom: 500,
@@ -83,6 +85,7 @@ describe('BrowserTab native overlay visibility', () => {
     approvalBridge.drainAll('file-permission');
     approvalBridge.drainAll('workspace');
     drainCapabilitySetupRequests();
+    useImageLightboxStore.getState().close();
     cleanup();
     vi.restoreAllMocks();
   });
@@ -134,6 +137,138 @@ describe('BrowserTab native overlay visibility', () => {
       expect(invoke).toHaveBeenCalledWith('browser_show', {
         id: 'browser-approval-regression',
       });
+    });
+  });
+
+  it('hides the native view while the image lightbox is open and restores it on close', async () => {
+    render(
+      <TooltipProvider>
+        <BrowserTab
+          tabId="browser-image-lightbox"
+          url="https://example.com"
+        />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-image-lightbox',
+      }));
+    });
+    invoke.mockClear();
+
+    act(() => {
+      useImageLightboxStore.getState().open([
+        { id: 'image-1', data: 'cG5n', mediaType: 'image/png' },
+      ], 0);
+    });
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_hide', { id: 'browser-image-lightbox' });
+    });
+    expect(invoke).not.toHaveBeenCalledWith('browser_capture', expect.anything());
+    invoke.mockClear();
+
+    act(() => {
+      useImageLightboxStore.getState().close();
+    });
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_show', { id: 'browser-image-lightbox' });
+    });
+  });
+
+  it('immediately hides for the lightbox while an older overlay capture is pending', async () => {
+    let resolveCapture!: (value: string | null) => void;
+    const capturePending = new Promise<string | null>((resolve) => {
+      resolveCapture = resolve;
+    });
+    invoke.mockImplementation((command: string) => (
+      command === 'browser_capture' ? capturePending : Promise.resolve(undefined)
+    ));
+
+    render(
+      <TooltipProvider>
+        <BrowserTab
+          tabId="browser-lightbox-capture-handoff"
+          url="https://example.com"
+        />
+      </TooltipProvider>,
+    );
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-lightbox-capture-handoff',
+      }));
+    });
+    invoke.mockClear();
+
+    act(() => {
+      usePreviewStore.setState({ menuOpen: true });
+    });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_capture', {
+        id: 'browser-lightbox-capture-handoff',
+      });
+    });
+
+    act(() => {
+      useImageLightboxStore.getState().open([
+        { id: 'handoff-image', data: 'cG5n', mediaType: 'image/png' },
+      ], 0);
+    });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_hide', {
+        id: 'browser-lightbox-capture-handoff',
+      });
+    });
+
+    // Closing both overlays must restore the native view without waiting for
+    // the obsolete capture promise to settle.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    invoke.mockClear();
+    act(() => {
+      useImageLightboxStore.getState().close();
+      usePreviewStore.setState({ menuOpen: false });
+    });
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_show', {
+        id: 'browser-lightbox-capture-handoff',
+      });
+    });
+
+    await act(async () => {
+      resolveCapture(null);
+      await capturePending;
+    });
+  });
+
+  it('creates an Electron native view hidden when the lightbox is already open', async () => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    };
+    runtime.__ABU_SHELL__ = { mainSupervisesSidecar: true };
+    act(() => {
+      useImageLightboxStore.getState().open([
+        { id: 'image-before-browser', data: 'cG5n', mediaType: 'image/png' },
+      ], 0);
+    });
+
+    render(
+      <TooltipProvider>
+        <BrowserTab
+          tabId="browser-created-under-lightbox"
+          url="https://example.com"
+        />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-created-under-lightbox',
+        visible: false,
+      }));
     });
   });
 

@@ -338,6 +338,14 @@ export interface TranslationDict {
     feedbackNegative: string;
     saveAndResend: string;
     clickToViewFull: string;
+    imagePreviewTitle: string;
+    downloadImage: string;
+    previousImage: string;
+    nextImage: string;
+    imageCounter: string;
+    imageSaveDone: string;
+    imageSaveFailed: string;
+    imageSaveTooLarge: string;
     imageExpired: string;
     imageLoading: string;
     imageUnavailable: string;

@@ -20,8 +20,19 @@ import {
   getPendingCapabilitySetup,
   subscribeCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
+import {
+  getPendingCommandConfirmation,
+  getPendingFilePermission,
+  getPendingUserQuestions,
+  getPendingWorkspaceRequest,
+  subscribeToCommandConfirmation,
+  subscribeToFilePermission,
+  subscribeToWorkspaceRequest,
+  subscribeUserQuestion,
+} from '@/core/agent/permissionBridge';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { usePreviewStore } from '@/stores/previewStore';
 
 type DiskImageState =
   | { status: 'idle'; itemId: null; src: null; blob: null }
@@ -38,6 +49,31 @@ function decodedBase64Length(value: string): number {
 
 class ImageSaveTooLargeError extends Error {}
 
+function subscribeBlockingApproval(onStoreChange: () => void): () => void {
+  const unsubscribers = [
+    subscribeToCommandConfirmation(onStoreChange),
+    subscribeToFilePermission(onStoreChange),
+    subscribeToWorkspaceRequest(onStoreChange),
+    subscribeUserQuestion(onStoreChange),
+  ];
+  return () => {
+    for (const unsubscribe of unsubscribers) unsubscribe();
+  };
+}
+
+function getBlockingApprovalSnapshot(): boolean {
+  return getPendingCommandConfirmation() !== null
+    || getPendingFilePermission() !== null
+    || getPendingWorkspaceRequest() !== null
+    || getPendingUserQuestions().length > 0;
+}
+
+function hasBlockingOverlay(): boolean {
+  return getPendingCapabilitySetup() !== null
+    || getBlockingApprovalSnapshot()
+    || usePreviewStore.getState().appModalOpen;
+}
+
 export default function ImageLightbox() {
   const { t } = useI18n();
   const isOpen = useImageLightboxStore((state) => state.isOpen);
@@ -51,7 +87,14 @@ export default function ImageLightbox() {
     subscribeCapabilitySetup,
     getPendingCapabilitySetup,
   );
+  const blockingApproval = useSyncExternalStore(
+    subscribeBlockingApproval,
+    getBlockingApprovalSnapshot,
+  );
+  const appModalOpen = usePreviewStore((state) => state.appModalOpen);
+  const blockingOverlay = capabilitySetup !== null || blockingApproval || appModalOpen;
   const dialogRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [diskImage, setDiskImage] = useState<DiskImageState>(DISK_IDLE);
   const [failedItemId, setFailedItemId] = useState<string | null>(null);
@@ -124,7 +167,7 @@ export default function ImageLightbox() {
   }, [item]);
 
   useLayoutEffect(() => {
-    if (!isOpen || capabilitySetup) return;
+    if (!isOpen || blockingOverlay) return;
     const dialog = dialogRef.current;
     const previousOverflow = document.body.style.overflow;
     const siblings = Array.from(document.body.children)
@@ -155,7 +198,7 @@ export default function ImageLightbox() {
         // update. Consult the source of truth as well as the render ref so the
         // outgoing lightbox can never steal focus back from the incoming
         // permission dialog.
-        if (getPendingCapabilitySetup()) return;
+        if (hasBlockingOverlay()) return;
         if (returnFocus?.isConnected) {
           returnFocus.focus();
           return;
@@ -165,11 +208,11 @@ export default function ImageLightbox() {
         )?.focus();
       });
     };
-  }, [capabilitySetup, isOpen, returnFocus]);
+  }, [blockingOverlay, isOpen, returnFocus]);
 
   useLayoutEffect(() => {
-    if (isOpen && capabilitySetup) close();
-  }, [capabilitySetup, close, isOpen]);
+    if (isOpen && blockingOverlay) close();
+  }, [blockingOverlay, close, isOpen]);
 
   const handleClose = useCallback(() => {
     close();
@@ -251,6 +294,22 @@ export default function ImageLightbox() {
         next();
         return;
       }
+      if (
+        event.key === 'ArrowUp'
+        || event.key === 'ArrowDown'
+        || event.key === 'PageUp'
+        || event.key === 'PageDown'
+      ) {
+        const scrollContainer = scrollContainerRef.current;
+        if (!scrollContainer) return;
+        event.preventDefault();
+        const direction = event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1;
+        const distance = event.key === 'PageUp' || event.key === 'PageDown'
+          ? scrollContainer.clientHeight
+          : 80;
+        scrollContainer.scrollBy({ behavior: 'smooth', top: direction * distance });
+        return;
+      }
     }
     if (event.key !== 'Tab') return;
 
@@ -272,7 +331,7 @@ export default function ImageLightbox() {
     }
   };
 
-  if (!isOpen || capabilitySetup || !item || typeof document === 'undefined') return null;
+  if (!isOpen || blockingOverlay || !item || typeof document === 'undefined') return null;
 
   return createPortal(
     <div
@@ -334,6 +393,7 @@ export default function ImageLightbox() {
       </div>
 
       <div
+        ref={scrollContainerRef}
         className="absolute inset-0 flex items-center justify-center overflow-auto px-20 py-20"
         onClick={(event) => {
           if (event.target === event.currentTarget) handleClose();
@@ -374,30 +434,40 @@ export default function ImageLightbox() {
 
       {hasGallery ? (
         <>
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon-lg"
-            className="absolute left-5 top-1/2 z-20 size-12 -translate-y-1/2 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
-            disabled={activeIndex === 0}
-            onClick={previous}
-            title={t.chat.previousImage}
-            aria-label={t.chat.previousImage}
+          <div
+            className="absolute left-5 top-1/2 z-20 -translate-y-1/2"
+            onClick={(event) => event.stopPropagation()}
           >
-            <ChevronLeft className="size-6" />
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="icon-lg"
-            className="absolute right-5 top-1/2 z-20 size-12 -translate-y-1/2 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
-            disabled={activeIndex === items.length - 1}
-            onClick={next}
-            title={t.chat.nextImage}
-            aria-label={t.chat.nextImage}
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon-lg"
+              className="size-12 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
+              disabled={activeIndex === 0}
+              onClick={previous}
+              title={t.chat.previousImage}
+              aria-label={t.chat.previousImage}
+            >
+              <ChevronLeft className="size-6" />
+            </Button>
+          </div>
+          <div
+            className="absolute right-5 top-1/2 z-20 -translate-y-1/2"
+            onClick={(event) => event.stopPropagation()}
           >
-            <ChevronRight className="size-6" />
-          </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon-lg"
+              className="size-12 rounded-full bg-white/90 text-black shadow-lg hover:bg-white"
+              disabled={activeIndex === items.length - 1}
+              onClick={next}
+              title={t.chat.nextImage}
+              aria-label={t.chat.nextImage}
+            >
+              <ChevronRight className="size-6" />
+            </Button>
+          </div>
           <div
             aria-live="polite"
             className="absolute bottom-5 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1.5 text-minor tabular-nums text-white/90"

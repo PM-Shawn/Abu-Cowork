@@ -46,6 +46,10 @@ const {
   migrateWindowsSecrets,
   finalizeTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
+const {
+  DEVICE_ID_CHANNEL,
+  resolveDeviceId,
+} = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const {
@@ -1120,6 +1124,37 @@ function registerTauriHost(app, options = {}) {
           showMigrationRetryDialog(app);
         });
       }
+    }
+  });
+
+  // Analytics device_id: file-backed so a reinstall / cleared Chromium profile
+  // does not mint a new id and inflate the console's device count. preload
+  // hands over whatever localStorage currently holds and writes the answer
+  // back, keeping the renderer's getDeviceId() synchronous — see
+  // electron/deviceIdStore.cjs for the precedence rules.
+  ipcMain.on(DEVICE_ID_CHANNEL, (e, request) => {
+    try {
+      assertTrustedIpcSender(e);
+      // ORDERING GUARD, not defensive noise. On a Tauri-transition launch the
+      // real id arrives via the localStorage migration ABOVE. While that plan
+      // is still `pending` (offered but not finalized — the renderer failed to
+      // write, or never acknowledged) localStorage does not yet hold the
+      // user's Tauri id, so minting here would persist a NEW id to disk and,
+      // on the retry launch that finally imports the real one, the file would
+      // win and overwrite it. That is precisely the "every user is suddenly
+      // new" artifact this whole change exists to prevent. Skip this launch;
+      // preload falls back to localStorage-only and the next launch persists.
+      if (localStorageMigration?.status === 'pending') {
+        e.returnValue = null;
+        return;
+      }
+      e.returnValue = resolveDeviceId({
+        dir: abuAppDataDir(app),
+        localStorageId: request?.localStorageId,
+      });
+    } catch {
+      // Telemetry identity must never be able to block boot.
+      e.returnValue = null;
     }
   });
 

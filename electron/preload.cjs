@@ -16,6 +16,8 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
 const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
+const DEVICE_ID_RESOLVE = 'abu:device-id:resolve';
+const DEVICE_ID_STORAGE_KEY = 'abu_device_id';
 const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
 const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
 const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
@@ -94,6 +96,28 @@ try {
 } catch {
   // Migration must never make the app unbootable. No acknowledgement means
   // main leaves the sentinel absent and retries next launch.
+}
+
+// Reconcile the analytics device_id against its file-backed copy in the app
+// data dir. MUST stay AFTER the Tauri import above: on a transition launch
+// that import is what puts the user's existing id into localStorage, and this
+// step adopts it rather than minting a replacement.
+//
+// Runs here, at preload-eval time, for one reason: src/utils/deviceId.ts's
+// getDeviceId() is SYNCHRONOUS and has five call sites. Settling localStorage
+// before any renderer module evaluates keeps that function — and every caller
+// — completely unchanged. Main owns generation, so under Electron the
+// renderer's own mint path never runs.
+try {
+  const current = globalThis.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+  const resolved = ipcRenderer.sendSync(DEVICE_ID_RESOLVE, { localStorageId: current });
+  if (resolved && typeof resolved.id === 'string' && resolved.id !== current) {
+    globalThis.localStorage.setItem(DEVICE_ID_STORAGE_KEY, resolved.id);
+  }
+} catch {
+  // A null answer (fs failure, migration still pending) or a storage throw
+  // leaves the renderer on its original localStorage-only behavior, which is
+  // exactly the pre-change status quo. The next launch retries.
 }
 
 let cbId = 1;

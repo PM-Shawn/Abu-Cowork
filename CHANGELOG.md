@@ -9,7 +9,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
-## v0.42.0 · 2026-08-25
+## v0.42.0 · 2026-08-27
 
 ### ✨ Features
 
@@ -18,7 +18,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **Triggers have autonomy capability tiers.** The trigger editor exposes a read-only / custom / full capability level, defaults legacy records to read-only, and warns before granting full access. `manage_trigger` can no longer widen a trigger's own tool/command/path allowlist.
 - **Tool-result images survive the whole session.** A screenshot or read-file image no longer degrades to a text placeholder after the turn ends: images are snapshotted to disk, backfilled on replay, and rehydrated on conversation reload, with old inline history dehydrated to keep the ledger small.
 - **Context usage now breaks down by layer.** The usage indicator shows where the tokens went instead of a single opaque number.
-- **A full-window lightbox for your own images.** Composer attachments and sent user-image thumbnails now open in a dedicated full-window viewer — save the image to disk via native Save As, step through images from that message or the current composer attachment list with the arrow keys, and scroll tall images. Assistant, tool, and workspace images still open in the side preview panel.
+- **A full-window lightbox for your own images.** Composer attachments and sent user-image thumbnails now open in a dedicated full-window viewer — save the image to disk via native Save As, step through images from that message or the current composer attachment list with the arrow keys, and scroll tall images with the mouse wheel or the keyboard (Up/Down/PageUp/PageDown). The viewer steps aside on its own when the agent needs an approval — a permission or command-confirmation dialog closes it instead of hiding behind it — and clicking a disabled paging arrow no longer closes the viewer. Assistant, tool, and workspace images still open in the side preview panel.
 - **Chapter rail gains a fisheye hover.** Hovering the left-margin chapter scale magnifies nearby ticks for easier targeting in long conversations.
 - **Windows layout pass.** The workspace header lays out correctly on Windows, and the title bar no longer swallows clicks meant for the conversation.
 
@@ -29,6 +29,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **The updater stops claiming "up to date" when it is disabled.** The check result is three-state now, so a build without an updater no longer reports the same thing as a genuinely current one.
 - **Terminal copy and text selection work as expected.** Selection and copy in the terminal tab were fixed, along with the edit-field context menu and panel reopen.
 - **The work-process fold no longer hides the answer.** Collapsing the work-process group hides only process steps; assistant text and mid-loop user messages stay visible in every fold state, and narrate-first turns keep their fold.
+- **Stop now reliably kills the running command's process tree.** The sidecar's run-ownership guard silently swallowed the abort dispatch, so a stopped task could leave its command running in the background. The abort callback now re-enters the owning run's context, and a failed dispatch is logged instead of dropped.
+- **Approval dialogs land in the conversation that asked.** With more than one loop running, a command confirmation could be stamped with another conversation's id and filtered out of view — the run then waited forever on an approval you couldn't see. Confirmations now carry the requesting loop's id, the same way file permissions already did.
+- **The temp directory no longer dead-ends on its canonical spelling.** On macOS the temp dir lives behind the `/var` → `/private/var` symlink, and both the pre-write read check and the privileged file host refused the canonical form of paths they had just approved — every read and write under the temp dir failed with an authorization prompt that could never be granted. Allowed roots are resolved to their real paths now.
+- **Diagnostic upload asks for a description and a conversation.** The feedback form no longer accepts an empty report: a problem description and at least one selected conversation are required before upload. Offline export stays unrestricted.
 - **Chapter rail stays inside its pane** and doesn't render on short conversations.
 
 ### ⚠️ Behavior change

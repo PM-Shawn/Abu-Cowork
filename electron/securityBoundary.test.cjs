@@ -587,6 +587,24 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     () => shellBridge.saveImageAttachment({ data: new Uint8Array(), mediaType: 'image/png' }),
     /data is invalid/,
   );
+  const imageInvokeCountBeforeOversizedBacking = invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length;
+  const oversizedBackingView = new Uint8Array(
+    new ArrayBuffer(32 * 1024 * 1024 + 1),
+    0,
+    1,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: oversizedBackingView,
+      mediaType: 'image/png',
+    }),
+    /data is invalid/,
+  );
+  assert.equal(invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length, imageInvokeCountBeforeOversizedBacking);
 
   holdImageSave = true;
   const firstPendingSave = shellBridge.saveImageAttachment({

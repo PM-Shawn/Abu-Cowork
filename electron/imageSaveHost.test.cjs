@@ -126,6 +126,17 @@ test('rejects destination extensions outside the declared image format', async (
   assert.equal(writes.length, 1);
 });
 
+test('rejects relative and NUL-containing paths returned by the save dialog', async () => {
+  for (const filePath of ['relative/export.png', '/chosen/export.png\0evil']) {
+    const { dependencies, writes } = createDependencies({ filePath });
+    await assert.rejects(
+      saveImageAttachment(app, event, { data: PNG, mediaType: 'image/png' }, dependencies),
+      /dialog returned an invalid path/,
+    );
+    assert.equal(writes.length, 0);
+  }
+});
+
 test('allows only one pending save per IPC sender', async () => {
   let resolveDialog;
   const { dependencies } = createDependencies();

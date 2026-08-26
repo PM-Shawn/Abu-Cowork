@@ -143,7 +143,17 @@ function invokeSaveImageAttachment(request) {
   const payload = { mediaType: request.mediaType };
   const data = request.data;
   const isBinary = data instanceof ArrayBuffer || ArrayBuffer.isView(data);
-  if (!isBinary || data.byteLength <= 0 || data.byteLength > MAX_IMAGE_SAVE_BYTES) {
+  const backingByteLength = data instanceof ArrayBuffer
+    ? data.byteLength
+    : ArrayBuffer.isView(data)
+      ? data.buffer.byteLength
+      : 0;
+  if (
+    !isBinary
+    || data.byteLength <= 0
+    || data.byteLength > MAX_IMAGE_SAVE_BYTES
+    || backingByteLength > MAX_IMAGE_SAVE_BYTES
+  ) {
     throw new Error('saveImageAttachment data is invalid');
   }
   payload.data = data;

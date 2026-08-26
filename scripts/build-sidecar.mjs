@@ -82,6 +82,10 @@ const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 
  */
 const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'core/logging/logger.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/logger.ts') },
+  // Capture native-command ownership at registration time so out-of-band
+  // AbortSignal callbacks can re-enter the correct ALS context. The renderer
+  // implementation remains a browser-safe identity wrapper.
+  { real: path.resolve(srcDir, 'core/tools/helpers/taskCommandInvoke.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/taskCommandInvokeRun.ts') },
   { real: path.resolve(srcDir, 'core/observability/compatEvents.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/compatEvents.ts') },
   { real: path.resolve(srcDir, 'core/llm/tauriFetch.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/tauriFetch.ts') },
   // P1-3a additions (docs/2026-07-19-phase1-p3-loop-migration-staging.md §2

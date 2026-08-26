@@ -42,6 +42,29 @@ import { sendRequest } from '../rpcClient';
 import { agentRunContext } from '../agentRunContext';
 import { subagentRunContext } from '../subagentRunContext';
 
+const CLEANUP_COMMANDS: ReadonlySet<string> = new Set([
+  'abort_command',
+  'ax_close_session',
+  'computer_use_end_task',
+]);
+
+/**
+ * Cleanup-only fallback for callbacks that already captured their owning
+ * runId but execute without an ambient AsyncLocalStorage store. The shell
+ * still validates both the run owner and its native-command allowlist.
+ */
+export async function invokeCleanupForCapturedRun<T>(
+  runId: string,
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  if (!runId || !CLEANUP_COMMANDS.has(cmd)) {
+    throw new Error(`[sidecar] explicit native.invoke owner override is restricted to cleanup commands: ${cmd}`);
+  }
+  console.error('[sidecar:native.invoke] cleanup dispatch used an explicit captured run owner', { runId, cmd });
+  return sendRequest('native.invoke', { runId, cmd, args }) as Promise<T>;
+}
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const runId = agentRunContext.getStore()?.runId ?? subagentRunContext.getStore()?.runId;
   if (!runId) {

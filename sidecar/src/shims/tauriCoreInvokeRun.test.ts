@@ -7,7 +7,7 @@ vi.mock('../rpcClient', () => ({
   sendRequest: (...args: unknown[]) => sendRequestMock(...args),
 }));
 
-import { invoke } from './tauriCoreInvokeRun';
+import { invoke, invokeCleanupForCapturedRun } from './tauriCoreInvokeRun';
 
 describe('tauriCoreInvokeRun', () => {
   beforeEach(() => {
@@ -43,6 +43,23 @@ describe('tauriCoreInvokeRun', () => {
     await expect(invoke('run_shell_command', { command: 'pwd' })).rejects.toThrow(
       /outside an agent\/subagent run context/,
     );
+    expect(sendRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('allows an explicitly captured owner to dispatch cleanup outside ALS', async () => {
+    await invokeCleanupForCapturedRun('main-run', 'abort_command', { commandId: 'cmd-1' });
+
+    expect(sendRequestMock).toHaveBeenCalledWith('native.invoke', {
+      runId: 'main-run',
+      cmd: 'abort_command',
+      args: { commandId: 'cmd-1' },
+    });
+  });
+
+  it('rejects explicit owner overrides for non-cleanup commands', async () => {
+    await expect(invokeCleanupForCapturedRun('main-run', 'run_shell_command', { command: 'pwd' }))
+      .rejects
+      .toThrow(/restricted to cleanup commands/);
     expect(sendRequestMock).not.toHaveBeenCalled();
   });
 });

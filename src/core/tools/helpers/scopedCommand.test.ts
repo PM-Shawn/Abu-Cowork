@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { clearLogs, getRecentLogs } from '@/core/logging/logger';
 import { invokeTaskCommand, TaskCommandAbortedError } from './scopedCommand';
 
 function setElectronMarker(enabled: boolean): void {
@@ -19,12 +20,14 @@ describe('invokeTaskCommand', () => {
 
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    clearLogs();
     delete process.env.ELECTRON_RUN_AS_NODE;
     delete process.env.ABU_ELECTRON_COMMAND_HOST;
     setElectronMarker(false);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.mocked(invoke).mockReset();
     if (oldElectronRunAsNode === undefined) {
       delete process.env.ELECTRON_RUN_AS_NODE;
@@ -119,5 +122,44 @@ describe('invokeTaskCommand', () => {
       .rejects
       .toThrow(TaskCommandAbortedError);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('records a warning when abort_command dispatch fails', async () => {
+    vi.useFakeTimers();
+    setElectronMarker(true);
+    const controller = new AbortController();
+    let resolveCommand!: (value: unknown) => void;
+    vi.mocked(invoke).mockImplementation(async (cmd) => {
+      if (cmd === 'run_shell_command') {
+        return await new Promise((resolve) => {
+          resolveCommand = resolve;
+        });
+      }
+      if (cmd === 'abort_command') throw new Error('sidecar transport closed');
+      return undefined;
+    });
+
+    const running = invokeTaskCommand(
+      'run_shell_command',
+      { command: 'sleep 60' },
+      { abortSignal: controller.signal },
+      { commandIdPrefix: 'warn-test' },
+    );
+
+    controller.abort();
+    await Promise.resolve();
+
+    const warning = getRecentLogs({ module: 'scoped-command', level: 'warn' }).at(-1);
+    expect(warning).toMatchObject({
+      message: 'abort_command dispatch failed',
+      data: {
+        commandId: expect.stringMatching(/^warn-test-/),
+        error: 'sidecar transport closed',
+      },
+    });
+
+    resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
+    await running;
+    await vi.advanceTimersByTimeAsync(500);
   });
 });

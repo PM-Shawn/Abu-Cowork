@@ -278,7 +278,7 @@ export default function TabStrip() {
                 'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
                 draggingId === tab.id && 'cursor-grabbing',
                 active
-                  ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
+                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
                   : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
                 // The dragged tab lifts off the strip; a drop target gets highlighted.
                 // pointer-events-none lets elementFromPoint "see through" it to the

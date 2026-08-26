@@ -9,7 +9,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
-## v0.42.0 · 2026-08-25
+## v0.42.0 · 2026-08-27
 
 ### ✨ Features
 
@@ -29,6 +29,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **The updater stops claiming "up to date" when it is disabled.** The check result is three-state now, so a build without an updater no longer reports the same thing as a genuinely current one.
 - **Terminal copy and text selection work as expected.** Selection and copy in the terminal tab were fixed, along with the edit-field context menu and panel reopen.
 - **The work-process fold no longer hides the answer.** Collapsing the work-process group hides only process steps; assistant text and mid-loop user messages stay visible in every fold state, and narrate-first turns keep their fold.
+- **Stop now reliably kills the running command's process tree.** The sidecar's run-ownership guard silently swallowed the abort dispatch, so a stopped task could leave its command running in the background. The abort callback now re-enters the owning run's context, and a failed dispatch is logged instead of dropped.
+- **Approval dialogs land in the conversation that asked.** With more than one loop running, a command confirmation could be stamped with another conversation's id and filtered out of view — the run then waited forever on an approval you couldn't see. Confirmations now carry the requesting loop's id, the same way file permissions already did.
+- **The temp directory no longer dead-ends on its canonical spelling.** On macOS the temp dir lives behind the `/var` → `/private/var` symlink, and both the pre-write read check and the privileged file host refused the canonical form of paths they had just approved — every read and write under the temp dir failed with an authorization prompt that could never be granted. Allowed roots are resolved to their real paths now.
+- **Diagnostic upload asks for a description and a conversation.** The feedback form no longer accepts an empty report: a problem description and at least one selected conversation are required before upload. Offline export stays unrestricted.
 - **Chapter rail stays inside its pane** and doesn't render on short conversations.
 
 ### ⚠️ Behavior change

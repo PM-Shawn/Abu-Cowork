@@ -1177,6 +1177,8 @@ const zhCN: TranslationDict = {
     conversationPickerInfoTooltip: '只会包含你勾选的对话，API Key、密钥等敏感信息已自动剔除。最多可选 5 个对话，默认每个对话取最近 100 条消息。',
     conversationPickerTooMany: '最多可选 {max} 个对话',
     descriptionLabel: '问题描述',
+    descriptionRequired: '请填写问题描述',
+    conversationRequired: '请选择要附带的对话',
     screenshotTitle: '附加截图',
     screenshotAddHint: '点击、拖拽或粘贴图片添加（最多 5 张，合计 5MB）',
     screenshotCount: '{n}/5',

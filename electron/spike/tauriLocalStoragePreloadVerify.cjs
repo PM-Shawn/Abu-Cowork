@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { resolveDeviceId } = require('../deviceIdStore.cjs');
 
 const preload = path.join(__dirname, '..', 'preload.cjs');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-preload-migration-'));
@@ -16,6 +17,7 @@ fs.writeFileSync(
   page,
   `<!doctype html><meta charset="utf-8"><script>
     window.valueAtFirstPageScript = localStorage.getItem('abu-settings');
+    window.deviceIdAtFirstPageScript = localStorage.getItem('abu_device_id');
   </script>`,
   'utf8'
 );
@@ -30,6 +32,15 @@ ipcMain.on('abu:tauri-local-storage:get', (event) => {
 ipcMain.on('abu:tauri-local-storage:ack', (event, result) => {
   acknowledgement = result;
   event.returnValue = { ok: true };
+});
+// preload sendSyncs on this channel too. Registering it here is not optional
+// politeness: an unlistened sendSync leaves the renderer depending on
+// Electron's no-listener behavior, which this harness has no business
+// exercising — and it is the one mechanism by which the device-id step could
+// stall a boot. Uses the real resolver so the assertion below covers the
+// production path, not a stub.
+ipcMain.on('abu:device-id:resolve', (event, request) => {
+  event.returnValue = resolveDeviceId({ dir: root, localStorageId: request?.localStorageId });
 });
 ipcMain.on('tauri:os-internals', (event) => {
   event.returnValue = {
@@ -58,6 +69,16 @@ app.whenReady().then(async () => {
       'window.valueAtFirstPageScript'
     );
     assert.equal(valueAtFirstPageScript, migratedValue);
+    // The device id must be settled BEFORE page scripts run — that timing is
+    // the whole reason reconciliation lives in preload and getDeviceId() could
+    // stay synchronous.
+    const deviceIdAtFirstPageScript = await win.webContents.executeJavaScript(
+      'window.deviceIdAtFirstPageScript'
+    );
+    const persistedDeviceId = JSON.parse(
+      fs.readFileSync(path.join(root, 'device-id.json'), 'utf8')
+    ).deviceId;
+    assert.equal(deviceIdAtFirstPageScript, persistedDeviceId);
     assert.deepEqual(acknowledgement, {
       imported: ['abu-settings'],
       overwritten: [],
@@ -65,7 +86,7 @@ app.whenReady().then(async () => {
       failed: [],
       previous: [],
     });
-    process.stdout.write('Electron preload migration verified before page scripts.\n');
+    process.stdout.write('Electron preload migration and device id verified before page scripts.\n');
     app.exit(0);
   } catch (error) {
     process.stderr.write(

@@ -555,12 +555,23 @@ test.describe.serial('Electron infra hygiene batch', () => {
 
     await startNewChat(page);
     await sendPrompt(page, `try manage_trigger escalation ${randomUUID()}`);
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(9);
+    // `manage_trigger` writes durable automation state, so selfExtensionPolicy
+    // makes every non-`list` action pass the self-extension confirmation before
+    // it runs. Approve it — the claim under test is that even a user-approved
+    // create cannot pick its own capability tier, not that the gate is absent.
+    await expect(page.getByRole('heading', { name: /^(新增能力确认|Confirm new capability)$/ }))
+      .toBeVisible({ timeout: READY_TIMEOUT });
+    await page.getByRole('button', { name: /^(确认执行|Confirm)$/ }).click();
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(10);
     const manageTriggerResult = expectToolResultMatches(
       taskRequests(mock)[9].body,
       'manage_trigger',
-      /模型不能更改能力档位。新建触发器默认为只读|model cannot change the capability level.*new triggers use read only/i,
+      // Two claims, matched separately so a copy edit between them (the notice
+      // has already been reworded twice) cannot silently stop asserting either.
+      /模型不能更改能力档位|model cannot change the capability level/i,
     );
+    expect(manageTriggerResult).toMatch(/新建触发器默认为只读|new triggers use read only/i);
     expect(manageTriggerResult).toMatch(/只读分析|Read-only analysis/i);
     expect(manageTriggerResult).not.toMatch(/完全自主|Fully autonomous/i);
     await expect.poll(async () => {

@@ -504,6 +504,33 @@ describe('self-extension approval gate', () => {
     expect(asked[0]).toContain('helper');
   });
 
+  it.each([
+    ['save_agent', { name: 'helper', systemPrompt: 'do things' }],
+    ['manage_trigger', { action: 'create', name: 't', prompt: 'p' }],
+    ['manage_mcp_server', { action: 'install', name: 'a' }],
+  ])('routes the %s confirmation to the loop that raised it', async (name, input) => {
+    // The callback stamps the request with a conversation so ChatView can show
+    // the dialog in the right chat. Omitting loopId makes permissionBridge fall
+    // back to getCurrentLoopContext() — the FIRST entry of the global loop map
+    // — so with a second loop registered the dialog is tagged with the wrong
+    // conversation, never renders, and the run waits forever on an approval
+    // nobody can see.
+    const seen: Array<string | undefined> = [];
+    const confirm = (async (_info: unknown, loopId?: string) => {
+      seen.push(loopId);
+      return true;
+    }) as never;
+
+    await checkToolApproval(
+      name,
+      input as Record<string, unknown>,
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+      confirm,
+    );
+
+    expect(seen).toEqual(['loop-1']);
+  });
+
   it('asks before rewriting the persona', async () => {
     const asked: string[] = [];
     await checkToolApproval(

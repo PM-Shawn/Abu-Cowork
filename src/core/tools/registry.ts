@@ -257,9 +257,16 @@ export function getAllTools(): ToolDefinition[] {
 }
 
 /**
- * Callback type for command confirmation
+ * Callback type for command confirmation.
+ *
+ * `loopId` is not optional in practice — it is how the request is stamped with
+ * the conversation that owns it. Without it `requestCommandConfirmation` falls
+ * back to `getCurrentLoopContext()`, which returns the FIRST entry of the
+ * global loop map; with a second loop registered the dialog is tagged with the
+ * wrong conversation, `ChatView` filters it out, and the run waits forever on
+ * an approval nobody can see. Mirrors `FilePermissionCallback` below.
  */
-export type CommandConfirmCallback = (info: ConfirmationInfo) => Promise<boolean>;
+export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
 
 /**
  * Callback type for file permission requests
@@ -570,7 +577,7 @@ export async function checkToolApproval(
           command,
           level: analysis.level,
           reason: reviewReason || analysis.reason,
-        });
+        }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
@@ -738,7 +745,7 @@ export async function checkToolApproval(
           kind: 'browser',
           browserOrigin: origin ?? undefined,
           allowPersistentGrant: !scripting && origin !== null,
-        });
+        }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
@@ -774,7 +781,7 @@ export async function checkToolApproval(
           level: 'warn',
           reason: t.commandConfirm.selfExtensionReason,
           kind: 'self-extension',
-        });
+        }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }

@@ -188,7 +188,7 @@ function backupPathFor(target) {
 
 /** Allowed root prefixes (macOS/Linux), mirroring capabilities/default.json. */
 function allowedRoots() {
-  return [
+  const declared = [
     os.homedir(), // $HOME/** (includes the app data dir under Application Support)
     os.tmpdir(), // $TEMP/**
     '/tmp',
@@ -199,6 +199,25 @@ function allowedRoots() {
   ]
     .filter((r) => typeof r === 'string' && r.length > 0)
     .map((r) => path.resolve(r));
+
+  // A root can itself live behind a symlink: on macOS `os.tmpdir()` is
+  // `/var/folders/<…>/T` and `/var` links to `/private/var`. Callers hand us
+  // the CANONICAL target of an approved path — the renderer pins every file
+  // tool to `pathCheck.resolvedPath` — which is lexically OUTSIDE the
+  // unresolved spelling of its own root, so the lexical gate below refused
+  // reads and writes anywhere under the macOS temp dir. The hand-written
+  // '/private/tmp' entry above patched exactly one instance of this; resolve
+  // the rest instead. Both spellings name the same directory, so the canonical
+  // containment check in assertAllowed() is unaffected.
+  const resolved = declared.map((root) => {
+    try {
+      return fs.realpathSync.native(root);
+    } catch {
+      return root; // a root that does not exist cannot widen anything
+    }
+  });
+
+  return [...new Set([...declared, ...resolved])];
 }
 
 function isPathWithin(candidate, root) {

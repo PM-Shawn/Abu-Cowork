@@ -107,6 +107,37 @@ test('symlinks whose canonical target remains in an allowed root keep working', 
   assert.equal(bytes.toString('utf8'), 'allowed');
 });
 
+test(
+  'a root that is itself behind a symlink is allowed under its canonical spelling too',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    // The renderer pins every approved file tool to the CANONICAL path, and on
+    // macOS os.tmpdir() is `/var/folders/<…>/T` behind the `/var` →
+    // `/private/var` link. Refusing the canonical spelling of a root's own
+    // contents broke reads and writes anywhere under the temp dir.
+    const dir = tempDir(t);
+    const file = path.join(dir, 'canonical-root.txt');
+    fs.writeFileSync(file, 'inside');
+    const canonical = fs.realpathSync.native(file);
+
+    assert.equal(
+      fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: file } }).toString('utf8'),
+      'inside'
+    );
+    assert.equal(
+      fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: canonical } }).toString('utf8'),
+      'inside'
+    );
+
+    // Widening the roots to their canonical spelling must not admit anything
+    // that was outside them: /private/etc is the canonical /etc.
+    assert.throws(
+      () => fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: '/private/etc/passwd' } }),
+      /outside the allowed scope/
+    );
+  }
+);
+
 test('path-policy canonicalization resolves an allowed symlink and a missing write tail', (t) => {
   const dir = tempDir(t);
   const targetDir = tempDir(t);

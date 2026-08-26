@@ -49,6 +49,11 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
 
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [uploadDone, setUploadDone] = useState(false);
+  // Required-field errors only appear after an upload attempt, and self-clear
+  // as soon as the field is filled (each render re-checks the condition).
+  const [showRequiredErrors, setShowRequiredErrors] = useState(false);
+  const descriptionMissing = description.trim().length === 0;
+  const conversationMissing = selectedConversationIds.length === 0;
 
   // Click-to-toggle info popover next to the "select conversations" label
   // (a hover tooltip vanishes on mouse-out; users want it to stay open).
@@ -83,6 +88,11 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
 
   const onUpload = async () => {
     if (uploadInProgress || exportInProgress) return;
+    if (descriptionMissing || conversationMissing) {
+      setShowRequiredErrors(true);
+      return;
+    }
+    setShowRequiredErrors(false);
     setUploadInProgress(true);
     setUploadDone(false);
     try {
@@ -144,14 +154,21 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
       <div>
         <div className="mb-1.5 text-body font-medium text-[var(--abu-text-secondary)]">
           {t.diagnostic.descriptionLabel}
+          <span className="ml-0.5 text-[var(--abu-danger)]">*</span>
         </div>
         <Textarea
           value={description}
           onChange={(e) => onDescriptionChange(e.target.value)}
           placeholder={t.diagnostic.uploadDescriptionPlaceholder}
-          className="min-h-[104px] text-body resize-none"
+          className={cn(
+            'min-h-[104px] text-body resize-none',
+            showRequiredErrors && descriptionMissing && 'border-[var(--abu-danger)]',
+          )}
           disabled={busy}
         />
+        {showRequiredErrors && descriptionMissing && (
+          <div className="mt-1 text-caption text-[var(--abu-danger)]">{t.diagnostic.descriptionRequired}</div>
+        )}
       </div>
 
       {/* Field 2 — screenshots (label + right-aligned counter). */}
@@ -173,6 +190,7 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
         <div className="mb-1.5 flex items-center gap-1.5">
           <span className="text-body font-medium text-[var(--abu-text-secondary)]">
             {t.diagnostic.conversationPickerTitle}
+            <span className="ml-0.5 text-[var(--abu-danger)]">*</span>
           </span>
           <div ref={infoRef} className="relative flex items-center">
             <button
@@ -198,6 +216,9 @@ export default function DiagnosticUpload({ onExportSuccess, description, onDescr
           onChange={handleSelectedConversationIdsChange}
           disabled={busy}
         />
+        {showRequiredErrors && conversationMissing && (
+          <div className="mt-1 text-caption text-[var(--abu-danger)]">{t.diagnostic.conversationRequired}</div>
+        )}
 
         {/* Raw-text toggle — ON by default (message text is included, secrets
             still scrubbed). Off strips text down to a size placeholder. */}

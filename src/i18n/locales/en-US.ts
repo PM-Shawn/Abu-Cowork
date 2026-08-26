@@ -1177,6 +1177,8 @@ const enUS: TranslationDict = {
     conversationPickerInfoTooltip: 'Only the conversations you select are included; API keys, secrets and other sensitive data are stripped automatically. Attach up to 5 conversations, each contributing its most recent 100 messages.',
     conversationPickerTooMany: 'You can attach at most {max} conversations',
     descriptionLabel: 'Problem description',
+    descriptionRequired: 'Please describe the problem',
+    conversationRequired: 'Please select at least one conversation to attach',
     screenshotTitle: 'Attach screenshots',
     screenshotAddHint: 'Click, drag & drop, or paste to add (up to 5 images, 5MB total)',
     screenshotCount: '{n}/5',

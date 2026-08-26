@@ -2,7 +2,12 @@ import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExter
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import {
+  runAgentLoopDispatched,
+  type AgentLoopDispatchResult,
+} from '@/core/agent/agentLoopRunner';
+import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
+import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -473,7 +478,23 @@ export default function ChatView({
     // freshly-appended item on its own next render, so this doesn't need to
     // wait for a DOM mutation callback the way the old MutationObserver did.
     scrollToLatest('auto');
-    const dispatch = await runAgentLoopDispatched(convId, text, { images });
+    let dispatch: AgentLoopDispatchResult;
+    try {
+      dispatch = await runAgentLoopDispatched(convId, text, { images });
+    } catch (error) {
+      // The runner deliberately keeps persistence/transport failures as
+      // rejections for non-UI callers. Once it has appended the user message,
+      // however, the failed transcript row (and its Retry action) owns
+      // recovery; handing the same text back to ChatInput would duplicate it.
+      if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
+        throw error;
+      }
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: error.message || t.chat.conversationBusy,
+      });
+      return;
+    }
     // A rejected dispatch (conversation busy, attachment mid-run) used to be
     // discarded here: the composer had already cleared, so the text and any
     // images simply vanished with no feedback. Surface it and hand the draft
@@ -483,7 +504,7 @@ export default function ChatView({
         type: 'error',
         title: dispatch.error || t.chat.conversationBusy,
       });
-      return false;
+      if (shouldRestoreComposerAfterDispatch(dispatch)) return false;
     }
   };
 

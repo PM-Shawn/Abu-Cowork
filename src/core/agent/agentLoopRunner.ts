@@ -108,6 +108,7 @@ import {
   getQueuedInputs,
   pauseUserInputQueue,
   removeQueuedInput,
+  restoreDequeuedUserInput,
   subscribeToInputQueue,
 } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
@@ -127,6 +128,7 @@ import {
 } from '../observability/runtimeTrace';
 import { getElectronSidecarRunFact } from '../../utils/electronHost';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
+import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
 import {
   createRunResourceSettlement,
   getRunResourceSettlement,
@@ -135,6 +137,20 @@ import {
   __resetRunResourceSettlementsForTests,
   type RunResourceSettlement,
 } from './runResourceSettlement';
+
+/**
+ * Renderer dispatch result with an explicit ownership answer for failed sends.
+ * `false` means the composer still owns the draft because the dispatch was
+ * rejected; `true` means the message already lives in the queue/transcript and
+ * its failed bubble is now the sole recovery path.
+ */
+export type AgentLoopDispatchResult = AgentLoopResult;
+
+function markReturnedErrorAsTaken(result: AgentLoopResult): AgentLoopDispatchResult {
+  return result.reason === 'error'
+    ? { ...result, messageTaken: true }
+    : result;
+}
 
 const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
@@ -153,9 +169,18 @@ class SidecarRunStateUnavailableError extends Error {
   }
 }
 
-function rendererRuntimeOptions(options?: AgentLoopOptions): AgentLoopOptions {
+function rendererRuntimeOptions(
+  options?: AgentLoopOptions,
+  onMessageTaken?: () => void,
+): AgentLoopOptions {
   return {
     ...options,
+    onMessageTaken: onMessageTaken || options?.onMessageTaken
+      ? () => {
+          onMessageTaken?.();
+          options?.onMessageTaken?.();
+        }
+      : undefined,
     // This function never crosses the wire. Rebuild it for every in-process
     // fallback so skill directives use the same registry/policy chain as a
     // normal tool call.
@@ -570,24 +595,27 @@ async function runInProcessWithPersistedMessage(
   runId: string,
   clientMessageId: string,
   options?: AgentLoopOptions,
-): Promise<AgentLoopResult> {
-  // Params preparation can fail before it upgrades the durable raw message
-  // to multimodal content. Do that here before the in-process handoff so a
-  // pre-dispatch failure never drops an attached image merely because the
-  // local loop is told not to append a duplicate user row.
-  const persistedMessage = getConversationReader()
-    .getConversation(conversationId)
-    ?.messages.find((message) => message.id === clientMessageId);
-  if (options?.images?.length && typeof persistedMessage?.content === 'string') {
-    const content = await buildUserMessageContent(conversationId, userMessage, options.images);
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-      state: 'pending',
-      content,
-    });
-    await waitForConversationPersistence(conversationId);
-  }
-  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
+): Promise<AgentLoopDispatchResult> {
   try {
+    // Params preparation can fail before it upgrades the durable raw message
+    // to multimodal content. Do that here before the in-process handoff so a
+    // pre-dispatch failure never drops an attached image merely because the
+    // local loop is told not to append a duplicate user row. This belongs
+    // inside the same failure finalization as the local loop: once the shell
+    // has appended the row, every thrown preparation/persistence step must
+    // leave it retryable instead of stranded at `pending`.
+    const persistedMessage = getConversationReader()
+      .getConversation(conversationId)
+      ?.messages.find((message) => message.id === clientMessageId);
+    if (options?.images?.length && typeof persistedMessage?.content === 'string') {
+      const content = await buildUserMessageContent(conversationId, userMessage, options.images);
+      useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+        state: 'pending',
+        content,
+      });
+      await waitForConversationPersistence(conversationId);
+    }
+    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
     const result = await runAgentLoop(conversationId, userMessage, rendererRuntimeOptions({
       ...options,
       loopId: runId,
@@ -603,7 +631,7 @@ async function runInProcessWithPersistedMessage(
       ...(result.error ? { error: result.error } : {}),
     });
     await waitForConversationPersistence(conversationId);
-    return result;
+    return markReturnedErrorAsTaken(result);
   } catch (error) {
     useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
       state: 'failed',
@@ -620,7 +648,7 @@ async function finalizePreDispatchInterruptedRun(
   runId: string,
   stage: 'params_build_aborted' | 'before_dispatch',
   runtimeStartedAt: number,
-): Promise<AgentLoopResult> {
+): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'interrupted',
   });
@@ -2422,11 +2450,12 @@ async function buildAgentRunParams(
  * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
  * ALSO pre-commit by construction — same in-process fallback.
  */
-async function runSingleAgentLoopDispatched(
+async function runSingleAgentLoopDispatchedWithOwnership(
   conversationId: string,
   userMessage: string,
+  ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
-): Promise<AgentLoopResult> {
+): Promise<AgentLoopDispatchResult> {
   const sidecarRunning = getSidecarStatus() === 'running';
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
@@ -2443,13 +2472,14 @@ async function runSingleAgentLoopDispatched(
     if (runningSession?.runId) {
       const interactive = isInteractiveDesktop(options, runningConv);
       if (!interactive || hasImages || !stageable) {
-        return { reason: 'error', error: getBusyError() };
+        return { reason: 'error', error: getBusyError(), messageTaken: false };
       }
       if (stageable) {
         if (options?.requireNewRun) {
           return {
             reason: 'error',
             error: 'A restricted recovery run cannot join an existing agent loop',
+            messageTaken: false,
           };
         }
         enqueueUserInput(conversationId, userMessage);
@@ -2459,13 +2489,14 @@ async function runSingleAgentLoopDispatched(
     if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
       const interactive = isInteractiveDesktop(options, runningConv);
       if (!interactive || hasImages || !stageable) {
-        return { reason: 'error', error: getBusyError() };
+        return { reason: 'error', error: getBusyError(), messageTaken: false };
       }
       if (stageable) {
         if (options?.requireNewRun) {
           return {
             reason: 'error',
             error: 'A restricted recovery run cannot join an existing agent loop',
+            messageTaken: false,
           };
         }
         // A live IN-PROCESS run for this conversation — stage into ITS
@@ -2479,7 +2510,11 @@ async function runSingleAgentLoopDispatched(
 
   if (!sidecarRunning) {
     await ensureBuiltinBrowserRuntime();
-    return runAgentLoop(conversationId, userMessage, rendererRuntimeOptions(options));
+    return runAgentLoop(
+      conversationId,
+      userMessage,
+      rendererRuntimeOptions(options, () => { ownership.messageTaken = true; }),
+    );
   }
 
   ensureHandlersRegistered();
@@ -2505,6 +2540,7 @@ async function runSingleAgentLoopDispatched(
     timestamp: runtimeStartedAt,
     loopId: runId,
   });
+  ownership.messageTaken = true;
   shellChatDelta.setConversationStatus(conversationId, 'running');
   try {
     await waitForConversationPersistence(conversationId);
@@ -2529,7 +2565,7 @@ async function runSingleAgentLoopDispatched(
     // Let the failed lifecycle replacement attempt settle in the background;
     // execution remains fenced regardless of whether the disk is still down.
     void waitForConversationPersistence(conversationId).catch(() => undefined);
-    return { reason: 'error', error: displayMessage };
+    return { reason: 'error', error: displayMessage, messageTaken: true };
   }
   markRuntimeRunStage(runId, 'local_message_persisted');
   traceRuntimeEvent('renderer.local_message_persisted', {
@@ -2710,7 +2746,7 @@ async function runSingleAgentLoopDispatched(
   let handedOffToLocal = false;
   const scopedRun = options?.authorizationScopeId !== undefined;
 
-  const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopResult> => {
+  const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopDispatchResult> => {
     await settleRunPersistence(session);
     if (session.abortRequested) {
       await finalizeAbortedRun(session, 'run-terminal');
@@ -2752,7 +2788,7 @@ async function runSingleAgentLoopDispatched(
       // only chance to surface the failure.
       const alreadyRenderedBySidecar = terminal.failure?.errorType === 'agent_loop_error';
       await finalizeFailedRun(session, displayMessage, 'failed', alreadyRenderedBySidecar);
-      return { reason: 'error', error: realMessage };
+      return { reason: 'error', error: realMessage, messageTaken: true };
     }
 
     const eventName = terminal.state === 'interrupted'
@@ -2773,7 +2809,7 @@ async function runSingleAgentLoopDispatched(
       terminal.state === 'interrupted' ? 'interrupted' : 'completed',
     );
     await waitForConversationPersistence(conversationId);
-    return terminal.result;
+    return markReturnedErrorAsTaken(terminal.result);
   };
 
   try {
@@ -2840,7 +2876,7 @@ async function runSingleAgentLoopDispatched(
       raw.error,
     );
     await waitForConversationPersistence(conversationId);
-    return raw;
+    return markReturnedErrorAsTaken(raw);
   } catch (err) {
     let transportError = err;
     let acceptedExecutionStateUnknown = false;
@@ -2946,7 +2982,7 @@ async function runSingleAgentLoopDispatched(
             replayOutcome.raw.error,
           );
           await waitForConversationPersistence(conversationId);
-          return replayOutcome.raw;
+          return markReturnedErrorAsTaken(replayOutcome.raw);
         } catch (replayError) {
           transportError = replayError;
         }
@@ -3042,6 +3078,7 @@ async function runSingleAgentLoopDispatched(
     return {
       reason: 'error',
       error: realMessage,
+      messageTaken: true,
       ...(transportError instanceof SidecarRunStateUnavailableError
         ? { stopReason: transportError.stopReason }
         : {}),
@@ -3119,6 +3156,25 @@ async function runSingleAgentLoopDispatched(
   }
 }
 
+async function runSingleAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopDispatchResult> {
+  const ownership = { messageTaken: false };
+  try {
+    return await runSingleAgentLoopDispatchedWithOwnership(
+      conversationId,
+      userMessage,
+      ownership,
+      options,
+    );
+  } catch (error) {
+    if (!ownership.messageTaken) throw error;
+    throw wrapAgentLoopDispatchError(error, true);
+  }
+}
+
 /**
  * Dispatch one user turn, then hand staged user follow-ups off one-by-one after
  * each completed run. Each follow-up re-enters the full dispatcher and therefore
@@ -3132,38 +3188,66 @@ export async function runAgentLoopDispatched(
   conversationId: string,
   userMessage: string,
   options?: AgentLoopOptions,
-): Promise<AgentLoopResult> {
+): Promise<AgentLoopDispatchResult> {
   const initialResult = await runSingleAgentLoopDispatched(conversationId, userMessage, options);
+  const initialMessageTaken = initialResult.reason !== 'error' || initialResult.messageTaken;
   let previousResult = initialResult;
+  let queuedInputInFlight: ReturnType<typeof dequeueNextUserInput>;
 
-  while (
-    previousResult.reason === 'completed'
-    || previousResult.reason === 'max_turns'
-    || previousResult.reason === 'no_progress'
-  ) {
-    const queuedInput = dequeueNextUserInput(conversationId);
-    if (!queuedInput) break;
-    previousResult = await runSingleAgentLoopDispatched(
-      conversationId,
-      queuedInput.text,
-      // User queue entries are authored by the desktop composer (or by the
-      // two concurrency guards, which only admit interactive desktop sends).
-      // They are not owned by the run that happened to be active when they
-      // were staged. Reusing that old run's callbacks/scope/ceiling/IM target
-      // would either elevate the desktop message into an unattended full run
-      // or incorrectly retain a lower ceiling. System-authored wake-ups never
-      // reach this dequeue path (`dequeueNextUserInput` skips them).
-      undefined,
-    );
-  }
+  try {
+    while (
+      previousResult.reason === 'completed'
+      || previousResult.reason === 'max_turns'
+      || previousResult.reason === 'no_progress'
+    ) {
+      const queuedInput = dequeueNextUserInput(conversationId);
+      if (!queuedInput) break;
+      queuedInputInFlight = queuedInput;
+      const handoffResult = await runSingleAgentLoopDispatched(
+        conversationId,
+        queuedInput.text,
+        // User queue entries are authored by the desktop composer (or by the
+        // two concurrency guards, which only admit interactive desktop sends).
+        // They are not owned by the run that happened to be active when they
+        // were staged. Reusing that old run's callbacks/scope/ceiling/IM target
+        // would either elevate the desktop message into an unattended full run
+        // or incorrectly retain a lower ceiling. System-authored wake-ups never
+        // reach this dequeue path (`dequeueNextUserInput` skips them).
+        undefined,
+      );
+      if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
+        restoreDequeuedUserInput(conversationId, queuedInput);
+        queuedInputInFlight = undefined;
+        previousResult = handoffResult;
+        break;
+      }
+      queuedInputInFlight = undefined;
+      previousResult = handoffResult;
+    }
 
-  if (
-    (previousResult.reason === 'aborted'
-      || previousResult.reason === 'error'
-      || previousResult.reason === 'awaiting_user')
-    && getQueuedInputs(conversationId).some((queued) => !queued.isSystem)
-  ) {
-    pauseUserInputQueue(conversationId);
+    if (
+      (previousResult.reason === 'aborted'
+        || previousResult.reason === 'error'
+        || previousResult.reason === 'awaiting_user')
+      && getQueuedInputs(conversationId).some((queued) => !queued.isSystem)
+    ) {
+      pauseUserInputQueue(conversationId);
+    }
+  } catch (error) {
+    if (queuedInputInFlight) {
+      if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
+        restoreDequeuedUserInput(conversationId, queuedInputInFlight);
+      }
+      // A taken q1 owns a failed bubble; an untaken q1 was restored above.
+      // In both cases, any remaining q2+ must stop auto-handoff and expose the
+      // queue strip's explicit Resume control.
+      pauseUserInputQueue(conversationId);
+    }
+    if (!initialMessageTaken) throw error;
+    // This promise still belongs to the original turn. Once that turn is
+    // accepted, a later queue-handoff/bookkeeping rejection must not make
+    // ChatInput restore (and potentially resend) its original draft.
+    throw wrapAgentLoopDispatchError(error, true);
   }
 
   return initialResult;

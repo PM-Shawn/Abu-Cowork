@@ -319,7 +319,7 @@ describe('agentLoopHost', () => {
         version: 1,
         runId: errParams.runId,
         state: 'failed',
-        result: { reason: 'error', error: 'boom' },
+        result: { reason: 'error', error: 'boom', messageTaken: true },
         failure: {
           errorType: 'error',
           message: 'boom',

@@ -932,7 +932,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const message = error instanceof Error ? error.message : String(error);
     const terminal = createAgentRunTerminal(
       runId,
-      { reason: 'error', error: message },
+      { reason: 'error', error: message, messageTaken: true },
       {
         errorType: sidecarRuntimeErrorType(error),
         message,

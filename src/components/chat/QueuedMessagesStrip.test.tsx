@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
+import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import {
   enqueueUserInput,
   clearInputQueue,
@@ -94,7 +95,7 @@ describe('QueuedMessagesStrip', () => {
     expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
   });
 
-  it('re-pauses the remaining queue when resume fails during startup', async () => {
+  it('restores the oldest item at the front when resume throws before acceptance', async () => {
     const user = userEvent.setup();
     runAgentLoopDispatchedMock.mockRejectedValueOnce(new Error('startup failed'));
     enqueueUserInput(CONV, '第一条');
@@ -107,6 +108,44 @@ describe('QueuedMessagesStrip', () => {
     await vi.waitFor(() => {
       expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
     });
-    expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第二条']);
+    expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第一条', '第二条']);
+  });
+
+  it('restores the oldest item at the front when resume is rejected', async () => {
+    const user = userEvent.setup();
+    runAgentLoopDispatchedMock.mockResolvedValueOnce({
+      reason: 'error',
+      error: 'conversation busy',
+      messageTaken: false,
+    });
+    enqueueUserInput(CONV, '第一条');
+    enqueueUserInput(CONV, '第二条');
+    pauseUserInputQueue(CONV);
+    render(<QueuedMessagesStrip conversationId={CONV} />);
+
+    await user.click(screen.getByRole('button', { name: '继续队列' }));
+
+    await vi.waitFor(() => {
+      expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第一条', '第二条']);
+    });
+    expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
+  });
+
+  it('does not requeue an item after dispatch accepted it and then rejected', async () => {
+    const user = userEvent.setup();
+    runAgentLoopDispatchedMock.mockRejectedValueOnce(
+      new AgentLoopDispatchError(new Error('terminal persistence failed'), true),
+    );
+    enqueueUserInput(CONV, '第一条');
+    enqueueUserInput(CONV, '第二条');
+    pauseUserInputQueue(CONV);
+    render(<QueuedMessagesStrip conversationId={CONV} />);
+
+    await user.click(screen.getByRole('button', { name: '继续队列' }));
+
+    await vi.waitFor(() => {
+      expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第二条']);
+    });
+    expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
   });
 });

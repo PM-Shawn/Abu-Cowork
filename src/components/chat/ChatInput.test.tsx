@@ -4,13 +4,19 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import ChatInput, { mergeComposerAppend, referenceDedupeKey, referenceChipLabel } from './ChatInput';
 import { createDocReference, createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { useChatStore } from '@/stores/chatStore';
-import { clearAllComposerDrafts, writeComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
+import {
+  clearAllComposerDrafts,
+  readComposerDraft,
+  writeComposerDraft,
+  WELCOME_COMPOSER_DRAFT_KEY,
+} from '@/stores/composerDraftStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { getI18n } from '@/i18n';
 import type { ImageAttachment } from '@/types';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
+import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
 
 const enterpriseBinding = (userId: string): EnterpriseBinding => ({
   serverUrl: 'https://example.test',
@@ -102,6 +108,54 @@ describe('ChatInput per-conversation drafts', () => {
       });
     });
     expect(textarea.value).toBe('alice draft');
+  });
+
+  it.each([
+    ['missing API key', () => Promise.resolve(false)],
+    [
+      'busy conversation',
+      () => Promise.resolve(
+        shouldRestoreComposerAfterDispatch({
+          reason: 'error',
+          error: 'conversation busy',
+          messageTaken: false,
+        }) ? false : undefined,
+      ),
+    ],
+  ])('restores the welcome draft when %s rejects the send', async (_scenario, onSend) => {
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await Promise.resolve();
+    });
+
+    expect(textarea.value).toBe('hello');
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('hello');
+  });
+
+  it('keeps the welcome draft empty after a post-commit run failure', async () => {
+    const onSend = vi.fn(() => Promise.resolve(
+      shouldRestoreComposerAfterDispatch({
+        reason: 'error',
+        error: 'provider unavailable',
+        messageTaken: true,
+      }) ? false : undefined,
+    ));
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter' });
+      await Promise.resolve();
+    });
+
+    expect(onSend).toHaveBeenCalledWith('hello', undefined, null);
+    expect(textarea.value).toBe('');
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
 });
 

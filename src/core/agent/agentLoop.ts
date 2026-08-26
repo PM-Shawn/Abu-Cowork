@@ -529,6 +529,12 @@ export interface AgentLoopOptions {
    * an in-process fallback or a queued continuation with a new controller.
    */
   onAbortControllerReady?: (controller: AbortController) => void;
+  /**
+   * Process-local ownership signal for renderer dispatch. Invoked only after
+   * the initial user message is already present in the transcript (or when a
+   * pre-persisted shell row is handed in). Never serialized to the sidecar.
+   */
+  onMessageTaken?: () => void;
   /** Host-owned, immutable authority ceiling for unattended/background runs. */
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   /** Shell-only factory; deliberately omitted from every sidecar wire shape. */
@@ -649,12 +655,25 @@ export function buildInterruptedToolCallContext(
   };
 }
 
-export interface AgentLoopResult {
-  reason: AgentLoopExitReason;
+interface AgentLoopResultBase {
   error?: string;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
   stopReason?: 'sidecar_unavailable';
 }
+
+/**
+ * A failed loop must say who owns recovery for the user message. Rejected
+ * entry guards leave it with the caller (`false`); once the message is queued
+ * or appended to the transcript, the message ledger owns recovery (`true`).
+ */
+export type AgentLoopResult =
+  | (AgentLoopResultBase & {
+      reason: Exclude<AgentLoopExitReason, 'error'>;
+    })
+  | (AgentLoopResultBase & {
+      reason: 'error';
+      messageTaken: boolean;
+    });
 
 /**
  * Gate for "only run when the user can actually review the result".
@@ -730,6 +749,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           return {
             reason: 'error',
             error: 'A restricted recovery run cannot join an existing agent loop',
+            messageTaken: false,
           };
         }
         // The message lives in the cancellable queue strip until the current
@@ -743,9 +763,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         error: hasImages
           ? getI18n().chat.attachmentDuringRun
           : getI18n().chat.conversationBusy,
+        messageTaken: false,
       };
     }
   }
+
+  if (options?.prePersistedUserMessageId) options.onMessageTaken?.();
 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
@@ -823,6 +846,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         timestamp: Date.now(),
         loopId,
       });
+      options?.onMessageTaken?.();
     }
     chatDelta.addMessage(conversationId, {
       id: generateId(),
@@ -831,7 +855,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       timestamp: Date.now(),
       loopId,
     });
-    return { reason: 'error', error: 'API Key not configured' };
+    return { reason: 'error', error: 'API Key not configured', messageTaken: true };
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
@@ -913,6 +937,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         timestamp: Date.now(),
         loopId,
       });
+      options?.onMessageTaken?.();
     }
     const detail = error instanceof Error ? error.message : String(error);
     chatDelta.addMessage(conversationId, {
@@ -923,7 +948,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       loopId,
     });
     logger.error('orchestration failed before the loop started', { conversationId, error: detail });
-    return { reason: 'error', error: detail };
+    return { reason: 'error', error: detail, messageTaken: true };
   }
   const { route, systemPromptSections } = orchestration;
   options?.runtimeEvent?.('agent_route_selected', {
@@ -1052,6 +1077,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         description: route.delegateAgent.description,
       } : undefined,
     });
+    options?.onMessageTaken?.();
   }
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
@@ -1079,7 +1105,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       chatDelta.setConversationStatus(conversationId, 'idle');
       executionPort.cancelExecution(execution.id);
-      return { reason: 'error', error: `Missing required tools: ${missing.join(', ')}` };
+      return {
+        reason: 'error',
+        error: `Missing required tools: ${missing.join(', ')}`,
+        messageTaken: true,
+      };
     }
   }
 
@@ -1261,7 +1291,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.setConversationStatus(conversationId, 'error');
         notifyTaskError(convTitle, conversationId);
-        return { reason: 'error', error: result.text };
+        return { reason: 'error', error: result.text, messageTaken: true };
       }
 
       eventRouter.route({
@@ -1318,7 +1348,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       chatDelta.setConversationStatus(conversationId, 'error');
       const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
-      return { reason: 'error', error: errorMessage };
+      return { reason: 'error', error: errorMessage, messageTaken: true };
     }
     return { reason: 'completed' };
   }
@@ -2936,5 +2966,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   }
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
-  return { reason: exitReason, error: exitError };
+  return exitReason === 'error'
+    ? { reason: 'error', error: exitError, messageTaken: true }
+    : { reason: exitReason, error: exitError };
 }

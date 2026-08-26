@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   buildUserMessageContent,
   isInteractiveDesktop,
@@ -12,10 +12,68 @@ import {
   buildDirectDelegateSubagentOptions,
   buildInterruptedToolCallContext,
   resolveToolContextWorkspacePath,
+  runAgentLoop,
 } from './agentLoop';
 import { trimOldScreenshots } from '../context/contextManager';
 import type { Message, ToolDefinition, ToolResultContent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
+import {
+  getConversationReader,
+  setConversationReader,
+} from './ports/conversationReader';
+import {
+  getAbortRegistry,
+  setAbortRegistry,
+} from './ports/abortRegistry';
+import {
+  clearInputQueue,
+  getQueuedInputs,
+  subscribeToInputQueue,
+} from './userInputQueue';
+
+describe('runAgentLoop live-run queue ownership', () => {
+  const conversationId = 'conv-live-observer-failure';
+  const defaultConversationReader = getConversationReader();
+  const defaultAbortRegistry = getAbortRegistry();
+
+  afterEach(() => {
+    setConversationReader(defaultConversationReader);
+    setAbortRegistry(defaultAbortRegistry);
+    clearInputQueue(conversationId);
+  });
+
+  it('returns enqueued after queue observers throw', async () => {
+    setConversationReader({
+      getConversation: () => ({
+        id: conversationId,
+        title: 'running conversation',
+        status: 'running',
+        messages: [],
+      }) as never,
+      getIndexEntry: () => undefined,
+      getThinkingStartTime: () => null,
+    });
+    setAbortRegistry({
+      hasAbortController: () => true,
+      getAbortController: () => new AbortController(),
+      clearAbortController: () => undefined,
+    });
+    const healthySubscriber = vi.fn();
+    const unsubscribeThrowing = subscribeToInputQueue(() => {
+      throw new Error('broken queue observer');
+    });
+    const unsubscribeHealthy = subscribeToInputQueue(healthySubscriber);
+
+    try {
+      await expect(runAgentLoop(conversationId, 'follow-up')).resolves.toEqual({ reason: 'enqueued' });
+      expect(getQueuedInputs(conversationId).map((item) => item.text)).toEqual(['follow-up']);
+      expect(healthySubscriber).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribeThrowing();
+      unsubscribeHealthy();
+    }
+  });
+});
 
 // escalateMaxOutputTokens / shouldContinueTruncatedToolCalls moved to
 // loopGuards.ts + loopGuards.test.ts (P1-3a-pre): they're pure and shared

@@ -1341,6 +1341,9 @@ export interface TranslationDict {
     conversationPickerTooMany: string; // {max}
     // Feedback form field label
     descriptionLabel: string;
+    // Required-field validation errors (upload path)
+    descriptionRequired: string;
+    conversationRequired: string;
     // Screenshot upload (feedback form)
     screenshotTitle: string;
     screenshotAddHint: string;

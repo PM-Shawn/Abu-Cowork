@@ -90,7 +90,12 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
     },
     timeout: 60_000,
   });
-  return { app, ...dataRoot };
+  // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
+  // doc above invites, and which already carries an `app` key) would otherwise
+  // have the stale, already-exited app spread over the new one — producing an
+  // ElectronApplication whose process() throws and a firstWindow() that hangs
+  // until timeout.
+  return { ...dataRoot, app };
 }
 
 async function reloadAndWaitForApp(page: Page): Promise<void> {

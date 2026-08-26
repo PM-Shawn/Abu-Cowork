@@ -10,6 +10,11 @@ import {
   drainCapabilitySetupRequests,
   requestCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
+import {
+  drainConfirmationQueue,
+  requestCommandConfirmation,
+} from '@/core/agent/permissionBridge';
+import { usePreviewStore } from '@/stores/previewStore';
 
 const mocks = vi.hoisted(() => ({
   loadLocalImageBlob: vi.fn(),
@@ -48,7 +53,9 @@ describe('ImageLightbox', () => {
   beforeEach(() => {
     initLanguage('en-US');
     useImageLightboxStore.getState().close();
+    usePreviewStore.getState().setAppModalOpen(false);
     drainCapabilitySetupRequests();
+    drainConfirmationQueue();
     mocks.loadLocalImageBlob.mockReset();
     mocks.resolveFileSource.mockReset();
     mocks.saveImageAttachment.mockReset();
@@ -61,7 +68,9 @@ describe('ImageLightbox', () => {
 
   afterEach(() => {
     useImageLightboxStore.getState().close();
+    usePreviewStore.getState().setAppModalOpen(false);
     drainCapabilitySetupRequests();
+    drainConfirmationQueue();
     cleanup();
     vi.restoreAllMocks();
     document.body.replaceChildren();
@@ -109,6 +118,23 @@ describe('ImageLightbox', () => {
     await waitFor(() => expect(composer).toHaveFocus());
   });
 
+  it('keeps Tab focus inside the enabled lightbox controls', () => {
+    render(<ImageLightbox />);
+    act(() => {
+      useImageLightboxStore.getState().open([item('one')], 0);
+    });
+
+    const dialog = screen.getByRole('dialog');
+    const download = screen.getByRole('button', { name: 'Download image' });
+    const close = screen.getByRole('button', { name: 'Close' });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(download).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(close).toHaveFocus();
+  });
+
   it('yields to an asynchronously requested capability setup', async () => {
     render(<ImageLightbox />);
     act(() => {
@@ -130,6 +156,46 @@ describe('ImageLightbox', () => {
     await expect(setupPromise).resolves.toBe(false);
   });
 
+  it('yields to a pending command confirmation and restores the app root', async () => {
+    const root = document.createElement('div');
+    root.id = 'root';
+    document.body.append(root);
+    render(<ImageLightbox />, { container: root });
+    act(() => {
+      useImageLightboxStore.getState().open([item('one')], 0);
+    });
+    expect(root.inert).toBe(true);
+    expect(root).toHaveAttribute('aria-hidden', 'true');
+
+    let confirmationPromise!: Promise<boolean>;
+    act(() => {
+      confirmationPromise = requestCommandConfirmation({
+        command: 'touch pending-approval',
+        level: 'warn',
+        reason: 'Regression test',
+      });
+    });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(root.inert).toBe(false);
+    expect(root).not.toHaveAttribute('aria-hidden');
+    act(() => drainConfirmationQueue());
+    await expect(confirmationPromise).resolves.toBe(false);
+  });
+
+  it('yields to the global close-window confirmation', async () => {
+    render(<ImageLightbox />);
+    act(() => {
+      useImageLightboxStore.getState().open([item('one')], 0);
+    });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+    act(() => usePreviewStore.getState().setAppModalOpen(true));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(useImageLightboxStore.getState().isOpen).toBe(false);
+  });
+
   it('navigates a gallery with bounded buttons and arrow keys', () => {
     render(<ImageLightbox />);
     act(() => {
@@ -148,6 +214,53 @@ describe('ImageLightbox', () => {
     expect(screen.getByText('Image 3 of 3')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Previous image' }));
     expect(screen.getByText('Image 2 of 3')).toBeInTheDocument();
+  });
+
+  it('keeps the lightbox open when the disabled previous-arrow area is clicked', () => {
+    render(<ImageLightbox />);
+    act(() => {
+      useImageLightboxStore.getState().open([item('one'), item('two')], 0);
+    });
+
+    const previous = screen.getByRole('button', { name: 'Previous image' });
+    expect(previous).toBeDisabled();
+    fireEvent.click(previous.parentElement!);
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Image 1 of 2')).toBeInTheDocument();
+  });
+
+  it('scrolls a long image with arrow and page keys', () => {
+    render(<ImageLightbox />);
+    act(() => {
+      useImageLightboxStore.getState().open([item('long')], 0);
+    });
+
+    const dialog = screen.getByRole('dialog');
+    const image = screen.getByRole('img');
+    Object.defineProperties(image, {
+      naturalWidth: { configurable: true, value: 400 },
+      naturalHeight: { configurable: true, value: 2400 },
+    });
+    fireEvent.load(image);
+    expect(image).toHaveClass('self-start');
+
+    const scrollContainer = image.parentElement!;
+    const scrollBy = vi.fn();
+    Object.defineProperties(scrollContainer, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollBy: { configurable: true, value: scrollBy },
+    });
+
+    for (const [key, top] of [
+      ['ArrowDown', 80],
+      ['ArrowUp', -80],
+      ['PageDown', 600],
+      ['PageUp', -600],
+    ] as const) {
+      fireEvent.keyDown(dialog, { key });
+      expect(scrollBy).toHaveBeenLastCalledWith({ behavior: 'smooth', top });
+    }
   });
 
   it('closes only when the empty backdrop is clicked', () => {
@@ -217,6 +330,42 @@ describe('ImageLightbox', () => {
     });
     expect(request).not.toHaveProperty('sourcePath');
     expect(Array.from(request.data as Uint8Array)).toEqual(Array.from(displayedBytes));
+  });
+
+  it('revokes each object URL across repeated open and close cycles', async () => {
+    mocks.resolveFileSource.mockResolvedValue({
+      status: 'available',
+      path: '/canonical/outputs/images/image.webp',
+    });
+    mocks.loadLocalImageBlob.mockResolvedValue(new Blob(['image'], { type: 'image/webp' }));
+    vi.mocked(URL.createObjectURL)
+      .mockReset()
+      .mockReturnValueOnce('blob:first-open')
+      .mockReturnValueOnce('blob:second-open');
+    render(<ImageLightbox />);
+    const persisted = item('persisted', {
+      data: '',
+      mediaType: 'image/webp',
+      filePath: '/workspace/outputs/images/image.webp',
+      conversationId: 'conversation-1',
+      workspacePath: '/workspace',
+    });
+
+    act(() => useImageLightboxStore.getState().open([persisted], 0));
+    await waitFor(() => {
+      expect(screen.getByRole('img')).toHaveAttribute('src', 'blob:first-open');
+    });
+    act(() => useImageLightboxStore.getState().close());
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:first-open'));
+
+    act(() => useImageLightboxStore.getState().open([persisted], 0));
+    await waitFor(() => {
+      expect(screen.getByRole('img')).toHaveAttribute('src', 'blob:second-open');
+    });
+    act(() => useImageLightboxStore.getState().close());
+
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2));
+    expect(URL.revokeObjectURL).toHaveBeenNthCalledWith(2, 'blob:second-open');
   });
 
   it('never shows the previous persisted image while the next one is loading', async () => {

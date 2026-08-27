@@ -46,7 +46,7 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
 
 /**
  * Horizontal workspace tab bar (TRAE Solo-style): tab kind icon + title +
- * hover close, active-tab styling, trailing `+` new-tab menu, middle-click
+ * always-visible close, active-tab styling, trailing `+` new-tab menu, middle-click
  * close, and lightweight pointer-based drag-to-reorder (no dnd-kit — mirrors
  * TRAE's `swapOpenedTab(i, j)`). See docs/2026-07-17-workspace-tabs-design.md.
  *
@@ -278,7 +278,7 @@ export default function TabStrip() {
                 'border-r border-[var(--abu-bg-pressed)] text-minor transition-shadow',
                 draggingId === tab.id && 'cursor-grabbing',
                 active
-                  ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)]'
+                  ? 'bg-[var(--abu-bg-active)] text-[var(--abu-text-primary)]'
                   : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)]',
                 // The dragged tab lifts off the strip; a drop target gets highlighted.
                 // pointer-events-none lets elementFromPoint "see through" it to the
@@ -331,7 +331,7 @@ export default function TabStrip() {
                   e.stopPropagation();
                   closeTab(tab.id, { focusAfterClose: true });
                 }}
-                className="mr-1 shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--abu-bg-pressed)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+                className="mr-1 shrink-0 rounded p-0.5 hover:bg-[var(--abu-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
                 aria-label={format(t.workspace.closeTabLabel, { title })}
                 title={t.workspace.closeTab}
               >

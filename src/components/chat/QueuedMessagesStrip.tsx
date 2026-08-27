@@ -7,9 +7,11 @@ import {
   isUserInputQueuePaused,
   pauseUserInputQueue,
   removeQueuedInput,
+  restoreDequeuedUserInput,
   resumeUserInputQueue,
 } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 
@@ -36,9 +38,19 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     resumeUserInputQueue(conversationId);
     const next = dequeueNextUserInput(conversationId);
     try {
-      if (next) await runAgentLoopDispatched(conversationId, next.text);
-    } catch {
-      pauseUserInputQueue(conversationId);
+      if (next) {
+        const result = await runAgentLoopDispatched(conversationId, next.text);
+        if (result.reason === 'error' && !result.messageTaken) {
+          restoreDequeuedUserInput(conversationId, next);
+        }
+      }
+    } catch (error) {
+      if (
+        next
+        && (!(error instanceof AgentLoopDispatchError) || !error.messageTaken)
+      ) {
+        restoreDequeuedUserInput(conversationId, next);
+      }
     } finally {
       if (getQueuedInputs(conversationId).some((item) => !item.isSystem)) {
         pauseUserInputQueue(conversationId);

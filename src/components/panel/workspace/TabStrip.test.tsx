@@ -140,6 +140,16 @@ describe('TabStrip pointer interactions', () => {
     expect(screen.queryByText(/base64/)).not.toBeInTheDocument();
   });
 
+  it('uses the selected-state token for the active tab background', () => {
+    renderTabs();
+
+    const summary = screen.getByRole('tab', { name: /Task Summary/ });
+    const terminal = screen.getByRole('tab', { name: /Terminal/ });
+    expect(terminal.closest('[data-tab-id]')).toHaveClass('bg-[var(--abu-bg-active)]');
+    expect(terminal.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-base)]');
+    expect(summary.closest('[data-tab-id]')).not.toHaveClass('bg-[var(--abu-bg-active)]');
+  });
+
   it('exposes a real tablist with roving tabIndex and aria tabpanel linkage', () => {
     renderTabs();
 
@@ -184,10 +194,17 @@ describe('TabStrip pointer interactions', () => {
     expect(Array.from(tablist.querySelectorAll<HTMLElement>('[tabindex="0"]'))).toEqual([summary]);
   });
 
-  it('renders the close control as an adjacent named button', () => {
+  it('keeps every close control visible as an adjacent named button', () => {
     renderTabs();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close Task Summary' }));
+    const closeButtons = screen.getAllByRole('button', { name: /^Close / });
+    expect(closeButtons).toHaveLength(2);
+    for (const button of closeButtons) {
+      expect(button).not.toHaveClass('opacity-0');
+      expect(button).not.toHaveClass('group-hover:opacity-100');
+    }
+
+    fireEvent.click(closeButtons[0]);
 
     expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([TERMINAL_ID]);
   });

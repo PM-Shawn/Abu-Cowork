@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { redactSensitiveMediaText } from './redaction';
+import { redactInlineMediaPayloads, redactSensitiveMediaText } from './redaction';
+
+describe('redactInlineMediaPayloads', () => {
+  it('redacts base64 data URL payloads without redacting ordinary paths', () => {
+    const dataUrls = [
+      'data:image/png;base64,QQ==',
+      'data:image/png;charset=utf-8;base64,QUJDRA==',
+      'data:application/pdf;name=secret.pdf;base64,JVBERi0=',
+      'data:;base64,QQ==',
+    ];
+    const plainPath = '/Users/shawn/proj/src/index.ts';
+    const glob = 'glob **/*.ts';
+    const sanitized = redactInlineMediaPayloads(`${plainPath} ${glob} ${dataUrls.join(' ')}`);
+
+    expect(sanitized).toContain(plainPath);
+    expect(sanitized).toContain(glob);
+    for (const dataUrl of dataUrls) {
+      expect(sanitized).not.toContain(dataUrl);
+    }
+    expect(sanitized).not.toMatch(/QQ==|QUJDRA==|JVBERi0=/);
+    expect(sanitized).not.toContain('[REDACTED:path]');
+    expect(sanitized.match(/\[REDACTED:base64\]/g)).toHaveLength(4);
+  });
+});
 
 describe('redactSensitiveMediaText', () => {
   it('redacts parameterized and empty-MIME data URLs plus angle-bracketed local paths without breaking https', () => {

@@ -71,6 +71,11 @@ function redactBase64DataUrls(value: string): string {
   return output + value.slice(cursor);
 }
 
+/** Redact inline media payloads without removing ordinary filesystem paths. */
+export function redactInlineMediaPayloads(value: string): string {
+  return redactBase64DataUrls(value);
+}
+
 /**
  * Redact media-bearing transport/telemetry text without treating ordinary
  * URLs as local filesystem paths. Explicit sidecar/file prefixes are handled
@@ -81,7 +86,7 @@ function redactBase64DataUrls(value: string): string {
  * slash/word/angle negative lookbehind.
  */
 export function redactSensitiveMediaText(value: string): string {
-  return redactBase64DataUrls(value)
+  return redactInlineMediaPayloads(value)
     .replace(ANGLE_ABSOLUTE_PATH_PATTERN, '<[REDACTED:path]>')
     .replace(WINDOWS_ABSOLUTE_PATH_PATTERN, '[REDACTED:path]')
     .replace(UNC_ABSOLUTE_PATH_PATTERN, '[REDACTED:path]')

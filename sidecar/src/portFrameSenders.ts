@@ -28,6 +28,7 @@ import type { ScratchpadPort } from '@/core/agent/ports/scratchpadPort';
 import type { ScratchpadEntry } from '@/stores/scratchpadStore';
 import type { TaskExecution, ExecutionStep, DetailBlock } from '@/types/execution';
 import type { TokenUsage, ToolResult, ToolResultContent } from '@/types';
+import { redactInlineMediaPayloads } from '@/core/security/redaction';
 import {
   prepareSidecarValueForWire,
   prepareToolResultForSidecarWire,
@@ -65,8 +66,22 @@ function sanitizeToolTransportText(value: string): string {
   return redactAbsoluteMediaPaths(value);
 }
 
+function sanitizeInlineToolPayloads(value: string): string {
+  return redactInlineMediaPayloads(value);
+}
+
 function toolResultHasInlineMedia(resultContent: ToolResultContent[] | undefined): boolean {
   return !!resultContent?.some((block) => block.type === 'image' && Boolean(block.source.data));
+}
+
+function sanitizeToolResultInlinePayloads(
+  resultContent: ToolResultContent[] | undefined,
+): ToolResultContent[] | undefined {
+  return resultContent?.map((block) => (
+    block.type === 'text'
+      ? { ...block, text: sanitizeInlineToolPayloads(block.text) }
+      : block
+  ));
 }
 
 function markToolCallMediaTransportFailure<T>(toolCall: T): T {
@@ -194,8 +209,8 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
           convId,
           messageId,
           toolCallId,
-          result,
-          wireResultContent,
+          sanitizeInlineToolPayloads(result),
+          sanitizeToolResultInlinePayloads(wireResultContent),
           isError,
           hideScreenshot,
           wireMetadata,

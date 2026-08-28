@@ -248,6 +248,41 @@ describe('createFrameChatDelta', () => {
     expect(delegatedMediaStoreMocks.persistDelegatedMedia).not.toHaveBeenCalled();
   });
 
+  it('redacts inline payloads while preserving plain-text paths when updateToolCall carries no structured media', () => {
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((frame) => frames.push(frame));
+    const dataUrl = `data:image/png;base64,${pngBase64}`;
+    const shortDataUrl = 'data:image/png;base64,QQ==';
+    const parameterizedDataUrl = 'data:image/png;charset=utf-8;base64,QUJDRA==';
+    const namedPdfDataUrl = 'data:application/pdf;name=secret.pdf;base64,JVBERi0=';
+    const emptyMimeDataUrl = 'data:;base64,QQ==';
+    const plainPath = '/Users/shawn/proj/src/index.ts';
+    const glob = 'glob **/*.ts';
+
+    delta.updateToolCall(
+      'conv-1',
+      'm1',
+      'tc-text-payload',
+      `Read ${plainPath}; ${glob}; payloads ${dataUrl} ${shortDataUrl} ${parameterizedDataUrl}`,
+      [{
+        type: 'text',
+        text: `Opened ${plainPath}; ${glob}; more payloads ${namedPdfDataUrl} ${emptyMimeDataUrl}`,
+      }],
+      false,
+    );
+
+    const wire = JSON.stringify(frames);
+    expect(wire).toContain(plainPath);
+    expect(wire).toContain(glob);
+    for (const rawPayload of [dataUrl, shortDataUrl, parameterizedDataUrl, namedPdfDataUrl, emptyMimeDataUrl]) {
+      expect(wire).not.toContain(rawPayload);
+    }
+    expect(wire).not.toMatch(/iVBORw0KGgo=|QQ==|QUJDRA==|JVBERi0=/);
+    expect(wire).not.toContain('[REDACTED:path]');
+    expect(wire.match(/\[REDACTED:base64\]/g)).toHaveLength(5);
+    expect(delegatedMediaStoreMocks.persistDelegatedMedia).not.toHaveBeenCalled();
+  });
+
   it('queues appendMessageToolCall image media, redacts media paths, and restores image bytes in the shell', async () => {
     let resolvePersist!: (ref: {
       id: string;

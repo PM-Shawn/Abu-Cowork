@@ -28,7 +28,6 @@ import { resolveParentConversationSummary } from '../../agent/parentConversation
 import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 import { subagentStopReasonFromBatchSummary } from '../../agent/batchTerminalSummary';
-import { anySignal } from '../../llm/heartbeat';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { getI18n, format } from '../../../i18n';
 
@@ -500,37 +499,8 @@ export const runAgentBatchTool: ToolDefinition = {
       }
     };
 
-    const taskControllers = resolvedTasks.map(() => new AbortController());
-    for (let i = 0; i < taskControllers.length; i++) {
-      const taskController = taskControllers[i];
-      try {
-        useBatchProgressStore.getState().registerTaskCanceller(batchIdentity, i, () => {
-          if (!taskController.signal.aborted) {
-            taskController.abort(new Error(getI18n().toolResult.orchestration.errCancelled));
-          }
-          // A queued task has no child execution to acknowledge. A running
-          // task stays `cancelling` until its promise genuinely settles, so a
-          // non-cooperative child is never presented as already stopped.
-          if (!claimedTaskIndices.has(i)) {
-            terminalizeTask(i, { status: 'stopped', reason: 'aborted' });
-          }
-        });
-      } catch {
-        // Best-effort: progress cancellation wiring must never break the batch.
-      }
-    }
-
-    const requestAllTaskCancellation = (): void => {
+    const terminalizeUnclaimedAbort = (): void => {
       for (let i = 0; i < resolvedTasks.length; i++) {
-        try {
-          if (useBatchProgressStore.getState().cancelTask(batchIdentity, i)) continue;
-        } catch {
-          // Fall through to the run-owned controller below.
-        }
-        const taskController = taskControllers[i];
-        if (!taskController.signal.aborted) {
-          taskController.abort(new Error(getI18n().toolResult.orchestration.errCancelled));
-        }
         if (!claimedTaskIndices.has(i)) {
           terminalizeTask(i, { status: 'stopped', reason: 'aborted' });
         }
@@ -538,9 +508,9 @@ export const runAgentBatchTool: ToolDefinition = {
     };
 
     if (loopCtx?.signal?.aborted) {
-      requestAllTaskCancellation();
+      terminalizeUnclaimedAbort();
     } else {
-      loopCtx?.signal?.addEventListener('abort', requestAllTaskCancellation, { once: true });
+      loopCtx?.signal?.addEventListener('abort', terminalizeUnclaimedAbort, { once: true });
     }
 
     const settled = await runWithConcurrency(
@@ -550,8 +520,6 @@ export const runAgentBatchTool: ToolDefinition = {
         // Belt-and-suspenders: if we raced the abort check in the worker loop,
         // bail before starting a fresh sub-agent run.
         if (loopCtx?.signal?.aborted) throw new Error(getI18n().toolResult.orchestration.errCancelled);
-        const taskSignal = taskControllers[idx]?.signal;
-        if (taskSignal?.aborted) throw new Error(getI18n().toolResult.orchestration.errCancelled);
         claimedTaskIndices.add(idx);
         // A task can spend its whole run answering directly without calling a
         // tool. Mark it running at worker admission, not at its first
@@ -567,9 +535,6 @@ export const runAgentBatchTool: ToolDefinition = {
             : resolved.task;
         let currentTurn = 0;
         try {
-          const timeoutParentSignal = taskSignal
-            ? anySignal(loopCtx?.signal ? [loopCtx.signal, taskSignal] : [taskSignal])
-            : loopCtx?.signal;
           const result = await runWithTimeout(
             (sig) => runSubagent({
               agent: resolved.agent,
@@ -617,11 +582,8 @@ export const runAgentBatchTool: ToolDefinition = {
               },
             }),
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
-            timeoutParentSignal,
+            loopCtx?.signal,
           );
-          if (taskSignal?.aborted || loopCtx?.signal?.aborted) {
-            throw new Error(getI18n().toolResult.orchestration.errCancelled);
-          }
           const settledResult = { status: 'fulfilled', value: result } as const satisfies PromiseSettledResult<SubagentResult>;
           if (structuredEntries !== undefined && schema !== undefined) {
             structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);
@@ -640,33 +602,17 @@ export const runAgentBatchTool: ToolDefinition = {
           terminalizeTask(idx, terminalForSettledResult(settledResult, structuredEntries?.[idx]?.ok));
           return result;
         } catch (err) {
-          const terminalError = taskSignal?.aborted || loopCtx?.signal?.aborted
-            ? new Error(getI18n().toolResult.orchestration.errCancelled)
-            : err;
-          const settledResult = { status: 'rejected', reason: terminalError } as const satisfies PromiseSettledResult<SubagentResult>;
+          const settledResult = { status: 'rejected', reason: err } as const satisfies PromiseSettledResult<SubagentResult>;
           if (structuredEntries !== undefined && schema !== undefined) {
             structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);
           }
           terminalizeTask(idx, terminalForSettledResult(settledResult, structuredEntries?.[idx]?.ok));
-          throw terminalError;
-        } finally {
-          try {
-            useBatchProgressStore.getState().unregisterTaskCanceller(batchIdentity, idx);
-          } catch {
-            // Best-effort
-          }
+          throw err;
         }
       },
       loopCtx?.signal,
     );
-    loopCtx?.signal?.removeEventListener('abort', requestAllTaskCancellation);
-    for (let i = 0; i < taskControllers.length; i++) {
-      try {
-        useBatchProgressStore.getState().unregisterTaskCanceller(batchIdentity, i);
-      } catch {
-        // Best-effort
-      }
-    }
+    loopCtx?.signal?.removeEventListener('abort', terminalizeUnclaimedAbort);
 
     if (structuredEntries !== undefined && schema !== undefined) {
       settled.forEach((result, i) => {

@@ -28,7 +28,6 @@ export interface BatchRowsRollup {
   stopped: number;
   incomplete: number;
   running: number;
-  cancelling: number;
   queued: number;
   unknown: number;
 }
@@ -226,7 +225,7 @@ export function rowsFromUnknown(toolCall: ToolCall, t: TranslationDict): BatchTa
   }));
 }
 
-export function canonicalRowStatus(status: BatchRowStatus): BatchTaskTerminalStatus | 'running' | 'cancelling' | 'queued' | 'unknown' {
+export function canonicalRowStatus(status: BatchRowStatus): BatchTaskTerminalStatus | 'running' | 'queued' | 'unknown' {
   return status;
 }
 
@@ -234,11 +233,11 @@ export function rollupBatchRows(rows: readonly BatchTaskRow[]): BatchRowsRollup 
   return rows.reduce<BatchRowsRollup>((counts, row) => {
     counts[canonicalRowStatus(row.status)]++;
     return counts;
-  }, { total: rows.length, succeeded: 0, failed: 0, stopped: 0, incomplete: 0, running: 0, cancelling: 0, queued: 0, unknown: 0 });
+  }, { total: rows.length, succeeded: 0, failed: 0, stopped: 0, incomplete: 0, running: 0, queued: 0, unknown: 0 });
 }
 
 export function isLiveRowStatus(status: BatchRowStatus): boolean {
-  return status === 'queued' || status === 'running' || status === 'cancelling';
+  return status === 'queued' || status === 'running';
 }
 
 export function batchRowStatusLabel(status: BatchRowStatus, t: TranslationDict): string {
@@ -247,8 +246,6 @@ export function batchRowStatusLabel(status: BatchRowStatus, t: TranslationDict):
       return t.workspace.agentStatusQueued;
     case 'running':
       return t.workspace.agentStatusRunning;
-    case 'cancelling':
-      return t.batch.statusCancelling;
     case 'succeeded':
       return t.workspace.agentStatusSucceeded;
     case 'failed':
@@ -268,7 +265,6 @@ export function compactBatchRollupSummary(rollup: BatchRowsRollup, t: Translatio
   if (rollup.failed > 0) parts.push(format(t.batch.batchStatusFailedCount, { n: rollup.failed }));
   if (rollup.stopped > 0) parts.push(format(t.batch.batchStatusStoppedCount, { n: rollup.stopped }));
   if (rollup.incomplete > 0) parts.push(format(t.batch.batchStatusIncompleteCount, { n: rollup.incomplete }));
-  if (rollup.cancelling > 0) parts.push(format(t.batch.batchStatusCancellingCount, { n: rollup.cancelling }));
   const active = rollup.running + rollup.queued;
   if (active > 0) parts.push(format(t.batch.batchStatusRunningCount, { n: active }));
   if (rollup.unknown > 0) parts.push(format(t.batch.batchStatusUnknownCount, { n: rollup.unknown }));

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, ChevronRight, CircleStop, Clock, Loader2, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useBatchProgress, useBatchProgressStore } from '@/stores/batchProgressStore';
+import { useBatchProgress } from '@/stores/batchProgressStore';
 import { useChatStore } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useI18n, format, type TranslationDict } from '@/i18n';
@@ -30,7 +30,7 @@ function StatusIcon({ status }: { status: BatchRowStatus }) {
   if (status === 'queued' || status === 'unknown') {
     return <Clock aria-hidden="true" className="h-3 w-3 text-[var(--abu-text-muted)]" />;
   }
-  if (status === 'running' || status === 'cancelling') {
+  if (status === 'running') {
     return <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />;
   }
   if (status === 'succeeded') {
@@ -54,15 +54,12 @@ function formatElapsed(ms: number): string {
 
 function summaryLabel(rows: BatchTaskRow[], t: TranslationDict): string {
   const counts = rollupBatchRows(rows);
-  if (counts.cancelling > 0) {
-    return format(t.batch.stoppingTitle, { n: counts.cancelling });
-  }
   if (counts.failed > 0 || counts.stopped > 0 || counts.incomplete > 0) {
     return format(t.batch.mixedSummary, {
       summary: compactBatchRollupSummary(counts, t),
     });
   }
-  if (counts.running > 0 || counts.cancelling > 0 || counts.queued > 0) {
+  if (counts.running > 0 || counts.queued > 0) {
     return format(t.batch.runningTitle, { n: rows.length });
   }
   if (counts.unknown > 0) {
@@ -79,7 +76,7 @@ export default function BatchProgress({
   const batch = useBatchProgress(identity);
   const openSubagent = usePreviewStore((s) => s.openSubagent);
   const [now, setNow] = useState(() => Date.now());
-  const hasLiveTask = batch?.tasks.some((task) => isLiveRowStatus(task.status)) ?? false;
+  const hasLiveTask = batch?.tasks.some((task) => task.status === 'queued' || task.status === 'running') ?? false;
   useEffect(() => {
     if (!hasLiveTask) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -111,7 +108,6 @@ export default function BatchProgress({
           <Button
             size="xs"
             variant="ghost"
-            aria-label={t.batch.stopAllLabel}
             onClick={(event) => {
               event.stopPropagation();
               useChatStore.getState().cancelStreaming(identity.conversationId);
@@ -128,56 +124,36 @@ export default function BatchProgress({
           const lastToolLabel = row.lastToolName
             ? getToolLabel(row.lastToolName, {}, locale).label
             : undefined;
-          const rowIsLive = isLiveRowStatus(row.status);
           return (
-            <div
+            <button
               key={row.taskIndex}
-              className="w-full flex items-start gap-2 px-3 py-1.5 hover:bg-[var(--abu-bg-hover)] transition-colors"
+              type="button"
+              onClick={() => openSubagent(identity, row.taskIndex, row.label)}
+              className="w-full flex items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] transition-colors"
+              aria-label={format(t.batch.openTaskLabel, { label: row.label, status: batchRowStatusLabel(row.status, t) })}
             >
-              <button
-                type="button"
-                onClick={() => openSubagent(identity, row.taskIndex, row.label)}
-                className="flex-1 min-w-0 flex items-start gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm"
-                aria-label={format(t.batch.openTaskLabel, { label: row.label, status: batchRowStatusLabel(row.status, t) })}
-              >
-                <span className="mt-0.5 shrink-0"><StatusIcon status={row.status} /></span>
-                <span className="flex-1 min-w-0">
-                  <span className={cn(
-                    'text-caption truncate block',
-                    (row.status === 'running' || row.status === 'cancelling') ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
-                    row.status === 'failed' && 'text-[var(--abu-danger)]',
-                  )}>
-                    {row.label}
-                  </span>
-                  <span className="text-caption text-[var(--abu-text-tertiary)] flex flex-wrap gap-x-1.5">
-                    <span>{batchRowStatusLabel(row.status, t)}</span>
-                    {lastToolLabel && <span>{lastToolLabel}</span>}
-                    {row.toolCallCount !== undefined && <span>{format(t.batch.toolCount, { n: row.toolCallCount })}</span>}
-                    {row.elapsedMs !== undefined && row.elapsedMs !== null && <span>{formatElapsed(row.elapsedMs)}</span>}
-                    {row.tokenTotal !== undefined && <span>{format(t.batch.tokenCount, { n: row.tokenTotal })}</span>}
-                    {row.status === 'running' && row.turn !== undefined && row.turn > 0 && (
-                      <span>{format(t.batch.turnLabel, { n: row.turn })}</span>
-                    )}
-                  </span>
+              <span className="mt-0.5 shrink-0"><StatusIcon status={row.status} /></span>
+              <span className="flex-1 min-w-0">
+                <span className={cn(
+                  'text-caption truncate block',
+                  row.status === 'running' ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)]',
+                  row.status === 'failed' && 'text-[var(--abu-danger)]',
+                )}>
+                  {row.label}
                 </span>
-              </button>
-              {rowIsLive && row.status !== 'cancelling' && (
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  aria-label={format(t.batch.stopTaskLabel, { label: row.label })}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    useBatchProgressStore.getState().cancelTask(identity, row.taskIndex);
-                  }}
-                  className="h-5 w-5 p-0 mt-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] shrink-0"
-                >
-                  <CircleStop aria-hidden="true" className="h-3.5 w-3.5" />
-                </Button>
-              )}
+                <span className="text-caption text-[var(--abu-text-tertiary)] flex flex-wrap gap-x-1.5">
+                  <span>{batchRowStatusLabel(row.status, t)}</span>
+                  {lastToolLabel && <span>{lastToolLabel}</span>}
+                  {row.toolCallCount !== undefined && <span>{format(t.batch.toolCount, { n: row.toolCallCount })}</span>}
+                  {row.elapsedMs !== undefined && row.elapsedMs !== null && <span>{formatElapsed(row.elapsedMs)}</span>}
+                  {row.tokenTotal !== undefined && <span>{format(t.batch.tokenCount, { n: row.tokenTotal })}</span>}
+                  {row.status === 'running' && row.turn !== undefined && row.turn > 0 && (
+                    <span>{format(t.batch.turnLabel, { n: row.turn })}</span>
+                  )}
+                </span>
+              </span>
               <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[var(--abu-text-muted)]" />
-            </div>
+            </button>
           );
         })}
       </div>

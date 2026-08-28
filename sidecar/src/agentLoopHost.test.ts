@@ -1133,7 +1133,7 @@ describe('agentLoopHost', () => {
       expect(lastDeltaOrder).toBeLessThan(terminalOrder);
     });
 
-    it('fails closed when a sidecar main-loop direct nested subagent cannot materialize shell-returned opaque refs', async () => {
+    it('fails closed without leaking media paths when a sidecar main-loop direct nested subagent cannot materialize shell-returned opaque refs', async () => {
       hasLocalToolMock.mockReturnValue(false);
       delegatedMediaStoreMocks.readDelegatedMedia.mockRejectedValueOnce(
         new Error('missing iVBORw0KGgo= at /Users/alice/secret.png'),
@@ -1180,6 +1180,7 @@ describe('agentLoopHost', () => {
       const wire = JSON.stringify(sendNotificationMock.mock.calls);
       expect(wire).not.toContain('iVBORw0KGgo=');
       expect(wire).not.toContain('/Users/alice/secret.png');
+      expect(wire).not.toContain('/tmp/secret.png');
       expect(wire).not.toContain('media_shell_reverse_missing');
     });
 

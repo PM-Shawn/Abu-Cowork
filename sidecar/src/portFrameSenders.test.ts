@@ -60,7 +60,7 @@ describe('createFrameChatDelta', () => {
     delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
   });
 
-  it('persists updateToolCall image results before strict shell receiver applies the frame', async () => {
+  it('persists updateToolCall image results and redacts media paths before strict shell receiver applies the frame', async () => {
     delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValueOnce({
       id: 'media_tool_result',
       sha256: 'c'.repeat(64),
@@ -77,6 +77,7 @@ describe('createFrameChatDelta', () => {
     const wire = JSON.stringify(frames);
     expect(wire).not.toContain(pngBase64);
     expect(wire).not.toContain('/tmp/private/secret-shot.png');
+    expect(wire).not.toContain('/Users/alice/Desktop/secret-shot.png');
     expect(sidecarValueHasOpaqueMediaRefs(frames)).toBe(true);
 
     const shellFrames = await materializeSidecarMediaRefsForShell(frames, 'conv-1');
@@ -100,6 +101,9 @@ describe('createFrameChatDelta', () => {
         undefined,
       ],
     }]);
+    const materialized = JSON.stringify(shellFrames);
+    expect(materialized).not.toContain('/tmp/private/secret-shot.png');
+    expect(materialized).not.toContain('/Users/alice/Desktop/secret-shot.png');
   });
 
   it('fails closed when updateToolCall image result persistence fails', async () => {
@@ -214,44 +218,37 @@ describe('createFrameChatDelta', () => {
     expect(frames.map((frame) => frame.a[2])).toEqual(['tc1', 'tc2']);
   });
 
-  it('scrubs absolute paths and data URLs from text-only rich results', () => {
+  it('preserves plain-text tool result paths when updateToolCall carries no structured media', () => {
     const frames: PortFrame[] = [];
     const delta = createFrameChatDelta((frame) => frames.push(frame));
-    const dataUrl = `data:image/png;base64,${pngBase64}`;
-    const shortDataUrl = 'data:image/png;base64,QQ==';
-    const parameterizedDataUrl = 'data:image/png;charset=utf-8;base64,QUJDRA==';
-    const namedPdfDataUrl = 'data:application/pdf;name=secret.pdf;base64,JVBERi0=';
-    const emptyMimeDataUrl = 'data:;base64,QQ==';
-    const httpsUrl = 'https://example.test/assets/secret.png';
-    const ordinaryDataText = 'ordinary data: label';
+    const plainTextResult = [
+      'Read 40 lines from /Users/shawn/proj/src/index.ts',
+      'glob **/*.ts',
+      'PATH=/Users/shawn/bin',
+    ].join('\n');
+    const plainTextBlock = [
+      'Opened /Users/shawn/proj/src/index.ts',
+      'Matched glob **/*.ts',
+      'PATH=/Users/shawn/bin',
+    ].join('\n');
 
     delta.updateToolCall(
       'conv-1',
       'm1',
       'tc-text',
-      `Saw ${dataUrl} ${shortDataUrl} ${parameterizedDataUrl} after opening path:/Users/alice/secret.png and /tmp/private/report.txt`,
-      [{ type: 'text', text: `Saw ${dataUrl} ${shortDataUrl} ${namedPdfDataUrl} ${emptyMimeDataUrl} after opening file:///Users/alice/secret.png </Users/alice/secret.png> and /var/private/report.txt ${httpsUrl} ${ordinaryDataText}` }],
+      plainTextResult,
+      [{ type: 'text', text: plainTextBlock }],
       false,
     );
 
-    const wire = JSON.stringify(frames);
-    expect(wire).not.toContain('path:/Users/alice/secret.png');
-    expect(wire).not.toContain('file:///Users/alice/secret.png');
-    expect(wire).not.toContain('/Users/alice/secret.png');
-    expect(wire).not.toContain('/tmp/private/report.txt');
-    expect(wire).not.toContain('/var/private/report.txt');
-    expect(wire).not.toContain(dataUrl);
-    expect(wire).not.toContain(shortDataUrl);
-    expect(wire).not.toContain(parameterizedDataUrl);
-    expect(wire).not.toContain(namedPdfDataUrl);
-    expect(wire).not.toContain(emptyMimeDataUrl);
-    expect(wire).toContain(httpsUrl);
-    expect(wire).toContain(ordinaryDataText);
-    expect(wire).toContain('[REDACTED:path]');
-    expect(wire).toContain('[REDACTED:base64]');
+    expect(frames).toHaveLength(1);
+    expect(frames[0].a[3]).toBe(plainTextResult);
+    expect(frames[0].a[4]).toEqual([{ type: 'text', text: plainTextBlock }]);
+    expect(JSON.stringify(frames)).not.toContain('[REDACTED:path]');
+    expect(delegatedMediaStoreMocks.persistDelegatedMedia).not.toHaveBeenCalled();
   });
 
-  it('queues appendMessageToolCall image media before subsequent chat frames and restores it in the shell', async () => {
+  it('queues appendMessageToolCall image media, redacts media paths, and restores image bytes in the shell', async () => {
     let resolvePersist!: (ref: {
       id: string;
       sha256: string;
@@ -313,6 +310,9 @@ describe('createFrameChatDelta', () => {
       type: 'image',
       source: { type: 'base64', media_type: 'image/png', data: pngBase64 },
     });
+    const materialized = JSON.stringify(shellFrames);
+    expect(materialized).not.toContain('/tmp/secret.png');
+    expect(materialized).not.toContain('/Users/alice/secret.png');
   });
 
   it('queues tool-call context and message tool-call snapshots with media before subsequent chat frames', async () => {

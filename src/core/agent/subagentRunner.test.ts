@@ -853,7 +853,7 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
-    it('keeps image tool results opaque on the shell-to-sidecar reverse channel', async () => {
+    it('keeps image tool results opaque and media paths redacted on the shell-to-sidecar reverse channel', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
@@ -877,6 +877,7 @@ describe('subagentRunner', () => {
 
       expect(serialized).not.toContain(imageData);
       expect(serialized).not.toContain('/private/customer/shot.png');
+      expect(serialized).toContain('[REDACTED:path]');
       expect(wireResult).toEqual([
         { type: 'text', text: 'Image: [REDACTED:path]' },
         { type: 'delegated_media_ref', originConversationId: 'conv-1', attachment: TEST_MEDIA_REF },
@@ -1387,6 +1388,7 @@ describe('subagentRunner', () => {
         type: 'image',
         source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
       });
+      expect(onProgress.mock.calls[0][0].result).toBe('Image: [REDACTED:path]');
     });
 
     it('fails closed then preserves order when progress image materialization fails', async () => {

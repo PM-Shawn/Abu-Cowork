@@ -69,16 +69,6 @@ function toolResultHasInlineMedia(resultContent: ToolResultContent[] | undefined
   return !!resultContent?.some((block) => block.type === 'image' && Boolean(block.source.data));
 }
 
-function sanitizeToolResultContentForTransport(
-  resultContent: ToolResultContent[] | undefined,
-): ToolResultContent[] | undefined {
-  return resultContent?.map((block) => (
-    block.type === 'text'
-      ? { ...block, text: sanitizeToolTransportText(block.text) }
-      : block
-  ));
-}
-
 function markToolCallMediaTransportFailure<T>(toolCall: T): T {
   if (!toolCall || typeof toolCall !== 'object' || Array.isArray(toolCall)) return toolCall;
   const safe = redactSidecarValueForWireFailure(toolCall) as Record<string, unknown>;
@@ -204,8 +194,8 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
           convId,
           messageId,
           toolCallId,
-          sanitizeToolTransportText(result),
-          sanitizeToolResultContentForTransport(wireResultContent),
+          result,
+          wireResultContent,
           isError,
           hideScreenshot,
           wireMetadata,

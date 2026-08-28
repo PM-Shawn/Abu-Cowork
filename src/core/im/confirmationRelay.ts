@@ -9,6 +9,7 @@ import { resolveCapability } from './authGate';
 export const DEFAULT_IM_CONFIRMATION_TIMEOUT_MS = 180_000;
 const TOMBSTONE_TTL_MS = DEFAULT_IM_CONFIRMATION_TIMEOUT_MS;
 const MAX_TOMBSTONES = 500;
+// This intentional 10,000 fail-closed cap assumes P0-D webhook signature verification prevents unauthenticated messageId flooding; post-verification TTL or pending-linked cleanup is tracked separately.
 const MAX_NUMERIC_REPLY_IDS = 10_000;
 const MAX_NUMERIC_REPLY_IDENTITY_COMPONENT_LENGTH = 512;
 const MAX_NUMERIC_REPLY_IDENTITY_KEY_LENGTH = 2_048;

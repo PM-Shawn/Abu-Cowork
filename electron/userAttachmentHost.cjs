@@ -16,7 +16,7 @@ const MAX_USER_ATTACHMENT_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_TOKENS_PER_SENDER = 32;
 const MAX_TOTAL_TOKENS = 512;
 const REQUEST_KEYS = new Set(['token']);
-const AUTHORIZE_KEYS = new Set(['path', 'name', 'mediaType', 'maxBytes', 'sender', 'now', 'ttlMs']);
+const AUTHORIZE_KEYS = new Set(['path', 'name', 'mediaType', 'maxBytes', 'sender']);
 const SELECT_KEYS = new Set(['mediaTypes']);
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 const tokenRecords = new Map();
@@ -147,11 +147,11 @@ function basenameForToken(request) {
   return candidate.split(/[\\/]/).pop() || 'attachment';
 }
 
-function issueUserAttachmentToken(request, allowedMediaTypes = IMAGE_MEDIA_TYPES) {
+function issueUserAttachmentToken(request, allowedMediaTypes = IMAGE_MEDIA_TYPES, options = {}) {
   validateAuthorizeRequest(request, allowedMediaTypes);
-  const now = Number.isFinite(request.now) ? request.now : Date.now();
-  const ttlMs = Number.isSafeInteger(request.ttlMs) && request.ttlMs > 0
-    ? request.ttlMs
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const ttlMs = Number.isSafeInteger(options.ttlMs) && options.ttlMs > 0
+    ? options.ttlMs
     : DEFAULT_TOKEN_TTL_MS;
   enforceTokenRegistryLimits(request.sender, now);
   const token = crypto.randomBytes(32).toString('base64url');

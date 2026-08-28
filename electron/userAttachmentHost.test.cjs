@@ -6,12 +6,17 @@ const {
   __testing,
   authorizeUserAttachment,
   bytesMatchMediaType,
-  issueUserAttachmentToken,
+  issueUserAttachmentToken: issueUserAttachmentTokenAt,
   readUserAttachment,
   releaseUserAttachment,
   selectUserAttachments,
   validateRequest,
 } = require('./userAttachmentHost.cjs');
+
+function issueUserAttachmentToken(request) {
+  const { now, ttlMs, ...authorizeRequest } = request;
+  return issueUserAttachmentTokenAt(authorizeRequest, undefined, { now, ttlMs });
+}
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
@@ -290,16 +295,26 @@ test('raw authorize API is image-only and rejects PDF direct input', () => {
     path: '/tmp/shot.png',
     name: 'shot.png',
     mediaType: 'image/png',
-    now: 1_000,
   });
   assert.equal(image.mediaType, 'image/png');
+
+  for (const [field, value] of [['now', 1_000], ['ttlMs', 60_000]]) {
+    assert.throws(
+      () => authorizeUserAttachment({ sender: {} }, {
+        path: '/tmp/shot.png',
+        name: 'shot.png',
+        mediaType: 'image/png',
+        [field]: value,
+      }),
+      new RegExp(`unsupported request field ${field}`),
+    );
+  }
 
   assert.throws(
     () => authorizeUserAttachment({ sender: {} }, {
       path: '/tmp/brief.pdf',
       name: 'brief.pdf',
       mediaType: 'application/pdf',
-      now: 1_000,
     }),
     /media type is unsupported/,
   );

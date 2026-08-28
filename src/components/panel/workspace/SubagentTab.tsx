@@ -31,6 +31,8 @@ function statusLabel(status: BatchTaskProgress['status'], t: TranslationDict): s
       return t.workspace.agentStatusQueued;
     case 'running':
       return t.workspace.agentStatusRunning;
+    case 'cancelling':
+      return t.batch.statusCancelling;
     case 'succeeded':
       return t.workspace.agentStatusSucceeded;
     case 'failed':
@@ -46,7 +48,7 @@ function StatusIcon({ status }: { status: BatchTaskProgress['status'] }) {
   if (status === 'queued') {
     return <Clock aria-hidden="true" className="w-4 h-4 text-[var(--abu-text-muted)]" strokeWidth={1.5} />;
   }
-  if (status === 'running') {
+  if (status === 'running' || status === 'cancelling') {
     return <Loader2 aria-hidden="true" className="w-4 h-4 motion-safe:animate-spin text-[var(--abu-clay)]" strokeWidth={1.5} />;
   }
   if (status === 'succeeded') {
@@ -71,7 +73,7 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
   const { t, locale } = useI18n();
   const batch = useBatchProgress(identity);
   const task = batch?.tasks[taskIndex];
-  const isLive = task?.status === 'running' || task?.status === 'queued';
+  const isLive = task?.status === 'running' || task?.status === 'cancelling' || task?.status === 'queued';
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {

@@ -16,7 +16,7 @@ import type {
 } from '@/types';
 import { makeBatchKey } from '@/types';
 
-export type BatchTaskStatus = 'queued' | 'running' | BatchTaskTerminalStatus;
+export type BatchTaskStatus = 'queued' | 'running' | 'cancelling' | BatchTaskTerminalStatus;
 export type BatchTaskStepStatus = 'running' | 'completed' | 'error' | 'cancelled';
 export type BatchTaskStepRichContentState = 'retained' | 'partially-retained' | 'released';
 
@@ -96,6 +96,9 @@ interface BatchProgressActions {
     idx: number,
     terminal: { status: BatchTaskTerminalStatus; reason: BatchTaskTerminalReason },
   ) => BatchTerminalSummary | undefined;
+  registerTaskCanceller: (identity: BatchIdentity, idx: number, cancel: () => void) => void;
+  unregisterTaskCanceller: (identity: BatchIdentity, idx: number) => void;
+  cancelTask: (identity: BatchIdentity, idx: number) => boolean;
   acquireViewLease: (identity: BatchIdentity) => void;
   releaseViewLease: (identity: BatchIdentity) => void;
   setActiveVisibleBatch: (identity: BatchIdentity | undefined) => void;
@@ -397,6 +400,7 @@ function makeRoomForStep(task: BatchTaskProgress): boolean {
 }
 
 const clearTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const taskCancellers = new Map<string, Map<number, () => void>>();
 /**
  * The step timeline is deliberately capped at 64 entries, so it cannot also
  * serve as the source of truth for whether a tool call has already been
@@ -421,6 +425,17 @@ function cancelClearTimer(batchKey: string): void {
     clearTimeout(timer);
     clearTimers.delete(batchKey);
   }
+}
+
+function unregisterTaskCancellerByKey(batchKey: string, idx: number): void {
+  const cancellers = taskCancellers.get(batchKey);
+  if (!cancellers) return;
+  cancellers.delete(idx);
+  if (cancellers.size === 0) taskCancellers.delete(batchKey);
+}
+
+function clearTaskCancellers(batchKey: string): void {
+  taskCancellers.delete(batchKey);
 }
 
 function canClearEntry(entry: BatchEntry | undefined): boolean {
@@ -504,6 +519,7 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
       const batchKey = keyOf(identity);
       cancelClearTimer(batchKey);
       observedStepIds.delete(batchKey);
+      clearTaskCancellers(batchKey);
       set((state) => {
         state.batches[batchKey] = {
           identity,
@@ -523,7 +539,7 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
       cancelClearTimer(batchKey);
       set((state) => {
         const task = state.batches[batchKey]?.tasks[idx];
-        if (!task || isSettledStatus(task.status)) return;
+        if (!task || isSettledStatus(task.status) || task.status === 'cancelling') return;
         task.status = 'running';
         task.startedAt ??= Date.now();
       });
@@ -544,7 +560,7 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
       set((state) => {
         const task = state.batches[batchKey]?.tasks[idx];
         if (!task || isSettledStatus(task.status)) return;
-        task.status = 'running';
+        if (task.status !== 'cancelling') task.status = 'running';
         task.startedAt ??= Date.now();
         const observedIds = getObservedStepIds(batchKey);
         const observedId = `${idx}:${step.id}`;
@@ -671,11 +687,11 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
         const task = entry?.tasks[idx];
         if (!entry || !task || isSettledStatus(task.status)) return;
         const now = Date.now();
-        const wasQueued = task.status === 'queued';
+        const wasNeverStarted = task.startedAt === undefined;
         task.status = terminal.status;
         task.terminalReason = terminal.reason;
         task.activity = undefined;
-        if (!(wasQueued && terminal.status === 'stopped')) task.startedAt ??= now;
+        if (!(wasNeverStarted && terminal.status === 'stopped')) task.startedAt ??= now;
         task.endedAt = now;
         for (const step of task.steps) {
           if (step.status !== 'running') continue;
@@ -696,11 +712,42 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
         entry.retainedRichBytes = batchRichContentBytes(entry);
         reclaimRichContent(state);
       });
+      unregisterTaskCancellerByKey(batchKey, idx);
       const summary = get().getTerminalSummary(identity);
       if (shouldScheduleClear) {
         get().scheduleClearBatch(identity, BATCH_PROGRESS_COMPLETED_TTL_MS);
       }
       return summary;
+    },
+
+    registerTaskCanceller: (identity, idx, cancel) => {
+      const batchKey = keyOf(identity);
+      let cancellers = taskCancellers.get(batchKey);
+      if (!cancellers) {
+        cancellers = new Map<number, () => void>();
+        taskCancellers.set(batchKey, cancellers);
+      }
+      cancellers.set(idx, cancel);
+    },
+
+    unregisterTaskCanceller: (identity, idx) => {
+      unregisterTaskCancellerByKey(keyOf(identity), idx);
+    },
+
+    cancelTask: (identity, idx) => {
+      const batchKey = keyOf(identity);
+      const task = get().batches[batchKey]?.tasks[idx];
+      if (!task || isSettledStatus(task.status) || task.status === 'cancelling') return false;
+      const cancel = taskCancellers.get(batchKey)?.get(idx);
+      if (!cancel) return false;
+      set((state) => {
+        const current = state.batches[batchKey]?.tasks[idx];
+        if (!current || isSettledStatus(current.status) || current.status === 'cancelling') return;
+        current.status = 'cancelling';
+        current.activity = undefined;
+      });
+      cancel();
+      return true;
     },
 
     acquireViewLease: (identity) => {
@@ -772,6 +819,7 @@ export const useBatchProgressStore = create<BatchProgressStore>()(
       const batchKey = keyOf(identity);
       cancelClearTimer(batchKey);
       observedStepIds.delete(batchKey);
+      clearTaskCancellers(batchKey);
       set((state) => {
         delete state.batches[batchKey];
         if (state.activeVisibleBatchKey === batchKey) state.activeVisibleBatchKey = undefined;

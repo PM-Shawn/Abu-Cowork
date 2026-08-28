@@ -157,9 +157,21 @@ describe('subagentHost', () => {
         ...baseParams(),
         runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
       }],
+      ['unknown wire field', { ...baseParams(), injectedByRenderer: true }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleSubagentRun(params)).rejects.toThrow(RpcError);
       await expect(handleSubagentRun(params)).rejects.toMatchObject({ code: -32602 });
+    });
+
+    it('accepts exactly the declared SubagentRunParams wire keys', async () => {
+      const defaults: Record<string, unknown> = baseParams();
+      const params = Object.fromEntries(
+        SUBAGENT_HOST_RUN_WIRE_FIELDS.map((field) => [field, defaults[field]]),
+      );
+      runSubagentLoopMock.mockResolvedValue(resultShape('ok'));
+
+      await expect(handleSubagentRun(params)).resolves.toMatchObject({ text: 'ok' });
+      expect(Object.keys(params).sort()).toEqual([...SUBAGENT_HOST_RUN_WIRE_FIELDS].sort());
     });
 
     it('rejects a duplicate runId that is already active', async () => {

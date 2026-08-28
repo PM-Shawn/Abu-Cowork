@@ -90,6 +90,7 @@ export interface SubagentHostRunParams {
 
 export const SUBAGENT_HOST_RUN_WIRE_FIELDS =
   SHARED_SUBAGENT_RUN_WIRE_FIELDS satisfies readonly (keyof SubagentHostRunParams)[];
+const subagentHostRunWireFieldSet = new Set<string>(SUBAGENT_HOST_RUN_WIRE_FIELDS);
 
 type AssertNever<T extends never> = T;
 
@@ -172,6 +173,8 @@ function assertDelegatedUserTurn(value: unknown): asserts value is DelegatedUser
 
 function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (!isRecord(params)) throw new RpcError(-32602, 'Invalid params: expected object');
+  const unknownKey = Object.keys(params).find((key) => !subagentHostRunWireFieldSet.has(key));
+  if (unknownKey) throw new RpcError(-32602, `Invalid params: unsupported field ${unknownKey}`);
   const { runId, agent, task, tools, settingsSnapshot, resolvedCreds, uiStrings, locale } = params;
   if (typeof runId !== 'string' || !runId) {
     throw new RpcError(-32602, 'Invalid params: runId must be a non-empty string');

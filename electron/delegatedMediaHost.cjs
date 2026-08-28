@@ -122,7 +122,7 @@ function persistDelegatedMedia(appDataDir, request) {
       if (existing.length === bytes.length && sha256(existing) === digest) return ref;
       throw new Error('delegated media: existing snapshot failed integrity verification');
     }
-    throw error;
+    throw new Error('delegated media: failed to persist snapshot');
   }
   return ref;
 }

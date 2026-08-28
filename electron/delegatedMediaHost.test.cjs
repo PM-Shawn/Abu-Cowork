@@ -81,6 +81,30 @@ test('does not overwrite an immutable existing media file with corrupt content',
   assert.deepEqual(fs.readFileSync(mediaPath), Buffer.from('corrupt'));
 });
 
+test('does not expose filesystem paths when snapshot persistence fails', () => {
+  const appDataDir = tmpAppData();
+  const originalWriteFileSync = fs.writeFileSync;
+  const secretPath = path.join(appDataDir, 'secret', 'private.png');
+  fs.writeFileSync = () => {
+    throw new Error(`write denied: ${secretPath}`);
+  };
+  try {
+    assert.throws(
+      () => persistDelegatedMedia(appDataDir, {
+        conversationId: 'conv_1',
+        mediaType: 'image/png',
+        bytes: PNG,
+      }),
+      (error) => error instanceof Error
+        && error.message === 'delegated media: failed to persist snapshot'
+        && !error.message.includes(appDataDir)
+        && !error.message.includes(secretPath),
+    );
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+  }
+});
+
 test('accepts a valid interlaced PNG at the host boundary', () => {
   const appDataDir = tmpAppData();
   const ref = persistDelegatedMedia(appDataDir, { conversationId: 'conv_1', mediaType: 'image/png', bytes: INTERLACED_PNG });

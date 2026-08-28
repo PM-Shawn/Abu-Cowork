@@ -146,7 +146,6 @@ export default function ChatView({
     setIsRenamingTitle(false);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
-  const deleteConversation = useChatStore((s) => s.deleteConversation);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // Subscribe to messages count so ChatView re-renders when background processes
   // (IM agentLoop) add messages — even if the conversation object reference is stale
@@ -472,10 +471,8 @@ export default function ChatView({
 
     let convId = activeConv?.id;
     const isNewConversation = !convId;
-    let createdConvId: string | undefined;
     if (!convId) {
       convId = createConversation(workspacePath);
-      createdConvId = convId;
     }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
@@ -493,7 +490,6 @@ export default function ChatView({
       // however, the failed transcript row (and its Retry action) owns
       // recovery; handing the same text back to ChatInput would duplicate it.
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
-        if (createdConvId) deleteConversation(createdConvId);
         throw error;
       }
       useToastStore.getState().addToast({
@@ -512,7 +508,6 @@ export default function ChatView({
         title: dispatch.error || t.chat.conversationBusy,
       });
       if (shouldRestoreComposerAfterDispatch(dispatch)) {
-        if (createdConvId) deleteConversation(createdConvId);
         return false;
       }
     }

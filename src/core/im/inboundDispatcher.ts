@@ -12,6 +12,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { parseInboundMessage } from './inboundRouter';
 import { triggerEngine } from '../trigger/triggerEngine';
 import { imChannelRouter } from './channelRouter';
+import { consumeIMConfirmationReply } from './confirmationRelay';
+import { useIMChannelStore } from '../../stores/imChannelStore';
 import { isTauriEnv } from '../../utils/tauriEnv';
 import type { ImageAttachment } from '../../types';
 
@@ -23,6 +25,10 @@ export async function startInboundDispatcher(): Promise<void> {
     'im-inbound-event',
     (event) => {
       const { platform, payload } = event.payload;
+      if (!hasEnabledChannelForPlatform(platform)) {
+        console.warn(`[InboundDispatcher] Dropped webhook message for disabled platform: ${platform}`);
+        return;
+      }
       dispatch(platform, payload);
     }
   );
@@ -68,6 +74,11 @@ function dispatch(
   // the attachment it was just sent.
   if (text !== undefined) message.text = text;
 
+  if (consumeIMConfirmationReply(message)) {
+    console.log('[InboundDispatcher] IM confirmation reply consumed');
+    return;
+  }
+
   // Trigger first: check if any IM trigger matches this message
   const matched = triggerEngine.tryMatchIMTriggers(message);
   if (matched) {
@@ -77,4 +88,10 @@ function dispatch(
 
   // No trigger matched → hand off to channel router
   imChannelRouter.dispatchMessage(message);
+}
+
+function hasEnabledChannelForPlatform(platform: string): boolean {
+  return useIMChannelStore.getState()
+    .getChannelsByPlatform(platform)
+    .some((channel) => channel.enabled === true);
 }

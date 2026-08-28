@@ -19,6 +19,7 @@ import type { NormalizedIMMessage } from './inboundRouter';
 import { GenericPluginAdapter } from './adapters/genericPlugin';
 import { getTauriFetch } from '../llm/tauriFetch';
 import { startPluginHeartbeat } from './pluginHeartbeat';
+import { extractPluginInboundMessageId } from './pluginMessageIdentity';
 
 // ── Manifest Schema ──
 
@@ -61,6 +62,7 @@ export interface PluginManifestFile {
     senderId: string;
     senderName?: string;
     chatId: string;
+    messageId?: string;
     isDirect?: string;
     /** If this field is absent in payload, treat as DM (e.g. "channel_id") */
     isDirectAbsent?: string;
@@ -213,13 +215,7 @@ function parseManifestInbound(
     isDirect = !extractPath(payload, mapping.isDirectAbsent);
   }
 
-  // Extract message ID for dedup (try common field names)
-  const messageId = String(
-    extractPath(payload, 'message_key') ??
-    extractPath(payload, 'message_id') ??
-    extractPath(payload, 'msg_id') ??
-    ''
-  );
+  const messageId = extractPluginInboundMessageId(payload, mapping.messageId);
 
   // Mention detection: support standard @Name and DChat format @<=#botId=>
   const textStr = String(text);
@@ -249,7 +245,7 @@ function parseManifestInbound(
     replyContext: {
       platform: manifest.platform,
       chatId: String(chatId),
-      messageId: messageId || undefined,
+      messageId,
     },
     raw: payload,
   };

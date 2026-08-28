@@ -447,6 +447,56 @@ describe('settingsStore partialize', () => {
     expect(snapshot.pendingImageGenSecretBridge).toBe('backend-123');
     useSettingsStore.setState({ pendingImageGenSecretBridge: undefined });
   });
+
+  it('persists the IM LAN webhook opt-in setting', () => {
+    const persistApi = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
+    }).persist;
+    const partialize = persistApi.getOptions().partialize!;
+    useSettingsStore.setState({ imChannel: { allowLanWebhook: true } });
+
+    const snapshot = partialize(useSettingsStore.getState());
+
+    expect(snapshot.imChannel).toEqual({ allowLanWebhook: true });
+    useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
+  });
+});
+
+describe('settingsStore IM channel security settings', () => {
+  const getMigrate = () =>
+    (useSettingsStore as unknown as {
+      persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+    }).persist.getOptions().migrate;
+
+  beforeEach(() => {
+    useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
+  });
+
+  it('defaults LAN webhook exposure to disabled for fresh installs', () => {
+    expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(false);
+  });
+
+  it('toggles the LAN webhook setting without clobbering the group object', () => {
+    useSettingsStore.getState().setIMAllowLanWebhook(true);
+    expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(true);
+  });
+
+  it('migrates missing pre-v46 settings to fail-closed', () => {
+    const migrated = getMigrate()({}, 45);
+    expect(migrated.imChannel).toEqual({ allowLanWebhook: false });
+  });
+
+  it('preserves an explicit pre-v46 opt-in and normalizes malformed values to false', () => {
+    expect(getMigrate()({ imChannel: { allowLanWebhook: true } }, 45).imChannel).toEqual({
+      allowLanWebhook: true,
+    });
+    expect(getMigrate()({ imChannel: { allowLanWebhook: 'yes' } }, 45).imChannel).toEqual({
+      allowLanWebhook: false,
+    });
+    expect(getMigrate()({ imChannel: ['bad'] }, 45).imChannel).toEqual({
+      allowLanWebhook: false,
+    });
+  });
 });
 
 describe('settingsStore labs flags', () => {

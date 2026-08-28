@@ -65,6 +65,15 @@ export function parseInboundMessage(
   }
 }
 
+function firstStringField(obj: Record<string, unknown> | undefined, fields: string[]): string {
+  if (!obj) return '';
+  for (const field of fields) {
+    const value = obj[field];
+    if (value !== undefined && value !== null && String(value) !== '') return String(value);
+  }
+  return '';
+}
+
 // ── Feishu ──
 
 function parseFeishu(payload: Record<string, unknown>): NormalizedIMMessage | null {
@@ -169,6 +178,7 @@ function parseDingTalk(payload: Record<string, unknown>): NormalizedIMMessage | 
 
   const sessionWebhook = String(payload.sessionWebhook ?? '');
   const conversationId = String(payload.conversationId ?? '');
+  const messageId = firstStringField(payload, ['msgId', 'msgid', 'messageId']);
 
   return {
     senderId,
@@ -181,6 +191,7 @@ function parseDingTalk(payload: Record<string, unknown>): NormalizedIMMessage | 
     replyContext: {
       platform: 'dingtalk',
       chatId: conversationId || undefined,
+      messageId: messageId || undefined,
       sessionWebhook: sessionWebhook || undefined,
     },
     raw: payload,
@@ -203,6 +214,7 @@ function parseWeCom(payload: Record<string, unknown>): NormalizedIMMessage | nul
   const senderName = String(from?.Name ?? payload.userName ?? senderId);
 
   const chatId = String(payload.ChatId ?? payload.chatid ?? '');
+  const messageId = firstStringField(payload, ['MsgId', 'msgid', 'msgId', 'messageId']);
   const isMention = text.includes('@Abu') || text.includes('@abu');
   const isDirect = !chatId || chatId === senderId;
 
@@ -217,6 +229,7 @@ function parseWeCom(payload: Record<string, unknown>): NormalizedIMMessage | nul
     replyContext: {
       platform: 'wecom',
       chatId: chatId || undefined,
+      messageId: messageId || undefined,
     },
     raw: payload,
   };
@@ -241,6 +254,8 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
   const channelId = String(event.channel ?? '');
   const threadTs = event.thread_ts ? String(event.thread_ts) : undefined;
   const channelType = String(event.channel_type ?? '');
+  const messageId = firstStringField(event, ['ts', 'client_msg_id', 'event_ts'])
+    || firstStringField(payload, ['event_id']);
 
   // Slack mentions: <@U12345>
   const isMention = /<@\w+>/.test(text);
@@ -260,6 +275,7 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
     replyContext: {
       platform: 'slack',
       chatId: channelId,
+      messageId: messageId || undefined,
       threadId: threadTs,
     },
     raw: payload,

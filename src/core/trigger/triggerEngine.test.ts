@@ -8,9 +8,15 @@
  * minimal mocking — focusing on the event handling path.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { useIMChannelStore } from '../../stores/imChannelStore';
 import type { Trigger, TriggerEventPayload } from '../../types/trigger';
+import type { IMChannel } from '../../types/imChannel';
+import type { NormalizedIMMessage } from '../im/inboundRouter';
 
 const runAgentLoopMock = vi.hoisted(() => vi.fn().mockResolvedValue({ reason: 'completed' }));
 const createAuthorizationScopeMock = vi.hoisted(() => vi.fn(() => 'scope-trigger-test'));
@@ -64,9 +70,14 @@ vi.mock('../im/pluginRegistry', () => ({
   getRegisteredPluginManifests: vi.fn().mockReturnValue([]),
 }));
 
+vi.mock('../../utils/tauriEnv', () => ({
+  isTauriEnv: () => true,
+}));
+
 // Import after mocks
 import { triggerEngine } from './triggerEngine';
 import { outputSender } from '../im/outputSender';
+import { getRegisteredPluginManifests } from '../im/pluginRegistry';
 
 function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   return {
@@ -85,6 +96,27 @@ function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   };
 }
 
+function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
+  return {
+    id: 'ch-1',
+    platform: 'slack',
+    name: 'Slack',
+    appId: 'app',
+    appSecret: 'secret',
+    capability: 'safe_tools',
+    responseMode: 'mention_only',
+    allowedUsers: [],
+    workspacePaths: [],
+    sessionTimeoutMinutes: 0,
+    maxRoundsPerSession: 50,
+    enabled: true,
+    status: 'connected',
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
 describe('TriggerEngine', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -95,6 +127,8 @@ describe('TriggerEngine', () => {
     disposeAuthorizationScopeMock.mockClear();
     // Reset stores
     useTriggerStore.setState({ triggers: {}, triggerOrder: [] });
+    useIMChannelStore.setState({ channels: {}, sessions: {}, archivedSessions: {} });
+    useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
@@ -106,6 +140,172 @@ describe('TriggerEngine', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  // ── Filter matching ──
+  describe('HTTP server binding', () => {
+    beforeEach(() => {
+      vi.mocked(invoke).mockResolvedValue(18080);
+      vi.mocked(getRegisteredPluginManifests).mockReturnValue([]);
+    });
+
+    afterEach(() => {
+      triggerEngine.stop();
+    });
+
+    it('keeps loopback binding when a heartbeat plugin exists but LAN webhook is not allowed', async () => {
+      vi.mocked(getRegisteredPluginManifests).mockReturnValue([
+        {
+          platform: 'heartbeat-test',
+          displayName: 'Heartbeat Test',
+          shortLabel: 'HT',
+          capabilities: {
+            markdown: false,
+            card: false,
+            messageUpdate: false,
+            connectionType: 'heartbeat',
+          },
+        },
+      ]);
+
+      await triggerEngine.start();
+
+      expect(invoke).toHaveBeenCalledWith('start_trigger_server', {
+        port: 18080,
+        bindAddr: '127.0.0.1',
+      });
+    });
+
+    it('binds to LAN only when heartbeat plugin exists and the user explicitly allows it', async () => {
+      useSettingsStore.setState({ imChannel: { allowLanWebhook: true } });
+      vi.mocked(getRegisteredPluginManifests).mockReturnValue([
+        {
+          platform: 'heartbeat-test',
+          displayName: 'Heartbeat Test',
+          shortLabel: 'HT',
+          capabilities: {
+            markdown: false,
+            card: false,
+            messageUpdate: false,
+            connectionType: 'heartbeat',
+          },
+        },
+      ]);
+
+      await triggerEngine.start();
+
+      expect(invoke).toHaveBeenCalledWith('start_trigger_server', {
+        port: 18080,
+        bindAddr: '0.0.0.0',
+      });
+    });
+
+    it('keeps loopback binding when a malformed v46 truthy value is present at runtime', async () => {
+      useSettingsStore.setState({ imChannel: { allowLanWebhook: 'yes' as never } });
+      vi.mocked(getRegisteredPluginManifests).mockReturnValue([
+        {
+          platform: 'heartbeat-test',
+          displayName: 'Heartbeat Test',
+          shortLabel: 'HT',
+          capabilities: {
+            markdown: false,
+            card: false,
+            messageUpdate: false,
+            connectionType: 'heartbeat',
+          },
+        },
+      ]);
+
+      await triggerEngine.start();
+
+      expect(invoke).toHaveBeenCalledWith('start_trigger_server', {
+        port: 18080,
+        bindAddr: '127.0.0.1',
+      });
+    });
+  });
+
+  describe('HTTP source boundary', () => {
+    beforeEach(() => {
+      vi.mocked(invoke).mockResolvedValue(18080);
+      vi.mocked(listen).mockClear();
+      vi.mocked(listen).mockResolvedValue(() => {});
+    });
+
+    afterEach(() => {
+      triggerEngine.stop();
+    });
+
+    function httpListener(): (event: { payload: { triggerId: string; payload: TriggerEventPayload } }) => void {
+      return vi.mocked(listen).mock.calls.find(([eventName]) => eventName === 'trigger-http-event')?.[1] as
+        (event: { payload: { triggerId: string; payload: TriggerEventPayload } }) => void;
+    }
+
+    it('does not let the HTTP endpoint fire an IM trigger even if its channel is disabled or removed', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-http-to-im',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ enabled: false }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      await triggerEngine.start();
+      const listener = httpListener();
+
+      listener({ payload: { triggerId: trigger.id, payload: { data: { text: 'bypass' } } } });
+      useIMChannelStore.setState({ channels: {}, sessions: {}, archivedSessions: {} });
+      listener({ payload: { triggerId: trigger.id, payload: { data: { text: 'bypass-again' } } } });
+
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('still dispatches a genuine HTTP trigger from the HTTP endpoint', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-real-http',
+        source: { type: 'http' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      await triggerEngine.start();
+
+      httpListener()({ payload: { triggerId: trigger.id, payload: { data: { text: 'ok' } } } });
+
+      await vi.waitFor(() => expect(runAgentLoopMock).toHaveBeenCalledTimes(1));
+    });
+
+    it('does not execute a queued HTTP retry after the trigger source changes to IM', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-http-source-race',
+        source: { type: 'http' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      await triggerEngine.start();
+      let resolveFirst!: () => void;
+      runAgentLoopMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      }));
+      const listener = httpListener();
+
+      listener({ payload: { triggerId: trigger.id, payload: { data: { seq: 1 } } } });
+      await vi.waitFor(() => expect(runAgentLoopMock).toHaveBeenCalledTimes(1));
+      listener({ payload: { triggerId: trigger.id, payload: { data: { seq: 2 } } } });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+          },
+        },
+      }));
+
+      resolveFirst();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ── Filter matching ──
@@ -327,6 +527,54 @@ describe('TriggerEngine', () => {
 
   // ── IM scope matching ──
   describe('IM scope matching', () => {
+    async function startBusyIMRetry(overrides: {
+      channel?: Partial<IMChannel>;
+      trigger?: Partial<Trigger>;
+      message?: Partial<NormalizedIMMessage>;
+    } = {}) {
+      const trigger = makeTrigger({
+        id: 'trigger-im-retry',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+        action: { prompt: 'handle', capability: 'safe_tools' },
+        ...overrides.trigger,
+      });
+      const channel = makeChannel({ ...overrides.channel });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({ channels: { 'ch-1': channel }, sessions: {}, archivedSessions: {} });
+      triggerEngine.startSourceWatcher(trigger);
+
+      let resolveFirst!: () => void;
+      runAgentLoopMock.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      }));
+
+      const baseMessage: NormalizedIMMessage = {
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'first',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+        ...overrides.message,
+      };
+
+      expect(triggerEngine.tryMatchIMTriggers(baseMessage)).toBe(1);
+      await vi.waitFor(() => expect(runAgentLoopMock).toHaveBeenCalledTimes(1));
+
+      expect(triggerEngine.tryMatchIMTriggers({
+        ...baseMessage,
+        text: 'retry',
+      })).toBe(1);
+
+      resolveFirst();
+      await Promise.resolve();
+      runAgentLoopMock.mockResolvedValue({ reason: 'completed' });
+      return { trigger, channel };
+    }
+
     it('tryMatchIMTriggers returns 0 when no IM triggers registered', () => {
       const msg = {
         platform: 'feishu' as const,
@@ -340,6 +588,540 @@ describe('TriggerEngine', () => {
         rawPayload: {},
       };
       expect(triggerEngine.tryMatchIMTriggers(msg)).toBe(0);
+    });
+
+    it('dispatches an IM trigger only when its bound channel is enabled for the message platform', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+        action: { prompt: 'handle', capability: 'safe_tools' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({ channels: { 'ch-1': makeChannel() }, sessions: {}, archivedSessions: {} });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        chatName: 'Group',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('skips IM triggers when the bound channel is disabled', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-disabled',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ enabled: false, status: 'disconnected' }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(0);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('skips IM triggers when the bound channel has malformed truthy enabled', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-malformed-enabled',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ enabled: 'yes' as never }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(0);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('skips IM triggers when the bound channel capability is malformed', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-malformed-channel-capability',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+        action: { prompt: 'handle', capability: 'read_tools' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ capability: 'garbage' as never }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(0);
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('skips IM triggers when the sender is not allowed by the channel whitelist', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-whitelist',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ allowedUsers: ['trusted-user'] }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(0);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('skips IM triggers whose action capability exceeds the sender effective channel capability', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-capability',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+        action: { prompt: 'handle', capability: 'full' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ capability: 'safe_tools' }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      const dispatched = triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      });
+
+      expect(dispatched).toBe(0);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after the bound channel is disabled', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], enabled: false },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after the bound channel is removed', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState({ channels: {}, sessions: {}, archivedSessions: {} });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after sender whitelist is revoked', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], allowedUsers: ['other-user'] },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not throw or execute a delayed IM retry after allowedUsers becomes malformed', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], allowedUsers: 'trusted_user' as never },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after effective channel capability is downgraded', async () => {
+      const { trigger } = await startBusyIMRetry({
+        channel: { capability: 'full', allowedUsers: ['u1'] },
+        trigger: { action: { prompt: 'handle', capability: 'full' } },
+      });
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], capability: 'safe_tools' },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after channel enabled is malformed truthy', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], enabled: 'yes' as never },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after channel disable-enable ABA', async () => {
+      const { trigger } = await startBusyIMRetry();
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], enabled: false },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+      useIMChannelStore.setState((state) => ({
+        channels: {
+          ...state.channels,
+          'ch-1': { ...state.channels['ch-1'], enabled: true },
+        },
+        sessions: {},
+        archivedSessions: {},
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after the trigger action capability is raised', async () => {
+      const { trigger } = await startBusyIMRetry({
+        channel: { capability: 'safe_tools' },
+        trigger: { action: { prompt: 'handle', capability: 'safe_tools' } },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            action: { prompt: 'handle', capability: 'full' },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after custom action capability changes to full', async () => {
+      const { trigger } = await startBusyIMRetry({
+        channel: { capability: 'full', allowedUsers: ['u1'] },
+        trigger: {
+          action: {
+            prompt: 'handle',
+            capability: 'custom',
+            permissions: { allowedTools: ['read_file'] },
+          },
+        },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            action: { prompt: 'handle', capability: 'full' },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after custom permissions are expanded', async () => {
+      const { trigger } = await startBusyIMRetry({
+        channel: { capability: 'full', allowedUsers: ['u1'] },
+        trigger: {
+          action: {
+            prompt: 'handle',
+            capability: 'custom',
+            permissions: { allowedTools: ['read_file'] },
+          },
+        },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            action: {
+              prompt: 'handle',
+              capability: 'custom',
+              permissions: { allowedTools: ['*'] },
+            },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not throw or execute when malformed custom permissions are present at admission', () => {
+      const trigger = makeTrigger({
+        id: 'trigger-im-malformed-permissions',
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'all' },
+        action: {
+          prompt: 'handle',
+          capability: 'custom',
+          permissions: { allowedTools: 123 as never },
+        },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger }, triggerOrder: [trigger.id] });
+      useIMChannelStore.setState({
+        channels: { 'ch-1': makeChannel({ capability: 'full', allowedUsers: ['u1'] }) },
+        sessions: {},
+        archivedSessions: {},
+      });
+      triggerEngine.startSourceWatcher(trigger);
+
+      expect(() => triggerEngine.tryMatchIMTriggers({
+        platform: 'slack',
+        senderName: 'User',
+        senderId: 'u1',
+        text: 'hello',
+        chatId: 'chat1',
+        isDirect: true,
+        isMention: false,
+        replyContext: { platform: 'slack', chatId: 'chat1' },
+        raw: {},
+      })).not.toThrow();
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after custom permissions become malformed', async () => {
+      const { trigger } = await startBusyIMRetry({
+        channel: { capability: 'full', allowedUsers: ['u1'] },
+        trigger: {
+          action: {
+            prompt: 'handle',
+            capability: 'custom',
+            permissions: { allowedTools: ['read_file'] },
+          },
+        },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            action: {
+              prompt: 'handle',
+              capability: 'custom',
+              permissions: {
+                allowedCommands: { bad: true } as never,
+                allowedPaths: 123 as never,
+                allowedTools: ['read_file'],
+              },
+            },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after pause-resume ABA', async () => {
+      const { trigger } = await startBusyIMRetry();
+
+      triggerEngine.stopSourceWatcher(trigger.id);
+      triggerEngine.startSourceWatcher(trigger);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a delayed IM retry after source policy A-B-A', async () => {
+      const { trigger } = await startBusyIMRetry({
+        trigger: { source: { type: 'im', channelId: 'ch-1', listenScope: 'all' } },
+      });
+
+      triggerEngine.stopSourceWatcher(trigger.id);
+      triggerEngine.startSourceWatcher({
+        ...trigger,
+        source: { type: 'im', channelId: 'ch-1', listenScope: 'direct_only' },
+      });
+      triggerEngine.stopSourceWatcher(trigger.id);
+      triggerEngine.startSourceWatcher(trigger);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a queued group event after the IM source narrows to direct_only', async () => {
+      const { trigger } = await startBusyIMRetry({
+        trigger: { source: { type: 'im', channelId: 'ch-1', listenScope: 'all' } },
+        message: { isDirect: false, isMention: true },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            source: { type: 'im', channelId: 'ch-1', listenScope: 'direct_only' },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('does not execute a queued chat event after the IM source chatId changes', async () => {
+      const { trigger } = await startBusyIMRetry({
+        trigger: { source: { type: 'im', channelId: 'ch-1', listenScope: 'all', chatId: 'chat1' } },
+        message: { chatId: 'chat1', replyContext: { platform: 'slack', chatId: 'chat1' } },
+      });
+      useTriggerStore.setState((state) => ({
+        triggers: {
+          ...state.triggers,
+          [trigger.id]: {
+            ...state.triggers[trigger.id],
+            source: { type: 'im', channelId: 'ch-1', listenScope: 'all', chatId: 'chat2' },
+          },
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      triggerEngine.stopSourceWatcher(trigger.id);
+    });
+
+    it('clears delayed IM retry timers on stop', async () => {
+      await startBusyIMRetry();
+
+      triggerEngine.stop();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('executes one delayed IM retry when the admitted authority is unchanged', async () => {
+      const { trigger } = await startBusyIMRetry();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runAgentLoopMock).toHaveBeenCalledTimes(2);
+      triggerEngine.stopSourceWatcher(trigger.id);
     });
   });
 

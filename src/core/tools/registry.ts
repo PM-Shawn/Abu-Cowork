@@ -458,6 +458,7 @@ export async function checkToolApproval(
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
   const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
+  const isTrustedIMFullRun = runPermissionCeiling?.source === 'im' && runPermissionCeiling.capability === 'full';
   const toolCeilingDecision = decideToolUnderRunPermissionCeiling(runPermissionCeiling, name, input);
   if (toolCeilingDecision.decision === 'deny') {
     return toolCeilingDecision;
@@ -480,6 +481,7 @@ export async function checkToolApproval(
   }
   let largeWritePathAfterApproval: string | null = null;
   let approvedExecutionPath: string | undefined;
+  let imFullFilePermissionAsked = false;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -541,12 +543,38 @@ export async function checkToolApproval(
         return commandCeilingDecision;
       }
 
+      const requiresIMFullConfirmation =
+        isTrustedIMFullRun
+        && (
+          analysis.level === 'warn'
+          || analysis.level === 'danger'
+          || (!analysis.readOnly && analysis.level === 'safe' && boundary !== 'inside')
+        );
+      if (requiresIMFullConfirmation) {
+        if (!onRequireConfirmation) {
+          return {
+            decision: 'deny',
+            reason: 'Error: command confirmation is unavailable for this IM full-control run',
+          };
+        }
+        const confirmed = await onRequireConfirmation({
+          command,
+          level: analysis.level,
+          reason: analysis.reason,
+        }, toolContext?.loopId);
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+        }
+      }
+
       // Decide how this command is gated. 'review' (smart tier) routes to the AI reviewer.
-      const decision = strategy.decideCommand(
-        { command, level: analysis.level, reason: analysis.reason },
-        analysis.readOnly,
-        boundary,
-      );
+      const decision = requiresIMFullConfirmation
+        ? 'allow'
+        : strategy.decideCommand(
+          { command, level: analysis.level, reason: analysis.reason },
+          analysis.readOnly,
+          boundary,
+        );
       let outcome: 'allow' | 'confirm' | 'deny' = decision === 'review' ? 'confirm' : decision;
       let reviewReason = '';
       if (decision === 'review') {
@@ -614,7 +642,7 @@ export async function checkToolApproval(
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
           // Decide gating based on permission mode.
           const cap = pathCheck.capability || pathInfo.capability;
-          let fileDecision = strategy.decideFileAccess(cap, true);
+          let fileDecision = isTrustedIMFullRun ? 'confirm' as const : strategy.decideFileAccess(cap, true);
           // smart tier → AI reviewer resolves to allow / confirm / deny.
           if (fileDecision === 'review') {
             const verdict = await reviewAction(
@@ -642,6 +670,7 @@ export async function checkToolApproval(
               if (!granted) {
                 return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
               }
+              if (isTrustedIMFullRun) imFullFilePermissionAsked = true;
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
               pathCheck = await checkFn(pathInfo.path, scopeId);
               if (!pathCheck.allowed) {
@@ -679,6 +708,23 @@ export async function checkToolApproval(
         };
       }
       approvedExecutionPath = pathCheck.resolvedPath;
+
+      if (isTrustedIMFullRun && name === TOOL_NAMES.DELETE_FILE && !imFullFilePermissionAsked) {
+        if (!onRequireConfirmation) {
+          return {
+            decision: 'deny',
+            reason: 'Error: delete_file confirmation is unavailable for this IM full-control run',
+          };
+        }
+        const confirmed = await onRequireConfirmation({
+          command: `${TOOL_NAMES.DELETE_FILE}: ${pathInfo.path}`,
+          level: 'danger',
+          reason: t.commandConfirm.descriptionDanger,
+        }, toolContext?.loopId);
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+        }
+      }
 
       if (name === TOOL_NAMES.WRITE_FILE) {
         // The overwrite-safety read-precheck below calls checkReadPath, which

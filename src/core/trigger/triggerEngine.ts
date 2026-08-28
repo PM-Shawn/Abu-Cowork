@@ -12,8 +12,11 @@ import type { OutputContext } from '../im/adapters/types';
 import type { Trigger, TriggerEventPayload } from '../../types/trigger';
 import type { IMReplyContext } from '../../types/im';
 import type { NormalizedIMMessage } from '../im/inboundRouter';
+import type { IMChannel } from '../../types/imChannel';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { resolveCapability } from '../im/authGate';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { createAuthorizationScope, disposeAuthorizationScope } from '../tools/pathSafety';
 import { cacheTriggerContext } from '../im/triggerContextCache';
@@ -47,6 +50,92 @@ const MAX_CONCURRENT_TRIGGERS = 5;
 const MAX_RETRY_ATTEMPTS = 3;
 const MAX_DEBOUNCE_CACHE_SIZE = 10_000;
 
+interface IMAdmissionContext {
+  kind: 'im';
+  channelId: string;
+  listenScope: Extract<Trigger['source'], { type: 'im' }>['listenScope'];
+  chatId?: string;
+  platform: NormalizedIMMessage['platform'];
+  senderId: string;
+  requiredCapability: Trigger['action']['capability'];
+  actionAuthorityFingerprint: string;
+  triggerPolicyEpoch: number;
+  channelRef: IMChannel;
+  channelAuthorityFingerprint: string;
+}
+
+interface HandleEventOptions {
+  skipChecks?: boolean;
+  _retryCount?: number;
+  _generation?: number;
+  imAdmission?: IMAdmissionContext;
+  sourceAdmission?: { kind: 'http' };
+}
+
+function capabilityRank(capability: 'chat_only' | 'read_tools' | 'safe_tools' | 'full' | 'custom' | undefined): number {
+  switch (capability) {
+    case 'chat_only':
+      return 0;
+    case 'read_tools':
+      return 1;
+    case 'safe_tools':
+      return 2;
+    case 'full':
+    case 'custom':
+      return 3;
+    default:
+      return 1;
+  }
+}
+
+function normalizeAuthorityList(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) return null;
+  if (!value.every((item): item is string => typeof item === 'string')) return null;
+  return [...value].sort();
+}
+
+function actionAuthorityFingerprint(action: Trigger['action']): string | null {
+  const allowedCommands = normalizeAuthorityList(action.permissions?.allowedCommands);
+  const allowedPaths = normalizeAuthorityList(action.permissions?.allowedPaths);
+  const allowedTools = normalizeAuthorityList(action.permissions?.allowedTools);
+  if (!allowedCommands || !allowedPaths || !allowedTools) return null;
+  return JSON.stringify({
+    capability: action.capability ?? 'read_tools',
+    workspacePath: action.workspacePath ?? '',
+    permissions: {
+      allowedCommands,
+      allowedPaths,
+      allowedTools,
+    },
+  });
+}
+
+function triggerExecutionPolicyFingerprint(trigger: Trigger): string {
+  return JSON.stringify({
+    status: trigger.status,
+    source: trigger.source,
+    actionAuthority: actionAuthorityFingerprint(trigger.action) ?? '__malformed_action_authority__',
+  });
+}
+
+function channelAuthorityFingerprint(channel: IMChannel): string | null {
+  if (
+    !Array.isArray(channel.allowedUsers)
+    || !channel.allowedUsers.every((allowedUser): allowedUser is string => typeof allowedUser === 'string')
+  ) {
+    return null;
+  }
+  return JSON.stringify({
+    id: channel.id,
+    platform: channel.platform,
+    enabled: channel.enabled,
+    capability: channel.capability,
+    allowedUsers: [...channel.allowedUsers].sort(),
+    updatedAt: channel.updatedAt,
+  });
+}
+
 class TriggerEngine {
   private runningTriggers = new Set<string>();
   private debounceCache = new Map<string, number>(); // "triggerId:hash" → timestamp
@@ -55,8 +144,12 @@ class TriggerEngine {
   private serverPort: number | null = null;
   private fileWatchers = new Map<string, UnwatchFn>(); // triggerId → unwatch
   private cronTimers = new Map<string, ReturnType<typeof setInterval>>(); // triggerId → timer
+  private retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private retryTimersByTrigger = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+  private triggerPolicyEpochs = new Map<string, number>();
   private imTriggersMap = new Map<string, Set<string>>(); // "channelId" → Set<triggerId>
   private unsubscribeStore: (() => void) | null = null;
+  private lifecycleGeneration = 0;
 
   async start() {
     if (!isTauriEnv()) return; // web / E2E: no Tauri IPC or event bus
@@ -64,12 +157,13 @@ class TriggerEngine {
 
     // Start HTTP server (Rust side)
     try {
-      // Use 0.0.0.0 if any IM plugin needs heartbeat/callback (LAN-accessible),
-      // otherwise use 127.0.0.1 (localhost-only, more secure)
+      // LAN webhook exposure is explicit opt-in. Heartbeat/callback plugins may
+      // need it, but plugin presence alone must not widen the listener.
       const { getRegisteredPluginManifests } = await import('../im/pluginRegistry');
       const hasHeartbeatPlugin = getRegisteredPluginManifests()
         .some((m) => m.capabilities.connectionType === 'heartbeat');
-      const bindAddr = hasHeartbeatPlugin ? '0.0.0.0' : '127.0.0.1';
+      const allowLanWebhook = useSettingsStore.getState().imChannel.allowLanWebhook === true;
+      const bindAddr = hasHeartbeatPlugin && allowLanWebhook ? '0.0.0.0' : '127.0.0.1';
       const port = await invoke<number>('start_trigger_server', { port: DEFAULT_PORT, bindAddr });
       this.serverPort = port;
       console.log(`[Trigger] HTTP server started on port ${port}`);
@@ -89,11 +183,19 @@ class TriggerEngine {
       'trigger-http-event',
       (event) => {
         const { triggerId, payload } = event.payload;
+        const trigger = useTriggerStore.getState().triggers[triggerId];
+        if (!trigger || trigger.status !== 'active' || trigger.source.type !== 'http') {
+          console.warn(`[Trigger] Dropped HTTP event for non-HTTP trigger: ${triggerId}`);
+          return;
+        }
         // Ensure payload has data field
         const normalizedPayload: TriggerEventPayload = {
           data: payload?.data ?? payload ?? {},
         };
-        this.handleEvent(triggerId, normalizedPayload);
+        this.handleEvent(triggerId, normalizedPayload, {
+          _generation: this.lifecycleGeneration,
+          sourceAdmission: { kind: 'http' },
+        });
       }
     );
 
@@ -125,6 +227,13 @@ class TriggerEngine {
 
         if (!prev) {
           if (trigger.status === 'active') this.startSourceWatcher(trigger);
+        } else if (triggerExecutionPolicyFingerprint(trigger) !== triggerExecutionPolicyFingerprint(prev)) {
+          this.bumpTriggerPolicyEpoch(id);
+          this.clearRetryTimersForTrigger(id);
+        }
+
+        if (!prev) {
+          // handled above
         } else if (trigger.status !== prev.status) {
           if (trigger.status === 'active') {
             this.startSourceWatcher(trigger);
@@ -154,6 +263,7 @@ class TriggerEngine {
   }
 
   stop() {
+    this.lifecycleGeneration++;
     this.unlistenHttp?.();
     this.unlistenHttp = null;
 
@@ -176,6 +286,12 @@ class TriggerEngine {
     }
     this.cronTimers.clear();
 
+    for (const timer of this.retryTimers) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
+    this.retryTimersByTrigger.clear();
+
     // Unsubscribe from store
     this.unsubscribeStore?.();
     this.unsubscribeStore = null;
@@ -194,11 +310,79 @@ class TriggerEngine {
 
   // ── Event handling ──
 
-  async handleEvent(triggerId: string, payload: TriggerEventPayload, options?: { skipChecks?: boolean; _retryCount?: number }) {
+  private scheduleRetry(
+    triggerId: string,
+    payload: TriggerEventPayload,
+    options: HandleEventOptions,
+    delay: number,
+  ): void {
+    const generation = options._generation ?? this.lifecycleGeneration;
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(timer);
+      this.retryTimersByTrigger.get(triggerId)?.delete(timer);
+      if (generation !== this.lifecycleGeneration) return;
+      void this.handleEvent(triggerId, payload, {
+        ...options,
+        _retryCount: (options._retryCount ?? 0) + 1,
+        _generation: generation,
+      });
+    }, delay);
+    this.retryTimers.add(timer);
+    if (!this.retryTimersByTrigger.has(triggerId)) {
+      this.retryTimersByTrigger.set(triggerId, new Set());
+    }
+    this.retryTimersByTrigger.get(triggerId)!.add(timer);
+  }
+
+  private clearRetryTimersForTrigger(triggerId: string): void {
+    const timers = this.retryTimersByTrigger.get(triggerId);
+    if (!timers) return;
+    for (const timer of timers) {
+      clearTimeout(timer);
+      this.retryTimers.delete(timer);
+    }
+    this.retryTimersByTrigger.delete(triggerId);
+  }
+
+  private bumpTriggerPolicyEpoch(triggerId: string): void {
+    this.triggerPolicyEpochs.set(triggerId, (this.triggerPolicyEpochs.get(triggerId) ?? 0) + 1);
+  }
+
+  private getTriggerPolicyEpoch(triggerId: string): number {
+    return this.triggerPolicyEpochs.get(triggerId) ?? 0;
+  }
+
+  private isIMAdmissionStillAllowed(trigger: Trigger, admission: IMAdmissionContext): boolean {
+    if (trigger.source.type !== 'im') return false;
+    if (trigger.source.channelId !== admission.channelId) return false;
+    if (trigger.source.listenScope !== admission.listenScope) return false;
+    if ((trigger.source.chatId ?? '') !== (admission.chatId ?? '')) return false;
+    if (this.getTriggerPolicyEpoch(trigger.id) !== admission.triggerPolicyEpoch) return false;
+    const currentActionAuthorityFingerprint = actionAuthorityFingerprint(trigger.action);
+    if (!currentActionAuthorityFingerprint) return false;
+    if (currentActionAuthorityFingerprint !== admission.actionAuthorityFingerprint) return false;
+    const channel = useIMChannelStore.getState().channels[admission.channelId];
+    if (!channel || channel.enabled !== true || channel.platform !== admission.platform) return false;
+    if (channel !== admission.channelRef) return false;
+    const currentChannelAuthorityFingerprint = channelAuthorityFingerprint(channel);
+    if (!currentChannelAuthorityFingerprint) return false;
+    if (currentChannelAuthorityFingerprint !== admission.channelAuthorityFingerprint) return false;
+    const authResult = resolveCapability(admission.senderId, channel);
+    if (!authResult.allowed) return false;
+    const admittedRank = capabilityRank(admission.requiredCapability);
+    const currentTriggerRank = capabilityRank(trigger.action.capability);
+    const currentChannelRank = capabilityRank(authResult.capability);
+    return currentTriggerRank <= admittedRank && currentTriggerRank <= currentChannelRank;
+  }
+
+  async handleEvent(triggerId: string, payload: TriggerEventPayload, options?: HandleEventOptions) {
     const store = useTriggerStore.getState();
     const trigger = store.triggers[triggerId];
     const skipChecks = options?.skipChecks ?? false;
     const retryCount = options?._retryCount ?? 0;
+    const generation = options?._generation ?? this.lifecycleGeneration;
+
+    if (generation !== this.lifecycleGeneration) return;
 
     if (!trigger) {
       console.warn(`[Trigger] Unknown trigger ID: ${triggerId}`);
@@ -207,6 +391,16 @@ class TriggerEngine {
 
     if (!skipChecks && trigger.status !== 'active') {
       console.log(`[Trigger] Trigger ${triggerId} is paused, skipping`);
+      return;
+    }
+
+    if (options?.sourceAdmission?.kind === 'http' && trigger.source.type !== 'http') {
+      console.warn(`[Trigger] HTTP trigger "${triggerId}" skipped: source changed`);
+      return;
+    }
+
+    if (options?.imAdmission && !this.isIMAdmissionStillAllowed(trigger, options.imAdmission)) {
+      console.warn(`[Trigger] IM trigger "${triggerId}" skipped: admission authority revoked`);
       return;
     }
 
@@ -243,7 +437,7 @@ class TriggerEngine {
       }
       const delay = 5000 * (retryCount + 1); // 5s, 10s, 15s
       console.log(`[Trigger] Already running: ${trigger.name}, retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} in ${delay / 1000}s`);
-      setTimeout(() => this.handleEvent(triggerId, payload, { ...options, _retryCount: retryCount + 1 }), delay);
+      this.scheduleRetry(triggerId, payload, { ...options, _generation: generation }, delay);
       return;
     }
 
@@ -255,7 +449,16 @@ class TriggerEngine {
       }
       const delay = 5000 * (retryCount + 1);
       console.log(`[Trigger] Concurrency limit (${MAX_CONCURRENT_TRIGGERS}), retry ${retryCount + 1}/${MAX_RETRY_ATTEMPTS} in ${delay / 1000}s`);
-      setTimeout(() => this.handleEvent(triggerId, payload, { ...options, _retryCount: retryCount + 1 }), delay);
+      this.scheduleRetry(triggerId, payload, { ...options, _generation: generation }, delay);
+      return;
+    }
+
+    if (options?.imAdmission && !this.isIMAdmissionStillAllowed(trigger, options.imAdmission)) {
+      console.warn(`[Trigger] IM trigger "${triggerId}" execution skipped: admission authority revoked`);
+      return;
+    }
+    if (options?.sourceAdmission?.kind === 'http' && trigger.source.type !== 'http') {
+      console.warn(`[Trigger] HTTP trigger "${triggerId}" execution skipped: source changed`);
       return;
     }
 
@@ -576,6 +779,8 @@ class TriggerEngine {
 
   /** Stop a file watcher, cron timer, or IM listener for a trigger. */
   stopSourceWatcher(triggerId: string) {
+    this.bumpTriggerPolicyEpoch(triggerId);
+    this.clearRetryTimersForTrigger(triggerId);
     const unwatch = this.fileWatchers.get(triggerId);
     if (unwatch) {
       unwatch();
@@ -720,12 +925,18 @@ class TriggerEngine {
 
     for (const [channelId, triggerIds] of this.imTriggersMap) {
       const channel = channelStore.channels[channelId];
-      if (!channel || channel.platform !== message.platform) continue;
+      if (!channel || channel.enabled !== true || channel.platform !== message.platform) continue;
+      const authResult = resolveCapability(message.senderId, channel);
+      if (!authResult.allowed) continue;
 
       for (const triggerId of triggerIds) {
         const trigger = store.triggers[triggerId];
         if (!trigger || trigger.status !== 'active') continue;
         if (trigger.source.type !== 'im') continue;
+        if (capabilityRank(trigger.action.capability) > capabilityRank(authResult.capability)) {
+          console.warn(`[Trigger] IM trigger "${trigger.id}" skipped: trigger capability exceeds sender channel capability`);
+          continue;
+        }
 
         // chatId filter
         if (trigger.source.chatId && message.chatId !== trigger.source.chatId) {
@@ -757,7 +968,33 @@ class TriggerEngine {
           continue;
         }
 
-        this.handleEvent(triggerId, payload);
+        const admittedActionAuthority = actionAuthorityFingerprint(trigger.action);
+        if (!admittedActionAuthority) {
+          console.warn(`[Trigger] IM trigger "${trigger.id}" skipped: malformed action authority`);
+          continue;
+        }
+        const admittedChannelAuthority = channelAuthorityFingerprint(channel);
+        if (!admittedChannelAuthority) {
+          console.warn(`[Trigger] IM trigger "${trigger.id}" skipped: malformed channel authority`);
+          continue;
+        }
+
+        this.handleEvent(triggerId, payload, {
+          _generation: this.lifecycleGeneration,
+          imAdmission: {
+            kind: 'im',
+            channelId,
+            listenScope: trigger.source.listenScope,
+            chatId: trigger.source.chatId,
+            platform: message.platform,
+            senderId: message.senderId,
+            requiredCapability: trigger.action.capability,
+            actionAuthorityFingerprint: admittedActionAuthority,
+            triggerPolicyEpoch: this.getTriggerPolicyEpoch(trigger.id),
+            channelRef: channel,
+            channelAuthorityFingerprint: admittedChannelAuthority,
+          },
+        });
         dispatched++;
       }
     }

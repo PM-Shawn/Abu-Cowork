@@ -35,7 +35,7 @@ async function readImageAsBase64(
       result = uint8ArrayToBase64(bytes);
     }
   } catch (e) {
-    logger.warn('image rehydrate failed', { filePath, err: String(e) });
+    logger.warn('image rehydrate failed', { fileName: getBaseName(filePath), err: String(e) });
     result = null;
   }
   cache?.set(cacheKey, result);

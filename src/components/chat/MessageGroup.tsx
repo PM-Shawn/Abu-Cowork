@@ -117,7 +117,17 @@ function formatWorkDuration(ms: number): string {
 }
 
 function emptyBatchRollup(): BatchRowsRollup {
-  return { total: 0, succeeded: 0, failed: 0, stopped: 0, incomplete: 0, running: 0, queued: 0, unknown: 0 };
+  return {
+    total: 0,
+    succeeded: 0,
+    failed: 0,
+    stopped: 0,
+    incomplete: 0,
+    running: 0,
+    cancelling: 0,
+    queued: 0,
+    unknown: 0,
+  };
 }
 
 function addBatchRollup(target: BatchRowsRollup, source: BatchRowsRollup): BatchRowsRollup {
@@ -127,6 +137,7 @@ function addBatchRollup(target: BatchRowsRollup, source: BatchRowsRollup): Batch
   target.stopped += source.stopped;
   target.incomplete += source.incomplete;
   target.running += source.running;
+  target.cancelling += source.cancelling;
   target.queued += source.queued;
   target.unknown += source.unknown;
   return target;

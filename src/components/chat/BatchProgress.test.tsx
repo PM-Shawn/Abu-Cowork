@@ -83,10 +83,38 @@ describe('BatchProgress', () => {
     useBatchProgressStore.getState().initBatch(identity, ['Inspect page']);
 
     render(<BatchProgress identity={identity} toolCall={toolCall()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop all agents' }));
 
     expect(cancelSpy).toHaveBeenCalledWith(identity.conversationId);
     cancelSpy.mockRestore();
+  });
+
+  it('stops one live task without opening its detail tab or stopping siblings', () => {
+    const cancelTask = vi.fn();
+    const siblingCancelTask = vi.fn();
+    const openSubagentSpy = vi.spyOn(usePreviewStore.getState(), 'openSubagent');
+    const cancelStreamingSpy = vi.spyOn(useChatStore.getState(), 'cancelStreaming');
+    const store = useBatchProgressStore.getState();
+    store.initBatch(identity, ['Inspect page', 'Write summary']);
+    store.setTaskRunning(identity, 0);
+    store.setTaskRunning(identity, 1);
+    store.registerTaskCanceller(identity, 0, cancelTask);
+    store.registerTaskCanceller(identity, 1, siblingCancelTask);
+
+    render(<BatchProgress identity={identity} toolCall={toolCall()} />);
+    const liveStatus = screen.getByRole('status');
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Inspect page' }));
+
+    expect(cancelTask).toHaveBeenCalledTimes(1);
+    expect(siblingCancelTask).not.toHaveBeenCalled();
+    expect(screen.getByText('Stopping…')).toBeInTheDocument();
+    expect(liveStatus).toHaveTextContent('Stopping agents (1)…');
+    expect(screen.queryByRole('button', { name: 'Stop Inspect page' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop Write summary' })).toBeInTheDocument();
+    expect(openSubagentSpy).not.toHaveBeenCalled();
+    expect(cancelStreamingSpy).not.toHaveBeenCalled();
+    openSubagentSpy.mockRestore();
+    cancelStreamingSpy.mockRestore();
   });
 
   it('uses normalized persisted partial summaries and keeps missing tasks unknown', () => {

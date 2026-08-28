@@ -334,6 +334,33 @@ describe('contextManager', () => {
       expect(independentlyEstimated).toBeLessThanOrEqual(result.inputBudget);
     },
   );
+
+  it('rejects a near-limit latest user turn whose delegated image refs would exceed the input budget', () => {
+    const delegatedRefs = Array.from({ length: 20 }, (_, index) => ({
+      type: 'delegated_media_ref',
+      originConversationId: 'conv-parent',
+      attachment: {
+        id: `media_${index}`,
+        sha256: `${index}`.padStart(64, 'a'),
+        mediaType: 'image/png',
+        bytes: 123,
+      },
+    }));
+    const messages: Message[] = [{
+      id: 'latest-user',
+      role: 'user',
+      timestamp: 1_800_000_000_000,
+      content: [
+        { type: 'text', text: 'Please inspect every delegated image.' },
+        ...delegatedRefs,
+      ] as unknown as Message['content'],
+    }];
+
+    expect(() => enforceContextBudget(messages, systemPrompt, 33_000, 1_000))
+      .toThrow(ContextBudgetError);
+    expect(() => enforceContextBudget(messages, systemPrompt, 33_000, 1_000))
+      .toThrow(/INPUT_TOO_LARGE/);
+  });
 });
 
 // trimOldScreenshots drops all but the most recent few screenshots. That policy

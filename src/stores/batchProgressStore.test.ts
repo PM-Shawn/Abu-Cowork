@@ -196,6 +196,48 @@ describe('batchProgressStore', () => {
     });
   });
 
+  describe('task cancellation registry', () => {
+    it('cancels only registered live tasks and unregisters on terminal state', () => {
+      const id = testIdentity('tc-cancel-registry');
+      const cancelA = vi.fn();
+      const cancelB = vi.fn();
+      const store = useBatchProgressStore.getState();
+      store.initBatch(id, ['Task A', 'Task B']);
+      store.setTaskRunning(id, 0);
+      store.setTaskRunning(id, 1);
+      store.registerTaskCanceller(id, 0, cancelA);
+      store.registerTaskCanceller(id, 1, cancelB);
+
+      expect(store.cancelTask(id, 0)).toBe(true);
+      expect(cancelA).toHaveBeenCalledTimes(1);
+      expect(cancelB).not.toHaveBeenCalled();
+
+      store.setTaskTerminal(id, 0, { status: 'stopped', reason: 'aborted' });
+      expect(store.cancelTask(id, 0)).toBe(false);
+      expect(store.cancelTask(id, 1)).toBe(true);
+      expect(cancelB).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops cancellers when a batch is cleared or reinitialized with the same identity', () => {
+      const id = testIdentity('tc-cancel-clear');
+      const staleCancel = vi.fn();
+      const freshCancel = vi.fn();
+      const store = useBatchProgressStore.getState();
+      store.initBatch(id, ['Task A']);
+      store.setTaskRunning(id, 0);
+      store.registerTaskCanceller(id, 0, staleCancel);
+      store.clearBatch(id);
+      expect(store.cancelTask(id, 0)).toBe(false);
+
+      store.initBatch(id, ['Task A']);
+      store.setTaskRunning(id, 0);
+      store.registerTaskCanceller(id, 0, freshCancel);
+      expect(store.cancelTask(id, 0)).toBe(true);
+      expect(staleCancel).not.toHaveBeenCalled();
+      expect(freshCancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('setTaskActivity', () => {
     it('updates activity and turn', () => {
       const id = testIdentity('tc-4');
@@ -324,20 +366,27 @@ describe('batchProgressStore', () => {
         .toEqual([{ type: 'text', text: 'a😀b' }]);
     });
 
-    it('truncates large near-boundary UTF-8 text without per-code-point encoder work or emoji corruption', () => {
-      const emptyTextContentBytes = jsonBytes([{ type: 'text', text: '' }]);
-      const retainedTextLength = BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES - emptyTextContentBytes - 1;
-      const retained = retainBatchResultContent([
-        { type: 'text', text: `${'a'.repeat(retainedTextLength)}😀x` },
-      ], BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
+    it('truncates near-boundary UTF-8 text without encoder work or emoji corruption', () => {
+      const prefix = 'a'.repeat(32);
+      const byteBudget = jsonBytes([{ type: 'text', text: prefix }]);
+      const encodeSpy = vi.spyOn(TextEncoder.prototype, 'encode');
+      let retained: ReturnType<typeof retainBatchResultContent>;
+      try {
+        retained = retainBatchResultContent([
+          { type: 'text', text: `${prefix}😀x` },
+        ], byteBudget);
+        expect(encodeSpy).not.toHaveBeenCalled();
+      } finally {
+        encodeSpy.mockRestore();
+      }
 
       expect(retained).toHaveLength(1);
       expect(retained?.[0].type).toBe('text');
       if (retained?.[0].type !== 'text') return;
-      expect(retained[0].text).toHaveLength(retainedTextLength);
+      expect(retained[0].text).toBe(prefix);
       expect(retained[0].text.endsWith('\uD83D')).toBe(false);
       expect(retained[0].text).not.toContain('�');
-      expect(jsonBytes(retained)).toBeLessThanOrEqual(BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES);
+      expect(jsonBytes(retained)).toBeLessThanOrEqual(byteBudget);
     });
 
     it('keeps running steps at the cap and does not double-count their late tool-end', () => {

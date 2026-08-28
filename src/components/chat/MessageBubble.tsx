@@ -485,7 +485,6 @@ export default function MessageBubble({
 
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
-    // Preserve image blocks from original message content
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
@@ -581,7 +580,6 @@ export default function MessageBubble({
       // turn stays on the same route — the user message stored content is
       // post-routing cleanInput, so the prefix is otherwise lost.
       const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
-      // Preserve image blocks from original user message
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {

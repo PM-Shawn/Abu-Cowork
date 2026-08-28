@@ -432,6 +432,16 @@ export interface TranslationDict {
     toolsRemoved: string;
     /** Tool-update notice footer. */
     toolsUpdatedFooter: string;
+    /** Composer rejected an out-of-scope direct PDF attachment. {name} */
+    unsupportedDocumentAttachment: string;
+    /** Composer is still admitting pasted/dropped/picked attachments. */
+    attachmentAdmissionPending: string;
+    /** Composer has an in-flight initial send for this draft. */
+    sendAlreadyPending: string;
+    /** Composer failed to admit an attachment. */
+    attachmentAdmissionFailed: string;
+    /** Accessible name for the skill/agent suggestion listbox. */
+    composerSuggestions: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
@@ -446,6 +456,14 @@ export interface TranslationDict {
       hookBlocked: string;
       /** Subagent produced no content. */
       noContent: string;
+      /** Delegated images need a vision-capable target model. */
+      delegatedVisionUnsupported: string;
+      /** Delegated documents need a target model with document blocks. */
+      delegatedDocumentUnsupported: string;
+      /** Delegated attachment metadata exceeded the safe request envelope. */
+      delegatedMediaLimitExceeded: string;
+      /** Delegated-media envelope failed structural validation. */
+      delegatedMediaInvalid: string;
       /** Required MCP tools are unavailable before delegation. {agentName} {requirements} {servers} */
       mcpRequiredUnavailable: string;
       /** Agent tools frontmatter contains non-string entries. {agentName} {positions} */
@@ -649,8 +667,12 @@ export interface TranslationDict {
   batch: {
     /** "并行执行 {n} 个子任务" */
     runningTitle: string;
+    /** Live-region announcement while one or more child agents are settling after Stop. */
+    stoppingTitle: string;
     /** "停止" */
     stopButton: string;
+    /** Accessible name for stopping the entire batch. */
+    stopAllLabel: string;
     /** "第{n}轮" */
     turnLabel: string;
     /** "✓ {n} 个子任务完成" — completion summary */
@@ -665,14 +687,19 @@ export interface TranslationDict {
     taskFallback: string;
     /** Unknown task status. */
     statusUnknown: string;
+    /** Cancellation requested but the child has not settled yet. */
+    statusCancelling: string;
     /** Open child agent task row accessible label. */
     openTaskLabel: string;
+    /** Stop one child agent task accessible label. */
+    stopTaskLabel: string;
     /** Fold header aggregate for child agents. {total} {summary} */
     foldBatchAggregate: string;
     batchStatusSucceededCount: string;
     batchStatusFailedCount: string;
     batchStatusStoppedCount: string;
     batchStatusIncompleteCount: string;
+    batchStatusCancellingCount: string;
     batchStatusRunningCount: string;
     batchStatusUnknownCount: string;
     /** "展开" */

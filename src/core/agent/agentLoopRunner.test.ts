@@ -190,6 +190,15 @@ vi.mock('./ports/conversationReader', () => ({
   }),
 }));
 
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+vi.mock('../subagent/delegatedMediaStore', () => ({
+  persistDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.persistDelegatedMedia(...a),
+  readDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.readDelegatedMedia(...a),
+}));
+
 const hasAbortControllerMock = vi.fn().mockReturnValue(false);
 const getAbortControllerMock = vi.fn(() => new AbortController());
 const clearAbortControllerMock = vi.fn();
@@ -207,7 +216,7 @@ const buildUserMessageContentMock = vi.fn(async (_conversationId: string, text: 
 vi.mock('./agentLoop', () => ({
   runAgentLoop: (...a: unknown[]) => runAgentLoopMock(...a),
   isInteractiveDesktop: (...a: unknown[]) => isInteractiveDesktopMock(...a),
-  buildUserMessageContent: (...a: [string, string, unknown]) => buildUserMessageContentMock(...a),
+  buildUserMessageContent: (...a: [string, string, unknown, unknown]) => buildUserMessageContentMock(...a),
   resolveToolContextWorkspacePath: (
     options: { authorizationScopeId?: string; imContext?: { workspacePath?: string | null } } | undefined,
     conversation: { workspacePath?: string | null } | null | undefined,
@@ -427,7 +436,7 @@ vi.mock('../../i18n', () => ({
       sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
       sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
-      attachmentDuringRun: '请等待当前任务结束后再发送图片，草稿已为你保留。',
+      attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
     },
   }),
@@ -659,6 +668,14 @@ describe('agentLoopRunner', () => {
     }));
     chatStoreAddMessageMock.mockReset();
     chatStoreUpdateUserMessageRunMock.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockImplementation(async (_conversationId: string, input: { mediaType: string; bytes: Uint8Array }) => ({
+      id: `media_${delegatedMediaStoreMocks.persistDelegatedMedia.mock.calls.length}`,
+      sha256: `${delegatedMediaStoreMocks.persistDelegatedMedia.mock.calls.length}`.repeat(64).slice(0, 64),
+      mediaType: input.mediaType,
+      bytes: input.bytes.byteLength,
+    }));
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
     buildUserMessageContentMock.mockReset();
     buildUserMessageContentMock.mockImplementation(async (_conversationId: string, text: string) => text);
     traceRuntimeEventMock.mockReset();
@@ -755,6 +772,63 @@ describe('agentLoopRunner', () => {
 
       await Promise.resolve();
       expect(applyDeltaFramesMock).toHaveBeenCalledWith(frames);
+    });
+
+    it('materializes opaque sidecar media refs before applying renderer frames', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const attachment = {
+        id: 'media_delta_test',
+        sha256: 'b'.repeat(64),
+        mediaType: 'image/png',
+        bytes: 8,
+      } as const;
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(
+        new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+      );
+      const frames = [{
+        p: 'chat',
+        m: 'addMessage',
+        a: ['conv-1', {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'Screenshot captured.',
+          timestamp: 1,
+          toolCalls: [{
+            id: 'tool-1',
+            name: 'computer',
+            input: {},
+            resultContent: [{
+              type: 'delegated_media_ref',
+              originConversationId: 'conv-1',
+              attachment,
+            }],
+          }],
+        }],
+      }];
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({ runId: 'run-1', frames });
+
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenCalledWith([{
+          ...frames[0],
+          a: ['conv-1', expect.objectContaining({
+            toolCalls: [expect.objectContaining({
+              resultContent: [{
+                type: 'image',
+                source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+              }],
+            })],
+          })],
+        }]);
+      });
+      expect(delegatedMediaStoreMocks.readDelegatedMedia).toHaveBeenCalledWith(
+        'conv-1',
+        attachment,
+        expect.any(AbortSignal),
+      );
     });
 
     it('serializes separate frame batches for the same run', async () => {
@@ -1967,6 +2041,38 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    it('keeps image tool results opaque on the shell-to-sidecar reverse channel', async () => {
+      const imageData = 'iVBORw0KGgo=';
+      executeAnyToolMock.mockResolvedValueOnce([
+        { type: 'text', text: 'Image: /private/customer/shot.png' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+      ]);
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke');
+      const wireResult = await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: {},
+        context: { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-image' },
+      });
+      const serialized = JSON.stringify(wireResult);
+
+      expect(serialized).not.toContain(imageData);
+      expect(serialized).not.toContain('/private/customer/shot.png');
+      expect(wireResult).toEqual([
+        { type: 'text', text: 'Image: [REDACTED:path]' },
+        {
+          type: 'delegated_media_ref',
+          originConversationId: 'conv-1',
+          attachment: expect.objectContaining({ mediaType: 'image/png', bytes: 8 }),
+        },
+      ]);
+      expect(delegatedMediaStoreMocks.persistDelegatedMedia).toHaveBeenCalledTimes(1);
+    });
+
     it('returns a narrow metadata envelope and checkpoints when a subagent tool reports structured terminal metadata', async () => {
       executeAnyToolMock.mockImplementationOnce(async (...args: unknown[]) => {
         const context = args[4] as { reportMetadata?: (value: unknown) => void };
@@ -3041,7 +3147,7 @@ describe('agentLoopRunner', () => {
         options: { images?: unknown[]; authorizationScopeId?: string; runPermissionCeiling?: unknown };
       });
       expect(payloads).toHaveLength(2);
-      expect(payloads[0].options.images).toHaveLength(1);
+      expect(payloads[0].options.images).toBeUndefined();
       expect(payloads[1].options.images).toBeUndefined();
       expect(payloads.map((payload) => payload.options.authorizationScopeId)).toEqual(['scope-run', undefined]);
       expect(payloads.map((payload) => payload.options.runPermissionCeiling)).toEqual([ceiling, undefined]);
@@ -3140,6 +3246,39 @@ describe('agentLoopRunner', () => {
       expect(startParams.clientMessageId).toBe(`msg-${startParams.runId}`);
       expect(startParams.payloadDigest).toMatch(/^rrp1-/);
       expect(startParams.options.prePersistedUserMessageId).toBe(startParams.clientMessageId);
+    });
+
+    it('keeps image and PDF base64 off both agent.start and agent.run wire payloads', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      const imageData = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+      const pdfData = 'JVBERi0x';
+      const userContent = [
+        { type: 'text', text: 'see attached' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfData } },
+      ];
+      buildUserMessageContentMock.mockResolvedValue(userContent);
+      chatStoreAddMessageMock.mockImplementation((_convId, message) => {
+        getConversationMock.mockReturnValue({
+          id: 'conv-1',
+          title: 't',
+          status: 'running',
+          messages: [{ ...message, content: userContent }],
+        });
+      });
+
+      await runAgentLoopDispatched('conv-1', 'see attached', {
+        images: [{ id: 'image-1', data: imageData, mediaType: 'image/png' }],
+      });
+
+      const startPayload = JSON.stringify(agentStartRequestMock.mock.calls[0][0]);
+      const runPayload = JSON.stringify(sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1]);
+      expect(startPayload).not.toContain(imageData);
+      expect(startPayload).not.toContain(pdfData);
+      expect(runPayload).not.toContain(imageData);
+      expect(runPayload).not.toContain(pdfData);
+      expect(runPayload).toContain('delegated_media_ref');
     });
 
     it('does not start or fall back when the durable user-message append fails', async () => {
@@ -4483,7 +4622,7 @@ describe('agentLoopRunner', () => {
 
         expect(result).toEqual({
           reason: 'error',
-          error: '请等待当前任务结束后再发送图片，草稿已为你保留。',
+          error: '请等待当前任务结束后再发送附件，草稿已为你保留。',
           messageTaken: false,
         });
         expect(runAgentLoopMock).not.toHaveBeenCalled();
@@ -4657,7 +4796,7 @@ describe('agentLoopRunner', () => {
         expect(sidecarRequestMock).not.toHaveBeenCalled();
         expect(result).toEqual({
           reason: 'error',
-          error: '请等待当前任务结束后再发送图片，草稿已为你保留。',
+          error: '请等待当前任务结束后再发送附件，草稿已为你保留。',
           messageTaken: false,
         });
       });

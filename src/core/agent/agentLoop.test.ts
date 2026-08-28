@@ -11,6 +11,7 @@ import {
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
   buildInterruptedToolCallContext,
+  buildToolRosterUpdateMessage,
   resolveToolContextWorkspacePath,
   runAgentLoop,
 } from './agentLoop';
@@ -72,6 +73,26 @@ describe('runAgentLoop live-run queue ownership', () => {
       unsubscribeThrowing();
       unsubscribeHealthy();
     }
+  });
+
+});
+
+describe('buildToolRosterUpdateMessage', () => {
+  it('marks the roster-change user-context message as hidden system input', () => {
+    expect(buildToolRosterUpdateMessage({
+      loopId: 'loop-1',
+      addedToolNames: ['delegate_to_agent'],
+      removedToolNames: ['run_agent_batch'],
+      id: 'roster-1',
+      timestamp: 123,
+    })).toMatchObject({
+      id: 'roster-1',
+      role: 'user',
+      loopId: 'loop-1',
+      timestamp: 123,
+      isSystem: true,
+      content: expect.stringContaining('delegate_to_agent'),
+    });
   });
 });
 

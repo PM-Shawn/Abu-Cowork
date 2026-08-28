@@ -12,6 +12,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { StreamEvent } from '../../types';
 import type { ProviderInstance } from '../../types/provider';
+import { LLMError } from '../llm/adapter';
+
+const mockEnforceContextBudget = vi.hoisted(() => vi.fn((msgs: unknown[]) => ({
+  messages: msgs,
+  tokensBefore: 1,
+  tokensAfter: 1,
+  inputBudget: 100000,
+  safetyMarginTokens: 1000,
+  strategy: 'unchanged',
+})));
+const mockCompressContextIfNeeded = vi.hoisted(() => vi.fn().mockResolvedValue({ compressed: false, messages: [] }));
 
 vi.mock('../../stores/workspaceStore', () => ({
   useWorkspaceStore: { getState: () => ({ currentPath: '/tmp/project' }), subscribe: vi.fn() },
@@ -35,20 +46,13 @@ vi.mock('../memdir/scan', () => ({
 }));
 
 vi.mock('../context/contextManager', () => ({
-  enforceContextBudget: vi.fn((msgs: unknown[]) => ({
-    messages: msgs,
-    tokensBefore: 1,
-    tokensAfter: 1,
-    inputBudget: 100000,
-    safetyMarginTokens: 1000,
-    strategy: 'unchanged',
-  })),
+  enforceContextBudget: (...args: unknown[]) => mockEnforceContextBudget(...args),
   // Pass-through — the real screenshot-budget behavior is covered by
   // contextManager.test.ts; here it must simply not disturb the pipeline.
   trimOldScreenshots: vi.fn((msgs: unknown[]) => msgs),
 }));
 vi.mock('../context/contextCompressor', () => ({
-  compressContextIfNeeded: vi.fn().mockResolvedValue({ compressed: false, messages: [] }),
+  compressContextIfNeeded: (...args: unknown[]) => mockCompressContextIfNeeded(...args),
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
 
@@ -65,6 +69,7 @@ const mockGetActiveProvider = vi.fn(
     models: [],
   }),
 );
+const mockResolveAgentModel = vi.hoisted(() => vi.fn(() => 'claude-opus-4-8'));
 vi.mock('../../stores/settingsStore', () => ({
   useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
 }));
@@ -77,7 +82,7 @@ vi.mock('../../stores/settingsStore', () => ({
 vi.mock('../../utils/settingsSelectors', () => ({
   getActiveProvider: (...args: unknown[]) => mockGetActiveProvider(...args),
   getActiveApiKey: () => 'sk-test',
-  resolveAgentModel: () => 'claude-opus-4-8',
+  resolveAgentModel: (...args: unknown[]) => mockResolveAgentModel(...args),
 }));
 
 vi.mock('../../stores/discoveredCapabilitiesStore', () => ({
@@ -86,6 +91,16 @@ vi.mock('../../stores/discoveredCapabilitiesStore', () => ({
 
 vi.mock('../enterprise/llm-resolver', () => ({
   resolveEffectiveLlmCreds: () => ({ apiKey: 'sk-test', baseUrl: undefined }),
+}));
+
+const mockReadDelegatedMedia = vi.fn();
+vi.mock('../subagent/delegatedMediaStore', () => ({
+  readDelegatedMedia: (...args: unknown[]) => mockReadDelegatedMedia(...args),
+  persistDelegatedMedia: vi.fn(),
+}));
+
+vi.mock('../session/outputSnapshots', () => ({
+  resolveFileSource: vi.fn(),
 }));
 
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
@@ -99,6 +114,11 @@ function emits(events: StreamEvent[]) {
 }
 
 const agent = { name: 'tester', systemPrompt: 'sys', tools: [] } as never;
+const trustedDelegatedOrigin = {
+  parentConversationId: 'conv-1',
+  parentLoopId: 'loop-1',
+  parentUserMessageId: 'user-1',
+} as const;
 
 describe('subagent max_tokens recovery (integration)', () => {
   beforeEach(() => {
@@ -118,6 +138,20 @@ describe('subagent max_tokens recovery (integration)', () => {
     );
     mockGetActiveProvider.mockReset();
     mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
+    mockResolveAgentModel.mockReset();
+    mockResolveAgentModel.mockReturnValue('claude-opus-4-8');
+    mockReadDelegatedMedia.mockReset();
+    mockEnforceContextBudget.mockClear();
+    mockEnforceContextBudget.mockImplementation((msgs: unknown[]) => ({
+      messages: msgs,
+      tokensBefore: 1,
+      tokensAfter: 1,
+      inputBudget: 100000,
+      safetyMarginTokens: 1000,
+      strategy: 'unchanged',
+    }));
+    mockCompressContextIfNeeded.mockReset();
+    mockCompressContextIfNeeded.mockResolvedValue({ compressed: false, messages: [] });
   });
 
   it('uses the IM workspace inherited by a delegate instead of the global workspace reader', async () => {
@@ -136,6 +170,368 @@ describe('subagent max_tokens recovery (integration)', () => {
     const chatOptions = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
     expect(chatOptions.systemPrompt).toContain('Path: /im/workspace');
     expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
+  });
+
+  it('starts a delegated multimodal turn with source blocks in order and task text last', async () => {
+    const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
+    mockReadDelegatedMedia.mockResolvedValue(imageBytes);
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'The first label.' },
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+          { type: 'text', text: 'The second label.' },
+        ],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    const firstMessages = mockClaudeChat.mock.calls[0][0] as Array<{ role: string; content: unknown }>;
+    const firstUserMessage = firstMessages.find((message) => message.role === 'user');
+    expect(firstUserMessage?.content).toEqual([
+      { type: 'text', text: 'The first label.' },
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: 'iVBORw0KGgoBAgME',
+        },
+      },
+      { type: 'text', text: 'The second label.' },
+      { type: 'text', text: 'Describe the image.' },
+    ]);
+    expect(mockReadDelegatedMedia).toHaveBeenCalledWith(
+      'conv-1',
+      {
+        id: 'attachment_opaque_1',
+        sha256: 'a'.repeat(64),
+        mediaType: 'image/png',
+        bytes: 12,
+      },
+      undefined,
+    );
+    expect(mockReadDelegatedMedia).toHaveBeenCalledTimes(1);
+
+    const firstBudgetMessages = mockEnforceContextBudget.mock.calls[0][0] as Array<{ id: string; content: unknown }>;
+    expect(firstBudgetMessages[0].id).toBe('sub-user-0');
+    expect(Array.isArray(firstBudgetMessages[0].content)).toBe(true);
+  });
+
+  it('fails before reading delegated media or calling the adapter when already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      signal: controller.signal,
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_abort', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+      },
+      ...trustedDelegatedOrigin,
+    });
+
+    expect(result.stopReason).toBe('aborted');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before reading media or calling the adapter for a text-only target', async () => {
+    mockResolveAgentModel.mockReturnValue('deepseek-chat');
+
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_text', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+      },
+      ...trustedDelegatedOrigin,
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('does not support image input');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for an unknown custom model unless image support is explicitly declared', async () => {
+    mockResolveAgentModel.mockReturnValue('unlisted-proxy-model');
+    mockGetActiveProvider.mockReturnValue({
+      id: 'custom-p1', source: 'custom', name: 'Custom proxy', enabled: true,
+      apiFormat: 'anthropic', baseUrl: 'https://example.invalid', apiKey: 'sk-test', models: [], status: 'verified', sortOrder: 0,
+    });
+    const delegatedUserTurn = {
+      schemaVersion: 1,
+      origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+      content: [{ type: 'image', attachment: { id: 'attachment_unknown', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+    } as never;
+
+    const unspecified = await runSubagentLoop({ agent, task: 'Describe it.', delegatedUserTurn, ...trustedDelegatedOrigin });
+    expect(unspecified.stopReason).toBe('error');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+
+    mockGetActiveProvider.mockReturnValue({
+      id: 'custom-p1', source: 'custom', name: 'Custom proxy', enabled: true,
+      apiFormat: 'anthropic', baseUrl: 'https://example.invalid', apiKey: 'sk-test', models: [], status: 'verified', sortOrder: 0,
+      declaredCapabilities: { supportsImages: true },
+    });
+    mockReadDelegatedMedia.mockResolvedValue(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]));
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    await runSubagentLoop({ agent, task: 'Describe it.', delegatedUserTurn, ...trustedDelegatedOrigin });
+    expect(mockClaudeChat).toHaveBeenCalledOnce();
+
+    mockClaudeChat.mockClear();
+    mockReadDelegatedMedia.mockClear();
+    mockGetActiveProvider.mockReturnValue({
+      id: 'custom-p1', source: 'custom', name: 'Custom proxy', enabled: true,
+      apiFormat: 'anthropic', baseUrl: 'https://example.invalid', apiKey: 'sk-test', models: [], status: 'verified', sortOrder: 0,
+      declaredCapabilities: { supportsImages: false },
+    });
+    const denied = await runSubagentLoop({ agent, task: 'Describe it.', delegatedUserTurn, ...trustedDelegatedOrigin });
+    expect(denied.stopReason).toBe('error');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+  });
+
+  it('does not read or base64-materialize a MediaRef until the adapter request seam', async () => {
+    mockReadDelegatedMedia.mockResolvedValue(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]));
+    mockEnforceContextBudget.mockImplementation((msgs: unknown[]) => {
+      expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+      return { messages: msgs, tokensBefore: 1, tokensAfter: 1, inputBudget: 100000, safetyMarginTokens: 1000, strategy: 'unchanged' };
+    });
+    mockClaudeChat.mockImplementationOnce(async (messages: unknown, opts: unknown, onEvent: (e: StreamEvent) => void) => {
+      expect(mockReadDelegatedMedia).toHaveBeenCalledOnce();
+      expect(JSON.stringify(messages)).toContain('iVBORw0KGgoBAgME');
+      void opts;
+      onEvent({ type: 'done', stopReason: 'end_turn' } as StreamEvent);
+    });
+
+    await runSubagentLoop({
+      agent,
+      task: 'Describe it.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_seam', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    expect(mockEnforceContextBudget).toHaveBeenCalled();
+    expect(mockReadDelegatedMedia).toHaveBeenCalled();
+    expect(mockReadDelegatedMedia.mock.invocationCallOrder[0])
+      .toBeGreaterThan(mockEnforceContextBudget.mock.invocationCallOrder[0]);
+  });
+
+  it('re-materializes delegated media for every provider retry instead of caching base64 for the run', async () => {
+    vi.useFakeTimers();
+    mockReadDelegatedMedia
+      .mockResolvedValueOnce(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1]))
+      .mockResolvedValueOnce(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 2]));
+    mockClaudeChat
+      .mockImplementationOnce(async () => {
+        throw new LLMError('temporary transport error', 'network_error', {
+          retryable: true,
+          retryAfterMs: 1,
+        });
+      })
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const run = runSubagentLoop({
+      agent,
+      task: 'Describe it.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_retry', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 9 } }],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    await vi.waitFor(() => expect(mockClaudeChat).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(5);
+    const result = await run;
+
+    expect(result.text).toBe('done');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect(mockReadDelegatedMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the explicit text-only fallback without reading delegated image bytes', async () => {
+    mockResolveAgentModel.mockReturnValue('deepseek-chat');
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      delegatedMediaFallback: 'text-only',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_fallback', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+      },
+      ...trustedDelegatedOrigin,
+    });
+
+    const messages = mockClaudeChat.mock.calls[0][0] as Array<{ role: string; content: unknown }>;
+    expect(messages.find((message) => message.role === 'user')?.content).toEqual([
+      { type: 'text', text: '[Attached image omitted because the selected subagent model does not support vision.]' },
+      { type: 'text', text: 'Describe the image.' },
+    ]);
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before reading media or calling the adapter for a document-unsupported target', async () => {
+    mockResolveAgentModel.mockReturnValue('gpt-4o');
+
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Read the document.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'document', attachment: { id: 'attachment_opaque_document', sha256: 'a'.repeat(64), mediaType: 'application/pdf', bytes: 12 } }],
+      },
+      ...trustedDelegatedOrigin,
+    });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('does not support document input');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+  });
+
+  it('fails before the adapter request when a delegated media ref cannot be read', async () => {
+    mockReadDelegatedMedia.mockResolvedValue(null);
+
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+        ],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('stored media is missing or corrupt');
+  });
+
+  it('keeps text-only delegated turns on the original string path', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent,
+      task: 'Summarize this.',
+      context: 'Use bullets.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'The parent user had no media.' },
+        ],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    const firstMessages = mockClaudeChat.mock.calls[0][0] as Array<{ role: string; content: unknown }>;
+    expect(firstMessages.find((message) => message.role === 'user')?.content).toBe('Summarize this.\n\nUse bullets.');
+    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['path-like origin', {
+      schemaVersion: 1,
+      origin: { conversationId: '../conv-1', loopId: 'loop-1', messageId: 'user-1' },
+      content: [{ type: 'text', text: 'text-only but forged origin' }],
+    }],
+    ['extra field', {
+      schemaVersion: 1,
+      origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+      content: [{ type: 'text', text: 'text-only with extra field', filePath: '/tmp/secret.png' }],
+    }],
+  ])('fails closed before the adapter for text-only delegatedUserTurn with %s', async (_label, delegatedUserTurn) => {
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Summarize this.',
+      delegatedUserTurn,
+    } as never);
+
+    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(result.stopReason).toBe('error');
+    expect(result.text).toContain('invalid envelope');
+  });
+
+  it('does not re-inject delegated media after compression while re-reading refs per provider request', async () => {
+    const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 5]);
+    mockReadDelegatedMedia.mockResolvedValue(imageBytes);
+    mockCompressContextIfNeeded.mockResolvedValue({
+      compressed: true,
+      messages: [{ id: 'sub-user-0', role: 'user', content: 'compressed without media', timestamp: 1 }],
+    });
+    const toolTurn = emits([
+      { type: 'tool_use', id: 'tool-1', name: 'noop', input: {} } as StreamEvent,
+      { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+    ]);
+    mockClaudeChat
+      .mockImplementationOnce(toolTurn)
+      .mockImplementationOnce(toolTurn)
+      .mockImplementationOnce(toolTurn)
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'done' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const result = await runSubagentLoop({
+      agent,
+      task: 'Describe the image.',
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 9 } },
+        ],
+      },
+      ...trustedDelegatedOrigin,
+    } as never);
+
+    expect(result.text).toBe('done');
+    expect(mockReadDelegatedMedia).toHaveBeenCalledTimes(3);
+    expect(mockCompressContextIfNeeded).toHaveBeenCalled();
+    const fourthSend = mockClaudeChat.mock.calls[3][0] as Array<{ id: string; content: unknown }>;
+    expect(fourthSend[0]).toMatchObject({ id: 'sub-user-0', content: 'compressed without media' });
   });
 
   it('informs subagents that their tool and permission boundary is fixed', async () => {
@@ -395,8 +791,8 @@ describe('subagent max_tokens recovery (integration)', () => {
   // abort path would never fire. If anyone regresses this to throw on abort, the
   // delegate abort fix silently breaks — this test guards the premise.
   //
-  // Note: an already-aborted-at-entry signal is deliberately IGNORED (stale-abort
-  // guard in runSubagentLoop), so the real cancellation shape is a mid-run abort.
+  // An already-aborted-at-entry signal now returns before delegated media is read
+  // or a provider is called. This test separately guards the mid-run return shape.
   it('returns a SubagentResult (does not throw) when aborted mid-run', async () => {
     const ac = new AbortController();
     // Turn 0: the user hits Stop during the LLM call, then the model still emits a

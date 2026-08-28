@@ -3,6 +3,9 @@ import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
 import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
 import type { SubagentHostRunParams } from './subagentHost';
+import { materializeSidecarMediaRefsForShell, sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
+import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
+import { firstImageContent } from '@/core/tools/toolResultContent';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -24,6 +27,13 @@ const findActiveRunDeltaMock = vi.fn();
 vi.mock('./agentLoopHost', () => ({
   findActiveRunDeltaForConversation: (...a: unknown[]) => findActiveRunDeltaMock(...a),
 }));
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+
+vi.mock('@/core/subagent/delegatedMediaStore', () => delegatedMediaStoreMocks);
 
 import {
   handleSubagentRun,
@@ -48,6 +58,9 @@ function baseParams(overrides: Record<string, unknown> = {}) {
     runId: nextRunId(),
     agent: { name: 'tester', description: 'd', systemPrompt: 'sys', filePath: '__preset__' },
     task: 'do the thing',
+    parentConversationId: 'conv-1',
+    parentLoopId: 'loop-1',
+    parentUserMessageId: 'user-1',
     locale: 'zh-CN',
     uiStrings: {
       'chat.subagent.taskCancelled': 'x',
@@ -89,6 +102,8 @@ describe('subagentHost', () => {
     sendRequestMock.mockResolvedValue('tool output');
     sendNotificationMock.mockReset();
     findActiveRunDeltaMock.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
   });
 
   describe('param validation', () => {
@@ -103,7 +118,11 @@ describe('subagentHost', () => {
         'task',
         'context',
         'parentConversationSummary',
+        'delegatedUserTurn',
+        'delegatedMediaFallback',
         'parentConversationId',
+        'parentLoopId',
+        'parentUserMessageId',
         'persistParentToolImages',
         'imContext',
         'allowedTools',
@@ -266,6 +285,148 @@ describe('subagentHost', () => {
       );
     });
 
+    it('restores opaque delegated image metadata without accepting inline data or local paths', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      runSubagentLoopMock.mockImplementation(async (options: Record<string, unknown>) => {
+        capturedOptions = options;
+        return resultShape('ok');
+      });
+      const delegatedUserTurn = {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+        ],
+      };
+
+      await handleSubagentRun(baseParams({ delegatedUserTurn }));
+
+      expect(capturedOptions?.delegatedUserTurn).toEqual(delegatedUserTurn);
+      expect(JSON.stringify(capturedOptions?.delegatedUserTurn)).not.toContain('data:image/');
+      await expect(handleSubagentRun(baseParams({
+        delegatedUserTurn: {
+          ...delegatedUserTurn,
+          content: [{ type: 'image', attachment: { ...delegatedUserTurn.content[1].attachment, id: '/Users/tester/secret.png' } }],
+        },
+      }))).rejects.toMatchObject({ code: -32602 });
+    });
+
+    it('restores only the trusted text-only delegated-media fallback', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      runSubagentLoopMock.mockImplementation(async (options: Record<string, unknown>) => {
+        capturedOptions = options;
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ delegatedMediaFallback: 'text-only' }));
+
+      expect(capturedOptions?.delegatedMediaFallback).toBe('text-only');
+      await expect(handleSubagentRun(baseParams({ delegatedMediaFallback: 'drop' as never })))
+        .rejects.toMatchObject({ code: -32602 });
+    });
+
+    it('rejects a delegated turn whose origin conversation is not the declared parent conversation', async () => {
+      runSubagentLoopMock.mockResolvedValue(resultShape('must not start'));
+      const delegatedUserTurn = {
+        schemaVersion: 1,
+        origin: { conversationId: 'different-conversation', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+        ],
+      };
+
+      await expect(handleSubagentRun(baseParams({
+        parentConversationId: 'declared-parent-conversation',
+        delegatedUserTurn,
+      }))).rejects.toMatchObject({ code: -32602 });
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('requires parent loop and source-message identity on the sidecar wire before it can trust delegated origin metadata', () => {
+      // `origin.loopId` and `origin.messageId` are currently self-asserted by
+      // the envelope. The host has no independently supplied identities with
+      // which to compare them, so it cannot establish the same trusted
+      // binding that it establishes for parentConversationId. Keep this red
+      // until the wire carries shell-owned parentLoopId and
+      // parentUserMessageId and the host rejects missing/mismatched values.
+      expect(SUBAGENT_HOST_RUN_WIRE_FIELDS).toEqual(expect.arrayContaining([
+        'parentLoopId',
+        'parentUserMessageId',
+      ]));
+    });
+
+    it.each([
+      ['inline image data', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 }, data: 'iVBORw0KGgo=' }],
+      }],
+      ['local filePath', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 }, filePath: '/Users/tester/secret.png' }],
+      }],
+      ['url field', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12, url: 'https://example.test/x.png' } }],
+      }],
+      ['malformed sha', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'not-a-sha', mediaType: 'image/png', bytes: 12 } }],
+      }],
+      ['malformed mime', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'text/plain', bytes: 12 } }],
+      }],
+      ['malformed bytes', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 0 } }],
+      }],
+      ['malformed origin', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1' },
+        content: [{ type: 'text', text: 'missing message id' }],
+      }],
+      ['path-like origin conversationId', {
+        schemaVersion: 1,
+        origin: { conversationId: '../conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'text', text: 'bad conversation id' }],
+      }],
+      ['path-like origin loopId', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: '/tmp/loop-1', messageId: 'user-1' },
+        content: [{ type: 'text', text: 'bad loop id' }],
+      }],
+      ['path-like origin messageId', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'file:///tmp/user-1' },
+        content: [{ type: 'text', text: 'bad message id' }],
+      }],
+      ['malformed schema', {
+        schemaVersion: 2,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'text', text: 'wrong schema' }],
+      }],
+      ['malformed content', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [],
+      }],
+      ['path-like opaque id', {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [{ type: 'image', attachment: { id: 'media_../secret', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
+      }],
+    ])('rejects delegatedUserTurn with %s', async (_label, delegatedUserTurn) => {
+      await expect(handleSubagentRun(baseParams({ delegatedUserTurn }))).rejects.toMatchObject({ code: -32602 });
+    });
+
     it('the sidecar-local ToolDefinition.execute stub throws if ever called directly (it never should be)', async () => {
       let capturedTools: Array<{ execute: () => Promise<unknown> }> = [];
       runSubagentLoopMock.mockImplementation(async (options: { toolInvoker: { getAllTools: () => Array<{ execute: () => Promise<unknown> }> } }) => {
@@ -341,6 +502,185 @@ describe('subagentHost', () => {
 
       const [, notifiedParams] = sendNotificationMock.mock.calls[0] as [string, { runId: string; event: unknown }];
       expect(JSON.parse(JSON.stringify(notifiedParams))).toEqual({ runId: 'usage-roundtrip-run', event: turnEvent });
+    });
+
+    it('persists image-bearing tool-end progress before notification and the shell can restore resultContent', async () => {
+      const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      const imageBase64 = 'iVBORw0KGgo=';
+      let resolvePersist!: (ref: {
+        id: string;
+        sha256: string;
+        mediaType: string;
+        bytes: number;
+      }) => void;
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockReturnValueOnce(
+        new Promise((resolve) => { resolvePersist = resolve; }),
+      );
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(imageBytes);
+      const rawEvent: SubagentProgressEvent = {
+        type: 'tool-end',
+        id: 't-image',
+        toolName: 'read_file',
+        result: 'Image: /tmp/secret.png',
+        error: false,
+        resultContent: [
+          { type: 'text', text: 'Image: /Users/alice/secret.png' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageBase64 } },
+        ],
+      };
+      let runSettled = false;
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: SubagentProgressEvent) => void }) => {
+        options.onProgress?.({ type: 'tool-start', id: 't-image', toolName: 'read_file', toolInput: { path: '/tmp/secret.png' } });
+        options.onProgress?.(rawEvent);
+        options.onProgress?.({ type: 'turn-complete', turn: 1, totalTurns: 200 });
+        return resultShape('ok');
+      });
+
+      const runPromise = handleSubagentRun(baseParams({ runId: 'progress-image-run', parentConversationId: 'conv-parent' }));
+      void runPromise.then(() => { runSettled = true; });
+
+      await vi.waitFor(() => expect(sendNotificationMock).toHaveBeenCalledTimes(1));
+      expect(sendNotificationMock.mock.calls[0][1]).toMatchObject({
+        runId: 'progress-image-run',
+        event: { type: 'tool-start' },
+      });
+      expect(runSettled).toBe(false);
+
+      resolvePersist({
+        id: 'media_progress_image',
+        sha256: 'a'.repeat(64),
+        mediaType: 'image/png',
+        bytes: imageBytes.byteLength,
+      });
+      await runPromise;
+
+      expect(sendNotificationMock).toHaveBeenCalledTimes(3);
+      expect(sendNotificationMock.mock.calls.map((call) => call[1].event.type)).toEqual([
+        'tool-start',
+        'tool-end',
+        'turn-complete',
+      ]);
+      const [, wireParams] = sendNotificationMock.mock.calls[1] as [string, { runId: string; event: SubagentProgressEvent }];
+      const wire = JSON.stringify(wireParams);
+      expect(wire).not.toContain(imageBase64);
+      expect(wire).not.toContain('/tmp/secret.png');
+      expect(wire).not.toContain('/Users/alice/secret.png');
+      expect(sidecarValueHasOpaqueMediaRefs(wireParams.event)).toBe(true);
+
+      const shellEvent = await materializeSidecarMediaRefsForShell(wireParams.event, 'conv-parent');
+      expect(shellEvent).toMatchObject({
+        type: 'tool-end',
+        id: 't-image',
+        result: 'Image: [REDACTED:path]',
+        error: false,
+      });
+      expect(shellEvent.type).toBe('tool-end');
+      if (shellEvent.type !== 'tool-end') {
+        throw new Error(`Expected materialized progress to be tool-end, got ${shellEvent.type}`);
+      }
+      expect(shellEvent.resultContent).toEqual([
+        { type: 'text', text: 'Image: [REDACTED:path]' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageBase64 } },
+      ]);
+    });
+
+    it('fails closed for image-bearing tool-end progress persistence errors before later progress', async () => {
+      const imageBase64 = 'iVBORw0KGgo=';
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockRejectedValueOnce(
+        new Error(`persist failed for ${imageBase64} at /tmp/secret.png`),
+      );
+      runSubagentLoopMock.mockImplementation(async (options: { onProgress?: (e: SubagentProgressEvent) => void }) => {
+        options.onProgress?.({ type: 'tool-start', id: 't-image', toolName: 'read_file', toolInput: { path: '/tmp/secret.png' } });
+        options.onProgress?.({
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: /tmp/secret.png',
+          error: false,
+          resultContent: [
+            { type: 'text', text: 'Image: /Users/alice/secret.png' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageBase64 } },
+          ],
+        });
+        options.onProgress?.({ type: 'turn-complete', turn: 1, totalTurns: 200 });
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ runId: 'progress-image-fail-run', parentConversationId: 'conv-parent' }));
+
+      expect(sendNotificationMock.mock.calls.map((call) => call[1].event.type)).toEqual([
+        'tool-start',
+        'tool-end',
+        'turn-complete',
+      ]);
+      const failedToolEnd = sendNotificationMock.mock.calls[1][1].event as SubagentProgressEvent;
+      const wire = JSON.stringify(sendNotificationMock.mock.calls);
+      expect(wire).not.toContain(imageBase64);
+      expect(wire).not.toContain('/tmp/secret.png');
+      expect(wire).not.toContain('/Users/alice/secret.png');
+      expect(failedToolEnd).toMatchObject({
+        type: 'tool-end',
+        id: 't-image',
+        toolName: 'read_file',
+        result: 'Error: Could not prepare sidecar progress media for transport.',
+        error: true,
+      });
+      expect(failedToolEnd.type === 'tool-end' ? failedToolEnd.resultContent : undefined).toBeUndefined();
+    });
+
+    it('materializes reverse tool.invoke refs before the nested loop admits image resultContent, then re-opaqueifies progress', async () => {
+      const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      const imageBase64 = 'iVBORw0KGgo=';
+      const mediaRef = {
+        id: 'media_reverse_progress',
+        sha256: 'b'.repeat(64),
+        mediaType: 'image/png',
+        bytes: imageBytes.byteLength,
+      };
+      sendRequestMock.mockResolvedValueOnce([
+        { type: 'text', text: 'Image: /tmp/secret.png' },
+        {
+          type: 'delegated_media_ref',
+          originConversationId: 'conv-parent',
+          attachment: mediaRef,
+        },
+      ]);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(imageBytes);
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValueOnce({
+        ...mediaRef,
+        id: 'media_progress_reopaque',
+      });
+      let admittedImage: ReturnType<typeof firstImageContent>;
+      runSubagentLoopMock.mockImplementation(async (options: {
+        toolInvoker: { executeAnyTool: (...a: unknown[]) => Promise<unknown>; toolResultToString: (r: unknown) => string };
+        onProgress?: (e: SubagentProgressEvent) => void;
+      }) => {
+        const rawResult = await options.toolInvoker.executeAnyTool('read_file', {});
+        const admitted = canonicalizeActiveToolResultContent(rawResult);
+        admittedImage = firstImageContent(admitted);
+        options.onProgress?.({
+          type: 'tool-end',
+          id: 't-ref',
+          toolName: 'read_file',
+          result: options.toolInvoker.toolResultToString(admitted ?? []),
+          error: false,
+          resultContent: admitted,
+        });
+        return resultShape('ok');
+      });
+
+      await handleSubagentRun(baseParams({ runId: 'reverse-ref-progress-run', parentConversationId: 'conv-parent' }));
+
+      expect(admittedImage).toEqual({ mediaType: 'image/png', base64: imageBase64 });
+      const progressCall = sendNotificationMock.mock.calls.find((call) => {
+        const [, params] = call as [string, { event?: SubagentProgressEvent }];
+        return params.event?.type === 'tool-end';
+      }) as [string, { runId: string; event: SubagentProgressEvent }] | undefined;
+      expect(progressCall).toBeDefined();
+      const wire = JSON.stringify(progressCall);
+      expect(wire).not.toContain(imageBase64);
+      expect(wire).not.toContain('/tmp/secret.png');
+      expect(sidecarValueHasOpaqueMediaRefs(progressCall![1].event)).toBe(true);
     });
   });
 

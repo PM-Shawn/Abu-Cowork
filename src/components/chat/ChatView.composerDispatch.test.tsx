@@ -22,6 +22,18 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: (...args: unknown[]) => dispatchMock(...args),
 }));
 
+vi.mock('@/utils/electronHost', () => ({
+  authorizeElectronUserAttachment: vi.fn(),
+  hasElectronCommandHost: vi.fn(() => false),
+  hasElectronUserAttachmentAuthorizeHost: vi.fn(() => false),
+  hasElectronUserAttachmentReadHost: vi.fn(() => false),
+  hasElectronUserAttachmentReleaseHost: vi.fn(() => false),
+  hasElectronUserAttachmentSelectHost: vi.fn(() => false),
+  readElectronUserAttachment: vi.fn(),
+  releaseElectronUserAttachment: vi.fn(),
+  selectElectronUserAttachments: vi.fn(),
+}));
+
 vi.mock('react-virtuoso', async () => {
   const { createElement, forwardRef } = await import('react');
   type MockVirtuosoProps = {

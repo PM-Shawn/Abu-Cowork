@@ -24,6 +24,12 @@ const SIDECAR_EVENT_CHANNEL = 'abu:sidecar-event';
 const SIDECAR_BRIDGE_STATE_CHANNEL = 'abu:sidecar-bridge-state';
 const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
 const SAVE_IMAGE_ATTACHMENT_CHANNEL = 'abu:save-image-attachment';
+const READ_USER_ATTACHMENT_CHANNEL = 'abu:read-user-attachment';
+const RELEASE_USER_ATTACHMENT_CHANNEL = 'abu:release-user-attachment';
+const AUTHORIZE_USER_ATTACHMENT_CHANNEL = 'abu:authorize-user-attachment';
+const SELECT_USER_ATTACHMENTS_CHANNEL = 'abu:select-user-attachments';
+const PERSIST_DELEGATED_MEDIA_CHANNEL = 'abu:persist-delegated-media';
+const READ_DELEGATED_MEDIA_CHANNEL = 'abu:read-delegated-media';
 const TAURI_STORE_KEYS = new Set([
   'abu-settings',
   'abu-chat',
@@ -134,9 +140,33 @@ const MAX_PENDING_SIDECAR_CHARS = 16 * 1024 * 1024;
 let pendingSidecarChars = 0;
 const MAX_ARGS_JSON_CHARS = 8 * 1024 * 1024;
 const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
+const MAX_DELEGATED_MEDIA_BYTES = Math.floor(3.75 * 1024 * 1024);
+
+function isUint8ArrayLike(value) {
+  return value
+    && typeof value === 'object'
+    && typeof value.byteLength === 'number'
+    && typeof value.byteOffset === 'number'
+    && value.BYTES_PER_ELEMENT === 1
+    && value.buffer
+    && typeof value.buffer.byteLength === 'number';
+}
+
+function compactUint8Array(view) {
+  const out = new Uint8Array(view.byteLength);
+  out.set(view);
+  return out;
+}
 const MAX_IMAGE_SAVE_BYTES = 32 * 1024 * 1024;
 const IMAGE_SAVE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const USER_ATTACHMENT_MEDIA_TYPES = IMAGE_SAVE_MEDIA_TYPES;
+const DELEGATED_MEDIA_TYPES = new Set([...IMAGE_SAVE_MEDIA_TYPES, 'application/pdf']);
 const IMAGE_SAVE_REQUEST_KEYS = new Set(['data', 'mediaType', 'suggestedName']);
+const USER_ATTACHMENT_REQUEST_KEYS = new Set(['token']);
+const USER_ATTACHMENT_AUTHORIZE_KEYS = new Set(['mediaType', 'maxBytes']);
+const USER_ATTACHMENT_SELECT_KEYS = new Set(['mediaTypes']);
+const DELEGATED_MEDIA_PERSIST_KEYS = new Set(['conversationId', 'bytes', 'mediaType', 'width', 'height']);
+const DELEGATED_MEDIA_READ_KEYS = new Set(['conversationId', 'ref']);
 let imageSavePending = false;
 
 function utf8ByteLength(value) {
@@ -204,6 +234,124 @@ function invokeSaveImageAttachment(request) {
     imageSavePending = false;
     throw error;
   }
+}
+
+function invokeReadUserAttachment(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('readUserAttachment request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !USER_ATTACHMENT_REQUEST_KEYS.has(key));
+  if (unknownKey) throw new Error(`readUserAttachment does not accept ${unknownKey}`);
+  if (typeof request.token !== 'string' || request.token.length < 32 || request.token.length > 256 || request.token.includes('\0')) {
+    throw new Error('readUserAttachment token is invalid');
+  }
+  return ipcRenderer.invoke(READ_USER_ATTACHMENT_CHANNEL, { token: request.token });
+}
+
+function invokeReleaseUserAttachment(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('releaseUserAttachment request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !USER_ATTACHMENT_REQUEST_KEYS.has(key));
+  if (unknownKey) throw new Error(`releaseUserAttachment does not accept ${unknownKey}`);
+  if (typeof request.token !== 'string' || request.token.length < 32 || request.token.length > 256 || request.token.includes('\0')) {
+    throw new Error('releaseUserAttachment token is invalid');
+  }
+  return ipcRenderer.invoke(RELEASE_USER_ATTACHMENT_CHANNEL, { token: request.token });
+}
+
+function invokeAuthorizeUserAttachment(file, request = {}) {
+  if (!file || typeof file !== 'object') {
+    throw new Error('authorizeUserAttachment requires a File');
+  }
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('authorizeUserAttachment request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !USER_ATTACHMENT_AUTHORIZE_KEYS.has(key));
+  if (unknownKey) throw new Error(`authorizeUserAttachment does not accept ${unknownKey}`);
+  if (!USER_ATTACHMENT_MEDIA_TYPES.has(request.mediaType)) {
+    throw new Error('authorizeUserAttachment media type is unsupported');
+  }
+  if (
+    request.maxBytes !== undefined
+    && (!Number.isSafeInteger(request.maxBytes)
+      || request.maxBytes <= 0
+      || request.maxBytes > MAX_IMAGE_SAVE_BYTES)
+  ) {
+    throw new Error('authorizeUserAttachment maxBytes is invalid');
+  }
+  const nativePath = webUtils.getPathForFile(file);
+  if (typeof nativePath !== 'string' || nativePath.length === 0 || nativePath.includes('\0')) {
+    throw new Error('authorizeUserAttachment native path is unavailable');
+  }
+  return ipcRenderer.invoke(AUTHORIZE_USER_ATTACHMENT_CHANNEL, {
+    path: nativePath,
+    name: typeof file.name === 'string' ? file.name : undefined,
+    mediaType: request.mediaType,
+    maxBytes: request.maxBytes,
+  });
+}
+
+function invokeSelectUserAttachments(request = {}) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('selectUserAttachments request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !USER_ATTACHMENT_SELECT_KEYS.has(key));
+  if (unknownKey) throw new Error(`selectUserAttachments does not accept ${unknownKey}`);
+  if (
+    request.mediaTypes !== undefined
+    && (!Array.isArray(request.mediaTypes)
+      || request.mediaTypes.length === 0
+      || request.mediaTypes.some((mediaType) => !USER_ATTACHMENT_MEDIA_TYPES.has(mediaType)))
+  ) {
+    throw new Error('selectUserAttachments media types are unsupported');
+  }
+  return ipcRenderer.invoke(SELECT_USER_ATTACHMENTS_CHANNEL, {
+    mediaTypes: request.mediaTypes ?? [...USER_ATTACHMENT_MEDIA_TYPES],
+  });
+}
+
+function invokePersistDelegatedMedia(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('persistDelegatedMedia request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !DELEGATED_MEDIA_PERSIST_KEYS.has(key));
+  if (unknownKey) throw new Error(`persistDelegatedMedia does not accept ${unknownKey}`);
+  if (typeof request.conversationId !== 'string' || request.conversationId.length === 0 || request.conversationId.includes('\0')) {
+    throw new Error('persistDelegatedMedia conversationId is invalid');
+  }
+  if (!isUint8ArrayLike(request.bytes) || request.bytes.byteLength === 0) {
+    throw new Error('persistDelegatedMedia bytes are invalid');
+  }
+  if (!DELEGATED_MEDIA_TYPES.has(request.mediaType)) {
+    throw new Error('persistDelegatedMedia media type is unsupported');
+  }
+  if (request.bytes.byteLength > MAX_DELEGATED_MEDIA_BYTES) {
+    throw new Error('persistDelegatedMedia bytes are too large');
+  }
+  const bytes = compactUint8Array(request.bytes);
+  return ipcRenderer.invoke(PERSIST_DELEGATED_MEDIA_CHANNEL, {
+    conversationId: request.conversationId,
+    bytes,
+    mediaType: request.mediaType,
+    ...(request.width === undefined ? {} : { width: request.width }),
+    ...(request.height === undefined ? {} : { height: request.height }),
+  });
+}
+
+function invokeReadDelegatedMedia(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) {
+    throw new Error('readDelegatedMedia request must be an object');
+  }
+  const unknownKey = Object.keys(request).find((key) => !DELEGATED_MEDIA_READ_KEYS.has(key));
+  if (unknownKey) throw new Error(`readDelegatedMedia does not accept ${unknownKey}`);
+  if (typeof request.conversationId !== 'string' || request.conversationId.length === 0 || request.conversationId.includes('\0')) {
+    throw new Error('readDelegatedMedia conversationId is invalid');
+  }
+  return ipcRenderer.invoke(READ_DELEGATED_MEDIA_CHANNEL, {
+    conversationId: request.conversationId,
+    ref: request.ref,
+  });
 }
 
 // Guard against exotic/non-JSON-serializable args (functions, DOM nodes, etc.)
@@ -431,6 +579,12 @@ contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   // the renderer can resolve only a File object the user already dragged in.
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveImageAttachment: invokeSaveImageAttachment,
+  authorizeUserAttachment: invokeAuthorizeUserAttachment,
+  selectUserAttachments: invokeSelectUserAttachments,
+  readUserAttachment: invokeReadUserAttachment,
+  releaseUserAttachment: invokeReleaseUserAttachment,
+  persistDelegatedMedia: invokePersistDelegatedMedia,
+  readDelegatedMedia: invokeReadDelegatedMedia,
   subscribeSidecarEvents: (callback) => {
     if (typeof callback !== 'function') {
       throw new Error('subscribeSidecarEvents requires a callback');

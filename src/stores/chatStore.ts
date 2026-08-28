@@ -36,6 +36,14 @@ import { appendBoundedSubagentToolCall } from '../core/session/durableToolResult
 
 enableMapSet();
 
+export type PendingAttachmentReadScope = 'workspace';
+
+export interface PendingAttachmentRequest {
+  path: string;
+  draftKey: string;
+  readScope: PendingAttachmentReadScope;
+}
+
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
@@ -539,11 +547,12 @@ interface ChatState {
   // one-shot buffer (mirrors pendingInput): ChatInput drains it into local
   // state then clears. NOT persisted.
   pendingReferences: ChatReference[];
-  // Pending file paths injected from the workspace file tree's "Add to chat"
-  // context menu item. Ephemeral one-shot buffer (mirrors pendingReferences):
-  // ChatInput drains it into its local files/images attachment state via
-  // processFilePaths, then clears. NOT persisted.
-  pendingAttachmentPaths: string[];
+  // Pending file attachments injected from the workspace file tree's "Add to
+  // chat" context menu item. Ephemeral one-shot buffer (mirrors
+  // pendingReferences): ChatInput drains only the records for its own
+  // draftKey into local attachment state via processFilePaths, then clears
+  // that draft bucket. NOT persisted.
+  pendingAttachmentRequests: PendingAttachmentRequest[];
   /** Bumped whenever a conversation's outputs manifest materially changes
    *  from outside the snapshot hot path — currently: after
    *  installSharedAttachments writes newly imported files. FileAttachment
@@ -687,8 +696,8 @@ interface ChatActions {
   appendPendingInput: (text: string | null) => void;
   addPendingReference: (ref: ChatReference) => void;
   clearPendingReferences: () => void;
-  addPendingAttachment: (path: string) => void;
-  clearPendingAttachments: () => void;
+  addPendingAttachment: (request: PendingAttachmentRequest) => void;
+  clearPendingAttachments: (draftKey?: string) => void;
   setPendingAgent: (agentName: string | null) => void;
   setConversationStatus: (convId: string, status: ConversationStatus) => void;
   clearCompletedStatus: (convId: string) => void;
@@ -746,7 +755,7 @@ export const useChatStore = create<ChatStore>()(
       pendingAgentName: null,
       pendingSearchJump: null,
       pendingReferences: [],
-      pendingAttachmentPaths: [],
+      pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
 
       createConversation: (workspacePath, options) => {
@@ -1999,20 +2008,27 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      addPendingAttachment: (path) => {
+      addPendingAttachment: (request) => {
         set((state) => {
           // Dedup: "Add to chat" on the same file twice (before the drain runs)
           // must not buffer it twice — images carry no path once decoded, so the
           // ChatInput drain can't dedup them downstream.
-          if (!state.pendingAttachmentPaths.includes(path)) {
-            state.pendingAttachmentPaths.push(path);
+          const exists = state.pendingAttachmentRequests.some((pending) => (
+            pending.path === request.path
+              && pending.draftKey === request.draftKey
+              && pending.readScope === request.readScope
+          ));
+          if (!exists) {
+            state.pendingAttachmentRequests.push(request);
           }
         });
       },
 
-      clearPendingAttachments: () => {
+      clearPendingAttachments: (draftKey) => {
         set((state) => {
-          state.pendingAttachmentPaths = [];
+          state.pendingAttachmentRequests = draftKey === undefined
+            ? []
+            : state.pendingAttachmentRequests.filter((request) => request.draftKey !== draftKey);
         });
       },
 

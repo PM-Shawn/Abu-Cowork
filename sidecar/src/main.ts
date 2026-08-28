@@ -329,11 +329,11 @@ function handleMessage(raw: string): void {
     // finalize and fence late frames. Keep accepting the old notification
     // shape for rolling upgrades / backward compatibility.
     if (!isNotification) {
-      runAsyncRequest(id, () => Promise.resolve(handleAgentAbort(params)));
+      runAsyncRequest(id, () => handleAgentAbort(params));
       return;
     }
-    try { handleAgentAbort(params); }
-    catch (err) { log('agent.abort handler threw (ignored — notification has no response)', err); }
+    void handleAgentAbort(params)
+      .catch((err) => log('agent.abort handler threw (ignored — notification has no response)', err));
     return;
   }
 

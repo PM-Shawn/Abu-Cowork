@@ -1,6 +1,7 @@
 import type { Conversation, DocumentContent, ImageContent, Message, MessageContent, ToolCall, ToolCallForContext, ToolResult, ToolResultContent } from '../../types';
 import { base64ToUint8Array, uint8ArrayToBase64 } from '../../utils/base64';
 import { getConversationReader } from '../agent/ports/conversationReader';
+import { readRecoverableImageBytes } from '../llm/imageRehydration';
 import { redactSensitiveMediaText } from '../security/redaction';
 import {
   persistDelegatedMedia,
@@ -148,13 +149,24 @@ function decodeInlineBytes(data: string, kind: 'image' | 'document'): Uint8Array
 }
 
 async function readStrippedImageBytes(
-  _conversationId: string,
-  _image: ImageContent,
-  _workspacePath: string | null | undefined,
+  conversationId: string,
+  image: ImageContent,
+  workspacePath: string | null | undefined,
   signal: AbortSignal | undefined,
 ): Promise<Uint8Array> {
   throwIfAborted(signal);
-  throw new DelegatedUserTurnError('Cannot materialize delegated image: stored pixels are unavailable');
+  if (!image.filePath) {
+    throw new DelegatedUserTurnError('Cannot materialize delegated image: stored pixels are unavailable');
+  }
+  const bytes = await raceAbort(
+    readRecoverableImageBytes(conversationId, image.filePath, workspacePath ?? null),
+    signal,
+  );
+  throwIfAborted(signal);
+  if (!bytes) {
+    throw new DelegatedUserTurnError('Cannot materialize delegated image: stored pixels are unavailable');
+  }
+  return bytes;
 }
 
 async function materializeImageBlock(

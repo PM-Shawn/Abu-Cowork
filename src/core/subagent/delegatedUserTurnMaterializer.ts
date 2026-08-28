@@ -18,7 +18,6 @@ import {
   type MediaRef,
 } from './delegatedUserTurn';
 import {
-  base64PayloadLength,
   DELEGATED_TEXT_ONLY_IMAGE_PLACEHOLDER,
   MAX_DELEGATED_IMAGE_BASE64_BYTES,
   MAX_DELEGATED_IMAGE_COUNT,
@@ -127,7 +126,7 @@ function assertInlineImageBudgetBeforeRead(content: readonly MessageContent[]): 
     }
     total += encodedLength;
   }
-  if (total > base64PayloadLength(MAX_DELEGATED_IMAGE_BASE64_BYTES * 3)) {
+  if (total > MAX_DELEGATED_IMAGE_BASE64_BYTES * 3) {
     throw new DelegatedUserTurnError('Cannot materialize delegated user turn: images are too large');
   }
 }

@@ -307,6 +307,27 @@ describe('delegated user turn materializer', () => {
     expect(sanitized).toContain(httpsUrl);
   });
 
+  it('rejects an aggregate above 15 MiB when every inline image is below 5 MiB before any byte work', async () => {
+    const imageBytes = new Uint8Array(Math.floor((MAX_DELEGATED_IMAGE_BASE64_BYTES - 4) * 3 / 4));
+    const data = uint8ArrayToBase64(imageBytes);
+    expect(data.length).toBeLessThan(MAX_DELEGATED_IMAGE_BASE64_BYTES);
+    expect(data.length * 4).toBeGreaterThan(MAX_DELEGATED_IMAGE_BASE64_BYTES * 3);
+    mocks.getConversation.mockReturnValue(conversation([userMessage({
+      id: 'user-source',
+      content: Array.from({ length: 4 }, () => ({
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: 'image/png' as const, data },
+      })),
+    })]));
+
+    await expect(materializeDelegatedUserTurn({ conversationId: 'conv-1', loopId: 'loop-1' }))
+      .rejects.toThrow(/images are too large/i);
+
+    expect(mockBase64Decode).not.toHaveBeenCalled();
+    expect(mocks.readDelegatedMedia).not.toHaveBeenCalled();
+    expect(mocks.persistDelegatedMedia).not.toHaveBeenCalled();
+  });
+
   it('keeps reverse tool-result media opaque on the sidecar wire and restores it only in the shell', async () => {
     const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
     const imageData = uint8ArrayToBase64(imageBytes);

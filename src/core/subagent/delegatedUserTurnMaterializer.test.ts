@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   getConversation: vi.fn(),
   persistDelegatedMedia: vi.fn(),
   readDelegatedMedia: vi.fn(),
+  resolveFileSource: vi.fn(),
+  readFile: vi.fn(),
 }));
 
 vi.mock('../agent/ports/conversationReader', () => ({
@@ -33,6 +35,14 @@ vi.mock('../agent/ports/conversationReader', () => ({
 vi.mock('./delegatedMediaStore', () => ({
   persistDelegatedMedia: (...args: unknown[]) => mocks.persistDelegatedMedia(...args),
   readDelegatedMedia: (...args: unknown[]) => mocks.readDelegatedMedia(...args),
+}));
+
+vi.mock('../session/outputSnapshots', () => ({
+  resolveFileSource: (...args: unknown[]) => mocks.resolveFileSource(...args),
+}));
+
+vi.mock('@tauri-apps/plugin-fs', () => ({
+  readFile: (...args: unknown[]) => mocks.readFile(...args),
 }));
 
 import {
@@ -81,6 +91,8 @@ describe('delegated user turn materializer', () => {
       bytes: input.bytes.byteLength,
     }));
     mocks.readDelegatedMedia.mockReset();
+    mocks.resolveFileSource.mockReset();
+    mocks.readFile.mockReset();
     mockBase64Decode.mockReset();
   });
 
@@ -476,7 +488,14 @@ describe('delegated user turn materializer', () => {
       .rejects.toThrow(/missing or ambiguous/);
   });
 
-  it('fails closed for stripped image blocks without attempting out-of-scope restart recovery', async () => {
+  it('recovers a stripped restart image by filePath before delegating it', async () => {
+    const recoveredBytes = new Uint8Array([137, 80, 78, 71]);
+    mocks.resolveFileSource.mockResolvedValue({
+      status: 'available',
+      path: '/Users/tester/.abu/conversations/conv-1/outputs/files/hash/secret.png',
+      isFromSnapshot: true,
+    });
+    mocks.readFile.mockResolvedValue(recoveredBytes);
     mocks.getConversation.mockReturnValue(conversation([
       userMessage({
         id: 'user-source',
@@ -491,8 +510,18 @@ describe('delegated user turn materializer', () => {
     ]));
 
     await expect(materializeDelegatedUserTurn({ conversationId: 'conv-1', loopId: 'loop-1' }))
-      .rejects.toThrow(/stored pixels are unavailable/);
-    expect(mocks.persistDelegatedMedia).not.toHaveBeenCalled();
+      .resolves.toMatchObject({
+        content: [{
+          type: 'image',
+          attachment: { mediaType: 'image/png', bytes: recoveredBytes.byteLength },
+        }],
+      });
+    expect(mocks.resolveFileSource).toHaveBeenCalledWith('conv-1', '/Users/tester/secret.png', '/workspace');
+    expect(mocks.readFile).toHaveBeenCalledWith('/Users/tester/.abu/conversations/conv-1/outputs/files/hash/secret.png');
+    expect(mocks.persistDelegatedMedia).toHaveBeenCalledWith('conv-1', {
+      mediaType: 'image/png',
+      bytes: recoveredBytes,
+    });
   });
 
   it.each([

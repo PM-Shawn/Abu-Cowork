@@ -6,6 +6,10 @@ import { delegateToAgentTool } from '../core/tools/definitions/agentTools';
 import { runAgentBatchTool } from '../core/tools/definitions/orchestrationTools';
 import { registerBuiltinTools } from '../core/tools/builtins';
 import { buildToolRosterUpdateMessage, runAgentLoop } from '../core/agent/agentLoop';
+import { rebuildImageAttachments } from '../components/chat/imageAttachmentRebuild';
+import { resolveFileSource } from '../core/session/outputSnapshots';
+import { readFile } from '@tauri-apps/plugin-fs';
+import type { MessageContent } from '../types';
 
 const state = vi.hoisted(() => ({
   runtime: 'local' as 'local' | 'sidecar',
@@ -157,6 +161,8 @@ describe('multimodal delegation route × runtime matrix', () => {
     state.sidecarRequests.length = 0;
     state.modelDelegates = false;
     state.modelCallCount = 0;
+    vi.mocked(resolveFileSource).mockReset();
+    vi.mocked(readFile).mockReset();
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
       return 0;
@@ -187,6 +193,56 @@ describe('multimodal delegation route × runtime matrix', () => {
       'text:Describe it.',
       'text:Describe it.',
     ]);
+  });
+
+  it.each(['local', 'sidecar'] as const)('post-restart retry direct @agent rehydrates stripped image before delegation (%s)', async (runtime) => {
+    state.runtime = runtime;
+    vi.mocked(resolveFileSource).mockResolvedValue({
+      status: 'available',
+      path: '/Users/tester/.abu/conversations/conv-1/outputs/files/hash/retry.png',
+      isFromSnapshot: true,
+    });
+    vi.mocked(readFile).mockResolvedValue(new Uint8Array([137, 80, 78, 71]));
+    const persistedRetryContent: MessageContent[] = [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: '' },
+        filePath: '/Users/tester/private/retry.png',
+      },
+      { type: 'text', text: 'Describe it.' },
+    ];
+    const retryImages = rebuildImageAttachments(persistedRetryContent, `retry-${runtime}`);
+    const conversationId = useChatStore.getState().createConversation();
+
+    const result = await runAgentLoop(conversationId, '@researcher Describe it.', { images: retryImages });
+
+    expect(result).toMatchObject({ reason: 'completed' });
+    expect(state.chats).toHaveLength(1);
+    const childContent = childUserContent();
+    expect(childContent.map((block) => (
+      block.type === 'image' ? `image:${block.source?.media_type}` : `text:${block.text}`
+    ))).toEqual([
+      'image:image/png',
+      'text:Describe it.',
+      'text:Describe it.',
+    ]);
+    const childImage = childContent.find((block) => block.type === 'image');
+    expect(childImage?.source).toMatchObject({ media_type: 'image/png', data: 'iVBORw==' });
+    const rehydrateCall = vi.mocked(resolveFileSource).mock.calls.find((call) => (
+      call[0] === conversationId && call[1] === '/Users/tester/private/retry.png'
+    ));
+    expect(rehydrateCall).toBeDefined();
+    expect(rehydrateCall?.slice(0, 2)).toEqual([
+      conversationId,
+      '/Users/tester/private/retry.png',
+    ]);
+    expect(rehydrateCall).toHaveLength(3);
+    if (runtime === 'sidecar') {
+      expect(state.sidecarRequests).toHaveLength(1);
+      const serializedRequest = JSON.stringify(state.sidecarRequests[0]);
+      expect(serializedRequest).not.toContain(PNG);
+      expect(serializedRequest).not.toContain('iVBORw==');
+    }
   });
 
   it.each(['local', 'sidecar'] as const)('delegate_to_agent reaches the child adapter with image content (%s)', async (runtime) => {

@@ -71,6 +71,17 @@ describe('delegated media renderer store boundary', () => {
     expect(electronHost.persistElectronDelegatedMedia).not.toHaveBeenCalled();
   });
 
+  it('rejects an unsupported BMP MIME before reaching the Electron bridge', async () => {
+    electronHost.hasElectronDelegatedMediaStore.mockReturnValue(true);
+
+    await expect(persistDelegatedMedia('conv-1', {
+      mediaType: 'image/bmp',
+      bytes: VALID_PNG,
+    })).rejects.toMatchObject({ code: 'invalid-media' });
+
+    expect(electronHost.persistElectronDelegatedMedia).not.toHaveBeenCalled();
+  });
+
   it('passes abortable reads through the Electron bridge', async () => {
     const signal = new AbortController().signal;
     electronHost.hasElectronDelegatedMediaStore.mockReturnValue(true);

@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
@@ -216,9 +216,10 @@ describe('MessageGroup stopped terminal', () => {
     // In-progress runs render their work inline: no fold wrapper exists yet
     // (the "Worked for" header is a settled-turn summary — see
     // computeWorkProcessFold), so the live batch card and the streaming text
-    // are both directly visible.
+    // are both directly visible, under the non-interactive ticking divider.
     expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
     expect(screen.queryByText(/Worked for/)).toBeNull();
+    expect(screen.getByText(/Working/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect live state.*Running/ })).toBeInTheDocument();
     expect(screen.getByText('The first result is already available.')).toBeInTheDocument();
   });
@@ -562,8 +563,10 @@ describe('MessageGroup stopped terminal', () => {
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
     // Running work renders inline — no fold header exists until the run
-    // settles, and the live batch card stays visible, across remounts.
+    // settles (only the non-interactive ticking divider), and the live batch
+    // card stays visible, across remounts.
     expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.getByText(/Working/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
@@ -573,6 +576,16 @@ describe('MessageGroup stopped terminal', () => {
   });
 
   it('never shows the "Worked for" header mid-run; it appears only once the run settles', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(5_000);
+    try {
+      runFoldLifecycle();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  function runFoldLifecycle() {
     const userMessage: Message = {
       id: 'user-lifecycle',
       role: 'user',
@@ -599,16 +612,18 @@ describe('MessageGroup stopped terminal', () => {
     };
     setConversationState(conversation);
 
-    // Phase 1 — fresh placeholder: typing dots only, no fold header row.
+    // Phase 1 — fresh placeholder: typing dots only, no divider and no fold
+    // header row yet.
     const view = render(
       <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
     );
     expect(document.querySelector('.typing-dot')).not.toBeNull();
     expect(screen.queryByText(/Worked for/)).toBeNull();
+    expect(screen.queryByText(/Working/)).toBeNull();
 
-    // Phase 2 — first process content arrives: the work renders inline and
-    // STILL no header row mounts above it (the mid-run "已处理 0s" insertion
-    // was the reported one-frame jump).
+    // Phase 2 — first process content arrives: the ticking in-run divider
+    // takes the dots' slot (progressive wording, not a button), and the
+    // settled "Worked for" header still does not exist.
     const batchMessage: Message = {
       ...placeholder,
       toolCalls: [{
@@ -630,9 +645,16 @@ describe('MessageGroup stopped terminal', () => {
     );
     expect(screen.getByRole('button', { name: /Open inspect lifecycle.*Running/ })).toBeInTheDocument();
     expect(screen.queryByText(/Worked for/)).toBeNull();
+    // Divider: elapsed = now(5s) - workStart(1s) = 4s, ticking every second.
+    expect(screen.getByText('Working for 4s')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Working for/ })).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByText('Working for 6s')).toBeInTheDocument();
 
-    // Phase 3 — run settles: the fold header appears, now truthfully in the
-    // past tense, together with the completion collapse.
+    // Phase 3 — run settles: the ticking divider hands its slot to the fold
+    // header, now truthfully in the past tense, with the completion collapse.
     useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
     const settledUser: Message = { ...userMessage, runState: 'completed', runEndedAt: 3_000 };
     const settledBatch: Message = { ...batchMessage, isStreaming: false };
@@ -650,7 +672,8 @@ describe('MessageGroup stopped terminal', () => {
       <MessageGroup conversationId={conversation.id} messages={[settledUser, settledBatch, finalMessage]} isLastGroup />,
     );
     expect(screen.getByText(/Worked for/)).toBeInTheDocument();
-  });
+    expect(screen.queryByText(/Working for/)).toBeNull();
+  }
 
   it('does not re-auto-collapse after the user manually expands a successful fold', async () => {
     const userMessage: Message = {

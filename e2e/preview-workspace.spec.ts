@@ -237,7 +237,7 @@ test.describe('Preview and workspace journey', () => {
   test('renders a completed batch aggregate and opens a deduped subagent workspace tab', async ({ page }) => {
     await seedBatchConversation(page, 'completed');
 
-    const processHeader = page.getByRole('button', { name: /已处理 4s · 2 个 Agent：2 成功/ });
+    const processHeader = page.getByRole('button', { name: /用时 4s · 2 个 Agent：2 成功/ });
     await expect(processHeader).toHaveAttribute('aria-expanded', 'false');
     await processHeader.click();
     await expect(processHeader).toHaveAttribute('aria-expanded', 'true');

@@ -449,6 +449,8 @@ const enUS: TranslationDict = {
       invalidDisallowedToolsField: 'Error: Cannot start agent “{agentName}”: AGENT.md disallowed-tools must be a list of strings, not a scalar value or object. Fix the tool configuration and retry.',
       invalidEmptyDisallowedToolDeclarations: 'Error: Cannot start agent “{agentName}”: entries {positions} in the AGENT.md disallowed-tools list are blank. Remove or replace the blank entries and retry.',
     },
+    working: 'Working',
+    workingFor: 'Working for {duration}',
     workedFor: 'Worked for {duration}',
     stoppedAfter: 'You stopped after {duration}',
     usageChipInput: 'Input',

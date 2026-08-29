@@ -107,6 +107,45 @@ function SkillPatchSummaryRow({ skillName, calls }: { skillName: string; calls: 
   );
 }
 
+// Elapsed time for the in-run status divider ("已处理 Ns"), ticking once per
+// second while `active` — the same 1s-interval + wall-clock pattern Codex uses
+// for its "Working for {time}" divider. Inert (0, no interval) when inactive,
+// so settled groups and pure-text runs pay nothing.
+function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  if (!active || startMs == null) return 0;
+  return Math.max(0, now - startMs);
+}
+
+/**
+ * In-run ticking status divider ("处理中" / "已处理 Ns"), Codex-aligned: plain
+ * text, not a button — no fold exists until the run settles, when the fold
+ * header button takes this exact slot as a 1:1 row swap.
+ *
+ * animateOnMount is FROZEN at mount (a later class change would replay the
+ * animation mid-run): the common path — typing dots hand off to the first
+ * process segment — is a same-slot row swap and must NOT animate (a grow-in
+ * would dip the region height for 200ms), while the text-first path inserts
+ * this row above already-visible content and needs the grow-in to avoid the
+ * one-frame insertion jump this whole change exists to kill.
+ */
+function RunStatusDivider({ label, animateOnMount }: { label: string; animateOnMount: boolean }) {
+  const [animate] = useState(animateOnMount);
+  return (
+    <div className={cn(animate && 'block-expand block-expand-open block-expand-enter')}>
+      <div className="mb-2 text-body text-[var(--abu-text-muted)] tabular-nums">
+        {label}
+      </div>
+    </div>
+  );
+}
+
 // Codex-style compact duration for the work-process fold label: "1m 4s" / "39s".
 function formatWorkDuration(ms: number): string {
   const totalSec = Math.max(0, Math.round(ms / 1000));
@@ -432,7 +471,7 @@ export function buildRenderSegments(
 // the fold range.
 //
 // While the run is still in progress the fold does not exist at all (null):
-// the header's "已处理 Xs" wording is a settled-turn summary, and mounting the
+// the settled "用时 Xs" header is a completed-turn summary, and mounting the
 // header row mid-run inserted ~28px above the live thinking/step block — under
 // SmoothHeight's 40px threshold, so it landed as a one-frame jump. Deferring
 // the whole wrapper keeps the in-run row structure stable (the typing dots
@@ -803,7 +842,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // generation isn't captured — its timestamp is set at creation — and the live
   // execution with the accurate endTime is usually evicted by the time this
   // settled fold renders). Floor the total at the sum of visible step durations
-  // so "已处理 X" is never less than the thinking/tool times the user can add up.
+  // so "用时 X" is never less than the thinking/tool times the user can add up.
   const workStepsSec =
     assistantMsgs.reduce((a, m) => a + (m.thinkingDuration ?? 0), 0) +
     activeExecSteps.filter((s) => s.type !== 'thinking').reduce((a, s) => a + (s.duration ?? 0), 0);
@@ -821,6 +860,26 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     })
     : '';
   const foldHeaderLabel = batchAggregateLabel ? `${workLabel} · ${batchAggregateLabel}` : workLabel;
+  // Codex-aligned in-run status divider: appears (animated) with the first
+  // process segment, ticks every second, and is NOT interactive — collapse
+  // only exists once the run settles and the fold header takes this exact
+  // slot ("已处理 Ns" → "用时 Ns" as a 1:1 row swap, no layout change).
+  const hasProcessSegments = segments.some(
+    (seg) => seg.kind === 'steps' || seg.kind === 'plan' || seg.kind === 'batch');
+  const showRunStatusLine = !isGroupDone && !isStopped && hasProcessSegments;
+  const runElapsedMs = useRunElapsedMs(workStart, showRunStatusLine);
+  // Entry-animation decision for the divider, derived from render data alone:
+  // when the group has no text yet, the divider mounts exactly as the typing
+  // dots leave — a same-slot row swap, no animation. When authored text is
+  // already visible (text-first turns), the divider is a genuine insertion
+  // above content the user is reading, so it grows in instead of landing in
+  // one frame.
+  const runStatusLineAnimates = segments.some((seg) => seg.kind === 'text');
+  // Sub-second elapsed shows the plain "处理中" (Codex: "Working") so the very
+  // first paint never reads "已处理 0s".
+  const runStatusLabel = runElapsedMs >= 1000
+    ? format(t.chat.workingFor, { duration: formatWorkDuration(runElapsedMs) })
+    : t.chat.working;
   const foldMode = foldEntry?.mode ?? 'auto';
   const workExpanded = foldMode === 'expanded' || (foldMode === 'auto' && !(foldEntry?.autoCollapseHandled ?? false));
   const hasFinalAnswerOutsideFold = workFoldEnd !== null && workFoldEnd < segments.length && segments[workFoldEnd]?.kind === 'text';
@@ -1063,7 +1122,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
             {/* SmoothHeight bridges the layout SWAPS inside this region — most
                 importantly the completion fold: the expanded thinking/step
-                block unmounts and the one-line "已处理 Xs" header takes its
+                block unmounts and the one-line "用时 Xs" header takes its
                 place in the same render, a -100~200px one-frame shrink that
                 (while pinned to the bottom) used to clamp scrollTop and jump
                 the whole view down. Streamed token growth stays instant (it's
@@ -1078,7 +1137,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 itself, so a plan card from an earlier turn in the same group does
                 not suppress the dots for the fresh empty turn that follows. */}
             {isStreaming && !streamingHasContent && (
-              /* mb-2 matches the TaskBlock header / "已处理 Xs" fold header
+              /* mb-2 matches the TaskBlock header / "用时 Xs" fold header
                  buttons that replace this row in later states; the label
                  geometry itself lives in the shared ThinkingStatusLine. */
               <ThinkingStatusLine label={t.status.thinking} className="mb-2" />
@@ -1095,6 +1154,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 at completion (no remount = keyboard focus survives, which
                 the focus-deferred auto-collapse below relies on). */}
             <div ref={workProcessRef}>
+              {showRunStatusLine && (
+                <RunStatusDivider
+                  label={runStatusLabel}
+                  animateOnMount={runStatusLineAnimates}
+                />
+              )}
               {workFoldEnd != null && (
                 /* Lightweight fold header — matches the thinking/step block
                     style (muted text + trailing chevron, no card background). */

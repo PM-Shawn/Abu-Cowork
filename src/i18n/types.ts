@@ -480,7 +480,10 @@ export interface TranslationDict {
       /** Agent disallowed-tools frontmatter contains blank entries. {agentName} {positions} */
       invalidEmptyDisallowedToolDeclarations: string;
     };
-    // Work-process fold label (Codex-style turn collapse). {duration} = e.g. "1m 4s"
+    // Work-process status line / fold label (Codex-style). {duration} = e.g. "1m 4s".
+    // working/workingFor = in-run divider (ticking); workedFor = settled fold header.
+    working: string;
+    workingFor: string;
     workedFor: string;
     stoppedAfter: string;
     // Usage chip

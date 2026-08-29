@@ -42,7 +42,7 @@ export function TypingDots({
 
 /** One status row: tertiary text-body label + bouncing dots. text-body (not
  *  text-minor) and no vertical padding of its own — successors (TaskBlock
- *  active header, "已处理 Xs" fold header) are text-body buttons with mb-2,
+ *  active header, "已处理 Ns" divider / "用时 Xs" fold header) are text-body buttons with mb-2,
  *  so callers that need the mb-2 pass it via className. */
 export function ThinkingStatusLine({
   label,

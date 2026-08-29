@@ -6,10 +6,10 @@
  * Message history is maintained in a local array and never written to chatStore.
  */
 
-import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolDefinition, ToolExecutionContext, ToolResultContent } from '../../types';
+import type { StreamEvent, Message, SubagentDefinition, SubagentStopReason, ToolDefinition, ToolExecutionContext, ToolResultContent, UpstreamErrorDetails } from '../../types';
 import type { IMContext } from './orchestrator';
 import type { LLMAdapter } from '../llm/adapter';
-import { LLMError, formatLlmDisplayError } from '../llm/adapter';
+import { LLMError, formatLlmDisplayError, normalizeUpstreamErrorDetails } from '../llm/adapter';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
 import type { ConfirmationInfo } from '../tools/commandSafety';
@@ -227,6 +227,8 @@ export class SubagentResult {
   readonly tokenUsage: { input: number; output: number };
   readonly duration: number; // seconds
   readonly stopReason: SubagentStopReason;
+  /** Bounded provider projection for a failed delegated run; never rawBody. */
+  readonly upstream?: UpstreamErrorDetails;
 
   constructor(params: {
     text: string;
@@ -235,6 +237,7 @@ export class SubagentResult {
     tokenUsage: { input: number; output: number };
     duration: number;
     stopReason: SubagentStopReason;
+    upstream?: UpstreamErrorDetails;
   }) {
     this.text = params.text;
     this.toolCallCount = params.toolCallCount;
@@ -242,6 +245,7 @@ export class SubagentResult {
     this.tokenUsage = params.tokenUsage;
     this.duration = params.duration;
     this.stopReason = params.stopReason;
+    this.upstream = normalizeUpstreamErrorDetails(params.upstream);
   }
 
   /** Backward compatible — callers that expect `string` get the text content */
@@ -1261,12 +1265,17 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       return abortResult;
     }
     const errorResult = new SubagentResult({
-      text: `Error: ${err instanceof LLMError ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody) : errMsg}`,
+      text: `Error: ${err instanceof LLMError && err.code === 'content_policy'
+        ? getI18n().chat.contentPolicyRejected
+        : err instanceof LLMError
+        ? formatLlmDisplayError(err, errMsg, getI18n().chat.errorEmptyBody)
+        : errMsg}`,
       toolCallCount: totalToolCalls,
       turnCount: 0,
       tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
       duration: (Date.now() - startTime) / 1000,
       stopReason: 'error',
+      ...(err instanceof LLMError && err.upstream ? { upstream: err.upstream } : {}),
     });
     await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: errorResult.text, error: true });
     subagentSpan.end({ output: errorResult.text, tokenUsage: errorResult.tokenUsage, toolCallCount: errorResult.toolCallCount, turnCount: errorResult.turnCount, duration: errorResult.duration, error: errMsg });

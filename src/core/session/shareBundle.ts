@@ -24,6 +24,7 @@ import { normalizeSeparators } from '@/utils/pathUtils';
 import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -204,6 +205,37 @@ async function prepareMessage(
     const r = redactText(clone.thinking);
     onRedaction(r);
     clone.thinking = r.text;
+  }
+  if (clone.runState !== 'failed' && clone.runState !== 'connection-failed') {
+    delete clone.runError;
+    delete clone.runErrorDetails;
+  }
+  if (clone.runError) {
+    const r = redactText(clone.runError);
+    onRedaction(r);
+    clone.runError = sanitizeUntrustedLlmErrorText(r.text, 'Provider request failed');
+  }
+  const runErrorDetails = normalizeUpstreamErrorDetails(clone.runErrorDetails);
+  if (!runErrorDetails) {
+    delete clone.runErrorDetails;
+  } else {
+    const redactOptionalField = (value: string | undefined): string | undefined => {
+      if (!value) return undefined;
+      const redacted = redactText(value);
+      onRedaction(redacted);
+      return redacted.text;
+    };
+    // Every provider-controlled string can echo credentials, including fields
+    // normally used as identifiers. Re-normalize after redaction so a replaced
+    // value can never escape the bounded share-contract projection.
+    const redactedDetails = normalizeUpstreamErrorDetails({
+      status: runErrorDetails.status,
+      error_type: redactOptionalField(runErrorDetails.error_type),
+      traceId: redactOptionalField(runErrorDetails.traceId),
+      summary: redactOptionalField(runErrorDetails.summary),
+    });
+    if (redactedDetails) clone.runErrorDetails = redactedDetails;
+    else delete clone.runErrorDetails;
   }
   return clone;
 }

@@ -605,6 +605,149 @@ describe('chatStore', () => {
       }
     });
 
+    it('keeps structured upstream error details on the durable failed user row', async () => {
+      const terminalTimestamp = new Date('2026-08-29T00:00:00.000Z').getTime();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(terminalTimestamp);
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-upstream-failure',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      const errorDetails = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'store-trace-403',
+        summary: 'The content safety system rejected the request.',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: errorDetails.summary,
+          errorDetails,
+        });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+          runState: 'failed',
+          runError: errorDetails.summary,
+          runErrorDetails: errorDetails,
+          runEndedAt: terminalTimestamp,
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('rejects privacy-unsafe upstream fields at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-upstream',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: 'HTTP 403 · content_policy',
+          errorDetails: {
+            status: 403,
+            rawBody: 'private prompt text',
+          } as never,
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe('HTTP 403 · content_policy');
+        expect(stored.runErrorDetails).toBeUndefined();
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('sanitizes a structured run error at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-run-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: '{"private":"provider body at store boundary"}',
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe(getI18n().chat.errorEmptyBody);
+        expect(JSON.stringify(stored)).not.toContain('provider body at store boundary');
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('drops failure fields when the store action completes a run', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-completed-with-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'completed',
+          error: 'must not survive',
+          errorDetails: { status: 403 },
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runState).toBe('completed');
+        expect(stored.runError).toBeUndefined();
+        expect(stored.runErrorDetails).toBeUndefined();
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
     it('persists a terminal timestamp with the interrupted reliable-run state', async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-08-13T06:30:00.000Z'));
@@ -3129,5 +3272,97 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
     expect((sanitized as { runState?: string }).runState).toBe('failed');
+  });
+
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid imported upstream projection: %s', (_label, runErrorDetails) => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-invalid-import',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy imported JSON runError', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-unsafe-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'Error: {"private":"imported provider body"}',
+    } as never);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('imported provider body');
+  });
+
+  it('drops failure fields from an imported completed row', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-completed-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+});
+
+describe('sanitizeLoadedMessages — upstream privacy boundary', () => {
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid persisted upstream projection: %s', (_label, runErrorDetails) => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-invalid-ledger',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never]);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy persisted HTML runError', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-unsafe-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: '<html><body>persisted proxy body</body></html>',
+    } as never]);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('persisted proxy body');
+  });
+
+  it('drops failure fields from a persisted completed row', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-completed-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never]);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
   });
 });

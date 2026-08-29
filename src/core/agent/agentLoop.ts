@@ -1,7 +1,7 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
-import { LLMError, formatLlmDisplayError } from '../llm/adapter';
+import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
@@ -538,7 +538,7 @@ export interface AgentLoopOptions {
    * the initial user message is already present in the transcript (or when a
    * pre-persisted shell row is handed in). Never serialized to the sidecar.
    */
-  onMessageTaken?: () => void;
+  onMessageTaken?: (messageId?: string) => void;
   /** Host-owned, immutable authority ceiling for unattended/background runs. */
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   /** Shell-only factory; deliberately omitted from every sidecar wire shape. */
@@ -690,6 +690,8 @@ export function buildToolRosterUpdateMessage(options: {
 
 interface AgentLoopResultBase {
   error?: string;
+  /** Bounded upstream fields for the failed-run terminal; never the raw body. */
+  upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
   stopReason?: 'sidecar_unavailable';
 }
@@ -801,7 +803,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
 
-  if (options?.prePersistedUserMessageId) options.onMessageTaken?.();
+  if (options?.prePersistedUserMessageId) {
+    options.onMessageTaken?.(options.prePersistedUserMessageId);
+  }
 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
@@ -872,14 +876,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // the user needs to configure a key before any skill/agent routing takes effect.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      const userMessageId = generateId();
       chatDelta.addMessage(conversationId, {
-        id: generateId(),
+        id: userMessageId,
         role: 'user',
         content: userContent,
         timestamp: Date.now(),
         loopId,
       });
-      options?.onMessageTaken?.();
+      options?.onMessageTaken?.(userMessageId);
     }
     chatDelta.addMessage(conversationId, {
       id: generateId(),
@@ -963,14 +968,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // same shape as the missing-API-key path above.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      const userMessageId = generateId();
       chatDelta.addMessage(conversationId, {
-        id: generateId(),
+        id: userMessageId,
         role: 'user',
         content: userContent,
         timestamp: Date.now(),
         loopId,
       });
-      options?.onMessageTaken?.();
+      options?.onMessageTaken?.(userMessageId);
     }
     const detail = error instanceof Error ? error.message : String(error);
     chatDelta.addMessage(conversationId, {
@@ -1094,9 +1100,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Include skill info if a skill was triggered; build multimodal content if images are attached
   if (!options?.prePersistedUserMessageId) {
     const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
+    const userMessageId = generateId();
 
     chatDelta.addMessage(conversationId, {
-      id: generateId(),
+      id: userMessageId,
       role: 'user',
       content: userContent,
       timestamp: Date.now(),
@@ -1110,7 +1117,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         description: route.delegateAgent.description,
       } : undefined,
     });
-    options?.onMessageTaken?.();
+    options?.onMessageTaken?.(userMessageId);
   }
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
@@ -1330,7 +1337,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.setConversationStatus(conversationId, 'error');
         notifyTaskError(convTitle, conversationId);
-        return { reason: 'error', error: result.text, messageTaken: true };
+        return {
+          reason: 'error',
+          error: result.text,
+          messageTaken: true,
+          ...(result.upstream ? { upstream: result.upstream } : {}),
+        };
       }
 
       eventRouter.route({
@@ -1364,11 +1376,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const terminalErrorMessage = err instanceof LLMError
+        ? formatLlmTerminalError(err)
+        : errorMessage;
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
       let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
         ? getI18n().chat.gatewayUnreachable
+        : err instanceof LLMError && err.code === 'content_policy'
+        ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
       if (err instanceof LLMError && err.code === 'not_found') {
         delegateDisplayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
@@ -1383,12 +1400,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       chatDelta.finishStreaming(conversationId, delegateErrorId);
       abortRegistry.clearAbortController(conversationId);
-      eventRouter.route({ type: 'error', loopId, error: errorMessage });
+      eventRouter.route({ type: 'error', loopId, error: terminalErrorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'error');
       const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
-      return { reason: 'error', error: errorMessage, messageTaken: true };
+      return {
+        reason: 'error',
+        error: terminalErrorMessage,
+        messageTaken: true,
+        ...(err instanceof LLMError && err.upstream ? { upstream: err.upstream } : {}),
+      };
     }
     return { reason: 'completed' };
   }
@@ -1412,6 +1434,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
+  let exitUpstream: UpstreamErrorDetails | undefined;
   let awaitingUserRecovery = false;
   // Cache of filePath → base64 for image rehydration, shared across every turn
   // of this request's tool-use loop so a stripped image is read from disk once,
@@ -2904,6 +2927,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       clearLoopContext(loopId);
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const terminalErrorMessage = err instanceof LLMError
+        ? formatLlmTerminalError(err)
+        : errorMessage;
       const errorCode = err instanceof LLMError
         ? err.code
         : err instanceof ContextBudgetError
@@ -2914,6 +2940,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         code: errorCode,
         model: effectiveModelId,
         providerId: getActiveProvider(settingsForModel)?.id,
+        status: err instanceof LLMError ? err.upstream?.status : undefined,
+        error_type: err instanceof LLMError ? err.upstream?.error_type : undefined,
+        traceId: err instanceof LLMError ? err.upstream?.traceId : undefined,
+        providerSummary: err instanceof LLMError ? err.upstream?.summary : undefined,
       });
 
       // Fire-and-forget: report to console for quality monitoring
@@ -2943,7 +2973,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         && /^forbidden\s*$/i.test(err.message.trim());
       // Provider-returned balance/resource-package exhaustion (e.g. Zhipu GLM
       // answers HTTP 429 with this Chinese text). Replace the raw provider
-      // string with actionable copy; `result.error` keeps the original.
+      // string with actionable copy; the diagnostic path keeps the raw body,
+      // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
       const isContextBudgetError = err instanceof ContextBudgetError;
@@ -2959,6 +2990,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ? getI18n().chat.ollamaForbidden
         : isInsufficientBalanceError
         ? getI18n().chat.insufficientBalance
+        : errorCode === 'content_policy'
+        ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
       if (errorCode === 'not_found') {
         displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
@@ -2972,7 +3005,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       chatDelta.finishStreaming(conversationId, assistantMsgId);
       abortRegistry.clearAbortController(conversationId);
       // Error the TaskExecution
-      eventRouter.route({ type: 'error', loopId, error: errorMessage });
+      eventRouter.route({ type: 'error', loopId, error: terminalErrorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       // Auto-deactivate skills on error
       deactivateAllSkills(conversationId, loopId);
@@ -2995,7 +3028,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       exitReason = 'error';
-      exitError = errorMessage;
+      exitError = terminalErrorMessage;
+      exitUpstream = err instanceof LLMError ? err.upstream : undefined;
       continueLoop = false;
     } finally {
       if (streamFlushTimer) clearInterval(streamFlushTimer);
@@ -3008,6 +3042,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return exitReason === 'error'
-    ? { reason: 'error', error: exitError, messageTaken: true }
+    ? {
+        reason: 'error',
+        error: exitError,
+        messageTaken: true,
+        ...(exitUpstream ? { upstream: exitUpstream } : {}),
+      }
     : { reason: exitReason, error: exitError };
 }

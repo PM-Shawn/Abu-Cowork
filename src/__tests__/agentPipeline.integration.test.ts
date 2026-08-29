@@ -503,6 +503,46 @@ describe('Agent Pipeline Integration', () => {
     ]);
   });
 
+  it('preserves structured upstream details when a direct @agent provider call is rejected', async () => {
+    const { routeInput } = await import('../core/agent/orchestrator');
+    vi.mocked(routeInput).mockReturnValueOnce({
+      type: 'delegate', cleanInput: 'Use a delegated agent.', name: 'abu',
+      delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+    } as never);
+    const upstream = {
+      status: 403,
+      error_type: 'governance.alicloud_content_safety_input_rejected',
+      traceId: 'delegate-pipeline-trace-403',
+      summary: 'provider rejected the delegated request',
+    } as const;
+    mockClaudeChat.mockRejectedValueOnce(new LLMError(
+      '{"private":"raw delegated provider body"}',
+      'content_policy',
+      {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"private":"raw delegated provider body"}',
+        upstream,
+      },
+    ));
+    const conversationId = useChatStore.getState().createConversation();
+
+    const result = await runAgentLoop(conversationId, 'Use a delegated agent.');
+
+    expect(result).toMatchObject({
+      reason: 'error',
+      messageTaken: true,
+      upstream,
+    });
+    const assistantText = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toMatch(/content[- ]safety|内容安全/i);
+    expect(assistantText).not.toContain('raw delegated provider body');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+  });
+
   it('re-materializes delegated media refs for each primary provider retry attempt', async () => {
     const mediaRef = {
       id: 'delegated-media-retry',
@@ -548,6 +588,40 @@ describe('Agent Pipeline Integration', () => {
     expect(delegatedMediaStore.readDelegatedMedia).toHaveBeenCalledTimes(2);
     expect(outboundPayloads[0]).toContain('AQID');
     expect(outboundPayloads[1]).toContain('BAUG');
+  });
+
+  it('returns structured upstream details and renders friendly copy for a content-policy rejection', async () => {
+    const upstream = {
+      status: 403,
+      error_type: 'governance.alicloud_content_safety_input_rejected',
+      traceId: 'pipeline-trace-403',
+      summary: 'The upstream content safety system rejected the request.',
+    } as const;
+    mockClaudeChat.mockRejectedValueOnce(new LLMError(
+      upstream.summary,
+      'content_policy',
+      {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"private":"raw provider body must stay out of the chat"}',
+        upstream,
+      },
+    ));
+    const conversationId = useChatStore.getState().createConversation();
+
+    const result = await runAgentLoop(conversationId, 'Fixed non-sensitive fixture input.');
+
+    expect(result).toMatchObject({
+      reason: 'error',
+      messageTaken: true,
+      upstream,
+    });
+    const assistantText = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).not.toContain('raw provider body must stay out of the chat');
+    expect(assistantText).not.toContain(upstream.error_type);
   });
 
   it('returns aborted before starting a direct delegate provider call when its linked signal is already aborted', async () => {

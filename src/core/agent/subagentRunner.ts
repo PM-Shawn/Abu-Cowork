@@ -66,7 +66,7 @@
  * is buffered until that commit point (or a valid successful response), so a
  * pre-commit transport failure cannot leave a ghost tool step behind.
  */
-import type { ToolDefinition, ToolExecutionContext } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import {
   getSidecarStatus,
   request as sidecarRequest,
@@ -87,6 +87,7 @@ import { resolveSubagentToolRoster } from './subagentToolRoster';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
+import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
@@ -260,23 +261,48 @@ interface SerializableSubagentResult {
   tokenUsage: { input: number; output: number };
   duration: number;
   stopReason?: SubagentStopReason;
+  upstream?: UpstreamErrorDetails;
 }
 
 function isSubagentStopReason(v: unknown): v is SubagentStopReason {
   return v === 'completed' || v === 'aborted' || v === 'error' || v === 'max_turns';
 }
 
+const SERIALIZABLE_SUBAGENT_RESULT_KEYS = new Set([
+  'text',
+  'toolCallCount',
+  'turnCount',
+  'tokenUsage',
+  'duration',
+  'stopReason',
+  'upstream',
+]);
+const SUBAGENT_TOKEN_USAGE_KEYS = new Set(['input', 'output']);
+
+function isFiniteNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResult {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const record = v as Record<string, unknown>;
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    typeof record.text === 'string' &&
-    typeof record.toolCallCount === 'number' &&
-    typeof record.turnCount === 'number' &&
-    typeof record.duration === 'number' &&
-    (record.stopReason === undefined || isSubagentStopReason(record.stopReason))
-  );
+  if (Object.keys(record).some((key) => !SERIALIZABLE_SUBAGENT_RESULT_KEYS.has(key))) return false;
+  if (typeof record.tokenUsage !== 'object' || record.tokenUsage === null || Array.isArray(record.tokenUsage)) {
+    return false;
+  }
+  const tokenUsage = record.tokenUsage as Record<string, unknown>;
+  return Object.keys(tokenUsage).every((key) => SUBAGENT_TOKEN_USAGE_KEYS.has(key))
+    && typeof record.text === 'string'
+    && isFiniteNonNegativeInteger(record.toolCallCount)
+    && isFiniteNonNegativeInteger(record.turnCount)
+    && isFiniteNonNegativeInteger(tokenUsage.input)
+    && isFiniteNonNegativeInteger(tokenUsage.output)
+    && typeof record.duration === 'number'
+    && Number.isFinite(record.duration)
+    && record.duration >= 0
+    && (record.stopReason === undefined || isSubagentStopReason(record.stopReason))
+    && (record.upstream === undefined
+      || (record.stopReason === 'error' && isUpstreamErrorDetails(record.upstream)));
 }
 
 // ── Run-session registry ────────────────────────────────────────────────
@@ -656,9 +682,15 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
   if (!isSerializableSubagentResult(raw)) {
     throw new Error('subagent.run response did not match the expected SubagentResult shape');
   }
+  const looksLikeLegacyError = raw.stopReason === undefined && /^\s*Error\s*:/i.test(raw.text);
+  const stopReason = raw.stopReason ?? (looksLikeLegacyError ? 'error' : 'completed');
+  const text = stopReason === 'error'
+    ? sanitizeUntrustedLlmErrorText(raw.text, `Error: ${getI18n().chat.errorEmptyBody}`)
+    : raw.text;
   return new SubagentResult({
     ...raw,
-    stopReason: raw.stopReason ?? 'completed',
+    text,
+    stopReason,
   });
 }
 
@@ -836,7 +868,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     // At least one tool already ran with (possibly real) side effects —
     // surface as a failed result, matching the shape runSubagentLoop's own
     // outer catch produces today. NO rerun.
-    const message = err instanceof Error ? err.message : String(err);
+    const message = sanitizeUntrustedLlmErrorText(
+      err instanceof Error ? err.message : String(err),
+      getI18n().chat.errorEmptyBody,
+    );
     return new SubagentResult({
       text: `Error: ${message}`,
       toolCallCount: 0,

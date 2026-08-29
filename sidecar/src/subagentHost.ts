@@ -19,7 +19,7 @@
  * `createReverseToolInvoker` doc comment for why: correctness over latency,
  * per the design doc's explicit instruction).
  */
-import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from '@/types';
+import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult, UpstreamErrorDetails } from '@/types';
 import type { IMContext } from '@/core/agent/orchestrator';
 import type { SettingsReader } from '@/core/agent/ports/settingsReader';
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
@@ -45,6 +45,7 @@ import { findActiveRunDeltaForConversation } from './agentLoopHost';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
 import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
+import { normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
 
 interface SerializableToolDefinition {
   name: string;
@@ -141,6 +142,7 @@ interface SerializableSubagentResult {
   tokenUsage: { input: number; output: number };
   duration: number;
   stopReason: SubagentStopReason;
+  upstream?: UpstreamErrorDetails;
 }
 
 const PROGRESS_MEDIA_TRANSPORT_ERROR = 'Error: Could not prepare sidecar progress media for transport.';
@@ -529,6 +531,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   try {
     const result = await subagentRunContext.run(runCtx, () => runSubagentLoop(options));
     await drainProgress();
+    const upstream = normalizeUpstreamErrorDetails(result.upstream);
     return {
       text: result.text,
       toolCallCount: result.toolCallCount,
@@ -536,6 +539,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       tokenUsage: result.tokenUsage,
       duration: result.duration,
       stopReason: result.stopReason,
+      ...(upstream ? { upstream } : {}),
     } satisfies SerializableSubagentResult;
   } finally {
     await drainProgress();

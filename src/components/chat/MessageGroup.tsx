@@ -128,17 +128,18 @@ function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
  * text, not a button — no fold exists until the run settles, when the fold
  * header button takes this exact slot as a 1:1 row swap.
  *
- * animateOnMount is FROZEN at mount (a later class change would replay the
- * animation mid-run): the common path — typing dots hand off to the first
- * process segment — is a same-slot row swap and must NOT animate (a grow-in
- * would dip the region height for 200ms), while the text-first path inserts
- * this row above already-visible content and needs the grow-in to avoid the
- * one-frame insertion jump this whole change exists to kill.
+ * ALWAYS grows in on mount (Codex animates its "Working for" divider the same
+ * way). The dots slot is NOT this row's to take: when the first process
+ * segment lands, TaskBlock's own header row is the dots row's designated
+ * same-slot successor (see ThinkingStatusLine), so at that commit the instant
+ * height budget is already spent (dots out, TaskBlock header in, net zero) —
+ * a non-animated divider on top was measured as the same one-frame +46px jump
+ * as the original bug. Growing in keeps every frame continuous: the thinking
+ * row slides down one row-height over 200ms instead of teleporting.
  */
-function RunStatusDivider({ label, animateOnMount }: { label: string; animateOnMount: boolean }) {
-  const [animate] = useState(animateOnMount);
+function RunStatusDivider({ label }: { label: string }) {
   return (
-    <div className={cn(animate && 'block-expand block-expand-open block-expand-enter')}>
+    <div className="block-expand block-expand-open block-expand-enter">
       <div className="mb-2 text-body text-[var(--abu-text-muted)] tabular-nums">
         {label}
       </div>
@@ -868,13 +869,6 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     (seg) => seg.kind === 'steps' || seg.kind === 'plan' || seg.kind === 'batch');
   const showRunStatusLine = !isGroupDone && !isStopped && hasProcessSegments;
   const runElapsedMs = useRunElapsedMs(workStart, showRunStatusLine);
-  // Entry-animation decision for the divider, derived from render data alone:
-  // when the group has no text yet, the divider mounts exactly as the typing
-  // dots leave — a same-slot row swap, no animation. When authored text is
-  // already visible (text-first turns), the divider is a genuine insertion
-  // above content the user is reading, so it grows in instead of landing in
-  // one frame.
-  const runStatusLineAnimates = segments.some((seg) => seg.kind === 'text');
   // Sub-second elapsed shows the plain "处理中" (Codex: "Working") so the very
   // first paint never reads "已处理 0s".
   const runStatusLabel = runElapsedMs >= 1000
@@ -1155,10 +1149,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 the focus-deferred auto-collapse below relies on). */}
             <div ref={workProcessRef}>
               {showRunStatusLine && (
-                <RunStatusDivider
-                  label={runStatusLabel}
-                  animateOnMount={runStatusLineAnimates}
-                />
+                <RunStatusDivider label={runStatusLabel} />
               )}
               {workFoldEnd != null && (
                 /* Lightweight fold header — matches the thinking/step block

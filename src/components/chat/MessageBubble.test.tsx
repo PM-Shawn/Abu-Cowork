@@ -119,4 +119,5 @@ describe('MessageBubble user run status', () => {
     expect(usePreviewStore.getState().tabs).toEqual([]);
     expect(usePreviewStore.getState().previewFilePath).toBeNull();
   });
+
 });

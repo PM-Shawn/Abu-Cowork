@@ -24,6 +24,7 @@ import {
   resolveEffectiveContextWindow,
   computeReasoningParams,
   isReasoningStarvation,
+  deriveDeclaredDefaults,
   type ModelCapabilities,
 } from '../llm/modelCapabilities';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -55,8 +56,28 @@ import {
   ActiveToolResultAdmission,
   type ActiveToolResultToken,
 } from './activeToolResultContent';
+import { isDelegatedUserTurn, type DelegatedUserTurn } from '../subagent/delegatedUserTurn';
+import {
+  buildInitialSubagentUserContent,
+  prepareDelegatedUserTurnForRequest,
+} from '../subagent/delegatedUserTurnMaterializer';
+import { preflightDelegatedMedia, type DelegatedMediaFailureReason } from '../subagent/delegatedMediaPreflight';
 
 const logger = createLogger('subagentLoop');
+
+function resolveDelegatedDeclaredCapabilities(
+  provider: ReturnType<typeof getActiveProvider>,
+  modelId: string,
+) {
+  const declared = resolveModelDeclared(provider, modelId);
+  if (provider?.source !== 'custom' || declared?.supportsImages !== undefined) {
+    return declared;
+  }
+  return {
+    ...declared,
+    supportsImages: deriveDeclaredDefaults(modelId).supportsImages,
+  };
+}
 
 /** Max times a subagent re-prompts after a max_tokens truncation. Mirrors the
  *  same-named limit in agentLoop (kept in sync deliberately). */
@@ -407,6 +428,10 @@ export interface SubagentLoopOptions {
   context?: string;
   /** Summary of parent conversation context for better task understanding */
   parentConversationSummary?: string;
+  /** Shell-materialized source user turn for multimodal delegation. */
+  delegatedUserTurn?: DelegatedUserTurn;
+  /** Trusted shell-only fallback; model tool inputs must never set this. */
+  delegatedMediaFallback?: 'text-only';
   signal?: AbortSignal;
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback?: FilePermissionCallback;
@@ -440,6 +465,8 @@ export interface SubagentLoopOptions {
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
   parentLoopId?: string;
+  /** Parent user message that triggered this delegated run. */
+  parentUserMessageId?: string;
   /**
    * Whether image-bearing child tool results need a hidden parent-message
    * replay entry. Single-agent delegation has persisted execution child steps
@@ -485,6 +512,34 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   // The caller owns signal freshness. Treat an already-aborted signal as a
   // real cancellation; silently replacing it can resurrect a stopped task.
   const signal = options.signal;
+  if (signal?.aborted) {
+    return new SubagentResult({
+      text: getI18n().chat.subagent.taskCancelled,
+      toolCallCount: 0,
+      turnCount: 0,
+      tokenUsage: { input: 0, output: 0 },
+      duration: 0,
+      stopReason: 'aborted',
+    });
+  }
+
+  if (options.delegatedUserTurn !== undefined && isDelegatedUserTurn(options.delegatedUserTurn)) {
+    const origin = options.delegatedUserTurn.origin;
+    if (
+      options.parentConversationId !== origin.conversationId
+      || options.parentLoopId !== origin.loopId
+      || options.parentUserMessageId !== origin.messageId
+    ) {
+      return new SubagentResult({
+        text: getI18n().chat.subagent.delegatedMediaInvalid,
+        toolCallCount: 0,
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 0,
+        stopReason: 'error',
+      });
+    }
+  }
 
   // Per-run injectable ports — same `options?.x ?? getX()` shape as
   // agentLoop.ts (agentLoop.ts:~717). Resolved once and reused for every
@@ -496,12 +551,47 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const workspaceReaderInst = options.workspaceReader ?? getWorkspaceReader();
 
   // Capability preflight happens before lifecycle hooks, observability, memory
-  // loading, side effects, or an LLM request. A disconnected MCP server makes
+  // loading, media reads, side effects, or an LLM request. A disconnected MCP server makes
   // its tools disappear from getAllTools(); treating that as an empty optional
   // roster would start an agent that cannot perform its declared job.
   const allTools = toolInvoker.getAllTools();
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(agent, allTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
+
+  const settings = settingsReader.getSnapshot();
+  const effectiveModelId = resolveAgentModel(agent.model, settings);
+  const startupCreds = (() => {
+    try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
+  })();
+  const startupProvider = getActiveProvider(settings);
+  const adapterKind = startupCreds?.forceOpenAiCompatible || startupProvider?.apiFormat === 'openai-compatible'
+    ? 'openai-compatible'
+    : 'claude';
+  const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
+  const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
+  const delegatedPreflight = preflightDelegatedMedia(
+    options.delegatedUserTurn,
+    startupCaps,
+    effectiveModelId,
+    adapterKind,
+    options.delegatedMediaFallback,
+  );
+  if ('diagnostic' in delegatedPreflight) {
+    // This DTO is allowlisted by delegatedMediaPreflight: no ref, SHA, bytes,
+    // URL, path, or provider error can enter the general-purpose logger.
+    logger.info('delegated media disposition', { ...delegatedPreflight.diagnostic });
+  }
+  if (delegatedPreflight.kind === 'error') {
+    const failureText: Record<DelegatedMediaFailureReason, string> = {
+      vision_unsupported: getI18n().chat.subagent.delegatedVisionUnsupported,
+      document_unsupported: getI18n().chat.subagent.delegatedDocumentUnsupported,
+      image_count: getI18n().chat.subagent.delegatedMediaLimitExceeded,
+      image_payload_too_large: getI18n().chat.subagent.delegatedMediaLimitExceeded,
+      image_total_too_large: getI18n().chat.subagent.delegatedMediaLimitExceeded,
+      invalid_turn: getI18n().chat.subagent.delegatedMediaInvalid,
+    };
+    return new SubagentResult({ text: failureText[delegatedPreflight.diagnostic.reason], toolCallCount: 0, turnCount: 0, tokenUsage: { input: 0, output: 0 }, duration: 0, stopReason: 'error' });
+  }
 
   // Lifecycle: subagentStart
   await emitHook({ type: 'subagentStart', timestamp: Date.now(), agentName: agent.name, task });
@@ -510,8 +600,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   const subagentSpan = startSubagentSpan(options.parentConversationId ?? null, { agentName: agent.name, task });
 
   try {
-    const settings = settingsReader.getSnapshot();
-
     // 1. Build system prompt
     const workspacePath = options.imContext?.workspacePath
       ?? (options.workspaceReader ? workspaceReaderInst.getCurrentPath() : (options.authorizationScopeId !== undefined ? null : workspaceReaderInst.getCurrentPath()));
@@ -575,10 +663,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 - If you lack a tool needed to complete the task, tell the parent agent exactly what is missing.
 - Do not work around a missing tool by simulating it or installing alternative software.`;
 
-    // 2. Determine model (with provider compatibility check)
-    const effectiveModelId = resolveAgentModel(agent.model, settings);
-
-    // 3. Get + filter tools
+    // 2. Get + filter tools
     if (Array.isArray(agent.tools) && agent.tools.length > 0) {
       warnPatternsWithoutKnownTool(agent.name, 'tools', agent.tools, allTools);
     }
@@ -604,15 +689,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // selectChatAdapter routes through the sidecar transport when it's healthy
     // ('running'), else falls back to the local in-process adapter — the
     // kind-choosing condition itself is unchanged (P1-1).
-    const _enterpriseCreds = (() => { try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined) } catch { return null } })()
-    const adapter: LLMAdapter = selectChatAdapter(
-      _enterpriseCreds?.forceOpenAiCompatible || getActiveProvider(settings)?.apiFormat === 'openai-compatible'
-        ? 'openai-compatible'
-        : 'claude',
-    );
+    const adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
     // 5. Initialize local messages
-    const userContent = context ? `${task}\n\n${context}` : task;
+    const userContent = await buildInitialSubagentUserContent({
+      task,
+      context,
+      delegatedUserTurn: options.delegatedUserTurn,
+      imageDisposition: delegatedPreflight.imageDisposition,
+    });
     const messages: Message[] = [
       {
         id: 'sub-user-0',
@@ -676,16 +761,13 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // runtime-discovered limits/reasoning status, then reserve a content floor so
       // reasoning can't starve the answer (the cause of "代理未返回任何结果").
       const provider = getActiveProvider(settings);
-      const declared = resolveModelDeclared(provider, effectiveModelId);
-      const discovered = provider
-        ? capsPort.get(provider.id, effectiveModelId)
-        : undefined;
+      const declared = resolveDelegatedDeclaredCapabilities(provider, effectiveModelId);
+      const discovered = provider ? capsPort.get(provider.id, effectiveModelId) : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
       const subagentCaps: ModelCapabilities = {
         ...baseCaps,
         ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
         ...(discovered?.contextWindow ? { contextWindow: discovered.contextWindow } : {}),
-        // A model observed emitting reasoning but unknown statically → can't bound it.
         ...(discovered?.isReasoningModel && baseCaps.thinking === false
           ? { thinking: 'uncontrollable' as const }
           : {}),
@@ -833,7 +915,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         }
       };
 
-      const chatFn = () => adapter.chat(preparedMessages, chatOptions, eventHandler);
+      const chatFn = async () => adapter.chat(
+        await prepareDelegatedUserTurnForRequest(
+          preparedMessages,
+          signal,
+          options.delegatedUserTurn?.origin.conversationId ?? options.parentConversationId,
+        ),
+        chatOptions,
+        eventHandler,
+      );
 
       await withRetry(
         chatFn,

@@ -22,6 +22,18 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: (...args: unknown[]) => dispatchMock(...args),
 }));
 
+vi.mock('@/utils/electronHost', () => ({
+  authorizeElectronUserAttachment: vi.fn(),
+  hasElectronCommandHost: vi.fn(() => false),
+  hasElectronUserAttachmentAuthorizeHost: vi.fn(() => false),
+  hasElectronUserAttachmentReadHost: vi.fn(() => false),
+  hasElectronUserAttachmentReleaseHost: vi.fn(() => false),
+  hasElectronUserAttachmentSelectHost: vi.fn(() => false),
+  readElectronUserAttachment: vi.fn(),
+  releaseElectronUserAttachment: vi.fn(),
+  selectElectronUserAttachments: vi.fn(),
+}));
+
 vi.mock('react-virtuoso', async () => {
   const { createElement, forwardRef } = await import('react');
   type MockVirtuosoProps = {
@@ -142,7 +154,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
     );
   });
 
-  it('restores the draft when the dispatcher rejects ownership', async () => {
+  it('keeps the created conversation when the dispatcher rejects ownership', async () => {
     configureApiKey();
     dispatchMock.mockResolvedValueOnce({
       reason: 'error',
@@ -154,11 +166,12 @@ describe('ChatView welcome composer dispatch ownership', () => {
     const textarea = await submitWelcome('retry me');
 
     await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(textarea).toHaveValue('retry me'));
+    await waitFor(() => expect(useChatStore.getState().activeConversationId).not.toBeNull());
+    expect(textarea).toHaveValue('');
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('retry me');
   });
 
-  it('restores the draft after a pre-accept dispatch rejection', async () => {
+  it('keeps the created conversation after a pre-accept dispatch rejection', async () => {
     configureApiKey();
     dispatchMock.mockRejectedValueOnce(new Error('failed before ownership'));
 
@@ -166,7 +179,8 @@ describe('ChatView welcome composer dispatch ownership', () => {
     const textarea = await submitWelcome('still mine');
 
     await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(textarea).toHaveValue('still mine'));
+    await waitFor(() => expect(useChatStore.getState().activeConversationId).not.toBeNull());
+    expect(textarea).toHaveValue('');
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('still mine');
   });
 

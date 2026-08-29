@@ -42,11 +42,92 @@ vi.mock('../sidecar/sidecarManager', () => ({
 }));
 
 const runSubagentLoopMock = vi.fn();
-vi.mock('./subagentLoop', async () => {
-  const actual = await vi.importActual<typeof import('./subagentLoop')>('./subagentLoop');
+vi.mock('./subagentLoop', () => {
+  class SubagentResult {
+    readonly text: string;
+    readonly toolCallCount: number;
+    readonly turnCount: number;
+    readonly tokenUsage: { input: number; output: number };
+    readonly duration: number;
+    readonly stopReason: string;
+
+    constructor(params: {
+      text: string;
+      toolCallCount: number;
+      turnCount: number;
+      tokenUsage: { input: number; output: number };
+      duration: number;
+      stopReason: string;
+    }) {
+      this.text = params.text;
+      this.toolCallCount = params.toolCallCount;
+      this.turnCount = params.turnCount;
+      this.tokenUsage = params.tokenUsage;
+      this.duration = params.duration;
+      this.stopReason = params.stopReason;
+    }
+
+    toString(): string {
+      return this.text;
+    }
+  }
+
+  const failure = (text: string) => new SubagentResult({
+    text,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+
+  const malformedListFailure = (
+    agentName: string,
+    field: 'tools' | 'disallowed-tools',
+    value: unknown,
+  ): SubagentResult | null => {
+    if (value === undefined) return null;
+    if (!Array.isArray(value)) return failure(`${agentName}: ${field} must be a list`);
+    const invalidPositions = value.flatMap((entry, index) => typeof entry === 'string' ? [] : [index + 1]);
+    if (invalidPositions.length > 0) return failure(`${agentName}: invalid ${field} entries at ${invalidPositions.join(', ')}`);
+    const emptyPositions = (value as string[]).flatMap((entry, index) => entry.trim() ? [] : [index + 1]);
+    return emptyPositions.length > 0
+      ? failure(`${agentName}: empty ${field} entries at ${emptyPositions.join(', ')}`)
+      : null;
+  };
+
   return {
-    ...actual,
     runSubagentLoop: (...a: unknown[]) => runSubagentLoopMock(...a),
+    SubagentResult,
+    resolveSubagentInteractionMode: (options: Record<string, unknown>) => [
+      'authorizationScopeId',
+      'runPermissionCeiling',
+      'imContext',
+      'triggerId',
+      'scheduledTaskId',
+    ].some((field) => options[field] !== undefined) ? 'background' : 'foreground',
+    buildSubagentMcpPreflightFailure: (
+      agentDefinition: { name: string; tools?: unknown; disallowedTools?: unknown },
+      availableTools: Array<{ name: string }>,
+    ) => {
+      const malformedTools = malformedListFailure(agentDefinition.name, 'tools', agentDefinition.tools);
+      if (malformedTools) return malformedTools;
+      const malformedDisallowedTools = malformedListFailure(
+        agentDefinition.name,
+        'disallowed-tools',
+        agentDefinition.disallowedTools,
+      );
+      if (malformedDisallowedTools) return malformedDisallowedTools;
+
+      const missing = (agentDefinition.tools as string[] | undefined)?.filter((pattern) =>
+        pattern.includes('__')
+        && !pattern.includes('*')
+        && !availableTools.some((tool) => tool.name === pattern),
+      ) ?? [];
+      if (missing.length === 0) return null;
+      const servers = [...new Set(missing.map((pattern) => pattern.split('__', 1)[0]))];
+      return failure(`${agentDefinition.name}: missing ${missing.join(', ')} from ${servers.join(', ')}`);
+    },
   };
 });
 
@@ -63,6 +144,15 @@ vi.mock('./ports/toolInvoker', () => ({
 const checkToolApprovalMock = vi.fn().mockResolvedValue({ decision: 'allow' });
 vi.mock('../tools/registry', () => ({
   checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
+}));
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+vi.mock('../subagent/delegatedMediaStore', () => ({
+  persistDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.persistDelegatedMedia(...a),
+  readDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.readDelegatedMedia(...a),
 }));
 
 const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
@@ -125,6 +215,13 @@ const agent: SubagentDefinition = {
   filePath: '__preset__',
 };
 
+const TEST_MEDIA_REF = {
+  id: 'media_reverse_test',
+  sha256: 'a'.repeat(64),
+  mediaType: 'image/png',
+  bytes: 8,
+} as const;
+
 /** Deferred promise helper — lets a test control exactly when sidecarRequest() settles. */
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
   let resolve!: (v: T) => void;
@@ -161,6 +258,9 @@ describe('subagentRunner', () => {
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
     checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue(TEST_MEDIA_REF);
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
     getAllToolsMock.mockReset();
     getAllToolsMock.mockReturnValue([
       { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
@@ -191,7 +291,11 @@ describe('subagentRunner', () => {
         | 'task'
         | 'context'
         | 'parentConversationSummary'
+        | 'delegatedUserTurn'
+        | 'delegatedMediaFallback'
         | 'parentConversationId'
+        | 'parentLoopId'
+        | 'parentUserMessageId'
         | 'persistParentToolImages'
         | 'imContext'
         | 'allowedTools'
@@ -210,7 +314,11 @@ describe('subagentRunner', () => {
         'task',
         'context',
         'parentConversationSummary',
+        'delegatedUserTurn',
+        'delegatedMediaFallback',
         'parentConversationId',
+        'parentLoopId',
+        'parentUserMessageId',
         'persistParentToolImages',
         'imContext',
         'allowedTools',
@@ -236,7 +344,6 @@ describe('subagentRunner', () => {
         'capsPort',
         'workspaceReader',
         'skillCommandApprovalFactory',
-        'parentLoopId',
       ]);
     });
 
@@ -288,6 +395,43 @@ describe('subagentRunner', () => {
       for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
         expect(wireParams).not.toHaveProperty(localField);
       }
+    });
+
+    it('sends only opaque delegated image metadata across the sidecar boundary', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+      const delegatedUserTurn = {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+        ],
+      };
+
+      await runSubagent({ agent, task: 'Describe the image.', delegatedUserTurn } as never);
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.delegatedUserTurn).toEqual(delegatedUserTurn);
+      const payload = JSON.stringify(wireParams);
+      expect(payload).not.toContain('data:image/');
+      expect(payload).not.toMatch(/(?:\/Users\/|[A-Za-z]:\\\\Users\\\\)/);
+    });
+
+    it('preserves the trusted text-only fallback across the sidecar boundary', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'Describe the image.', delegatedMediaFallback: 'text-only' });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.delegatedMediaFallback).toBe('text-only');
     });
   });
 
@@ -709,6 +853,41 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
+    it('keeps image tool results opaque and media paths redacted on the shell-to-sidecar reverse channel', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const imageData = 'iVBORw0KGgo=';
+      executeAnyToolMock.mockResolvedValueOnce([
+        { type: 'text', text: 'Image: /private/customer/shot.png' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+      ]);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'inspect screenshot',
+        parentConversationId: 'conv-1',
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const wireResult = await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      const serialized = JSON.stringify(wireResult);
+
+      expect(serialized).not.toContain(imageData);
+      expect(serialized).not.toContain('/private/customer/shot.png');
+      expect(serialized).toContain('[REDACTED:path]');
+      expect(wireResult).toEqual([
+        { type: 'text', text: 'Image: [REDACTED:path]' },
+        { type: 'delegated_media_ref', originConversationId: 'conv-1', attachment: TEST_MEDIA_REF },
+      ]);
+      expect(delegatedMediaStoreMocks.persistDelegatedMedia).toHaveBeenCalledTimes(1);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
     it('overwrites a forged sidecar ceiling with the parent-owned subagent ceiling', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -1074,7 +1253,7 @@ describe('subagentRunner', () => {
       const { runSubagent } = await importFresh();
       const onProgress = vi.fn();
 
-      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
       const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
@@ -1100,7 +1279,7 @@ describe('subagentRunner', () => {
       const { runSubagent } = await importFresh();
 
       const onProgress = vi.fn();
-      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
 
       expect(onSidecarNotification).toHaveBeenCalledWith('subagent.progress', expect.any(Function));
       const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
@@ -1117,16 +1296,28 @@ describe('subagentRunner', () => {
         id: `subagent-v1:${encodeURIComponent(runId)}:t1`,
       });
 
-      // tool-end may now carry resultContent (subagent image rendering) —
-      // the handler must forward it verbatim, not project it away.
+      // Media-bearing progress crosses the sidecar boundary as an opaque ref
+      // and becomes renderer-safe base64 only after the shell reads it.
+      const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(imageBytes);
       const richEvent = {
         type: 'tool-end', id: 't2', toolName: 'computer', result: 'shot', error: false,
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+        resultContent: [{
+          type: 'delegated_media_ref',
+          originConversationId: 'conv-1',
+          attachment: TEST_MEDIA_REF,
+        }],
       };
       progressHandler({ runId, event: richEvent });
-      expect(onProgress).toHaveBeenLastCalledWith({
-        ...richEvent,
-        id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+      await vi.waitFor(() => {
+        expect(onProgress).toHaveBeenLastCalledWith({
+          ...richEvent,
+          id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+          }],
+        });
       });
 
       const usageEvent = {
@@ -1140,6 +1331,151 @@ describe('subagentRunner', () => {
 
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
+    });
+
+    it('queues later non-media progress behind pending image materialization', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const readGate = deferred<Uint8Array>();
+      delegatedMediaStoreMocks.readDelegatedMedia.mockReturnValueOnce(readGate.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      progressHandler({
+        runId,
+        event: {
+          type: 'turn-complete',
+          turn: 1,
+          totalTurns: 200,
+          usage: { inputTokens: 1, outputTokens: 2 },
+        },
+      });
+      expect(onProgress).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      let runSettled = false;
+      void runPromise.then(() => { runSettled = true; });
+      await Promise.resolve();
+      expect(runSettled).toBe(false);
+
+      readGate.resolve(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+      await runPromise;
+
+      expect(onProgress.mock.calls.map((call) => call[0].type)).toEqual(['tool-end', 'turn-complete']);
+      expect(onProgress.mock.calls[0][0].resultContent[0]).toEqual({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+      });
+      expect(onProgress.mock.calls[0][0].result).toBe('Image: [REDACTED:path]');
+    });
+
+    it('fails closed then preserves order when progress image materialization fails', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockRejectedValueOnce(new Error('missing media'));
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      progressHandler({ runId, event: { type: 'turn-complete', turn: 1, totalTurns: 200 } });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+
+      expect(onProgress.mock.calls.map((call) => call[0].type)).toEqual(['tool-end', 'turn-complete']);
+      expect(onProgress.mock.calls[0][0]).toMatchObject({
+        type: 'tool-end',
+        id: `subagent-v1:${encodeURIComponent(runId)}:t-image`,
+        toolName: 'read_file',
+        result: 'Error: Could not prepare sidecar progress media for display.',
+        error: true,
+      });
+      expect(onProgress.mock.calls[0][0].resultContent).toBeUndefined();
+    });
+
+    it('fails closed instead of publishing opaque progress when parentConversationId is missing', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+
+      expect(delegatedMediaStoreMocks.readDelegatedMedia).not.toHaveBeenCalled();
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      expect(onProgress.mock.calls[0][0]).toMatchObject({
+        type: 'tool-end',
+        id: `subagent-v1:${encodeURIComponent(runId)}:t-image`,
+        toolName: 'read_file',
+        result: 'Error: Could not prepare sidecar progress media for display.',
+        error: true,
+      });
+      expect(onProgress.mock.calls[0][0].resultContent).toBeUndefined();
     });
 
     it('an unknown runId is silently dropped — no throw, no callback invocation', async () => {

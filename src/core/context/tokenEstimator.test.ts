@@ -82,6 +82,29 @@ describe('tokenEstimator', () => {
       expect(tokens).toBeGreaterThanOrEqual(1600);
     });
 
+    it('accounts for internal delegated media refs as image cost without reading bytes', () => {
+      const msgWithDelegatedRef: Message[] = [{
+        id: 'm1',
+        role: 'user',
+        timestamp: FIXED_TIMESTAMP,
+        content: [
+          { type: 'text', text: 'look' },
+          {
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-parent',
+            attachment: {
+              id: 'media_1',
+              sha256: 'a'.repeat(64),
+              mediaType: 'image/png',
+              bytes: 123,
+            },
+          } as unknown as MessageContent,
+        ],
+      }];
+
+      expect(estimateMessageTokens(msgWithDelegatedRef)).toBeGreaterThanOrEqual(1600);
+    });
+
     it('accounts for thinking content', () => {
       const msg: Message[] = [{
         id: '1',

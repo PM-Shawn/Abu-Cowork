@@ -287,11 +287,17 @@ export interface ImageContent {
 
 export interface DocumentContent {
   type: 'document';
+  name?: string;
   source: {
     type: 'base64';
     media_type: 'application/pdf';
     data: string;
   };
+  /**
+   * Optional legacy/persistence provenance. It is metadata-only in this batch:
+   * never use it to rehydrate stripped PDF bytes.
+   */
+  originConversationId?: string;
 }
 
 export type MessageContent = TextContent | ImageContent | DocumentContent;

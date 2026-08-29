@@ -17,7 +17,9 @@ import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
   getComposerDraftKey,
+  registerComposerDraftResourceDisposer,
   useComposerDraftStore,
+  writeComposerDraft,
   writePersistedComposerText,
 } from './composerDraftStore';
 import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
@@ -271,6 +273,30 @@ describe('chatStore', () => {
       useChatStore.getState().deleteConversation(id);
 
       expect(useComposerDraftStore.getState().drafts[draftKey]).toBeUndefined();
+    });
+
+    it('disposes token resources held by the deleted conversation draft', () => {
+      const dispose = vi.fn();
+      const unregister = registerComposerDraftResourceDisposer(dispose);
+      const id = useChatStore.getState().createConversation();
+      const draftKey = getComposerDraftKey(id);
+      writeComposerDraft(draftKey, {
+        text: '',
+        images: [],
+        files: [{ id: 'pdf', token: 'trusted-token', name: 'plan.pdf' }],
+        references: [],
+        selectedSkill: null,
+        selectedAgent: null,
+      });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(dispose).toHaveBeenCalledWith({
+        kind: 'file-token',
+        token: 'trusted-token',
+        file: { id: 'pdf', token: 'trusted-token', name: 'plan.pdf' },
+      });
+      unregister();
     });
 
     it('switches to another conversation when active is deleted', async () => {
@@ -2883,32 +2909,58 @@ describe('chatStore', () => {
     });
   });
 
-  describe('pendingAttachmentPaths', () => {
+  describe('pendingAttachmentRequests', () => {
     beforeEach(() => {
-      useChatStore.setState({ pendingAttachmentPaths: [] });
+      useChatStore.setState({ pendingAttachmentRequests: [] });
     });
 
     it('starts empty', () => {
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([]);
     });
 
-    it('addPendingAttachment appends', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().addPendingAttachment('/proj/b.txt');
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual(['/proj/a.txt', '/proj/b.txt']);
+    it('addPendingAttachment records the launch draft and scoped provenance', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/a.pdf', draftKey: 'local:conversation:a', readScope: 'workspace' }),
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b', readScope: 'workspace' }),
+      ]);
     });
 
-    it('clearPendingAttachments empties the buffer', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().clearPendingAttachments();
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+    it('clearPendingAttachments can drain only one draft bucket', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().clearPendingAttachments('local:conversation:a');
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b' }),
+      ]);
     });
 
     it('is NOT included in persisted partialize output', () => {
       // partialize 只导出 conversationIndex —— 反向守卫，防止有人误加进持久化
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
       const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
-      expect(persisted && 'pendingAttachmentPaths' in persisted).toBe(false);
+      expect(persisted && 'pendingAttachmentRequests' in persisted).toBe(false);
     });
   });
 

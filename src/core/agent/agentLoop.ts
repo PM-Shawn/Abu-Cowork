@@ -1,4 +1,4 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
 import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError } from '../llm/adapter';
@@ -56,6 +56,10 @@ import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
+import {
+  materializeDelegatedUserTurn,
+  prepareDelegatedUserTurnForRequest,
+} from '../subagent/delegatedUserTurnMaterializer';
 import { createSubagentController } from './subagentAbort';
 import { ActiveToolResultAdmission } from './activeToolResultContent';
 import {
@@ -655,6 +659,35 @@ export function buildInterruptedToolCallContext(
   };
 }
 
+export function buildToolRosterUpdateMessage(options: {
+  id: string;
+  loopId: string;
+  timestamp: number;
+  addedToolNames?: string[];
+  removedToolNames?: string[];
+}): Message {
+  const tc = getI18n().chat;
+  const parts: string[] = [tc.toolsUpdatedHeader];
+  const addedToolNames = options.addedToolNames ?? [];
+  const removedToolNames = options.removedToolNames ?? [];
+  if (addedToolNames.length > 0) {
+    parts.push(format(tc.toolsAdded, { tools: addedToolNames.join(', ') }));
+  }
+  if (removedToolNames.length > 0) {
+    parts.push(format(tc.toolsRemoved, { tools: removedToolNames.join(', ') }));
+  }
+  parts.push(tc.toolsUpdatedFooter);
+
+  return {
+    id: options.id,
+    role: 'user',
+    content: parts.join('\n'),
+    timestamp: options.timestamp,
+    loopId: options.loopId,
+    isSystem: true,
+  };
+}
+
 interface AgentLoopResultBase {
   error?: string;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
@@ -742,8 +775,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const runningConv = getConversationReader().getConversation(conversationId);
     if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
       const interactive = isInteractiveDesktop(options, runningConv);
-      const hasImages = Boolean(options?.images?.length);
-      const stageable = userMessage.trim().length > 0 && !hasImages;
+      const hasAttachments = Boolean(options?.images?.length);
+      const stageable = userMessage.trim().length > 0 && !hasAttachments;
       if (interactive && stageable) {
         if (options?.requireNewRun) {
           return {
@@ -760,7 +793,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
       return {
         reason: 'error',
-        error: hasImages
+        error: hasAttachments
           ? getI18n().chat.attachmentDuringRun
           : getI18n().chat.conversationBusy,
         messageTaken: false,
@@ -1204,10 +1237,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
+      // This route is entered only after the triggering user message has been
+      // persisted above. Bind the envelope to shell-owned ids; never let a
+      // route/tool argument choose an arbitrary source message or file.
+      const delegatedUserTurn = await materializeDelegatedUserTurn({ conversationId, loopId, signal: subagentSignal });
       const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
+        delegatedUserTurn,
         signal: subagentSignal,
         commandConfirmCallback: confirmCb,
         filePermissionCallback: filePermCb,
@@ -1216,6 +1254,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         triggerId: _convForContext?.triggerId,
         scheduledTaskId: _convForContext?.scheduledTaskId,
         parentLoopId: loopId,
+        parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
         settingsReader: entrySettingsReader,
@@ -1236,7 +1275,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // delegate run. Re-check the abort signal here so a user Stop during an
       // @agent delegation is reported as {reason:'aborted'}, not a successful
       // completion (schedulers/triggers/isIncompleteReason depend on this).
-      if (abortController.signal.aborted || delegateExitReason === 'aborted') {
+      if (abortController.signal.aborted || subagentSignal.aborted || delegateExitReason === 'aborted') {
         subagentCleanup();
         chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
         chatDelta.setAgentStatus(conversationId, 'idle');
@@ -1315,6 +1354,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isUserAbort = err instanceof Error
         && (err.name === 'AbortError'
           || abortController.signal.aborted
+          || subagentSignal.aborted
           || (err instanceof LLMError && err.code === 'cancelled'));
       if (isUserAbort) {
         chatDelta.cancelStreaming(conversationId);
@@ -1955,43 +1995,45 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         toolTokens
       );
       let preparedMessages = initialBudgetResult.messages;
+      let lastProviderMessages = preparedMessages;
+      let primaryBudgetGateLogged = false;
 
-      // Step 4: Rehydrate stripped image base64 from disk before sending.
-      // Persisted images keep only `filePath` (base64 cleared to save disk); the
-      // send path used the empty data directly, emitting `data:<mime>;base64,`
-      // (empty) → provider "Invalid base64 image_url", bricking every later turn.
-      // rehydrateForSend gates on vision + is the single shared send-prep seam
-      // (see also the recovery retry below — both must use it).
-      preparedMessages = await rehydrateForSend(preparedMessages, {
-        vision: modelCaps.vision,
-        conversationId,
-        workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
-        cache: imageBase64Cache,
-        maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
-      });
-
-      // The final provider-boundary invariant. Re-run after image rehydration so
-      // every primary send is checked in its actual outbound shape, not merely
-      // against the persisted (base64-stripped) history representation.
-      const finalBudgetResult = enforceContextBudget(
-        preparedMessages,
-        effectiveSystemPrompt,
-        contextWindowSize,
-        maxOutputTokens,
-        toolTokens,
-      );
-      preparedMessages = finalBudgetResult.messages;
-      if (initialBudgetResult.strategy !== 'unchanged' || finalBudgetResult.strategy !== 'unchanged') {
-        logger.info('Context budget gate applied', {
-          tokensBefore: initialBudgetResult.tokensBefore,
-          tokensAfter: finalBudgetResult.tokensAfter,
-          inputBudget: finalBudgetResult.inputBudget,
-          safetyMarginTokens: finalBudgetResult.safetyMarginTokens,
-          strategy: initialBudgetResult.strategy === 'unchanged'
-            ? finalBudgetResult.strategy
-            : initialBudgetResult.strategy,
+      const buildProviderAttemptMessages = async (
+        baseMessages: Message[],
+        budgetWindowSize: number,
+      ) => {
+        // Step 4: Rehydrate provider-bound media for this attempt.
+        // Delegated media refs are intentionally expanded inside the retry
+        // attempt so provider retries re-read shell-owned media instead of
+        // reusing a run-lifetime base64 snapshot. Persisted images still share
+        // the imageBase64Cache because that cache is for local file rehydration,
+        // not delegated ref materialization.
+        let outboundMessages = await prepareDelegatedUserTurnForRequest(
+          baseMessages,
+          abortController.signal,
+          conversationId,
+        );
+        outboundMessages = await rehydrateForSend(outboundMessages, {
+          vision: modelCaps.vision,
+          conversationId,
+          workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
+          cache: imageBase64Cache,
+          maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
         });
-      }
+
+        // The final provider-boundary invariant. Re-run after media expansion so
+        // each actual outbound attempt, including retry attempts, is checked in
+        // its provider-bound shape rather than the persisted/ref-bearing shape.
+        const budgetResult = enforceContextBudget(
+          outboundMessages,
+          effectiveSystemPrompt,
+          budgetWindowSize,
+          maxOutputTokens,
+          toolTokens,
+        );
+        lastProviderMessages = budgetResult.messages;
+        return budgetResult;
+      };
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
@@ -2034,7 +2076,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           : undefined,
       };
 
-      const chatFn = () => adapter.chat(preparedMessages, chatOptions, eventHandler);
+      const chatFn = async () => {
+        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize);
+        if (!primaryBudgetGateLogged && (
+          initialBudgetResult.strategy !== 'unchanged'
+          || providerBudgetResult.strategy !== 'unchanged'
+        )) {
+          logger.info('Context budget gate applied', {
+            tokensBefore: initialBudgetResult.tokensBefore,
+            tokensAfter: providerBudgetResult.tokensAfter,
+            inputBudget: providerBudgetResult.inputBudget,
+            safetyMarginTokens: providerBudgetResult.safetyMarginTokens,
+            strategy: initialBudgetResult.strategy === 'unchanged'
+              ? providerBudgetResult.strategy
+              : initialBudgetResult.strategy,
+          });
+          primaryBudgetGateLogged = true;
+        }
+        return adapter.chat(providerBudgetResult.messages, chatOptions, eventHandler);
+      };
 
       // Drive crash-protection flushes from elapsed time, not provider events.
       // A provider can emit one partial chunk and then stall indefinitely; the
@@ -2329,23 +2389,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recovered = true;
           }
 
-          // Retry with recovered messages. These were rebuilt from the stripped
-          // store copies (compression / round-slicing above), so re-run the same
-          // send-prep seam the primary path uses — otherwise a vision model would
-          // get empty-base64 images silently dropped on this path.
-          preparedMessages = await rehydrateForSend(preparedMessages, {
-            vision: modelCaps.vision,
-            conversationId,
-            workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
-            cache: imageBase64Cache,
-            maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
-          });
-          const recoveryBudgetResult = enforceContextBudget(
+          // Retry with recovered messages through the same provider-attempt seam
+          // as the primary path. These messages were rebuilt from stripped store
+          // copies (compression / round-slicing above), so media expansion and
+          // the final budget gate must happen in the outbound shape.
+          const recoveryBudgetResult = await buildProviderAttemptMessages(
             preparedMessages,
-            effectiveSystemPrompt,
             recoveryContextWindowSize,
-            maxOutputTokens,
-            toolTokens,
           );
           preparedMessages = recoveryBudgetResult.messages;
           logger.info('Context recovery budget gate applied', {
@@ -2376,7 +2426,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         startGeneration(conversationId, {
           name: `turn-${turnCount}`,
           model: effectiveModelId,
-          input: preparedMessages,
+          input: lastProviderMessages,
           startTime: new Date(genStartTime),
         }).end({
           output: {
@@ -2392,7 +2442,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (finalUsage) {
         chatDelta.updateMessageUsage(conversationId, finalUsage, assistantMsgId);
         // Calibrate token estimator with actual API usage
-        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(preparedMessages) + toolTokens;
+        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(lastProviderMessages) + toolTokens;
         calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
         // Record token usage
         const usageSnapshot = { ...finalUsage };
@@ -2524,22 +2574,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const removed = tools.filter(t => !freshNames.has(t.name));
 
           if (added.length > 0 || removed.length > 0) {
-            const tc = getI18n().chat;
-            const parts: string[] = [tc.toolsUpdatedHeader];
-            if (added.length > 0) {
-              parts.push(format(tc.toolsAdded, { tools: added.map(t => t.name).join(', ') }));
-            }
-            if (removed.length > 0) {
-              parts.push(format(tc.toolsRemoved, { tools: removed.map(t => t.name).join(', ') }));
-            }
-            parts.push(tc.toolsUpdatedFooter);
-            chatDelta.addMessage(conversationId, {
+            chatDelta.addMessage(conversationId, buildToolRosterUpdateMessage({
               id: generateId(),
-              role: 'user',
-              content: parts.join('\n'),
+              addedToolNames: added.map(t => t.name),
+              removedToolNames: removed.map(t => t.name),
               timestamp: Date.now(),
               loopId,
-            });
+            }));
           }
         }
       }

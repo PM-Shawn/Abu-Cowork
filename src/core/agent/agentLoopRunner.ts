@@ -30,7 +30,7 @@
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ImageAttachment, ToolExecutionContext, Conversation, ToolExecutionMetadata } from '../../types';
+import type { ToolExecutionContext, Conversation, ToolExecutionMetadata } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -89,6 +89,12 @@ import {
   type AgentLoopOptions,
   type AgentLoopResult,
 } from './agentLoop';
+import {
+  materializeSidecarMediaRefsForShell,
+  prepareConversationSnapshotForSidecarWire,
+  prepareToolResultForSidecarWire,
+  sidecarValueHasOpaqueMediaRefs,
+} from '../subagent/delegatedUserTurnMaterializer';
 import {
   areAgentRunTerminalsEqual,
   isAgentRunTerminal,
@@ -521,9 +527,25 @@ function handleAgentDelta(rawParams: unknown): void {
     }
   }
   const previous = session.frameApplyTail ?? Promise.resolve();
-  session.frameApplyTail = previous.then(() =>
-    applyDeltaFrames(frames)
-  ).then(() => {
+  let hasOpaqueMediaRefs: boolean;
+  try {
+    hasOpaqueMediaRefs = sidecarValueHasOpaqueMediaRefs(frames);
+  } catch (err) {
+    logger.warn('agent.delta rejected unsafe media payload', {
+      runId: params.runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  session.frameApplyTail = previous.then(() => (
+    hasOpaqueMediaRefs
+      ? materializeSidecarMediaRefsForShell(
+          frames,
+          session.conversationId,
+          session.shellAbortController.signal,
+        ).then((shellFrames) => applyDeltaFrames(shellFrames))
+      : applyDeltaFrames(frames)
+  )).then(() => {
     if (!isFirstDelta || session.firstFrameApplied) return;
     session.firstFrameApplied = true;
     markRuntimeRunStage(params.runId as string, 'first_frame_applied');
@@ -1301,10 +1323,14 @@ async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
       },
     },
   ));
-  // Keep the generic ToolResult wire unchanged. Only subagent tools need a
-  // tiny envelope so the sidecar parent loop can restore trusted terminal
-  // metadata onto its original ToolExecutionContext.
-  return metadata ? { result, metadata } : result;
+  const wireResult = await prepareToolResultForSidecarWire(
+    trustedConversationId,
+    result,
+    session.shellAbortController.signal,
+  );
+  // Only subagent tools need a tiny envelope so the sidecar parent loop can
+  // restore trusted terminal metadata onto its original ToolExecutionContext.
+  return metadata ? { result: wireResult, metadata } : wireResult;
 }
 
 /**
@@ -1946,7 +1972,12 @@ interface AgentRunParams {
   conversationId: string;
   userMessage: string;
   options: {
-    images?: ImageAttachment[];
+    /**
+     * PDF documents are pre-persisted into `conversationSnapshot.messages`
+     * before dispatch. Do not send them again through options: that would put
+     * redundant base64 on the shell→sidecar wire and create a second source of
+     * truth for the same user turn.
+     */
     blockedTools?: string[];
     allowedTools?: string[];
     authorizationScopeId?: string;
@@ -2039,6 +2070,24 @@ function digestRunPayload(value: string): string {
     right = Math.imul(right ^ code, 0x85ebca6b);
   }
   return `rrp1-${value.length.toString(16)}-${(left >>> 0).toString(16).padStart(8, '0')}${(right >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function canonicalizeForRunDigest(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeForRunDigest);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      if (key === 'payloadDigest' || record[key] === undefined) continue;
+      out[key] = canonicalizeForRunDigest(record[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function buildAgentRunPayloadDigest(params: unknown): string {
+  return digestRunPayload(JSON.stringify(canonicalizeForRunDigest(params)));
 }
 
 /**
@@ -2344,31 +2393,12 @@ async function buildAgentRunParams(
     ...(qi.isSystem ? { isSystem: qi.isSystem } : {}),
   }));
 
-  const payloadDigest = digestRunPayload(JSON.stringify({
-    version: 1,
+  const paramsWithoutDigest: Omit<AgentRunParams, 'payloadDigest'> = {
     runId,
     clientMessageId,
     conversationId,
     userMessage,
     options: {
-      images: options?.images,
-      blockedTools: options?.blockedTools,
-      allowedTools: options?.allowedTools,
-      authorizationScopeId: options?.authorizationScopeId,
-      runPermissionCeiling: options?.runPermissionCeiling,
-      workspacePathSnapshot,
-      imContext: options?.imContext,
-    },
-  }));
-
-  return {
-    runId,
-    clientMessageId,
-    payloadDigest,
-    conversationId,
-    userMessage,
-    options: {
-      images: options?.images,
       blockedTools: options?.blockedTools,
       allowedTools: options?.allowedTools,
       authorizationScopeId: options?.authorizationScopeId,
@@ -2381,11 +2411,11 @@ async function buildAgentRunParams(
     // Freeze the entry provider/model onto the wire snapshot. A model switch
     // while message persistence is in flight belongs to the next run and must
     // not be combined with this run's already-resolved credentials.
-    conversationSnapshot: {
+    conversationSnapshot: await prepareConversationSnapshotForSidecarWire({
       ...conversationSnapshot,
       workspacePath: workspacePathSnapshot,
       model: settingsForModel.activeModel,
-    } as Conversation,
+    } as Conversation, abortSignal),
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
     settingsSnapshot: settingsForModel,
     capsSnapshot,
@@ -2395,6 +2425,8 @@ async function buildAgentRunParams(
     locale: getLocale(),
     queuedInputs,
   };
+  const payloadDigest = buildAgentRunPayloadDigest(paramsWithoutDigest);
+  return { ...paramsWithoutDigest, payloadDigest };
 }
 
 /**
@@ -2463,15 +2495,15 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   // the same one-live-run-per-conversation invariant.
   {
     const runningConv = getConversationReader().getConversation(conversationId);
-    const hasImages = Boolean(options?.images?.length);
-    const stageable = userMessage.trim().length > 0 && !hasImages;
-    const getBusyError = (): string => hasImages
+    const hasAttachments = Boolean(options?.images?.length);
+    const stageable = userMessage.trim().length > 0 && !hasAttachments;
+    const getBusyError = (): string => hasAttachments
       ? getI18n().chat.attachmentDuringRun
       : getI18n().chat.conversationBusy;
     const runningSession = findJoinableRunSessionForConversation(conversationId);
     if (runningSession?.runId) {
       const interactive = isInteractiveDesktop(options, runningConv);
-      if (!interactive || hasImages || !stageable) {
+      if (!interactive || hasAttachments || !stageable) {
         return { reason: 'error', error: getBusyError(), messageTaken: false };
       }
       if (stageable) {
@@ -2488,7 +2520,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     }
     if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
       const interactive = isInteractiveDesktop(options, runningConv);
-      if (!interactive || hasImages || !stageable) {
+      if (!interactive || hasAttachments || !stageable) {
         return { reason: 'error', error: getBusyError(), messageTaken: false };
       }
       if (stageable) {

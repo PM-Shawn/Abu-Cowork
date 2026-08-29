@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef, type DragEvent as ReactDragEvent } from 'react';
 import { listen, TauriEvent } from '@tauri-apps/api/event';
 import { isTauriEnv } from '@/utils/tauriEnv';
-import { getElectronFilePath, hasElectronCommandHost } from '@/utils/electronHost';
+import { getElectronFilePath, hasElectronCommandHost, type ElectronUserAttachmentToken } from '@/utils/electronHost';
 
 interface DragDropPayload {
   paths: string[];
@@ -11,30 +11,56 @@ interface DragDropPayload {
 /** Debounce window to deduplicate rapid DRAG_DROP events (ms) */
 const DROP_DEBOUNCE_MS = 300;
 
-export function useFileDragDrop(onDrop: (paths: string[]) => void) {
+type FileDropHandler = (
+  paths: string[],
+  attachments?: ElectronUserAttachmentToken[],
+) => void | Promise<void>;
+
+export interface FileDragDropAdmissionOptions {
+  /** Called in the native drop event, before any asynchronous authorization. */
+  onAdmissionStart?: () => (() => void);
+  /** Reports native path or opaque-token admission failures to the user. */
+  onAdmissionError?: () => void;
+}
+
+export function useFileDragDrop(
+  onDrop: FileDropHandler,
+  admissionOptions: FileDragDropAdmissionOptions = {},
+) {
   const [isDragging, setIsDragging] = useState(false);
   const onDropRef = useRef(onDrop);
+  const admissionOptionsRef = useRef(admissionOptions);
   // Sync ref during render to avoid stale closure — useEffect would leave a timing gap
   // eslint-disable-next-line react-hooks/refs
   onDropRef.current = onDrop;
+  // eslint-disable-next-line react-hooks/refs
+  admissionOptionsRef.current = admissionOptions;
 
   const lastDropTimeRef = useRef(0);
   const lastDropPathsRef = useRef<string>('');
   const dragDepthRef = useRef(0);
 
-  const deliverPaths = useCallback((paths: string[]) => {
-    if (paths.length === 0) return;
+  const deliverPaths = useCallback(async (
+    paths: string[],
+    attachments: ElectronUserAttachmentToken[] = [],
+    callback: FileDropHandler = onDropRef.current,
+  ): Promise<void> => {
+    if (paths.length === 0 && attachments.length === 0) return;
 
     // Deduplicate rapid duplicate drop events
     const now = Date.now();
-    const key = paths.join('|');
+    const key = `${paths.join('|')}::${attachments.map((attachment) => attachment.token).join('|')}`;
     if (now - lastDropTimeRef.current < DROP_DEBOUNCE_MS && key === lastDropPathsRef.current) {
       return;
     }
     lastDropTimeRef.current = now;
     lastDropPathsRef.current = key;
 
-    onDropRef.current(paths);
+    if (attachments.length > 0) {
+      await callback(paths, attachments);
+    } else {
+      await callback(paths);
+    }
   }, []);
 
   const electronHost = hasElectronCommandHost();
@@ -74,15 +100,36 @@ export function useFileDragDrop(onDrop: (paths: string[]) => void) {
     dragDepthRef.current = 0;
     setIsDragging(false);
 
-    const paths = Array.from(event.dataTransfer.files).flatMap((file) => {
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0) return;
+    const dropStartedWithCallback = onDropRef.current;
+    const admissionAtDropStart = admissionOptionsRef.current;
+    const finishAdmission = admissionAtDropStart.onAdmissionStart?.();
+    void (async () => {
+      const paths: string[] = [];
+      const attachments: ElectronUserAttachmentToken[] = [];
+      let admissionFailed = false;
       try {
-        const path = getElectronFilePath(file);
-        return path ? [path] : [];
+        for (const file of files) {
+          const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+          if (isPdf) { admissionFailed = true; continue; }
+          try {
+            const path = getElectronFilePath(file);
+            if (path) paths.push(path);
+            else admissionFailed = true;
+          } catch {
+            // Synthetic/no-native-path file; fail closed.
+            admissionFailed = true;
+          }
+        }
+        await deliverPaths(paths, attachments, dropStartedWithCallback);
+        if (admissionFailed) admissionAtDropStart.onAdmissionError?.();
       } catch {
-        return [];
+        admissionAtDropStart.onAdmissionError?.();
+      } finally {
+        finishAdmission?.();
       }
-    });
-    deliverPaths(paths);
+    })();
   };
 
   useEffect(() => {
@@ -109,7 +156,12 @@ export function useFileDragDrop(onDrop: (paths: string[]) => void) {
       unlisteners.push(
         await listen<DragDropPayload>(TauriEvent.DRAG_DROP, (event) => {
           setIsDragging(false);
-          deliverPaths(event.payload.paths);
+          const callbackAtDropStart = onDropRef.current;
+          const admissionAtDropStart = admissionOptionsRef.current;
+          const finishAdmission = admissionAtDropStart.onAdmissionStart?.();
+          void deliverPaths(event.payload.paths, [], callbackAtDropStart)
+            .catch(() => admissionAtDropStart.onAdmissionError?.())
+            .finally(() => finishAdmission?.());
         })
       );
     }

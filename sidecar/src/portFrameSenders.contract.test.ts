@@ -13,17 +13,26 @@
  * somewhere is red". Not runtime validation, not codegen — a plain
  * data-driven pin.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort } from './portFrameSenders';
 import type { PortFrame } from './portFrameCoalescer';
 import { CHAT_CONTRACT_FIXTURES, EXEC_CONTRACT_FIXTURES } from '@/core/agent/__contractFixtures__/portFrameFixtures';
 import { createInProcessChatDelta } from '@/core/agent/ports/chatDelta';
 import { createInProcessExecutionPort } from '@/core/agent/ports/executionPort';
+import { sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+
+vi.mock('@/core/subagent/delegatedMediaStore', () => delegatedMediaStoreMocks);
 
 /** Methods with their own dedicated special-case test above (id-preserving
  *  or signature-translating) — deliberately excluded from the generic
  *  fixture's completeness check, not just forgotten. */
 const CHAT_SPECIAL_CASED = new Set(['cancelStreaming']);
+const CHAT_SENDER_MEDIA_PREPARED = new Set(['appendMessageToolCall']);
 const EXEC_SPECIAL_CASED = new Set([
   'createExecution',
   // Reads never travel as frames at all (see frameApplier.ts's module doc) —
@@ -33,6 +42,11 @@ const EXEC_SPECIAL_CASED = new Set([
 ]);
 
 describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
+  beforeEach(() => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
+  });
+
   it('covers setContextUsage frames both with and without a breakdown payload', () => {
     const usageFixtures = CHAT_CONTRACT_FIXTURES
       .filter(({ method }) => method === 'setContextUsage')
@@ -43,14 +57,17 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
     expect(usageFixtures.some((usage) => !('breakdown' in usage))).toBe(true);
   });
 
-  it.each(CHAT_CONTRACT_FIXTURES)('$method pushes {p:"chat", m:"$method", a: <fixture args, same order>}', ({ method, args }) => {
+  it.each(CHAT_CONTRACT_FIXTURES.filter(({ method }) => !CHAT_SENDER_MEDIA_PREPARED.has(method)))('$method pushes {p:"chat", m:"$method", a: <fixture args, same order>}', ({ method, args }) => {
     const frames: PortFrame[] = [];
     const delta = createFrameChatDelta((f) => frames.push(f)) as unknown as Record<string, (...a: unknown[]) => unknown>;
 
     expect(typeof delta[method]).toBe('function');
     delta[method](...args);
 
-    expect(frames).toEqual([{ p: 'chat', m: method, a: args }]);
+    const expectedArgs = method === 'setMessageToolCalls'
+      ? ['conv-1', 'msg-1', [{ id: 'tc1', name: 'read_file', input: { path: '[REDACTED:path]' } }]]
+      : args;
+    expect(frames).toEqual([{ p: 'chat', m: method, a: expectedArgs }]);
     if (method === 'setContextUsage') {
       const usage = frames[0].a[1] as Record<string, unknown>;
       expect(usage).toMatchObject({
@@ -74,6 +91,31 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
         expect(usage).not.toHaveProperty('breakdown');
       }
     }
+  });
+
+  it('appendMessageToolCall persists inline media as an opaque ref before pushing the fixture frame', async () => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValueOnce({
+      id: 'media_contract_tool_call',
+      sha256: 'b'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 2,
+    });
+    const fixture = CHAT_CONTRACT_FIXTURES.find(({ method }) => method === 'appendMessageToolCall');
+    expect(fixture).toBeDefined();
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+
+    delta.appendMessageToolCall(...fixture!.args as Parameters<typeof delta.appendMessageToolCall>);
+    await delta.drain();
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].p).toBe('chat');
+    expect(frames[0].m).toBe('appendMessageToolCall');
+    expect(frames[0].a.slice(0, 2)).toEqual(fixture!.args.slice(0, 2));
+    const wire = JSON.stringify(frames[0]);
+    expect(wire).not.toContain('aGk=');
+    expect(wire).not.toContain('/tmp/shot.png');
+    expect(sidecarValueHasOpaqueMediaRefs(frames[0])).toBe(true);
   });
 });
 

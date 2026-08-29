@@ -46,7 +46,7 @@ function collectTools(): { registered: RegisteredTool[]; transport: BrowserTrans
   };
   const transport: BrowserTransport = {
     isConnected: vi.fn(async () => true),
-    send: vi.fn(async () => ({ ok: true, data: {} })),
+    send: vi.fn(async () => ({ success: true, data: {} })),
     getConnectionError: vi.fn(() => 'not connected'),
   } as unknown as BrowserTransport;
 
@@ -69,6 +69,7 @@ describe('tool surface', () => {
       'get_tabs',
       'keyboard',
       'navigate',
+      'query_js',
       'screenshot',
       'screenshot_full_page',
       'scroll',
@@ -96,6 +97,7 @@ describe('tool surface', () => {
     // description, not only in the runtime message: falling back to a script
     // is what the truncation used to cause.
     expect(snapshot.description).toMatch(/execute_js/);
+    expect(snapshot.description).toMatch(/query_js/);
     expect(Object.keys(snapshot.schema!)).toEqual(expect.arrayContaining(['selector', 'maxChars']));
   });
 
@@ -122,8 +124,17 @@ describe('tool surface', () => {
     const js = collectTools().registered.find((t) => t.name === 'execute_js')!;
     expect(js.description).toMatch(/LAST RESORT/);
     expect(js.description).toMatch(/interrupts the user/);
+    expect(js.description).toMatch(/query_js/);
     expect(js.description).toMatch(/extract_text/);
     expect(js.description).toMatch(/select/);
+  });
+
+  it('describes query_js as a detached read-only batch-read tool', () => {
+    const query = collectTools().registered.find((t) => t.name === 'query_js')!;
+    expect(query.description).toMatch(/detached, inert copy/i);
+    expect(query.description).toMatch(/batch reads/i);
+    expect(query.description).toMatch(/no approval prompt/i);
+    expect(Object.keys(query.schema!)).toEqual(expect.arrayContaining(['tabId', 'code', 'selector']));
   });
 
   it('forwards the snapshot scoping options to the page', async () => {
@@ -137,6 +148,26 @@ describe('tool surface', () => {
       selector: '.ant-form',
       maxChars: 5000,
     });
+  });
+
+  it('reads HTML first, then evaluates query_js outside the page transport', async () => {
+    const { registered, transport } = collectTools();
+    vi.mocked(transport.send).mockResolvedValueOnce({
+      success: true,
+      data: '<html><body><main><h1>Hello</h1><p data-kind="x">World</p></main></body></html>',
+    });
+    const query = registered.find((t) => t.name === 'query_js')!;
+
+    const result = await query.handler({
+      tabId: 9,
+      selector: 'main',
+      code: '({ title: document.querySelector("h1").textContent, count: document.querySelectorAll("[data-kind]").length })',
+    }) as { content: Array<{ text: string }> };
+
+    expect(transport.send).toHaveBeenCalledWith('get_html', { tabId: 9, selector: 'main' });
+    expect(result.content[0].text).toContain('"title": "Hello"');
+    expect(result.content[0].text).toContain('"count": 1');
+    expect(result.content[0].text).toContain('note: this ran against a read-only copy');
   });
 });
 

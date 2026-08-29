@@ -49,7 +49,9 @@ async function readLinkedomIifeSource() {
   } catch {
     const { build } = await import('esbuild');
     const result = await build({
-      entryPoints: [new URL('../node_modules/linkedom/worker.js', import.meta.url).pathname],
+      // fileURLToPath, not URL.pathname: the latter yields "/D:/..." on
+      // Windows, which esbuild cannot resolve.
+      entryPoints: [fileURLToPath(new URL('../node_modules/linkedom/worker.js', import.meta.url))],
       bundle: true,
       write: false,
       format: 'iife',

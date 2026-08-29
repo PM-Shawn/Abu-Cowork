@@ -123,7 +123,11 @@ jobs:
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
 
       - name: Install dependencies
-        run: npm ci
+        # Root deps + abu-browser-bridge (own package: query_js worker tests
+        # resolve linkedom/ses from the bridge's local node_modules).
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
@@ -425,7 +429,11 @@ jobs:
           shared-key: electron-windows-x64
 
       - name: Install dependencies
-        run: npm ci
+        # Root deps + abu-browser-bridge (own package: query_js worker tests
+        # resolve linkedom/ses from the bridge's local node_modules).
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}

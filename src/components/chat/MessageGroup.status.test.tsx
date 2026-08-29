@@ -164,7 +164,7 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getByText('I will inspect the workspace first.')).toBeInTheDocument();
   });
 
-  it('keeps streaming assistant text visible after manually collapsing preceding work', () => {
+  it('renders running work inline without a fold header, keeping streaming text visible', () => {
     const userMessage: Message = {
       id: 'user-streaming-text',
       role: 'user',
@@ -213,9 +213,13 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
-    const foldButton = screen.getByRole('button', { name: /1 agents: 1 running/ });
-    fireEvent.click(foldButton);
-    expect(foldButton).toHaveAttribute('aria-expanded', 'false');
+    // In-progress runs render their work inline: no fold wrapper exists yet
+    // (the "Worked for" header is a settled-turn summary — see
+    // computeWorkProcessFold), so the live batch card and the streaming text
+    // are both directly visible.
+    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+    expect(screen.getByRole('button', { name: /Open inspect live state.*Running/ })).toBeInTheDocument();
     expect(screen.getByText('The first result is already available.')).toBeInTheDocument();
   });
 
@@ -517,7 +521,7 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getAllByText('✓ 1 sub-tasks completed')).toHaveLength(1);
   });
 
-  it('keeps process-only running work visible without offering a destructive fold', () => {
+  it('keeps process-only running work visible with no fold header until the run settles', () => {
     const userMessage: Message = {
       id: 'user-running-fold',
       role: 'user',
@@ -557,15 +561,95 @@ describe('MessageGroup stopped terminal', () => {
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    // Running work offers a manual fold but never auto-collapses: the live
-    // batch card must stay visible by default, across remounts.
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
+    // Running work renders inline — no fold header exists until the run
+    // settles, and the live batch card stays visible, across remounts.
+    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
+  });
+
+  it('never shows the "Worked for" header mid-run; it appears only once the run settles', () => {
+    const userMessage: Message = {
+      id: 'user-lifecycle',
+      role: 'user',
+      content: 'run the lifecycle batch',
+      timestamp: 1_000,
+      loopId: 'loop-lifecycle',
+      runState: 'running',
+    };
+    const placeholder: Message = {
+      id: 'assistant-lifecycle',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_100,
+      loopId: 'loop-lifecycle',
+      isStreaming: true,
+    };
+    const conversation: Conversation = {
+      id: 'conversation-lifecycle',
+      title: 'Lifecycle',
+      messages: [userMessage, placeholder],
+      createdAt: 1_000,
+      updatedAt: 1_100,
+      status: 'running',
+    };
+    setConversationState(conversation);
+
+    // Phase 1 — fresh placeholder: typing dots only, no fold header row.
+    const view = render(
+      <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
+    );
+    expect(document.querySelector('.typing-dot')).not.toBeNull();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+
+    // Phase 2 — first process content arrives: the work renders inline and
+    // STILL no header row mounts above it (the mid-run "已处理 0s" insertion
+    // was the reported one-frame jump).
+    const batchMessage: Message = {
+      ...placeholder,
+      toolCalls: [{
+        id: 'lifecycle-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect lifecycle' }] },
+        isExecuting: true,
+      }],
+    };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'lifecycle-batch',
+    };
+    useBatchProgressStore.getState().initBatch(identity, ['inspect lifecycle']);
+    useBatchProgressStore.getState().setTaskRunning(identity, 0);
+    view.rerender(
+      <MessageGroup conversationId={conversation.id} messages={[userMessage, batchMessage]} isLastGroup />,
+    );
+    expect(screen.getByRole('button', { name: /Open inspect lifecycle.*Running/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+
+    // Phase 3 — run settles: the fold header appears, now truthfully in the
+    // past tense, together with the completion collapse.
+    useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+    const settledUser: Message = { ...userMessage, runState: 'completed', runEndedAt: 3_000 };
+    const settledBatch: Message = { ...batchMessage, isStreaming: false };
+    const finalMessage: Message = {
+      id: 'assistant-lifecycle-final',
+      role: 'assistant',
+      content: 'Lifecycle finished.',
+      timestamp: 2_900,
+      loopId: 'loop-lifecycle',
+    };
+    useChatStore.setState({
+      conversations: { [conversation.id]: { ...conversation, status: 'idle' } },
+    });
+    view.rerender(
+      <MessageGroup conversationId={conversation.id} messages={[settledUser, settledBatch, finalMessage]} isLastGroup />,
+    );
+    expect(screen.getByText(/Worked for/)).toBeInTheDocument();
   });
 
   it('does not re-auto-collapse after the user manually expands a successful fold', async () => {

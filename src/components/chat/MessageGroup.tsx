@@ -425,13 +425,22 @@ export function buildRenderSegments(
 // Index (exclusive) up to which segments fold into the collapsible "工作过程"
 // group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. When the
 // turn is done and ends in a text answer, the fold stops at that answer;
-// otherwise (streaming, text-first with no closing answer, process after the
-// last text) the whole group folds. Authored content is still never hidden:
-// the collapsed render branch filters segments by kind and keeps text/user
-// segments visible unconditionally — the swallow bug this replaced lived in
-// that filter, not in the fold range.
+// otherwise (text-first with no closing answer, process after the last text)
+// the whole group folds. Authored content is still never hidden: the collapsed
+// render branch filters segments by kind and keeps text/user segments visible
+// unconditionally — the swallow bug this replaced lived in that filter, not in
+// the fold range.
+//
+// While the run is still in progress the fold does not exist at all (null):
+// the header's "已处理 Xs" wording is a settled-turn summary, and mounting the
+// header row mid-run inserted ~28px above the live thinking/step block — under
+// SmoothHeight's 40px threshold, so it landed as a one-frame jump. Deferring
+// the whole wrapper keeps the in-run row structure stable (the typing dots
+// swap 1:1 with TaskBlock's first row) and the header only appears together
+// with the completion collapse, which SmoothHeight bridges.
 // eslint-disable-next-line react-refresh/only-export-components
 export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
+  if (!isDone) return null;
   const hasProcess = segments.some((segment) =>
     segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
   if (!hasProcess) return null;
@@ -442,7 +451,7 @@ export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolea
   const hasProcessAfterLastText = lastTextIdx >= 0 && segments
     .slice(lastTextIdx + 1)
     .some((segment) => segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
-  if (isDone && lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
+  if (lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
   return segments.length;
 }
 
@@ -1078,50 +1087,50 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             {/* Render segments: text blocks and merged step groups.
                 When the turn is done and has a final text answer, all
                 intermediate segments (thinking/plan/steps) are folded
-                behind a single collapsible "工作过程" row (Codex-style). */}
-            {workFoldEnd == null ? (
-              <>
-                {segments.map(renderSegment)}
-              </>
-            ) : (
-              <>
-                <div ref={workProcessRef}>
-                  {/* Lightweight fold header — matches the thinking/step block
-                      style (muted text + trailing chevron, no card background). */}
-                  <button
-                    type="button"
-                    aria-expanded={workExpanded}
-                    onClick={() => {
-                      useWorkProcessFoldStore.getState().setMode(
-                        conversationId,
-                        foldKey,
-                        workExpanded ? 'collapsed' : 'expanded',
-                      );
-                    }}
-                    className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
-                  >
-                    <span>{foldHeaderLabel}</span>
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
-                    />
-                  </button>
-                  {workExpanded
-                    ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
-                    : segments.slice(0, workFoldEnd)
-                        /* Collapsing hides PROCESS segments only. Assistant text
-                           and mid-loop user messages are authored conversation
-                           content and must survive any fold state — hiding them
-                           here was the "collapse swallows the answer" bug. Keep
-                           the original segment index so keys stay stable across
-                           fold toggles. */
-                        .map((seg, i) => ({ seg, i }))
-                        .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
-                        .map(({ seg, i }) => renderSegment(seg, i))}
-                </div>
-                {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
-              </>
-            )}
+                behind a single collapsible "工作过程" row (Codex-style).
+                While the run is in progress workFoldEnd is null: everything
+                renders inline and no header row exists yet — but the
+                workProcessRef wrapper stays mounted either way, so the
+                process subtree keeps its DOM parent when the fold appears
+                at completion (no remount = keyboard focus survives, which
+                the focus-deferred auto-collapse below relies on). */}
+            <div ref={workProcessRef}>
+              {workFoldEnd != null && (
+                /* Lightweight fold header — matches the thinking/step block
+                    style (muted text + trailing chevron, no card background). */
+                <button
+                  type="button"
+                  aria-expanded={workExpanded}
+                  onClick={() => {
+                    useWorkProcessFoldStore.getState().setMode(
+                      conversationId,
+                      foldKey,
+                      workExpanded ? 'collapsed' : 'expanded',
+                    );
+                  }}
+                  className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
+                >
+                  <span>{foldHeaderLabel}</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                  />
+                </button>
+              )}
+              {workFoldEnd == null || workExpanded
+                ? segments.slice(0, workFoldEnd ?? segments.length).map((seg, i) => renderSegment(seg, i))
+                : segments.slice(0, workFoldEnd)
+                    /* Collapsing hides PROCESS segments only. Assistant text
+                       and mid-loop user messages are authored conversation
+                       content and must survive any fold state — hiding them
+                       here was the "collapse swallows the answer" bug. Keep
+                       the original segment index so keys stay stable across
+                       fold toggles. */
+                    .map((seg, i) => ({ seg, i }))
+                    .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
+                    .map(({ seg, i }) => renderSegment(seg, i))}
+            </div>
+            {workFoldEnd != null && segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
             </SmoothHeight>
 
             {/* Interactive notice cards (Module I) — skill proposals etc.

@@ -33,6 +33,10 @@ process.on('unhandledRejection', (error) => {
 });
 
 function fixtureServer() {
+  const treeNodes = Array.from({ length: 24 }, (_, index) => {
+    const number = String(index + 1).padStart(2, '0');
+    return `<li data-node-id="node-${number}" data-config="config-${number}">Node ${number}</li>`;
+  }).join('');
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(`<!doctype html>
@@ -42,6 +46,7 @@ function fixtureServer() {
           <label>Name <input id="name" placeholder="Your name"></label>
           <button id="submit" onclick="document.querySelector('#output').textContent='Hello '+document.querySelector('#name').value">Submit</button>
           <div id="output">Waiting</div>
+          <ul id="tree">${treeNodes}</ul>
         </body>
       </html>`);
   });
@@ -177,6 +182,18 @@ app.whenReady().then(async () => {
       snapshot,
     );
 
+    const treeHtml = await performBrowserAutomation('get_html', {
+      tabId,
+      selector: '#tree',
+    });
+    record(
+      'get_html_scopes_the_20_plus_node_fixture',
+      treeHtml.includes('data-node-id="node-01"') &&
+        treeHtml.includes('data-node-id="node-24"') &&
+        !treeHtml.includes('id="submit"'),
+      treeHtml,
+    );
+
     await performBrowserAutomation('fill', {
       tabId,
       locator: { css: '#name' },
@@ -309,6 +326,46 @@ app.whenReady().then(async () => {
         !getTabsResponse.error &&
         responseText.includes('Abu Browser Runtime Fixture'),
       { initialized, getTabsResponse },
+    );
+
+    await mcpDispatch(app, 'mcp_write', {
+      id: mcpId,
+      message: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'query_js',
+          arguments: {
+            tabId,
+            selector: '#tree',
+            code: `
+              const rows = [...document.querySelectorAll('[data-node-id]')];
+              document.querySelector('[data-node-id="node-01"]').textContent = 'copy-only change';
+              ({
+                count: rows.length,
+                configs: rows.map((row) => ({ id: row.dataset.nodeId, config: row.dataset.config })),
+              });
+            `,
+          },
+        },
+      }),
+    });
+    const queryResponse = await waitForRpcResponse(win, stashKey, 3);
+    const queryText = queryResponse.result?.content?.[0]?.text || '';
+    const liveFirstNode = await performBrowserAutomation('extract_text', {
+      tabId,
+      selector: '[data-node-id="node-01"]',
+    });
+    record(
+      'bundled_mcp_full_chain_query_js_reads_all_nodes_without_live_mutation',
+      !queryResponse.error &&
+        queryText.includes('"count": 24') &&
+        queryText.includes('"id": "node-01"') &&
+        queryText.includes('"config": "config-24"') &&
+        queryText.includes('read-only copy') &&
+        liveFirstNode === 'Node 01',
+      { queryResponse, liveFirstNode, executeJsCallsForThisPath: 0 },
     );
     mcpDispatch(app, 'mcp_kill', { id: mcpId });
     mcpId = null;

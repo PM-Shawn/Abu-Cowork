@@ -77,7 +77,7 @@ describe('getBlockedToolsForLevel', () => {
     // Read-only tools the policy module never enumerates (registered
     // dynamically by the browser servers) — the namespace wildcard must catch
     // these too.
-    'snapshot', 'screenshot', 'get_tabs',
+    'snapshot', 'query_js', 'screenshot', 'get_tabs',
   ];
 
   function blocks(level: Parameters<typeof getBlockedToolsForLevel>[0], tool: string): boolean {

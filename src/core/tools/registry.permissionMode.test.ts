@@ -180,11 +180,15 @@ describe('browser automation approval gate', () => {
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
-    const decision = await checkToolApproval(
+    const snapshotDecision = await checkToolApproval(
       'abu-browser__snapshot', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never,
     );
+    const queryDecision = await checkToolApproval(
+      'abu-browser__query_js', { tabId: 1, code: 'document.title' }, { conversationId: 'conv-1' } as never, confirm as never,
+    );
 
-    expect(decision.decision).toBe('allow');
+    expect(snapshotDecision.decision).toBe('allow');
+    expect(queryDecision.decision).toBe('allow');
     expect(asked).toHaveLength(0);
   });
 

@@ -442,7 +442,11 @@ export default function ChatView({
     highlightFadeTimerRef.current = setTimeout(() => setHighlightedMessageId(null), 2600);
   }, [pendingSearchJump, activeConvId, messageCount, updatePinned]);
 
-  const handleSend = async (text: string, images?: ImageAttachment[], workspacePath?: string | null) => {
+  const handleSend = async (
+    text: string,
+    images?: ImageAttachment[],
+    workspacePath?: string | null,
+  ) => {
     // Block sending if API key is not configured (Ollama doesn't need one).
     // Returning false hands the text back to the composer — opening settings
     // used to swallow whatever the user had typed.
@@ -452,9 +456,8 @@ export default function ChatView({
       return false;
     }
 
-    let convId = activeConv?.id;
-
     if (text.trim() === '/compact') {
+      const convId = activeConv?.id;
       const res = await compactConversationManually(convId ?? '');
       useToastStore.getState().addToast(
         res.compacted
@@ -466,11 +469,11 @@ export default function ChatView({
       return;
     }
 
+    let convId = activeConv?.id;
     const isNewConversation = !convId;
     if (!convId) {
       convId = createConversation(workspacePath);
     }
-    // Auto-collapse sidebar when sending first message in a new conversation
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
@@ -504,7 +507,9 @@ export default function ChatView({
         type: 'error',
         title: dispatch.error || t.chat.conversationBusy,
       });
-      if (shouldRestoreComposerAfterDispatch(dispatch)) return false;
+      if (shouldRestoreComposerAfterDispatch(dispatch)) {
+        return false;
+      }
     }
   };
 

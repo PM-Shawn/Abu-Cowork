@@ -3,11 +3,19 @@
  * Node sidecar an explicit command-host environment marker. Tauri has none of
  * these signals, so its runtime and invoke contracts remain unchanged.
  */
+import type { MediaRef } from '@/core/subagent/delegatedUserTurn';
+
 interface AbuShellBridge {
   mainSupervisesSidecar?: boolean;
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
+  authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
+  selectUserAttachments?: (request: ElectronUserAttachmentSelectRequest) => Promise<ElectronUserAttachmentToken[]>;
+  readUserAttachment?: (request: ElectronUserAttachmentReadRequest) => Promise<Uint8Array>;
+  releaseUserAttachment?: (request: ElectronUserAttachmentReleaseRequest) => Promise<ElectronUserAttachmentReleaseResult>;
+  persistDelegatedMedia?: (request: ElectronDelegatedMediaPersistRequest) => Promise<MediaRef>;
+  readDelegatedMedia?: (request: ElectronDelegatedMediaReadRequest) => Promise<Uint8Array | null>;
   subscribeSidecarEvents?: (handler: (event: ElectronSidecarEvent) => void) => () => void;
   getSidecarBridgeSnapshot?: (afterSequence?: number) => Promise<ElectronSidecarBridgeSnapshot>;
   recordRuntimeEvent?: (event: Record<string, unknown>) => void;
@@ -25,6 +33,53 @@ export const MAX_ELECTRON_IMAGE_SAVE_BYTES = 32 * 1024 * 1024;
 export interface ElectronImageSaveResult {
   saved: boolean;
   fileName?: string;
+}
+
+export interface ElectronUserAttachmentReadRequest {
+  token: string;
+}
+
+export interface ElectronUserAttachmentReleaseRequest {
+  token: string;
+}
+
+export interface ElectronUserAttachmentReleaseResult {
+  released: boolean;
+}
+
+export interface ElectronUserAttachmentAuthorizeRequest {
+  mediaType: ElectronUserAttachmentMediaType;
+  maxBytes?: number;
+}
+
+export type ElectronUserAttachmentMediaType =
+  | 'image/jpeg'
+  | 'image/png'
+  | 'image/gif'
+  | 'image/webp';
+
+export interface ElectronUserAttachmentSelectRequest {
+  mediaTypes?: ElectronUserAttachmentMediaType[];
+}
+
+export interface ElectronUserAttachmentToken {
+  token: string;
+  name: string;
+  mediaType: ElectronUserAttachmentMediaType;
+  expiresAt: number;
+}
+
+export interface ElectronDelegatedMediaPersistRequest {
+  conversationId: string;
+  bytes: Uint8Array;
+  mediaType: string;
+  width?: number;
+  height?: number;
+}
+
+export interface ElectronDelegatedMediaReadRequest {
+  conversationId: string;
+  ref: MediaRef;
 }
 
 export interface ElectronSidecarEvent {
@@ -92,12 +147,112 @@ export function hasElectronImageSaveHost(): boolean {
   return typeof getRuntime().__ABU_SHELL__?.saveImageAttachment === 'function';
 }
 
+export function hasElectronUserAttachmentReadHost(): boolean {
+  return typeof getRuntime().__ABU_SHELL__?.readUserAttachment === 'function';
+}
+
+export function hasElectronUserAttachmentAuthorizeHost(): boolean {
+  const shell = getRuntime().__ABU_SHELL__;
+  return typeof shell?.authorizeUserAttachment === 'function'
+    && typeof shell.readUserAttachment === 'function';
+}
+
+export function hasElectronUserAttachmentSelectHost(): boolean {
+  const shell = getRuntime().__ABU_SHELL__;
+  return typeof shell?.selectUserAttachments === 'function'
+    && typeof shell.readUserAttachment === 'function';
+}
+
+export function hasElectronUserAttachmentReleaseHost(): boolean {
+  return typeof getRuntime().__ABU_SHELL__?.releaseUserAttachment === 'function';
+}
+
+export function hasElectronDelegatedMediaStore(): boolean {
+  const shell = getRuntime().__ABU_SHELL__;
+  return typeof shell?.persistDelegatedMedia === 'function'
+    && typeof shell.readDelegatedMedia === 'function';
+}
+
 /** Save one image through Electron's user-mediated native save dialog. */
 export async function saveElectronImageAttachment(
   request: ElectronImageSaveRequest,
 ): Promise<ElectronImageSaveResult | null> {
   const save = getRuntime().__ABU_SHELL__?.saveImageAttachment;
   return save ? await save(request) : null;
+}
+
+export async function readElectronUserAttachment(
+  request: ElectronUserAttachmentReadRequest,
+): Promise<Uint8Array> {
+  const read = getRuntime().__ABU_SHELL__?.readUserAttachment;
+  if (!read) throw new Error('Electron attachment read host is unavailable');
+  return await read(request);
+}
+
+export async function releaseElectronUserAttachment(
+  request: ElectronUserAttachmentReleaseRequest,
+): Promise<ElectronUserAttachmentReleaseResult> {
+  const release = getRuntime().__ABU_SHELL__?.releaseUserAttachment;
+  if (!release) throw new Error('Electron attachment release host is unavailable');
+  return await release(request);
+}
+
+export async function authorizeElectronUserAttachment(
+  file: File,
+  request: ElectronUserAttachmentAuthorizeRequest,
+): Promise<ElectronUserAttachmentToken> {
+  const authorize = getRuntime().__ABU_SHELL__?.authorizeUserAttachment;
+  if (!authorize) throw new Error('Electron attachment authorization host is unavailable');
+  return await authorize(file, request);
+}
+
+export async function selectElectronUserAttachments(
+  request: ElectronUserAttachmentSelectRequest = {},
+): Promise<ElectronUserAttachmentToken[]> {
+  const select = getRuntime().__ABU_SHELL__?.selectUserAttachments;
+  if (!select) throw new Error('Electron attachment picker host is unavailable');
+  return await select(request);
+}
+
+export async function persistElectronDelegatedMedia(
+  request: ElectronDelegatedMediaPersistRequest,
+): Promise<MediaRef> {
+  const persist = getRuntime().__ABU_SHELL__?.persistDelegatedMedia;
+  if (!persist) throw new Error('Electron delegated media store is unavailable');
+  return await persist(request);
+}
+
+export async function readElectronDelegatedMedia(
+  request: ElectronDelegatedMediaReadRequest,
+  signal?: AbortSignal,
+): Promise<Uint8Array | null> {
+  const read = getRuntime().__ABU_SHELL__?.readDelegatedMedia;
+  if (!read) return null;
+  if (!signal) return await read(request);
+  if (signal.aborted) throw new Error('Delegated media read aborted');
+  return await new Promise<Uint8Array | null>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Delegated media read aborted'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    read(request).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

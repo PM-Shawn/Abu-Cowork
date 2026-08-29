@@ -47,7 +47,7 @@ describe('providerCallHealth', () => {
     });
 
     it('does NOT flag transient / non-config codes', () => {
-      for (const code of ['rate_limit', 'overloaded', 'server_error', 'network_error', 'network_blocked', 'context_too_long', 'cancelled', 'unknown'] as const) {
+      for (const code of ['content_policy', 'rate_limit', 'overloaded', 'server_error', 'network_error', 'network_blocked', 'context_too_long', 'cancelled', 'unknown'] as const) {
         expect(isConfigFailureCode(code)).toBe(false);
       }
     });

@@ -283,6 +283,7 @@ export interface TranslationDict {
     runRecovering: string;
     runFailed: string;
     runConnectionFailed: string;
+    contentPolicyRejected: string;
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
@@ -432,6 +433,16 @@ export interface TranslationDict {
     toolsRemoved: string;
     /** Tool-update notice footer. */
     toolsUpdatedFooter: string;
+    /** Composer rejected an out-of-scope direct PDF attachment. {name} */
+    unsupportedDocumentAttachment: string;
+    /** Composer is still admitting pasted/dropped/picked attachments. */
+    attachmentAdmissionPending: string;
+    /** Composer has an in-flight initial send for this draft. */
+    sendAlreadyPending: string;
+    /** Composer failed to admit an attachment. */
+    attachmentAdmissionFailed: string;
+    /** Accessible name for the skill/agent suggestion listbox. */
+    composerSuggestions: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
@@ -446,6 +457,14 @@ export interface TranslationDict {
       hookBlocked: string;
       /** Subagent produced no content. */
       noContent: string;
+      /** Delegated images need a vision-capable target model. */
+      delegatedVisionUnsupported: string;
+      /** Delegated documents need a target model with document blocks. */
+      delegatedDocumentUnsupported: string;
+      /** Delegated attachment metadata exceeded the safe request envelope. */
+      delegatedMediaLimitExceeded: string;
+      /** Delegated-media envelope failed structural validation. */
+      delegatedMediaInvalid: string;
       /** Required MCP tools are unavailable before delegation. {agentName} {requirements} {servers} */
       mcpRequiredUnavailable: string;
       /** Agent tools frontmatter contains non-string entries. {agentName} {positions} */
@@ -1273,6 +1292,7 @@ export interface TranslationDict {
     errMap: {
       // AI service codes
       aiAuth: string;
+      aiContentPolicy: string;
       aiRateLimit: string;
       aiOverloaded: string;
       aiServerError: string;

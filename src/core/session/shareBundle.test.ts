@@ -116,6 +116,71 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
   });
 
+  it('allowlists and redacts provider error details before sharing', async () => {
+    const secret = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
+    const conv = makeConv([
+      {
+        id: 'failed-valid',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 1,
+        runState: 'failed',
+        runError: `provider echoed ${secret}`,
+        runErrorDetails: {
+          status: 403,
+          error_type: `governance.${secret}`,
+          traceId: secret,
+          summary: `provider echoed ${secret}`,
+        },
+      },
+      {
+        id: 'failed-malformed',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 2,
+        runState: 'failed',
+        runErrorDetails: {
+          status: 403,
+          rawBody: `private prompt and ${secret}`,
+        } as never,
+      },
+      {
+        id: 'failed-legacy-raw-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 3,
+        runState: 'failed',
+        runError: '{"private":"legacy provider body without a credential pattern"}',
+      },
+      {
+        id: 'completed-with-stale-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 4,
+        runState: 'completed',
+        runError: 'must not survive a completed row',
+        runErrorDetails: { status: 403 },
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+    const serialized = JSON.stringify(bundle);
+
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('private prompt');
+    expect(serialized).not.toContain('rawBody');
+    expect(serialized).not.toContain('legacy provider body without a credential pattern');
+    expect(bundle.messages[0].runError).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.error_type).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.traceId).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.summary).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[1].runErrorDetails).toBeUndefined();
+    expect(bundle.messages[2].runError).toBe('Provider request failed');
+    expect(bundle.messages[3].runError).toBeUndefined();
+    expect(bundle.messages[3].runErrorDetails).toBeUndefined();
+    expect(bundle.stats.redactionCount).toBeGreaterThanOrEqual(4);
+  });
+
   it('clears isStreaming flags and tool-call execution state', async () => {
     const conv = makeConv([
       {

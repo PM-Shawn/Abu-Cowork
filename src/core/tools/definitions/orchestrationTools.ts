@@ -25,6 +25,7 @@ import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
+import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import { buildSchemaInstruction, extractJsonObject, validateStructured } from '../../agent/structuredOutput';
 import { subagentStopReasonFromBatchSummary } from '../../agent/batchTerminalSummary';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
@@ -392,6 +393,10 @@ export const runAgentBatchTool: ToolDefinition = {
     const loopCtx = toolExecContext?.loopId
       ? getLoopContext(toolExecContext.loopId)
       : getCurrentLoopContext();
+    const materializerLoopCtx = toolExecContext?.conversationId !== undefined
+      && toolExecContext.loopId !== undefined
+      ? getLoopContext(toolExecContext.loopId)
+      : undefined;
 
     // ── Tool call ID for batch progress tracking ──────────────────────────
     const batchIdentity: BatchIdentity = {
@@ -404,6 +409,20 @@ export const runAgentBatchTool: ToolDefinition = {
 
     // ── 3. Extract parent conversation summary ─────────────────────────────
     const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
+
+    // The batch shares one immutable snapshot of the shell-owned triggering
+    // turn. Materialising inside a worker would duplicate storage work and
+    // could bind children to different mutable conversation state.
+    if (!materializerLoopCtx
+      || toolExecContext?.conversationId !== materializerLoopCtx.conversationId
+      || toolExecContext.loopId !== materializerLoopCtx.loopId) {
+      throw new Error('Cannot delegate user turn: missing or mismatched trusted loop context');
+    }
+    const delegatedUserTurn = await materializeDelegatedUserTurn({
+      conversationId: materializerLoopCtx.conversationId,
+      loopId: materializerLoopCtx.loopId,
+      signal: loopCtx?.signal,
+    });
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };
@@ -522,6 +541,10 @@ export const runAgentBatchTool: ToolDefinition = {
               task: effectiveTask,
               context: resolved.context,
               parentConversationSummary,
+              delegatedUserTurn,
+              parentLoopId: delegatedUserTurn.origin.loopId,
+              parentConversationId: delegatedUserTurn.origin.conversationId,
+              parentUserMessageId: delegatedUserTurn.origin.messageId,
               signal: sig,
               commandConfirmCallback: loopCtx?.commandConfirmCallback,
               filePermissionCallback: loopCtx?.filePermissionCallback,

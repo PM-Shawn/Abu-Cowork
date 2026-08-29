@@ -5,6 +5,7 @@ import { agentRegistry } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
+import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
 import { useChatStore } from '../../../stores/chatStore';
@@ -254,6 +255,10 @@ export const delegateToAgentTool: ToolDefinition = {
     const loopCtx = toolExecContext?.loopId
       ? getLoopContext(toolExecContext.loopId)
       : getCurrentLoopContext();
+    const materializerLoopCtx = toolExecContext?.conversationId !== undefined
+      && toolExecContext.loopId !== undefined
+      ? getLoopContext(toolExecContext.loopId)
+      : undefined;
     const ownerConversationId = toolExecContext?.conversationId ?? loopCtx?.conversationId;
 
     // 4. Set agent status indicator
@@ -320,11 +325,28 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 8. Sync mode: blocking await
     try {
+      // A model tool call may describe its task, but it never chooses the
+      // source message. The active shell loop owns both ids. Refuse to
+      // delegate when the tool context cannot be proved to refer to it.
+      if (!materializerLoopCtx
+        || toolExecContext?.conversationId !== materializerLoopCtx.conversationId
+        || toolExecContext.loopId !== materializerLoopCtx.loopId) {
+        throw new Error('Cannot delegate user turn: missing or mismatched trusted loop context');
+      }
+      const delegatedUserTurn = await materializeDelegatedUserTurn({
+        conversationId: materializerLoopCtx.conversationId,
+        loopId: materializerLoopCtx.loopId,
+        signal: subagentSignal,
+      });
       const result = await runSubagent({
         agent,
         task,
         context,
         parentConversationSummary,
+        delegatedUserTurn,
+        parentLoopId: delegatedUserTurn.origin.loopId,
+        parentConversationId: delegatedUserTurn.origin.conversationId,
+        parentUserMessageId: delegatedUserTurn.origin.messageId,
         signal: subagentSignal,
         commandConfirmCallback: loopCtx?.commandConfirmCallback,
         filePermissionCallback: loopCtx?.filePermissionCallback,

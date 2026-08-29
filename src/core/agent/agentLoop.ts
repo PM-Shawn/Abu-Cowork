@@ -1,7 +1,7 @@
-import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, MessageContent, SubagentStopReason, ToolExecutionContext } from '../../types';
+import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
-import { LLMError, formatLlmDisplayError } from '../llm/adapter';
+import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
@@ -56,6 +56,10 @@ import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
 import type { SubagentProgressEvent } from './subagentLoop';
+import {
+  materializeDelegatedUserTurn,
+  prepareDelegatedUserTurnForRequest,
+} from '../subagent/delegatedUserTurnMaterializer';
 import { createSubagentController } from './subagentAbort';
 import { ActiveToolResultAdmission } from './activeToolResultContent';
 import {
@@ -534,7 +538,7 @@ export interface AgentLoopOptions {
    * the initial user message is already present in the transcript (or when a
    * pre-persisted shell row is handed in). Never serialized to the sidecar.
    */
-  onMessageTaken?: () => void;
+  onMessageTaken?: (messageId?: string) => void;
   /** Host-owned, immutable authority ceiling for unattended/background runs. */
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   /** Shell-only factory; deliberately omitted from every sidecar wire shape. */
@@ -655,8 +659,39 @@ export function buildInterruptedToolCallContext(
   };
 }
 
+export function buildToolRosterUpdateMessage(options: {
+  id: string;
+  loopId: string;
+  timestamp: number;
+  addedToolNames?: string[];
+  removedToolNames?: string[];
+}): Message {
+  const tc = getI18n().chat;
+  const parts: string[] = [tc.toolsUpdatedHeader];
+  const addedToolNames = options.addedToolNames ?? [];
+  const removedToolNames = options.removedToolNames ?? [];
+  if (addedToolNames.length > 0) {
+    parts.push(format(tc.toolsAdded, { tools: addedToolNames.join(', ') }));
+  }
+  if (removedToolNames.length > 0) {
+    parts.push(format(tc.toolsRemoved, { tools: removedToolNames.join(', ') }));
+  }
+  parts.push(tc.toolsUpdatedFooter);
+
+  return {
+    id: options.id,
+    role: 'user',
+    content: parts.join('\n'),
+    timestamp: options.timestamp,
+    loopId: options.loopId,
+    isSystem: true,
+  };
+}
+
 interface AgentLoopResultBase {
   error?: string;
+  /** Bounded upstream fields for the failed-run terminal; never the raw body. */
+  upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
   stopReason?: 'sidecar_unavailable';
 }
@@ -742,8 +777,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     const runningConv = getConversationReader().getConversation(conversationId);
     if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
       const interactive = isInteractiveDesktop(options, runningConv);
-      const hasImages = Boolean(options?.images?.length);
-      const stageable = userMessage.trim().length > 0 && !hasImages;
+      const hasAttachments = Boolean(options?.images?.length);
+      const stageable = userMessage.trim().length > 0 && !hasAttachments;
       if (interactive && stageable) {
         if (options?.requireNewRun) {
           return {
@@ -760,7 +795,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       }
       return {
         reason: 'error',
-        error: hasImages
+        error: hasAttachments
           ? getI18n().chat.attachmentDuringRun
           : getI18n().chat.conversationBusy,
         messageTaken: false,
@@ -768,7 +803,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     }
   }
 
-  if (options?.prePersistedUserMessageId) options.onMessageTaken?.();
+  if (options?.prePersistedUserMessageId) {
+    options.onMessageTaken?.(options.prePersistedUserMessageId);
+  }
 
   // New turn starts clean: drop any stale plan-mode lock from a prior/abandoned plan (see planMode.ts).
   clearPlanMode(conversationId);
@@ -839,14 +876,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // the user needs to configure a key before any skill/agent routing takes effect.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      const userMessageId = generateId();
       chatDelta.addMessage(conversationId, {
-        id: generateId(),
+        id: userMessageId,
         role: 'user',
         content: userContent,
         timestamp: Date.now(),
         loopId,
       });
-      options?.onMessageTaken?.();
+      options?.onMessageTaken?.(userMessageId);
     }
     chatDelta.addMessage(conversationId, {
       id: generateId(),
@@ -930,14 +968,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // same shape as the missing-API-key path above.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
+      const userMessageId = generateId();
       chatDelta.addMessage(conversationId, {
-        id: generateId(),
+        id: userMessageId,
         role: 'user',
         content: userContent,
         timestamp: Date.now(),
         loopId,
       });
-      options?.onMessageTaken?.();
+      options?.onMessageTaken?.(userMessageId);
     }
     const detail = error instanceof Error ? error.message : String(error);
     chatDelta.addMessage(conversationId, {
@@ -1061,9 +1100,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Include skill info if a skill was triggered; build multimodal content if images are attached
   if (!options?.prePersistedUserMessageId) {
     const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
+    const userMessageId = generateId();
 
     chatDelta.addMessage(conversationId, {
-      id: generateId(),
+      id: userMessageId,
       role: 'user',
       content: userContent,
       timestamp: Date.now(),
@@ -1077,7 +1117,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         description: route.delegateAgent.description,
       } : undefined,
     });
-    options?.onMessageTaken?.();
+    options?.onMessageTaken?.(userMessageId);
   }
 
   // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
@@ -1204,10 +1244,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     );
 
     try {
+      // This route is entered only after the triggering user message has been
+      // persisted above. Bind the envelope to shell-owned ids; never let a
+      // route/tool argument choose an arbitrary source message or file.
+      const delegatedUserTurn = await materializeDelegatedUserTurn({ conversationId, loopId, signal: subagentSignal });
       const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
         parentConversationSummary: parentConversationSummary || undefined,
+        delegatedUserTurn,
         signal: subagentSignal,
         commandConfirmCallback: confirmCb,
         filePermissionCallback: filePermCb,
@@ -1216,6 +1261,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         triggerId: _convForContext?.triggerId,
         scheduledTaskId: _convForContext?.scheduledTaskId,
         parentLoopId: loopId,
+        parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
         persistParentToolImages: true,
         settingsReader: entrySettingsReader,
@@ -1236,7 +1282,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // delegate run. Re-check the abort signal here so a user Stop during an
       // @agent delegation is reported as {reason:'aborted'}, not a successful
       // completion (schedulers/triggers/isIncompleteReason depend on this).
-      if (abortController.signal.aborted || delegateExitReason === 'aborted') {
+      if (abortController.signal.aborted || subagentSignal.aborted || delegateExitReason === 'aborted') {
         subagentCleanup();
         chatDelta.removeActiveAgent(conversationId, delegateAgent.name);
         chatDelta.setAgentStatus(conversationId, 'idle');
@@ -1291,7 +1337,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.setAgentStatus(conversationId, 'idle');
         chatDelta.setConversationStatus(conversationId, 'error');
         notifyTaskError(convTitle, conversationId);
-        return { reason: 'error', error: result.text, messageTaken: true };
+        return {
+          reason: 'error',
+          error: result.text,
+          messageTaken: true,
+          ...(result.upstream ? { upstream: result.upstream } : {}),
+        };
       }
 
       eventRouter.route({
@@ -1315,6 +1366,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isUserAbort = err instanceof Error
         && (err.name === 'AbortError'
           || abortController.signal.aborted
+          || subagentSignal.aborted
           || (err instanceof LLMError && err.code === 'cancelled'));
       if (isUserAbort) {
         chatDelta.cancelStreaming(conversationId);
@@ -1324,11 +1376,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return { reason: 'aborted' };
       }
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const terminalErrorMessage = err instanceof LLMError
+        ? formatLlmTerminalError(err)
+        : errorMessage;
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
       let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
         ? getI18n().chat.gatewayUnreachable
+        : err instanceof LLMError && err.code === 'content_policy'
+        ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
       if (err instanceof LLMError && err.code === 'not_found') {
         delegateDisplayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
@@ -1343,12 +1400,17 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       chatDelta.finishStreaming(conversationId, delegateErrorId);
       abortRegistry.clearAbortController(conversationId);
-      eventRouter.route({ type: 'error', loopId, error: errorMessage });
+      eventRouter.route({ type: 'error', loopId, error: terminalErrorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setConversationStatus(conversationId, 'error');
       const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
-      return { reason: 'error', error: errorMessage, messageTaken: true };
+      return {
+        reason: 'error',
+        error: terminalErrorMessage,
+        messageTaken: true,
+        ...(err instanceof LLMError && err.upstream ? { upstream: err.upstream } : {}),
+      };
     }
     return { reason: 'completed' };
   }
@@ -1372,6 +1434,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   let continueLoop = true;
   let exitReason: AgentLoopExitReason = 'completed';
   let exitError: string | undefined;
+  let exitUpstream: UpstreamErrorDetails | undefined;
   let awaitingUserRecovery = false;
   // Cache of filePath → base64 for image rehydration, shared across every turn
   // of this request's tool-use loop so a stripped image is read from disk once,
@@ -1955,43 +2018,45 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         toolTokens
       );
       let preparedMessages = initialBudgetResult.messages;
+      let lastProviderMessages = preparedMessages;
+      let primaryBudgetGateLogged = false;
 
-      // Step 4: Rehydrate stripped image base64 from disk before sending.
-      // Persisted images keep only `filePath` (base64 cleared to save disk); the
-      // send path used the empty data directly, emitting `data:<mime>;base64,`
-      // (empty) → provider "Invalid base64 image_url", bricking every later turn.
-      // rehydrateForSend gates on vision + is the single shared send-prep seam
-      // (see also the recovery retry below — both must use it).
-      preparedMessages = await rehydrateForSend(preparedMessages, {
-        vision: modelCaps.vision,
-        conversationId,
-        workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
-        cache: imageBase64Cache,
-        maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
-      });
-
-      // The final provider-boundary invariant. Re-run after image rehydration so
-      // every primary send is checked in its actual outbound shape, not merely
-      // against the persisted (base64-stripped) history representation.
-      const finalBudgetResult = enforceContextBudget(
-        preparedMessages,
-        effectiveSystemPrompt,
-        contextWindowSize,
-        maxOutputTokens,
-        toolTokens,
-      );
-      preparedMessages = finalBudgetResult.messages;
-      if (initialBudgetResult.strategy !== 'unchanged' || finalBudgetResult.strategy !== 'unchanged') {
-        logger.info('Context budget gate applied', {
-          tokensBefore: initialBudgetResult.tokensBefore,
-          tokensAfter: finalBudgetResult.tokensAfter,
-          inputBudget: finalBudgetResult.inputBudget,
-          safetyMarginTokens: finalBudgetResult.safetyMarginTokens,
-          strategy: initialBudgetResult.strategy === 'unchanged'
-            ? finalBudgetResult.strategy
-            : initialBudgetResult.strategy,
+      const buildProviderAttemptMessages = async (
+        baseMessages: Message[],
+        budgetWindowSize: number,
+      ) => {
+        // Step 4: Rehydrate provider-bound media for this attempt.
+        // Delegated media refs are intentionally expanded inside the retry
+        // attempt so provider retries re-read shell-owned media instead of
+        // reusing a run-lifetime base64 snapshot. Persisted images still share
+        // the imageBase64Cache because that cache is for local file rehydration,
+        // not delegated ref materialization.
+        let outboundMessages = await prepareDelegatedUserTurnForRequest(
+          baseMessages,
+          abortController.signal,
+          conversationId,
+        );
+        outboundMessages = await rehydrateForSend(outboundMessages, {
+          vision: modelCaps.vision,
+          conversationId,
+          workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
+          cache: imageBase64Cache,
+          maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
         });
-      }
+
+        // The final provider-boundary invariant. Re-run after media expansion so
+        // each actual outbound attempt, including retry attempts, is checked in
+        // its provider-bound shape rather than the persisted/ref-bearing shape.
+        const budgetResult = enforceContextBudget(
+          outboundMessages,
+          effectiveSystemPrompt,
+          budgetWindowSize,
+          maxOutputTokens,
+          toolTokens,
+        );
+        lastProviderMessages = budgetResult.messages;
+        return budgetResult;
+      };
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
@@ -2034,7 +2099,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           : undefined,
       };
 
-      const chatFn = () => adapter.chat(preparedMessages, chatOptions, eventHandler);
+      const chatFn = async () => {
+        const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize);
+        if (!primaryBudgetGateLogged && (
+          initialBudgetResult.strategy !== 'unchanged'
+          || providerBudgetResult.strategy !== 'unchanged'
+        )) {
+          logger.info('Context budget gate applied', {
+            tokensBefore: initialBudgetResult.tokensBefore,
+            tokensAfter: providerBudgetResult.tokensAfter,
+            inputBudget: providerBudgetResult.inputBudget,
+            safetyMarginTokens: providerBudgetResult.safetyMarginTokens,
+            strategy: initialBudgetResult.strategy === 'unchanged'
+              ? providerBudgetResult.strategy
+              : initialBudgetResult.strategy,
+          });
+          primaryBudgetGateLogged = true;
+        }
+        return adapter.chat(providerBudgetResult.messages, chatOptions, eventHandler);
+      };
 
       // Drive crash-protection flushes from elapsed time, not provider events.
       // A provider can emit one partial chunk and then stall indefinitely; the
@@ -2329,23 +2412,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             recovered = true;
           }
 
-          // Retry with recovered messages. These were rebuilt from the stripped
-          // store copies (compression / round-slicing above), so re-run the same
-          // send-prep seam the primary path uses — otherwise a vision model would
-          // get empty-base64 images silently dropped on this path.
-          preparedMessages = await rehydrateForSend(preparedMessages, {
-            vision: modelCaps.vision,
-            conversationId,
-            workspacePath: getConversationReader().getConversation(conversationId)?.workspacePath ?? null,
-            cache: imageBase64Cache,
-            maxRequestImageBytes: imagePolicy.maxRequestImageBytes,
-          });
-          const recoveryBudgetResult = enforceContextBudget(
+          // Retry with recovered messages through the same provider-attempt seam
+          // as the primary path. These messages were rebuilt from stripped store
+          // copies (compression / round-slicing above), so media expansion and
+          // the final budget gate must happen in the outbound shape.
+          const recoveryBudgetResult = await buildProviderAttemptMessages(
             preparedMessages,
-            effectiveSystemPrompt,
             recoveryContextWindowSize,
-            maxOutputTokens,
-            toolTokens,
           );
           preparedMessages = recoveryBudgetResult.messages;
           logger.info('Context recovery budget gate applied', {
@@ -2376,7 +2449,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         startGeneration(conversationId, {
           name: `turn-${turnCount}`,
           model: effectiveModelId,
-          input: preparedMessages,
+          input: lastProviderMessages,
           startTime: new Date(genStartTime),
         }).end({
           output: {
@@ -2392,7 +2465,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (finalUsage) {
         chatDelta.updateMessageUsage(conversationId, finalUsage, assistantMsgId);
         // Calibrate token estimator with actual API usage
-        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(preparedMessages) + toolTokens;
+        const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(lastProviderMessages) + toolTokens;
         calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
         // Record token usage
         const usageSnapshot = { ...finalUsage };
@@ -2524,22 +2597,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           const removed = tools.filter(t => !freshNames.has(t.name));
 
           if (added.length > 0 || removed.length > 0) {
-            const tc = getI18n().chat;
-            const parts: string[] = [tc.toolsUpdatedHeader];
-            if (added.length > 0) {
-              parts.push(format(tc.toolsAdded, { tools: added.map(t => t.name).join(', ') }));
-            }
-            if (removed.length > 0) {
-              parts.push(format(tc.toolsRemoved, { tools: removed.map(t => t.name).join(', ') }));
-            }
-            parts.push(tc.toolsUpdatedFooter);
-            chatDelta.addMessage(conversationId, {
+            chatDelta.addMessage(conversationId, buildToolRosterUpdateMessage({
               id: generateId(),
-              role: 'user',
-              content: parts.join('\n'),
+              addedToolNames: added.map(t => t.name),
+              removedToolNames: removed.map(t => t.name),
               timestamp: Date.now(),
               loopId,
-            });
+            }));
           }
         }
       }
@@ -2863,6 +2927,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       clearLoopContext(loopId);
       const errorMessage = err instanceof Error ? err.message : String(err);
+      const terminalErrorMessage = err instanceof LLMError
+        ? formatLlmTerminalError(err)
+        : errorMessage;
       const errorCode = err instanceof LLMError
         ? err.code
         : err instanceof ContextBudgetError
@@ -2873,6 +2940,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         code: errorCode,
         model: effectiveModelId,
         providerId: getActiveProvider(settingsForModel)?.id,
+        status: err instanceof LLMError ? err.upstream?.status : undefined,
+        error_type: err instanceof LLMError ? err.upstream?.error_type : undefined,
+        traceId: err instanceof LLMError ? err.upstream?.traceId : undefined,
+        providerSummary: err instanceof LLMError ? err.upstream?.summary : undefined,
       });
 
       // Fire-and-forget: report to console for quality monitoring
@@ -2902,7 +2973,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         && /^forbidden\s*$/i.test(err.message.trim());
       // Provider-returned balance/resource-package exhaustion (e.g. Zhipu GLM
       // answers HTTP 429 with this Chinese text). Replace the raw provider
-      // string with actionable copy; `result.error` keeps the original.
+      // string with actionable copy; the diagnostic path keeps the raw body,
+      // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
       const isContextBudgetError = err instanceof ContextBudgetError;
@@ -2918,6 +2990,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ? getI18n().chat.ollamaForbidden
         : isInsufficientBalanceError
         ? getI18n().chat.insufficientBalance
+        : errorCode === 'content_policy'
+        ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
       if (errorCode === 'not_found') {
         displayError += `\n\n${getI18n().chat.errorNotFoundHint}`;
@@ -2931,7 +3005,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       chatDelta.finishStreaming(conversationId, assistantMsgId);
       abortRegistry.clearAbortController(conversationId);
       // Error the TaskExecution
-      eventRouter.route({ type: 'error', loopId, error: errorMessage });
+      eventRouter.route({ type: 'error', loopId, error: terminalErrorMessage });
       persistExecutionSnapshot(conversationId, loopId);
       // Auto-deactivate skills on error
       deactivateAllSkills(conversationId, loopId);
@@ -2954,7 +3028,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
       notifyTaskError(convTitle, conversationId);
       exitReason = 'error';
-      exitError = errorMessage;
+      exitError = terminalErrorMessage;
+      exitUpstream = err instanceof LLMError ? err.upstream : undefined;
       continueLoop = false;
     } finally {
       if (streamFlushTimer) clearInterval(streamFlushTimer);
@@ -2967,6 +3042,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   await endComputerUseTaskLease();
   endConversationTrace(conversationId, { output: { reason: exitReason }, error: exitError });
   return exitReason === 'error'
-    ? { reason: 'error', error: exitError, messageTaken: true }
+    ? {
+        reason: 'error',
+        error: exitError,
+        messageTaken: true,
+        ...(exitUpstream ? { upstream: exitUpstream } : {}),
+      }
     : { reason: exitReason, error: exitError };
 }

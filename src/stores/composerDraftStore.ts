@@ -35,8 +35,11 @@ export interface ComposerSuggestion {
 
 export interface ComposerFileAttachment {
   id: string;
-  path: string;
+  path?: string;
+  token?: string;
   name: string;
+  expiresAt?: number;
+  readScope?: 'workspace';
 }
 
 export interface ComposerDraft {
@@ -46,6 +49,17 @@ export interface ComposerDraft {
   references: ChatReference[];
   selectedSkill: ComposerSuggestion | null;
   selectedAgent: ComposerSuggestion | null;
+}
+
+export interface ComposerDraftResource {
+  kind: 'file-token';
+  token: string;
+  file: ComposerFileAttachment;
+}
+
+export interface ComposerDraftRuntimeState {
+  pendingAdmissions: number;
+  pendingSends: number;
 }
 
 interface PersistedComposerDraft {
@@ -66,6 +80,10 @@ export type ComposerDraftScope =
   | `account:${string}`;
 
 const sessionDrafts = new Map<string, ComposerDraft>();
+const draftSubscribers = new Map<string, Set<() => void>>();
+const runtimeSubscribers = new Map<string, Set<() => void>>();
+const draftRuntimeStates = new Map<string, ComposerDraftRuntimeState>();
+const resourceDisposers = new Set<(resource: ComposerDraftResource) => void>();
 // Deleting an active conversation and switching the composer happen in the
 // same render cycle. Its unmount/key-change cleanup can therefore arrive
 // after the store deletion. Tombstones make that stale flush a no-op instead
@@ -90,6 +108,50 @@ function cloneDraft(draft: ComposerDraft): ComposerDraft {
     files: [...draft.files],
     references: [...draft.references],
   };
+}
+
+function getRuntimeStateRef(key: string): ComposerDraftRuntimeState {
+  return draftRuntimeStates.get(key) ?? { pendingAdmissions: 0, pendingSends: 0 };
+}
+
+function setRuntimeState(key: string, next: ComposerDraftRuntimeState): void {
+  if (next.pendingAdmissions === 0 && next.pendingSends === 0) {
+    draftRuntimeStates.delete(key);
+  } else {
+    draftRuntimeStates.set(key, next);
+  }
+  notifyRuntimeSubscribers(key);
+}
+
+function notifyDraftSubscribers(key: string): void {
+  draftSubscribers.get(key)?.forEach((listener) => listener());
+}
+
+function notifyRuntimeSubscribers(key: string): void {
+  runtimeSubscribers.get(key)?.forEach((listener) => listener());
+}
+
+function subscribeKeyed(
+  subscribers: Map<string, Set<() => void>>,
+  key: string,
+  listener: () => void,
+): () => void {
+  const listeners = subscribers.get(key) ?? new Set<() => void>();
+  listeners.add(listener);
+  subscribers.set(key, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) subscribers.delete(key);
+  };
+}
+
+function disposeComposerDraftResources(draft: ComposerDraft | undefined): void {
+  if (!draft || resourceDisposers.size === 0) return;
+  for (const file of draft.files) {
+    if (!file.token) continue;
+    const resource: ComposerDraftResource = { kind: 'file-token', token: file.token, file };
+    resourceDisposers.forEach((dispose) => dispose(resource));
+  }
 }
 
 function hasSessionContent(draft: ComposerDraft): boolean {
@@ -213,6 +275,68 @@ export const useComposerDraftStore = create<ComposerDraftState>()(
   ),
 );
 
+export function subscribeComposerDraft(key: string, listener: () => void): () => void {
+  return subscribeKeyed(draftSubscribers, key, listener);
+}
+
+export function subscribeComposerDraftRuntime(key: string, listener: () => void): () => void {
+  return subscribeKeyed(runtimeSubscribers, key, listener);
+}
+
+export function getComposerDraftRuntimeState(key: string): ComposerDraftRuntimeState {
+  const state = getRuntimeStateRef(key);
+  return {
+    pendingAdmissions: state.pendingAdmissions,
+    pendingSends: state.pendingSends,
+  };
+}
+
+export function beginComposerDraftAdmission(key: string): () => void {
+  const state = getRuntimeStateRef(key);
+  setRuntimeState(key, {
+    ...state,
+    pendingAdmissions: state.pendingAdmissions + 1,
+  });
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    const current = getRuntimeStateRef(key);
+    setRuntimeState(key, {
+      ...current,
+      pendingAdmissions: Math.max(0, current.pendingAdmissions - 1),
+    });
+  };
+}
+
+export function tryBeginComposerDraftSend(key: string): (() => void) | null {
+  const state = getRuntimeStateRef(key);
+  if (state.pendingSends > 0) return null;
+  setRuntimeState(key, {
+    ...state,
+    pendingSends: state.pendingSends + 1,
+  });
+  let finished = false;
+  return () => {
+    if (finished) return;
+    finished = true;
+    const current = getRuntimeStateRef(key);
+    setRuntimeState(key, {
+      ...current,
+      pendingSends: Math.max(0, current.pendingSends - 1),
+    });
+  };
+}
+
+export function registerComposerDraftResourceDisposer(
+  dispose: (resource: ComposerDraftResource) => void,
+): () => void {
+  resourceDisposers.add(dispose);
+  return () => {
+    resourceDisposers.delete(dispose);
+  };
+}
+
 export function getComposerDraftKey(
   conversationId: string | null | undefined,
   scope: ComposerDraftScope = LOCAL_COMPOSER_DRAFT_SCOPE,
@@ -232,10 +356,21 @@ export function readComposerDraft(key: string): ComposerDraft {
 
 /** Save rich state in memory and plain text on disk immediately. */
 export function writeComposerDraft(key: string, draft: ComposerDraft): void {
-  if (discardedDraftKeys.has(key)) return;
+  if (discardedDraftKeys.has(key)) {
+    disposeComposerDraftResources(draft);
+    return;
+  }
   if (hasSessionContent(draft)) sessionDrafts.set(key, cloneDraft(draft));
   else sessionDrafts.delete(key);
   useComposerDraftStore.getState().setText(key, draft.text);
+  notifyDraftSubscribers(key);
+}
+
+export function updateComposerDraft(
+  key: string,
+  update: (draft: ComposerDraft) => ComposerDraft,
+): void {
+  writeComposerDraft(key, update(readComposerDraft(key)));
 }
 
 /** Debounced callers use this to update only the persistent text layer. */
@@ -244,9 +379,16 @@ export function writePersistedComposerText(key: string, text: string): void {
   useComposerDraftStore.getState().setText(key, text);
 }
 
-export function clearComposerDraft(key: string): void {
+export function clearComposerDraft(
+  key: string,
+  options: { disposeResources?: boolean } = {},
+): void {
+  if (options.disposeResources ?? true) {
+    disposeComposerDraftResources(sessionDrafts.get(key));
+  }
   sessionDrafts.delete(key);
   useComposerDraftStore.getState().clear(key);
+  notifyDraftSubscribers(key);
 }
 
 export function clearConversationComposerDraft(
@@ -271,12 +413,18 @@ export function clearConversationComposerDraft(
 }
 
 export function clearSessionComposerDrafts(): void {
+  for (const draft of sessionDrafts.values()) {
+    disposeComposerDraftResources(draft);
+  }
   sessionDrafts.clear();
+  draftSubscribers.forEach((listeners) => listeners.forEach((listener) => listener()));
 }
 
 /** Primarily useful for logout/reset flows and isolated tests. */
 export function clearAllComposerDrafts(): void {
   clearSessionComposerDrafts();
   discardedDraftKeys.clear();
+  draftRuntimeStates.clear();
+  runtimeSubscribers.forEach((listeners) => listeners.forEach((listener) => listener()));
   useComposerDraftStore.getState().clearAll();
 }

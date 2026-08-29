@@ -1,4 +1,4 @@
-import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod } from '../../types';
+import type { StreamEvent, Message, ToolDefinition, BuiltinSearchMethod, UpstreamErrorDetails } from '../../types';
 import type { PromptSection } from './promptSections';
 import type { Logger } from '../logging/logger';
 
@@ -128,7 +128,8 @@ export type LLMErrorCode =
   | 'overloaded'           // 529 / 503
   | 'context_too_long'     // 400 with context length error
   | 'invalid_request'      // 400 other
-  | 'authentication'       // 401 / 403
+  | 'authentication'       // 401 / credential-related 403
+  | 'content_policy'       // 403 rejected by an upstream content-safety policy
   | 'not_found'            // 404
   | 'server_error'         // 500 / 502
   | 'network_error'        // fetch/connection failures
@@ -136,17 +137,43 @@ export type LLMErrorCode =
   | 'cancelled'            // user abort
   | 'unknown';
 
+const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
+  'rate_limit',
+  'overloaded',
+  'context_too_long',
+  'invalid_request',
+  'authentication',
+  'content_policy',
+  'not_found',
+  'server_error',
+  'network_error',
+  'network_blocked',
+  'cancelled',
+  'unknown',
+]);
+
+export function isLLMErrorCode(value: unknown): value is LLMErrorCode {
+  return typeof value === 'string' && LLM_ERROR_CODES.has(value);
+}
+
 export class LLMError extends Error {
   code: LLMErrorCode;
   retryable: boolean;
   retryAfterMs?: number;
   statusCode?: number;
   rawBody?: string;
+  upstream?: UpstreamErrorDetails;
 
   constructor(
     message: string,
     code: LLMErrorCode,
-    options?: { retryable?: boolean; retryAfterMs?: number; statusCode?: number; rawBody?: string }
+    options?: {
+      retryable?: boolean;
+      retryAfterMs?: number;
+      statusCode?: number;
+      rawBody?: string;
+      upstream?: UpstreamErrorDetails;
+    }
   ) {
     super(message);
     this.name = 'LLMError';
@@ -155,7 +182,209 @@ export class LLMError extends Error {
     this.retryAfterMs = options?.retryAfterMs;
     this.statusCode = options?.statusCode;
     this.rawBody = options?.rawBody;
+    this.upstream = normalizeUpstreamErrorDetails(options?.upstream);
   }
+}
+
+const UPSTREAM_ERROR_SUMMARY_MAX_CHARS = 500;
+const UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS = 256;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stripProviderStatusPrefix(body: string): string {
+  return body.replace(/^\s*(?:HTTP\s+)?\d{3}(?:\s*:\s*|\s+|(?=[{[<]))/i, '');
+}
+
+/**
+ * Bound an error string received from an older/untrusted process without ever
+ * promoting a raw JSON or HTML provider response into renderer-visible text.
+ * Known wrappers are inspected only for classification; safe plain text keeps
+ * its original wording for compatibility.
+ */
+export function sanitizeUntrustedLlmErrorText(value: unknown, fallback: string): string {
+  const safeFallback = fallback.trim().slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS) || 'unknown';
+  if (typeof value !== 'string') return safeFallback;
+  const trimmed = value.trim();
+  if (!trimmed) return safeFallback;
+
+  return isUnsafeStructuredLlmErrorText(trimmed)
+    ? safeFallback
+    : trimmed.slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+}
+
+/** True when an error/stack's first payload line is JSON-like or markup. */
+export function isUnsafeStructuredLlmErrorText(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  let candidate = trimmed
+    .replace(/^sidecar error\s+-?\d+\s*:\s*/i, '')
+    .replace(/^(?:[A-Za-z_$][\w$]*Error|Error)\s*:\s*/, '');
+  candidate = stripProviderStatusPrefix(candidate).trimStart();
+  return candidate.split(/\r?\n/).some((line) => {
+    const payload = stripProviderStatusPrefix(
+      line.trim().replace(/^(?:[A-Za-z_$][\w$]*Error|Error)\s*:\s*/, ''),
+    ).trimStart();
+    if (!payload) return false;
+    if (payload.startsWith('<')) return true;
+    try {
+      JSON.parse(payload);
+      return true;
+    } catch {
+      // A truncated/pretty-printed JSON object or array is still a raw
+      // provider body even though one line cannot be parsed in isolation.
+      return /^[{[]/.test(payload);
+    }
+  });
+}
+
+/** Validate the bounded provider projection before trusting cross-process data. */
+export function isUpstreamErrorDetails(value: unknown): value is UpstreamErrorDetails {
+  if (!isRecord(value)) return false;
+  const allowedKeys = new Set(['status', 'error_type', 'traceId', 'summary']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false;
+  if (!Number.isInteger(value.status) || (value.status as number) < 100 || (value.status as number) > 599) {
+    return false;
+  }
+  for (const [key, maxChars] of [
+    ['error_type', UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS],
+    ['traceId', UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS],
+    ['summary', UPSTREAM_ERROR_SUMMARY_MAX_CHARS],
+  ] as const) {
+    const field = value[key];
+    if (field === undefined) continue;
+    if (typeof field !== 'string' || field.length > maxChars || field.trim().length === 0) return false;
+  }
+  return true;
+}
+
+/** Return a fresh allowlisted projection for store/export boundaries. */
+export function normalizeUpstreamErrorDetails(value: unknown): UpstreamErrorDetails | undefined {
+  if (!isUpstreamErrorDetails(value)) return undefined;
+  const summary = value.summary && !isUnsafeStructuredLlmErrorText(value.summary)
+    ? value.summary.trim()
+    : undefined;
+  return {
+    status: value.status,
+    ...(value.error_type ? { error_type: value.error_type.trim() } : {}),
+    ...(value.traceId ? { traceId: value.traceId.trim() } : {}),
+    ...(summary ? { summary } : {}),
+  };
+}
+
+function parseProviderErrorBody(rawBody: string): Record<string, unknown> | undefined {
+  const stripped = stripProviderStatusPrefix(rawBody);
+  try {
+    const parsed: unknown = JSON.parse(stripped);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parsesAsJson(rawBody: string): boolean {
+  const stripped = stripProviderStatusPrefix(rawBody);
+  try {
+    JSON.parse(stripped);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function providerErrorRecords(rawBody: string): Record<string, unknown>[] {
+  const root = parseProviderErrorBody(rawBody);
+  if (!root) return [];
+  const nestedError = isRecord(root.error) ? root.error : undefined;
+  const nestedDetail = isRecord(root.detail) ? root.detail : undefined;
+  const errorDetail = nestedError && isRecord(nestedError.detail) ? nestedError.detail : undefined;
+  return [nestedError, errorDetail, nestedDetail, root].filter(isRecord);
+}
+
+function firstBoundedString(
+  records: Record<string, unknown>[],
+  keys: readonly string[],
+  maxChars: number,
+): string | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value !== 'string') continue;
+      const trimmed = value.trim();
+      if (trimmed) return trimmed.slice(0, maxChars);
+    }
+  }
+  return undefined;
+}
+
+/** Build the only provider-error projection allowed to cross the terminal wire. */
+export function extractUpstreamErrorDetails(
+  statusCode: number,
+  rawBody: string,
+  fallbackMessage: string,
+): UpstreamErrorDetails {
+  const records = providerErrorRecords(rawBody);
+  const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
+  const traceId = firstBoundedString(records, ['traceId', 'trace_id'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
+  const structuredSummary = firstBoundedString(records, ['message', 'detail'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  // For a parsed JSON body with no human-readable message/detail, omit the
+  // summary instead of copying the whole JSON object into the UI card. Plain
+  // text provider bodies still use the bounded fallback.
+  const fallbackSummary = records.length === 0 && !parsesAsJson(rawBody)
+    ? fallbackMessage.trim().slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS)
+    : '';
+  return {
+    status: statusCode,
+    ...(errorType ? { error_type: errorType } : {}),
+    ...(traceId ? { traceId } : {}),
+    ...(structuredSummary || fallbackSummary
+      ? { summary: structuredSummary || fallbackSummary }
+      : {}),
+  };
+}
+
+/**
+ * Produce a bounded terminal/store message without ever falling back to the
+ * adapter's raw JSON response body. Detailed raw data remains diagnostic-only.
+ */
+export function formatLlmTerminalError(err: LLMError): string {
+  const upstream = normalizeUpstreamErrorDetails(err.upstream);
+  const summary = upstream?.summary?.trim();
+  if (summary) return summary.slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  const message = err.message.trim();
+  // Hand-constructed local errors have no raw provider body and may carry a
+  // useful safe message. Classified HTTP errors either have the bounded
+  // upstream projection or retain rawBody, so they take the status/code path.
+  if (!upstream && !err.rawBody && message) {
+    return message.slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  }
+  const status = upstream?.status ?? err.statusCode;
+  if (status !== undefined) return `HTTP ${status} · ${err.code}`;
+  return err.rawBody ? err.code : message ? message.slice(0, UPSTREAM_ERROR_SUMMARY_MAX_CHARS) : err.code;
+}
+
+function isContentPolicyRejection(rawBody: string): boolean {
+  const records = providerErrorRecords(rawBody);
+  const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
+  if (errorType && /governance\.|content[_-]safety|content[_-]policy/i.test(errorType)) {
+    return true;
+  }
+  const detail = firstBoundedString(records, ['detail'], UPSTREAM_ERROR_SUMMARY_MAX_CHARS);
+  if (detail && /safety[\s_-]*system/i.test(detail)) {
+    return true;
+  }
+  // A valid JSON body has already been inspected structurally above. Do not
+  // regex its serialized message strings: quoted user text can contain
+  // fragments such as `'error_type':'content_policy'` without being a
+  // provider error field.
+  if (parsesAsJson(rawBody)) return false;
+  // Some providers prefix the JSON with the status code or return a shape we
+  // do not otherwise understand. Keep the fallback precise to the error_type
+  // field so quoted user input cannot turn an unrelated 403 into this class.
+  return /["']error_type["']\s*:\s*["'][^"']*(?:governance\.|content[_-]safety|content[_-]policy)/i.test(rawBody)
+    || /["']detail["']\s*:\s*["'][^"']*safety[\s_-]*system/i.test(rawBody);
 }
 
 /**
@@ -165,7 +394,7 @@ export class LLMError extends Error {
  */
 export function extractApiErrorMessage(rawBody: string): string {
   // Some providers (e.g. mimo) prefix body with status code: "403 {json}"
-  const stripped = rawBody.replace(/^\d{3}\s+/, '');
+  const stripped = stripProviderStatusPrefix(rawBody);
   try {
     const parsed = JSON.parse(stripped) as {
       error?: { message?: string };
@@ -188,8 +417,29 @@ export function extractApiErrorMessage(rawBody: string): string {
  * because some WAFs forge application/json in the Content-Type header.
  */
 function isHtmlBody(body: string): boolean {
-  const trimmed = body.trimStart().toLowerCase();
-  return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html');
+  let candidate = stripProviderStatusPrefix(body.slice(0, 8192)).trimStart();
+
+  // HTML documents may omit the <html> element, and proxy pages sometimes
+  // prepend an XML declaration or one or more comments. Peel off only those
+  // document-level prolog nodes, then require a document root rather than
+  // treating arbitrary angle-bracket text in a provider message as HTML.
+  while (candidate) {
+    if (candidate.startsWith('<!--')) {
+      const commentEnd = candidate.indexOf('-->');
+      if (commentEnd === -1) return false;
+      candidate = candidate.slice(commentEnd + 3).trimStart();
+      continue;
+    }
+    if (/^<\?xml\b/i.test(candidate)) {
+      const declarationEnd = candidate.indexOf('?>');
+      if (declarationEnd === -1) return false;
+      candidate = candidate.slice(declarationEnd + 2).trimStart();
+      continue;
+    }
+    break;
+  }
+
+  return /^(?:<!doctype\b|<html\b|<head\b|<body\b)/i.test(candidate);
 }
 
 /**
@@ -200,49 +450,65 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
   // Detect HTML response before any JSON parsing — a WAF / reverse-proxy
   // intercepted the request and returned an error page instead of an API response.
   if (isHtmlBody(rawBody)) {
+    const message = '请求被网络防火墙或代理拦截（返回了 HTML 页面而非 API 响应）';
     return new LLMError(
-      '请求被网络防火墙或代理拦截（返回了 HTML 页面而非 API 响应）',
+      message,
       'network_blocked',
-      { retryable: false, statusCode, rawBody: rawBody.slice(0, 500) },
+      {
+        retryable: false,
+        statusCode,
+        rawBody: rawBody.slice(0, 500),
+        upstream: extractUpstreamErrorDetails(statusCode, '', message),
+      },
     );
   }
 
   const message = extractApiErrorMessage(rawBody);
   const stored = rawBody.slice(0, 1000);
+  const upstream = extractUpstreamErrorDetails(statusCode, rawBody, message);
 
   // Rate limiting
   if (statusCode === 429) {
     const retryAfter = extractRetryAfter(message);
     return new LLMError(message, 'rate_limit', {
-      retryable: true, retryAfterMs: retryAfter, statusCode, rawBody: stored,
+      retryable: true, retryAfterMs: retryAfter, statusCode, rawBody: stored, upstream,
     });
   }
 
   // Overloaded
   if (statusCode === 529 || statusCode === 503) {
     return new LLMError(message, 'overloaded', {
-      retryable: true, retryAfterMs: 5000, statusCode, rawBody: stored,
+      retryable: true, retryAfterMs: 5000, statusCode, rawBody: stored, upstream,
     });
   }
 
   // Server errors (retryable)
   if (statusCode === 500 || statusCode === 502) {
     return new LLMError(message, 'server_error', {
-      retryable: true, retryAfterMs: 2000, statusCode, rawBody: stored,
+      retryable: true, retryAfterMs: 2000, statusCode, rawBody: stored, upstream,
+    });
+  }
+
+  // A provider policy rejection is not a credential failure. Check only 403;
+  // 401 remains authentication even if an unusual body mentions safety.
+  if (statusCode === 403 && isContentPolicyRejection(rawBody)) {
+    const policyMessage = upstream.summary ?? `HTTP ${statusCode} · content_policy`;
+    return new LLMError(policyMessage, 'content_policy', {
+      retryable: false, statusCode, rawBody: stored, upstream,
     });
   }
 
   // Auth errors (not retryable)
   if (statusCode === 401 || statusCode === 403) {
     return new LLMError(message, 'authentication', {
-      retryable: false, statusCode, rawBody: stored,
+      retryable: false, statusCode, rawBody: stored, upstream,
     });
   }
 
   // Not found
   if (statusCode === 404) {
     return new LLMError(message, 'not_found', {
-      retryable: false, statusCode, rawBody: stored,
+      retryable: false, statusCode, rawBody: stored, upstream,
     });
   }
 
@@ -251,15 +517,15 @@ export function classifyError(statusCode: number, rawBody: string): LLMError {
     const isContextTooLong = /prompt.is.too.long|token.*exceed|too.many.tokens|max.tokens.exceeded|context.window|context.length/i.test(message);
     if (isContextTooLong) {
       return new LLMError(message, 'context_too_long', {
-        retryable: false, statusCode, rawBody: stored,
+        retryable: false, statusCode, rawBody: stored, upstream,
       });
     }
     return new LLMError(message, 'invalid_request', {
-      retryable: false, statusCode, rawBody: stored,
+      retryable: false, statusCode, rawBody: stored, upstream,
     });
   }
 
-  return new LLMError(message, 'unknown', { retryable: false, statusCode, rawBody: stored });
+  return new LLMError(message, 'unknown', { retryable: false, statusCode, rawBody: stored, upstream });
 }
 
 function extractRetryAfter(message: string): number | undefined {
@@ -279,25 +545,19 @@ function extractRetryAfter(message: string): number | undefined {
  * empty-body fallback string is a caller-supplied parameter rather than an
  * internal `getI18n()` call. Callers should pass `getI18n().chat.errorEmptyBody`.
  *
- * Note: we deliberately do NOT append an `rawBody` snippet. `classifyError`
- * already surfaces any non-empty body through `err.message` (via
- * `extractApiErrorMessage`), so an empty `fallbackMessage` implies an empty body —
- * a snippet would never add signal and would only risk leaking an opaque
- * intercept page into the chat surface.
+ * For classified LLM errors, always format from the bounded upstream
+ * projection. `err.message` can still contain a raw JSON fallback for local
+ * diagnostics and must not be copied into the chat surface.
  */
 export function formatLlmDisplayError(
   err: unknown,
   fallbackMessage: string,
   emptyBodyFallback: string,
 ): string {
+  if (err instanceof LLMError) {
+    return formatLlmTerminalError(err) || emptyBodyFallback;
+  }
   const msg = fallbackMessage.trim();
   if (msg) return msg;
-  if (err instanceof LLMError) {
-    const parts: string[] = [];
-    if (err.statusCode) parts.push(`HTTP ${err.statusCode}`);
-    if (err.code) parts.push(err.code);
-    return parts.join(' · ') || emptyBodyFallback;
-  }
   return emptyBodyFallback;
 }
-

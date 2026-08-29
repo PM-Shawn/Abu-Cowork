@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { useChatStore } from '../../../stores/chatStore';
 import { saveAgentTool, delegateToAgentTool } from './agentTools';
+
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
+const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
 
 // Mock dependencies not covered by global setup
 vi.mock('../../skill/loader', () => ({
@@ -9,10 +13,23 @@ vi.mock('../../skill/loader', () => ({
 vi.mock('../../agent/registry', () => ({
   agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
 }));
-vi.mock('../../agent/permissionBridge', () => ({
-  getCurrentLoopContext: vi.fn(),
-  requestWorkspace: vi.fn(),
-}));
+vi.mock('../../agent/permissionBridge', () => {
+  const getCurrentLoopContext = vi.fn(() => ({
+    loopId: 'loop-1',
+    conversationId: 'conv-1',
+    toolCallToStepId: new Map(),
+    eventRouter: {
+      getCurrentStepId: () => undefined,
+      addChildStepToDelegate: () => undefined,
+      completeChildStep: () => undefined,
+    },
+  }));
+  return {
+    getCurrentLoopContext,
+    getLoopContext: vi.fn(() => getCurrentLoopContext()),
+    requestWorkspace: vi.fn(),
+  };
+});
 vi.mock('../../agent/subagentLoop', () => ({
   buildSubagentMcpPreflightFailure: vi.fn().mockReturnValue(null),
   runSubagentLoop: vi.fn(),
@@ -20,6 +37,9 @@ vi.mock('../../agent/subagentLoop', () => ({
 }));
 vi.mock('../../agent/subagentAbort', () => ({
   createSubagentController: vi.fn(),
+}));
+vi.mock('../../subagent/delegatedUserTurnMaterializer', () => ({
+  materializeDelegatedUserTurn: (...args: unknown[]) => materializeDelegatedUserTurnMock(...args),
 }));
 vi.mock('../../../stores/chatStore', () => ({
   useChatStore: {
@@ -54,8 +74,15 @@ vi.mock('../../agent/ports/settingsReader', () => ({
 }));
 
 describe('delegateToAgentTool', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { getCurrentLoopContext, getLoopContext } = await import('../../agent/permissionBridge');
+    vi.mocked(getLoopContext).mockImplementation(() => getCurrentLoopContext());
+    materializeDelegatedUserTurnMock.mockResolvedValue(Object.freeze({
+      schemaVersion: 1,
+      origin: Object.freeze({ conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' }),
+      content: Object.freeze([Object.freeze({ type: 'text', text: 'source turn' })]),
+    }));
   });
 
   it('describes the fixed tool boundaries of built-in role presets', () => {
@@ -63,6 +90,10 @@ describe('delegateToAgentTool', () => {
     expect(type.description).toContain('research (lookup-focused: file reads, search, web and general HTTP requests)');
     expect(type.description).toContain('writer (content authoring: read/write/edit files plus web search)');
     expect(type.description).toContain('executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts)');
+  });
+
+  it('keeps the trusted shell-only media fallback out of the delegation tool schema', () => {
+    expect(delegateToAgentTool.inputSchema.properties).not.toHaveProperty('delegatedMediaFallback');
   });
 
   it('is explicitly marked concurrency-safe — a fan-out of independent sub-agent delegations must stay parallel, not silently fall back to the fail-closed default', () => {
@@ -104,7 +135,10 @@ describe('delegateToAgentTool', () => {
       },
     } as never);
 
-    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'look something up' });
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'look something up' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
 
     expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -114,6 +148,95 @@ describe('delegateToAgentTool', () => {
         persistParentToolImages: true,
       }),
     );
+  });
+
+  it('hands the triggering multimodal user turn to delegate_to_agent', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const parentUserMessage = {
+      id: 'user-1', role: 'user' as const, loopId: 'loop-1', timestamp: 0,
+      content: [
+        { type: 'text' as const, text: 'Inspect this image.' },
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: TINY_PNG_BASE64 } },
+        { type: 'text' as const, text: 'Keep this ordering.' },
+      ],
+    };
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    const materializeSignal = new AbortController().signal;
+    vi.mocked(createSubagentController).mockReturnValue({ signal: materializeSignal, cleanup: vi.fn() } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done', stopReason: 'completed' } as never);
+    vi.mocked(useChatStore.getState).mockReturnValue({
+      activeConversationId: 'conv-1',
+      conversations: { 'conv-1': { messages: [parentUserMessage] } },
+      getActiveConversation: vi.fn(), setAgentStatus: vi.fn(), addActiveAgent: vi.fn(), removeActiveAgent: vi.fn(),
+    } as never);
+    vi.mocked(getLoopContext).mockReturnValue({
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      toolCallToStepId: new Map(),
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    const delegatedUserTurn = Object.freeze({
+      schemaVersion: 1,
+      origin: Object.freeze({ conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' }),
+      content: Object.freeze([Object.freeze({ type: 'text', text: 'Inspect this image.' })]),
+    });
+    materializeDelegatedUserTurnMock.mockResolvedValueOnce(delegatedUserTurn);
+
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'Describe the image.', messageId: 'attacker-chosen', path: '/Users/attacker/private.png' },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'delegate-1' } as never,
+    );
+
+    const childOptions = vi.mocked(runSubagentLoop).mock.calls.at(-1)?.[0] as unknown as { delegatedUserTurn?: unknown };
+    expect(materializeDelegatedUserTurnMock).toHaveBeenCalledTimes(1);
+    expect(materializeDelegatedUserTurnMock).toHaveBeenCalledWith({ conversationId: 'conv-1', loopId: 'loop-1', signal: materializeSignal });
+    expect(childOptions.delegatedUserTurn).toBe(delegatedUserTurn);
+  });
+
+  it('does not start a child when the trusted delegate signal aborts during materialization', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const controller = new AbortController();
+    controller.abort();
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: controller.signal, cleanup: vi.fn() } as never);
+    materializeDelegatedUserTurnMock.mockImplementationOnce(async ({ signal }: { signal?: AbortSignal }) => {
+      if (signal?.aborted) throw new Error('aborted');
+      throw new Error('expected aborted signal');
+    });
+
+    await expect(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'stop' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    )).rejects.toThrow(/aborted/);
+    expect(runSubagentLoop).not.toHaveBeenCalled();
+  });
+
+  it('fails closed instead of binding a delegate to an unspecified or mismatched loop', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getLoopContext } = await import('../../agent/permissionBridge');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(getLoopContext).mockReturnValue({
+      loopId: 'trusted-loop',
+      conversationId: 'trusted-conversation',
+      toolCallToStepId: new Map(),
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+
+    await expect(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'do not bind this' },
+      { conversationId: 'trusted-conversation' } as never,
+    )).rejects.toThrow(/trusted loop context/);
+    await expect(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'do not bind this' },
+      { conversationId: 'untrusted-conversation', loopId: 'trusted-loop' } as never,
+    )).rejects.toThrow(/trusted loop context/);
+    expect(materializeDelegatedUserTurnMock).not.toHaveBeenCalled();
   });
 
   // The child-step visualization seam: tool-start must stamp the subagent's
@@ -156,7 +279,10 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'screenshot the page' });
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'screenshot the page' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
 
     expect(addChildStepToDelegate).toHaveBeenCalledWith(
       'loop-1',
@@ -208,7 +334,10 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'read it' });
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'read it' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
 
     expect(completeChildStep).toHaveBeenCalledOnce();
   });
@@ -241,7 +370,7 @@ describe('delegateToAgentTool', () => {
 
     await delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'try hard' },
-      { reportMetadata } as never,
+      { conversationId: 'conv-1', loopId: 'loop-1', reportMetadata } as never,
     );
 
     expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
@@ -279,7 +408,12 @@ describe('delegateToAgentTool', () => {
 
     await delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'look something up' },
-      { authorizationScopeId: 'scope-from-tool-context', workspacePath: null } as never,
+      {
+        conversationId: 'conv-1',
+        loopId: 'loop-1',
+        authorizationScopeId: 'scope-from-tool-context',
+        workspacePath: null,
+      } as never,
     );
 
     expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(

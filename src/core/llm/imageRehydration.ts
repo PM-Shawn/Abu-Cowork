@@ -14,6 +14,29 @@ const logger = createLogger('imageRehydration');
 export type ImageBase64Cache = Map<string, string | null>;
 
 /**
+ * Re-read a stripped image's bytes from its disk copy (live file or snapshot).
+ * Returns null when the file is unrecoverable (expired / missing / read error) —
+ * callers must fail closed or degrade gracefully, never emit an empty payload.
+ */
+export async function readRecoverableImageBytes(
+  conversationId: string | undefined,
+  filePath: string,
+  workspacePath: string | null,
+): Promise<Uint8Array | null> {
+  try {
+    const resolved = await resolveFileSource(conversationId, filePath, workspacePath);
+    if (resolved.status === 'available') {
+      const { readFile } = await import('@tauri-apps/plugin-fs');
+      const bytes = await readFile(resolved.path);
+      return bytes.byteLength > 0 ? bytes : null;
+    }
+  } catch (e) {
+    logger.warn('image rehydrate failed', { fileName: getBaseName(filePath), err: String(e) });
+  }
+  return null;
+}
+
+/**
  * Re-read a stripped image's base64 from its disk copy (live file or snapshot).
  * Returns null when the file is unrecoverable (expired / missing / read error) —
  * callers must degrade gracefully, never emit an empty base64.
@@ -26,18 +49,8 @@ async function readImageAsBase64(
 ): Promise<string | null> {
   const cacheKey = `file:${filePath}`;
   if (cache?.has(cacheKey)) return cache.get(cacheKey) ?? null;
-  let result: string | null = null;
-  try {
-    const resolved = await resolveFileSource(conversationId, filePath, workspacePath);
-    if (resolved.status === 'available') {
-      const { readFile } = await import('@tauri-apps/plugin-fs');
-      const bytes = await readFile(resolved.path);
-      result = uint8ArrayToBase64(bytes);
-    }
-  } catch (e) {
-    logger.warn('image rehydrate failed', { filePath, err: String(e) });
-    result = null;
-  }
+  const bytes = await readRecoverableImageBytes(conversationId, filePath, workspacePath);
+  const result = bytes ? uint8ArrayToBase64(bytes) : null;
   cache?.set(cacheKey, result);
   return result;
 }

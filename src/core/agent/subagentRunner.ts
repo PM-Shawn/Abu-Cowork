@@ -66,7 +66,7 @@
  * is buffered until that commit point (or a valid successful response), so a
  * pre-commit transport failure cannot leave a ghost tool step behind.
  */
-import type { ToolDefinition, ToolExecutionContext } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import {
   getSidecarStatus,
   request as sidecarRequest,
@@ -87,6 +87,7 @@ import { resolveSubagentToolRoster } from './subagentToolRoster';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
+import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { normalizeIMRunCapability } from '../permissions/runPermissionCeiling';
@@ -146,9 +147,16 @@ import {
   scopeSubagentLoopProgress,
   scopeSubagentProgressEvent,
 } from './subagentProgressIdentity';
+import {
+  materializeSidecarMediaRefsForShell,
+  prepareToolResultForSidecarWire,
+  redactSidecarValueForWireFailure,
+  sidecarValueHasOpaqueMediaRefs,
+} from '../subagent/delegatedUserTurnMaterializer';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
 const ABORT_GRACE_MS = 5_000;
+const PROGRESS_MEDIA_DISPLAY_ERROR = 'Error: Could not prepare sidecar progress media for display.';
 
 /** Wire-safe tool projection sent to the sidecar — `execute` (a function) is dropped; the sidecar never calls it directly (tool execution always reverses to `tool.invoke`). */
 export interface SerializableToolDefinition {
@@ -169,7 +177,11 @@ export interface SubagentRunParams {
   task: string;
   context?: string;
   parentConversationSummary?: string;
+  delegatedUserTurn?: SubagentLoopOptions['delegatedUserTurn'];
+  delegatedMediaFallback?: SubagentLoopOptions['delegatedMediaFallback'];
   parentConversationId?: string;
+  parentLoopId?: string;
+  parentUserMessageId?: string;
   persistParentToolImages?: boolean;
   imContext?: SubagentLoopOptions['imContext'];
   allowedTools?: string[];
@@ -232,7 +244,6 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   'capsPort',
   'workspaceReader',
   'skillCommandApprovalFactory',
-  'parentLoopId',
 ] as const satisfies readonly (keyof SubagentLoopOptions)[];
 
 export type SubagentLoopOptionsWireExhaustive = AssertNever<
@@ -250,23 +261,48 @@ interface SerializableSubagentResult {
   tokenUsage: { input: number; output: number };
   duration: number;
   stopReason?: SubagentStopReason;
+  upstream?: UpstreamErrorDetails;
 }
 
 function isSubagentStopReason(v: unknown): v is SubagentStopReason {
   return v === 'completed' || v === 'aborted' || v === 'error' || v === 'max_turns';
 }
 
+const SERIALIZABLE_SUBAGENT_RESULT_KEYS = new Set([
+  'text',
+  'toolCallCount',
+  'turnCount',
+  'tokenUsage',
+  'duration',
+  'stopReason',
+  'upstream',
+]);
+const SUBAGENT_TOKEN_USAGE_KEYS = new Set(['input', 'output']);
+
+function isFiniteNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResult {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const record = v as Record<string, unknown>;
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    typeof record.text === 'string' &&
-    typeof record.toolCallCount === 'number' &&
-    typeof record.turnCount === 'number' &&
-    typeof record.duration === 'number' &&
-    (record.stopReason === undefined || isSubagentStopReason(record.stopReason))
-  );
+  if (Object.keys(record).some((key) => !SERIALIZABLE_SUBAGENT_RESULT_KEYS.has(key))) return false;
+  if (typeof record.tokenUsage !== 'object' || record.tokenUsage === null || Array.isArray(record.tokenUsage)) {
+    return false;
+  }
+  const tokenUsage = record.tokenUsage as Record<string, unknown>;
+  return Object.keys(tokenUsage).every((key) => SUBAGENT_TOKEN_USAGE_KEYS.has(key))
+    && typeof record.text === 'string'
+    && isFiniteNonNegativeInteger(record.toolCallCount)
+    && isFiniteNonNegativeInteger(record.turnCount)
+    && isFiniteNonNegativeInteger(tokenUsage.input)
+    && isFiniteNonNegativeInteger(tokenUsage.output)
+    && typeof record.duration === 'number'
+    && Number.isFinite(record.duration)
+    && record.duration >= 0
+    && (record.stopReason === undefined || isSubagentStopReason(record.stopReason))
+    && (record.upstream === undefined
+      || (record.stopReason === 'error' && isUpstreamErrorDetails(record.upstream)));
 }
 
 // ── Run-session registry ────────────────────────────────────────────────
@@ -284,6 +320,10 @@ interface RunSession {
   firstToolInvokeArrived: boolean;
   /** Progress received before the sidecar run reaches a no-rerun commit point. */
   bufferedProgress: SubagentProgressEvent[];
+  /** Ordered async ref materialization before progress is exposed to shell UI. */
+  progressApplyTail: Promise<void>;
+  /** True while progressApplyTail is protecting order for a pending progress event. */
+  progressApplyBusy: boolean;
   resourceSettlement: RunResourceSettlement;
 }
 
@@ -339,6 +379,31 @@ function publishSessionProgress(session: RunSession, event: SubagentProgressEven
 function flushBufferedProgress(session: RunSession): void {
   const buffered = session.bufferedProgress.splice(0);
   for (const event of buffered) publishSessionProgress(session, event);
+}
+
+function failClosedProgressDisplayEvent(event: SubagentProgressEvent): SubagentProgressEvent {
+  const safeEvent = redactSidecarValueForWireFailure(event) as SubagentProgressEvent;
+  if (safeEvent.type !== 'tool-end') return safeEvent;
+  return {
+    ...safeEvent,
+    result: PROGRESS_MEDIA_DISPLAY_ERROR,
+    error: true,
+    resultContent: undefined,
+  };
+}
+
+function enqueueProgressApply(session: RunSession, task: () => void | Promise<void>): void {
+  session.progressApplyBusy = true;
+  const current = session.progressApplyTail.then(async () => {
+    await task();
+  });
+  session.progressApplyTail = current.catch(() => undefined);
+  const capturedTail = session.progressApplyTail;
+  void capturedTail.finally(() => {
+    if (session.progressApplyTail === capturedTail) {
+      session.progressApplyBusy = false;
+    }
+  });
 }
 
 // ── Reverse-channel handlers (registered ONCE at module init) ──────────
@@ -429,7 +494,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   }
 
   const invoker = getToolInvoker(); // shell-side in-process default — registry-backed, same as any in-process subagent run.
-  return await session.resourceSettlement.run(() => invoker.executeAnyTool(
+  const result = await session.resourceSettlement.run(() => invoker.executeAnyTool(
     toolName,
     (params.input as Record<string, unknown>) ?? {},
     session.options.commandConfirmCallback,
@@ -439,6 +504,11 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
       params.context as ToolExecutionContext | undefined,
     ),
   ));
+  return prepareToolResultForSidecarWire(
+    session.options.parentConversationId,
+    result,
+    session.options.signal,
+  );
 }
 
 /**
@@ -458,11 +528,57 @@ function handleSubagentProgress(rawParams: unknown): void {
   if (!session) return; // unknown/already-finished runId — silent drop
   if (!session.options.onProgress) return;
   const event = scopeSubagentProgressEvent(params.runId, params.event);
-  if (!session.firstToolInvokeArrived) {
-    session.bufferedProgress.push(event);
+  let hasOpaqueMediaRefs: boolean;
+  try {
+    hasOpaqueMediaRefs = sidecarValueHasOpaqueMediaRefs(event);
+  } catch (err) {
+    logger.warn('subagent progress rejected unsafe media payload', {
+      eventType: event.type,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return;
   }
-  publishSessionProgress(session, event);
+  if (!hasOpaqueMediaRefs) {
+    const safeEvent = redactSidecarValueForWireFailure(event) as SubagentProgressEvent;
+    const publishSafeEvent = () => {
+      if (!session.firstToolInvokeArrived) {
+        session.bufferedProgress.push(safeEvent);
+        return;
+      }
+      publishSessionProgress(session, safeEvent);
+    };
+    if (session.progressApplyBusy) {
+      enqueueProgressApply(session, publishSafeEvent);
+      return;
+    }
+    publishSafeEvent();
+    return;
+  }
+  enqueueProgressApply(session, async () => {
+    try {
+      const parentConversationId = session.options.parentConversationId;
+      if (!parentConversationId) {
+        throw new Error('Missing parent conversation id for sidecar progress media');
+      }
+      const shellEvent = await materializeSidecarMediaRefsForShell(event, parentConversationId, session.options.signal);
+      if (!session.firstToolInvokeArrived) {
+        session.bufferedProgress.push(shellEvent);
+        return;
+      }
+      publishSessionProgress(session, shellEvent);
+    } catch (err) {
+      logger.warn('subagent progress media materialization failed', {
+        eventType: event.type,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      const safeEvent = failClosedProgressDisplayEvent(event);
+      if (!session.firstToolInvokeArrived) {
+        session.bufferedProgress.push(safeEvent);
+        return;
+      }
+      publishSessionProgress(session, safeEvent);
+    }
+  });
 }
 
 let handlersRegistered = false;
@@ -540,7 +656,11 @@ function buildSubagentRunParams(
     task: options.task,
     context: options.context,
     parentConversationSummary: options.parentConversationSummary,
+    delegatedUserTurn: options.delegatedUserTurn,
+    delegatedMediaFallback: options.delegatedMediaFallback,
     parentConversationId: options.parentConversationId,
+    parentLoopId: options.parentLoopId,
+    parentUserMessageId: options.parentUserMessageId,
     persistParentToolImages: options.persistParentToolImages,
     imContext: options.imContext,
     allowedTools: options.allowedTools,
@@ -562,9 +682,15 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
   if (!isSerializableSubagentResult(raw)) {
     throw new Error('subagent.run response did not match the expected SubagentResult shape');
   }
+  const looksLikeLegacyError = raw.stopReason === undefined && /^\s*Error\s*:/i.test(raw.text);
+  const stopReason = raw.stopReason ?? (looksLikeLegacyError ? 'error' : 'completed');
+  const text = stopReason === 'error'
+    ? sanitizeUntrustedLlmErrorText(raw.text, `Error: ${getI18n().chat.errorEmptyBody}`)
+    : raw.text;
   return new SubagentResult({
     ...raw,
-    stopReason: raw.stopReason ?? 'completed',
+    text,
+    stopReason,
   });
 }
 
@@ -676,6 +802,8 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ),
     firstToolInvokeArrived: false,
     bufferedProgress: [],
+    progressApplyTail: Promise.resolve(),
+    progressApplyBusy: false,
     resourceSettlement: createRunResourceSettlement(
       sessionOptions.signal,
       () => { session.firstToolInvokeArrived = true; },
@@ -713,6 +841,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       ? await Promise.race([requestPromise, gracePromise])
       : await requestPromise;
     const result = reconstructSubagentResult(raw);
+    await session.progressApplyTail;
     // A direct-answer run never sends tool.invoke. Its ordered progress frames
     // become durable only after the final response itself validates.
     flushBufferedProgress(session);
@@ -739,7 +868,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     // At least one tool already ran with (possibly real) side effects —
     // surface as a failed result, matching the shape runSubagentLoop's own
     // outer catch produces today. NO rerun.
-    const message = err instanceof Error ? err.message : String(err);
+    const message = sanitizeUntrustedLlmErrorText(
+      err instanceof Error ? err.message : String(err),
+      getI18n().chat.errorEmptyBody,
+    );
     return new SubagentResult({
       text: `Error: ${message}`,
       toolCallCount: 0,
@@ -749,6 +881,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       stopReason: 'error',
     });
   } finally {
+    await session.progressApplyTail;
     session.resourceSettlement.seal();
     if (options.authorizationScopeId !== undefined) {
       await session.resourceSettlement.settlement;

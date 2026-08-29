@@ -17,7 +17,9 @@ import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
   getComposerDraftKey,
+  registerComposerDraftResourceDisposer,
   useComposerDraftStore,
+  writeComposerDraft,
   writePersistedComposerText,
 } from './composerDraftStore';
 import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
@@ -271,6 +273,30 @@ describe('chatStore', () => {
       useChatStore.getState().deleteConversation(id);
 
       expect(useComposerDraftStore.getState().drafts[draftKey]).toBeUndefined();
+    });
+
+    it('disposes token resources held by the deleted conversation draft', () => {
+      const dispose = vi.fn();
+      const unregister = registerComposerDraftResourceDisposer(dispose);
+      const id = useChatStore.getState().createConversation();
+      const draftKey = getComposerDraftKey(id);
+      writeComposerDraft(draftKey, {
+        text: '',
+        images: [],
+        files: [{ id: 'pdf', token: 'trusted-token', name: 'plan.pdf' }],
+        references: [],
+        selectedSkill: null,
+        selectedAgent: null,
+      });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(dispose).toHaveBeenCalledWith({
+        kind: 'file-token',
+        token: 'trusted-token',
+        file: { id: 'pdf', token: 'trusted-token', name: 'plan.pdf' },
+      });
+      unregister();
     });
 
     it('switches to another conversation when active is deleted', async () => {
@@ -571,6 +597,149 @@ describe('chatStore', () => {
           clientMessageId: 'client-msg-1',
           skill: { name: 'writer' },
         });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('keeps structured upstream error details on the durable failed user row', async () => {
+      const terminalTimestamp = new Date('2026-08-29T00:00:00.000Z').getTime();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(terminalTimestamp);
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-upstream-failure',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      const errorDetails = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'store-trace-403',
+        summary: 'The content safety system rejected the request.',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: errorDetails.summary,
+          errorDetails,
+        });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+          runState: 'failed',
+          runError: errorDetails.summary,
+          runErrorDetails: errorDetails,
+          runEndedAt: terminalTimestamp,
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('rejects privacy-unsafe upstream fields at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-upstream',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: 'HTTP 403 · content_policy',
+          errorDetails: {
+            status: 403,
+            rawBody: 'private prompt text',
+          } as never,
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe('HTTP 403 · content_policy');
+        expect(stored.runErrorDetails).toBeUndefined();
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('sanitizes a structured run error at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-run-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: '{"private":"provider body at store boundary"}',
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe(getI18n().chat.errorEmptyBody);
+        expect(JSON.stringify(stored)).not.toContain('provider body at store boundary');
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('drops failure fields when the store action completes a run', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-completed-with-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'completed',
+          error: 'must not survive',
+          errorDetails: { status: 403 },
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runState).toBe('completed');
+        expect(stored.runError).toBeUndefined();
+        expect(stored.runErrorDetails).toBeUndefined();
       } finally {
         vi.mocked(exists).mockReset();
         vi.mocked(exists).mockResolvedValue(false);
@@ -2883,32 +3052,58 @@ describe('chatStore', () => {
     });
   });
 
-  describe('pendingAttachmentPaths', () => {
+  describe('pendingAttachmentRequests', () => {
     beforeEach(() => {
-      useChatStore.setState({ pendingAttachmentPaths: [] });
+      useChatStore.setState({ pendingAttachmentRequests: [] });
     });
 
     it('starts empty', () => {
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([]);
     });
 
-    it('addPendingAttachment appends', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().addPendingAttachment('/proj/b.txt');
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual(['/proj/a.txt', '/proj/b.txt']);
+    it('addPendingAttachment records the launch draft and scoped provenance', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/a.pdf', draftKey: 'local:conversation:a', readScope: 'workspace' }),
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b', readScope: 'workspace' }),
+      ]);
     });
 
-    it('clearPendingAttachments empties the buffer', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().clearPendingAttachments();
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+    it('clearPendingAttachments can drain only one draft bucket', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().clearPendingAttachments('local:conversation:a');
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b' }),
+      ]);
     });
 
     it('is NOT included in persisted partialize output', () => {
       // partialize 只导出 conversationIndex —— 反向守卫，防止有人误加进持久化
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
       const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
-      expect(persisted && 'pendingAttachmentPaths' in persisted).toBe(false);
+      expect(persisted && 'pendingAttachmentRequests' in persisted).toBe(false);
     });
   });
 
@@ -3077,5 +3272,97 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
     expect((sanitized as { runState?: string }).runState).toBe('failed');
+  });
+
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid imported upstream projection: %s', (_label, runErrorDetails) => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-invalid-import',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy imported JSON runError', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-unsafe-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'Error: {"private":"imported provider body"}',
+    } as never);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('imported provider body');
+  });
+
+  it('drops failure fields from an imported completed row', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-completed-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+});
+
+describe('sanitizeLoadedMessages — upstream privacy boundary', () => {
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid persisted upstream projection: %s', (_label, runErrorDetails) => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-invalid-ledger',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never]);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy persisted HTML runError', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-unsafe-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: '<html><body>persisted proxy body</body></html>',
+    } as never]);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('persisted proxy body');
+  });
+
+  it('drops failure fields from a persisted completed row', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-completed-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never]);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
   });
 });

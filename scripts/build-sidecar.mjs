@@ -178,6 +178,11 @@ const SHIM_TARGETS = [
   // saveUserImagesToDisk() for every sidecar-run main loop even though its
   // underlying fs/path calls work fine. See sessionDirRun.ts.
   { real: path.resolve(srcDir, 'core/session/sessionDir.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/sessionDirRun.ts') },
+  // Renderer delegated-media persistence is intentionally Electron-preload
+  // only. A sidecar-run loop uses this app-data/Node-fs implementation at the
+  // same opaque ref location instead of pulling @tauri-apps/plugin-fs back
+  // through outputSnapshots.ts.
+  { real: path.resolve(srcDir, 'core/subagent/delegatedMediaStore.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/delegatedMediaStoreRun.ts') },
   // P1-3B-4 fix — real forwarding shim (drainQueuedInputs/clearInputQueue →
   // input.consumed notify, everything else pass-through) so mid-task queued
   // input works for a sidecar-run main loop — see userInputQueueRun.ts.

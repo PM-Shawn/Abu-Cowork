@@ -1094,6 +1094,8 @@ export function isMessageWrittenToDisk(id: string): boolean {
 /**
  * Prepare a message for disk storage:
  * - Clear image base64 data (filePath preserved for recovery)
+ * - PDF document blocks stay intact; delegated PDF refs are a send-time
+ *   contract, not a restart/rehydration persistence layer in this batch
  * - HTML/Mermaid/code blocks preserved intact
  */
 function cloneToolResultContentForDisk(

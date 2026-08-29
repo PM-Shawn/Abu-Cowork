@@ -169,11 +169,62 @@ vi.mock('../core/context/tokenEstimator', () => ({
 vi.mock('../core/context/contextUtils', () => ({
   identifyRounds: vi.fn().mockReturnValue([]),
   RECENT_ROUNDS_TO_KEEP: 4,
+  getMessageText: vi.fn().mockImplementation((content: unknown) => (
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.filter((block): block is { type: 'text'; text: string } => (
+          typeof block === 'object' && block !== null
+          && (block as { type?: unknown }).type === 'text'
+          && typeof (block as { text?: unknown }).text === 'string'
+        )).map((block) => block.text).join('\n')
+        : ''
+  )),
+}));
+
+const delegatedMediaBytes = vi.hoisted(() => new Map<string, Uint8Array>());
+vi.mock('../core/subagent/delegatedMediaStore', () => ({
+  persistDelegatedMedia: vi.fn(async (_conversationId: string, input: { mediaType: string; bytes: Uint8Array }) => {
+    const id = `delegated-media-${delegatedMediaBytes.size + 1}`;
+    delegatedMediaBytes.set(id, input.bytes);
+    return { id, sha256: 'a'.repeat(64), mediaType: input.mediaType, bytes: input.bytes.byteLength };
+  }),
+  readDelegatedMedia: vi.fn(async (_conversationId: string, ref: { id: string }) => delegatedMediaBytes.get(ref.id) ?? null),
+}));
+
+vi.mock('../core/session/outputSnapshots', () => ({
+  resolveFileSource: vi.fn(),
 }));
 
 // Mock misc
 vi.mock('../core/agent/retry', () => ({
-  withRetry: vi.fn().mockImplementation((fn) => fn()),
+  withRetry: vi.fn().mockImplementation(async (
+    fn: () => Promise<unknown>,
+    config?: { maxRetries?: number },
+    signal?: AbortSignal,
+    onRetry?: (attempt: number, error: { code?: string; retryable?: boolean }, delayMs: number) => void,
+  ) => {
+    let attempt = 0;
+    const maxRetries = config?.maxRetries ?? 3;
+    while (true) {
+      if (signal?.aborted) {
+        throw new Error('Request cancelled');
+      }
+      try {
+        return await fn();
+      } catch (error) {
+        const retryable = typeof error === 'object'
+          && error !== null
+          && (error as { retryable?: unknown }).retryable === true
+          && (error as { code?: unknown }).code !== 'cancelled';
+        if (!retryable || attempt >= maxRetries) {
+          throw error;
+        }
+        onRetry?.(attempt + 1, error as { code?: string; retryable?: boolean }, 0);
+        attempt++;
+      }
+    }
+  }),
 }));
 
 vi.mock('../core/agent/permissionBridge', () => ({
@@ -345,6 +396,8 @@ vi.mock('../../utils/platform', () => ({
 
 // Now import the module under test
 import { runAgentLoop, persistExecutionSnapshot } from '../core/agent/agentLoop';
+import { LLMError } from '../core/llm/adapter';
+import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
 import type { StreamEvent, Message } from '../types';
@@ -352,6 +405,8 @@ import type { StreamEvent, Message } from '../types';
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
 import * as contextManagerModule from '../core/context/contextManager';
 import * as toolSearchModule from '../core/tools/toolSearch';
+
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 
 describe('Agent Pipeline Integration', () => {
   // runAgentLoop lazily `await import()`s these on its hot path, so the FIRST
@@ -368,6 +423,7 @@ describe('Agent Pipeline Integration', () => {
   });
 
   beforeEach(() => {
+    delegatedMediaBytes.clear();
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
@@ -417,6 +473,171 @@ describe('Agent Pipeline Integration', () => {
 
     const assistantMsg = conv.messages.find((m) => m.role === 'assistant' && m.content !== '');
     expect(assistantMsg).toBeDefined();
+  });
+
+  it('starts direct @agent delegation with the triggering image turn as ordered MessageContent blocks', async () => {
+    const { routeInput } = await import('../core/agent/orchestrator');
+    vi.mocked(routeInput).mockReturnValueOnce({
+      type: 'delegate', cleanInput: 'Describe the image.', name: 'abu',
+      delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+    } as never);
+    mockClaudeChat.mockImplementationOnce(async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      onEvent({ type: 'text', text: 'done' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    const conversationId = useChatStore.getState().createConversation();
+
+    await runAgentLoop(conversationId, 'Describe the image.', {
+      images: [{ id: 'img-1', data: TINY_PNG_BASE64, mediaType: 'image/png' }],
+    });
+
+    const firstChildMessages = mockClaudeChat.mock.calls[0][0] as Array<{ role: string; content: unknown }>;
+    const firstChildUser = firstChildMessages.find((message) => message.role === 'user');
+    const parentUser = useChatStore.getState().conversations[conversationId].messages
+      .find((message) => message.role === 'user');
+    const parentContent = parentUser?.content;
+    expect(Array.isArray(parentContent)).toBe(true);
+    expect(firstChildUser?.content).toEqual([
+      ...(parentContent as Array<unknown>).map(({ filePath: _filePath, ...block }) => block),
+      { type: 'text', text: 'Describe the image.' },
+    ]);
+  });
+
+  it('preserves structured upstream details when a direct @agent provider call is rejected', async () => {
+    const { routeInput } = await import('../core/agent/orchestrator');
+    vi.mocked(routeInput).mockReturnValueOnce({
+      type: 'delegate', cleanInput: 'Use a delegated agent.', name: 'abu',
+      delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+    } as never);
+    const upstream = {
+      status: 403,
+      error_type: 'governance.alicloud_content_safety_input_rejected',
+      traceId: 'delegate-pipeline-trace-403',
+      summary: 'provider rejected the delegated request',
+    } as const;
+    mockClaudeChat.mockRejectedValueOnce(new LLMError(
+      '{"private":"raw delegated provider body"}',
+      'content_policy',
+      {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"private":"raw delegated provider body"}',
+        upstream,
+      },
+    ));
+    const conversationId = useChatStore.getState().createConversation();
+
+    const result = await runAgentLoop(conversationId, 'Use a delegated agent.');
+
+    expect(result).toMatchObject({
+      reason: 'error',
+      messageTaken: true,
+      upstream,
+    });
+    const assistantText = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).toMatch(/content[- ]safety|内容安全/i);
+    expect(assistantText).not.toContain('raw delegated provider body');
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-materializes delegated media refs for each primary provider retry attempt', async () => {
+    const mediaRef = {
+      id: 'delegated-media-retry',
+      sha256: 'b'.repeat(64),
+      mediaType: 'image/png' as const,
+      bytes: 3,
+    };
+    delegatedMediaBytes.set(mediaRef.id, new Uint8Array([1, 2, 3]));
+    const conversationId = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(conversationId, {
+      id: 'historical-user-with-ref',
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Historical reference' },
+        {
+          type: 'delegated_media_ref',
+          originConversationId: conversationId,
+          attachment: mediaRef,
+        },
+      ] as never,
+      timestamp: 1,
+      loopId: 'older-loop',
+    });
+
+    let providerAttempt = 0;
+    const outboundPayloads: string[] = [];
+    mockClaudeChat.mockImplementation(
+      async (messages: unknown, _opts: unknown, onEvent: (e: StreamEvent) => void) => {
+        providerAttempt++;
+        const outboundPayload = JSON.stringify(messages);
+        outboundPayloads.push(outboundPayload);
+        if (providerAttempt === 1) {
+          delegatedMediaBytes.set(mediaRef.id, new Uint8Array([4, 5, 6]));
+          throw new LLMError('temporary provider failure', 'network_error', { retryable: true });
+        }
+        onEvent({ type: 'done', stopReason: 'end_turn' });
+      },
+    );
+
+    await runAgentLoop(conversationId, 'Retry after a transient provider failure.');
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect(delegatedMediaStore.readDelegatedMedia).toHaveBeenCalledTimes(2);
+    expect(outboundPayloads[0]).toContain('AQID');
+    expect(outboundPayloads[1]).toContain('BAUG');
+  });
+
+  it('returns structured upstream details and renders friendly copy for a content-policy rejection', async () => {
+    const upstream = {
+      status: 403,
+      error_type: 'governance.alicloud_content_safety_input_rejected',
+      traceId: 'pipeline-trace-403',
+      summary: 'The upstream content safety system rejected the request.',
+    } as const;
+    mockClaudeChat.mockRejectedValueOnce(new LLMError(
+      upstream.summary,
+      'content_policy',
+      {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"private":"raw provider body must stay out of the chat"}',
+        upstream,
+      },
+    ));
+    const conversationId = useChatStore.getState().createConversation();
+
+    const result = await runAgentLoop(conversationId, 'Fixed non-sensitive fixture input.');
+
+    expect(result).toMatchObject({
+      reason: 'error',
+      messageTaken: true,
+      upstream,
+    });
+    const assistantText = useChatStore.getState().conversations[conversationId].messages
+      .filter((message) => message.role === 'assistant')
+      .map((message) => typeof message.content === 'string' ? message.content : '')
+      .join('\n');
+    expect(assistantText).not.toContain('raw provider body must stay out of the chat');
+    expect(assistantText).not.toContain(upstream.error_type);
+  });
+
+  it('returns aborted before starting a direct delegate provider call when its linked signal is already aborted', async () => {
+    const { routeInput } = await import('../core/agent/orchestrator');
+    const { createSubagentController } = await import('../core/agent/subagentAbort');
+    const controller = new AbortController();
+    controller.abort();
+    vi.mocked(createSubagentController).mockReturnValueOnce({ signal: controller.signal, cleanup: vi.fn() } as never);
+    vi.mocked(routeInput).mockReturnValueOnce({
+      type: 'delegate', cleanInput: 'Stop.', name: 'abu',
+      delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+    } as never);
+    const conversationId = useChatStore.getState().createConversation();
+
+    await expect(runAgentLoop(conversationId, 'Stop.')).resolves.toMatchObject({ reason: 'aborted' });
+    expect(mockClaudeChat).not.toHaveBeenCalled();
   });
 
   it('estimates each published context component only once per turn', async () => {

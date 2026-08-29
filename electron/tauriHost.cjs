@@ -57,6 +57,22 @@ const {
   saveImageAttachment,
 } = require('./imageSaveHost.cjs');
 const {
+  AUTHORIZE_USER_ATTACHMENT_CHANNEL,
+  READ_USER_ATTACHMENT_CHANNEL,
+  RELEASE_USER_ATTACHMENT_CHANNEL,
+  SELECT_USER_ATTACHMENTS_CHANNEL,
+  authorizeUserAttachment,
+  readUserAttachment,
+  releaseUserAttachment,
+  selectUserAttachments,
+} = require('./userAttachmentHost.cjs');
+const {
+  PERSIST_DELEGATED_MEDIA_CHANNEL,
+  READ_DELEGATED_MEDIA_CHANNEL,
+  persistDelegatedMedia,
+  readDelegatedMedia,
+} = require('./delegatedMediaHost.cjs');
+const {
   fsWatchDispatch,
   FS_WATCH_MISS,
   cleanupFsWatchesForSender,
@@ -1444,6 +1460,36 @@ function registerTauriHost(app, options = {}) {
   ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {
     assertTrustedMainIpcSender(e);
     return saveImageAttachment(app, e, request, { dialog, BrowserWindow });
+  });
+
+  ipcMain.handle(READ_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return readUserAttachment(e, request);
+  });
+
+  ipcMain.handle(RELEASE_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return releaseUserAttachment(e, request);
+  });
+
+  ipcMain.handle(AUTHORIZE_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return authorizeUserAttachment(e, request);
+  });
+
+  ipcMain.handle(SELECT_USER_ATTACHMENTS_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return selectUserAttachments(e, request, { dialog });
+  });
+
+  ipcMain.handle(PERSIST_DELEGATED_MEDIA_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return persistDelegatedMedia(abuAppDataDir(app), request);
+  });
+
+  ipcMain.handle(READ_DELEGATED_MEDIA_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return readDelegatedMedia(abuAppDataDir(app), request);
   });
 
   ipcMain.handle(SIDECAR_BRIDGE_STATE_CHANNEL, async (e, query = {}) => {

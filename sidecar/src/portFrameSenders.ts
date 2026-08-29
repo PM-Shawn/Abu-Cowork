@@ -27,12 +27,87 @@ import type { ExecutionPort } from '@/core/agent/ports/executionPort';
 import type { ScratchpadPort } from '@/core/agent/ports/scratchpadPort';
 import type { ScratchpadEntry } from '@/stores/scratchpadStore';
 import type { TaskExecution, ExecutionStep, DetailBlock } from '@/types/execution';
-import type { TokenUsage } from '@/types';
+import type { TokenUsage, ToolResult, ToolResultContent } from '@/types';
+import { redactInlineMediaPayloads } from '@/core/security/redaction';
+import {
+  prepareSidecarValueForWire,
+  prepareToolResultForSidecarWire,
+  redactAbsoluteMediaPaths,
+  redactSidecarValueForWireFailure,
+  sidecarValueNeedsMediaEncoding,
+} from '@/core/subagent/delegatedUserTurnMaterializer';
 import type { PortFrame } from './portFrameCoalescer';
 
 type Push = (frame: PortFrame) => void;
 
+export type FrameChatDelta = ChatDelta & {
+  /** Push any non-chat port frame through the same media-ordering barrier. */
+  pushTransportFrame: (frame: PortFrame) => void;
+  /** Queue an arbitrary sidecar→shell transport task behind pending media frames. */
+  pushTransportTask: (task: () => void | Promise<void>) => void;
+  /** Wait until every queued sidecar→shell transport frame has been pushed in order. */
+  drain: () => Promise<void>;
+  /** Alias for drain; named for terminal/final-flush call sites. */
+  flush: () => Promise<void>;
+};
+
 // ── ChatDelta ────────────────────────────────────────────────────────────
+
+const TOOL_MEDIA_TRANSPORT_ERROR = 'Error: Could not prepare sidecar tool media for transport.';
+
+function cloneWireValue<T>(value: T): T {
+  if (typeof globalThis.structuredClone === 'function') {
+    return globalThis.structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function sanitizeToolTransportText(value: string): string {
+  return redactAbsoluteMediaPaths(value);
+}
+
+function sanitizeInlineToolPayloads(value: string): string {
+  return redactInlineMediaPayloads(value);
+}
+
+function toolResultHasInlineMedia(resultContent: ToolResultContent[] | undefined): boolean {
+  return !!resultContent?.some((block) => block.type === 'image' && Boolean(block.source.data));
+}
+
+function sanitizeToolResultInlinePayloads(
+  resultContent: ToolResultContent[] | undefined,
+): ToolResultContent[] | undefined {
+  return resultContent?.map((block) => (
+    block.type === 'text'
+      ? { ...block, text: sanitizeInlineToolPayloads(block.text) }
+      : block
+  ));
+}
+
+function markToolCallMediaTransportFailure<T>(toolCall: T): T {
+  if (!toolCall || typeof toolCall !== 'object' || Array.isArray(toolCall)) return toolCall;
+  const safe = redactSidecarValueForWireFailure(toolCall) as Record<string, unknown>;
+  return {
+    ...safe,
+    result: TOOL_MEDIA_TRANSPORT_ERROR,
+    resultContent: undefined,
+    isError: true,
+  } as T;
+}
+
+function failClosedPreparedChatArgs(method: string, args: unknown[]): unknown[] {
+  const safeArgs = redactSidecarValueForWireFailure(args);
+  if (method === 'appendMessageToolCall' && safeArgs.length >= 3) {
+    return [safeArgs[0], safeArgs[1], markToolCallMediaTransportFailure(safeArgs[2])];
+  }
+  if (method === 'appendToolCallContext' && safeArgs.length >= 3) {
+    return [safeArgs[0], safeArgs[1], markToolCallMediaTransportFailure(safeArgs[2])];
+  }
+  if (method === 'setMessageToolCalls' && Array.isArray(safeArgs[2])) {
+    return [safeArgs[0], safeArgs[1], safeArgs[2].map((call) => markToolCallMediaTransportFailure(call))];
+  }
+  return safeArgs;
+}
 
 /**
  * `onLocalApply`, if given, is invoked SYNCHRONOUSLY BEFORE the frame is
@@ -47,10 +122,145 @@ type Push = (frame: PortFrame) => void;
  * "return value consumed by the loop" branch — see P1-3B-2-REPORT.md's
  * inventory for the full 28-method check.
  */
-export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: unknown[]) => void): ChatDelta {
+export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: unknown[]) => void): FrameChatDelta {
+  let transportTail: Promise<void> = Promise.resolve();
+  let transportBusy = false;
+
+  function enqueueTransport(task: () => void | Promise<void>): void {
+    transportBusy = true;
+    const current = transportTail.then(async () => {
+      await task();
+    });
+    transportTail = current.catch(() => undefined);
+    const capturedTail = transportTail;
+    void capturedTail.finally(() => {
+      if (transportTail === capturedTail) {
+        transportBusy = false;
+      }
+    });
+  }
+
+  function pushWireFrame(frame: PortFrame): void {
+    if (!transportBusy) {
+      push(frame);
+      return;
+    }
+    enqueueTransport(() => push(frame));
+  }
+
   function send(m: string, a: unknown[]): void {
     onLocalApply?.(m, a);
-    push({ p: 'chat', m, a });
+    pushWireFrame({ p: 'chat', m, a });
+  }
+
+  function sendPrepared(m: string, a: unknown[], conversationId: string | undefined): void {
+    const wireArgs = cloneWireValue(a);
+    onLocalApply?.(m, a);
+    if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
+      pushWireFrame({ p: 'chat', m, a: redactSidecarValueForWireFailure(wireArgs) });
+      return;
+    }
+    enqueueTransport(async () => {
+      try {
+        push({
+          p: 'chat',
+          m,
+          a: await prepareSidecarValueForWire(conversationId, wireArgs),
+        });
+      } catch {
+        push({
+          p: 'chat',
+          m,
+          a: failClosedPreparedChatArgs(m, wireArgs),
+        });
+      }
+    });
+  }
+
+  function sendUpdateToolCall(
+    convId: string,
+    messageId: string,
+    toolCallId: string,
+    result: string,
+    resultContent: ToolResultContent[] | undefined,
+    isError?: boolean,
+    hideScreenshot?: boolean,
+    metadata?: unknown,
+  ): void {
+    const localArgs = [
+      convId,
+      messageId,
+      toolCallId,
+      result,
+      resultContent,
+      isError,
+      hideScreenshot,
+      metadata,
+    ];
+    const wireResultContent = cloneWireValue(resultContent);
+    const wireMetadata = cloneWireValue(metadata);
+    onLocalApply?.('updateToolCall', localArgs);
+
+    if (!toolResultHasInlineMedia(wireResultContent)) {
+      pushWireFrame({
+        p: 'chat',
+        m: 'updateToolCall',
+        a: [
+          convId,
+          messageId,
+          toolCallId,
+          sanitizeInlineToolPayloads(result),
+          sanitizeToolResultInlinePayloads(wireResultContent),
+          isError,
+          hideScreenshot,
+          wireMetadata,
+        ],
+      });
+      return;
+    }
+
+    enqueueTransport(async () => {
+      try {
+        const prepared = await prepareToolResultForSidecarWire(convId, wireResultContent as ToolResult);
+        push({
+          p: 'chat',
+          m: 'updateToolCall',
+          a: [
+            convId,
+            messageId,
+            toolCallId,
+            sanitizeToolTransportText(result),
+            Array.isArray(prepared) ? prepared : undefined,
+            isError,
+            hideScreenshot,
+            wireMetadata,
+          ],
+        });
+      } catch {
+        push({
+          p: 'chat',
+          m: 'updateToolCall',
+          a: [
+            convId,
+            messageId,
+            toolCallId,
+            TOOL_MEDIA_TRANSPORT_ERROR,
+            undefined,
+            true,
+            hideScreenshot,
+            wireMetadata,
+          ],
+        });
+      }
+    });
+  }
+
+  async function drain(): Promise<void> {
+    while (true) {
+      const pending = transportTail;
+      await pending;
+      if (transportTail === pending) return;
+    }
   }
 
   return {
@@ -64,26 +274,21 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     deactivateSkills: (convId) => send('deactivateSkills', [convId]),
     setMessageStreamingFlag: (convId, messageId, streaming) =>
       send('setMessageStreamingFlag', [convId, messageId, streaming]),
-    setMessageToolCalls: (convId, messageId, toolCalls) => send('setMessageToolCalls', [convId, messageId, toolCalls]),
+    setMessageToolCalls: (convId, messageId, toolCalls) =>
+      sendPrepared('setMessageToolCalls', [convId, messageId, toolCalls], convId),
     addMessage: (convId, message) => send('addMessage', [convId, message]),
     deleteMessagesFrom: (convId, messageId) => send('deleteMessagesFrom', [convId, messageId]),
     updateToolCall: (convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata) =>
-      send('updateToolCall', [
-        convId,
-        messageId,
-        toolCallId,
-        result,
-        resultContent,
-        isError,
-        hideScreenshot,
-        metadata,
-      ]),
+      sendUpdateToolCall(convId, messageId, toolCallId, result, resultContent, isError, hideScreenshot, metadata),
     checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) =>
       send('checkpointToolCallMetadata', [convId, messageId, toolCallId, metadata]),
-    appendToolCallContext: (convId, loopId, context) => send('appendToolCallContext', [convId, loopId, context]),
-    appendMessageToolCall: (convId, loopId, toolCall) => send('appendMessageToolCall', [convId, loopId, toolCall]),
+    appendToolCallContext: (convId, loopId, context) =>
+      sendPrepared('appendToolCallContext', [convId, loopId, context], convId),
+    appendMessageToolCall: (convId, loopId, toolCall) =>
+      sendPrepared('appendMessageToolCall', [convId, loopId, toolCall], convId),
     updateMessageUsage: (convId, usage, msgId) => send('updateMessageUsage', [convId, usage, msgId]),
-    setExecutionStepsSnapshot: (convId, loopId, steps) => send('setExecutionStepsSnapshot', [convId, loopId, steps]),
+    setExecutionStepsSnapshot: (convId, loopId, steps) =>
+      sendPrepared('setExecutionStepsSnapshot', [convId, loopId, steps], convId),
     setPlannedStepsSnapshot: (convId, loopId, steps) => send('setPlannedStepsSnapshot', [convId, loopId, steps]),
     setConversationStatus: (convId, status) => send('setConversationStatus', [convId, status]),
     setAgentStatus: (convId, status, tool, agentName) => send('setAgentStatus', [convId, status, tool, agentName]),
@@ -96,6 +301,10 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     setConversationModel: (convId, model) => send('setConversationModel', [convId, model]),
     setPendingProposalSignal: (convId, signal) => send('setPendingProposalSignal', [convId, signal]),
     removeActiveAgent: (convId, agentName) => send('removeActiveAgent', [convId, agentName]),
+    pushTransportFrame: pushWireFrame,
+    pushTransportTask: enqueueTransport,
+    drain,
+    flush: drain,
   };
 }
 
@@ -144,11 +353,51 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
  * not something fixable inside this transport-agnostic factory — flagged
  * per the card's "STOP and record" instruction rather than invented around.
  */
-export function createFrameExecutionPort(push: Push): ExecutionPort {
+export function createFrameExecutionPort(
+  push: Push,
+  enqueueTransport?: (task: () => void | Promise<void>) => void,
+): ExecutionPort {
   const executions = new Map<string, TaskExecution>(); // keyed by id === loopId
 
   function findStep(exec: TaskExecution, stepId: string): ExecutionStep | undefined {
     return exec.steps.find((s) => s.id === stepId);
+  }
+
+  function pushExecTask(task: () => void | Promise<void>): void {
+    if (enqueueTransport) {
+      enqueueTransport(task);
+      return;
+    }
+    void task();
+  }
+
+  function pushExecFrameForConversation(conversationId: string | undefined, method: string, args: unknown[]): void {
+    const wireArgs = cloneWireValue(args);
+    if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
+      const frame = { p: 'exec' as const, m: method, a: redactSidecarValueForWireFailure(wireArgs) };
+      pushExecTask(() => push(frame));
+      return;
+    }
+    const task = async () => {
+      try {
+        push({
+          p: 'exec',
+          m: method,
+          a: await prepareSidecarValueForWire(conversationId, wireArgs),
+        });
+      } catch {
+        push({
+          p: 'exec',
+          m: method,
+          a: redactSidecarValueForWireFailure(wireArgs),
+        });
+      }
+    };
+    pushExecTask(task);
+  }
+
+  function pushExecFrame(execId: string, method: string, args: unknown[]): void {
+    pushExecFrameForConversation(executions.get(execId)?.conversationId, method, args);
   }
 
   return {
@@ -164,7 +413,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         steps: [],
       };
       executions.set(loopId, execution);
-      push({ p: 'exec', m: 'createExecution', a: [conversationId, loopId] });
+      pushExecFrameForConversation(conversationId, 'createExecution', [conversationId, loopId]);
       return execution;
     },
 
@@ -174,7 +423,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         exec.status = 'cancelled';
         exec.endTime = Date.now();
       }
-      push({ p: 'exec', m: 'cancelExecution', a: [execId] });
+      pushExecFrame(execId, 'cancelExecution', [execId]);
     },
 
     getExecutionByLoopId: (loopId) => executions.get(loopId),
@@ -194,7 +443,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
       if (exec && exec.status !== 'running') {
         executions.delete(execId);
       }
-      push({ p: 'exec', m: 'evictExecution', a: [execId] });
+      pushExecFrame(execId, 'evictExecution', [execId]);
     },
 
     completeExecution: (execId) => {
@@ -205,7 +454,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         // plannedSteps status flip is a no-op here — see the KNOWN GAP doc
         // comment above (plannedSteps never populates on this local mirror).
       }
-      push({ p: 'exec', m: 'completeExecution', a: [execId] });
+      pushExecFrame(execId, 'completeExecution', [execId]);
     },
 
     errorExecution: (execId, error) => {
@@ -214,13 +463,13 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         exec.status = 'error';
         exec.endTime = Date.now();
       }
-      push({ p: 'exec', m: 'errorExecution', a: [execId, error] });
+      pushExecFrame(execId, 'errorExecution', [execId, error]);
     },
 
     addStep: (execId, step) => {
       const exec = executions.get(execId);
       if (exec) exec.steps.push(step);
-      push({ p: 'exec', m: 'addStep', a: [execId, step] });
+      pushExecFrame(execId, 'addStep', [execId, step]);
     },
 
     setStepResult: (execId, stepId, result) => {
@@ -232,7 +481,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         step.endTime = Date.now();
         if (step.startTime) step.duration = (step.endTime - step.startTime) / 1000;
       }
-      push({ p: 'exec', m: 'setStepResult', a: [execId, stepId, result] });
+      pushExecFrame(execId, 'setStepResult', [execId, stepId, result]);
     },
 
     setStepError: (execId, stepId, error) => {
@@ -244,7 +493,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         step.endTime = Date.now();
         if (step.startTime) step.duration = (step.endTime - step.startTime) / 1000;
       }
-      push({ p: 'exec', m: 'setStepError', a: [execId, stepId, error] });
+      pushExecFrame(execId, 'setStepError', [execId, stepId, error]);
     },
 
     addChildStep: (execId, parentStepId, childStep) => {
@@ -254,7 +503,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         if (!parent.childSteps) parent.childSteps = [];
         parent.childSteps.push(childStep);
       }
-      push({ p: 'exec', m: 'addChildStep', a: [execId, parentStepId, childStep] });
+      pushExecFrame(execId, 'addChildStep', [execId, parentStepId, childStep]);
     },
 
     updateChildStep: (execId, parentStepId, childStepId, result, error, detailBlocks) => {
@@ -275,7 +524,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
           }
         }
       }
-      push({ p: 'exec', m: 'updateChildStep', a: [execId, parentStepId, childStepId, result, error, detailBlocks] });
+      pushExecFrame(execId, 'updateChildStep', [execId, parentStepId, childStepId, result, error, detailBlocks]);
     },
 
     addDetailBlock: (execId, stepId, block: DetailBlock) => {
@@ -286,7 +535,7 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
         if (existingIndex >= 0) step.detailBlocks[existingIndex] = block;
         else step.detailBlocks.push(block);
       }
-      push({ p: 'exec', m: 'addDetailBlock', a: [execId, stepId, block] });
+      pushExecFrame(execId, 'addDetailBlock', [execId, stepId, block]);
     },
 
     releaseDetailBlockImage: (execId, stepId, blockId) => {
@@ -296,25 +545,25 @@ export function createFrameExecutionPort(push: Push): ExecutionPort {
           .find((candidate) => candidate.id === stepId);
       const block = step?.detailBlocks.find((candidate) => candidate.id === blockId);
       if (block) delete block.imageData;
-      push({ p: 'exec', m: 'releaseDetailBlockImage', a: [execId, stepId, blockId] });
+      pushExecFrame(execId, 'releaseDetailBlockImage', [execId, stepId, blockId]);
     },
 
     appendThinking: (execId, content) => {
       const exec = executions.get(execId);
       if (exec) exec.thinking = (exec.thinking || '') + content;
-      push({ p: 'exec', m: 'appendThinking', a: [execId, content] });
+      pushExecFrame(execId, 'appendThinking', [execId, content]);
     },
 
     setThinkingDuration: (execId, duration) => {
       const exec = executions.get(execId);
       if (exec) exec.thinkingDuration = duration;
-      push({ p: 'exec', m: 'setThinkingDuration', a: [execId, duration] });
+      pushExecFrame(execId, 'setThinkingDuration', [execId, duration]);
     },
 
     setUsage: (execId, usage: TokenUsage) => {
       const exec = executions.get(execId);
       if (exec) exec.usage = usage;
-      push({ p: 'exec', m: 'setUsage', a: [execId, usage] });
+      pushExecFrame(execId, 'setUsage', [execId, usage]);
     },
   };
 }

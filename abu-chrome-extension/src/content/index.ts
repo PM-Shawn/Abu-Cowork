@@ -112,6 +112,7 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
     case 'fill': return fillElement(payload.locator as ElementLocator, payload.value as string);
     case 'select': return selectOption(payload.locator as ElementLocator, payload.value as string);
     case 'wait_for': return waitFor(payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
+    case 'get_html': return getHtml(payload.selector as string | undefined);
     case 'extract_text': return extractText(payload.selector as string | undefined);
     case 'extract_table': return extractTable(payload.selector as string | undefined);
     case 'scroll': return scrollPage(payload as Record<string, unknown>);
@@ -1092,6 +1093,61 @@ async function waitFor(
     // Timeout
     const timeoutTimer = setTimeout(() => complete(true), timeout);
   });
+}
+
+// =============================================================================
+// 7. GET HTML — inert DOM source for query_js
+// =============================================================================
+
+function sameOriginFrameHtml(frame: HTMLIFrameElement): string {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc?.documentElement) {
+      return '<abu-frame-unavailable data-reason="empty"></abu-frame-unavailable>';
+    }
+    return serializeElementWithFrames(doc.documentElement);
+  } catch {
+    return '<abu-frame-unavailable data-reason="cross-origin"></abu-frame-unavailable>';
+  }
+}
+
+function inlineFrameElement(frame: HTMLIFrameElement, ownerDocument: Document): Element {
+  const inline = ownerDocument.createElement('abu-inline-frame');
+  inline.setAttribute('data-src', frame.getAttribute('src') ?? '');
+  inline.setAttribute('data-title', frame.getAttribute('title') ?? '');
+  inline.innerHTML = sameOriginFrameHtml(frame);
+  return inline;
+}
+
+function serializeElementWithFrames(element: Element): string {
+  if (element.tagName === 'IFRAME') {
+    return inlineFrameElement(element as HTMLIFrameElement, element.ownerDocument).outerHTML;
+  }
+
+  const clone = element.cloneNode(true) as Element;
+  const liveFrames = [...element.querySelectorAll('iframe')];
+  const clonedFrames = [...clone.querySelectorAll('iframe')];
+
+  for (let i = 0; i < liveFrames.length; i += 1) {
+    const live = liveFrames[i] as HTMLIFrameElement;
+    const cloned = clonedFrames[i];
+    if (!cloned?.parentNode) continue;
+    const inline = inlineFrameElement(live, clone.ownerDocument);
+    cloned.parentNode.replaceChild(inline, cloned);
+  }
+
+  return clone.outerHTML;
+}
+
+function getHtml(selector?: string): string {
+  const root = selector ? document.querySelector(selector) : document.documentElement;
+  if (!root) {
+    throw new Error(
+      `Scope element not found: ${selector}. ` +
+      'Run query_js without a selector or take a snapshot to see what the page actually contains.',
+    );
+  }
+  return serializeElementWithFrames(root);
 }
 
 // =============================================================================

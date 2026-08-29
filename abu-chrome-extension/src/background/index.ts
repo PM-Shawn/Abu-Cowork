@@ -495,6 +495,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'snapshot':
+      case 'get_html':
       case 'click':
       case 'fill':
       case 'select':
@@ -505,7 +506,10 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'keyboard':
       case 'start_recording':
       case 'stop_recording': {
-        const tabId = payload.tabId as number;
+        const tabId = (typeof payload.tabId === 'number' ? payload.tabId : lastActiveTabId) as number | null;
+        if (!tabId) {
+          return { id, success: false, error: 'No active browser tab is available. Call get_tabs and pass tabId.' };
+        }
         const result = await sendToContentScript(tabId, action, payload);
         return { id, success: true, data: result };
       }

@@ -251,7 +251,7 @@ describe('resolveTriggerCallbacks', () => {
         // read-only tools this module never enumerates (they're registered
         // dynamically by the browser servers) — the wildcard has to catch
         // those too, not just the known state-changing set.
-        for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'snapshot', 'screenshot', 'get_tabs']) {
+        for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'snapshot', 'query_js', 'screenshot', 'get_tabs']) {
           expect(blockedTools.some((p) => matchesToolName(`abu-browser__${tool}`, p)), tool).toBe(true);
           expect(blockedTools.some((p) => matchesToolName(`abu-browser-bridge__${tool}`, p)), tool).toBe(true);
         }

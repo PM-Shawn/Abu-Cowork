@@ -27,7 +27,7 @@ describe('browser tool policy', () => {
     });
 
     it('leaves observation tools ungated', () => {
-      for (const tool of ['snapshot', 'get_tabs', 'extract_text', 'extract_table', 'screenshot', 'scroll']) {
+      for (const tool of ['snapshot', 'get_tabs', 'extract_text', 'extract_table', 'query_js', 'screenshot', 'scroll']) {
         expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe('read-only');
       }
     });
@@ -53,7 +53,7 @@ describe('browser tool policy', () => {
     it('matches every tool under those servers — state-changing, navigate, and read-only alike', () => {
       const patterns = listAllBrowserToolPatterns();
       for (const server of ['abu-browser', 'abu-browser-bridge']) {
-        for (const tool of ['click', 'fill', 'navigate', 'snapshot', 'screenshot', 'get_tabs', 'anything-not-yet-invented']) {
+        for (const tool of ['click', 'fill', 'navigate', 'snapshot', 'query_js', 'screenshot', 'get_tabs', 'anything-not-yet-invented']) {
           expect(
             patterns.some((p) => matchesToolName(`${server}__${tool}`, p)),
             `${server}__${tool}`,
@@ -172,6 +172,7 @@ describe('browser tool policy', () => {
 
     it('leaves ordinary actions and other servers unflagged', () => {
       expect(isScriptingBrowserTool('abu-browser__click')).toBe(false);
+      expect(isScriptingBrowserTool('abu-browser__query_js')).toBe(false);
       expect(isScriptingBrowserTool('abu-browser__navigate')).toBe(false);
       expect(isScriptingBrowserTool('other-server__execute_js')).toBe(false);
       expect(isScriptingBrowserTool('execute_js')).toBe(false);

@@ -42,6 +42,7 @@ const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 350
  */
 const MCP_TOOL_RULES: Record<string, TruncationRule> = {
   snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
+  query_js: { headLines: 0, tailLines: 0, maxChars: 32000 },
   extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },
   extract_table: { headLines: 0, tailLines: 0, maxChars: 20000 },
   get_tabs: { headLines: 0, tailLines: 0, maxChars: 8000 },

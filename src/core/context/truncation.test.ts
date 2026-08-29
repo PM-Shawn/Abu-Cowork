@@ -133,6 +133,17 @@ describe('MCP tool results', () => {
     expect(result).not.toContain('characters omitted');
   });
 
+  it('does not blind-cut query_js results after the source-bounded 30000-char budget', () => {
+    const result = truncateToolResult('abu-browser-bridge__query_js', bigJson(28000));
+    expect(result.length).toBeGreaterThan(28000);
+    expect(result).not.toContain('characters omitted');
+  });
+
+  it('applies the query_js budget to the built-in browser server too', () => {
+    const result = truncateToolResult('abu-browser__query_js', bigJson(28000));
+    expect(result).not.toContain('characters omitted');
+  });
+
   it('still bounds a snapshot that blew past its own in-page budget', () => {
     const result = truncateToolResult('abu-browser-bridge__snapshot', bigJson(80000));
     expect(result.length).toBeLessThan(80000);

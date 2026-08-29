@@ -5,6 +5,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { evaluateQueryJsOnHtml } from './queryJs.js';
 
 export interface BrowserTransportResponse {
   success: boolean;
@@ -127,7 +128,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 2. browser_snapshot
   server.tool(
     'snapshot',
-    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions, plus its \`id\`/\`name\` when the page provides them. Refs stay valid across snapshots for as long as the element stays on the page, so you can snapshot, act, and re-snapshot without re-reading refs you already hold. This is the primary way to understand what's on a page before taking action — prefer it over running scripts against the DOM. If a result says it was truncated, follow the instruction in its message (scope with \`selector\`, or raise \`maxChars\`) rather than switching to execute_js.`,
+    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions, plus its \`id\`/\`name\` when the page provides them. Refs stay valid across snapshots for as long as the element stays on the page, so you can snapshot, act, and re-snapshot without re-reading refs you already hold. This is the primary way to understand what's on a page before taking action. If you need to batch-read many DOM nodes, trees, attributes, or tables in one call, use query_js instead of execute_js. If a result says it was truncated, follow the instruction in its message (scope with \`selector\`, or raise \`maxChars\`) rather than switching to execute_js.`,
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page (e.g. the form you are filling). Use this first when a snapshot comes back truncated.'),
@@ -217,7 +218,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 7. browser_extract_text
   server.tool(
     'extract_text',
-    'Extract text content from the page or a specific element. Useful for reading content, checking values, or verifying results.',
+    'Extract text content from the page or a specific element. Useful for reading content, checking values, or verifying results. For structured batch reads across many nodes, use query_js against the detached read-only DOM copy.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector to extract text from. If omitted, extracts the full page text (may be large).'),
@@ -296,7 +297,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 12. browser_execute_js
   server.tool(
     'execute_js',
-    'Execute arbitrary JavaScript in the page. LAST RESORT: it holds the page\'s full authority, so every single run interrupts the user for its own approval — a task that reaches for it repeatedly is a task the user experiences as broken. Before using it, check the tool that already covers what you want: read the page with `snapshot` (interactive elements, including the rows of an open dropdown) or `extract_text` / `extract_table`; wait for something with `wait_for`, whose timeout reports what the page actually looks like; choose from a dropdown with `select`. To confirm an action worked — a toast, a validation error, a redirect — use `wait_for` then `extract_text`, not a script. Read the error a tool returns before switching away from it: it usually names the next step.',
+    'Execute arbitrary JavaScript in the live page. LAST RESORT: it holds the page\'s full authority, so every single run interrupts the user for its own approval — a task that reaches for it repeatedly is a task the user experiences as broken. For read-only batch DOM work (querySelectorAll, walking trees/tables, collecting text or attributes), use query_js: it runs on a detached inert DOM copy and shows no approval prompt. Before using execute_js, check the tool that already covers what you want: read the page with `snapshot`, `extract_text`, `extract_table`, or `query_js`; wait for something with `wait_for`, whose timeout reports what the page actually looks like; choose from a dropdown with `select`. To confirm an action worked — a toast, a validation error, a redirect — use `wait_for` then `extract_text`, not a live-page script. Read the error a tool returns before switching away from it: it usually names the next step.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       code: z.string().describe('JavaScript code to execute. The last expression value is returned.'),
@@ -308,7 +309,30 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 13. browser_screenshot
+  // 13. browser_query_js
+  server.tool(
+    'query_js',
+    'Run JavaScript against a detached, inert copy of the page DOM. Reading is fully supported (`querySelectorAll`, `textContent`, attributes, tree/table walks), the real page can never be modified, and no approval prompt is shown. Use this for batch reads that would take many snapshot/extract calls. Not available in the copy: live JS state, computed styles/layout, event dispatch, network, files, or page globals. To interact, use click/fill/select; use execute_js only when the live page itself must run code and the user should approve that single run.',
+    {
+      tabId: z.coerce.number().optional().describe('Tab ID from get_tabs. If omitted, uses the current active browser tab.'),
+      code: z.string().describe('Synchronous JavaScript to evaluate against the detached DOM copy. The completion value is returned as JSON.'),
+      selector: z.string().optional().describe('Optional CSS selector to serialize only one subtree before running the query. Use this when the page is large or when you only need one region.'),
+    },
+    async ({ tabId, code, selector }) => {
+      await ensureConnected(transport);
+      const htmlResponse = await transport.send('get_html', { tabId, selector });
+      if (!htmlResponse.success) {
+        throw new Error(htmlResponse.error ?? 'Failed to read page HTML');
+      }
+      if (typeof htmlResponse.data !== 'string') {
+        throw new Error('Browser transport returned invalid HTML for query_js');
+      }
+      const text = await evaluateQueryJsOnHtml(htmlResponse.data, code);
+      return { content: [{ type: 'text' as const, text }] };
+    }
+  );
+
+  // 14. browser_screenshot
   server.tool(
     'screenshot',
     'Take a screenshot of the visible area of a tab. Returns a base64-encoded PNG image. Useful for visual confirmation of actions.',
@@ -331,7 +355,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 14. browser_screenshot_full_page
+  // 15. browser_screenshot_full_page
   server.tool(
     'screenshot_full_page',
     'Take a full-page screenshot by scrolling and stitching the entire page content. Returns a base64-encoded PNG image of the complete page. Use this when the user asks for a "long screenshot" or wants to capture content beyond the visible viewport. This is slower than a regular screenshot.',
@@ -355,7 +379,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 15. browser_connection_status
+  // 16. browser_connection_status
   server.tool(
     'connection_status',
     'Check whether the browser transport is connected and ready before performing browser actions.',
@@ -371,7 +395,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 15. get_downloads — recent download activity
+  // 17. get_downloads — recent download activity
   server.tool(
     'get_downloads',
     'Get recent file downloads from the browser. Useful for confirming that a file was downloaded after clicking a download button.',
@@ -382,7 +406,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 16. start_recording — record user interactions
+  // 18. start_recording — record user interactions
   server.tool(
     'start_recording',
     'Start recording user interactions on a page (clicks, inputs, selects). The user performs actions manually, then call stop_recording to get a list of recorded steps that can be used as an automation template.',
@@ -396,7 +420,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     }
   );
 
-  // 17. stop_recording — stop recording and return captured steps
+  // 19. stop_recording — stop recording and return captured steps
   server.tool(
     'stop_recording',
     'Stop recording user interactions and return the captured steps. Each step includes the action type, element locator, and value. Use these steps as a template to replay the automation.',

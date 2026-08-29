@@ -571,8 +571,11 @@ async function performBrowserAutomation(action, payload = {}) {
 
   if (action === 'get_downloads') return recentDownloads.map((item) => ({ ...item }));
 
-  const match = findViewByTabId(payload.tabId);
-  if (!match) throw new Error(`Browser tab not found: ${String(payload.tabId)}`);
+  const targetTabId = payload.tabId === undefined && action === 'get_html'
+    ? activeAutomationTabId
+    : payload.tabId;
+  const match = findViewByTabId(targetTabId);
+  if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
   activeAutomationTabId = view.webContents.id;
 
@@ -587,6 +590,7 @@ async function performBrowserAutomation(action, payload = {}) {
 
   const domActions = new Set([
     'snapshot',
+    'get_html',
     'click',
     'fill',
     'select',

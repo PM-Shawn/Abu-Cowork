@@ -60,6 +60,8 @@ const waitFor = (condition: Record<string, unknown>, timeout: number) =>
   handleAction('wait_for', { condition, timeout }) as Promise<WaitResult>;
 const select = (locator: Record<string, unknown>, value: string) =>
   handleAction('select', { locator, value }) as Promise<ActionResult>;
+const getHtml = (payload: Record<string, unknown> = {}) =>
+  handleAction('get_html', payload) as Promise<string>;
 
 /** Size used for every "laid out" element — see the stub below. */
 const LAID_OUT = { width: 100, height: 20 };
@@ -265,6 +267,79 @@ describe('snapshot contract (pinned — must not change)', () => {
     const texts = snap.elements.map((e) => e.text);
     expect(texts).toContain('动设备');
     expect(snap.elements.some((e) => e.role === 'combobox')).toBe(true);
+  });
+});
+
+describe('get_html contract for query_js', () => {
+  it('serializes the whole document by default', async () => {
+    document.body.innerHTML = '<main><h1>Report</h1><p data-id="a">Alpha</p></main>';
+
+    const html = await getHtml();
+
+    expect(html).toContain('<html');
+    expect(html).toContain('<h1>Report</h1>');
+    expect(html).toContain('data-id="a"');
+  });
+
+  it('serializes only the selected subtree when selector is provided', async () => {
+    document.body.innerHTML = '<section id="skip">No</section><main id="keep"><p>Yes</p></main>';
+
+    const html = await getHtml({ selector: '#keep' });
+
+    expect(html).toContain('<main id="keep">');
+    expect(html).toContain('<p>Yes</p>');
+    expect(html).not.toContain('id="skip"');
+  });
+
+  it('fails missing selectors with narrowing guidance', async () => {
+    await expect(getHtml({ selector: '#missing' })).rejects.toThrow(/snapshot/);
+  });
+
+  it('inlines same-origin iframe HTML and marks inaccessible frames', async () => {
+    document.body.innerHTML = `
+      <main>
+        <iframe id="same" title="same"></iframe>
+        <iframe id="cross" title="cross"></iframe>
+      </main>
+    `;
+    const same = document.querySelector('#same') as HTMLIFrameElement;
+    Object.defineProperty(same, 'contentDocument', {
+      configurable: true,
+      value: document.implementation.createHTMLDocument('inner'),
+    });
+    same.contentDocument!.body.innerHTML = '<section class="inside">Frame text</section>';
+    const cross = document.querySelector('#cross') as HTMLIFrameElement;
+    Object.defineProperty(cross, 'contentDocument', {
+      configurable: true,
+      get() {
+        throw new DOMException('cross origin', 'SecurityError');
+      },
+    });
+
+    const html = await getHtml({ selector: 'main' });
+
+    expect(html).toContain('<abu-inline-frame');
+    expect(html).toContain('data-title="same"');
+    expect(html).toContain('class="inside"');
+    expect(html).toContain('Frame text');
+    expect(html).toContain('data-reason="cross-origin"');
+  });
+
+  it('inlines a same-origin iframe when the selector targets the frame itself', async () => {
+    document.body.innerHTML = '<iframe id="target" title="selected frame"></iframe>';
+    const frame = document.querySelector('#target') as HTMLIFrameElement;
+    Object.defineProperty(frame, 'contentDocument', {
+      configurable: true,
+      value: document.implementation.createHTMLDocument('selected'),
+    });
+    frame.contentDocument!.body.innerHTML = '<p data-node="inside">Selected frame text</p>';
+
+    const html = await getHtml({ selector: '#target' });
+
+    expect(html).toContain('<abu-inline-frame');
+    expect(html).toContain('data-title="selected frame"');
+    expect(html).toContain('data-node="inside"');
+    expect(html).not.toContain('<iframe');
   });
 });
 

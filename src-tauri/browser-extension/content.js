@@ -62,6 +62,8 @@
         return selectOption(payload.locator, payload.value);
       case "wait_for":
         return waitFor(payload.condition, payload.timeout);
+      case "get_html":
+        return getHtml(payload.selector);
       case "extract_text":
         return extractText(payload.selector);
       case "extract_table":
@@ -663,6 +665,49 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
       const pollTimer = setInterval(tryCheck, 500);
       const timeoutTimer = setTimeout(() => complete(true), timeout);
     });
+  }
+  function sameOriginFrameHtml(frame) {
+    try {
+      const doc = frame.contentDocument;
+      if (!doc?.documentElement) {
+        return '<abu-frame-unavailable data-reason="empty"></abu-frame-unavailable>';
+      }
+      return serializeElementWithFrames(doc.documentElement);
+    } catch {
+      return '<abu-frame-unavailable data-reason="cross-origin"></abu-frame-unavailable>';
+    }
+  }
+  function inlineFrameElement(frame, ownerDocument) {
+    const inline = ownerDocument.createElement("abu-inline-frame");
+    inline.setAttribute("data-src", frame.getAttribute("src") ?? "");
+    inline.setAttribute("data-title", frame.getAttribute("title") ?? "");
+    inline.innerHTML = sameOriginFrameHtml(frame);
+    return inline;
+  }
+  function serializeElementWithFrames(element) {
+    if (element.tagName === "IFRAME") {
+      return inlineFrameElement(element, element.ownerDocument).outerHTML;
+    }
+    const clone = element.cloneNode(true);
+    const liveFrames = [...element.querySelectorAll("iframe")];
+    const clonedFrames = [...clone.querySelectorAll("iframe")];
+    for (let i = 0; i < liveFrames.length; i += 1) {
+      const live = liveFrames[i];
+      const cloned = clonedFrames[i];
+      if (!cloned?.parentNode) continue;
+      const inline = inlineFrameElement(live, clone.ownerDocument);
+      cloned.parentNode.replaceChild(inline, cloned);
+    }
+    return clone.outerHTML;
+  }
+  function getHtml(selector) {
+    const root = selector ? document.querySelector(selector) : document.documentElement;
+    if (!root) {
+      throw new Error(
+        `Scope element not found: ${selector}. Run query_js without a selector or take a snapshot to see what the page actually contains.`
+      );
+    }
+    return serializeElementWithFrames(root);
   }
   function extractText(selector) {
     let text;

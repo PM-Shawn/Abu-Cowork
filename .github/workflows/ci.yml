@@ -29,7 +29,12 @@ jobs:
 
       - name: Install dependencies
         id: install
-        run: npm ci
+        # abu-browser-bridge is its own package; its query_js tests build the
+        # sandbox worker with esbuild resolving linkedom/ses from the bridge's
+        # local node_modules, so it needs an install of its own.
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
 
       # Gate steps run independently of EACH OTHER (so one red stage doesn't mask
       # another) but are skipped when install failed or the job was cancelled —

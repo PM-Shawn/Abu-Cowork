@@ -375,6 +375,7 @@
           return { id, success: true, data: results[0]?.result };
         }
         case "snapshot":
+        case "get_html":
         case "click":
         case "fill":
         case "select":
@@ -385,7 +386,10 @@
         case "keyboard":
         case "start_recording":
         case "stop_recording": {
-          const tabId = payload.tabId;
+          const tabId = typeof payload.tabId === "number" ? payload.tabId : lastActiveTabId;
+          if (!tabId) {
+            return { id, success: false, error: "No active browser tab is available. Call get_tabs and pass tabId." };
+          }
           const result = await sendToContentScript(tabId, action, payload);
           return { id, success: true, data: result };
         }

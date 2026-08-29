@@ -47,8 +47,16 @@ function requiredArtifacts(repoRoot) {
       filePath: path.join(repoRoot, 'electron', 'browser-runtime', 'dist', 'server.mjs'),
     },
     {
+      name: 'Abu-Browser query_js Worker',
+      filePath: path.join(repoRoot, 'electron', 'browser-runtime', 'dist', 'queryJsWorker.mjs'),
+    },
+    {
       name: 'Abu-Chrome-Bridge 运行时',
       filePath: path.join(repoRoot, 'electron', 'chrome-bridge-runtime', 'dist', 'server.mjs'),
+    },
+    {
+      name: 'Abu-Chrome-Bridge query_js Worker',
+      filePath: path.join(repoRoot, 'electron', 'chrome-bridge-runtime', 'dist', 'queryJsWorker.mjs'),
     },
     {
       name: 'Abu-Chrome-Bridge 扩展',

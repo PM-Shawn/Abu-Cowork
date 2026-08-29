@@ -18,6 +18,7 @@ const BROWSER_TOOL_SUFFIXES = [
   'wait_for',
   'extract_text',
   'extract_table',
+  'query_js',
   'scroll',
   'navigate',
   'keyboard',

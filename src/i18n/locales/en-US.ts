@@ -250,6 +250,7 @@ const enUS: TranslationDict = {
     runRecovering: 'Connection interrupted. Recovering…',
     runFailed: 'Send failed',
     runConnectionFailed: 'Connection recovery failed',
+    contentPolicyRejected: 'The upstream content-safety system rejected the request (often triggered by conversation history; try continuing in a new conversation)',
     runInterrupted: 'Stopped',
     runRecoveredAfterRestart: 'The task did not finish before the app restarted. Please retry.',
     runRetry: 'Retry',
@@ -1129,6 +1130,7 @@ const enUS: TranslationDict = {
     detailHide: 'Hide details',
     errMap: {
       aiAuth: 'API key is invalid or expired',
+      aiContentPolicy: 'The upstream content-safety system rejected the request (often triggered by conversation history; try continuing in a new conversation)',
       aiRateLimit: 'Rate limit exceeded, try again shortly',
       aiOverloaded: 'Provider is busy, try again shortly',
       aiServerError: 'Provider returned a server error',

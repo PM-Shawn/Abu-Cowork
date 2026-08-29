@@ -283,6 +283,7 @@ export interface TranslationDict {
     runRecovering: string;
     runFailed: string;
     runConnectionFailed: string;
+    contentPolicyRejected: string;
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
@@ -1291,6 +1292,7 @@ export interface TranslationDict {
     errMap: {
       // AI service codes
       aiAuth: string;
+      aiContentPolicy: string;
       aiRateLimit: string;
       aiOverloaded: string;
       aiServerError: string;

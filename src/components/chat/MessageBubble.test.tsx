@@ -77,7 +77,35 @@ describe('MessageBubble user run status', () => {
 
     render(<MessageBubble message={message} />);
 
-    expect(screen.getByText('Send failed')).toBeInTheDocument();
+    const failureLabel = screen.getByText('Send failed');
+    expect(failureLabel).toBeInTheDocument();
+    expect(failureLabel.parentElement).not.toHaveAttribute('title');
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('renders structured upstream failure fields without a raw JSON blob', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: '{"error_type":"governance.alicloud_content_safety_input_rejected"}',
+      runErrorDetails: {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'trace-403-local',
+        summary: 'The upstream content safety system rejected the request.',
+      },
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.getByText('HTTP 403')).toBeInTheDocument();
+    expect(screen.getByText('governance.alicloud_content_safety_input_rejected')).toBeInTheDocument();
+    expect(screen.getByText('trace-403-local')).toBeInTheDocument();
+    expect(screen.getByText('The upstream content safety system rejected the request.')).toBeInTheDocument();
+    expect(screen.queryByText(message.runError as string)).not.toBeInTheDocument();
+    expect(screen.getByText('Send failed').parentElement).not.toHaveAttribute('title');
+    expect(screen.queryByText(/conversation history/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 

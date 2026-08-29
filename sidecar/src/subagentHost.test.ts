@@ -93,6 +93,12 @@ function resultShape(text: string) {
 // production return type.
 type SubagentRunResult = ReturnType<typeof resultShape> & {
   stopReason: 'completed' | 'aborted' | 'error' | 'max_turns';
+  upstream?: {
+    status: number;
+    error_type?: string;
+    traceId?: string;
+    summary?: string;
+  };
 };
 
 describe('subagentHost', () => {
@@ -245,6 +251,39 @@ describe('subagentHost', () => {
       const result = (await handleSubagentRun(baseParams({ runId: 'stop-reason-run' }))) as SubagentRunResult;
 
       expect(result.stopReason).toBe('error');
+    });
+
+    it('returns the bounded upstream projection across the subagent wire', async () => {
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'subagent-host-trace-403',
+        summary: 'provider rejected the request',
+      } as const;
+      runSubagentLoopMock.mockResolvedValueOnce({
+        ...resultShape('Error: content policy rejected'),
+        stopReason: 'error',
+        upstream,
+      });
+
+      const result = (await handleSubagentRun(baseParams({ runId: 'upstream-run' }))) as SubagentRunResult;
+
+      expect(result).toMatchObject({ stopReason: 'error', upstream });
+      expect(result).not.toHaveProperty('rawBody');
+    });
+
+    it('drops a privacy-unsafe upstream object before writing the subagent response', async () => {
+      runSubagentLoopMock.mockResolvedValueOnce({
+        ...resultShape('Error: content policy rejected'),
+        stopReason: 'error',
+        upstream: { status: 403, rawBody: 'private prompt text' },
+      });
+
+      const result = (await handleSubagentRun(baseParams({ runId: 'unsafe-upstream-run' }))) as SubagentRunResult;
+
+      expect(result.upstream).toBeUndefined();
+      expect(JSON.stringify(result)).not.toContain('rawBody');
+      expect(JSON.stringify(result)).not.toContain('private prompt text');
     });
 
     it('parses and restores blockedTools into the sidecar SubagentLoopOptions', async () => {

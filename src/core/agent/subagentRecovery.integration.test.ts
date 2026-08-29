@@ -743,6 +743,32 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(result.stopReason).toBe('error');
   });
 
+  it('preserves a bounded content-policy projection from a delegated provider failure', async () => {
+    const upstream = {
+      status: 403,
+      error_type: 'governance.alicloud_content_safety_input_rejected',
+      traceId: 'subagent-trace-403',
+      summary: 'provider rejected the request',
+    } as const;
+    mockClaudeChat.mockRejectedValueOnce(new LLMError(
+      '{"private":"raw delegated provider body"}',
+      'content_policy',
+      {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"private":"raw delegated provider body"}',
+        upstream,
+      },
+    ));
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.stopReason).toBe('error');
+    expect(result.upstream).toEqual(upstream);
+    expect(result.text).toMatch(/content[- ]safety|内容安全/i);
+    expect(result.text).not.toContain('raw delegated provider body');
+  });
+
   it('marks a normal end_turn with no text or tools as no-content error', async () => {
     mockClaudeChat.mockImplementationOnce(emits([
       { type: 'done', stopReason: 'end_turn' } as StreamEvent,

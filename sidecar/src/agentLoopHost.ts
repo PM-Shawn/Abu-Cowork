@@ -71,6 +71,7 @@ import {
   materializeSidecarMediaRefsForShell,
   sidecarValueHasOpaqueMediaRefs,
 } from '@/core/subagent/delegatedUserTurnMaterializer';
+import { formatLlmTerminalError, LLMError, normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
 interface SerializableToolDefinition {
@@ -785,7 +786,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const terminal = createAgentRunTerminal(runId, result);
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
-    return result;
+    return terminal.result;
   }
   if (registryEntry) registryEntry.state = 'running';
   traceSidecarRuntimeEvent('sidecar.agent_run_received', {
@@ -1001,7 +1002,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const terminal = createAgentRunTerminal(runId, result);
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
-    return result;
+    return terminal.result;
   } catch (error) {
     traceSidecarRuntimeEvent('sidecar.agent_run_failed', {
       runId,
@@ -1013,18 +1014,41 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     });
     await chatDelta.drain();
     coalescer.flush();
-    const message = error instanceof Error ? error.message : String(error);
+    const upstream = error instanceof LLMError
+      ? normalizeUpstreamErrorDetails(error.upstream)
+      : undefined;
+    const message = error instanceof LLMError
+      ? formatLlmTerminalError(error)
+      : error instanceof Error ? error.message : String(error);
     const terminal = createAgentRunTerminal(
       runId,
-      { reason: 'error', error: message, messageTaken: true },
+      {
+        reason: 'error',
+        error: message,
+        messageTaken: true,
+        ...(upstream ? { upstream } : {}),
+      },
       {
         errorType: sidecarRuntimeErrorType(error),
         message,
-        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+        ...(error instanceof Error && !(error instanceof LLMError) && error.stack
+          ? { stack: error.stack }
+          : {}),
+        ...(upstream ? { upstream } : {}),
       },
     );
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
+    if (error instanceof LLMError) {
+      throw new RpcError(-32000, message, {
+        name: 'LLMError',
+        code: error.code,
+        retryable: error.retryable,
+        statusCode: error.statusCode,
+        message,
+        ...(upstream ? { upstream } : {}),
+      });
+    }
     throw error;
   } finally {
     coalescer.flush();

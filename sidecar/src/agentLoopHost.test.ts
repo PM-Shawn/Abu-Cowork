@@ -3,6 +3,8 @@ import { RpcError } from './protocol';
 import type { SubagentLoopOptions, SubagentProgressEvent } from '@/core/agent/subagentLoop';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
 import { firstImageContent } from '@/core/tools/toolResultContent';
+import { FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE } from '@/core/agent/__contractFixtures__/agentRunTerminalFixture';
+import { LLMError } from '@/core/llm/adapter';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -386,6 +388,62 @@ describe('agentLoopHost', () => {
           stack: expect.stringContaining('Error: boom'),
         },
       });
+    });
+
+    it('projects an unexpected top-level LLMError into a safe terminal and RPC error', async () => {
+      const rawBody = '{"private":"raw provider body"}';
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'host-unexpected-trace-403',
+      } as const;
+      runAgentLoopMock.mockRejectedValueOnce(new LLMError(rawBody, 'content_policy', {
+        retryable: false,
+        statusCode: 403,
+        rawBody,
+        upstream,
+      }));
+      const params = reliableParams();
+      handleAgentStart(params);
+
+      await expect(handleAgentRun(params)).rejects.toMatchObject({
+        code: -32000,
+        message: 'HTTP 403 · content_policy',
+        data: expect.objectContaining({
+          message: 'HTTP 403 · content_policy',
+          upstream,
+        }),
+      });
+      const terminal = sendNotificationMock.mock.calls
+        .filter((call) => call[0] === 'agent.terminal')
+        .at(-1)?.[1];
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: {
+          reason: 'error',
+          error: 'HTTP 403 · content_policy',
+          messageTaken: true,
+          upstream,
+        },
+        failure: {
+          errorType: 'llmerror',
+          message: 'HTTP 403 · content_policy',
+          upstream,
+        },
+      });
+      expect((terminal as { failure?: { stack?: string } }).failure?.stack).toBeUndefined();
+      expect(JSON.stringify(terminal)).not.toContain('raw provider body');
+    });
+
+    it('publishes structured upstream failure details returned by the agent loop', async () => {
+      runAgentLoopMock.mockResolvedValueOnce(FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE.result);
+
+      await handleStartedAgentRun({ runId: FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE.runId });
+
+      expect(sendNotificationMock).toHaveBeenCalledWith(
+        'agent.terminal',
+        FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE,
+      );
     });
 
     it('aborts scoped run controllers on normal completion so background commands cannot outlive unattended runs', async () => {

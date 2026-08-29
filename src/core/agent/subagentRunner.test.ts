@@ -50,6 +50,12 @@ vi.mock('./subagentLoop', () => {
     readonly tokenUsage: { input: number; output: number };
     readonly duration: number;
     readonly stopReason: string;
+    readonly upstream?: {
+      status: number;
+      error_type?: string;
+      traceId?: string;
+      summary?: string;
+    };
 
     constructor(params: {
       text: string;
@@ -58,6 +64,12 @@ vi.mock('./subagentLoop', () => {
       tokenUsage: { input: number; output: number };
       duration: number;
       stopReason: string;
+      upstream?: {
+        status: number;
+        error_type?: string;
+        traceId?: string;
+        summary?: string;
+      };
     }) {
       this.text = params.text;
       this.toolCallCount = params.toolCallCount;
@@ -65,6 +77,7 @@ vi.mock('./subagentLoop', () => {
       this.tokenUsage = params.tokenUsage;
       this.duration = params.duration;
       this.stopReason = params.stopReason;
+      this.upstream = params.upstream;
     }
 
     toString(): string {
@@ -599,6 +612,98 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('completed');
     });
 
+    it('reconstructs a strict bounded upstream projection from a failed sidecar subagent', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'subagent-runner-trace-403',
+        summary: 'provider rejected the request',
+      } as const;
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: content policy rejected',
+        toolCallCount: 0,
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+        upstream,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.upstream).toEqual(upstream);
+    });
+
+    it('rejects a subagent upstream projection with privacy-unsafe extra fields', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: content policy rejected',
+        toolCallCount: 0,
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+        upstream: { status: 403, rawBody: 'private prompt text' },
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+      expect(result.upstream).toBeUndefined();
+    });
+
+    it.each([
+      ['missing tokenUsage', { tokenUsage: undefined }],
+      ['string token count', { tokenUsage: { input: '10', output: 2 } }],
+      ['missing output token count', { tokenUsage: { input: 1 } }],
+      ['negative tool count', { toolCallCount: -1 }],
+      ['fractional turn count', { turnCount: 1.5 }],
+      ['non-finite duration', { duration: Number.POSITIVE_INFINITY }],
+      ['unknown top-level key', { rawBody: 'private prompt text' }],
+    ])('rejects malformed sidecar result metrics/shape: %s', async (_label, override) => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 2 },
+        duration: 1,
+        stopReason: 'completed',
+        ...override,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+    });
+
+    it('rejects a completed sidecar result carrying failure-only upstream details', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'completed text',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 2 },
+        duration: 1,
+        stopReason: 'completed',
+        upstream: { status: 403 },
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+      expect(result.upstream).toBeUndefined();
+    });
+
     it('defaults a legacy sidecar result with no stopReason to completed', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({
@@ -614,6 +719,64 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toBe('legacy sidecar result');
+      expect(result.stopReason).toBe('completed');
+    });
+
+    it.each([
+      'Error: {"private":"legacy delegated provider body"}',
+      'Error: <html><body>legacy delegated proxy page</body></html>',
+    ])('sanitizes a legacy failed subagent response before returning it: %s', async (text) => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text,
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('legacy delegated');
+      expect(result.stopReason).toBe('error');
+    });
+
+    it('sanitizes an Error-prefixed legacy result with no stopReason', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: {"private":"legacy no-stop provider body"}',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('legacy no-stop provider body');
+      expect(result.stopReason).toBe('error');
+    });
+
+    it('infers a missing legacy stopReason only for an Error-prefixed result', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: '{"normal":"successful JSON output"}',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.text).toBe('{"normal":"successful JSON output"}');
       expect(result.stopReason).toBe('completed');
     });
 
@@ -1609,6 +1772,26 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('error');
       expect(result.toolCallCount).toBe(0);
       expect(result.turnCount).toBe(0);
+    });
+
+    it('sanitizes a structured transport error after tool execution without rerunning', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      d.reject(new Error('{"private":"committed provider body"}'));
+
+      const result = await runPromise;
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('committed provider body');
+      expect(result.stopReason).toBe('error');
     });
   });
 

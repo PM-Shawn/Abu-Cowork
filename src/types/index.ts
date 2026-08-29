@@ -325,6 +325,18 @@ export interface ThinkingBlock {
   thinking: string;
 }
 
+/**
+ * Bounded, user-visible projection of an upstream provider error. The raw
+ * response body stays inside the adapter/diagnostic path and must never cross
+ * the sidecar terminal wire or be persisted on a chat message.
+ */
+export interface UpstreamErrorDetails {
+  status: number;
+  error_type?: string;
+  traceId?: string;
+  summary?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -347,6 +359,8 @@ export interface Message {
   clientMessageId?: string;
   /** User-facing detail retained when dispatch reaches a failed terminal. */
   runError?: string;
+  /** Structured provider fields retained for the failed-run error card. */
+  runErrorDetails?: UpstreamErrorDetails;
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;

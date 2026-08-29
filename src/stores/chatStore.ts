@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { current, enableMapSet } from 'immer';
-import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
+import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
@@ -33,6 +33,7 @@ import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
+import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
 
 enableMapSet();
 
@@ -55,6 +56,7 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'connection-failed',
   'interrupted',
 ]);
+const RUN_FAILURE_STATES = new Set<Message['runState']>(['failed', 'connection-failed']);
 
 function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
   return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
@@ -78,14 +80,43 @@ function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<s
   };
 }
 
+function safeRunErrorFallback(errorDetails?: UpstreamErrorDetails): string {
+  const statusFallback = errorDetails
+    ? `HTTP ${errorDetails.status}`
+    : getI18n().chat.errorEmptyBody;
+  return errorDetails?.summary
+    ? sanitizeUntrustedLlmErrorText(errorDetails.summary, statusFallback)
+    : statusFallback;
+}
+
+function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  return sanitizeUntrustedLlmErrorText(value, safeRunErrorFallback(errorDetails));
+}
+
+function enforceRunErrorState(message: Message): Message {
+  if (RUN_FAILURE_STATES.has(message.runState)) return message;
+  const { runError: _runError, runErrorDetails: _runErrorDetails, ...withoutRunError } = message;
+  return withoutRunError as Message;
+}
+
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter.
  * Pass the bundle's `collectAnsweredLoopIds` so a stale-active row whose loop
  * demonstrably replied is inferred completed here too — without it, the same
  * ledger that loads clean from disk imports branded "发送失败". */
 export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
-  return recoverInterruptedUserRun({
-    ...msg,
+  const {
+    runErrorDetails: untrustedRunErrorDetails,
+    runError: untrustedRunError,
+    ...messageWithoutErrorDetails
+  } = msg;
+  const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
+  const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
+  return enforceRunErrorState(recoverInterruptedUserRun({
+    ...messageWithoutErrorDetails,
+    ...(runError ? { runError } : {}),
+    ...(runErrorDetails ? { runErrorDetails } : {}),
     isStreaming: false,
     toolCalls: msg.toolCalls?.map((tc) => {
       const {
@@ -95,7 +126,7 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       } = tc;
       return { ...safeToolCall, isExecuting: false };
     }),
-  }, answeredLoopIds);
+  }, answeredLoopIds));
 }
 
 /** A non-ghost assistant row: real text, tool activity, or thinking. Shared
@@ -136,6 +167,13 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
   const answeredLoopIds = collectAnsweredLoopIds(messages);
   return messages
     .map((msg) => {
+      const {
+        runErrorDetails: untrustedRunErrorDetails,
+        runError: untrustedRunError,
+        ...messageWithoutErrorDetails
+      } = msg;
+      const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
+      const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
       const toolCalls = msg.toolCalls?.map((tc) => {
         const safeToRetryRecovery =
           tc.sandboxRecoveryAction === 'pending'
@@ -150,11 +188,13 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
             : tc.sandboxRecoveryAction,
         };
       });
-      return recoverInterruptedUserRun({
-        ...msg,
+      return enforceRunErrorState(recoverInterruptedUserRun({
+        ...messageWithoutErrorDetails,
+        ...(runError ? { runError } : {}),
+        ...(runErrorDetails ? { runErrorDetails } : {}),
         isStreaming: false,
         toolCalls,
-      }, answeredLoopIds);
+      }, answeredLoopIds));
     })
     .filter(msg => msg.role !== 'assistant' || isSubstantiveAssistant(msg));
 }
@@ -611,6 +651,7 @@ interface ChatActions {
     patch: {
       state: NonNullable<Message['runState']>;
       error?: string;
+      errorDetails?: UpstreamErrorDetails;
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -1444,8 +1485,13 @@ export const useChatStore = create<ChatStore>()(
           } else {
             delete message.runEndedAt;
           }
-          if (patch.error) message.runError = patch.error;
+          const errorDetails = normalizeUpstreamErrorDetails(patch.errorDetails);
+          const isFailure = RUN_FAILURE_STATES.has(patch.state);
+          const runError = isFailure ? sanitizeRunError(patch.error, errorDetails) : undefined;
+          if (runError) message.runError = runError;
           else delete message.runError;
+          if (isFailure && errorDetails) message.runErrorDetails = errorDetails;
+          else delete message.runErrorDetails;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;

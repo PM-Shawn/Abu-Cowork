@@ -250,6 +250,7 @@ const zhCN: TranslationDict = {
     runRecovering: '连接中断，正在恢复…',
     runFailed: '发送失败',
     runConnectionFailed: '连接恢复失败',
+    contentPolicyRejected: '上游内容安全系统拒绝了请求（通常由对话历史触发，可尝试新开会话继续）',
     runInterrupted: '已停止',
     runRecoveredAfterRestart: '应用重启前任务未完成，请重试。',
     runRetry: '重试',
@@ -1129,6 +1130,7 @@ const zhCN: TranslationDict = {
     detailHide: '收起详情',
     errMap: {
       aiAuth: 'API Key 无效或已过期',
+      aiContentPolicy: '上游内容安全系统拒绝了请求（通常由对话历史触发，可尝试新开会话继续）',
       aiRateLimit: '请求频率超限，稍后再试',
       aiOverloaded: 'provider 服务繁忙，稍后再试',
       aiServerError: 'provider 服务异常，稍后再试',

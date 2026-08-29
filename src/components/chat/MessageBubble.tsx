@@ -710,7 +710,7 @@ export default function MessageBubble({
                   communicates that work is in progress; only actionable failures belong
                   under the user's message. */}
               {hasRunFailure && (
-                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]" title={message.runError}>
+                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
                   <span>
                     {message.runState === 'failed' && t.chat.runFailed}
                     {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
@@ -720,6 +720,31 @@ export default function MessageBubble({
                       <RefreshCw className="h-3 w-3" />
                       {t.chat.runRetry}
                     </Button>
+                  )}
+                </div>
+              )}
+              {hasRunFailure && message.runErrorDetails && (
+                <div
+                  role="alert"
+                  className="max-w-2xl space-y-1.5 rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-minor text-[var(--abu-text-primary)]"
+                >
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-caption">
+                    <span>HTTP {message.runErrorDetails.status}</span>
+                    {message.runErrorDetails.error_type && (
+                      <span className="break-all">
+                        error_type: <span>{message.runErrorDetails.error_type}</span>
+                      </span>
+                    )}
+                    {message.runErrorDetails.traceId && (
+                      <span className="break-all">
+                        traceId: <span>{message.runErrorDetails.traceId}</span>
+                      </span>
+                    )}
+                  </div>
+                  {message.runErrorDetails.summary && (
+                    <p className="break-words text-[var(--abu-text-secondary)]">
+                      {message.runErrorDetails.summary}
+                    </p>
                   )}
                 </div>
               )}

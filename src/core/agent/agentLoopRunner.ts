@@ -30,7 +30,7 @@
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, ToolExecutionMetadata } from '../../types';
+import type { ToolExecutionContext, Conversation, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -88,6 +88,7 @@ import {
   resolveToolContextWorkspacePath,
   type AgentLoopOptions,
   type AgentLoopResult,
+  type AgentLoopExitReason,
 } from './agentLoop';
 import {
   materializeSidecarMediaRefsForShell,
@@ -98,11 +99,18 @@ import {
 import {
   areAgentRunTerminalsEqual,
   isAgentRunTerminal,
+  sanitizeReceivedAgentRunTerminal,
   type AgentRunTerminal,
 } from './agentRunTerminal';
 import { precomputeOrchestration } from './entryOrchestration';
 import type { RouteResult, IMContext } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
+import {
+  isUpstreamErrorDetails,
+  isUnsafeStructuredLlmErrorText,
+  normalizeUpstreamErrorDetails,
+  sanitizeUntrustedLlmErrorText,
+} from '../llm/adapter';
 import type { ConversationMeta } from '../session/conversationStorage';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
@@ -165,6 +173,38 @@ const AGENT_FIRST_FRAME_STALL_MS = 30_000;
 const AGENT_START_ACK_TIMEOUT_MS = 3_000;
 const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
+const AGENT_LOOP_EXIT_REASONS = new Set<AgentLoopExitReason>([
+  'completed',
+  'aborted',
+  'error',
+  'max_turns',
+  'no_progress',
+  'awaiting_user',
+  'enqueued',
+]);
+
+function warnFailedAgentResult(params: {
+  runId: string;
+  conversationId: string;
+  cause: string;
+  source: 'terminal' | 'raw-rpc' | 'replay-rpc' | 'fallback-in-process';
+  upstream?: UpstreamErrorDetails;
+  errorType?: string;
+  stack?: string;
+}): void {
+  logger.warn('agent loop reported a failed result', {
+    runId: params.runId,
+    conversationId: params.conversationId,
+    resultSource: params.source,
+    sidecarCause: params.cause,
+    sidecarErrorType: params.errorType,
+    sidecarStack: params.stack,
+    status: params.upstream?.status,
+    error_type: params.upstream?.error_type,
+    traceId: params.upstream?.traceId,
+    providerSummary: params.upstream?.summary,
+  });
+}
 
 class SidecarRunStateUnavailableError extends Error {
   readonly stopReason = 'sidecar_unavailable' as const;
@@ -177,14 +217,14 @@ class SidecarRunStateUnavailableError extends Error {
 
 function rendererRuntimeOptions(
   options?: AgentLoopOptions,
-  onMessageTaken?: () => void,
+  onMessageTaken?: (messageId?: string) => void,
 ): AgentLoopOptions {
   return {
     ...options,
     onMessageTaken: onMessageTaken || options?.onMessageTaken
-      ? () => {
-          onMessageTaken?.();
-          options?.onMessageTaken?.();
+      ? (messageId) => {
+          onMessageTaken?.(messageId);
+          options?.onMessageTaken?.(messageId);
         }
       : undefined,
     // This function never crosses the wire. Rebuild it for every in-process
@@ -565,29 +605,30 @@ function handleAgentDelta(rawParams: unknown): void {
 /** `agent.terminal` (NOTIFICATION) — first valid terminal wins per run. */
 function handleAgentTerminal(rawParams: unknown): void {
   if (!isAgentRunTerminal(rawParams)) return;
-  const session = sessions.get(rawParams.runId);
+  const terminal = sanitizeReceivedAgentRunTerminal(rawParams, getI18n().chat.errorEmptyBody);
+  const session = sessions.get(terminal.runId);
   if (!session) return;
 
   if (session.terminal) {
-    if (!areAgentRunTerminalsEqual(session.terminal, rawParams)) {
+    if (!areAgentRunTerminalsEqual(session.terminal, terminal)) {
       logger.warn('conflicting agent terminal ignored', {
-        runId: rawParams.runId,
+        runId: terminal.runId,
         firstState: session.terminal.state,
-        conflictingState: rawParams.state,
+        conflictingState: terminal.state,
       });
     }
     return;
   }
 
-  session.terminal = rawParams;
+  session.terminal = terminal;
   session.dropFrames = true;
   if (session.firstFrameStallTimer) {
     clearTimeout(session.firstFrameStallTimer);
     session.firstFrameStallTimer = undefined;
   }
-  markRuntimeRunStage(rawParams.runId, 'terminal_received');
+  markRuntimeRunStage(terminal.runId, 'terminal_received');
   traceRuntimeEvent('renderer.agent_terminal_received', {
-    runId: rawParams.runId,
+    runId: terminal.runId,
     executionPath: 'sidecar',
     stage: 'terminal_received',
     outcome: rawParams.result.reason,
@@ -595,19 +636,24 @@ function handleAgentTerminal(rawParams: unknown): void {
       ? undefined
       : Date.now() - session.runtimeStartedAt,
   });
-  session.resolveTerminal?.(rawParams);
+  session.resolveTerminal?.(terminal);
 }
 
 function updateSessionMessageState(
   session: RunSession,
   state: NonNullable<Conversation['messages'][number]['runState']>,
   error?: string,
+  errorDetails?: UpstreamErrorDetails,
 ): void {
   if (!session.userMessageId) return;
   useChatStore.getState().updateUserMessageRun(
     session.conversationId,
     session.userMessageId,
-    { state, ...(error ? { error } : {}) },
+    {
+      state,
+      ...(error ? { error } : {}),
+      ...(errorDetails ? { errorDetails } : {}),
+    },
   );
 }
 
@@ -648,9 +694,19 @@ async function runInProcessWithPersistedMessage(
       : result.reason === 'error'
         ? 'failed'
         : 'completed';
+    if (result.reason === 'error') {
+      warnFailedAgentResult({
+        runId,
+        conversationId,
+        cause: result.error || 'Agent run failed',
+        source: 'fallback-in-process',
+        upstream: result.upstream,
+      });
+    }
     useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
       state,
       ...(result.error ? { error: result.error } : {}),
+      ...(result.upstream ? { errorDetails: result.upstream } : {}),
     });
     await waitForConversationPersistence(conversationId);
     return markReturnedErrorAsTaken(result);
@@ -708,12 +764,13 @@ async function finalizeFailedRun(
   displayMessage: string,
   state: 'failed' | 'connection-failed' = 'failed',
   skipErrorAppend = false,
+  errorDetails?: UpstreamErrorDetails,
 ): Promise<void> {
   if (session.failureFinalizationPromise) return session.failureFinalizationPromise;
 
   session.failureFinalizationPromise = (async () => {
     session.dropFrames = true;
-    updateSessionMessageState(session, state, displayMessage);
+    updateSessionMessageState(session, state, displayMessage, errorDetails);
     await (session.frameApplyTail ?? Promise.resolve());
     try {
       const chatDelta = getChatDelta();
@@ -2009,7 +2066,36 @@ interface AgentRunParams {
 
 /** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
 function isAgentLoopResult(v: unknown): v is AgentLoopResult {
-  return typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>).reason === 'string';
+  if (typeof v !== 'object' || v === null) return false;
+  const candidate = v as Record<string, unknown>;
+  const allowedKeys = new Set(['reason', 'error', 'stopReason', 'messageTaken', 'upstream']);
+  return Object.keys(candidate).every((key) => allowedKeys.has(key))
+    && typeof candidate.reason === 'string'
+    && AGENT_LOOP_EXIT_REASONS.has(candidate.reason as AgentLoopExitReason)
+    && (candidate.error === undefined || typeof candidate.error === 'string')
+    && (candidate.stopReason === undefined || candidate.stopReason === 'sidecar_unavailable')
+    && (candidate.reason === 'error' || candidate.stopReason === undefined)
+    && (candidate.reason === 'error' || candidate.error === undefined)
+    && (candidate.messageTaken === undefined || typeof candidate.messageTaken === 'boolean')
+    && (candidate.reason === 'error'
+      ? typeof candidate.messageTaken === 'boolean'
+      : candidate.messageTaken === undefined)
+    && (candidate.reason === 'error' || candidate.upstream === undefined)
+    && (candidate.upstream === undefined || isUpstreamErrorDetails(candidate.upstream));
+}
+
+function sanitizeReceivedAgentLoopResult(result: AgentLoopResult): AgentLoopResult {
+  const upstream = normalizeUpstreamErrorDetails(result.upstream);
+  const error = result.error === undefined
+    ? undefined
+    : sanitizeUntrustedLlmErrorText(result.error, getI18n().chat.errorEmptyBody);
+  return {
+    reason: result.reason,
+    ...(error !== undefined ? { error } : {}),
+    ...(result.stopReason !== undefined ? { stopReason: result.stopReason } : {}),
+    ...(result.reason === 'error' ? { messageTaken: result.messageTaken } : {}),
+    ...(upstream ? { upstream } : {}),
+  } as AgentLoopResult;
 }
 
 interface AgentStartAck {
@@ -2542,11 +2628,64 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
   if (!sidecarRunning) {
     await ensureBuiltinBrowserRuntime();
-    return runAgentLoop(
-      conversationId,
-      userMessage,
-      rendererRuntimeOptions(options, () => { ownership.messageTaken = true; }),
-    );
+    let localUserMessageId: string | undefined;
+    try {
+      const result = await runAgentLoop(
+        conversationId,
+        userMessage,
+        rendererRuntimeOptions(options, (messageId) => {
+          ownership.messageTaken = true;
+          localUserMessageId = messageId;
+          if (messageId) {
+            useChatStore.getState().updateUserMessageRun(conversationId, messageId, {
+              state: 'running',
+            });
+          }
+        }),
+      );
+      if (localUserMessageId) {
+        const upstream = result.reason === 'error'
+          ? normalizeUpstreamErrorDetails(result.upstream)
+          : undefined;
+        const error = result.reason === 'error' && result.error
+          ? sanitizeUntrustedLlmErrorText(
+              result.error,
+              upstream?.summary ?? (upstream ? `HTTP ${upstream.status}` : getI18n().chat.errorEmptyBody),
+            )
+          : undefined;
+        useChatStore.getState().updateUserMessageRun(conversationId, localUserMessageId, {
+          state: result.reason === 'aborted'
+            ? 'interrupted'
+            : result.reason === 'error'
+              ? 'failed'
+              : 'completed',
+          ...(error ? { error } : {}),
+          ...(upstream ? { errorDetails: upstream } : {}),
+        });
+        await waitForConversationPersistence(conversationId);
+      }
+      return result;
+    } catch (error) {
+      if (localUserMessageId) {
+        const errorRecord = error && typeof error === 'object'
+          ? error as { message?: unknown; upstream?: unknown }
+          : undefined;
+        const upstream = normalizeUpstreamErrorDetails(errorRecord?.upstream);
+        const rawMessage = typeof errorRecord?.message === 'string'
+          ? errorRecord.message
+          : String(error);
+        useChatStore.getState().updateUserMessageRun(conversationId, localUserMessageId, {
+          state: 'failed',
+          error: sanitizeUntrustedLlmErrorText(
+            rawMessage,
+            upstream?.summary ?? (upstream ? `HTTP ${upstream.status}` : getI18n().chat.errorEmptyBody),
+          ),
+          ...(upstream ? { errorDetails: upstream } : {}),
+        });
+        await waitForConversationPersistence(conversationId);
+      }
+      throw error;
+    }
   }
 
   ensureHandlersRegistered();
@@ -2779,6 +2918,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   const scopedRun = options?.authorizationScopeId !== undefined;
 
   const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopDispatchResult> => {
+    terminal = sanitizeReceivedAgentRunTerminal(terminal, getI18n().chat.errorEmptyBody);
     await settleRunPersistence(session);
     if (session.abortRequested) {
       await finalizeAbortedRun(session, 'run-terminal');
@@ -2794,15 +2934,18 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
     if (terminal.state === 'failed') {
       const realMessage = terminal.result.error || 'Agent run failed';
+      const upstream = terminal.failure?.upstream ?? terminal.result.upstream;
       const displayMessage = realMessage === 'Sidecar process closed'
         ? getI18n().chat.sidecarInterrupted
         : realMessage;
-      logger.warn('agent loop reported a failed terminal', {
+      warnFailedAgentResult({
         runId,
         conversationId,
-        sidecarCause: realMessage,
-        sidecarErrorType: terminal.failure?.errorType,
-        sidecarStack: terminal.failure?.stack,
+        cause: realMessage,
+        source: 'terminal',
+        upstream,
+        errorType: terminal.failure?.errorType,
+        stack: terminal.failure?.stack,
       });
       traceRuntimeEvent('renderer.agent_run_failed', {
         runId,
@@ -2819,8 +2962,13 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       // crash / uncaught throw, where nothing rendered and this append is the
       // only chance to surface the failure.
       const alreadyRenderedBySidecar = terminal.failure?.errorType === 'agent_loop_error';
-      await finalizeFailedRun(session, displayMessage, 'failed', alreadyRenderedBySidecar);
-      return { reason: 'error', error: realMessage, messageTaken: true };
+      await finalizeFailedRun(session, displayMessage, 'failed', alreadyRenderedBySidecar, upstream);
+      return {
+        reason: 'error',
+        error: realMessage,
+        messageTaken: true,
+        ...(upstream ? { upstream } : {}),
+      };
     }
 
     const eventName = terminal.state === 'interrupted'
@@ -2869,10 +3017,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       return await settleFromTerminal(outcome.terminal);
     }
 
-    const raw = outcome.raw;
-    if (!isAgentLoopResult(raw)) {
+    if (!isAgentLoopResult(outcome.raw)) {
       throw new Error('agent.run response did not match the expected AgentLoopResult shape');
     }
+    const raw = sanitizeReceivedAgentLoopResult(outcome.raw);
     // The sidecar flushes its coalescer before replying, and the transport
     // preserves byte order. Await the shell-side FIFO plus the store's
     // fire-and-forget JSONL writes before exposing a completed turn.
@@ -2902,10 +3050,20 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         ? undefined
         : session.firstDeltaAt - runtimeStartedAt,
     });
+    if (raw.reason === 'error') {
+      warnFailedAgentResult({
+        runId,
+        conversationId,
+        cause: raw.error || 'Agent run failed',
+        source: 'raw-rpc',
+        upstream: raw.upstream,
+      });
+    }
     updateSessionMessageState(
       session,
       raw.reason === 'aborted' ? 'interrupted' : raw.reason === 'error' ? 'failed' : 'completed',
       raw.error,
+      raw.upstream,
     );
     await waitForConversationPersistence(conversationId);
     return markReturnedErrorAsTaken(raw);
@@ -3002,19 +3160,30 @@ async function runSingleAgentLoopDispatchedWithOwnership(
           if (!isAgentLoopResult(replayOutcome.raw)) {
             throw new Error('replayed agent.run response did not match the expected result shape', { cause: err });
           }
+          const replayResult = sanitizeReceivedAgentLoopResult(replayOutcome.raw);
           await settleRunPersistence(session);
           if (session.terminal) return await settleFromTerminal(session.terminal);
+          if (replayResult.reason === 'error') {
+            warnFailedAgentResult({
+              runId,
+              conversationId,
+              cause: replayResult.error || 'Agent run failed',
+              source: 'replay-rpc',
+              upstream: replayResult.upstream,
+            });
+          }
           updateSessionMessageState(
             session,
-            replayOutcome.raw.reason === 'aborted'
+            replayResult.reason === 'aborted'
               ? 'interrupted'
-              : replayOutcome.raw.reason === 'error'
+              : replayResult.reason === 'error'
                 ? 'failed'
                 : 'completed',
-            replayOutcome.raw.error,
+            replayResult.error,
+            replayResult.upstream,
           );
           await waitForConversationPersistence(conversationId);
-          return markReturnedErrorAsTaken(replayOutcome.raw);
+          return markReturnedErrorAsTaken(replayResult);
         } catch (replayError) {
           transportError = replayError;
         }
@@ -3064,10 +3233,21 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // Logging only `err.message` (the generic wrapper) threw that away — pull
     // `data` out so the on-disk log names the actual failure.
     const errData = (transportError as { data?: unknown } | null)?.data;
-    const realMessage =
-      errData && typeof errData === 'object' && 'message' in errData
-        ? String((errData as { message: unknown }).message)
-        : transportError instanceof Error ? transportError.message : String(transportError);
+    const errDataRecord = errData && typeof errData === 'object' && !Array.isArray(errData)
+      ? errData as Record<string, unknown>
+      : undefined;
+    const upstream = normalizeUpstreamErrorDetails(errDataRecord?.upstream);
+    const rawCause = typeof errDataRecord?.message === 'string'
+      ? errDataRecord.message
+      : transportError instanceof Error ? transportError.message : String(transportError);
+    const realMessage = sanitizeUntrustedLlmErrorText(
+      rawCause,
+      upstream?.summary ?? (upstream ? `HTTP ${upstream.status}` : getI18n().chat.errorEmptyBody),
+    );
+    const sidecarStack = typeof errDataRecord?.stack === 'string'
+      && !isUnsafeStructuredLlmErrorText(errDataRecord.stack)
+      ? errDataRecord.stack
+      : undefined;
     const displayMessage =
       transportError instanceof SidecarRunStateUnavailableError
         ? getI18n().chat.sidecarUnavailable
@@ -3079,10 +3259,11 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       conversationId,
       error: transportError instanceof Error ? transportError.message : String(transportError),
       sidecarCause: realMessage,
-      sidecarStack:
-        errData && typeof errData === 'object' && 'stack' in errData
-          ? String((errData as { stack: unknown }).stack)
-          : undefined,
+      sidecarStack,
+      status: upstream?.status,
+      error_type: upstream?.error_type,
+      traceId: upstream?.traceId,
+      providerSummary: upstream?.summary,
     });
     traceRuntimeEvent('renderer.agent_run_failed', {
       runId,
@@ -3106,11 +3287,14 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       session,
       displayMessage,
       isConnectionFailure ? 'connection-failed' : 'failed',
+      false,
+      upstream,
     );
     return {
       reason: 'error',
       error: realMessage,
       messageTaken: true,
+      ...(upstream ? { upstream } : {}),
       ...(transportError instanceof SidecarRunStateUnavailableError
         ? { stopReason: transportError.stopReason }
         : {}),

@@ -81,7 +81,11 @@ describe('sidecar delegated-media store shim', () => {
     const target = __testing.pathForRefWithPathApi(appDataDir, 'conv_1', ref);
     expect(target).not.toBeNull();
     await expect(stat(target!)).resolves.toMatchObject({ mode: expect.any(Number) });
-    expect((await stat(target!)).mode & 0o777).toBe(0o600);
+    // POSIX mode bits are meaningful on macOS/Linux only; Windows stat() reports
+    // a synthetic 0o666 regardless of the mode passed at write time.
+    if (process.platform !== 'win32') {
+      expect((await stat(target!)).mode & 0o777).toBe(0o600);
+    }
     await expect(readDelegatedMedia('conv_1', ref)).resolves.toEqual(PNG);
   });
 

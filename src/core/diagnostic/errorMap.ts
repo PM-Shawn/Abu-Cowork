@@ -45,6 +45,14 @@ export function mapAIServiceError(opts: MapAIErrorOpts): FriendlyError {
   const t = getI18n();
   const raw = opts.rawMessage ?? '';
 
+  // A classified policy rejection is authoritative. Provider summaries can
+  // contain words that look like another failure (for example "timeout" or
+  // "budget exceeded"), but must never steer the user toward an API-key,
+  // model, balance, or retry action once the structured code is known.
+  if (opts.errorCode === 'content_policy') {
+    return { message: t.diagnostic.errMap.aiContentPolicy };
+  }
+
   // Substring layer FIRST for high-signal patterns (provider may return 200
   // with a JSON error body, in which case errorCode is missing).
   if (/budget.has.been.exceeded|budget_exceeded/i.test(raw)) {

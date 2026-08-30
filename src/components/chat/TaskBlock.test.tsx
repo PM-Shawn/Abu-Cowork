@@ -140,6 +140,27 @@ describe('TaskBlock — thinking pane running → completed', () => {
     expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(true);
   });
 
+  it('keeps long live thinking inside the max-h-48 scroll pane and follows its internal bottom', () => {
+    const { container, rerender } = render(
+      <TaskBlock executionSteps={[execThinkingStep()]} isActive />,
+    );
+    const pane = container.querySelector<HTMLElement>('.max-h-48.overflow-y-auto');
+    expect(pane).not.toBeNull();
+    Object.defineProperty(pane!, 'scrollHeight', { configurable: true, value: 480 });
+    pane!.scrollTop = 0;
+
+    rerender(
+      <TaskBlock
+        executionSteps={[execThinkingStep({ detail: 'reasoning tokens streaming in\nnext line' })]}
+        isActive
+      />,
+    );
+
+    expect(pane!.classList.contains('max-h-48')).toBe(true);
+    expect(pane!.classList.contains('overflow-y-auto')).toBe(true);
+    expect(pane!.scrollTop).toBe(480);
+  });
+
   it('collapse via the toggle rolls the panel up (closed + inert), not unmounted; history mounts render the button statically', () => {
     const { container } = render(
       <TaskBlock

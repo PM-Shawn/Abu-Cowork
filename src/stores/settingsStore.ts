@@ -156,10 +156,11 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
+export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 export type ToolboxTab = 'skills' | 'agents' | 'mcp';
+export type TeamTab = 'inbox' | 'tasks' | 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
@@ -397,6 +398,10 @@ interface SettingsActions {
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
   openToolbox: (tab?: ToolboxTab) => void;
+  activeTeamTab: TeamTab;
+  openTeam: (tab?: TeamTab) => void;
+  closeTeam: () => void;
+  setActiveTeamTab: (tab: TeamTab) => void;
   closeToolbox: () => void;
   setActiveToolboxTab: (tab: ToolboxTab) => void;
   setToolboxSearchQuery: (query: string) => void;
@@ -639,6 +644,7 @@ export const useSettingsStore = create<SettingsStore>()(
       toolboxSearchQuery: '',
       installingItem: null,
       viewMode: 'chat' as ViewMode,
+      activeTeamTab: 'inbox' as TeamTab,
       systemSettingsOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
@@ -976,6 +982,10 @@ export const useSettingsStore = create<SettingsStore>()(
           toolboxSearchQuery: '',
         }),
       setActiveToolboxTab: (tab) => set({ activeToolboxTab: tab, toolboxSearchQuery: '' }),
+      openTeam: (tab) =>
+        set((s) => ({ viewMode: 'team' as ViewMode, activeTeamTab: tab ?? s.activeTeamTab })),
+      closeTeam: () => set({ viewMode: 'chat' as ViewMode }),
+      setActiveTeamTab: (tab) => set({ activeTeamTab: tab }),
       setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),

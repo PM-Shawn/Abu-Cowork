@@ -809,6 +809,9 @@ export interface ManagedAgentMetadata {
 export interface SubagentMetadata {
   /** Canonical name — primary key in agentRegistry, also the `@mention` token. */
   name: string;
+  /** Stable role identity for team membership (write-once, survives rename).
+   *  Written into AGENT.md frontmatter the first time an agent joins a team. */
+  roleId?: string;
   /** Default-locale description shown in toolbox / agent selector. */
   description: string;
   avatar?: string;

@@ -136,6 +136,7 @@ export interface TranslationDict {
     scheduledTasks: string;
     triggers: string;
     toolbox: string;
+    team: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -709,6 +710,9 @@ export interface TranslationDict {
 
   // Settings Modal
   settings: {
+    labsExpTeamTitle: string;
+    labsExpTeamDesc: string;
+    labsExpTeamWhere: string;
     title: string;
     apiConfig: string;
     modelSelect: string;
@@ -1379,6 +1383,54 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  team: {
+    tabInbox: string;
+    tabTasks: string;
+    tabMembers: string;
+    tabTeams: string;
+    searchPlaceholder: string;
+    newTeam: string;
+    editTeam: string;
+    createTeamAction: string;
+    teamCreated: string;
+    teamSaved: string;
+    teamSaveFailed: string;
+    fieldName: string;
+    fieldNamePlaceholder: string;
+    fieldMembers: string;
+    fieldMembersHint: string;
+    noMembersYet: string;
+    createMemberNow: string;
+    setLeader: string;
+    leaderBadge: string;
+    leaderRequiredHint: string;
+    fieldLeaderNote: string;
+    fieldLeaderNoteHint: string;
+    fieldLeaderNotePlaceholder: string;
+    teamRowSummary: string;
+    unknownMember: string;
+    unknownTeam: string;
+    newTask: string;
+    createTaskAction: string;
+    taskCreated: string;
+    taskCreateFailed: string;
+    fieldTaskTeam: string;
+    fieldTaskGoal: string;
+    fieldTaskGoalPlaceholder: string;
+    statusAwaitingPlan: string;
+    statusRunning: string;
+    statusPendingReview: string;
+    statusBlocked: string;
+    statusDone: string;
+    inboxEmpty: string;
+    inboxEmptyHint: string;
+    tasksEmpty: string;
+    tasksEmptyHint: string;
+    goCreateTeam: string;
+    teamsEmpty: string;
+    teamsEmptyHint: string;
+  };
+
   toolbox: {
     title: string;
     skills: string;

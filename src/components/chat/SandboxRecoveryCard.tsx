@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { format, useI18n } from '@/i18n';
@@ -108,6 +109,7 @@ export default function SandboxRecoveryCard({
       await setAction(conversationId, messageId, toolCallId, 'started');
       computerUseMayHaveSideEffects = true;
 
+      announceChatTurnScrollIntent({ conversationId, source: 'sandbox-recovery' });
       const result = await runAgentLoopDispatched(
         conversationId,
         format(t.sandbox.appAutomationContinuePrompt, { app }),

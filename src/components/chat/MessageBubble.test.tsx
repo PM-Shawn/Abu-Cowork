@@ -71,6 +71,14 @@ describe('MessageBubble user run status', () => {
     },
   );
 
+  it('exposes a stable DOM anchor for the persisted user message id', () => {
+    setConversation(baseMessage, 'running');
+
+    const { container } = render(<MessageBubble message={baseMessage} />);
+
+    expect(container.querySelector('[data-message-id="message-1"]')).toBeInTheDocument();
+  });
+
   it('keeps an actionable failure and retry control visible', () => {
     const message = { ...baseMessage, runState: 'failed' as const, runError: 'network unavailable' };
     setConversation(message, 'idle');

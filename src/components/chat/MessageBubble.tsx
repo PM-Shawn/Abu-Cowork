@@ -13,6 +13,7 @@ import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
@@ -495,6 +496,7 @@ export default function MessageBubble({
       // edited resend stays on the same agent / skill — otherwise the message
       // falls back to the default `general` route and the expert is lost.
       const routedContent = reattachRoutingPrefix(newContent, message);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
       await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
     };
 
@@ -528,6 +530,7 @@ export default function MessageBubble({
 
     const proceed = async () => {
       useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(
         convId,
         routedContent,
@@ -585,6 +588,7 @@ export default function MessageBubble({
       const proceed = async () => {
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
+        announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
         await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
       };
 
@@ -620,7 +624,7 @@ export default function MessageBubble({
     // Extract file attachments from user message text
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
-      <div className="flex justify-end w-full group">
+      <div className="flex justify-end w-full group" data-message-id={message.id}>
         {rewindConfirmDialog}
         <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}

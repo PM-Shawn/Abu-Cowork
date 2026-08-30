@@ -11,6 +11,7 @@ import {
   resumeUserInputQueue,
 } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -39,6 +40,7 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     const next = dequeueNextUserInput(conversationId);
     try {
       if (next) {
+        announceChatTurnScrollIntent({ conversationId, source: 'queue-resume' });
         const result = await runAgentLoopDispatched(conversationId, next.text);
         if (result.reason === 'error' && !result.messageTaken) {
           restoreDequeuedUserInput(conversationId, next);

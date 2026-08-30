@@ -30,6 +30,7 @@ import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, par
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
@@ -757,6 +758,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       if (firstAssistantInLoop) {
         useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
       }
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(convId, userContent, { images: retryImages });
     };
 

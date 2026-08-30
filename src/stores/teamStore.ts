@@ -36,6 +36,33 @@ export type TeamTaskStatus =
   | 'blocked'         // 卡住了
   | 'done';           // 完成 — only the user can move a task here
 
+export type TeamPlanItemState = 'pending' | 'running' | 'done' | 'failed';
+
+/** One member's share of a confirmed plan. */
+export interface TeamPlanItem {
+  id: string;
+  memberRoleId: string;
+  /** What this member should do, in the leader's words. */
+  what: string;
+  /** Expected output (e.g. a filename in the task folder). Advisory. */
+  produces?: string;
+  /** Item ids that must be done before this one starts. */
+  dependsOn: string[];
+  state: TeamPlanItemState;
+  /** Sub-conversation carrying this item's full run (execution ledger). */
+  conversationId?: string;
+  /** Bounded failure summary for the task detail row. */
+  error?: string;
+}
+
+export interface TeamPlan {
+  items: TeamPlanItem[];
+  /** Leader-drafted "怎么算做完" — shown with the plan, user may edit or ignore. */
+  doneWhen: string[];
+  proposedAt: number;
+  confirmedAt?: number;
+}
+
 export interface TeamTask {
   id: string;
   teamId: string;
@@ -44,6 +71,14 @@ export interface TeamTask {
   /** Absolute paths of attached reference files (optional). */
   attachments: string[];
   status: TeamTaskStatus;
+  /** Leader's proposed (then confirmed) split. Absent until the leader plans. */
+  plan?: TeamPlan;
+  /** Conversation where the leader planned (and later summarizes). */
+  planningConversationId?: string;
+  /** Task folder where member outputs land. */
+  folder?: string;
+  /** One-line blocked/failure reason surfaced in lists (plain language). */
+  statusNote?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -58,7 +93,15 @@ interface TeamState {
   restoreTeam: (id: string) => void;
 
   createTask: (input: { teamId: string; goal: string; attachments?: string[] }) => TeamTask;
-  updateTaskStatus: (id: string, status: TeamTaskStatus) => void;
+  updateTaskStatus: (id: string, status: TeamTaskStatus, statusNote?: string) => void;
+
+  // --- planning / execution (R2) — called by the team orchestrator only ---
+  setPlanningConversation: (taskId: string, conversationId: string) => void;
+  /** Leader's proposal via the team_propose_plan tool. Task stays awaiting_plan
+   *  until the USER confirms — proposing is never starting. */
+  proposePlan: (taskId: string, plan: Omit<TeamPlan, 'proposedAt' | 'confirmedAt'>) => void;
+  confirmPlan: (taskId: string, folder: string) => void;
+  setItemState: (taskId: string, itemId: string, state: TeamPlanItemState, patch?: { conversationId?: string; error?: string }) => void;
 }
 
 function genId(prefix: string): string {
@@ -131,9 +174,66 @@ export const useTeamStore = create<TeamState>()(
         return task;
       },
 
-      updateTaskStatus: (id, status) =>
+      updateTaskStatus: (id, status, statusNote) =>
         set((s) => ({
-          tasks: s.tasks.map((t) => (t.id === id ? { ...t, status, updatedAt: Date.now() } : t)),
+          tasks: s.tasks.map((t) => (t.id === id ? { ...t, status, statusNote, updatedAt: Date.now() } : t)),
+        })),
+
+      setPlanningConversation: (taskId, conversationId) =>
+        set((s) => ({
+          tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, planningConversationId: conversationId, updatedAt: Date.now() } : t)),
+        })),
+
+      proposePlan: (taskId, plan) => {
+        const task = get().tasks.find((t) => t.id === taskId);
+        if (!task) throw new Error('task not found');
+        if (task.status !== 'awaiting_plan') throw new Error('task is not awaiting a plan');
+        if (plan.items.length === 0) throw new Error('plan needs at least one item');
+        const ids = new Set(plan.items.map((i) => i.id));
+        for (const item of plan.items) {
+          for (const dep of item.dependsOn) {
+            if (!ids.has(dep)) throw new Error(`unknown dependency: ${dep}`);
+            if (dep === item.id) throw new Error('an item cannot depend on itself');
+          }
+        }
+        // Cycle check: repeatedly peel items whose deps are all peeled.
+        const peeled = new Set<string>();
+        let progressed = true;
+        while (progressed) {
+          progressed = false;
+          for (const item of plan.items) {
+            if (peeled.has(item.id)) continue;
+            if (item.dependsOn.every((d) => peeled.has(d))) { peeled.add(item.id); progressed = true; }
+          }
+        }
+        if (peeled.size !== plan.items.length) throw new Error('plan has a dependency cycle');
+        set((s) => ({
+          tasks: s.tasks.map((t) => (t.id === taskId
+            ? { ...t, plan: { ...plan, proposedAt: Date.now() }, updatedAt: Date.now() }
+            : t)),
+        }));
+      },
+
+      confirmPlan: (taskId, folder) =>
+        set((s) => ({
+          tasks: s.tasks.map((t) => (t.id === taskId && t.plan
+            ? { ...t, status: 'running', folder, statusNote: undefined, plan: { ...t.plan, confirmedAt: Date.now() }, updatedAt: Date.now() }
+            : t)),
+        })),
+
+      setItemState: (taskId, itemId, state, patch) =>
+        set((s) => ({
+          tasks: s.tasks.map((t) => {
+            if (t.id !== taskId || !t.plan) return t;
+            return {
+              ...t,
+              updatedAt: Date.now(),
+              plan: {
+                ...t.plan,
+                items: t.plan.items.map((item) => (item.id === itemId ? { ...item, state, ...patch } : item)),
+              },
+            };
+          }),
         })),
     }),
     {

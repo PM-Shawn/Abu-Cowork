@@ -1429,6 +1429,37 @@ export interface TranslationDict {
     goCreateTeam: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    itemDependsOn: string;
+    viewRun: string;
+    retryItemAction: string;
+    detailDoneWhen: string;
+    detailPlanHeader: string;
+    detailPlanProposed: string;
+    detailFolder: string;
+    viewPlanningRun: string;
+    planWaiting: string;
+    planConfirm: string;
+    planAdjust: string;
+    planAdjustPlaceholder: string;
+    planAdjustSend: string;
+    confirmStarted: string;
+    runningHint: string;
+    reviewAccept: string;
+    reviewReject: string;
+    reviewRejectPlaceholder: string;
+    reviewRejectSend: string;
+    reviewRejectTarget: string;
+    replan: string;
+    planningConversationTitle: string;
+    itemConversationTitle: string;
+    itemMemberMissing: string;
+    blockedTeamMissing: string;
+    blockedLeaderMissing: string;
+    blockedNoPlan: string;
+    blockedPlanFailed: string;
+    blockedItemsFailed: string;
+    noticePendingReview: string;
+    noticeBlocked: string;
   };
 
   toolbox: {

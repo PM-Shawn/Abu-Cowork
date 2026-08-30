@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, selectPendingTasks, type Team, type TeamTask } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -9,8 +8,10 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Inbox, ListTodo, Bot, UsersRound, Search, X, Crown } from 'lucide-react';
+import { Inbox, ListTodo, Bot, UsersRound, Search, Crown } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
+import DialogShell from './DialogShell';
+import TaskDetailDialog from './TaskDetailDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import AgentsSection from '@/components/customize/AgentsSection';
 import { Input } from '@/components/ui/input';
@@ -29,36 +30,6 @@ import type { SubagentDefinition } from '@/types';
  * 队员 tab reuses AgentsSection — a 队员 IS a custom agent (single identity
  * source), which also inherits the toolbox's IME-safe editors for free.
  */
-
-/** Local dialog shell copying ConfirmDialog's portal/overlay pattern. */
-function DialogShell({ open, onClose, title, children, wide }: {
-  open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean;
-}) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  if (!open) return null;
-  return createPortal(
-    <div data-electron-no-drag className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150" onClick={onClose}>
-      <div
-        className={`bg-[var(--abu-bg-base)] rounded-2xl shadow-xl border border-[var(--abu-border)] w-full ${wide ? 'max-w-lg' : 'max-w-md'} mx-4 max-h-[85vh] flex flex-col`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 pt-4 pb-2">
-          <h2 className="text-title font-semibold text-[var(--abu-text-primary)]">{title}</h2>
-          <button onClick={onClose} className="btn-ghost p-1 rounded-md text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]" aria-label="close">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-        <div className="px-5 pb-5 overflow-y-auto">{children}</div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
 
 function EmptyState({ icon: Icon, title, hint, action }: {
   icon: typeof Inbox; title: string; hint?: string; action?: ReactNode;
@@ -252,9 +223,12 @@ function TaskCreateDialog({ open, onClose, teams }: { open: boolean; onClose: ()
   const handleCreate = () => {
     if (!teamId || !goal.trim()) return;
     try {
-      createTask({ teamId, goal });
+      const task = createTask({ teamId, goal });
       addToast({ type: 'success', title: t.team.taskCreated });
       onClose();
+      // Fire leader planning immediately — the user confirms the split before
+      // anything executes (指派 ≠ 启动), so auto-planning is safe and expected.
+      void import('@/core/team/orchestrator').then((mod) => mod.startPlanning(task.id));
     } catch (err) {
       addToast({ type: 'error', title: t.team.taskCreateFailed, message: String(err) });
     }
@@ -305,10 +279,14 @@ function statusMeta(t: ReturnType<typeof useI18n>['t'], status: TeamTask['status
   }
 }
 
-function TaskRow({ task, team, t }: { task: TeamTask; team: Team | undefined; t: ReturnType<typeof useI18n>['t'] }) {
+function TaskRow({ task, team, t, onOpen }: { task: TeamTask; team: Team | undefined; t: ReturnType<typeof useI18n>['t']; onOpen: (id: string) => void }) {
   const meta = statusMeta(t, task.status);
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3">
+    <div
+      className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
+      onClick={() => onOpen(task.id)}
+      data-testid={`task-row-${task.id}`}
+    >
       <div className="flex-1 min-w-0">
         <div className="text-body text-[var(--abu-text-primary)] truncate">{task.goal.split('\n')[0]}</div>
         <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
@@ -335,6 +313,7 @@ export default function TeamView() {
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
@@ -390,7 +369,7 @@ export default function TeamView() {
         return (
           <div className="p-4 space-y-2 overflow-y-auto h-full">
             {pending.map((task) => (
-              <TaskRow key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} t={t} />
+              <TaskRow key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} t={t} onOpen={setDetailTaskId} />
             ))}
           </div>
         );
@@ -413,7 +392,7 @@ export default function TeamView() {
         return (
           <div className="p-4 space-y-2 overflow-y-auto h-full">
             {list.map((task) => (
-              <TaskRow key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} t={t} />
+              <TaskRow key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} t={t} onOpen={setDetailTaskId} />
             ))}
           </div>
         );
@@ -470,6 +449,7 @@ export default function TeamView() {
         onSwitchToMembers={() => { setActiveTeamTab('members'); setManualCreateTrigger((c) => c + 1); }}
       />
       <TaskCreateDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} teams={activeTeams} />
+      <TaskDetailDialog taskId={detailTaskId} onClose={() => setDetailTaskId(null)} />
     </div>
   );
 }

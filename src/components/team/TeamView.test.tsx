@@ -46,8 +46,21 @@ vi.mock('@/i18n', async () => {
 
 const registryAgents: Record<string, { name: string; description: string; roleId?: string; filePath: string; systemPrompt: string; managed?: boolean }> = {};
 vi.mock('@/core/agent/registry', () => ({
-  agentRegistry: { getAgent: (name: string) => registryAgents[name] },
+  agentRegistry: {
+    getAgent: (name: string) => registryAgents[name],
+    getAvailableAgents: () => Object.values(registryAgents),
+  },
   serializeAgentMd: vi.fn(() => 'md'),
+}));
+
+// TaskDetailDialog pulls the orchestrator (heavy loop graph) — stub it.
+vi.mock('@/core/team/orchestrator', () => ({
+  startPlanning: vi.fn(async () => undefined),
+  requestPlanAdjustment: vi.fn(async () => undefined),
+  confirmAndExecute: vi.fn(async () => undefined),
+  acceptTask: vi.fn(),
+  rejectTask: vi.fn(async () => undefined),
+  retryItem: vi.fn(async () => undefined),
 }));
 
 vi.mock('@/core/team/roleIdentity', () => ({

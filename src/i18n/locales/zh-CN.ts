@@ -449,7 +449,10 @@ const zhCN: TranslationDict = {
       invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
       invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
     },
-    workedFor: '已处理 {duration}',
+    // 与 Codex 官方 zh-CN 对齐：进行中读秒用「已处理」，完成态用「用时」。
+    working: '处理中',
+    workingFor: '已处理 {duration}',
+    workedFor: '用时 {duration}',
     stoppedAfter: '你在 {duration} 后停止了',
     usageChipInput: '输入',
     usageChipOutput: '输出',

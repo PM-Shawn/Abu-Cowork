@@ -100,7 +100,7 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   if (!context?.showTypingIndicator) return null;
   // Layout mirrors a MessageGroup's assistant row (shared AssistantRowAvatar,
   // gap-3, shared ThinkingStatusLine) so the hand-off from this footer to the
-  // real assistant placeholder — and then to the TaskBlock header / "已处理
+  // real assistant placeholder — and then to the TaskBlock header / "用时
   // Xs" fold header — keeps the label on the same baseline at the same size
   // instead of hopping between typographies ("错行"). The negative top margin
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.

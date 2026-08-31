@@ -24,6 +24,8 @@
  *   artifact, mirroring how `src/core/logging/logger.ts`'s ring buffer is
  *   already exported into diagnostic bundles today.
  */
+import { getPlatform } from '../../utils/platform';
+import { APP_VERSION } from '../../utils/version';
 
 // ── Event shapes ──────────────────────────────────────────────────────────
 
@@ -82,6 +84,55 @@ export function buildSchedulerDriftSignal(
   };
 }
 
+/** Separator used when composing a synthetic Map key out of several fields
+ *  (`deriveTargetKey`'s tab prefix, `summarizeBrowserSignals`'s dedup keys).
+ *  A NAMED CONSTANT on purpose — an earlier revision embedded a raw U+0000
+ *  byte directly in this file as the separator, which made `file`(1)
+ *  classify the source as binary "data", made `grep` skip it by default,
+ *  and made the byte invisible in a diff. A named constant keeps the
+ *  separator visible in source and in diffs no matter what character it is. */
+const KEY_SEP = ' ';
+
+// ── Collector context (platform/appVersion/channel/conversationId/ts) ────
+
+/** `getPlatform()` (utils/platform.ts) logs a console warning on every call
+ *  made before `initPlatform()` has resolved at app startup. A signal can
+ *  fire many times per second (one per browser tool call), so calling it
+ *  uncached would turn one early-startup race into per-call console noise.
+ *  Cached after the first non-'unknown' read; re-attempted on every call
+ *  while still 'unknown' so a signal built early in startup still recovers
+ *  the real platform once `initPlatform()` finishes, without re-warning on
+ *  every subsequent call in the steady state. */
+let cachedPlatform: string | null = null;
+
+function resolvedPlatform(): string {
+  if (cachedPlatform === null || cachedPlatform === 'unknown') {
+    try {
+      cachedPlatform = getPlatform();
+    } catch {
+      cachedPlatform = 'unknown';
+    }
+  }
+  return cachedPlatform;
+}
+
+/** Single source of truth for the uniform `BrowserSignalContext` every
+ *  collection point (registry.ts, previewStore.ts) attaches to its events —
+ *  avoids duplicating the `getPlatform()` caching above in each caller. */
+export function buildBrowserSignalContext(
+  channel: 'builtin' | 'chrome',
+  conversationId?: string,
+  now: number = Date.now(),
+): BrowserSignalContext {
+  return {
+    platform: resolvedPlatform(),
+    appVersion: APP_VERSION,
+    channel,
+    ...(conversationId ? { conversationId } : {}),
+    ts: now,
+  };
+}
+
 // ── browserChannelForTool ─────────────────────────────────────────────────
 
 /** Built-in browser runtime + Chrome extension bridge — mirrors
@@ -95,9 +146,19 @@ export function browserChannelForTool(namespacedName: string): 'builtin' | 'chro
 
 // ── RepeatTracker ─────────────────────────────────────────────────────────
 
+/** Emit once a streak first crosses the threshold (count===3), then only
+ *  every REPEAT_EMIT_STRIDE calls after that ("still stuck" heartbeat)
+ *  instead of every single call. A task hammering the same target hundreds
+ *  of times previously emitted a `repeat_action` on every one of those
+ *  calls once past the threshold, which could flood the whole 5000-entry
+ *  rolling buffer (`MAX_BROWSER_SIGNAL_ENTRIES`) with one repetitive signal
+ *  and evict everything else from the same task. */
+const REPEAT_EMIT_STRIDE = 10;
+
 /** Per-conversation same-tool+same-target consecutive-call counter.
- *  Emits (shouldEmit=true) once the streak reaches 3; resets on any change
- *  of tool or target. Caller owns the instance's lifetime/scoping. */
+ *  Emits (shouldEmit=true) at count 3, then every `REPEAT_EMIT_STRIDE`
+ *  calls after that; resets on any change of tool or target. Caller owns
+ *  the instance's lifetime/scoping. */
 export class RepeatTracker {
   private lastTool: string | null = null;
   private lastTargetKey: string | null = null;
@@ -111,7 +172,8 @@ export class RepeatTracker {
       this.lastTargetKey = targetKey;
       this.count = 1;
     }
-    return { count: this.count, shouldEmit: this.count >= 3 };
+    const shouldEmit = this.count === 3 || (this.count > 3 && (this.count - 3) % REPEAT_EMIT_STRIDE === 0);
+    return { count: this.count, shouldEmit };
   }
 
   reset(): void {
@@ -140,18 +202,52 @@ export class FallbackToScriptTracker {
 
 // ── classifyBlockedPage ───────────────────────────────────────────────────
 
-const HTTP_429_PATTERNS = [/\b429\b/, /too many requests/i];
-const CHALLENGE_PATTERNS = [/cloudflare/i, /checking your browser/i, /cf-browser-verification/i, /just a moment/i];
+/** Hot-path guard for both `classifyBlockedPage` and `detectFrameHint`:
+ *  a browser tool result can be a multi-MB page dump (e.g. `extract_text`
+ *  with no selector), and both run on EVERY tool call, success or failure.
+ *  A block/challenge banner or an iframe note always appears early in the
+ *  text, so scanning only the prefix avoids paying several regexes' worth
+ *  of CPU per call against megabytes of text for no detection benefit.
+ */
+const CLASSIFY_SCAN_CHARS = 2000;
+
+function scanPrefix(resultText: string): string {
+  return resultText.length > CLASSIFY_SCAN_CHARS ? resultText.slice(0, CLASSIFY_SCAN_CHARS) : resultText;
+}
+
+// Bare "429" false-positives on a price ("$429"), an item count, or a port
+// number on an otherwise-successful page — require it to co-occur with
+// rate-limit wording within a short span. "too many requests" alone is
+// specific enough to stand on its own.
+const HTTP_429_PATTERNS = [
+  /\b429\b[^.\n]{0,40}(?:too many requests|rate limit)/i,
+  /(?:too many requests|rate limit)[^.\n]{0,40}\b429\b/i,
+  /too many requests/i,
+];
+// Bare "cloudflare" false-positives on an ordinary page footer/CDN badge
+// ("Powered by Cloudflare") — the other three phrases are already specific
+// challenge-page wording and stand on their own; the cloudflare mention only
+// counts when paired with actual challenge wording nearby.
+const CHALLENGE_PATTERNS = [
+  /checking your browser/i,
+  /cf-browser-verification/i,
+  /just a moment/i,
+  /cloudflare[^.\n]{0,80}challenge/i,
+  /challenge[^.\n]{0,80}cloudflare/i,
+];
 const VERIFY_WALL_PATTERNS = [/verify you are human/i, /complete the captcha/i, /security check/i, /verify[^.]{0,20}robot/i];
 
 /** Conservative, keyword-based classifier — "宁漏勿误报" (prefer a missed
- *  detection over a false positive). Never throws. */
+ *  detection over a false positive). Only meaningful on a FAILED tool_call
+ *  (callers gate on `!ok`) — a successful result is not a blocked page no
+ *  matter what words its content happens to contain. Never throws. */
 export function classifyBlockedPage(resultText: string | undefined | null): 'http_429' | 'challenge' | 'verify_wall' | null {
   if (!resultText) return null;
   try {
-    if (HTTP_429_PATTERNS.some((p) => p.test(resultText))) return 'http_429';
-    if (CHALLENGE_PATTERNS.some((p) => p.test(resultText))) return 'challenge';
-    if (VERIFY_WALL_PATTERNS.some((p) => p.test(resultText))) return 'verify_wall';
+    const scanned = scanPrefix(resultText);
+    if (HTTP_429_PATTERNS.some((p) => p.test(scanned))) return 'http_429';
+    if (CHALLENGE_PATTERNS.some((p) => p.test(scanned))) return 'challenge';
+    if (VERIFY_WALL_PATTERNS.some((p) => p.test(scanned))) return 'verify_wall';
     return null;
   } catch {
     return null;
@@ -180,10 +276,14 @@ export function classifyBrowserToolError(resultText: string | undefined | null):
 }
 
 /** Flags a possible iframe-related failure (PRD hypothesis: iframes are a
- *  hidden root cause behind selector-resolution failures). */
+ *  hidden root cause behind selector-resolution failures). Only meaningful
+ *  on a FAILED tool_call (callers gate on `!ok`) — a successful snapshot or
+ *  extract routinely contains the bare word "frame" (a `<iframe>` tag in the
+ *  DOM tree, a "chart-frame"/"time-frame" class or id, etc.), so this
+ *  intentionally requires the literal "iframe" token, not bare "frame". */
 export function detectFrameHint(resultText: string | undefined | null): boolean {
   if (!resultText) return false;
-  return /\biframe\b|\bframe\b/i.test(resultText);
+  return /\biframe\b/i.test(scanPrefix(resultText));
 }
 
 /** This codebase's error-result convention: every failing ToolResult string
@@ -195,29 +295,66 @@ export function isBrowserToolResultError(resultText: string): boolean {
 
 // ── deriveTargetKey ───────────────────────────────────────────────────────
 
+/** 32-bit FNV-1a — small, dependency-free, good-enough distribution for a
+ *  diagnostics dedup key (not a security hash). Returns 8 lowercase hex
+ *  chars. */
+function fnv1aHex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/** A `text`/`role`/`name`/`testId` locator strategy would leak literal page
+ *  content if serialized verbatim (see the module doc's privacy
+ *  constraint), so it is hashed instead of dropped. Hashing — instead of
+ *  folding every such locator into one shared 'locator:other' bucket —
+ *  keeps repeat-detection and the diagnostic summary's top-3 list accurate:
+ *  clicking 3 different buttons that each resolve by visible text no longer
+ *  reads as "the same target clicked 3 times", and clicking the same button
+ *  3 times is still recognized as a real repeat. The prefix names which
+ *  locator strategy was used (for readability); the hash covers the whole
+ *  parsed locator object so two different `text` values never collide. */
+function hashedLocatorKey(parsed: Record<string, unknown>): string {
+  const strategy = typeof parsed.text === 'string' ? 'text'
+    : typeof parsed.testId === 'string' ? 'testId'
+    : (typeof parsed.role === 'string' || typeof parsed.name === 'string') ? 'role'
+    : 'locator';
+  return `${strategy}#${fnv1aHex(JSON.stringify(parsed))}`;
+}
+
 /** Structural-only locator fingerprint for repeat-action detection.
- *  Deliberately excludes `text`/`role`/`name`/`testId` locator strategies
- *  (can echo literal page text) and any `value` field (literal user/page
- *  content) — see the module doc's privacy constraint. */
+ *  `ref`/`css`/`xpath`/`selector` are serialized verbatim (structural, not
+ *  page content); `text`/`role`/`name`/`testId` locators are hashed (see
+ *  `hashedLocatorKey`) instead of serialized, and a fill/select `value` is
+ *  never read at all — see the module doc's privacy constraint.
+ *
+ *  Every key is prefixed with the tab id when one is present: element refs
+ *  like "e1" are assigned per-snapshot and routinely reused across
+ *  different tabs/pages, so without the tab id two unrelated targets on
+ *  different tabs would collide into one (false) repeat-action streak. */
 export function deriveTargetKey(toolName: string, input: Record<string, unknown>): string {
+  const tabId = input.tabId;
+  const tabPrefix = typeof tabId === 'number' || typeof tabId === 'string' ? `tab:${tabId}${KEY_SEP}` : '';
+
   const rawLocator = input.locator;
   if (typeof rawLocator === 'string') {
     try {
       const parsed = JSON.parse(rawLocator) as Record<string, unknown>;
-      if (typeof parsed.ref === 'string') return `ref:${parsed.ref}`;
-      if (typeof parsed.css === 'string') return `css:${parsed.css}`;
-      if (typeof parsed.xpath === 'string') return `xpath:${parsed.xpath}`;
-      return 'locator:other';
+      if (typeof parsed.ref === 'string') return `${tabPrefix}ref:${parsed.ref}`;
+      if (typeof parsed.css === 'string') return `${tabPrefix}css:${parsed.css}`;
+      if (typeof parsed.xpath === 'string') return `${tabPrefix}xpath:${parsed.xpath}`;
+      return `${tabPrefix}${hashedLocatorKey(parsed)}`;
     } catch {
-      return 'locator:unparsable';
+      return `${tabPrefix}locator:unparsable`;
     }
   }
   if (typeof input.selector === 'string' && input.selector.length > 0) {
-    return `selector:${input.selector}`;
+    return `${tabPrefix}selector:${input.selector}`;
   }
-  if (typeof input.tabId === 'number' || typeof input.tabId === 'string') {
-    return `tabId:${input.tabId}`;
-  }
+  if (tabPrefix) return `${tabPrefix}notarget`;
   return `tool:${toolName}`;
 }
 
@@ -366,16 +503,69 @@ export function noteBrowserToolOutcome(
   }
 }
 
-/** Test utility / conversation teardown: clears one conversation's trackers,
- *  or all of them when no id is given. */
+/** Test utility / conversation teardown: clears one conversation's trackers
+ *  (repeat/fallback state AND the tab→origin cache below), or all of them
+ *  when no id is given. Wired into `chatStore.ts`'s `deleteConversation` —
+ *  the existing per-conversation-module teardown hook (mirrors
+ *  `clearInputQueue`/`useTaskExecutionStore.clearConversation` etc. already
+ *  called there) — so a long-lived app session doesn't accumulate an
+ *  unbounded number of dead conversations' tracker/cache entries. */
 export function clearBrowserToolTrackers(conversationId?: string): void {
   if (conversationId) {
     repeatTrackers.delete(conversationId);
     fallbackTrackers.delete(conversationId);
+    clearTabOriginCache(conversationId);
     return;
   }
   repeatTrackers.clear();
   fallbackTrackers.clear();
+  clearTabOriginCache();
+}
+
+// ── Tab → origin cache (zero-extra-round-trip site attribution) ──────────
+// `navigate` is the only browser action that carries its destination URL
+// directly; every other action only carries a numeric tabId. Resolving that
+// tabId to an origin via `get_tabs` just for telemetry would double this
+// app's browser traffic (see `recordBrowserToolCallSignal`'s doc), so
+// instead the origin a `navigate` call already resolved for FREE is cached
+// here and reused by later calls against the same tab — giving
+// `bySiteAndPlatform` real site coverage beyond navigate calls alone, at
+// zero additional round trips. Scoped by conversationId so two unrelated
+// tasks reusing the same numeric tabId never cross-contaminate.
+const tabOriginCache = new Map<string, string>();
+
+function tabOriginCacheKey(conversationId: string | undefined, tabId: number): string {
+  return `${conversationId ?? NO_CONVERSATION_KEY}${KEY_SEP}${tabId}`;
+}
+
+export function noteTabOrigin(conversationId: string | undefined, tabId: number, origin: string): void {
+  try {
+    tabOriginCache.set(tabOriginCacheKey(conversationId, tabId), origin);
+  } catch {
+    // Observability must never change product behavior.
+  }
+}
+
+export function getCachedTabOrigin(conversationId: string | undefined, tabId: number): string | undefined {
+  try {
+    return tabOriginCache.get(tabOriginCacheKey(conversationId, tabId));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Test utility / folded into `clearBrowserToolTrackers` for conversation
+ *  teardown — clears one conversation's cached tab origins, or all of them
+ *  when no id is given. */
+export function clearTabOriginCache(conversationId?: string): void {
+  if (conversationId) {
+    const prefix = `${conversationId}${KEY_SEP}`;
+    for (const key of tabOriginCache.keys()) {
+      if (key.startsWith(prefix)) tabOriginCache.delete(key);
+    }
+    return;
+  }
+  tabOriginCache.clear();
 }
 
 // ── Tab lifetime tracking ─────────────────────────────────────────────────
@@ -423,6 +613,29 @@ export function approximateTaskSuccess(inputs: TaskSuccessInputs): boolean {
 }
 
 // ── Diagnostic-bundle summary aggregation ─────────────────────────────────
+
+/** No production collection point emits `task_end` yet (see the batch 1
+ *  delivery report's "task_end hook" note) — the existing `agentEnd`/
+ *  `subagentEnd` lifecycle hooks that could feed it have known gaps on the
+ *  error/abort exit paths, and wiring around that gap is a separate,
+ *  larger change than this observability-only batch. `taskCount`/
+ *  `successRateApprox` are therefore always `0`/`null` in production today;
+ *  this flag lets a bundle reader tell "genuinely zero browser tasks" apart
+ *  from "the counter isn't wired up yet" instead of silently misreading a
+ *  0 as good news. */
+export const TASK_END_INSTRUMENTED = false;
+
+/** Embedded in the diagnostic bundle's `browser/summary.json` alongside
+ *  `TASK_END_INSTRUMENTED`. Also documents the buffer's actual scope: it is
+ *  a plain in-memory ring buffer (see `MAX_BROWSER_SIGNAL_ENTRIES` above),
+ *  reset on every app restart — cross-restart persistence is a later
+ *  batch's decision, not this one's. */
+export const BROWSER_SIGNALS_SCOPE_NOTE =
+  'taskCount/successRateApprox are 0/null in this build because no production code path ' +
+  'emits the task_end signal yet (see TASK_END_INSTRUMENTED) — this is not necessarily zero ' +
+  'browser task activity. All figures in this section cover only the CURRENT app session: ' +
+  'signals live in an in-memory ring buffer and are lost on restart (disk persistence across ' +
+  'restarts is deferred to a later batch).';
 
 export interface BrowserTaskSummary {
   taskCount: number;
@@ -495,7 +708,7 @@ export function summarizeBrowserSignals(records: BrowserSignalRecord[]): Browser
   const repeatMax = new Map<string, { tool: string; targetKey: string; count: number }>();
   for (const record of records) {
     if (record.kind !== 'repeat_action') continue;
-    const key = `${record.tool} ${record.targetKey}`;
+    const key = `${record.tool}${KEY_SEP}${record.targetKey}`;
     const existing = repeatMax.get(key);
     if (!existing || record.count > existing.count) {
       repeatMax.set(key, { tool: record.tool, targetKey: record.targetKey, count: record.count });
@@ -518,7 +731,7 @@ export function summarizeBrowserSignals(records: BrowserSignalRecord[]): Browser
     if (record.kind !== 'tool_call') continue;
     const origin = record.origin ?? 'unknown';
     const platform = record.platform ?? 'unknown';
-    const key = `${origin} ${platform}`;
+    const key = `${origin}${KEY_SEP}${platform}`;
     const entry = siteMap.get(key) ?? { origin, platform, toolCallCount: 0, okCount: 0 };
     entry.toolCallCount += 1;
     if (record.ok) entry.okCount += 1;

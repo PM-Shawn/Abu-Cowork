@@ -48,18 +48,18 @@ import {
 import { getLargeWriteBlockReason } from '../agent/hooks/largeWriteGuard';
 import {
   browserChannelForTool,
+  buildBrowserSignalContext,
   buildBrowserSignalRecord,
   classifyBlockedPage,
   classifyBrowserToolError,
   deriveTargetKey,
   detectFrameHint,
+  getCachedTabOrigin,
   isBrowserToolResultError,
   noteBrowserToolOutcome,
+  noteTabOrigin,
   safeRecordBrowserSignal,
-  type BrowserSignalContext,
 } from '../observability/browserSignals';
-import { getPlatform } from '../../utils/platform';
-import { APP_VERSION } from '../../utils/version';
 import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
 /**
@@ -359,97 +359,6 @@ export interface ToolApprovalDecision {
  * action can still be approved, but only one conversation at a time, never
  * persistently.
  */
-/**
- * Uniform observability context attached to every browser signal record —
- * see browserSignals.ts's module doc for the "collection layer attaches
- * these fields" convention. `channel` falls back to 'builtin' only in the
- * (never-hit-in-practice) case of a caller invoking this for a name
- * `browserChannelForTool` doesn't recognize as a browser tool — every call
- * site below gates on `classifyBrowserTool`/`browserChannelForTool`
- * returning non-null first.
- */
-function browserSignalContext(
-  namespacedName: string,
-  toolContext: ToolExecutionContext | undefined,
-): BrowserSignalContext {
-  return {
-    platform: getPlatform(),
-    appVersion: APP_VERSION,
-    channel: browserChannelForTool(namespacedName) ?? 'builtin',
-    ...(toolContext?.conversationId ? { conversationId: toolContext.conversationId } : {}),
-    ts: Date.now(),
-  };
-}
-
-/**
- * Records the tool_call signal (+ any derived fallback_to_script/
- * repeat_action/blocked_page signals) for one browser MCP tool invocation,
- * at the execution boundary in `executeAnyTool` — after the approval gate,
- * around the actual `mcpManager.callTool` call. Never throws: every
- * `safeRecordBrowserSignal` call already swallows its own errors, and this
- * function performs no I/O of its own.
- *
- * `origin` is deliberately best-effort and NEVER does a `get_tabs` round
- * trip (unlike `resolveBrowserActionOrigin`, which the approval gate can
- * afford once per state-changing call) — resolving a bare `tabId` to an
- * origin for every read-only call too would double this app's browser
- * traffic just for telemetry. Only `navigate`'s own `url` input is used.
- */
-function recordBrowserToolCallSignal(
-  namespacedName: string,
-  toolContext: ToolExecutionContext | undefined,
-  input: Record<string, unknown>,
-  startedAt: number,
-  resultText: string,
-): void {
-  const separator = namespacedName.indexOf('__');
-  const bareToolName = separator === -1 ? namespacedName : namespacedName.slice(separator + 2);
-  const durationMs = Date.now() - startedAt;
-  const ok = !isBrowserToolResultError(resultText);
-  const targetKey = deriveTargetKey(bareToolName, input);
-  const { repeat, fallback } = noteBrowserToolOutcome(toolContext?.conversationId, bareToolName, targetKey, ok);
-
-  const tabIdRaw = input.tabId;
-  const tabId = typeof tabIdRaw === 'number'
-    ? tabIdRaw
-    : typeof tabIdRaw === 'string' && tabIdRaw.trim() !== '' && Number.isFinite(Number(tabIdRaw))
-      ? Number(tabIdRaw)
-      : undefined;
-  const origin = bareToolName === 'navigate' && typeof input.url === 'string'
-    ? normalizeBrowserOrigin(input.url) ?? undefined
-    : undefined;
-  const frameHint = detectFrameHint(resultText);
-
-  const context = browserSignalContext(namespacedName, toolContext);
-  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-    {
-      kind: 'tool_call',
-      tool: namespacedName,
-      ok,
-      durationMs,
-      ...(tabId !== undefined ? { tabId } : {}),
-      ...(origin ? { origin } : {}),
-      ...(frameHint ? { frameHint: true as const } : {}),
-      ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
-    },
-    context,
-  ));
-
-  if (fallback) {
-    safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
-  }
-  if (repeat.shouldEmit) {
-    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-      { kind: 'repeat_action', tool: bareToolName, targetKey, count: repeat.count },
-      context,
-    ));
-  }
-  const blockedClass = classifyBlockedPage(resultText);
-  if (blockedClass) {
-    safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'blocked_page', className: blockedClass }, context));
-  }
-}
-
 async function resolveBrowserActionOrigin(
   namespacedName: string,
   input: Record<string, unknown>,
@@ -493,6 +402,93 @@ async function resolveBrowserActionOrigin(
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Records the tool_call signal (+ any derived fallback_to_script/
+ * repeat_action/blocked_page signals) for one browser MCP tool invocation,
+ * at the execution boundary in `executeAnyTool` — after the approval gate,
+ * around the actual `mcpManager.callTool` call. Never throws: every
+ * `safeRecordBrowserSignal` call already swallows its own errors, and this
+ * function performs no I/O of its own.
+ *
+ * `origin` is best-effort and NEVER does its own `get_tabs` round trip
+ * (unlike `resolveBrowserActionOrigin` above, which the approval gate can
+ * afford once per state-changing call) — resolving a bare `tabId` to an
+ * origin for every read-only call too would double this app's browser
+ * traffic just for telemetry. Instead: a successful `navigate` resolves its
+ * own origin for free (its `url` input is right there), which is cached by
+ * tabId (`noteTabOrigin`) so every LATER call against that same tab —
+ * click, fill, extract_text, ... — can reuse it via `getCachedTabOrigin`
+ * with zero additional round trips, giving `bySiteAndPlatform` real
+ * per-site coverage beyond navigate calls alone.
+ *
+ * `frameHint`/`blockedClass` are only computed when the call FAILED (`!ok`):
+ * a SUCCESSFUL result's content can legitimately contain "iframe" (a
+ * snapshot's DOM tree), "429" (a price/item count), or "cloudflare" (a page
+ * footer) without any of that meaning the page blocked the agent — see
+ * `browserSignals.ts`'s `classifyBlockedPage`/`detectFrameHint` docs.
+ */
+function recordBrowserToolCallSignal(
+  namespacedName: string,
+  toolContext: ToolExecutionContext | undefined,
+  input: Record<string, unknown>,
+  startedAt: number,
+  resultText: string,
+): void {
+  const separator = namespacedName.indexOf('__');
+  const bareToolName = separator === -1 ? namespacedName : namespacedName.slice(separator + 2);
+  const durationMs = Date.now() - startedAt;
+  const ok = !isBrowserToolResultError(resultText);
+  const conversationId = toolContext?.conversationId;
+  const targetKey = deriveTargetKey(bareToolName, input);
+  const { repeat, fallback } = noteBrowserToolOutcome(conversationId, bareToolName, targetKey, ok);
+
+  const tabIdRaw = input.tabId;
+  const tabId = typeof tabIdRaw === 'number'
+    ? tabIdRaw
+    : typeof tabIdRaw === 'string' && tabIdRaw.trim() !== '' && Number.isFinite(Number(tabIdRaw))
+      ? Number(tabIdRaw)
+      : undefined;
+
+  let origin: string | undefined;
+  if (bareToolName === 'navigate' && typeof input.url === 'string') {
+    origin = normalizeBrowserOrigin(input.url) ?? undefined;
+    if (ok && origin && tabId !== undefined) noteTabOrigin(conversationId, tabId, origin);
+  } else if (tabId !== undefined) {
+    origin = getCachedTabOrigin(conversationId, tabId);
+  }
+
+  const context = buildBrowserSignalContext(browserChannelForTool(namespacedName) ?? 'builtin', conversationId);
+  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+    {
+      kind: 'tool_call',
+      tool: namespacedName,
+      ok,
+      durationMs,
+      ...(tabId !== undefined ? { tabId } : {}),
+      ...(origin ? { origin } : {}),
+      ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+      ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
+    },
+    context,
+  ));
+
+  if (fallback) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
+  }
+  if (repeat.shouldEmit) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { kind: 'repeat_action', tool: bareToolName, targetKey, count: repeat.count },
+      context,
+    ));
+  }
+  if (!ok) {
+    const blockedClass = classifyBlockedPage(resultText);
+    if (blockedClass) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'blocked_page', className: blockedClass }, context));
+    }
   }
 }
 
@@ -844,7 +840,7 @@ export async function checkToolApproval(
         }
         safeRecordBrowserSignal(() => buildBrowserSignalRecord(
           { kind: 'confirm_prompt', origin: origin ?? undefined },
-          browserSignalContext(name, toolContext),
+          buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
         ));
         const confirmed = await onRequireConfirmation({
           command: origin

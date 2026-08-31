@@ -49,6 +49,7 @@ function makeLocator(fields: Record<string, unknown>): string {
 
 let responseQueue: string[] = [];
 let defaultResponse = 'ok';
+let getTabsCallCount = 0;
 
 /** Queue a one-shot response for the NEXT non-get_tabs callTool invocation. */
 function queueResponse(text: string): void {
@@ -70,9 +71,13 @@ describe('registry.ts browser observability collection', () => {
     mocks.isConnected.mockReturnValue(true);
     responseQueue = [];
     defaultResponse = 'ok';
+    getTabsCallCount = 0;
     mocks.callTool.mockReset();
     mocks.callTool.mockImplementation(async (_server: string, toolName: string) => {
-      if (toolName === 'get_tabs') return JSON.stringify({ windows: [] });
+      if (toolName === 'get_tabs') {
+        getTabsCallCount++;
+        return JSON.stringify({ windows: [] });
+      }
       return responseQueue.length > 0 ? responseQueue.shift() : defaultResponse;
     });
   });
@@ -180,7 +185,9 @@ describe('registry.ts browser observability collection', () => {
     );
     const repeats = getRecentBrowserSignals().filter((s) => s.kind === 'repeat_action');
     expect(repeats).toHaveLength(1);
-    expect(repeats[0]).toMatchObject({ kind: 'repeat_action', targetKey: 'selector:#a', count: 3 });
+    // targetKey is tab-id-prefixed (fix-wave finding #4: same selector on a
+    // different tab must not collide into the same repeat streak).
+    expect(repeats[0]).toMatchObject({ kind: 'repeat_action', targetKey: 'tab:1 selector:#a', count: 3 });
   });
 
   it('resets the repeat streak when the target changes', async () => {
@@ -262,5 +269,118 @@ describe('registry.ts browser observability collection', () => {
     setDefaultResponse('unrelated result');
     await executeAnyTool('some-other-server__do_thing', {}, undefined, undefined, { conversationId: 'conv-1' });
     expect(getRecentBrowserSignals()).toHaveLength(0);
+  });
+
+  // ── Fix-wave finding #3: frameHint/blocked_page must not fire on success ──
+  describe('frameHint/blocked_page are only classified on a FAILED call (fix-wave finding #3)', () => {
+    it('does not flag frameHint on a successful result that happens to contain "iframe"', async () => {
+      setDefaultResponse(JSON.stringify({ elements: [{ tag: 'iframe', ref: 'e1' }] }));
+      await executeAnyTool('abu-browser__snapshot', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' });
+      const [signal] = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signal).toMatchObject({ ok: true });
+      expect((signal as { frameHint?: boolean }).frameHint).toBeUndefined();
+    });
+
+    it('does not record blocked_page for a successful result mentioning "429" as a price/count', async () => {
+      setDefaultResponse('In stock: 429 units available');
+      await executeAnyTool('abu-browser__extract_text', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' });
+      expect(getRecentBrowserSignals().filter((s) => s.kind === 'blocked_page')).toHaveLength(0);
+    });
+
+    it('still flags frameHint on a FAILED result mentioning iframe', async () => {
+      setDefaultResponse('Error: element not found (it may be inside an iframe)');
+      await executeAnyTool('abu-browser__click', { tabId: 1, locator: makeLocator({ ref: 'e1' }) }, async () => true, undefined, { conversationId: 'conv-1' });
+      const [signal] = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signal).toMatchObject({ ok: false, frameHint: true });
+    });
+  });
+
+  // ── Fix-wave: navigate success caches tabId→origin, zero extra round trips ──
+  describe('tab origin cache (fix-wave)', () => {
+    it('gives a later call on the same tab the origin a prior successful navigate resolved, without an extra get_tabs call', async () => {
+      queueResponse('ok'); // response for the navigate call itself
+      await executeAnyTool(
+        'abu-browser__navigate',
+        { tabId: 1, url: 'https://example.com/page', action: 'goto' },
+        async () => true,
+        undefined,
+        { conversationId: 'conv-1' },
+      );
+      const getTabsCallsAfterNavigate = getTabsCallCount;
+
+      queueResponse('extracted text');
+      await executeAnyTool(
+        'abu-browser__extract_text',
+        { tabId: 1, selector: '#content' },
+        undefined,
+        undefined,
+        { conversationId: 'conv-1' },
+      );
+
+      const toolCalls = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      const extractSignal = toolCalls.find((s) => s.kind === 'tool_call' && s.tool === 'abu-browser__extract_text');
+      expect(extractSignal).toMatchObject({ origin: 'https://example.com' });
+      // No additional get_tabs round trip was spent resolving it.
+      expect(getTabsCallCount).toBe(getTabsCallsAfterNavigate);
+    });
+
+    it('does not cache an origin when the navigate call itself failed', async () => {
+      queueResponse('Error: navigation failed');
+      await executeAnyTool(
+        'abu-browser__navigate',
+        { tabId: 1, url: 'https://example.com/page', action: 'goto' },
+        async () => true,
+        undefined,
+        { conversationId: 'conv-1' },
+      );
+
+      queueResponse('extracted text');
+      await executeAnyTool('abu-browser__extract_text', { tabId: 1, selector: '#content' }, undefined, undefined, { conversationId: 'conv-1' });
+
+      const extractSignal = getRecentBrowserSignals().find((s) => s.kind === 'tool_call' && s.tool === 'abu-browser__extract_text');
+      expect((extractSignal as { origin?: string })?.origin).toBeUndefined();
+    });
+
+    it('scopes the cached origin by conversation — an unrelated conversation reusing the same tabId does not inherit it', async () => {
+      queueResponse('ok');
+      await executeAnyTool(
+        'abu-browser__navigate',
+        { tabId: 1, url: 'https://example.com/page', action: 'goto' },
+        async () => true,
+        undefined,
+        { conversationId: 'conv-1' },
+      );
+
+      queueResponse('extracted text');
+      await executeAnyTool('abu-browser__extract_text', { tabId: 1, selector: '#content' }, undefined, undefined, { conversationId: 'conv-2' });
+
+      const extractSignal = getRecentBrowserSignals().find((s) => s.kind === 'tool_call' && s.tool === 'abu-browser__extract_text' && s.conversationId === 'conv-2');
+      expect((extractSignal as { origin?: string })?.origin).toBeUndefined();
+    });
+  });
+
+  // ── Fix-wave minor: callTool throwing must propagate untouched + still record ──
+  describe('mcpManager.callTool throwing (fix-wave minor, registry.ts callTool-throw branch)', () => {
+    it('propagates the original error object unchanged and still records ok:false', async () => {
+      const originalError = new Error('transport exploded');
+      mocks.callTool.mockImplementationOnce(async () => { throw originalError; });
+
+      await expect(
+        executeAnyTool('abu-browser__snapshot', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' }),
+      ).rejects.toBe(originalError);
+
+      const [signal] = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signal).toMatchObject({ tool: 'abu-browser__snapshot', ok: false });
+    });
+
+    it('propagates a thrown non-Error value unchanged too', async () => {
+      mocks.callTool.mockImplementationOnce(async () => { throw 'plain string failure'; });
+
+      await expect(
+        executeAnyTool('abu-browser__snapshot', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' }),
+      ).rejects.toBe('plain string failure');
+
+      expect(getRecentBrowserSignals().filter((s) => s.kind === 'tool_call')).toHaveLength(1);
+    });
   });
 });

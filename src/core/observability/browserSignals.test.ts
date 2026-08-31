@@ -2,7 +2,13 @@
  * Pure-function/type layer for browser-automation observability signals.
  * See docs/plans/2026-09-01-browser-batch1-observability.md (T1).
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+vi.mock('../../utils/platform', () => ({
+  getPlatform: vi.fn(() => 'unknown'),
+}));
+
+import { getPlatform } from '../../utils/platform';
 import {
   RepeatTracker,
   FallbackToScriptTracker,
@@ -13,6 +19,7 @@ import {
   deriveTargetKey,
   browserChannelForTool,
   buildBrowserSignalRecord,
+  buildBrowserSignalContext,
   recordBrowserSignal,
   getRecentBrowserSignals,
   clearBrowserSignals,
@@ -20,12 +27,16 @@ import {
   clearBrowserToolTrackers,
   noteTabCreated,
   noteTabClosed,
+  noteTabOrigin,
+  getCachedTabOrigin,
+  clearTabOriginCache,
   recordSchedulerDriftSignal,
   getRecentSchedulerDriftSignals,
   clearSchedulerDriftSignals,
   buildSchedulerDriftSignal,
   approximateTaskSuccess,
   summarizeBrowserSignals,
+  TASK_END_INSTRUMENTED,
   type BrowserSignalContext,
 } from './browserSignals';
 
@@ -62,12 +73,23 @@ describe('RepeatTracker', () => {
     expect(tracker.track('click', 'ref:e1')).toEqual({ count: 2, shouldEmit: false });
   });
 
-  it('emits starting at the 3rd consecutive call on the same tool+target', () => {
+  it('emits at the 3rd consecutive call, then stays silent until the next emit stride', () => {
     const tracker = new RepeatTracker();
     tracker.track('click', 'ref:e1');
     tracker.track('click', 'ref:e1');
     expect(tracker.track('click', 'ref:e1')).toEqual({ count: 3, shouldEmit: true });
-    expect(tracker.track('click', 'ref:e1')).toEqual({ count: 4, shouldEmit: true });
+    // 4th through 12th stay silent — emitting on every call past the
+    // threshold could flood the 5000-entry rolling buffer with one
+    // repetitive signal (fix-wave finding #minor).
+    for (let count = 4; count <= 12; count++) {
+      expect(tracker.track('click', 'ref:e1')).toEqual({ count, shouldEmit: false });
+    }
+    // 13th = 3 + 10 (REPEAT_EMIT_STRIDE) — the next "still stuck" heartbeat.
+    expect(tracker.track('click', 'ref:e1')).toEqual({ count: 13, shouldEmit: true });
+    for (let count = 14; count <= 22; count++) {
+      expect(tracker.track('click', 'ref:e1')).toEqual({ count, shouldEmit: false });
+    }
+    expect(tracker.track('click', 'ref:e1')).toEqual({ count: 23, shouldEmit: true });
   });
 
   it('resets the streak when the target changes', () => {
@@ -131,11 +153,28 @@ describe('classifyBlockedPage', () => {
   it('classifies HTTP 429 text', () => {
     expect(classifyBlockedPage('Error: request failed with status 429 Too Many Requests')).toBe('http_429');
   });
+  it('classifies "too many requests" alone, without needing "429" to co-occur', () => {
+    expect(classifyBlockedPage('Error: too many requests, please slow down')).toBe('http_429');
+  });
   it('classifies a Cloudflare-style challenge page', () => {
     expect(classifyBlockedPage('Checking your browser before accessing the site (Cloudflare)')).toBe('challenge');
   });
   it('classifies a human-verification wall', () => {
     expect(classifyBlockedPage('Please verify you are human to continue')).toBe('verify_wall');
+  });
+
+  // Fix-wave finding #3: bare "429"/"cloudflare" false-positive on ordinary
+  // successful page content — both must require actual rate-limit/challenge
+  // wording nearby, not just the bare keyword.
+  it('does NOT classify a bare "429" that is just a price or item count', () => {
+    expect(classifyBlockedPage('In stock: 429 units, price $429.00')).toBeNull();
+  });
+  it('does NOT classify a plain "Powered by Cloudflare" footer badge', () => {
+    expect(classifyBlockedPage('Copyright 2026 Acme Inc. Powered by Cloudflare.')).toBeNull();
+  });
+  it('only scans a bounded prefix (hot-path guard on multi-MB page dumps)', () => {
+    const huge = 'a'.repeat(10_000) + ' 429 too many requests';
+    expect(classifyBlockedPage(huge)).toBeNull();
   });
 });
 
@@ -168,6 +207,20 @@ describe('detectFrameHint', () => {
   it('returns false for undefined', () => {
     expect(detectFrameHint(undefined)).toBe(false);
   });
+
+  // Fix-wave finding #3: bare "frame" (not "iframe") routinely appears in
+  // successful snapshot output — a DOM class/id like "chart-frame" or
+  // "time-frame", not an iframe-related failure.
+  it('does NOT match a bare "frame" substring (e.g. a "chart-frame" class name)', () => {
+    expect(detectFrameHint('snapshot: div.chart-frame { ref: e1 }')).toBe(false);
+  });
+  it('does NOT match the standalone word "frame" (e.g. "time frame")', () => {
+    expect(detectFrameHint('completed within the expected time frame')).toBe(false);
+  });
+  it('only scans a bounded prefix (hot-path guard on multi-MB page dumps)', () => {
+    const huge = 'a'.repeat(10_000) + ' iframe';
+    expect(detectFrameHint(huge)).toBe(false);
+  });
 });
 
 describe('isBrowserToolResultError', () => {
@@ -183,30 +236,72 @@ describe('isBrowserToolResultError', () => {
 });
 
 describe('deriveTargetKey', () => {
-  it('prefers a ref locator', () => {
-    expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ ref: 'e3' }) })).toBe('ref:e3');
+  it('prefers a ref locator, prefixed with the tab id', () => {
+    expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ ref: 'e3' }) })).toBe('tab:1 ref:e3');
   });
   it('uses a css locator when no ref is present', () => {
-    expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ css: '#submit' }) })).toBe('css:#submit');
-  });
-  it('buckets text/role/name/testId locators together instead of serializing page content', () => {
-    expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: '立即购买' }) })).toBe('locator:other');
+    expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ css: '#submit' }) })).toBe('tab:1 css:#submit');
   });
   it('falls back gracefully for an unparsable locator string', () => {
-    expect(deriveTargetKey('click', { tabId: 1, locator: 'not-json' })).toBe('locator:unparsable');
+    expect(deriveTargetKey('click', { tabId: 1, locator: 'not-json' })).toBe('tab:1 locator:unparsable');
   });
   it('uses a top-level selector when there is no locator', () => {
-    expect(deriveTargetKey('extract_text', { tabId: 1, selector: '#content' })).toBe('selector:#content');
+    expect(deriveTargetKey('extract_text', { tabId: 1, selector: '#content' })).toBe('tab:1 selector:#content');
   });
-  it('falls back to tabId when there is no locator/selector', () => {
-    expect(deriveTargetKey('screenshot', { tabId: 7 })).toBe('tabId:7');
+  it('falls back to a tab-scoped "notarget" when there is no locator/selector but a tabId is present', () => {
+    expect(deriveTargetKey('screenshot', { tabId: 7 })).toBe('tab:7 notarget');
   });
-  it('falls back to the tool name when nothing else is available', () => {
+  it('falls back to the tool name when nothing else is available (no tabId either)', () => {
     expect(deriveTargetKey('get_tabs', {})).toBe('tool:get_tabs');
   });
   it('never includes the literal fill/select value', () => {
     const key = deriveTargetKey('fill', { tabId: 1, locator: JSON.stringify({ css: '#name' }), value: 'super-secret-value' });
     expect(key).not.toContain('super-secret-value');
+  });
+
+  // Fix-wave finding #4: text/role/testId locators must NOT collapse into
+  // one shared 'locator:other' bucket (breaks repeat-detection accuracy and
+  // the diagnostic top-3 list), but must also never serialize literal page
+  // text — hash instead.
+  describe('hashed text/role/testId locators (fix-wave finding #4)', () => {
+    it('never serializes the literal locator text', () => {
+      const key = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: '立即购买' }) });
+      expect(key).not.toContain('立即购买');
+    });
+    it('names the locator strategy in the key prefix', () => {
+      expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: 'Buy now' }) }))
+        .toMatch(/^tab:1 text#[0-9a-f]{8}$/);
+      expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ testId: 'submit-btn' }) }))
+        .toMatch(/^tab:1 testId#[0-9a-f]{8}$/);
+      expect(deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ role: 'button', name: 'Submit' }) }))
+        .toMatch(/^tab:1 role#[0-9a-f]{8}$/);
+    });
+    it('gives two DIFFERENT text locators two different hashes (no longer collapsed together)', () => {
+      const a = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: 'Buy now' }) });
+      const b = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: 'Cancel' }) });
+      expect(a).not.toBe(b);
+    });
+    it('gives the SAME text locator the same hash every time (repeat-detection still works)', () => {
+      const a = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: 'Buy now' }) });
+      const b = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ text: 'Buy now' }) });
+      expect(a).toBe(b);
+    });
+  });
+
+  // Fix-wave finding #4: element refs like "e1" are reused across different
+  // snapshots/tabs, so the tab id must be part of the key or two unrelated
+  // targets on different tabs collide into one false repeat streak.
+  describe('tab-id collision guard (fix-wave finding #4)', () => {
+    it('gives the same ref on two different tabs two different keys', () => {
+      const tab1 = deriveTargetKey('click', { tabId: 1, locator: JSON.stringify({ ref: 'e1' }) });
+      const tab2 = deriveTargetKey('click', { tabId: 2, locator: JSON.stringify({ ref: 'e1' }) });
+      expect(tab1).not.toBe(tab2);
+    });
+    it('gives the same selector on two different tabs two different keys', () => {
+      const tab1 = deriveTargetKey('extract_text', { tabId: 1, selector: '#content' });
+      const tab2 = deriveTargetKey('extract_text', { tabId: 2, selector: '#content' });
+      expect(tab1).not.toBe(tab2);
+    });
   });
 });
 
@@ -444,5 +539,114 @@ describe('summarizeBrowserSignals', () => {
     const summary = summarizeBrowserSignals(records);
     expect(summary.taskCount).toBe(2);
     expect(summary.successRateApprox).toBe(0.5);
+  });
+});
+
+describe('buildBrowserSignalContext (fix-wave: cached platform read)', () => {
+  it('caches the platform after the first non-"unknown" read, and retries while still "unknown"', () => {
+    const getPlatformMock = vi.mocked(getPlatform);
+    getPlatformMock.mockClear();
+    getPlatformMock.mockReturnValue('unknown');
+
+    const first = buildBrowserSignalContext('builtin');
+    expect(first.platform).toBe('unknown');
+    expect(getPlatformMock).toHaveBeenCalledTimes(1);
+
+    // Still unknown — must retry (recovery path for a signal built before
+    // initPlatform() resolves at startup), not silently stick to 'unknown'.
+    const second = buildBrowserSignalContext('builtin');
+    expect(second.platform).toBe('unknown');
+    expect(getPlatformMock).toHaveBeenCalledTimes(2);
+
+    // Platform is now known — cached from here on: no further calls, so no
+    // further "called before initPlatform()" console warnings either.
+    getPlatformMock.mockReturnValue('macos');
+    const third = buildBrowserSignalContext('builtin');
+    expect(third.platform).toBe('macos');
+    expect(getPlatformMock).toHaveBeenCalledTimes(3);
+
+    const fourth = buildBrowserSignalContext('builtin');
+    expect(fourth.platform).toBe('macos');
+    expect(getPlatformMock).toHaveBeenCalledTimes(3); // not called again
+  });
+
+  it('attaches channel/appVersion/conversationId/ts as given', () => {
+    vi.mocked(getPlatform).mockReturnValue('macos');
+    const record = buildBrowserSignalContext('chrome', 'conv-1', 12345);
+    expect(record).toEqual({
+      platform: 'macos',
+      appVersion: expect.any(String),
+      channel: 'chrome',
+      conversationId: 'conv-1',
+      ts: 12345,
+    });
+  });
+
+  it('omits conversationId when not given', () => {
+    vi.mocked(getPlatform).mockReturnValue('macos');
+    const record = buildBrowserSignalContext('builtin');
+    expect(record.conversationId).toBeUndefined();
+  });
+});
+
+describe('tab origin cache (fix-wave: zero-extra-round-trip site attribution)', () => {
+  beforeEach(() => {
+    clearTabOriginCache();
+  });
+
+  it('returns undefined for a tab with no cached origin', () => {
+    expect(getCachedTabOrigin('conv-1', 1)).toBeUndefined();
+  });
+
+  it('returns the cached origin after noteTabOrigin', () => {
+    noteTabOrigin('conv-1', 1, 'https://example.com');
+    expect(getCachedTabOrigin('conv-1', 1)).toBe('https://example.com');
+  });
+
+  it('scopes the cache by conversationId — the same tabId in another conversation is not cross-contaminated', () => {
+    noteTabOrigin('conv-1', 1, 'https://a.com');
+    expect(getCachedTabOrigin('conv-2', 1)).toBeUndefined();
+  });
+
+  it('clearTabOriginCache(conversationId) only clears that conversation', () => {
+    noteTabOrigin('conv-1', 1, 'https://a.com');
+    noteTabOrigin('conv-2', 1, 'https://b.com');
+    clearTabOriginCache('conv-1');
+    expect(getCachedTabOrigin('conv-1', 1)).toBeUndefined();
+    expect(getCachedTabOrigin('conv-2', 1)).toBe('https://b.com');
+  });
+
+  it('clearTabOriginCache() with no argument clears everything', () => {
+    noteTabOrigin('conv-1', 1, 'https://a.com');
+    noteTabOrigin(undefined, 2, 'https://b.com');
+    clearTabOriginCache();
+    expect(getCachedTabOrigin('conv-1', 1)).toBeUndefined();
+    expect(getCachedTabOrigin(undefined, 2)).toBeUndefined();
+  });
+
+  it('never throws on a malformed call', () => {
+    expect(() => noteTabOrigin('conv-1', Number.NaN, 'https://a.com')).not.toThrow();
+  });
+});
+
+describe('clearBrowserToolTrackers also clears the tab origin cache (fix-wave)', () => {
+  it('clears cached tab origins for the given conversation', () => {
+    noteTabOrigin('conv-1', 1, 'https://a.com');
+    clearBrowserToolTrackers('conv-1');
+    expect(getCachedTabOrigin('conv-1', 1)).toBeUndefined();
+  });
+
+  it('clears ALL cached tab origins when called with no conversationId', () => {
+    noteTabOrigin('conv-1', 1, 'https://a.com');
+    noteTabOrigin('conv-2', 1, 'https://b.com');
+    clearBrowserToolTrackers();
+    expect(getCachedTabOrigin('conv-1', 1)).toBeUndefined();
+    expect(getCachedTabOrigin('conv-2', 1)).toBeUndefined();
+  });
+});
+
+describe('TASK_END_INSTRUMENTED (fix-wave minor: taskCount:0 misread guard)', () => {
+  it('is false — no production collection point emits task_end yet', () => {
+    expect(TASK_END_INSTRUMENTED).toBe(false);
   });
 });

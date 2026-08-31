@@ -4,13 +4,15 @@ import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useI18n, format } from '@/i18n';
-import { Sparkles, Bot, Server, Search } from 'lucide-react';
+import { Sparkles, Bot, Server, Search, Puzzle } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useToastStore } from '@/stores/toastStore';
 import { installSkillFromFolder } from '@/core/skill/installer';
 import { installAgentFromFolder } from '@/core/agent/installer';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_PLUGIN_SYSTEM } from '@/core/labs/registry';
 import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
@@ -18,6 +20,14 @@ import TopTabNav from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import { Input } from '@/components/ui/input';
+
+// Tab ids surfaced by the Plugin System IA (labs flag LABS_PLUGIN_SYSTEM).
+// 'plugins' has no counterpart in the persisted `ToolboxTab` union — the
+// store keeps only 'skills' | 'agents' | 'mcp' (see settingsStore.ts) — so
+// it's tracked as local component state (`pluginTab` below) instead of
+// widening the store's type.
+type PluginIATab = 'plugins' | 'skills' | 'mcp';
+
 // Enterprise skill/MCP tab implementations are registered by the enterprise-modules
 // entry point (real impls in the enterprise build, no-op in the OSS build). The
 // consumers below read them via getEnterpriseMount(), which returns a NullComponent
@@ -38,6 +48,40 @@ export default function ToolboxView() {
   const enterpriseMode = useEnterpriseStore(s => s.mode);
   const isEnterprise = enterpriseMode.kind !== 'personal';
 
+  // Plugin System IA: flag off → pixel-identical to pre-experiment behavior
+  // (skills/agents/mcp tabs, driven entirely by the store's activeToolboxTab,
+  // untouched below). Flag on → 3 tabs become plugins/skills/mcp; the Agents
+  // tab is dropped (its home moves to the sidebar's Team view once that
+  // branch merges — see LABS_PLUGIN_SYSTEM's registry comment).
+  const isPluginIA = useLabsFlag(LABS_PLUGIN_SYSTEM);
+
+  // Local tab selection for the Plugin IA only — decoupled from the store's
+  // `ToolboxTab` (which has no 'plugins' member). Initialized eagerly from
+  // whatever the store's activeToolboxTab already is, so a component that
+  // mounts with the flag already on (or flips on mid-session while the
+  // stored tab is the now-gone 'agents') never renders a blank tab panel.
+  const [pluginTab, setPluginTab] = useState<PluginIATab>(() => (
+    activeToolboxTab === 'skills' || activeToolboxTab === 'mcp' ? activeToolboxTab : 'plugins'
+  ));
+
+  // Re-derive the safe landing tab every time we enter (or are already in)
+  // Plugin IA mode, in case the store's activeToolboxTab changed while the
+  // flag was off (e.g. user was on 'agents', flag flips on elsewhere while
+  // this view stays mounted) — without this, `pluginTab` could go stale and
+  // the switch below would fall through to `null` (a white screen).
+  useEffect(() => {
+    if (!isPluginIA) return;
+    setPluginTab(activeToolboxTab === 'skills' || activeToolboxTab === 'mcp' ? activeToolboxTab : 'plugins');
+    // Only re-sync on the flag transition itself (and the tab read at that
+    // moment) — once inside Plugin IA, tab switches are owned by
+    // pluginTab/setPluginTab below, not the underlying store tab.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPluginIA]);
+
+  // Unified "what's actually showing" tab id, used for content + header
+  // logic below so they never disagree with what the nav highlights.
+  const activeTab: ToolboxTab | 'plugins' = isPluginIA ? pluginTab : activeToolboxTab;
+
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
@@ -47,16 +91,28 @@ export default function ToolboxView() {
   useEffect(() => {
     setManualCreateTrigger(0);
     setToolboxSearchQuery('');
-  }, [activeToolboxTab, capabilityScope, setToolboxSearchQuery]);
+  }, [activeTab, capabilityScope, setToolboxSearchQuery]);
 
   useEffect(() => {
     if (!isEnterprise) setCapabilityScope('personal');
   }, [isEnterprise]);
 
+  // Tab-nav selection handler. Under the Plugin IA, 'plugins' has no store
+  // representation — it's local-only. Selecting 'skills'/'mcp' still mirrors
+  // into the store so the tab lands somewhere sane if the flag turns back off.
+  const handleSelectTab = (id: ToolboxTab | 'plugins') => {
+    if (isPluginIA) {
+      setPluginTab(id as PluginIATab);
+      if (id !== 'plugins') setActiveToolboxTab(id);
+      return;
+    }
+    setActiveToolboxTab(id as ToolboxTab);
+  };
+
   // Handler for creating with AI, adapts to active tab
   const handleAICreate = () => {
     startNewConversation();
-    const prompt = activeToolboxTab === 'agents'
+    const prompt = activeTab === 'agents'
       ? t.toolbox.aiCreateAgentPrompt
       : t.toolbox.aiCreateSkillPrompt;
     setPendingInput(prompt);
@@ -65,7 +121,7 @@ export default function ToolboxView() {
 
   // Handler for uploading a folder (Skills/Agents)
   const handleUploadFile = async () => {
-    const isAgent = activeToolboxTab === 'agents';
+    const isAgent = activeTab === 'agents';
     const addToast = useToastStore.getState().addToast;
 
     try {
@@ -98,11 +154,19 @@ export default function ToolboxView() {
     setManualCreateTrigger((c) => c + 1);
   };
 
-  const navItems: { id: ToolboxTab; label: string; icon: typeof Sparkles }[] = [
-    { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
-    { id: 'agents', label: t.toolbox.agents, icon: Bot },
-    { id: 'mcp', label: t.toolbox.mcp, icon: Server },
-  ];
+  // Flag off: unchanged skills/agents/mcp — pixel-identical to pre-experiment.
+  // Flag on: plugins/skills/mcp — 'agents' dropped (see isPluginIA comment above).
+  const navItems: { id: ToolboxTab | 'plugins'; label: string; icon: typeof Sparkles }[] = isPluginIA
+    ? [
+        { id: 'plugins', label: t.toolbox.plugins, icon: Puzzle },
+        { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
+        { id: 'mcp', label: t.toolbox.connectors, icon: Server },
+      ]
+    : [
+        { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
+        { id: 'agents', label: t.toolbox.agents, icon: Bot },
+        { id: 'mcp', label: t.toolbox.mcp, icon: Server },
+      ];
 
   const renderContent = () => {
     const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
@@ -114,7 +178,16 @@ export default function ToolboxView() {
         ? enterpriseMode.lastConfig
         : null;
 
-    switch (activeToolboxTab) {
+    switch (activeTab) {
+      // Plugin IA placeholder — the real plugin list/management UI is Task 10's
+      // scope. This is intentionally minimal.
+      case 'plugins': {
+        return (
+          <div className="h-full flex items-center justify-center text-body text-[var(--abu-text-tertiary)]">
+            {t.toolbox.pluginsEmptyState}
+          </div>
+        );
+      }
       case 'skills': {
         if (isEnterprise && capabilityScope === 'organization') {
           if (!binding) return null;
@@ -178,7 +251,7 @@ export default function ToolboxView() {
     ) : null;
 
     let createControl: ReactNode = null;
-    if (activeToolboxTab === 'agents' && (!isEnterprise || capabilityScope === 'personal')) {
+    if (activeTab === 'agents' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
@@ -187,7 +260,7 @@ export default function ToolboxView() {
           uploadLabel={t.toolbox.uploadFile}
         />
       );
-    } else if (activeToolboxTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
+    } else if (activeTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
@@ -198,23 +271,36 @@ export default function ToolboxView() {
           menuTestId="skill-create-menu"
         />
       );
-    } else if (activeToolboxTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
+    } else if (activeTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
     }
+    // activeTab === 'plugins' → no create control yet (Task 10's scope).
 
     return <>{scopeControl}{searchBox}{createControl}</>;
   };
 
   return (
     <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
+      {/* Plugin IA title — only rendered when the flag is on, so the flag-off
+          layout stays pixel-identical to pre-experiment (no title bar existed
+          here before this experiment). */}
+      {isPluginIA && (
+        <h1
+          data-testid="toolbox-plugin-title"
+          className="shrink-0 px-8 pt-3 text-h-sm font-semibold text-[var(--abu-text-primary)]"
+        >
+          {t.toolbox.plugins}
+        </h1>
+      )}
+
       {/* Content-area header row — tabs left, search + create right. Sits below
           the window's floating title-bar controls (traffic lights / sidebar
           toggle / search / new-task), so it no longer needs the sidebarCollapsed
           horizontal-clearance hack (see TopTabNav's `belowChrome` mode). */}
       <TopTabNav
         items={navItems}
-        activeId={activeToolboxTab}
-        onSelect={setActiveToolboxTab}
+        activeId={activeTab}
+        onSelect={handleSelectTab}
         belowChrome
         right={renderHeaderRight()}
       />

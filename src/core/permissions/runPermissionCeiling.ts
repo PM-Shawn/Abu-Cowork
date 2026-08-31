@@ -334,15 +334,21 @@ export function decideFileUnderRunPermissionCeiling(
 
 export function decideStateChangingToolUnderRunPermissionCeiling(
   ceiling: RunPermissionCeiling | null,
-  kind: 'browser' | 'self-extension',
+  kind: 'browser' | 'self-extension' | 'plugin',
 ): CeilingDecision {
   if (!ceiling || ceiling.capability === 'full') return { decision: 'allow' };
   if (ceiling.capability === 'scheduled') {
     // Preserve pre-authorized browser-site behavior, but never allow an
     // unattended task to install/modify durable capabilities or identity.
+    //
+    // Plugin tools side with self-extension rather than browser: a browser
+    // site the user pre-authorized is a bounded, named target, while a plugin
+    // tool is arbitrary third-party code whose behavior nobody has bounded.
+    // Letting one run unattended needs its own product decision — denying is
+    // the loosenable default, allowing is not.
     return kind === 'browser'
       ? { decision: 'allow' }
-      : { decision: 'deny', reason: 'Error: self-extension is outside this scheduled run capability' };
+      : { decision: 'deny', reason: `Error: ${kind} is outside this scheduled run capability` };
   }
   return {
     decision: 'deny',

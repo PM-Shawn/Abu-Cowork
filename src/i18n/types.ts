@@ -858,6 +858,9 @@ export interface TranslationDict {
     labsExpTodosInboxWhere: string;
     labsExpPetWhere: string;
     labsExpPetDesc: string;
+    labsExpPluginSystemTitle: string;
+    labsExpPluginSystemDesc: string;
+    labsExpPluginSystemWhere: string;
     // General section
     general: string;
     generalDescription: string;
@@ -1386,6 +1389,13 @@ export interface TranslationDict {
     mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
+    // Plugin System IA (labs flag LABS_PLUGIN_SYSTEM) — see ToolboxModal
+    plugins: string;
+    pluginsEmptyState: string;
+    /** Third tab's label under the Plugin IA — "连接器"/Connectors. Distinct
+     *  from `mcp` (used unchanged for the flag-off MCP tab) because en-US's
+     *  `mcp` is literally "MCP", not a Connectors-flavored label. */
+    connectors: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;
@@ -2498,6 +2508,9 @@ export interface TranslationDict {
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */
     browserBlockSite: string;
+    pluginToolAction: string;
+    pluginToolReason: string;
+    pluginToolDenied: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };

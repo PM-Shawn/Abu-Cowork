@@ -15,6 +15,50 @@ export function pluginRoot(home: string): string {
   return joinPath(home, '.abu', PLUGIN_ROOT_DIRNAME);
 }
 
+
+/** A third-party string was not usable as a path segment. */
+export class PluginPathError extends Error {
+  readonly field: string;
+
+  constructor(field: string, value: string) {
+    super(`Unsafe plugin path segment for ${field}: ${JSON.stringify(value)}`);
+    this.name = 'PluginPathError';
+    this.field = field;
+  }
+}
+
+/**
+ * Reject a third-party string that must not escape its directory.
+ *
+ * `marketplace`, plugin `name` and `version` all come from JSON written by
+ * whoever authored the marketplace. Concatenated unchecked they are a path
+ * traversal: a marketplace named `../../Library`, a plugin named
+ * `LaunchAgents` and version `.` resolve to `~/Library/LaunchAgents`, which is
+ * still inside $HOME and therefore passes Electron's capability scope
+ * (`fsHost.cjs` `assertAllowed`). Install would write into a login-item
+ * directory; uninstall would `remove(recursive: true)` it.
+ *
+ * Windows is worse — `assertAllowed` returns before any scope check there — so
+ * backslash is rejected alongside forward slash rather than treated as an
+ * ordinary character.
+ *
+ * Denylist rather than a charset allowlist: plugin names legitimately carry
+ * `@`, `.` and unicode, and an allowlist narrow enough to be safe would reject
+ * real packages. What must never appear is a separator, a NUL, or a segment
+ * that is only dots.
+ */
+function assertSafeSegment(field: string, value: string): string {
+  if (typeof value !== 'string') throw new PluginPathError(field, String(value));
+  if (value.trim() !== value || value.length === 0) throw new PluginPathError(field, value);
+  // Separators, plus every control character. A control char is never a
+  // legitimate part of a package name, and one embedded in a displayed name
+  // can hide what a path really is from whoever is approving the install.
+  // eslint-disable-next-line no-control-regex
+  if (/[/\\\u0000-\u001f\u007f]/.test(value)) throw new PluginPathError(field, value);
+  if (/^\.+$/.test(value)) throw new PluginPathError(field, value);
+  return value;
+}
+
 /** `<home>/.abu/<PLUGIN_ROOT_DIRNAME>/<marketplace>/<name>/<version>` */
 export function pluginInstallDir(
   home: string,
@@ -22,7 +66,12 @@ export function pluginInstallDir(
   name: string,
   version: string,
 ): string {
-  return joinPath(pluginRoot(home), marketplace, name, version);
+  return joinPath(
+    pluginRoot(home),
+    assertSafeSegment('marketplace', marketplace),
+    assertSafeSegment('name', name),
+    assertSafeSegment('version', version),
+  );
 }
 
 /** `<pluginRoot>/installed.json` — the installed-plugins manifest. */

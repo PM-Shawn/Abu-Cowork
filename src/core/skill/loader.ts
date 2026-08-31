@@ -214,8 +214,17 @@ export class SkillLoader {
     // the other way round. Roots come from the install record rather than a
     // directory scan, so a plugin is credited with exactly what its
     // disclosure said it would contribute.
-    for (const dir of await pluginSkillDirs(home)) {
-      dirs.push({ path: dir, source: 'plugin' });
+    // Defensive, mirroring the enterprise block below: the plugin subsystem is
+    // fed by an on-disk file users can edit. `readInstalled` already drops
+    // records it cannot vouch for, so this should never fire — but a throw
+    // here would cost the user *every* skill, not just the plugin ones, and
+    // that is far too much blast radius for an optional subsystem.
+    try {
+      for (const dir of await pluginSkillDirs(home)) {
+        dirs.push({ path: dir, source: 'plugin' });
+      }
+    } catch (error) {
+      console.warn('[SkillLoader] skipping plugin skill roots:', error);
     }
 
     // Enterprise-installed skills (AppData/skills/enterprise/<name>/SKILL.md).

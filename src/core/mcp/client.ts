@@ -2,7 +2,7 @@
 // Stdio transport uses Tauri Rust backend for child process management.
 // HTTP transports (StreamableHTTP, SSE) use the MCP SDK directly.
 
-import type { ToolDefinition, ToolParameter, ToolResult, ToolResultContent } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolParameter, ToolResult, ToolResultContent } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
@@ -13,6 +13,32 @@ import { isEnterpriseModuleActive } from '@/core/enterprise/entitlement';
 
 const mcpLogger = createLogger('mcp');
 const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
+
+/**
+ * MCP request `_meta` key carrying the owning conversation id. Mirrors
+ * `ABU_CONVERSATION_META_KEY` exported from `abu-browser-bridge/src/tools.ts`
+ * (duplicated here rather than imported — abu-browser-bridge is published to
+ * npm separately and isn't a workspace dependency of this app).
+ */
+const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
+
+/**
+ * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
+ * of the execute() closure built during tool discovery so the mapping is
+ * directly unit-testable — the discovery flow itself depends on the MCP SDK,
+ * which the test environment stubs out entirely.
+ */
+export function toCallToolOpts(
+  context?: ToolExecutionContext
+): { conversationId?: string; signal?: AbortSignal } {
+  return {
+    conversationId: context?.conversationId,
+    // `signal` isn't populated from ToolExecutionContext until a later PR adds
+    // an AbortSignal field there; declared now so callTool()'s opts shape
+    // doesn't need to change again once that field lands.
+    signal: undefined,
+  };
+}
 
 function isEnterpriseServerBlocked(name: string): boolean {
   return name.startsWith(ENTERPRISE_SERVER_PREFIX) && !isEnterpriseModuleActive('mcp');
@@ -397,8 +423,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -704,8 +730,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -734,7 +760,8 @@ export class MCPClientManager {
   async callTool(
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    opts?: { conversationId?: string; signal?: AbortSignal }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
@@ -752,7 +779,11 @@ export class MCPClientManager {
     let timerId: ReturnType<typeof setTimeout>;
     try {
       const client = server.client as {
-        callTool: (params: { name: string; arguments: Record<string, unknown> }) => Promise<{
+        callTool: (params: {
+          name: string;
+          arguments: Record<string, unknown>;
+          _meta?: Record<string, unknown>;
+        }) => Promise<{
           content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
       };
@@ -764,8 +795,15 @@ export class MCPClientManager {
       const timeout = new Promise<never>((_, reject) => {
         timerId = setTimeout(() => reject(new Error(`MCP tool call timed out after ${serverTimeout / 1000}s: ${toolName}`)), serverTimeout);
       });
+      const params: { name: string; arguments: Record<string, unknown>; _meta?: Record<string, unknown> } = {
+        name: toolName,
+        arguments: coercedArgs,
+      };
+      if (opts?.conversationId) {
+        params._meta = { [ABU_CONVERSATION_META_KEY]: opts.conversationId };
+      }
       const result = await Promise.race([
-        client.callTool({ name: toolName, arguments: coercedArgs }),
+        client.callTool(params),
         timeout,
       ]);
       clearTimeout(timerId!);

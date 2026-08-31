@@ -7,6 +7,17 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
 
+/**
+ * MCP `_meta` key the Abu client (`src/core/mcp/client.ts`) uses to carry the
+ * owning conversation id on every `callTool` request, so a tool handler can
+ * read `extra._meta?.[ABU_CONVERSATION_META_KEY]` without the model ever
+ * seeing conversationId in the tool's input schema. `client.ts` duplicates
+ * this literal (with a comment pointing back here) rather than importing it,
+ * since abu-browser-bridge is published to npm separately and isn't a
+ * workspace dependency of the desktop app.
+ */
+export const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
+
 export interface BrowserTransportResponse {
   success: boolean;
   data?: unknown;

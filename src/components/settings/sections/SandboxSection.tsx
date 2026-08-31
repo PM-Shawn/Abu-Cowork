@@ -3,7 +3,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 import { getAuthorizedWritablePaths, revokeWorkspace } from '@/core/tools/pathSafety';
 import { useI18n } from '@/i18n';
-import { isMacOS } from '@/utils/platform';
+import { isMacOS, isWindows } from '@/utils/platform';
 import { Shield, ShieldAlert, Globe, Plus, X, Info, Rocket, Bot, ShieldCheck, FolderOpen, Trash2 } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
 import { cn } from '@/lib/utils';
@@ -27,7 +27,12 @@ export default function SandboxSection() {
   const allowPrivateNetworks = useSettingsStore(s => s.allowPrivateNetworks);
   const setAllowPrivateNetworks = useSettingsStore(s => s.setAllowPrivateNetworks);
   const { t } = useI18n();
-  const macOS = isMacOS();
+  // Windows has a real OS-level sandbox too (restricted token + PowerShell
+  // ConstrainedLanguage, see electron/commandHost.cjs) — the settings UI must
+  // expose the same toggle there, with Windows-specific copy since the
+  // mechanism differs from macOS Seatbelt (no file-path isolation).
+  const windows = isWindows();
+  const osSandboxAvailable = isMacOS() || windows;
   const [showWarning, setShowWarning] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [newDomain, setNewDomain] = useState('');
@@ -69,7 +74,7 @@ export default function SandboxSection() {
     <div className="space-y-4">
       <SettingsSectionHeader title={t.settings.sandbox} description={t.settings.sandboxDescription} />
 
-      {macOS ? (
+      {osSandboxAvailable ? (
         <>
           {/* Sandbox Toggle */}
           <button
@@ -97,18 +102,18 @@ export default function SandboxSection() {
                     {showDetails && (
                       <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
                         <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed">
-                          {t.settings.sandboxProtectedPaths}
+                          {windows ? t.settings.sandboxWindowsMechanism : t.settings.sandboxProtectedPaths}
                         </p>
                         <div className="border-t border-[var(--abu-border)] my-1.5" />
                         <p className="text-caption text-[var(--abu-text-muted)] leading-relaxed">
-                          {t.settings.sandboxWritablePaths}
+                          {windows ? t.settings.sandboxWindowsScope : t.settings.sandboxWritablePaths}
                         </p>
                       </div>
                     )}
                   </div>
                 </div>
                 <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                  {t.settings.sandboxProtectionDescription}
+                  {windows ? t.settings.sandboxProtectionDescriptionWindows : t.settings.sandboxProtectionDescription}
                 </p>
               </div>
             </div>
@@ -138,7 +143,7 @@ export default function SandboxSection() {
                       {t.settings.networkIsolation}
                     </p>
                     <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                      {t.settings.networkIsolationDescription}
+                      {windows ? t.settings.networkIsolationDescriptionWindows : t.settings.networkIsolationDescription}
                     </p>
                   </div>
                 </div>
@@ -224,7 +229,7 @@ export default function SandboxSection() {
           <ConfirmDialog
             open={showWarning}
             title={t.settings.sandbox}
-            message={t.settings.sandboxDisableWarning}
+            message={windows ? t.settings.sandboxDisableWarningWindows : t.settings.sandboxDisableWarning}
             confirmText={t.common.confirm}
             cancelText={t.common.cancel}
             variant="danger"

@@ -419,11 +419,14 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
   while (Date.now() < deadline) {
     const adopted = views.get(id);
     if (adopted?.webContents && !adopted.webContents.isDestroyed()) {
-      // browserCreate() normally wrote the meta already; keep the owner even if
-      // some other path ever adopts the id.
-      if (!viewMeta.has(id)) viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+      // The requesting conversation is the authority on this view's owner —
+      // browserCreate() normally wrote the same value from the pending map, and
+      // if any other path got there first its guess must not win (that would
+      // hand the tab to the wrong owner AND leave this caller without a current
+      // tab). Same authority model as the fallback branch below.
+      viewMeta.set(id, { ownerKey, createdAt: Date.now() });
       pendingAutomationOwners.delete(id);
-      activeTabIdByOwner.set(ownerKeyOf(id), adopted.webContents.id);
+      activeTabIdByOwner.set(ownerKey, adopted.webContents.id);
       return adopted;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

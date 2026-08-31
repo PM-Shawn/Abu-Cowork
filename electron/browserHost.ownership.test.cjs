@@ -313,6 +313,51 @@ test('user focus updates only the focused tab owner\'s current tab', async () =>
   }
 });
 
+test('a headless fallback view still belongs to the requesting conversation', async () => {
+  // No renderer answers `browser://automation-open`, so createAutomationView
+  // falls through its bounded wait and builds the hidden view itself. That
+  // branch has its own meta / active-tab / pending-map writes which the
+  // adoption path never executes.
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    const aTabs = await getTabs(host, OWNER_A);
+    const openEvent = emitted.find((entry) => entry.event === 'browser://automation-open');
+    assert.ok(openEvent, 'the automation-open event fires even with no renderer listening');
+    const fallbackId = openEvent.payload.id;
+    const aTab = tabIds(aTabs)[0];
+
+    // The fallback view is recorded as the requesting owner's current tab...
+    assert.equal(aTabs.summary.currentTabId, aTab);
+    // ...and its meta says OWNER_A owns it — a legacy view would let B through.
+    await assert.rejects(navigate(host, OWNER_B, aTab, 'https://example.com/'), (error) => {
+      assert.match(error.message, /belongs to another conversation's task/);
+      return true;
+    });
+
+    // The pending-owner entry was consumed by the fallback. Probe it: dropping
+    // the view clears viewMeta but never touches the pending map, so
+    // re-creating the SAME id as a user pane tab would come back OWNER_A-owned
+    // (and invisible to a legacy caller) if the entry had been stranded.
+    const contents = contentsFor(aTab);
+    contents.destroyed = true;
+    contents.fire('destroyed');
+    host.browserDispatch(null, 'browser_create', {
+      id: fallbackId,
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+
+    const legacyTabs = await getTabs(host);
+    assert.equal(tabIds(legacyTabs).length, 1);
+    assert.equal(legacyTabs.windows[0].tabs[0].url, 'https://example.com/');
+  } finally {
+    restore();
+  }
+});
+
 test('a destroyed view drops its ownership record', async () => {
   const { host, restore } = loadHost();
   try {

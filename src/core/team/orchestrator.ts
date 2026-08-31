@@ -213,6 +213,39 @@ export async function startMemberTask(taskId: string): Promise<void> {
   await confirmAndExecute(taskId);
 }
 
+/**
+ * Run a pipeline: create a task, seed the plan from the frozen template and
+ * execute immediately — leader planning is skipped entirely (the whole point
+ * of a pipeline: the split was already confirmed by acceptance). Outcome
+ * bookkeeping auto-pauses the pipeline after 2 consecutive failures so an
+ * unattended loop can never fail quietly forever.
+ */
+export async function runPipeline(pipelineId: string, goalOverride?: string): Promise<{ ok: boolean; taskId?: string; reason?: string }> {
+  const store = useTeamStore.getState();
+  const pipeline = store.pipelines.find((p) => p.id === pipelineId);
+  const t = getI18n();
+  if (!pipeline) return { ok: false, reason: 'pipeline not found' };
+  if (pipeline.pausedAt) return { ok: false, reason: t.team.pipelinePausedReason };
+  const team = store.teams.find((item) => item.id === pipeline.teamId && !item.archivedAt);
+  if (!team) return { ok: false, reason: t.team.blockedTeamMissing };
+
+  const task = useTeamStore.getState().createTask({ teamId: pipeline.teamId, goal: goalOverride?.trim() || pipeline.goal });
+  useTeamStore.getState().recordPipelineRun(pipelineId, task.id);
+  useTeamStore.getState().proposePlan(task.id, {
+    items: pipeline.template.map((item) => ({ ...item, dependsOn: [...item.dependsOn], state: 'pending' })),
+    doneWhen: [...pipeline.doneWhen],
+  });
+  await confirmAndExecute(task.id);
+
+  const after = useTeamStore.getState().tasks.find((item) => item.id === task.id);
+  const ok = after?.status === 'pending_review';
+  const failures = useTeamStore.getState().recordPipelineOutcome(pipelineId, ok);
+  if (!ok && failures >= 2) {
+    void notifyTeamTaskBlocked(format(t.team.pipelineAutoPaused, { name: pipeline.name }));
+  }
+  return { ok, taskId: task.id };
+}
+
 /** Route a freshly created task to its execution path. */
 export function kickoffTask(taskId: string): void {
   const task = useTeamStore.getState().tasks.find((item) => item.id === taskId);

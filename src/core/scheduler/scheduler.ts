@@ -167,6 +167,32 @@ class SchedulerEngine {
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
 
+    // Team pipeline dispatch: the pipeline owns its own conversations, plan
+    // seeding and outcome bookkeeping (incl. auto-pause after 2 failures) —
+    // the scheduler only triggers it and records the run outcome.
+    if (task.teamPipelineId) {
+      const scheduleStore = useScheduleStore.getState();
+      const runId = scheduleStore.startRun(task.id, '');
+      this.runningTasks.add(task.id);
+      try {
+        const { runPipeline } = await import('@/core/team/orchestrator');
+        const outcome = await runPipeline(task.teamPipelineId);
+        if (outcome.ok) {
+          scheduleStore.completeRun(task.id, runId);
+          notifyScheduledTaskCompleted(task.name);
+        } else {
+          scheduleStore.errorRun(task.id, runId, outcome.reason ?? 'pipeline run failed');
+          notifyScheduledTaskError(task.name);
+        }
+      } catch (err) {
+        scheduleStore.errorRun(task.id, runId, String(err));
+        notifyScheduledTaskError(task.name);
+      } finally {
+        this.runningTasks.delete(task.id);
+      }
+      return;
+    }
+
     const chatStore = useChatStore.getState();
     const scheduleStore = useScheduleStore.getState();
 

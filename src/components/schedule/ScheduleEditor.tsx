@@ -1,4 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useTeamStore } from '@/stores/teamStore';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TEAM } from '@/core/labs/registry';
+import { SearchSelect } from '@/components/ui/search-select';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -48,6 +52,11 @@ export default function ScheduleEditor() {
   const [minute, setMinute] = useState(0);
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [skillName, setSkillName] = useState('');
+  // Team pipeline dispatch (labs-gated): when set, this schedule triggers the
+  // pipeline instead of a plain prompt run — planning is skipped by design.
+  const [teamPipelineId, setTeamPipelineId] = useState('');
+  const teamEnabled = useLabsFlag(LABS_TEAM);
+  const pipelines = useTeamStore((store) => store.pipelines);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
@@ -67,6 +76,7 @@ export default function ScheduleEditor() {
       setMinute(editingTask.schedule.time?.minute ?? 0);
       setDayOfWeek(editingTask.schedule.dayOfWeek ?? 1);
       setSkillName(editingTask.skillName ?? '');
+      setTeamPipelineId(editingTask.teamPipelineId ?? '');
       setWorkspacePath(editingTask.workspacePath ?? '');
       setProjectId(editingTask.projectId ?? '');
       setOutputChannelId(editingTask.outputChannelId ?? '');
@@ -134,7 +144,8 @@ export default function ScheduleEditor() {
   const showDaySelector = frequency === 'weekly';
 
   const handleSave = () => {
-    if (!name.trim() || !prompt.trim()) return;
+    if (!name.trim()) return;
+    if (!teamPipelineId && !prompt.trim()) return;
 
     const schedule: ScheduleConfig = {
       frequency,
@@ -151,7 +162,8 @@ export default function ScheduleEditor() {
       updateTask(editingTaskId, {
         name: name.trim(),
         description: description.trim() || undefined,
-        prompt: prompt.trim(),
+        prompt: teamPipelineId ? (prompt.trim() || name.trim()) : prompt.trim(),
+        teamPipelineId: teamPipelineId || undefined,
         schedule,
         skillName: skillName || undefined,
         workspacePath: effectiveWorkspace || undefined,
@@ -165,7 +177,8 @@ export default function ScheduleEditor() {
       createTask({
         name: name.trim(),
         description: description.trim() || undefined,
-        prompt: prompt.trim(),
+        prompt: teamPipelineId ? (prompt.trim() || name.trim()) : prompt.trim(),
+        teamPipelineId: teamPipelineId || undefined,
         schedule,
         skillName: skillName || undefined,
         workspacePath: effectiveWorkspace || undefined,
@@ -226,7 +239,30 @@ export default function ScheduleEditor() {
             />
           </div>
 
-          {/* Task prompt */}
+          {/* Team pipeline dispatch (labs-gated) */}
+          {teamEnabled && pipelines.length > 0 && (
+            <div>
+              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
+                {t.schedule.teamPipeline}
+              </label>
+              <SearchSelect
+                value={teamPipelineId || null}
+                onChange={(v) => setTeamPipelineId(v === teamPipelineId ? '' : v)}
+                options={[
+                  { value: '', label: t.schedule.teamPipelineNone },
+                  ...pipelines.map((p) => ({ value: p.id, label: p.name, icon: '⚙️' })),
+                ]}
+                placeholder={t.schedule.teamPipelineNone}
+                searchPlaceholder={t.schedule.teamPipelineSearch}
+                emptyText={t.schedule.teamPipelineEmpty}
+                testId="schedule-pipeline-select"
+              />
+              <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.schedule.teamPipelineHint}</p>
+            </div>
+          )}
+
+          {/* Task prompt — a pipeline run carries its own goal */}
+          {!teamPipelineId && (
           <div>
             <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
               {t.schedule.taskPrompt}
@@ -239,6 +275,7 @@ export default function ScheduleEditor() {
               className="w-full px-3 py-2 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg text-body text-[var(--abu-text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] resize-none"
             />
           </div>
+          )}
 
           {/* Frequency selector */}
           <div>

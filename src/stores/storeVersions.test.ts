@@ -20,7 +20,7 @@ const PERSISTED_STORES = [
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
-  { key: 'abu-team', minVersion: 2 },
+  { key: 'abu-team', minVersion: 3 },
 ] as const;
 
 // Import all stores to trigger persist initialization

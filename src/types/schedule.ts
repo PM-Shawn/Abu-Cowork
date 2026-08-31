@@ -37,6 +37,9 @@ export interface ScheduledTask {
   outputUserIds?: string;
   /** Project this task belongs to */
   projectId?: string;
+  /** When set, this schedule dispatches a team pipeline (the plan template
+   *  runs without leader planning) instead of a plain conversation prompt. */
+  teamPipelineId?: string;
   /**
    * The permission mode this task runs under while unattended. Reuses chat's
    * own three-tier autonomy axis (`standard`/`smart`/`autonomous`,

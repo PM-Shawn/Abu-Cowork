@@ -9,7 +9,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { Inbox, ListTodo, Bot, UsersRound, Search, Paperclip, X } from 'lucide-react';
+import { Inbox, ListTodo, Bot, UsersRound, Search, Paperclip, X, Workflow, Play, Pause, Trash2 } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
@@ -415,6 +415,8 @@ export default function TeamView() {
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
   const tasks = useTeamStore((s) => s.tasks);
+  const pipelinesList = useTeamStore((s) => s.pipelines);
+  const addToastRef = useToastStore((s) => s.addToast);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
@@ -441,6 +443,7 @@ export default function TeamView() {
     { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox, badgeCount: pending.length },
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
     { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: UsersRound },
+    { id: 'pipelines' as TeamTab, label: t.team.tabPipelines, icon: Workflow },
   ];
 
   // AI-create for 队员 reuses the toolbox idiom: jump to chat with a crafted prompt.
@@ -618,6 +621,69 @@ export default function TeamView() {
                 </div>
               </details>
             )}
+          </div>
+        );
+      }
+      case 'pipelines': {
+        const pipelines = useTeamStore.getState().pipelines;
+        if (pipelines.length === 0) {
+          return (
+            <EmptyState
+              icon={Workflow}
+              title={t.team.pipelinesEmpty}
+              hint={t.team.pipelinesEmptyHint}
+            />
+          );
+        }
+        return (
+          <div className="p-4 space-y-2 overflow-y-auto h-full">
+            {pipelinesList.map((pipe) => {
+              const team = teams.find((tm) => tm.id === pipe.teamId);
+              return (
+                <div key={pipe.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3" data-testid={`pipeline-row-${pipe.name}`}>
+                  <Workflow className="h-5 w-5 shrink-0 text-[var(--abu-text-tertiary)]" strokeWidth={1.75} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-body text-[var(--abu-text-primary)] truncate">
+                      {pipe.name}
+                      {pipe.pausedAt && (
+                        <span className="ml-2 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]">{t.team.pipelinePausedBadge}</span>
+                      )}
+                    </div>
+                    <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
+                      {team?.name ?? t.team.unknownTeam}
+                      {pipe.lastRunAt ? ` · ${format(t.team.pipelineLastRun, { time: new Date(pipe.lastRunAt).toLocaleString() })}` : ''}
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-1.5">
+                    {pipe.pausedAt ? (
+                      <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().resumePipeline(pipe.id)} data-testid={`pipeline-resume-${pipe.name}`}>
+                        {t.team.pipelineResume}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        data-testid={`pipeline-run-${pipe.name}`}
+                        onClick={() => {
+                          addToastRef({ type: 'success', title: format(t.team.pipelineStarted, { name: pipe.name }) });
+                          void import('@/core/team/orchestrator').then((mod) => mod.runPipeline(pipe.id));
+                        }}
+                      >
+                        <Play className="h-3.5 w-3.5" />{t.team.pipelineRunNow}
+                      </Button>
+                    )}
+                    {!pipe.pausedAt && (
+                      <Button size="icon-sm" variant="ghost" title={t.team.pipelinePause} onClick={() => useTeamStore.getState().pausePipeline(pipe.id)}>
+                        <Pause className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    <Button size="icon-sm" variant="ghost" title={t.common.delete} onClick={() => useTeamStore.getState().deletePipeline(pipe.id)}>
+                      <Trash2 className="h-3.5 w-3.5 text-[var(--abu-text-tertiary)]" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         );
       }

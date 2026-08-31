@@ -1311,6 +1311,21 @@ const enUS: TranslationDict = {
     stopTaskAction: 'Stop',
     stoppedByUser: 'You stopped this task — retry or rework from the detail view',
     itemStateStopped: 'Stopped',
+    pipelinePausedReason: 'Pipeline is paused',
+    pipelineAutoPaused: 'Pipeline "{name}" failed twice in a row and was auto-paused. Resume it from the pipelines tab once fixed.',
+    tabPipelines: 'Pipelines',
+    pipelinesEmpty: 'No pipelines yet',
+    pipelinesEmptyHint: 'Accept a team task, then Save as pipeline in its detail — the same work runs again without planning, and can be scheduled.',
+    pipelinePausedBadge: 'Paused',
+    pipelineLastRun: 'Last run {time}',
+    pipelineRunNow: 'Run',
+    pipelinePause: 'Pause',
+    pipelineResume: 'Resume',
+    pipelineStarted: '"{name}" is running — you will be notified when done',
+    savePipelineAction: 'Save as pipeline',
+    pipelineNamePlaceholder: 'Name this pipeline, e.g. Monthly data report',
+    pipelineSaved: 'Saved as pipeline',
+    pipelineSaveFailed: 'Failed to save pipeline',
   },
 
   toolbox: {
@@ -1965,6 +1980,11 @@ const enUS: TranslationDict = {
   },
 
   schedule: {
+    teamPipeline: 'Team pipeline (optional)',
+    teamPipelineNone: 'No pipeline',
+    teamPipelineSearch: 'Search pipelines...',
+    teamPipelineEmpty: 'No matching pipelines',
+    teamPipelineHint: 'When set, this schedule runs the pipeline directly — the confirmed split executes without replanning.',
     title: 'Scheduled Tasks',
     newTask: 'New Task',
     editTask: 'Edit Task',

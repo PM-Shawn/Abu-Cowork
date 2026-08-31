@@ -1489,6 +1489,21 @@ export interface TranslationDict {
     stopTaskAction: string;
     stoppedByUser: string;
     itemStateStopped: string;
+    pipelinePausedReason: string;
+    pipelineAutoPaused: string;
+    tabPipelines: string;
+    pipelinesEmpty: string;
+    pipelinesEmptyHint: string;
+    pipelinePausedBadge: string;
+    pipelineLastRun: string;
+    pipelineRunNow: string;
+    pipelinePause: string;
+    pipelineResume: string;
+    pipelineStarted: string;
+    savePipelineAction: string;
+    pipelineNamePlaceholder: string;
+    pipelineSaved: string;
+    pipelineSaveFailed: string;
   };
 
   toolbox: {
@@ -2146,6 +2161,11 @@ export interface TranslationDict {
 
   // Scheduled Tasks
   schedule: {
+    teamPipeline: string;
+    teamPipelineNone: string;
+    teamPipelineSearch: string;
+    teamPipelineEmpty: string;
+    teamPipelineHint: string;
     title: string;
     newTask: string;
     editTask: string;

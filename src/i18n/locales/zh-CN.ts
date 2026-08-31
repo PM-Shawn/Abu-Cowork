@@ -1312,6 +1312,21 @@ const zhCN: TranslationDict = {
     stopTaskAction: '停止',
     stoppedByUser: '你停止了这个任务，可在详情里重试或打回',
     itemStateStopped: '已停止',
+    pipelinePausedReason: '流水线已暂停',
+    pipelineAutoPaused: '流水线「{name}」连续失败 2 次，已自动暂停。修好后可在流水线页恢复。',
+    tabPipelines: '流水线',
+    pipelinesEmpty: '还没有流水线',
+    pipelinesEmptyHint: '验收通过的团队任务，在详情里点「存为流水线」——同样的活下次跳过拆解直接干，也能接到定时任务里自动跑。',
+    pipelinePausedBadge: '已暂停',
+    pipelineLastRun: '上次运行 {time}',
+    pipelineRunNow: '运行',
+    pipelinePause: '暂停',
+    pipelineResume: '恢复',
+    pipelineStarted: '「{name}」开始运行，做完会通知你',
+    savePipelineAction: '存为流水线',
+    pipelineNamePlaceholder: '给这条流水线起个名字，如：月度数据周报',
+    pipelineSaved: '已存为流水线',
+    pipelineSaveFailed: '保存流水线失败',
   },
 
   toolbox: {
@@ -1967,6 +1982,11 @@ const zhCN: TranslationDict = {
   },
 
   schedule: {
+    teamPipeline: '团队流水线（可选）',
+    teamPipelineNone: '不使用流水线',
+    teamPipelineSearch: '搜索流水线...',
+    teamPipelineEmpty: '没有匹配的流水线',
+    teamPipelineHint: '选择后，这个定时任务会直接运行该流水线：按已确认的分工执行，不再重新拆解。',
     title: '定时任务',
     newTask: '新建任务',
     editTask: '编辑任务',

@@ -464,7 +464,14 @@ function browserSessionForViews() {
   // per-origin backoff above. Registered once per session (this function is
   // memoized via the `browserSession` singleton), covering every automation
   // view and every pane tab, since they all share `BROWSER_SESSION_PARTITION`.
-  browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'] }, (details, callback) => {
+  // `types: ['mainFrame']` (Electron 43's WebRequestFilter) narrows the native
+  // event stream itself, on top of the `resourceType === 'mainFrame'` check
+  // below — belt-and-braces, since the JS check alone still means every
+  // subresource response on every page marshals into this process first.
+  // NOTE: Electron allows only ONE `onHeadersReceived` listener per session —
+  // registering a second one on `BROWSER_SESSION_PARTITION` anywhere else
+  // would silently REPLACE this one (last registration wins), not add to it.
+  browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['mainFrame'] }, (details, callback) => {
     if (details.resourceType === 'mainFrame') {
       const origin = originOf(details.url);
       if (details.statusCode === 429) {
@@ -871,6 +878,11 @@ async function performBrowserAutomation(action, payload = {}, opts) {
 }
 
 async function runBrowserAutomation(action, payload, signal) {
+  // Checked before EVERYTHING else — including get_tabs/get_downloads, which
+  // bypass every per-tab gate below — so a stopped run cannot still provision
+  // and open a brand-new tab (or leak any other side effect) after Stop.
+  assertNotAborted(signal);
+
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
@@ -914,7 +926,24 @@ async function runBrowserAutomation(action, payload, signal) {
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
     assertNotAborted(signal);
 
-    const remainingMs = backoffRemainingMs(originOf(view.webContents.getURL()));
+    // A `navigate` to a NEW page (the default `goto`, or an explicit one) is
+    // rate-limit-checked against the URL it is ABOUT TO LOAD, not the tab's
+    // current origin — otherwise a tab sitting on a backed-off site could
+    // never navigate away (false block), and a tab sitting on a clean site
+    // could freely navigate INTO a backed-off one (missed block: the escape
+    // hatch away from a bad origin must stay open, but a fresh navigation
+    // INTO it must not). Every other gated action (click/fill/.../reload/
+    // back/forward) acts on the page already loaded, so it keeps checking the
+    // view's current origin. An unparseable target URL yields no origin
+    // (`originOf` returns null on a parse failure), so `backoffRemainingMs`
+    // sees nothing to check and this gate falls through — the malformed URL
+    // is still caught by `allowedAutomationUrl()` inside
+    // `navigateAutomationTab()`, which is the right place to report it.
+    const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
+    const backoffOrigin = isGotoNavigate
+      ? originOf(payload.url)
+      : originOf(view.webContents.getURL());
+    const remainingMs = backoffRemainingMs(backoffOrigin);
     if (remainingMs > 0) {
       throw new Error(
         `This site is rate-limiting automated actions (HTTP 429). Backing off for ${Math.ceil(remainingMs / 1000)}s — ` +

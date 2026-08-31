@@ -762,8 +762,14 @@ test('a 429 returned after a redirect is attributed to the post-redirect origin,
     respond(fireHeadersReceived, 'https://y.example.com/start', 302); // redirect hop from Y
     respond(fireHeadersReceived, 'https://x.example.com/final', 429); // final hop from X
 
-    // The redirect landed the tab on X.
-    await navigate(host, OWNER_A, aTab, 'https://x.example.com/final');
+    // The redirect landed the tab on X — driven directly on the fake
+    // webContents, exactly like a real redirect: Chromium's OWN navigation
+    // engine follows a 3xx without ever re-entering the automation gate (only
+    // the ORIGINAL `goto` call from the agent goes through it). Routing this
+    // through another `navigate()` call would (correctly, per I-1) get
+    // blocked as a fresh navigation INTO the now-backed-off X — which is not
+    // what is being simulated here.
+    await contentsFor(aTab).loadURL('https://x.example.com/final');
 
     // A further gated action on that (now X-origin) tab is blocked.
     await assert.rejects(
@@ -795,6 +801,75 @@ test('a 429 on a subresource (non-main-frame) is not treated as the page rate-li
 
     await navigate(host, OWNER_A, aTab, 'https://example.com/still-fine');
     assert.equal(contentsFor(aTab).url, 'https://example.com/still-fine');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I-1 — the R5 gate must check the NAVIGATION TARGET's origin, not the tab's
+ * current origin, for a `navigate`/`goto` action. Checking the current origin
+ * (the pre-fix behavior) gets both directions wrong: it lets automation
+ * navigate FROM a clean tab INTO a backed-off origin (missed block), and it
+ * traps a tab that happens to be sitting ON a backed-off origin so it can
+ * never navigate away to safety (false block, and the escape hatch — leaving
+ * the bad site — is exactly what should NOT be gated).
+ */
+test('navigating INTO a backed-off origin is blocked, even from a clean tab', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://x.example.com/'),
+      /Backing off for 1s/
+    );
+    assert.equal(contentsFor(aTab).url, 'https://y.example.com/', 'the navigation to x.com never happened');
+  } finally {
+    restore();
+  }
+});
+
+test('navigating AWAY FROM a backed-off origin is the escape hatch and is never gated', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://x.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/');
+    assert.equal(contentsFor(aTab).url, 'https://y.example.com/', 'leaving the backed-off origin is allowed');
+  } finally {
+    restore();
+  }
+});
+
+test('an in-page action on a backed-off origin still uses the current-origin check', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://x.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: aTab,
+        selector: '#submit',
+      }),
+      /Backing off for 1s/
+    );
   } finally {
     restore();
   }
@@ -854,6 +929,39 @@ test('a pre-aborted signal is honored even before the rate-limit gate runs', asy
       /Browser action cancelled because the run was stopped\./
     );
     assert.equal(contentsFor(aTab).url, 'about:blank');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I-3 — `get_tabs`/`get_downloads` sit entirely outside `TAKEOVER_GATED_ACTIONS`
+ * (they are read-only, and `get_tabs` is the one action that PROVISIONS a tab
+ * for an owner that has none), so the per-gate `assertNotAborted` never ran for
+ * them. A Stop mid-flight could still land after the abort, opening a brand new
+ * tab for a run that no longer exists. `assertNotAborted` at the very top of
+ * `runBrowserAutomation` closes that gap for every action, gated or not.
+ */
+test('a pre-aborted signal stops get_tabs before it can provision or open a tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A }, { signal: controller.signal }),
+      /Browser action cancelled because the run was stopped\./
+    );
+
+    assert.equal(
+      emitted.some((entry) => entry.event === 'browser://automation-open'),
+      false,
+      'an aborted get_tabs must not open a new automation view'
+    );
+    // Confirm no view exists for OWNER_A at all (a live, un-aborted get_tabs
+    // would have provisioned exactly one).
+    const probe = await probeTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(probe), []);
   } finally {
     restore();
   }

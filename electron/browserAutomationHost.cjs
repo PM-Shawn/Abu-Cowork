@@ -116,9 +116,15 @@ async function handleRequest(req, res) {
     const { performBrowserAutomation } = require('./browserHost.cjs');
     const data = await performBrowserAutomation(action, payload, { signal: controller.signal });
     res.off('close', onClose);
-    // A request whose client already disconnected has no socket left to
-    // write a response to; writing anyway would throw from inside this
-    // handler (e.g. ERR_STREAM_WRITE_AFTER_END).
+    // On a premature disconnect `res.writableEnded` is actually still FALSE
+    // here (the response body was never written), so this guard does not
+    // block that case — it passes, and `sendJson()` runs. That write is a
+    // harmless no-op: Node's `http.ServerResponse` routes a write on an
+    // already-destroyed socket to an internal no-op callback rather than
+    // throwing, so nothing inside this handler can be surprised by it. The
+    // guard is kept for the normal-path case — symmetry with the catch
+    // branch below, and skipping a JSON.stringify + header build whose result
+    // would just be discarded.
     if (!res.writableEnded) sendJson(res, 200, { success: true, data });
   } catch (error) {
     res.off('close', onClose);

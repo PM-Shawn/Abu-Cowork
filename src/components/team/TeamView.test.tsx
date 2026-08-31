@@ -55,6 +55,8 @@ vi.mock('@/core/agent/registry', () => ({
 
 // TaskDetailDialog pulls the orchestrator (heavy loop graph) — stub it.
 vi.mock('@/core/team/orchestrator', () => ({
+  kickoffTask: vi.fn(),
+  startMemberTask: vi.fn(async () => undefined),
   startPlanning: vi.fn(async () => undefined),
   requestPlanAdjustment: vi.fn(async () => undefined),
   confirmAndExecute: vi.fn(async () => undefined),

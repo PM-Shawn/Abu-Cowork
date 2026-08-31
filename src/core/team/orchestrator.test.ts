@@ -37,7 +37,7 @@ vi.mock('@/utils/notifications', () => ({
   notifyTeamTaskBlocked: vi.fn(async () => undefined),
 }));
 
-import { startPlanning, confirmAndExecute, acceptTask } from './orchestrator';
+import { startPlanning, confirmAndExecute, acceptTask, startMemberTask } from './orchestrator';
 
 function seed() {
   registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
@@ -57,14 +57,16 @@ describe('team orchestrator', () => {
   });
 
   describe('startPlanning', () => {
-    it('registers a planning conversation and delegates to the leader with the verbatim goal', async () => {
+    it('default mode: plan is visible-not-blocking — execution auto-starts after the proposal', async () => {
       const { task } = seed();
       // The leader "calls the tool" mid-run: simulate by proposing during the loop.
-      runBehavior = async () => {
-        useTeamStore.getState().proposePlan(task.id, {
-          items: [{ id: '1', memberRoleId: 'role-w', what: '写初稿', dependsOn: [], state: 'pending' }],
-          doneWhen: ['有周报'],
-        });
+      runBehavior = async (_conv, message) => {
+        if (message.includes('Plan the split')) {
+          useTeamStore.getState().proposePlan(task.id, {
+            items: [{ id: '1', memberRoleId: 'role-w', what: '写初稿', dependsOn: [], state: 'pending' }],
+            doneWhen: ['有周报'],
+          });
+        }
         return { reason: 'completed' };
       };
       await startPlanning(task.id);
@@ -72,9 +74,29 @@ describe('team orchestrator', () => {
       expect(after.planningConversationId).toBe('conv-1');
       expect(runCalls[0].message).toContain('@leader');
       expect(runCalls[0].message).toContain('出一版 8 月周报');
-      // Proposing never starts execution.
+      // User decision 2026-08-31: no blocking plan confirmation by default —
+      // the member run fired and the task went straight to the review gate.
+      expect(after.status).toBe('pending_review');
+      expect(runCalls.some((call) => call.message.includes('@writer'))).toBe(true);
+    });
+
+    it('strict mode (requirePlanApproval): the proposal waits for the user', async () => {
+      registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
+      registryAgents['writer'] = { name: 'writer', description: 'write', roleId: 'role-w', filePath: '/a/writer/AGENT.md', systemPrompt: '' };
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'role-l', memberRoleIds: ['role-w'], requirePlanApproval: true });
+      const task = useTeamStore.getState().createTask({ teamId: team.id, goal: 'g' });
+      runBehavior = async () => {
+        useTeamStore.getState().proposePlan(task.id, {
+          items: [{ id: '1', memberRoleId: 'role-w', what: 'x', dependsOn: [], state: 'pending' }],
+          doneWhen: [],
+        });
+        return { reason: 'completed' };
+      };
+      await startPlanning(task.id);
+      const after = useTeamStore.getState().tasks[0];
       expect(after.status).toBe('awaiting_plan');
       expect(after.plan).toBeDefined();
+      expect(runCalls).toHaveLength(1); // planning run only, no member run
     });
 
     it('marks the task blocked (visibly, not silently) when the leader never proposes', async () => {
@@ -138,6 +160,27 @@ describe('team orchestrator', () => {
       useTeamStore.getState().updateTaskStatus(task.id, 'done');
       await confirmAndExecute(task.id);
       expect(runCalls).toHaveLength(0);
+    });
+  });
+
+  describe('startMemberTask', () => {
+    it('runs a single-member task with no planning step and lands in review', async () => {
+      registryAgents['writer'] = { name: 'writer', description: 'write', roleId: 'role-w', filePath: '/a/writer/AGENT.md', systemPrompt: '' };
+      const task = useTeamStore.getState().createTask({ memberRoleId: 'role-w', goal: '整理反馈' });
+      await startMemberTask(task.id);
+      const after = useTeamStore.getState().tasks[0];
+      expect(after.status).toBe('pending_review');
+      expect(after.plan?.items).toHaveLength(1);
+      // No leader/planning prompt — the one run is the member doing the goal.
+      expect(runCalls).toHaveLength(1);
+      expect(runCalls[0].message).toContain('@writer');
+      expect(runCalls[0].message).toContain('整理反馈');
+    });
+
+    it('blocks visibly when the member no longer exists', async () => {
+      const task = useTeamStore.getState().createTask({ memberRoleId: 'role-ghost', goal: 'g' });
+      await startMemberTask(task.id);
+      expect(useTeamStore.getState().tasks[0].status).toBe('blocked');
     });
   });
 

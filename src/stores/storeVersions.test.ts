@@ -20,10 +20,12 @@ const PERSISTED_STORES = [
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
+  { key: 'abu-team', minVersion: 2 },
 ] as const;
 
 // Import all stores to trigger persist initialization
 beforeAll(async () => {
+  await import('./teamStore');
   await import('./settingsStore');
   await import('./chatStore');
   await import('./scratchpadStore');

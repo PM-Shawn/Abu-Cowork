@@ -1460,6 +1460,16 @@ export interface TranslationDict {
     blockedItemsFailed: string;
     noticePendingReview: string;
     noticeBlocked: string;
+    statusPreparing: string;
+    fieldTaskAssignee: string;
+    fieldPlanApproval: string;
+    fieldPlanApprovalHint: string;
+    memberTaskStarting: string;
+    planAutoStarting: string;
+    chatReceiptTitle: string;
+    chatReceiptBody: string;
+    chatReceiptOpen: string;
+    chatReceiptEmptyGoal: string;
   };
 
   toolbox: {

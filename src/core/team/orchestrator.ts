@@ -121,6 +121,43 @@ export async function startPlanning(taskId: string): Promise<void> {
   } finally {
     inFlight.delete(taskId);
   }
+  // Default mode: the plan is visible-not-blocking — execution starts as soon
+  // as the leader has a split. The human gates are risky-op approvals, stuck
+  // states, and final review (user decision 2026-08-31; strict per-team
+  // requirePlanApproval keeps the old confirm screen).
+  const settled = useTeamStore.getState().tasks.find((item) => item.id === taskId);
+  if (settled?.status === 'awaiting_plan' && settled.plan && !team.requirePlanApproval) {
+    await confirmAndExecute(taskId);
+  }
+}
+
+/**
+ * Single-member task: no leader, no planning step — the user's goal IS the
+ * assignment. Materializes a one-item plan (so detail/review UIs are shared)
+ * and executes immediately.
+ */
+export async function startMemberTask(taskId: string): Promise<void> {
+  const store = useTeamStore.getState();
+  const task = store.tasks.find((item) => item.id === taskId);
+  if (!task?.memberRoleId || task.status !== 'awaiting_plan' || task.plan) return;
+  const member = resolveMember(task.memberRoleId);
+  if (!member) {
+    useTeamStore.getState().updateTaskStatus(taskId, 'blocked', getI18n().team.itemMemberMissing);
+    return;
+  }
+  useTeamStore.getState().proposePlan(taskId, {
+    items: [{ id: '1', memberRoleId: task.memberRoleId, what: task.goal, dependsOn: [], state: 'pending' }],
+    doneWhen: [],
+  });
+  await confirmAndExecute(taskId);
+}
+
+/** Route a freshly created task to its execution path. */
+export function kickoffTask(taskId: string): void {
+  const task = useTeamStore.getState().tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  if (task.memberRoleId) void startMemberTask(taskId);
+  else void startPlanning(taskId);
 }
 
 /** Leader planning retry with the user's adjustment note appended. */
@@ -162,8 +199,7 @@ export async function confirmAndExecute(taskId: string): Promise<void> {
   const task = store.tasks.find((item) => item.id === taskId);
   if (!task?.plan || task.status !== 'awaiting_plan') return;
   if (inFlight.has(taskId)) return;
-  const team = store.teams.find((item) => item.id === task.teamId);
-  if (!team) return;
+  if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
 
   inFlight.add(taskId);
   try {
@@ -237,9 +273,9 @@ export async function retryItem(taskId: string, itemId: string): Promise<void> {
   const store = useTeamStore.getState();
   const task = store.tasks.find((item) => item.id === taskId);
   if (!task?.plan || !task.folder || task.status !== 'blocked') return;
-  const team = store.teams.find((item) => item.id === task.teamId);
+  if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
   const target = task.plan.items.find((item) => item.id === itemId);
-  if (!team || !target || target.state !== 'failed') return;
+  if (!target || target.state !== 'failed') return;
   if (inFlight.has(taskId)) return;
   inFlight.add(taskId);
   try {
@@ -271,8 +307,7 @@ export async function rejectTask(taskId: string, feedback: string, targetItemId?
   const store = useTeamStore.getState();
   const task = store.tasks.find((item) => item.id === taskId);
   if (!task?.plan || task.status !== 'pending_review' || !task.folder) return;
-  const team = store.teams.find((item) => item.id === task.teamId);
-  if (!team) return;
+  if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
   // Re-open the targeted item (or the last one) with the user's note verbatim.
   const target = targetItemId
     ? task.plan.items.find((item) => item.id === targetItemId)

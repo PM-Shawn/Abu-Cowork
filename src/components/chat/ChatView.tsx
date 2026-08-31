@@ -30,6 +30,7 @@ import AgentStatusStrip from './AgentStatusStrip';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
+import { tryHandleTeamMention } from '@/core/team/chatEntry';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -762,6 +763,26 @@ export default function ChatView({
             : { type: 'error', title: t.chat.compactCommand.failed },
       );
       return;
+    }
+
+    // `@<team> <goal>` hands work to a team — a local action like /compact,
+    // no LLM turn. The receipt is a toast with a jump into the 任务 kanban;
+    // execution happens in background conversations owned by the task.
+    if (text.trimStart().startsWith('@')) {
+      const teamHit = tryHandleTeamMention(text);
+      if (teamHit.handled) {
+        useToastStore.getState().addToast({
+          type: 'success',
+          title: format(t.team.chatReceiptTitle, { team: teamHit.teamName, goal: teamHit.goal.split('\n')[0].slice(0, 20) }),
+          message: t.team.chatReceiptBody,
+          actions: [{ label: t.team.chatReceiptOpen, onClick: () => useSettingsStore.getState().openTeam('tasks') }],
+        });
+        return;
+      }
+      if (teamHit.reason === 'empty_goal') {
+        useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamHit.teamName ?? '' }) });
+        return false; // hand the text back to the composer
+      }
     }
 
     let convId = activeConv?.id;

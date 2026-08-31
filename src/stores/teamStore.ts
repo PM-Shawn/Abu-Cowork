@@ -25,6 +25,10 @@ export interface Team {
   /** Optional leader briefing — injected into the leader's instructions when
    *  it picks up a task for this team (copy explains this in the UI). */
   leaderNote?: string;
+  /** Opt-in strict mode: the leader's split waits for the user before running.
+   *  Default (false) = plan is visible-not-blocking and execution auto-starts —
+   *  the human gates are risky-op approvals, stuck states, and review. */
+  requirePlanApproval?: boolean;
   createdAt: number;
   archivedAt?: number;
 }
@@ -65,7 +69,10 @@ export interface TeamPlan {
 
 export interface TeamTask {
   id: string;
-  teamId: string;
+  /** Exactly one of teamId / memberRoleId is set: a task is handed to a team
+   *  (leader plans the split) or directly to one member (no planning step). */
+  teamId?: string;
+  memberRoleId?: string;
   /** The user's ask, verbatim (never paraphrased — PRD §4.3). */
   goal: string;
   /** Absolute paths of attached reference files (optional). */
@@ -87,18 +94,19 @@ interface TeamState {
   teams: Team[];
   tasks: TeamTask[];
 
-  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string }) => Team;
-  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote'>>) => void;
+  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean }) => Team;
+  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval'>>) => void;
   archiveTeam: (id: string) => void;
   restoreTeam: (id: string) => void;
 
-  createTask: (input: { teamId: string; goal: string; attachments?: string[] }) => TeamTask;
+  createTask: (input: { teamId?: string; memberRoleId?: string; goal: string; attachments?: string[] }) => TeamTask;
   updateTaskStatus: (id: string, status: TeamTaskStatus, statusNote?: string) => void;
 
   // --- planning / execution (R2) — called by the team orchestrator only ---
   setPlanningConversation: (taskId: string, conversationId: string) => void;
-  /** Leader's proposal via the team_propose_plan tool. Task stays awaiting_plan
-   *  until the USER confirms — proposing is never starting. */
+  /** Leader's proposal via the team_propose_plan tool. Proposing never starts
+   *  anything by itself: the orchestrator auto-starts right after (default) or
+   *  waits for the user (strict requirePlanApproval teams). */
   proposePlan: (taskId: string, plan: Omit<TeamPlan, 'proposedAt' | 'confirmedAt'>) => void;
   confirmPlan: (taskId: string, folder: string) => void;
   setItemState: (taskId: string, itemId: string, state: TeamPlanItemState, patch?: { conversationId?: string; error?: string }) => void;
@@ -128,6 +136,7 @@ export const useTeamStore = create<TeamState>()(
           leaderRoleId: input.leaderRoleId,
           memberRoleIds,
           leaderNote: input.leaderNote?.trim() || undefined,
+          requirePlanApproval: input.requirePlanApproval || undefined,
           createdAt: Date.now(),
         };
         set((s) => ({ teams: [...s.teams, team] }));
@@ -158,12 +167,16 @@ export const useTeamStore = create<TeamState>()(
       createTask: (input) => {
         const goal = input.goal.trim();
         if (!goal) throw new Error('task goal required');
-        const team = get().teams.find((t) => t.id === input.teamId && !t.archivedAt);
-        if (!team) throw new Error('team not found');
+        if (!!input.teamId === !!input.memberRoleId) throw new Error('assign to exactly one team or member');
+        if (input.teamId) {
+          const team = get().teams.find((t) => t.id === input.teamId && !t.archivedAt);
+          if (!team) throw new Error('team not found');
+        }
         const now = Date.now();
         const task: TeamTask = {
           id: genId('ttask'),
           teamId: input.teamId,
+          memberRoleId: input.memberRoleId,
           goal,
           attachments: input.attachments ?? [],
           status: 'awaiting_plan',
@@ -238,13 +251,28 @@ export const useTeamStore = create<TeamState>()(
     }),
     {
       name: 'abu-team',
-      version: 1,
+      version: 2,
+      // v1 → v2: Task gained optional memberRoleId (single-agent assignee) and
+      // Team gained optional requirePlanApproval. Both additive — v1 data is
+      // valid v2 data unchanged.
+      migrate: (persisted: unknown) => persisted as { teams: Team[]; tasks: TeamTask[] },
       partialize: (s) => ({ teams: s.teams, tasks: s.tasks }),
     },
   ),
 );
 
-/** Items that need the user's attention — drives the 收件箱 tab + sidebar badge. */
-export function selectPendingTasks(tasks: TeamTask[]): TeamTask[] {
-  return tasks.filter((t) => t.status === 'awaiting_plan' || t.status === 'pending_review' || t.status === 'blocked');
+/**
+ * Items that need the user's attention — drives the 收件箱 tab.
+ * awaiting_plan only counts when the team runs in strict mode AND a proposal
+ * is actually waiting; by default planning is visible-not-blocking.
+ */
+export function selectPendingTasks(tasks: TeamTask[], teams: Team[]): TeamTask[] {
+  return tasks.filter((t) => {
+    if (t.status === 'pending_review' || t.status === 'blocked') return true;
+    if (t.status === 'awaiting_plan' && t.plan) {
+      const team = teams.find((tm) => tm.id === t.teamId);
+      return team?.requirePlanApproval === true;
+    }
+    return false;
+  });
 }

@@ -15,8 +15,9 @@ import DialogShell from './DialogShell';
  * Team task detail: the 拆解确认屏 (the soul of the feature — PRD §4.4), live
  * execution view, and the review gate. One dialog serves 收件箱 + 任务 rows.
  *
- * Discipline mirrored from the PRD:
- * - Confirming is the ONLY way work starts; closing the dialog starts nothing.
+ * Discipline mirrored from the PRD (updated 2026-08-31):
+ * - Default: the plan is visible-not-blocking — execution auto-starts; the
+ *   confirm buttons appear only for strict (requirePlanApproval) teams.
  * - 完成 is user-only (收下); rejection carries the user's words verbatim.
  * - Copy always names the member ("它"), never "我".
  */
@@ -121,7 +122,19 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
           return (
             <div className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {format(t.team.planWaiting, { leader: team ? memberName(team.leaderRoleId) : t.team.unknownMember })}
+              {task.memberRoleId
+                ? t.team.memberTaskStarting
+                : format(t.team.planWaiting, { leader: team ? memberName(team.leaderRoleId) : t.team.unknownMember })}
+            </div>
+          );
+        }
+        // Default mode: the plan is visible-not-blocking — execution starts on
+        // its own moments after the proposal lands; no buttons to click.
+        if (!team?.requirePlanApproval) {
+          return (
+            <div className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t.team.planAutoStarting}
             </div>
           );
         }

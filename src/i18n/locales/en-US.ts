@@ -1282,6 +1282,16 @@ const enUS: TranslationDict = {
     blockedItemsFailed: '{count} sub-task(s) failed — retry from the detail view',
     noticePendingReview: '{team} finished "{goal}" — waiting for your review',
     noticeBlocked: "{team}'s task is stuck: {reason}",
+    statusPreparing: 'Preparing',
+    fieldTaskAssignee: 'Hand it to',
+    fieldPlanApproval: 'Ask me before the split runs',
+    fieldPlanApprovalHint: 'When on, the leader pauses for your go-ahead after planning. Off (default): work starts right away — you can watch or stop anytime.',
+    memberTaskStarting: 'Starting…',
+    planAutoStarting: 'Split settled — starting shortly…',
+    chatReceiptTitle: 'Handed to {team} · "{goal}"',
+    chatReceiptBody: 'Starts after planning; it will come back to you when done.',
+    chatReceiptOpen: 'View task',
+    chatReceiptEmptyGoal: 'What should {team} do? Put the ask after the @.',
   },
 
   toolbox: {

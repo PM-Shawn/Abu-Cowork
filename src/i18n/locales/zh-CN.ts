@@ -1283,6 +1283,16 @@ const zhCN: TranslationDict = {
     blockedItemsFailed: '{count} 个子任务失败，可在详情里重试',
     noticePendingReview: '{team} 做完了「{goal}」，等你确认',
     noticeBlocked: '{team} 的任务卡住了：{reason}',
+    statusPreparing: '准备中',
+    fieldTaskAssignee: '交给谁',
+    fieldPlanApproval: '分工先经我确认',
+    fieldPlanApprovalHint: '开启后，队长拆完分工会先停下等你点头再开工。默认拆完直接干，你随时可看可停。',
+    memberTaskStarting: '正在开始…',
+    planAutoStarting: '分工已定，即将开始执行…',
+    chatReceiptTitle: '交给{team}了 ·「{goal}」',
+    chatReceiptBody: '拆解后自动开工，做完会来找你。',
+    chatReceiptOpen: '查看任务',
+    chatReceiptEmptyGoal: '要交给{team}做什么？把要求写在 @ 后面。',
   },
 
   toolbox: {

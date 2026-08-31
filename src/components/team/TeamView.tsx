@@ -17,6 +17,7 @@ import AgentsSection from '@/components/customize/AgentsSection';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Toggle } from '@/components/ui/toggle';
 import type { SubagentDefinition } from '@/types';
 
 /**
@@ -82,6 +83,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [leaderName, setLeaderName] = useState<string>('');
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [leaderNote, setLeaderNote] = useState('');
+  const [requireApproval, setRequireApproval] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -91,8 +93,9 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       setLeaderName(roleLabel(agents, team.leaderRoleId, ''));
       setMemberNames(team.memberRoleIds.map((id) => roleLabel(agents, id, '')).filter(Boolean));
       setLeaderNote(team.leaderNote ?? '');
+      setRequireApproval(team.requirePlanApproval === true);
     } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setLeaderNote('');
+      setName(''); setLeaderName(''); setMemberNames([]); setLeaderNote(''); setRequireApproval(false);
     }
   }, [open, team, agents]);
 
@@ -115,10 +118,10 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         memberRoleIds.push(await resolve(n));
       }
       if (team) {
-        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined });
+        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval });
         addToast({ type: 'success', title: t.team.teamSaved });
       } else {
-        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined });
+        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval });
         addToast({ type: 'success', title: t.team.teamCreated });
       }
       onClose();
@@ -186,6 +189,14 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
           )}
         </div>
 
+        <div className="flex items-center justify-between rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
+          <div className="min-w-0 pr-3">
+            <div className="text-body text-[var(--abu-text-primary)]">{t.team.fieldPlanApproval}</div>
+            <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.fieldPlanApprovalHint}</div>
+          </div>
+          <Toggle checked={requireApproval} onChange={() => setRequireApproval((v) => !v)} size="md" />
+        </div>
+
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldLeaderNote}</label>
           {/* Tell the user exactly how this text is used — mechanism, not mystery. */}
@@ -206,31 +217,46 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
 
 // ---------------------------------------------------------------- Task dialog
 
-function TaskCreateDialog({ open, onClose, teams }: { open: boolean; onClose: () => void; teams: Team[] }) {
+function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onClose: () => void; teams: Team[]; agents: SubagentDefinition[] }) {
   const { t } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
   const createTask = useTeamStore((s) => s.createTask);
-  const [teamId, setTeamId] = useState('');
+  const refresh = useDiscoveryStore((s) => s.refresh);
+  // Assignee: a team OR a single member (user decision 2026-08-31). Exactly one.
+  const [assignee, setAssignee] = useState<{ kind: 'team'; id: string } | { kind: 'member'; name: string } | null>(null);
   const [goal, setGoal] = useState('');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     if (open) {
       setGoal('');
-      setTeamId(teams.length === 1 ? teams[0].id : '');
+      setAssignee(teams.length === 1 && agents.length === 0 ? { kind: 'team', id: teams[0].id } : null);
     }
-  }, [open, teams]);
+  }, [open, teams, agents]);
 
-  const handleCreate = () => {
-    if (!teamId || !goal.trim()) return;
+  const handleCreate = async () => {
+    if (!assignee || !goal.trim() || creating) return;
+    setCreating(true);
     try {
-      const task = createTask({ teamId, goal });
+      let task;
+      if (assignee.kind === 'team') {
+        task = createTask({ teamId: assignee.id, goal });
+      } else {
+        const agent = agentRegistry.getAgent(assignee.name);
+        if (!agent) throw new Error(`agent not found: ${assignee.name}`);
+        const { roleId, wrote } = await ensureRoleId(agent);
+        if (wrote) await refresh();
+        task = createTask({ memberRoleId: roleId, goal });
+      }
       addToast({ type: 'success', title: t.team.taskCreated });
       onClose();
-      // Fire leader planning immediately — the user confirms the split before
-      // anything executes (指派 ≠ 启动), so auto-planning is safe and expected.
-      void import('@/core/team/orchestrator').then((mod) => mod.startPlanning(task.id));
+      // Planning (team) or direct execution (member) starts right away; the
+      // plan is visible-not-blocking unless the team opted into strict mode.
+      void import('@/core/team/orchestrator').then((mod) => mod.kickoffTask(task.id));
     } catch (err) {
       addToast({ type: 'error', title: t.team.taskCreateFailed, message: String(err) });
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -238,16 +264,26 @@ function TaskCreateDialog({ open, onClose, teams }: { open: boolean; onClose: ()
     <DialogShell open={open} onClose={onClose} title={t.team.newTask}>
       <div className="space-y-4">
         <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskTeam}</label>
+          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskAssignee}</label>
           <div className="mt-1 flex flex-wrap gap-2">
             {teams.map((team) => (
               <button
                 key={team.id}
-                onClick={() => setTeamId(team.id)}
-                className={`px-3 py-1.5 rounded-lg text-body border ${teamId === team.id ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'}`}
+                onClick={() => setAssignee({ kind: 'team', id: team.id })}
+                className={`px-3 py-1.5 rounded-lg text-body border ${assignee?.kind === 'team' && assignee.id === team.id ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'}`}
                 data-testid={`task-team-${team.name}`}
               >
-                {team.name}
+                <UsersRound className="h-3.5 w-3.5 inline mr-1" />{team.name}
+              </button>
+            ))}
+            {agents.map((agent) => (
+              <button
+                key={agent.filePath}
+                onClick={() => setAssignee({ kind: 'member', name: agent.name })}
+                className={`px-3 py-1.5 rounded-lg text-body border ${assignee?.kind === 'member' && assignee.name === agent.name ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'}`}
+                data-testid={`task-member-${agent.name}`}
+              >
+                {agent.avatar ? `${agent.avatar} ` : ''}{agent.name}
               </button>
             ))}
           </div>
@@ -260,7 +296,7 @@ function TaskCreateDialog({ open, onClose, teams }: { open: boolean; onClose: ()
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-          <Button onClick={handleCreate} disabled={!teamId || !goal.trim()} data-testid="task-create">{t.team.createTaskAction}</Button>
+          <Button onClick={() => { void handleCreate(); }} disabled={!assignee || !goal.trim() || creating} data-testid="task-create">{t.team.createTaskAction}</Button>
         </div>
       </div>
     </DialogShell>
@@ -271,12 +307,32 @@ function TaskCreateDialog({ open, onClose, teams }: { open: boolean; onClose: ()
 
 function statusMeta(t: ReturnType<typeof useI18n>['t'], status: TeamTask['status']): { label: string; cls: string } {
   switch (status) {
-    case 'awaiting_plan': return { label: t.team.statusAwaitingPlan, cls: 'text-[var(--abu-warning)] bg-[var(--abu-warning-bg)]' };
+    case 'awaiting_plan': return { label: t.team.statusPreparing, cls: 'text-[var(--abu-warning)] bg-[var(--abu-warning-bg)]' };
     case 'running': return { label: t.team.statusRunning, cls: 'text-[var(--abu-info)] bg-[var(--abu-info-bg)]' };
     case 'pending_review': return { label: t.team.statusPendingReview, cls: 'text-[var(--abu-clay)] bg-[var(--abu-bg-hover)]' };
     case 'blocked': return { label: t.team.statusBlocked, cls: 'text-[var(--abu-danger)] bg-[var(--abu-danger-bg)]' };
     case 'done': return { label: t.team.statusDone, cls: 'text-[var(--abu-text-tertiary)] bg-[var(--abu-bg-muted)]' };
   }
+}
+
+function KanbanCard({ task, team, agents, t, onOpen }: {
+  task: TeamTask; team: Team | undefined; agents: SubagentDefinition[]; t: ReturnType<typeof useI18n>['t']; onOpen: (id: string) => void;
+}) {
+  const assignee = team?.name
+    ?? (task.memberRoleId ? roleLabel(agents, task.memberRoleId, t.team.unknownMember) : t.team.unknownTeam);
+  return (
+    <div
+      className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
+      onClick={() => onOpen(task.id)}
+      data-testid={`task-card-${task.id}`}
+    >
+      <div className="text-body text-[var(--abu-text-primary)] line-clamp-2">{task.goal.split('\n')[0]}</div>
+      <div className="text-caption text-[var(--abu-text-tertiary)] mt-1 truncate">{assignee}</div>
+      {task.status === 'blocked' && (
+        <div className="text-caption text-[var(--abu-danger)] mt-0.5 truncate">{task.statusNote ?? t.team.statusBlocked}</div>
+      )}
+    </div>
+  );
 }
 
 function TaskRow({ task, team, t, onOpen }: { task: TeamTask; team: Team | undefined; t: ReturnType<typeof useI18n>['t']; onOpen: (id: string) => void }) {
@@ -319,7 +375,7 @@ export default function TeamView() {
 
   const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
   const agents = useMemberAgents();
-  const pending = useMemo(() => selectPendingTasks(tasks), [tasks]);
+  const pending = useMemo(() => selectPendingTasks(tasks, teams), [tasks, teams]);
 
   const navItems = [
     { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox },
@@ -382,18 +438,39 @@ export default function TeamView() {
               icon={ListTodo}
               title={t.team.tasksEmpty}
               hint={t.team.tasksEmptyHint}
-              action={activeTeams.length > 0
+              action={(activeTeams.length > 0 || agents.length > 0)
                 ? <Button size="sm" onClick={() => setTaskDialogOpen(true)}>{t.team.newTask}</Button>
-                // No dead ends: creating a task needs a team first, offer that instead.
+                // No dead ends: creating a task needs an assignee first, offer that instead.
                 : <Button size="sm" variant="outline" onClick={() => setActiveTeamTab('teams')}>{t.team.goCreateTeam}</Button>}
             />
           );
         }
+        // Kanban: the tab is for WATCHING flow (user decision 2026-08-31) —
+        // initiation lives in the chat composer; the top-right + stays as a
+        // secondary shortcut. Blocked tasks sit in the running column with
+        // their red note so the board stays four columns.
+        const columns: Array<{ key: string; title: string; items: typeof list }> = [
+          { key: 'preparing', title: t.team.statusPreparing, items: list.filter((task) => task.status === 'awaiting_plan') },
+          { key: 'running', title: t.team.statusRunning, items: list.filter((task) => task.status === 'running' || task.status === 'blocked') },
+          { key: 'review', title: t.team.statusPendingReview, items: list.filter((task) => task.status === 'pending_review') },
+          { key: 'done', title: t.team.statusDone, items: list.filter((task) => task.status === 'done') },
+        ];
         return (
-          <div className="p-4 space-y-2 overflow-y-auto h-full">
-            {list.map((task) => (
-              <TaskRow key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} t={t} onOpen={setDetailTaskId} />
-            ))}
+          <div className="p-4 h-full overflow-x-auto">
+            <div className="flex gap-3 h-full min-w-[640px]">
+              {columns.map((col) => (
+                <div key={col.key} className="flex-1 min-w-0 flex flex-col" data-testid={`kanban-${col.key}`}>
+                  <div className="text-caption font-medium text-[var(--abu-text-secondary)] px-1 pb-2 shrink-0">
+                    {col.title} <span className="text-[var(--abu-text-tertiary)]">{col.items.length}</span>
+                  </div>
+                  <div className="space-y-2 overflow-y-auto flex-1">
+                    {col.items.map((task) => (
+                      <KanbanCard key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} agents={agents} t={t} onOpen={setDetailTaskId} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         );
       }
@@ -448,7 +525,7 @@ export default function TeamView() {
         onClose={() => setTeamDialog({ open: false, team: null })}
         onSwitchToMembers={() => { setActiveTeamTab('members'); setManualCreateTrigger((c) => c + 1); }}
       />
-      <TaskCreateDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} teams={activeTeams} />
+      <TaskCreateDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} teams={activeTeams} agents={agents} />
       <TaskDetailDialog taskId={detailTaskId} onClose={() => setDetailTaskId(null)} />
     </div>
   );

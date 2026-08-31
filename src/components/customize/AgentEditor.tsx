@@ -71,6 +71,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     const tags = tagsStr.split(',').map((s) => s.trim()).filter(Boolean);
     return {
       name: name.trim(),
+      // Write-once creation stamp: preserved on edit, set for new agents so
+      // the 队员 list can order newest-first.
+      createdAt: agent?.createdAt ?? Date.now(),
       description: description.trim(),
       avatar: avatar.trim() || undefined,
       model: model.trim() || 'inherit',

@@ -118,7 +118,11 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
 
   // Split into user-defined vs builtin/system agents. Builtins go under the
   // "Examples" section, user agents under "My agents".
-  const userAgents = filteredAgents.filter((a) => !isSystemAgent(a));
+  const userAgents = filteredAgents
+    .filter((a) => !isSystemAgent(a))
+    // Newest first (user feedback 2026-08-31); agents predating the created
+    // stamp sort after dated ones, alphabetically.
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.name.localeCompare(b.name));
   const systemAgents = filteredAgents.filter(isSystemAgent);
 
   const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;

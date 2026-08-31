@@ -19,6 +19,18 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   TOOL_NAMES.ASK_USER_QUESTION,
 ]);
 
+/**
+ * Protocol tools every subagent must see regardless of the agent's declared
+ * `tools:` allowlist. Marketplace/builtin agents ship frozen tool lists that
+ * predate newer protocol tools — team_propose_plan is how a team leader
+ * reports its split during a planning run, and it is context-gated (only a
+ * registered planning conversation accepts it), so exposure elsewhere is
+ * inert. An explicit agent `disallowed-tools` entry still removes it.
+ */
+const ALWAYS_AVAILABLE_SUBAGENT_TOOLS = new Set<string>([
+  'team_propose_plan',
+]);
+
 function parsePatterns(value: unknown): { patterns: string[]; valid: boolean } {
   if (value === undefined) return { patterns: [], valid: true };
   if (
@@ -47,9 +59,10 @@ export function resolveSubagentToolNames(
 
   return {
     toolNames: allToolNames.filter((toolName) =>
-      (declared.patterns.length === 0 || declared.patterns.some((pattern) => matchesToolName(toolName, pattern)))
+      ((declared.patterns.length === 0 || declared.patterns.some((pattern) => matchesToolName(toolName, pattern)))
+        || ALWAYS_AVAILABLE_SUBAGENT_TOOLS.has(toolName))
       && !disallowed.patterns.some((pattern) => matchesToolName(toolName, pattern))
-      && (!allowedTools?.length || allowedTools.some((pattern) => matchesToolName(toolName, pattern)))
+      && (!allowedTools?.length || allowedTools.some((pattern) => matchesToolName(toolName, pattern)) || ALWAYS_AVAILABLE_SUBAGENT_TOOLS.has(toolName))
       && !blockedTools?.some((pattern) => matchesToolName(toolName, pattern))
       && !ALWAYS_BLOCKED_SUBAGENT_TOOLS.has(toolName),
     ),

@@ -22,6 +22,7 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
     return {
       name: meta.name as string,
       roleId: meta['role-id'] as string | undefined,
+      createdAt: meta['created'] as number | undefined,
       description: (meta.description as string) ?? '',
       avatar: meta.avatar as string | undefined,
       model: meta.model as string | undefined,
@@ -532,6 +533,7 @@ export function serializeAgentMd(metadata: Partial<SubagentMetadata>, systemProm
 
   set('name', metadata.name);
   set('role-id', metadata.roleId);
+  set('created', metadata.createdAt);
   set('description', metadata.description);
   set('avatar', metadata.avatar);
   set('model', metadata.model);

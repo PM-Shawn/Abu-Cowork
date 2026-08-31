@@ -812,6 +812,9 @@ export interface SubagentMetadata {
   /** Stable role identity for team membership (write-once, survives rename).
    *  Written into AGENT.md frontmatter the first time an agent joins a team. */
   roleId?: string;
+  /** Creation timestamp (ms), written once on first save — drives newest-first
+   *  ordering in the 队员 list. Absent on older agents (they sort last). */
+  createdAt?: number;
   /** Default-locale description shown in toolbox / agent selector. */
   description: string;
   avatar?: string;

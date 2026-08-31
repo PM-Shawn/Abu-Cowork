@@ -546,17 +546,41 @@ export default function TeamView() {
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} />;
       case 'teams': {
+        const archivedTeams = teams.filter((tm) => tm.archivedAt);
         if (activeTeams.length === 0) {
           return (
-            <EmptyState
-              icon={UsersRound}
-              title={t.team.teamsEmpty}
-              hint={t.team.teamsEmptyHint}
-              action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
-            />
+            <div className="h-full flex flex-col">
+              <div className="flex-1 min-h-0">
+                <EmptyState
+                  icon={UsersRound}
+                  title={t.team.teamsEmpty}
+                  hint={t.team.teamsEmptyHint}
+                  action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
+                />
+              </div>
+              {/* Archived teams must stay reachable even with zero active ones
+                  (real-machine bug 2026-08-31: the section vanished). */}
+              {archivedTeams.length > 0 && (
+                <div className="p-4 pt-0">
+                  <details open>
+                    <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
+                      {format(t.team.archivedSection, { count: String(archivedTeams.length) })}
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      {archivedTeams.map((team) => (
+                        <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
+                          <UsersRound className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.75} />
+                          <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
+                          <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              )}
+            </div>
           );
         }
-        const archivedTeams = teams.filter((tm) => tm.archivedAt);
         return (
           <div className="p-4 space-y-2 overflow-y-auto h-full">
             {activeTeams.map((team) => (

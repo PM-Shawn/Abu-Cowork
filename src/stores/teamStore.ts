@@ -140,7 +140,8 @@ export const useTeamStore = create<TeamState>()(
           requirePlanApproval: input.requirePlanApproval || undefined,
           createdAt: Date.now(),
         };
-        set((s) => ({ teams: [...s.teams, team] }));
+        // Newest first — freshly created things surface at the top (user feedback).
+        set((s) => ({ teams: [team, ...s.teams] }));
         return team;
       },
 

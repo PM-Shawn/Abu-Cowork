@@ -1003,7 +1003,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   useLayoutEffect(() => {
     if (!showSuggestions) return;
     suggestionOptionRefs.current.get(selectedIndex)?.scrollIntoView({ block: 'nearest' });
-  }, [selectedIndex, showSuggestions]);
+    // suggestionKey: when the query changes the LIST changes while selectedIndex
+    // often stays 0 — without this dep the popup keeps its old scrollTop and the
+    // top rows (teams) sit out of view (real-machine bug 2026-08-31).
+  }, [selectedIndex, showSuggestions, suggestionKey]);
 
   // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
   useEffect(() => {

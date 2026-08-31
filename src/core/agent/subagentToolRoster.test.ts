@@ -34,3 +34,26 @@ describe('resolveSubagentToolNames', () => {
     });
   });
 });
+
+describe('protocol tools', () => {
+  it('team_propose_plan is available even when the agent declares an explicit tools allowlist', () => {
+    // Marketplace/builtin agents ship frozen tool lists that predate the team
+    // protocol tool — the leader must still be able to report its split
+    // (real-machine bug 2026-08-31: planning silently produced no plan).
+    const names = resolveSubagentToolNames(
+      ['web_search', 'read_file', 'team_propose_plan'],
+      { tools: ['web_search'] },
+    ).toolNames;
+    expect(names).toContain('team_propose_plan');
+    expect(names).toContain('web_search');
+    expect(names).not.toContain('read_file');
+  });
+
+  it('an explicit disallowed-tools entry still removes the protocol tool', () => {
+    const names = resolveSubagentToolNames(
+      ['team_propose_plan', 'read_file'],
+      { disallowedTools: ['team_propose_plan'] },
+    ).toolNames;
+    expect(names).not.toContain('team_propose_plan');
+  });
+});

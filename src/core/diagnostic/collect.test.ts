@@ -622,3 +622,80 @@ describe('collectBundleFiles — browser observability (batch 1, T3: raw signal 
     expect(exported).toContain('[REDACTED]');
   });
 });
+
+describe('collectBundleFiles — browser observability (batch 1, T4: task summary)', () => {
+  beforeEach(() => {
+    clearBrowserSignals();
+  });
+
+  afterEach(() => {
+    clearBrowserSignals();
+  });
+
+  it('embeds a zeroed/null summary when no browser signals were recorded', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const summary = JSON.parse(String(files['browser/summary.json']));
+    expect(summary).toMatchObject({
+      taskCount: 0,
+      successRateApprox: null,
+      fallbackCount: 0,
+      confirmPromptCount: 0,
+      repeatActionTop3: [],
+      blockedPageCount: 0,
+      avgTabAliveMs: null,
+      bySiteAndPlatform: [],
+    });
+  });
+
+  it('aggregates recorded signals into the diagnostic bundle summary section', async () => {
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'fallback_to_script' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: 'https://example.com' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'blocked_page', className: 'challenge' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'repeat_action', tool: 'click', targetKey: 'ref:e1', count: 4 },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'tab_lifetime', event: 'closed', aliveMs: 2000 },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 12, origin: 'https://example.com' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const summary = JSON.parse(String(files['browser/summary.json']));
+
+    expect(summary.fallbackCount).toBe(1);
+    expect(summary.confirmPromptCount).toBe(1);
+    expect(summary.blockedPageCount).toBe(1);
+    expect(summary.repeatActionTop3).toEqual([{ tool: 'click', targetKey: 'ref:e1', count: 4 }]);
+    expect(summary.avgTabAliveMs).toBe(2000);
+    expect(summary.bySiteAndPlatform).toEqual([
+      { origin: 'https://example.com', platform: 'macos', toolCallCount: 1, okRate: 1 },
+    ]);
+  });
+
+  it('redacts secrets from the summary before adding it to the bundle', async () => {
+    const secret = `sk-${'a'.repeat(32)}`;
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin: secret },
+      browserSignalCtx(),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const exported = String(files['browser/summary.json']);
+    expect(exported).not.toContain(secret);
+    expect(exported).toContain('[REDACTED]');
+  });
+});

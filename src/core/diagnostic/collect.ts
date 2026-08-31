@@ -21,7 +21,7 @@ import { useScheduleStore } from '@/stores/scheduleStore';
 import { skillLoader } from '@/core/skill/loader';
 import { getRecentLogs, getLogDirPath } from '@/core/logging/logger';
 import { getRendererRuntimeTraceSnapshot } from '@/core/observability/runtimeTrace';
-import { getRecentBrowserSignals } from '@/core/observability/browserSignals';
+import { getRecentBrowserSignals, summarizeBrowserSignals } from '@/core/observability/browserSignals';
 import { catalogGetCount } from '@/core/session/conversationStorage';
 import { getElectronRuntimeDiagnostics } from '@/utils/electronHost';
 import { APP_VERSION } from '@/utils/version';
@@ -601,20 +601,32 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
     files['logs/runtime.jsonl'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
   }
 
-  // ── browser/signals.jsonl ────────────────────────────────────────────
-  // Raw dump of the browser-automation observability rolling buffer (batch 1,
-  // core/observability/browserSignals.ts) — tool_call/confirm_prompt/
-  // blocked_page/repeat_action/fallback_to_script/tab_lifetime/task_end
-  // events. In-memory only (never written to disk outside this export),
-  // capped at the module's rolling limit — see that module's doc for why
-  // this mirrors `logs/runtime.jsonl`'s existing ring-buffer-to-bundle
-  // pattern instead of adding a new continuous disk writer.
+  // ── browser/signals.jsonl + browser/summary.json ────────────────────
+  // Raw dump + aggregated "browser task summary" from the browser-automation
+  // observability rolling buffer (batch 1, core/observability/
+  // browserSignals.ts) — tool_call/confirm_prompt/blocked_page/repeat_action/
+  // fallback_to_script/tab_lifetime/task_end events. In-memory only (never
+  // written to disk outside this export), capped at the module's rolling
+  // limit — see that module's doc for why this mirrors `logs/runtime.jsonl`'s
+  // existing ring-buffer-to-bundle pattern instead of adding a new
+  // continuous disk writer. The summary turns "the user got annoyed and
+  // reported a bug" into "the bundle already says which site/tool degraded"
+  // (F1.2/F1.3 — approximate success rate, confirm-prompt count, degraded/
+  // repeat/blocked counts, per-site×platform breakdown).
   try {
-    files['browser/signals.jsonl'] = getRecentBrowserSignals()
+    const browserSignals = getRecentBrowserSignals();
+    files['browser/signals.jsonl'] = browserSignals
       .map((s) => JSON.stringify(scrubSecrets(s)))
       .join('\n');
+    files['browser/summary.json'] = JSON.stringify(
+      scrubSecrets(summarizeBrowserSignals(browserSignals)),
+      null,
+      2,
+    );
   } catch (e) {
-    files['browser/signals.jsonl'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    const errorPayload = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
+    files['browser/signals.jsonl'] = errorPayload;
+    files['browser/summary.json'] = errorPayload;
   }
 
   // ── logs/YYYY-MM-DD.log ──────────────────────────────────────────────

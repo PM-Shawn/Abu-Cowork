@@ -14,6 +14,12 @@ import type { Conversation, Message } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import { clearLogs, createLogger } from '@/core/logging/logger';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
+import {
+  buildBrowserSignalRecord,
+  clearBrowserSignals,
+  recordBrowserSignal,
+  type BrowserSignalContext,
+} from '@/core/observability/browserSignals';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -539,5 +545,80 @@ describe('collectBundleFiles — F1/F2/F3 review-flagged regressions', () => {
       expect(r.total).toBe(10);
       expect(r.capped).toBe(false);
     });
+  });
+});
+
+const browserSignalCtx = (overrides: Partial<BrowserSignalContext> = {}): BrowserSignalContext => ({
+  platform: 'macos',
+  appVersion: '0.42.0',
+  channel: 'builtin',
+  ts: FIXED_TIMESTAMP,
+  ...overrides,
+});
+
+describe('collectBundleFiles — browser observability (batch 1, T3: raw signal export)', () => {
+  beforeEach(() => {
+    clearBrowserSignals();
+  });
+
+  afterEach(() => {
+    clearBrowserSignals();
+  });
+
+  it('embeds the rolling browser signal buffer as JSONL', async () => {
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: 'https://example.com' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'blocked_page', className: 'http_429' },
+      browserSignalCtx({ conversationId: 'conv-1' }),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+
+    expect(files['browser/signals.jsonl']).toBeDefined();
+    const lines = String(files['browser/signals.jsonl']).split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0])).toMatchObject({ kind: 'confirm_prompt', origin: 'https://example.com' });
+    expect(JSON.parse(lines[1])).toMatchObject({ kind: 'blocked_page', className: 'http_429' });
+  });
+
+  it('produces an empty (but present) export when no browser signals were recorded', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    expect(files['browser/signals.jsonl']).toBe('');
+  });
+
+  it('never embeds more lines than the rolling cap, even if the buffer briefly grows unbounded', async () => {
+    // Regression guard for the rolling-cap requirement — record well past the
+    // documented 5000-entry cap (core/observability/browserSignals.ts) and
+    // confirm the exported bundle line count is still bounded, not just the
+    // in-memory reader (already covered by browserSignals.test.ts).
+    const CAP = 5000;
+    for (let i = 0; i < CAP + 25; i++) {
+      recordBrowserSignal(buildBrowserSignalRecord(
+        { kind: 'confirm_prompt' },
+        browserSignalCtx({ ts: i }),
+      ));
+    }
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const lines = String(files['browser/signals.jsonl']).split('\n');
+    expect(lines).toHaveLength(CAP);
+    // Oldest 25 were evicted — the exported buffer starts at ts=25.
+    expect(JSON.parse(lines[0]).ts).toBe(25);
+  });
+
+  it('redacts secrets embedded in a signal field before adding it to the bundle', async () => {
+    const secret = `sk-${'a'.repeat(32)}`;
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: secret },
+      browserSignalCtx(),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const exported = String(files['browser/signals.jsonl']);
+    expect(exported).not.toContain(secret);
+    expect(exported).toContain('[REDACTED]');
   });
 });

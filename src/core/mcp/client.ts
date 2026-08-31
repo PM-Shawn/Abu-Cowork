@@ -802,7 +802,7 @@ export class MCPClientManager {
             _meta?: Record<string, unknown>;
           },
           resultSchema?: undefined,
-          options?: { signal?: AbortSignal }
+          options?: { signal?: AbortSignal; timeout?: number }
         ) => Promise<{
           content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
@@ -829,8 +829,18 @@ export class MCPClientManager {
       if (Object.keys(meta).length > 0) {
         params._meta = meta;
       }
+      // Always pass `timeout` (not only when a signal is given): the SDK's
+      // own request/response cycle has an internal default request timeout
+      // (60s) that fires independently of the manual `Promise.race` above.
+      // For browser servers, serverTimeout is 120s — without this, the SDK's
+      // 60s default would reject `wait_for`-style long calls before our own
+      // race ever gets a chance to.
       const result = await Promise.race([
-        client.callTool(params, undefined, opts?.signal ? { signal: opts.signal } : undefined),
+        client.callTool(
+          params,
+          undefined,
+          opts?.signal ? { signal: opts.signal, timeout: serverTimeout } : { timeout: serverTimeout }
+        ),
         timeout,
       ]);
       clearTimeout(timerId!);

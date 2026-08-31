@@ -89,11 +89,15 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     expect(mockCallTool).toHaveBeenCalledWith(
       { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
       undefined,
-      { signal: controller.signal }
+      { signal: controller.signal, timeout: 30000 }
     );
   });
 
-  it('does not pass an options object when the context has no abort signal', async () => {
+  // Task B2 (controller addendum): `timeout: serverTimeout` is always passed
+  // to the SDK now (not only alongside a signal) — see client.test.ts's
+  // "always passes options.timeout" for why: the SDK's own internal request
+  // timeout otherwise fires ahead of callTool's manual race.
+  it('still passes options.timeout when the context has no abort signal', async () => {
     await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
       conversationId: 'c1',
     });
@@ -101,7 +105,7 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     expect(mockCallTool).toHaveBeenCalledWith(
       { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
       undefined,
-      undefined
+      { timeout: 30000 }
     );
   });
 });

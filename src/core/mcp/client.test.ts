@@ -142,17 +142,35 @@ describe('abort signal propagation into MCP callTool', () => {
     expect(mockCallTool).toHaveBeenCalledWith(
       { name: 'some_tool', arguments: { a: 1 } },
       undefined,
-      { signal: controller.signal }
+      { signal: controller.signal, timeout: 30000 }
     );
   });
 
-  it('does not pass an options object when no signal is given (behavior unchanged)', async () => {
+  // Task B2 (controller addendum): the SDK's own request/response cycle has
+  // an internal default request timeout (60s, DEFAULT_REQUEST_TIMEOUT_MSEC)
+  // that used to fire independently of the manual Promise.race above it —
+  // for a browser server, whose manual race allows 120s, that meant the
+  // SDK's internal 60s timeout could reject a long `wait_for` first. Passing
+  // `timeout: serverTimeout` aligns the SDK's own timeout with the race.
+  it('always passes options.timeout (serverTimeout) to the SDK, signal or not', async () => {
     await manager.callTool('test-server', 'some_tool', { a: 1 });
 
     expect(mockCallTool).toHaveBeenCalledWith(
       { name: 'some_tool', arguments: { a: 1 } },
       undefined,
-      undefined
+      { timeout: 30000 }
+    );
+  });
+
+  it('passes options.timeout=120000 for a browser server (120s manual race)', async () => {
+    setFakeServer('abu-browser');
+
+    await manager.callTool('abu-browser', 'wait_for', { tabId: 1 });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'wait_for', arguments: { tabId: 1 } },
+      undefined,
+      { timeout: 120000 }
     );
   });
 

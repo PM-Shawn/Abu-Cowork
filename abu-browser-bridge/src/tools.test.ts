@@ -148,11 +148,12 @@ describe('tool surface', () => {
 
     await snapshot.handler({ tabId: 7, selector: '.ant-form', maxChars: 5000 });
 
-    expect(transport.send).toHaveBeenCalledWith('snapshot', {
-      tabId: 7,
-      selector: '.ant-form',
-      maxChars: 5000,
-    });
+    expect(transport.send).toHaveBeenCalledWith(
+      'snapshot',
+      { tabId: 7, selector: '.ant-form', maxChars: 5000 },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('reads HTML first, then evaluates query_js outside the page transport', async () => {
@@ -169,7 +170,12 @@ describe('tool surface', () => {
       code: '({ title: document.querySelector("h1").textContent, count: document.querySelectorAll("[data-kind]").length })',
     }) as { content: Array<{ text: string }> };
 
-    expect(transport.send).toHaveBeenCalledWith('get_html', { tabId: 9, selector: 'main' });
+    expect(transport.send).toHaveBeenCalledWith(
+      'get_html',
+      { tabId: 9, selector: 'main' },
+      undefined,
+      { signal: undefined }
+    );
     expect(result.content[0].text).toContain('"title": "Hello"');
     expect(result.content[0].text).toContain('"count": 1');
     expect(result.content[0].text).toContain('note: this ran against a read-only copy');
@@ -185,10 +191,15 @@ describe('ownerId forwarding', () => {
 
     // get_tabs takes no input schema, so its only parameter is `extra`.
     await getTabs.handler({});
-    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {});
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {}, undefined, { signal: undefined });
 
     await getTabs.handler(metaWithOwner);
-    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_tabs',
+      { ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('get_tabs forwards createIfEmpty:false only when the caller opted out of provisioning', async () => {
@@ -203,10 +214,12 @@ describe('ownerId forwarding', () => {
         [ABU_CREATE_IF_EMPTY_META_KEY]: false,
       },
     });
-    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {
-      ownerId: 'conv-42',
-      createIfEmpty: false,
-    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_tabs',
+      { ownerId: 'conv-42', createIfEmpty: false },
+      undefined,
+      { signal: undefined }
+    );
 
     // Anything other than an explicit `false` keeps the historical payload
     // shape, so the host keeps its create-when-empty default.
@@ -216,7 +229,12 @@ describe('ownerId forwarding', () => {
         [ABU_CREATE_IF_EMPTY_META_KEY]: true,
       },
     });
-    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_tabs',
+      { ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('click omits ownerId without a conversation id, and includes it with one', async () => {
@@ -224,14 +242,20 @@ describe('ownerId forwarding', () => {
     const click = registered.find((t) => t.name === 'click')!;
 
     await click.handler({ tabId: 1, locator: '{"css":"#a"}' });
-    expect(transport.send).toHaveBeenLastCalledWith('click', { tabId: 1, locator: { css: '#a' } });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' } },
+      undefined,
+      { signal: undefined }
+    );
 
     await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, metaWithOwner);
-    expect(transport.send).toHaveBeenLastCalledWith('click', {
-      tabId: 1,
-      locator: { css: '#a' },
-      ownerId: 'conv-42',
-    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' }, ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('navigate omits ownerId without a conversation id, and includes it with one', async () => {
@@ -239,19 +263,20 @@ describe('ownerId forwarding', () => {
     const navigate = registered.find((t) => t.name === 'navigate')!;
 
     await navigate.handler({ tabId: 2, url: 'https://example.com', action: 'goto' });
-    expect(transport.send).toHaveBeenLastCalledWith('navigate', {
-      tabId: 2,
-      url: 'https://example.com',
-      action: 'goto',
-    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'navigate',
+      { tabId: 2, url: 'https://example.com', action: 'goto' },
+      undefined,
+      { signal: undefined }
+    );
 
     await navigate.handler({ tabId: 2, url: 'https://example.com', action: 'goto' }, metaWithOwner);
-    expect(transport.send).toHaveBeenLastCalledWith('navigate', {
-      tabId: 2,
-      url: 'https://example.com',
-      action: 'goto',
-      ownerId: 'conv-42',
-    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'navigate',
+      { tabId: 2, url: 'https://example.com', action: 'goto', ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('screenshot omits ownerId without a conversation id, and includes it with one', async () => {
@@ -259,10 +284,20 @@ describe('ownerId forwarding', () => {
     const screenshot = registered.find((t) => t.name === 'screenshot')!;
 
     await screenshot.handler({ tabId: 3 });
-    expect(transport.send).toHaveBeenLastCalledWith('screenshot', { tabId: 3 });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'screenshot',
+      { tabId: 3 },
+      undefined,
+      { signal: undefined }
+    );
 
     await screenshot.handler({ tabId: 3 }, metaWithOwner);
-    expect(transport.send).toHaveBeenLastCalledWith('screenshot', { tabId: 3, ownerId: 'conv-42' });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'screenshot',
+      { tabId: 3, ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
   });
 
   it('query_js omits ownerId without a conversation id, and includes it with one on the get_html call', async () => {
@@ -276,14 +311,92 @@ describe('ownerId forwarding', () => {
     vi.mocked(transport.send).mockResolvedValue({ success: true, data: '<html></html>' });
 
     await query.handler({ tabId: 9, code: '1' }).catch(() => {});
-    expect(transport.send).toHaveBeenLastCalledWith('get_html', { tabId: 9, selector: undefined });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_html',
+      { tabId: 9, selector: undefined },
+      undefined,
+      { signal: undefined }
+    );
 
     await query.handler({ tabId: 9, code: '1' }, metaWithOwner).catch(() => {});
-    expect(transport.send).toHaveBeenLastCalledWith('get_html', {
-      tabId: 9,
-      selector: undefined,
-      ownerId: 'conv-42',
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_html',
+      { tabId: 9, selector: undefined, ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
+  });
+});
+
+// Task B2: `extra.signal` is the MCP SDK's per-request AbortSignal
+// (RequestHandlerExtra.signal), which fires when the client cancels the tool
+// call (see B1: the conversation's abort signal reaches the SDK's callTool()
+// options). Every handler must forward it into transport.send()'s 4th param
+// so an aborted conversation stops a browser action from hanging until its
+// own (sometimes 120s) timeout.
+describe('abort signal forwarding', () => {
+  it('forwards extra.signal as the 4th transport.send() argument', async () => {
+    const { registered, transport } = collectTools();
+    const controller = new AbortController();
+    const click = registered.find((t) => t.name === 'click')!;
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, { signal: controller.signal });
+
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' } },
+      undefined,
+      { signal: controller.signal }
+    );
+  });
+
+  it('forwards the signal alongside a custom timeout for wait_for', async () => {
+    const { registered, transport } = collectTools();
+    const controller = new AbortController();
+    const waitFor = registered.find((t) => t.name === 'wait_for')!;
+
+    await waitFor.handler(
+      { tabId: 1, condition: '{"type":"appear","locator":{"css":"#a"}}', timeout: 1000 },
+      { signal: controller.signal }
+    );
+
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'wait_for',
+      { tabId: 1, condition: { type: 'appear', locator: { css: '#a' } }, timeout: 1000 },
+      6000,
+      { signal: controller.signal }
+    );
+  });
+
+  it('ignores a non-AbortSignal value under extra.signal rather than forwarding garbage', async () => {
+    const { registered, transport } = collectTools();
+    const click = registered.find((t) => t.name === 'click')!;
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, { signal: 'not-a-signal' });
+
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' } },
+      undefined,
+      { signal: undefined }
+    );
+  });
+
+  it('rejects the tool call when the transport rejects because the signal was aborted mid-flight', async () => {
+    const { registered, transport } = collectTools();
+    const controller = new AbortController();
+    const click = registered.find((t) => t.name === 'click')!;
+    const abortError = new DOMException('The operation was aborted.', 'AbortError');
+    vi.mocked(transport.send).mockImplementationOnce(() => {
+      // Simulates chromeWsTransport/HttpBrowserTransport rejecting once the
+      // signal they were handed fires while the request is still in flight.
+      controller.abort();
+      return Promise.reject(abortError);
     });
+
+    await expect(
+      click.handler({ tabId: 1, locator: '{"css":"#a"}' }, { signal: controller.signal })
+    ).rejects.toThrow('The operation was aborted');
   });
 });
 

@@ -37,7 +37,8 @@ export interface BrowserTransport {
   send(
     action: string,
     payload?: Record<string, unknown>,
-    timeoutMs?: number
+    timeoutMs?: number,
+    opts?: { signal?: AbortSignal }
   ): Promise<BrowserTransportResponse>;
   isConnected(): boolean | Promise<boolean>;
   getConnectionError(): string;
@@ -48,10 +49,10 @@ const BROWSER_EXTENSION_NOT_CONNECTED =
   'Browser extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.';
 
 const chromeWsTransport: BrowserTransport = {
-  send: async (action, payload = {}, timeoutMs = 30_000) => {
+  send: async (action, payload = {}, timeoutMs = 30_000, opts) => {
     const { sendToExtension, isExtensionConnected } = await import('./wsServer.js');
     try {
-      return await sendToExtension(action, payload, timeoutMs);
+      return await sendToExtension(action, payload, timeoutMs, opts?.signal);
     } catch (err) {
       if (!isExtensionConnected()) {
         throw new Error(BROWSER_EXTENSION_NOT_CONNECTED, { cause: err });
@@ -111,6 +112,36 @@ function createIfEmptyFromExtra(extra: unknown): false | undefined {
   return meta?.[ABU_CREATE_IF_EMPTY_META_KEY] === false ? false : undefined;
 }
 
+/**
+ * Pull the per-request `AbortSignal` out of a tool handler's `extra` (the MCP
+ * SDK's `RequestHandlerExtra.signal`, set for every request). The SDK fires
+ * this when the client sends a `notifications/cancelled` for the request
+ * (see B1: the desktop client passes the conversation's abort signal into
+ * `callTool`'s SDK options), so a handler that forwards it into
+ * `transport.send()` lets an aborted run stop waiting on the extension/host
+ * instead of hanging until the tool's own timeout.
+ */
+function signalFromExtra(extra: unknown): AbortSignal | undefined {
+  const signal = (extra as { signal?: unknown } | undefined)?.signal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
+/**
+ * Every handler's `transport.send()` call, with the caller's abort signal
+ * always forwarded as the 4th param. Centralized so "pass extra.signal
+ * through" isn't repeated (and can't silently drift) at each of the 19 call
+ * sites below.
+ */
+function sendWithSignal(
+  transport: BrowserTransport,
+  action: string,
+  payload: Record<string, unknown>,
+  extra: unknown,
+  timeoutMs?: number
+): Promise<BrowserTransportResponse> {
+  return transport.send(action, payload, timeoutMs, { signal: signalFromExtra(extra) });
+}
+
 function formatResult(response: BrowserTransportResponse): string {
   if (!response.success) {
     return `Error: ${response.error ?? 'Unknown error'}`;
@@ -165,10 +196,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
       const createIfEmpty = createIfEmptyFromExtra(extra);
-      const res = await transport.send('get_tabs', {
+      const res = await sendWithSignal(transport, 'get_tabs', {
         ...(ownerId ? { ownerId } : {}),
         ...(createIfEmpty === false ? { createIfEmpty: false } : {}),
-      });
+      }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -185,7 +216,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, selector, maxChars }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('snapshot', { tabId, selector, maxChars, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -202,7 +233,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('click', { tabId, locator: parsed, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'click', { tabId, locator: parsed, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -220,7 +251,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('fill', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'fill', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -238,7 +269,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('select', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -263,9 +294,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const parsed = parseCondition(condition);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send(
+      const res = await sendWithSignal(
+        transport,
         'wait_for',
         { tabId, condition: parsed, timeout, ...(ownerId ? { ownerId } : {}) },
+        extra,
         timeout + 5000
       );
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
@@ -283,7 +316,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('extract_text', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'extract_text', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -299,7 +332,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('extract_table', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'extract_table', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -317,7 +350,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, direction, amount, selector }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('scroll', { tabId, direction, amount, selector, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'scroll', { tabId, direction, amount, selector, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -334,7 +367,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, url, action }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('navigate', { tabId, url, action, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'navigate', { tabId, url, action, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -351,7 +384,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, key, modifiers }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('keyboard', { tabId, key, modifiers, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'keyboard', { tabId, key, modifiers, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -367,7 +400,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, code }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('execute_js', { tabId, code, ...(ownerId ? { ownerId } : {}) }, 60_000);
+      const res = await sendWithSignal(transport, 'execute_js', { tabId, code, ...(ownerId ? { ownerId } : {}) }, extra, 60_000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -384,7 +417,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, code, selector }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const htmlResponse = await transport.send('get_html', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
+      const htmlResponse = await sendWithSignal(transport, 'get_html', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
       if (!htmlResponse.success) {
         throw new Error(htmlResponse.error ?? 'Failed to read page HTML');
       }
@@ -406,7 +439,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('screenshot', { tabId, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'screenshot', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -431,7 +464,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await transport.send('screenshot_full_page', { tabId, ...(ownerId ? { ownerId } : {}) }, 120_000);
+      const res = await sendWithSignal(transport, 'screenshot_full_page', { tabId, ...(ownerId ? { ownerId } : {}) }, extra, 120_000);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -468,7 +501,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async (extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('get_downloads', ownerId ? { ownerId } : {});
+      const res = await sendWithSignal(transport, 'get_downloads', ownerId ? { ownerId } : {}, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -483,7 +516,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('start_recording', { tabId, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'start_recording', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -498,7 +531,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('stop_recording', { tabId, ...(ownerId ? { ownerId } : {}) });
+      const res = await sendWithSignal(transport, 'stop_recording', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

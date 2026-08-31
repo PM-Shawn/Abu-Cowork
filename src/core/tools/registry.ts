@@ -933,6 +933,7 @@ export async function executeAnyTool(
     if (mcpManager.isConnected(serverName)) {
       const result = await mcpManager.callTool(serverName, toolName, executionInput, {
         conversationId: toolContext?.conversationId,
+        signal: toolContext?.abortSignal,
       });
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {

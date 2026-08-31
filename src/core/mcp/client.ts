@@ -42,10 +42,7 @@ export function toCallToolOpts(
 ): { conversationId?: string; signal?: AbortSignal } {
   return {
     conversationId: context?.conversationId,
-    // `signal` isn't populated from ToolExecutionContext until a later PR adds
-    // an AbortSignal field there; declared now so callTool()'s opts shape
-    // doesn't need to change again once that field lands.
-    signal: undefined,
+    signal: context?.abortSignal,
   };
 }
 
@@ -798,11 +795,15 @@ export class MCPClientManager {
     let timerId: ReturnType<typeof setTimeout>;
     try {
       const client = server.client as {
-        callTool: (params: {
-          name: string;
-          arguments: Record<string, unknown>;
-          _meta?: Record<string, unknown>;
-        }) => Promise<{
+        callTool: (
+          params: {
+            name: string;
+            arguments: Record<string, unknown>;
+            _meta?: Record<string, unknown>;
+          },
+          resultSchema?: undefined,
+          options?: { signal?: AbortSignal }
+        ) => Promise<{
           content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
       };
@@ -829,7 +830,7 @@ export class MCPClientManager {
         params._meta = meta;
       }
       const result = await Promise.race([
-        client.callTool(params),
+        client.callTool(params, undefined, opts?.signal ? { signal: opts.signal } : undefined),
         timeout,
       ]);
       clearTimeout(timerId!);
@@ -868,6 +869,17 @@ export class MCPClientManager {
       return JSON.stringify(result);
     } catch (err) {
       clearTimeout(timerId!);
+      // The conversation run was stopped: the SDK already cancelled the
+      // in-flight request (see toCallToolOpts/callTool's `signal` param) and
+      // rejected promptly. Only browser automation servers get the friendlier
+      // cancellation message shown to the model/user — other MCP servers keep
+      // whatever error the SDK surfaced for its own abort handling.
+      if (
+        opts?.signal?.aborted &&
+        (serverName === 'abu-browser' || serverName === 'abu-browser-bridge')
+      ) {
+        throw new Error('Browser action cancelled because the run was stopped.', { cause: err });
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });

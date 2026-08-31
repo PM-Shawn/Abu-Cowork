@@ -71,4 +71,37 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     const params = mockCallTool.mock.calls[0][0];
     expect(params._meta).toBeUndefined();
   });
+
+  // Task B1: ToolExecutionContext.abortSignal (already injected by toolExecutor
+  // at every dispatch site) must reach the underlying MCP SDK client.callTool()
+  // as its RequestOptions.signal (3rd positional param), the same way
+  // conversationId reaches `_meta` above — this is the real dispatch path a
+  // model tool_use goes through, not just the last-hop unit in client.test.ts.
+  it('forwards the abort signal from ToolExecutionContext into the MCP request options', async () => {
+    const controller = new AbortController();
+
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+      abortSignal: controller.signal,
+    });
+
+    expect(mockCallTool).toHaveBeenCalledTimes(1);
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
+      undefined,
+      { signal: controller.signal }
+    );
+  });
+
+  it('does not pass an options object when the context has no abort signal', async () => {
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+    });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
+      undefined,
+      undefined
+    );
+  });
 });

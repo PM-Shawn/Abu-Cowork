@@ -65,6 +65,7 @@ vi.mock('../../../utils/pathUtils', () => ({
 }));
 vi.mock('../../../utils/validation', () => ({
   ITEM_NAME_RE: /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+  AGENT_NAME_RE: /^[\p{L}\p{N}](?:[\p{L}\p{N}_-]*[\p{L}\p{N}])?$/u,
 }));
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),

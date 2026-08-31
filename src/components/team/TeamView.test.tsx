@@ -68,6 +68,9 @@ vi.mock('@/core/team/orchestrator', () => ({
 vi.mock('@/core/team/roleIdentity', () => ({
   ensureRoleId: vi.fn(async (agent: { roleId?: string }) =>
     agent.roleId ? { roleId: agent.roleId, wrote: false } : { roleId: 'role-new', wrote: true }),
+  effectiveRoleId: (agent: { roleId?: string; name: string }) => agent.roleId ?? `builtin:${agent.name}`,
+  isBuiltinAgent: () => false,
+  resolveRoleId: () => null,
 }));
 
 // AgentsSection drags in the whole toolbox world — stub it.
@@ -129,7 +132,9 @@ describe('TeamView', () => {
     fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '数据小队' } });
     expect(save.disabled).toBe(true); // still no leader
 
-    fireEvent.click(screen.getByTestId('set-leader-writer'));
+    // Leader is its own searchable dropdown (user feedback 2026-08-31).
+    fireEvent.click(screen.getByTestId('team-leader-select'));
+    fireEvent.click(screen.getByTestId('search-select-option-writer'));
     expect(save.disabled).toBe(false);
 
     fireEvent.click(save);

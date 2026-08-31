@@ -13,7 +13,7 @@ import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
-import { ITEM_NAME_RE } from '../../../utils/validation';
+import { ITEM_NAME_RE, AGENT_NAME_RE } from '../../../utils/validation';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
@@ -460,7 +460,9 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const t = getI18n().toolResult.agent;
       const label = isSkill ? t.labelSkill : t.labelAgent;
 
-      if (!ITEM_NAME_RE.test(name)) {
+      // Agents allow unicode names (数据分析师); skills keep the strict slug.
+      const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
+      if (!nameRe.test(name)) {
         return format(t.errInvalidName, { label, name });
       }
 

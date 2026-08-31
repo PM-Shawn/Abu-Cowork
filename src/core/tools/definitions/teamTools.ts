@@ -59,13 +59,17 @@ export const proposeTeamPlanTool: ToolDefinition = {
       return 'Error: the team for this task no longer exists.';
     }
 
-    // Resolve member names → stable roleIds against the CURRENT roster.
+    // Resolve member names → stable roleIds against the CURRENT roster
+    // (covers both frontmatter role-ids and synthetic builtin: ids).
     const { agentRegistry } = await import('../../agent/registry');
+    const { effectiveRoleId } = await import('../../team/roleIdentity');
     const roleIdByName = new Map<string, string>();
     for (const meta of agentRegistry.getAvailableAgents()) {
       const agent = agentRegistry.getAgent(meta.name);
-      if (agent?.roleId && team.memberRoleIds.includes(agent.roleId)) {
-        roleIdByName.set(agent.name, agent.roleId);
+      if (!agent) continue;
+      const roleId = effectiveRoleId(agent);
+      if (roleId && team.memberRoleIds.includes(roleId)) {
+        roleIdByName.set(agent.name, roleId);
       }
     }
 

@@ -1,6 +1,6 @@
 import { useTeamStore, type Team, type TeamTask, type TeamPlanItem } from '@/stores/teamStore';
 import { useChatStore } from '@/stores/chatStore';
-import { agentRegistry } from '@/core/agent/registry';
+import { resolveRoleId } from '@/core/team/roleIdentity';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import type { SubagentDefinition } from '@/types';
 import { mkdir } from '@tauri-apps/plugin-fs';
@@ -27,11 +27,7 @@ import { notifyTeamTaskPendingReview, notifyTeamTaskBlocked } from '@/utils/noti
 const inFlight = new Set<string>();
 
 function resolveMember(roleId: string): SubagentDefinition | null {
-  for (const meta of agentRegistry.getAvailableAgents()) {
-    const agent = agentRegistry.getAgent(meta.name);
-    if (agent?.roleId === roleId) return agent;
-  }
-  return null;
+  return resolveRoleId(roleId);
 }
 
 function memberLine(agent: SubagentDefinition): string {

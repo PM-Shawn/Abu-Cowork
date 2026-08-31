@@ -6,9 +6,9 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { ensureRoleId } from '@/core/team/roleIdentity';
+import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Inbox, ListTodo, Bot, UsersRound, Search, Crown } from 'lucide-react';
+import { Inbox, ListTodo, Bot, UsersRound, Search } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TaskDetailDialog from './TaskDetailDialog';
@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
+import { SearchSelect, MultiSearchSelect, type SearchSelectOption } from '@/components/ui/search-select';
 import type { SubagentDefinition } from '@/types';
 
 /**
@@ -45,26 +46,35 @@ function EmptyState({ icon: Icon, title, hint, action }: {
   );
 }
 
-/** User-selectable member agents: user-defined custom agents only. */
-function useMemberAgents(): SubagentDefinition[] {
+/**
+ * Selectable member pool: every enabled agent — user-defined AND enabled
+ * marketplace/builtin roles (user feedback 2026-08-31: office users组队 most
+ * often start from 市场 roles). Disabled agents stay out.
+ */
+function useMemberPool(): SubagentDefinition[] {
   const { agents } = useDiscoveryStore();
+  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const [full, setFull] = useState<SubagentDefinition[]>([]);
   useEffect(() => {
+    const disabled = new Set(disabledAgents ?? []);
     const list: SubagentDefinition[] = [];
     for (const meta of agents) {
       const a = agentRegistry.getAgent(meta.name);
       if (!a) continue;
-      if (a.name === 'abu' || a.managed) continue;
-      if (a.filePath === '__builtin__' || a.filePath.includes('builtin-agents')) continue;
+      if (a.name === 'abu' || a.managed || disabled.has(a.name)) continue;
       list.push(a);
     }
     setFull(list);
-  }, [agents]);
+  }, [agents, disabledAgents]);
   return full;
 }
 
 function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: string): string {
-  return agents.find((a) => a.roleId === roleId)?.name ?? fallback;
+  return agents.find((a) => effectiveRoleId(a) === roleId)?.name ?? fallback;
+}
+
+function memberOption(a: SubagentDefinition): SearchSelectOption {
+  return { value: a.name, label: a.name, description: a.description || undefined, icon: a.avatar ?? '🤖' };
 }
 
 // ---------------------------------------------------------------- Team dialog
@@ -77,7 +87,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
-  const agents = useMemberAgents();
+  const agents = useMemberPool();
 
   const [name, setName] = useState('');
   const [leaderName, setLeaderName] = useState<string>('');
@@ -140,54 +150,49 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="mt-1" data-testid="team-name-input" />
         </div>
 
-        <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldMembers}</label>
-          <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldMembersHint}</div>
-          {agents.length === 0 ? (
-            <div className="mt-2 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 flex items-center justify-between">
-              <span className="text-caption text-[var(--abu-text-secondary)]">{t.team.noMembersYet}</span>
-              {/* Never a dead end: creating the missing thing is one click away. */}
-              <Button size="sm" variant="outline" onClick={() => { onClose(); onSwitchToMembers(); }}>{t.team.createMemberNow}</Button>
+        {agents.length === 0 ? (
+          <div className="rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 flex items-center justify-between">
+            <span className="text-caption text-[var(--abu-text-secondary)]">{t.team.noMembersYet}</span>
+            {/* Never a dead end: creating the missing thing is one click away. */}
+            <Button size="sm" variant="outline" onClick={() => { onClose(); onSwitchToMembers(); }}>{t.team.createMemberNow}</Button>
+          </div>
+        ) : (
+          <>
+            {/* Two separate dropdowns (user feedback 2026-08-31): a single
+                crown-in-list picker made the leader choice easy to miss. */}
+            <div>
+              <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldLeader}</label>
+              <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldLeaderHint}</div>
+              <SearchSelect
+                className="mt-1.5"
+                value={leaderName || null}
+                onChange={(name) => {
+                  setLeaderName(name);
+                  setMemberNames((prev) => prev.filter((n) => n !== name));
+                }}
+                options={agents.map(memberOption)}
+                placeholder={t.team.leaderPlaceholder}
+                searchPlaceholder={t.team.searchPlaceholder}
+                emptyText={t.team.pickerEmpty}
+                testId="team-leader-select"
+              />
             </div>
-          ) : (
-            <div className="mt-2 space-y-1 max-h-48 overflow-y-auto pr-1" data-testid="team-member-picker">
-              {agents.map((a) => {
-                const selected = memberNames.includes(a.name);
-                const isLeader = leaderName === a.name;
-                return (
-                  <div
-                    key={a.filePath}
-                    onClick={() => {
-                      if (isLeader) return; // leader is always a member
-                      setMemberNames((prev) => selected ? prev.filter((n) => n !== a.name) : [...prev, a.name]);
-                    }}
-                    className={`flex items-center gap-3 rounded-xl px-3 py-2 cursor-pointer border ${selected || isLeader ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)]' : 'border-transparent bg-[var(--abu-bg-muted)] hover:bg-[var(--abu-bg-hover)]'}`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="text-body text-[var(--abu-text-primary)] truncate">{a.avatar ? `${a.avatar} ` : ''}{a.name}</div>
-                      <div className="text-caption text-[var(--abu-text-tertiary)] truncate">{a.description || '—'}</div>
-                    </div>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setLeaderName(a.name);
-                        setMemberNames((prev) => prev.includes(a.name) ? prev : [...prev, a.name]);
-                      }}
-                      className={`shrink-0 flex items-center gap-1 text-caption px-2 py-1 rounded-md ${isLeader ? 'text-[var(--abu-clay)] font-medium' : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]'}`}
-                      title={t.team.setLeader}
-                      data-testid={`set-leader-${a.name}`}
-                    >
-                      <Crown className="h-3.5 w-3.5" />{isLeader ? t.team.leaderBadge : t.team.setLeader}
-                    </button>
-                  </div>
-                );
-              })}
+            <div>
+              <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldMembers}</label>
+              <div className="text-caption text-[var(--abu-text-tertiary)] mt-0.5">{t.team.fieldMembersHint}</div>
+              <MultiSearchSelect
+                className="mt-1.5"
+                values={memberNames.filter((n) => n !== leaderName)}
+                onChange={setMemberNames}
+                options={agents.filter((a) => a.name !== leaderName).map(memberOption)}
+                placeholder={t.team.membersPlaceholder}
+                searchPlaceholder={t.team.searchPlaceholder}
+                emptyText={t.team.pickerEmpty}
+                testId="team-members-select"
+              />
             </div>
-          )}
-          {!leaderName && agents.length > 0 && (
-            <div className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.team.leaderRequiredHint}</div>
-          )}
-        </div>
+          </>
+        )}
 
         <div className="flex items-center justify-between rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
           <div className="min-w-0 pr-3">
@@ -222,28 +227,35 @@ function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onC
   const addToast = useToastStore((s) => s.addToast);
   const createTask = useTeamStore((s) => s.createTask);
   const refresh = useDiscoveryStore((s) => s.refresh);
-  // Assignee: a team OR a single member (user decision 2026-08-31). Exactly one.
-  const [assignee, setAssignee] = useState<{ kind: 'team'; id: string } | { kind: 'member'; name: string } | null>(null);
+  // Assignee: a team OR a single member — one searchable dropdown, teams
+  // first with a kind badge (user feedback 2026-08-31: no flat chips).
+  const [assignee, setAssignee] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     if (open) {
       setGoal('');
-      setAssignee(teams.length === 1 && agents.length === 0 ? { kind: 'team', id: teams[0].id } : null);
+      setAssignee(teams.length === 1 && agents.length === 0 ? `team:${teams[0].id}` : null);
     }
   }, [open, teams, agents]);
+
+  const options: SearchSelectOption[] = [
+    ...teams.map((team) => ({ value: `team:${team.id}`, label: team.name, icon: '👥', badge: t.team.kindTeam })),
+    ...agents.map((a) => ({ ...memberOption(a), value: `member:${a.name}` })),
+  ];
 
   const handleCreate = async () => {
     if (!assignee || !goal.trim() || creating) return;
     setCreating(true);
     try {
       let task;
-      if (assignee.kind === 'team') {
-        task = createTask({ teamId: assignee.id, goal });
+      if (assignee.startsWith('team:')) {
+        task = createTask({ teamId: assignee.slice(5), goal });
       } else {
-        const agent = agentRegistry.getAgent(assignee.name);
-        if (!agent) throw new Error(`agent not found: ${assignee.name}`);
+        const name = assignee.slice(7);
+        const agent = agentRegistry.getAgent(name);
+        if (!agent) throw new Error(`agent not found: ${name}`);
         const { roleId, wrote } = await ensureRoleId(agent);
         if (wrote) await refresh();
         task = createTask({ memberRoleId: roleId, goal });
@@ -263,36 +275,23 @@ function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onC
   return (
     <DialogShell open={open} onClose={onClose} title={t.team.newTask}>
       <div className="space-y-4">
-        <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskAssignee}</label>
-          <div className="mt-1 flex flex-wrap gap-2">
-            {teams.map((team) => (
-              <button
-                key={team.id}
-                onClick={() => setAssignee({ kind: 'team', id: team.id })}
-                className={`px-3 py-1.5 rounded-lg text-body border ${assignee?.kind === 'team' && assignee.id === team.id ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'}`}
-                data-testid={`task-team-${team.name}`}
-              >
-                <UsersRound className="h-3.5 w-3.5 inline mr-1" />{team.name}
-              </button>
-            ))}
-            {agents.map((agent) => (
-              <button
-                key={agent.filePath}
-                onClick={() => setAssignee({ kind: 'member', name: agent.name })}
-                className={`px-3 py-1.5 rounded-lg text-body border ${assignee?.kind === 'member' && assignee.name === agent.name ? 'border-[var(--abu-clay)] bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'border-[var(--abu-border)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'}`}
-                data-testid={`task-member-${agent.name}`}
-              >
-                {agent.avatar ? `${agent.avatar} ` : ''}{agent.name}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* What first, who second (user feedback 2026-08-31). */}
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskGoal}</label>
-          {/* Deliberately the whole form: no acceptance criteria, no advanced
-              settings, no model, no template — the leader derives structure. */}
           <Textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={4} className="mt-1" placeholder={t.team.fieldTaskGoalPlaceholder} data-testid="task-goal-input" />
+        </div>
+        <div>
+          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskAssignee}</label>
+          <SearchSelect
+            className="mt-1"
+            value={assignee}
+            onChange={setAssignee}
+            options={options}
+            placeholder={t.team.assigneePlaceholder}
+            searchPlaceholder={t.team.searchPlaceholder}
+            emptyText={t.team.pickerEmpty}
+            testId="task-assignee-select"
+          />
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
@@ -374,7 +373,7 @@ export default function TeamView() {
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
   const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
-  const agents = useMemberAgents();
+  const agents = useMemberPool();
   const pending = useMemo(() => selectPendingTasks(tasks, teams), [tasks, teams]);
 
   const navItems = [

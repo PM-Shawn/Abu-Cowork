@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
+import { effectiveRoleId } from '@/core/team/roleIdentity';
 import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retryItem, startPlanning } from '@/core/team/orchestrator';
 import { useI18n, format } from '@/i18n';
 import { Loader2, CheckCircle2, XCircle, Circle, ArrowRight, RotateCcw } from 'lucide-react';
@@ -43,7 +44,8 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
     const map = new Map<string, string>();
     for (const meta of agentRegistry.getAvailableAgents()) {
       const agent = agentRegistry.getAgent(meta.name);
-      if (agent?.roleId) map.set(agent.roleId, agent.name);
+      const roleId = agent ? effectiveRoleId(agent) : undefined;
+      if (agent && roleId) map.set(roleId, agent.name);
     }
     return (roleId: string) => map.get(roleId) ?? t.team.unknownMember;
   }, [t, taskId]); // eslint-disable-line react-hooks/exhaustive-deps -- re-resolve when a different task opens

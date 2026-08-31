@@ -33,6 +33,7 @@ import { mergeFileAttachments } from '@/components/chat/composerFileAttachments'
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
+import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
@@ -140,6 +141,9 @@ interface SuggestionItem {
   name: string;
   description: string;
   trigger?: string;
+  /** True for team entries in the @ list — rendered with a 👥 kind badge and
+   *  routed to task creation on send (chatEntry intercept). */
+  team?: boolean;
 }
 
 interface FileAttachmentItem {
@@ -367,6 +371,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
+  const activeTeams = useTeamStore((store) => store.teams).filter((team) => !team.archivedAt);
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selection, setSelection] = useState<ComposerSelection>({
@@ -931,20 +936,27 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const suggestions = useMemo((): SuggestionItem[] => {
     const trimmed = text.trim();
 
-    // Agent suggestions when typing @
+    // Agent + team suggestions when typing @. Teams come first with a kind
+    // badge so 用户 can tell 团队 from 单个队员 at a glance (feedback 2026-08-31).
     if (suggestionType === 'agent') {
       const query = agentMentionTarget?.query ?? '';
-      return agents
-        .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
-        .filter((a) => {
-          if (!query) return true;
-          return a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query);
-        })
-        .map((a) => ({
-          name: a.name,
-          description: a.description,
-        }));
+      const teamItems: SuggestionItem[] = activeTeams
+        .filter((team) => !query || team.name.toLowerCase().includes(query))
+        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true }));
+      return [
+        ...teamItems,
+        ...agents
+          .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
+          .filter((a) => {
+            if (!query) return true;
+            return a.name.toLowerCase().includes(query) ||
+              a.description.toLowerCase().includes(query);
+          })
+          .map((a) => ({
+            name: a.name,
+            description: a.description,
+          })),
+      ];
     }
 
     // Skill suggestions when typing /
@@ -966,7 +978,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet]);
+  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet, t.team.suggestionTeamHint]);
 
   const suggestionKey = useMemo(() => {
     if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;
@@ -1443,9 +1455,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                     'w-5 text-center font-mono text-minor shrink-0',
                     suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
                   )}>
-                    {suggestionType === 'agent' ? '@' : '/'}
+                    {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
                   </span>
                   <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
+                  {item.team && (
+                    <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">{t.team.kindTeam}</span>
+                  )}
                   <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
                 </div>
                 {item.trigger && (
@@ -1576,7 +1591,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                 className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-[var(--abu-link)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
                 title={t.common.close}
               >
-                @{selectedAgent.name}
+                {selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}
               </button>
             )}
             {selectedSkill && (

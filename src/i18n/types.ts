@@ -1470,9 +1470,23 @@ export interface TranslationDict {
     chatReceiptBody: string;
     chatReceiptOpen: string;
     chatReceiptEmptyGoal: string;
+    fieldLeader: string;
+    fieldLeaderHint: string;
+    leaderPlaceholder: string;
+    membersPlaceholder: string;
+    pickerEmpty: string;
+    assigneePlaceholder: string;
+    kindTeam: string;
+    suggestionTeamHint: string;
   };
 
   toolbox: {
+    agentNamePlaceholder: string;
+    agentNameFormatHint: string;
+    agentInstructionsLabel: string;
+    agentAdvancedSection: string;
+    agentSkillsPlaceholder: string;
+    agentSkillsEmpty: string;
     title: string;
     skills: string;
     agents: string;

@@ -1,5 +1,5 @@
 import type { SubagentDefinition } from '@/types';
-import { serializeAgentMd } from '@/core/agent/registry';
+import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 
 /**
@@ -15,12 +15,43 @@ export function createRoleId(): string {
   return `role-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Builtin/marketplace agents can't carry frontmatter — their names are stable
+ *  (shipped with the app), so a synthetic name-keyed id serves as the roleId.
+ *  This is what lets 市场 roles join teams (user feedback 2026-08-31). */
+export function isBuiltinAgent(agent: Pick<SubagentDefinition, 'filePath'>): boolean {
+  const filePath = agent.filePath ?? '';
+  return filePath === '__builtin__' || filePath.includes('builtin-agents');
+}
+
+const BUILTIN_ROLE_PREFIX = 'builtin:';
+
+/** Effective roleId for any agent — synthetic for builtins, frontmatter otherwise. */
+export function effectiveRoleId(agent: SubagentDefinition): string | undefined {
+  if (isBuiltinAgent(agent)) return BUILTIN_ROLE_PREFIX + agent.name;
+  return agent.roleId;
+}
+
+/** Resolve a stored roleId back to the live agent (both id families). */
+export function resolveRoleId(roleId: string): SubagentDefinition | null {
+  if (roleId.startsWith(BUILTIN_ROLE_PREFIX)) {
+    const agent = agentRegistry.getAgent(roleId.slice(BUILTIN_ROLE_PREFIX.length));
+    return agent && isBuiltinAgent(agent) ? agent : null;
+  }
+  for (const meta of agentRegistry.getAvailableAgents()) {
+    const agent = agentRegistry.getAgent(meta.name);
+    if (agent?.roleId === roleId) return agent;
+  }
+  return null;
+}
+
+
 /**
  * Return the agent's stable roleId, writing one into its AGENT.md if missing.
  * Caller is responsible for refreshing the discovery store afterwards when a
  * write happened (returned `wrote` flag).
  */
 export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId: string; wrote: boolean }> {
+  if (isBuiltinAgent(agent)) return { roleId: BUILTIN_ROLE_PREFIX + agent.name, wrote: false };
   if (agent.roleId) return { roleId: agent.roleId, wrote: false };
   const roleId = createRoleId();
   const md = serializeAgentMd({ ...agent, roleId }, agent.systemPrompt ?? '');

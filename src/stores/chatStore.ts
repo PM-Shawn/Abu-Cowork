@@ -34,6 +34,7 @@ import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
+import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
 
 enableMapSet();
 
@@ -1008,6 +1009,11 @@ export const useChatStore = create<ChatStore>()(
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
         useWorkProcessFoldStore.getState().clearConversation(id);
+        // Browser-automation observability (batch 1 fix-wave): per-conversation
+        // repeat/fallback trackers and the tab→origin cache in
+        // core/observability/browserSignals.ts would otherwise accumulate one
+        // dead entry per deleted conversation forever in a long-lived session.
+        clearBrowserToolTrackers(id);
         // Workspace subagent tabs are conversation-owned. Close them before
         // clearing their ephemeral batches so the active view lease is
         // released synchronously and no clickable dead tab survives deletion.

@@ -23,6 +23,7 @@ import {
   writePersistedComposerText,
 } from './composerDraftStore';
 import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
+import { getCachedTabOrigin, noteBrowserToolOutcome, noteTabOrigin } from '@/core/observability/browserSignals';
 import { useBatchProgressStore } from './batchProgressStore';
 import { subagentTabId, usePreviewStore } from './previewStore';
 import { makeBatchKey } from '@/types';
@@ -205,6 +206,25 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().deleteConversation(id);
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
+    });
+
+    it('clears the conversation\'s browser-automation observability trackers (fix-wave: prevents an unbounded leak in a long-lived session)', () => {
+      const id = useChatStore.getState().createConversation();
+      // Manufacture some tracker state for this conversation: a repeat streak
+      // and a cached tab origin (browserSignals.ts's per-conversation Maps).
+      noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      noteTabOrigin(id, 1, 'https://example.com');
+      expect(getCachedTabOrigin(id, 1)).toBe('https://example.com');
+
+      useChatStore.getState().deleteConversation(id);
+
+      // The tab-origin cache entry is gone...
+      expect(getCachedTabOrigin(id, 1)).toBeUndefined();
+      // ...and the repeat streak restarted from scratch (count back to 1,
+      // not 3 — if the old tracker had survived, this 3rd call would emit).
+      const after = noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      expect(after.repeat).toEqual({ count: 1, shouldEmit: false });
     });
 
     it('cascades subagent tab leases and batch entries for the deleted conversation only', () => {

@@ -3,20 +3,43 @@ import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import {
+  buildBrowserSignalContext,
   buildBrowserSignalRecord,
   noteTabClosed,
   noteTabCreated,
   safeRecordBrowserSignal,
-  type BrowserSignalContext,
 } from '@/core/observability/browserSignals';
-import { getPlatform } from '@/utils/platform';
-import { APP_VERSION } from '@/utils/version';
 
-/** Uniform observability context for a workspace-tab lifecycle signal.
- *  `channel` is always 'builtin' here — this tracks the in-app right-panel
- *  browser workspace tab, not a Chrome-extension-bridge action. */
-function tabLifetimeSignalContext(): BrowserSignalContext {
-  return { platform: getPlatform(), appVersion: APP_VERSION, channel: 'builtin', ts: Date.now() };
+/** This tracks the in-app right-panel browser workspace tab, not a
+ *  Chrome-extension-bridge action — `channel` is always 'builtin'. Uses the
+ *  shared `buildBrowserSignalContext` (fix-wave: single cached-platform
+ *  reader, see that function's doc) rather than duplicating the
+ *  getPlatform() caching here. */
+function tabLifetimeSignalContext() {
+  return buildBrowserSignalContext('builtin');
+}
+
+/**
+ * Emits a `tab_lifetime` 'closed' signal (+ `noteTabClosed` bookkeeping) for
+ * every browser-kind tab in `removed`. Shared by `closeTab`/`closeOtherTabs`/
+ * `closeAllTabs` — fix-wave finding: `closeOtherTabs`/`closeAllTabs` used to
+ * discard their browser tabs without ever calling `closeTab`, which meant
+ * (a) no `closed` signal for those tabs, and (b) a real leak — their entry
+ * in `browserSignals.ts`'s internal `tabCreatedAt` map lived forever, since
+ * only `noteTabClosed` deletes it.
+ */
+function noteBrowserTabsClosed(removed: WorkspaceTab[]): void {
+  for (const tab of removed) {
+    if (tab.kind !== 'browser') continue;
+    // aliveMs is omitted when this tab was opened via the plain,
+    // non-agent-adopted branch of openBrowser, which never called
+    // noteTabCreated — safe degrade, not an error.
+    const aliveMs = noteTabClosed(tab.id);
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { kind: 'tab_lifetime', event: 'closed', ...(aliveMs !== undefined ? { aliveMs } : {}) },
+      tabLifetimeSignalContext(),
+    ));
+  }
 }
 
 /**
@@ -312,17 +335,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const { tabs, activeTabId } = get();
     const idx = tabs.findIndex((t) => t.id === id);
     if (idx === -1) return;
-    if (tabs[idx].kind === 'browser') {
-      // Observability only (batch 1): aliveMs is omitted (noteTabClosed
-      // returns undefined) when this tab was opened via the plain,
-      // non-agent-adopted branch of openBrowser, which never called
-      // noteTabCreated — safe degrade, not an error.
-      const aliveMs = noteTabClosed(id);
-      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-        { kind: 'tab_lifetime', event: 'closed', ...(aliveMs !== undefined ? { aliveMs } : {}) },
-        tabLifetimeSignalContext(),
-      ));
-    }
+    noteBrowserTabsClosed([tabs[idx]]);
     const nextTabs = tabs.filter((t) => t.id !== id);
     let nextActiveId = activeTabId;
     if (activeTabId === id) {
@@ -340,11 +353,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   closeOtherTabs: (id) => {
     const { tabs } = get();
     if (!tabs.some((t) => t.id === id)) return;
+    noteBrowserTabsClosed(tabs.filter((t) => t.id !== id));
     const nextTabs = tabs.filter((t) => t.id === id);
     commitTabs(nextTabs, id);
   },
 
   closeAllTabs: () => {
+    noteBrowserTabsClosed(get().tabs);
     commitTabs([], null);
   },
 

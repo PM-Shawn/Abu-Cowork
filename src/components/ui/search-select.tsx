@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import { Search, Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -24,17 +25,56 @@ export interface SearchSelectOption {
   badge?: string;
 }
 
-function useOutsideClose(open: boolean, ref: React.RefObject<HTMLDivElement | null>, close: () => void) {
+function useOutsideClose(
+  open: boolean,
+  refs: Array<React.RefObject<HTMLElement | null>>,
+  close: () => void,
+) {
   React.useEffect(() => {
     if (!open) return;
     const onClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) close();
+      if (refs.every((ref) => !ref.current || !ref.current.contains(e.target as Node))) close();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
     document.addEventListener('mousedown', onClick);
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('mousedown', onClick); document.removeEventListener('keydown', onKey); };
-  }, [open, ref, close]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- refs array is stable per call site
+  }, [open, close]);
+}
+
+/**
+ * Anchor the dropdown to the trigger with fixed positioning in a portal, so
+ * it can never be clipped by a dialog's overflow container (the bug this
+ * replaced: absolute positioning inside DialogShell's scroll area). Flips
+ * upward when the space below the trigger is too tight, and tracks scroll
+ * (capture phase — dialog bodies scroll, not the window) and resize.
+ */
+const DROPDOWN_MAX_HEIGHT = 300;
+
+function useAnchoredRect(open: boolean, triggerRef: React.RefObject<HTMLElement | null>) {
+  const [style, setStyle] = React.useState<React.CSSProperties | null>(null);
+  React.useLayoutEffect(() => {
+    if (!open) { setStyle(null); return; }
+    const update = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const openUp = rect.bottom + DROPDOWN_MAX_HEIGHT > window.innerHeight && rect.top > DROPDOWN_MAX_HEIGHT;
+      setStyle({
+        position: 'fixed',
+        left: rect.left,
+        width: rect.width,
+        ...(openUp
+          ? { bottom: window.innerHeight - rect.top + 4 }
+          : { top: rect.bottom + 4 }),
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [open, triggerRef]);
+  return style;
 }
 
 function OptionRow({ option, selected, onPick }: { option: SearchSelectOption; selected: boolean; onPick: () => void }) {
@@ -64,13 +104,14 @@ function OptionRow({ option, selected, onPick }: { option: SearchSelectOption; s
   );
 }
 
-function Dropdown({ options, isSelected, onPick, searchPlaceholder, emptyText }: {
+const Dropdown = React.forwardRef<HTMLDivElement, {
   options: SearchSelectOption[];
   isSelected: (value: string) => boolean;
   onPick: (value: string) => void;
   searchPlaceholder: string;
   emptyText: string;
-}) {
+  style: React.CSSProperties;
+}>(function Dropdown({ options, isSelected, onPick, searchPlaceholder, emptyText, style }, ref) {
   const [query, setQuery] = React.useState('');
   const filtered = React.useMemo(() => {
     if (!query.trim()) return options;
@@ -79,7 +120,7 @@ function Dropdown({ options, isSelected, onPick, searchPlaceholder, emptyText }:
       o.label.toLowerCase().includes(q) || (o.description ?? '').toLowerCase().includes(q));
   }, [options, query]);
   return (
-    <div className="absolute z-50 mt-1 left-0 right-0 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
+    <div ref={ref} style={style} className="z-[10001] rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
       <div className="relative px-1 pb-1.5">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
         <Input
@@ -98,7 +139,7 @@ function Dropdown({ options, isSelected, onPick, searchPlaceholder, emptyText }:
       </div>
     </div>
   );
-}
+});
 
 const triggerCls = 'w-full flex items-center gap-2 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 py-2 text-left text-body hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]';
 
@@ -114,7 +155,10 @@ export function SearchSelect({ value, onChange, options, placeholder, searchPlac
 }) {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
-  useOutsideClose(open, ref, () => setOpen(false));
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const close = React.useCallback(() => setOpen(false), []);
+  useOutsideClose(open, [ref, dropdownRef], close);
+  const anchorStyle = useAnchoredRect(open, ref);
   const selected = options.find((o) => o.value === value) ?? null;
   return (
     <div ref={ref} className={cn('relative', className)}>
@@ -126,14 +170,17 @@ export function SearchSelect({ value, onChange, options, placeholder, searchPlac
         {selected?.badge && <span className="text-caption px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">{selected.badge}</span>}
         <ChevronDown className="h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]" />
       </button>
-      {open && (
+      {open && anchorStyle && createPortal(
         <Dropdown
+          ref={dropdownRef}
+          style={anchorStyle}
           options={options}
           isSelected={(v) => v === value}
           onPick={(v) => { onChange(v); setOpen(false); }}
           searchPlaceholder={searchPlaceholder}
           emptyText={emptyText}
-        />
+        />,
+        document.body,
       )}
     </div>
   );
@@ -151,7 +198,10 @@ export function MultiSearchSelect({ values, onChange, options, placeholder, sear
 }) {
   const [open, setOpen] = React.useState(false);
   const ref = React.useRef<HTMLDivElement>(null);
-  useOutsideClose(open, ref, () => setOpen(false));
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const close = React.useCallback(() => setOpen(false), []);
+  useOutsideClose(open, [ref, dropdownRef], close);
+  const anchorStyle = useAnchoredRect(open, ref);
   const selected = values
     .map((v) => options.find((o) => o.value === v))
     .filter((o): o is SearchSelectOption => o !== undefined);
@@ -174,14 +224,17 @@ export function MultiSearchSelect({ values, onChange, options, placeholder, sear
             ))}
         <ChevronDown className="h-4 w-4 shrink-0 ml-auto text-[var(--abu-text-tertiary)]" />
       </button>
-      {open && (
+      {open && anchorStyle && createPortal(
         <Dropdown
+          ref={dropdownRef}
+          style={anchorStyle}
           options={options}
           isSelected={(v) => values.includes(v)}
           onPick={toggle}
           searchPlaceholder={searchPlaceholder}
           emptyText={emptyText}
-        />
+        />,
+        document.body,
       )}
     </div>
   );

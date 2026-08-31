@@ -177,6 +177,101 @@ function ownerKeyOf(id) {
   return meta ? meta.ownerKey : LEGACY_OWNER;
 }
 
+/**
+ * ## Backing off while the user takes over (R4)
+ *
+ * Agent tabs are adopted into the visible browser pane, so the user can grab
+ * the keyboard mid-task — and used to lose: automation kept clicking and
+ * filling under their hands, and the model then reasoned about a page state
+ * that neither side had produced alone.
+ *
+ * Attribution is a plain time window. `before-input-event` and `focus` on a
+ * view are the USER only while `aiActionDepth === 0`; every automation action
+ * runs with that depth raised, so `keyboardAutomation`'s own
+ * `webContents.focus()` + `sendInputEvent()` are excluded without needing to
+ * tag individual events. The depth is deliberately GLOBAL, not per owner:
+ * during owner A's action, owner B's real input is misread as automation. That
+ * error is one-directional (a missed backoff, never a new block) and the window
+ * is milliseconds wide, so it is accepted rather than tracked per owner.
+ *
+ * State-changing actions then wait for a quiet window before running. Read-only
+ * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
+ * never wait — they are exactly what a model should do while the user works.
+ */
+const USER_INTERACT_QUIET_MS = 3000;
+const TAKEOVER_WAIT_MS = 10000;
+const TAKEOVER_POLL_MS = 500;
+
+/** Fixed text: it tells the model to re-read the page, not to retry blindly. */
+const USER_TAKEOVER_MESSAGE =
+  'The user is currently interacting with this browser tab. Automation paused to avoid ' +
+  'conflicting with their input. Wait for them to finish, then re-read the page state ' +
+  '(snapshot) before continuing.';
+
+const TAKEOVER_GATED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'navigate',
+  'execute_js',
+  'scroll',
+  'start_recording',
+]);
+
+/** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
+const userInteractionAt = new Map();
+
+/** >0 while an automation action is executing — its own events are not the user. */
+let aiActionDepth = 0;
+
+/**
+ * The backoff is a wall-clock wait of up to 10 seconds, which no test can sit
+ * through. Both reads of "now" and the poll sleep go through this one seam so a
+ * test can drive virtual time (see `__testing.setClock`).
+ */
+const REAL_CLOCK = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+let clock = REAL_CLOCK;
+
+/**
+ * Drop an owner's interaction record once none of its views survive, so a long
+ * session does not accumulate one timestamp per conversation that ever typed.
+ */
+function forgetOwnerInteractionIfUnused(ownerKey) {
+  for (const id of views.keys()) {
+    if (ownerKeyOf(id) === ownerKey) return;
+  }
+  userInteractionAt.delete(ownerKey);
+}
+
+/**
+ * @param {string} viewId the view the action is about to touch
+ * @param {string} ownerKey that view's owner (NOT necessarily the caller's —
+ *   an agent may be driving the user's own legacy pane tab, and it is the pane
+ *   tab's user we must yield to)
+ */
+function userIsInteracting(viewId, ownerKey) {
+  // Picking an element is a live, multi-second user gesture that never emits an
+  // input event of its own — treat the armed session itself as "hands on".
+  if (inspectSessions.has(viewId)) return true;
+  const last = userInteractionAt.get(ownerKey);
+  return typeof last === 'number' && clock.now() - last < USER_INTERACT_QUIET_MS;
+}
+
+async function awaitUserIdle(viewId) {
+  const ownerKey = ownerKeyOf(viewId);
+  if (!userIsInteracting(viewId, ownerKey)) return;
+  const deadline = clock.now() + TAKEOVER_WAIT_MS;
+  while (clock.now() < deadline) {
+    await clock.sleep(TAKEOVER_POLL_MS);
+    if (!userIsInteracting(viewId, ownerKey)) return;
+  }
+  throw new Error(USER_TAKEOVER_MESSAGE);
+}
+
 function resolveOwnerKey(payload) {
   const raw = payload && typeof payload.ownerId === 'string' ? payload.ownerId.trim() : '';
   return raw || LEGACY_OWNER;
@@ -354,7 +449,15 @@ function configureBrowserView(id, view) {
   contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame) resetAutomationRuntime();
   });
+  // Attribution for the takeover backoff: outside an automation action, input
+  // landing here is the user working in this view's owner's tab.
+  const recordUserInteraction = () => {
+    if (aiActionDepth > 0) return;
+    userInteractionAt.set(ownerKeyOf(id), clock.now());
+  };
+  contents.on('before-input-event', recordUserInteraction);
   contents.on('focus', () => {
+    recordUserInteraction();
     // The user focusing a view makes it that view OWNER's current tab, never
     // anyone else's.
     activeTabIdByOwner.set(ownerKeyOf(id), automationTabId);
@@ -371,8 +474,10 @@ function configureBrowserView(id, view) {
     // wiped — that would silently downgrade the live new view to legacy and
     // hand it to every other conversation.
     if (views.get(id) === view) {
+      const ownerKey = ownerKeyOf(id);
       viewMeta.delete(id);
       views.delete(id);
+      forgetOwnerInteractionIfUnused(ownerKey);
     }
   });
 }
@@ -642,6 +747,17 @@ async function screenshotAutomation(view, fullPage) {
 }
 
 async function performBrowserAutomation(action, payload = {}) {
+  // Everything this call does — including creating and loading views — is
+  // automation, so nothing it triggers may be mistaken for the user.
+  aiActionDepth += 1;
+  try {
+    return await runBrowserAutomation(action, payload);
+  } finally {
+    aiActionDepth -= 1;
+  }
+}
+
+async function runBrowserAutomation(action, payload) {
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
@@ -681,6 +797,19 @@ async function performBrowserAutomation(action, payload = {}) {
   const match = findViewByTabId(targetTabId, ownerKey);
   if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
+
+  if (TAKEOVER_GATED_ACTIONS.has(action)) {
+    // Step outside the AI-attribution window for the wait itself: observing the
+    // user is the entire point of it, and at depth>0 their keystrokes would be
+    // filed as automation's own and the wait would end after one quiet poll.
+    aiActionDepth -= 1;
+    try {
+      await awaitUserIdle(match.id);
+    } finally {
+      aiActionDepth += 1;
+    }
+  }
+
   activeTabIdByOwner.set(ownerKey, view.webContents.id);
 
   if (action === 'navigate') return navigateAutomationTab(view, payload);
@@ -898,11 +1027,13 @@ function closeView(id, view) {
   } catch {
     /* already gone — best-effort */
   }
+  const ownerKey = ownerKeyOf(id);
   views.delete(id);
   // `destroyed` also clears these, but it never fires when the window is torn
   // down under us (app quit) — don't leak the ownership record.
   viewMeta.delete(id);
   pendingAutomationOwners.delete(id);
+  forgetOwnerInteractionIfUnused(ownerKey);
 }
 
 function browserClose({ id }) {
@@ -965,4 +1096,8 @@ module.exports = {
   BROWSER_MISS,
   closeAllBrowserViews,
   performBrowserAutomation,
+  __testing: {
+    /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
+    setClock(next) { clock = next || REAL_CLOCK; },
+  },
 };

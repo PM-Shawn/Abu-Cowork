@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * browserHost — per-conversation tab ownership.
+ * browserHost — per-conversation tab ownership, and backing off when the user
+ * takes the page over.
  *
  * Before this suite, `browserHost.cjs` kept ONE global `activeAutomationTabId`
  * and `get_tabs` returned every live view, so two conversations running browser
@@ -17,6 +18,15 @@
  *  4. The "current tab" is per owner, not global.
  *  5. Touching another owner's tab fails loud with a next-step hint.
  *  6. An empty (filtered) tab set creates a view for THAT owner.
+ *
+ * The takeover contract (R4) is layered on top of the same ownership keys:
+ *  7. Keyboard input / focus landing on a view while no automation action is
+ *     running is the USER, recorded against that view's owner; the same events
+ *     fired by automation itself (keyboard's focus + sendInputEvent) are not.
+ *  8. A state-changing action (click/fill/select/keyboard/navigate/execute_js/
+ *     scroll/start_recording) waits for a 3s quiet window before running, and
+ *     gives up after 10s with a fixed "the user is interacting" message.
+ *     Read-only actions never wait.
  *
  * browserHost.cjs is a main-process module (`require('electron')` +
  * `require('./tauriHost.cjs')`), so this runs it under plain Node with both of
@@ -47,6 +57,13 @@ class FakeWebContents {
     this.destroyed = false;
     this.listeners = new Map();
     this.navigationHistory = { goBack() {}, goForward() {} };
+    this.isolatedScripts = [];
+    this.debugger = {
+      isAttached: () => false,
+      attach() {},
+      detach() {},
+      async sendCommand() { return { data: 'AAAA', cssContentSize: { width: 10, height: 10 } }; },
+    };
   }
 
   on(event, handler) {
@@ -67,13 +84,24 @@ class FakeWebContents {
   isDestroyed() { return this.destroyed; }
   getURL() { return this.url; }
   getTitle() { return this.title; }
-  focus() {}
+
+  /** Electron focuses the real webContents here, which fires its `focus` event. */
+  focus() { this.fire('focus'); }
+
+  sendInputEvent() {}
   reload() {}
   close() { this.destroyed = true; }
 
   async loadURL(url) {
     this.url = url;
     return undefined;
+  }
+
+  async executeJavaScriptInIsolatedWorld(_worldId, scripts) {
+    this.isolatedScripts.push(scripts);
+    // `drainSelections` is the only inspect call whose return value matters
+    // here; an empty drain keeps the session armed without emitting.
+    return [];
   }
 }
 
@@ -191,6 +219,34 @@ function contentsFor(tabId) {
   const found = contentsRegistry.get(tabId);
   assert.ok(found, `no fake webContents for tab ${tabId}`);
   return found;
+}
+
+/**
+ * The takeover backoff is a real-time wait (up to 10s), so the tests drive it
+ * through the module's injectable clock instead: `sleep()` advances virtual
+ * time by exactly the polling interval and records it, and `onSleep` lets a
+ * test simulate the user typing straight through the wait.
+ */
+function fakeClock(start = 1_000_000) {
+  const state = { t: start, sleeps: [], onSleep: null };
+  const clock = {
+    now: () => state.t,
+    async sleep(ms) {
+      state.t += ms;
+      state.sleeps.push(ms);
+      if (state.onSleep) state.onSleep();
+    },
+  };
+  return { state, clock };
+}
+
+const USER_TAKEOVER_MESSAGE =
+  'The user is currently interacting with this browser tab. Automation paused to avoid ' +
+  'conflicting with their input. Wait for them to finish, then re-read the page state ' +
+  '(snapshot) before continuing.';
+
+function typeInto(tabId) {
+  contentsFor(tabId).fire('before-input-event', {}, { type: 'keyDown', key: 'a' });
 }
 
 test('get_tabs isolates two conversations from each other', async () => {
@@ -399,6 +455,122 @@ test('a headless fallback view still belongs to the requesting conversation', as
     const legacyTabs = await getTabs(host);
     assert.equal(tabIds(legacyTabs).length, 1);
     assert.equal(legacyTabs.windows[0].tabs[0].url, 'https://example.com/');
+  } finally {
+    restore();
+  }
+});
+
+test('a state-changing action waits out the user\'s input, then proceeds', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab);
+    state.t += 2000; // 2s into the 3s quiet window — still "hands on keyboard"
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    assert.deepEqual(state.sleeps, [500, 500], 'polled twice, then the window went quiet');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/', 'the action ran after the wait');
+  } finally {
+    restore();
+  }
+});
+
+test('a state-changing action gives up with the pause message if the user never stops', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab);
+    // The user keeps typing through every poll — the recording must survive the
+    // wait, i.e. the wait itself must not be inside the AI-attribution window.
+    state.onSleep = () => typeInto(aTab);
+
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), (error) => {
+      assert.equal(error.message, USER_TAKEOVER_MESSAGE);
+      return true;
+    });
+
+    assert.equal(state.sleeps.length, 20, '10s of 500ms polls, then it stops trying');
+    assert.equal(contentsFor(aTab).url, 'about:blank', 'the action never ran');
+  } finally {
+    restore();
+  }
+});
+
+test('read-only actions are never held back by user interaction', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab); // the user is mid-keystroke right now
+
+    const shot = await host.performBrowserAutomation('screenshot', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+    });
+    assert.match(shot, /^data:image\/png;base64,/);
+    const tabs = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(tabs), [aTab]);
+
+    assert.deepEqual(state.sleeps, [], 'reading the page never waits on the user');
+  } finally {
+    restore();
+  }
+});
+
+test('automation\'s own focus and input do not count as user interaction', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    // `keyboard` focuses the webContents and injects key events — all of it
+    // inside the AI-attribution window, so none of it is the user.
+    await host.performBrowserAutomation('keyboard', { ownerId: OWNER_A, tabId: aTab, key: 'a' });
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, [], 'automation must not back off from itself');
+
+    // The same event, fired while no action is running, IS the user.
+    contentsFor(aTab).fire('focus');
+    await navigate(host, OWNER_A, aTab, 'https://example.org/');
+    assert.equal(state.sleeps.length, 6, 'waited out the full 3s quiet window');
+    assert.equal(contentsFor(aTab).url, 'https://example.org/');
+  } finally {
+    restore();
+  }
+});
+
+test('an armed inspect session backs automation off like live input', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const viewId = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+
+    // The user is picking an element in this very view.
+    await host.browserDispatch(null, 'browser_inspect_set', { id: viewId, enabled: true });
+
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), (error) => {
+      assert.equal(error.message, USER_TAKEOVER_MESSAGE);
+      return true;
+    });
+    assert.equal(state.sleeps.length, 20);
+
+    // Disarmed (also clears the poll timer, which would otherwise outlive the test).
+    await host.browserDispatch(null, 'browser_inspect_set', { id: viewId, enabled: false });
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, []);
   } finally {
     restore();
   }

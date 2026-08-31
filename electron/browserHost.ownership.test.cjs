@@ -745,6 +745,44 @@ test('a 2xx main-frame response clears that origin\'s backoff window', async () 
   }
 });
 
+test('a 429 returned after a redirect is attributed to the post-redirect origin, not the pre-redirect one', async () => {
+  // Electron's webRequest fires onHeadersReceived once per hop of a
+  // navigation, each carrying THAT hop's own response URL — a redirect
+  // Y -> X therefore fires twice: once for Y's 3xx, once for X's final
+  // response. Simulate exactly that shape and confirm the backoff lands on
+  // X (the origin that actually answered 429), not Y (the one the agent
+  // originally asked to visit).
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/start');
+
+    respond(fireHeadersReceived, 'https://y.example.com/start', 302); // redirect hop from Y
+    respond(fireHeadersReceived, 'https://x.example.com/final', 429); // final hop from X
+
+    // The redirect landed the tab on X.
+    await navigate(host, OWNER_A, aTab, 'https://x.example.com/final');
+
+    // A further gated action on that (now X-origin) tab is blocked.
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://x.example.com/final?retry=1'),
+      /Backing off for 1s/
+    );
+    assert.equal(contentsFor(aTab).url, 'https://x.example.com/final', 'no retry landed');
+
+    // A second, unrelated tab still on Y's origin is unaffected — the backoff
+    // must be keyed by X, not by Y (nor by anything else the redirect touched).
+    const bTab = tabIds(await getTabs(host, OWNER_B))[0];
+    await navigate(host, OWNER_B, bTab, 'https://y.example.com/other-page');
+    await navigate(host, OWNER_B, bTab, 'https://y.example.com/still-fine');
+    assert.equal(contentsFor(bTab).url, 'https://y.example.com/still-fine');
+  } finally {
+    restore();
+  }
+});
+
 test('a 429 on a subresource (non-main-frame) is not treated as the page rate-limiting', async () => {
   const { host, fireHeadersReceived, restore } = loadHost();
   try {

@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from './batchProgressStore';
 import { subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
+import { clearBrowserSignals, getRecentBrowserSignals } from '@/core/observability/browserSignals';
 
 function reset() {
   usePreviewStore.setState({
@@ -328,6 +329,75 @@ describe('previewStore', () => {
       const [t0] = usePreviewStore.getState().tabs;
       usePreviewStore.getState().closeTab(t0.id);
       expect(usePreviewStore.getState().previewFilePath).toBe('/a/2.md');
+    });
+  });
+
+  // ── tab_lifetime observability (batch 1, T5) ──────────────────────────
+  // Only the agent-automation adoption branch of openBrowser (a main-provided
+  // requestedId) counts as a browser-automation tab's "creation" — a plain
+  // user-opened browser tab is not necessarily automation-driven. closeTab
+  // reports 'closed' for any 'browser'-kind tab regardless of how it was
+  // opened, since the alive-duration signal degrades safely (aliveMs
+  // omitted) when there was no matching 'created' record.
+  describe('tab_lifetime signals', () => {
+    beforeEach(() => {
+      clearBrowserSignals();
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+    });
+
+    afterEach(() => {
+      clearBrowserSignals();
+      vi.useRealTimers();
+    });
+
+    function tabLifetimeSignals() {
+      return getRecentBrowserSignals().filter((s) => s.kind === 'tab_lifetime');
+    }
+
+    it('records "created" when an agent-adopted browser view is newly opened', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      expect(tabLifetimeSignals()).toEqual([
+        expect.objectContaining({ kind: 'tab_lifetime', event: 'created' }),
+      ]);
+    });
+
+    it('does not record "created" again when the same requestedId is re-adopted (reactivation, not a new tab)', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      expect(tabLifetimeSignals()).toHaveLength(1);
+    });
+
+    it('does not record "created" for a plain user-opened browser tab (no requestedId)', () => {
+      usePreviewStore.getState().openBrowser('https://example.com');
+      expect(tabLifetimeSignals()).toEqual([]);
+    });
+
+    it('records "closed" with the elapsed aliveMs for an agent-adopted tab', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      vi.advanceTimersByTime(2500);
+      usePreviewStore.getState().closeTab('agent-browser-1');
+
+      const closed = tabLifetimeSignals().find((s) => s.kind === 'tab_lifetime' && s.event === 'closed');
+      expect(closed).toMatchObject({ kind: 'tab_lifetime', event: 'closed', aliveMs: 2500 });
+    });
+
+    it('records "closed" without aliveMs for a browser tab that was never tracked as created', () => {
+      usePreviewStore.getState().openBrowser('https://example.com'); // plain branch — no 'created' recorded
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().closeTab(id);
+
+      const closed = tabLifetimeSignals();
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toMatchObject({ kind: 'tab_lifetime', event: 'closed' });
+      expect((closed[0] as { aliveMs?: number }).aliveMs).toBeUndefined();
+    });
+
+    it('does not record any tab_lifetime signal when closing a non-browser tab', () => {
+      usePreviewStore.getState().openPreview('/a/1.md');
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().closeTab(id);
+      expect(tabLifetimeSignals()).toEqual([]);
     });
   });
 

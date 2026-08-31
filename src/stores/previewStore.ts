@@ -2,6 +2,22 @@ import { create } from 'zustand';
 import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
+import {
+  buildBrowserSignalRecord,
+  noteTabClosed,
+  noteTabCreated,
+  safeRecordBrowserSignal,
+  type BrowserSignalContext,
+} from '@/core/observability/browserSignals';
+import { getPlatform } from '@/utils/platform';
+import { APP_VERSION } from '@/utils/version';
+
+/** Uniform observability context for a workspace-tab lifecycle signal.
+ *  `channel` is always 'builtin' here — this tracks the in-app right-panel
+ *  browser workspace tab, not a Chrome-extension-bridge action. */
+function tabLifetimeSignalContext(): BrowserSignalContext {
+  return { platform: getPlatform(), appVersion: APP_VERSION, channel: 'builtin', ts: Date.now() };
+}
 
 /**
  * Opening workspace content is an explicit "show me this" intent, so it must
@@ -234,6 +250,14 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         url,
       }];
       commitTabs(nextTabs, requestedId);
+      // Observability only (batch 1): a genuinely new agent-adopted browser
+      // view — never for the reactivation branch above, which is the same
+      // tab still alive, not a new one.
+      noteTabCreated(requestedId);
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { kind: 'tab_lifetime', event: 'created' },
+        tabLifetimeSignalContext(),
+      ));
       return requestedId;
     }
     const existing = tabs.find((t) => t.kind === 'browser' && t.url === url);
@@ -288,6 +312,17 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const { tabs, activeTabId } = get();
     const idx = tabs.findIndex((t) => t.id === id);
     if (idx === -1) return;
+    if (tabs[idx].kind === 'browser') {
+      // Observability only (batch 1): aliveMs is omitted (noteTabClosed
+      // returns undefined) when this tab was opened via the plain,
+      // non-agent-adopted branch of openBrowser, which never called
+      // noteTabCreated — safe degrade, not an error.
+      const aliveMs = noteTabClosed(id);
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { kind: 'tab_lifetime', event: 'closed', ...(aliveMs !== undefined ? { aliveMs } : {}) },
+        tabLifetimeSignalContext(),
+      ));
+    }
     const nextTabs = tabs.filter((t) => t.id !== id);
     let nextActiveId = activeTabId;
     if (activeTabId === id) {

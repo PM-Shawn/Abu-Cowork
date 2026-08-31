@@ -16,8 +16,11 @@ import { clearLogs, createLogger } from '@/core/logging/logger';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import {
   buildBrowserSignalRecord,
+  buildSchedulerDriftSignal,
   clearBrowserSignals,
+  clearSchedulerDriftSignals,
   recordBrowserSignal,
+  recordSchedulerDriftSignal,
   type BrowserSignalContext,
 } from '@/core/observability/browserSignals';
 
@@ -575,7 +578,10 @@ describe('collectBundleFiles — browser observability (batch 1, T3: raw signal 
       browserSignalCtx({ conversationId: 'conv-1' }),
     ));
 
-    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    // conv-1 must be selected for its signals to appear — see the
+    // "unselected conversations are filtered out" describe block below
+    // (fix-wave finding #2).
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: ['conv-1'] });
 
     expect(files['browser/signals.jsonl']).toBeDefined();
     const lines = String(files['browser/signals.jsonl']).split('\n');
@@ -673,7 +679,7 @@ describe('collectBundleFiles — browser observability (batch 1, T4: task summar
       browserSignalCtx({ conversationId: 'conv-1' }),
     ));
 
-    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: ['conv-1'] });
     const summary = JSON.parse(String(files['browser/summary.json']));
 
     expect(summary.fallbackCount).toBe(1);
@@ -697,5 +703,120 @@ describe('collectBundleFiles — browser observability (batch 1, T4: task summar
     const exported = String(files['browser/summary.json']);
     expect(exported).not.toContain(secret);
     expect(exported).toContain('[REDACTED]');
+  });
+
+  it('embeds taskEndInstrumented + a scope note so a 0 taskCount is not misread as "no browser activity" (fix-wave minor)', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const summary = JSON.parse(String(files['browser/summary.json']));
+    expect(summary.taskEndInstrumented).toBe(false);
+    expect(typeof summary.note).toBe('string');
+    expect(summary.note.length).toBeGreaterThan(0);
+  });
+});
+
+describe('collectBundleFiles — browser observability (fix-wave finding #1: scheduler drift export)', () => {
+  beforeEach(() => {
+    clearSchedulerDriftSignals();
+  });
+
+  afterEach(() => {
+    clearSchedulerDriftSignals();
+  });
+
+  it('embeds recorded scheduler drift signals as JSONL', async () => {
+    recordSchedulerDriftSignal(buildSchedulerDriftSignal('task-1', 1000, 1500));
+    recordSchedulerDriftSignal(buildSchedulerDriftSignal('task-2', 2000, 2100));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+
+    expect(files['browser/scheduler-drift.jsonl']).toBeDefined();
+    const lines = String(files['browser/scheduler-drift.jsonl']).split('\n');
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0])).toMatchObject({ taskId: 'task-1', driftMs: 500 });
+    expect(JSON.parse(lines[1])).toMatchObject({ taskId: 'task-2', driftMs: 100 });
+  });
+
+  it('produces an empty (but present) export when no drift signals were recorded', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    expect(files['browser/scheduler-drift.jsonl']).toBe('');
+  });
+
+  it('is not filtered by conversation selection — scheduler drift is task-scoped, not conversation-scoped', async () => {
+    recordSchedulerDriftSignal(buildSchedulerDriftSignal('task-1', 1000, 1500));
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    expect(String(files['browser/scheduler-drift.jsonl'])).toContain('task-1');
+  });
+});
+
+describe('collectBundleFiles — browser observability (fix-wave finding #2: unselected conversations are filtered out)', () => {
+  const convSelected = makeConversation('conv-selected-0000');
+  const convUnselected = makeConversation('conv-unselected-000');
+
+  beforeEach(() => {
+    clearBrowserSignals();
+    useChatStore.setState({
+      conversations: { [convSelected.id]: convSelected, [convUnselected.id]: convUnselected },
+      conversationIndex: {
+        [convSelected.id]: makeMeta(convSelected.id),
+        [convUnselected.id]: makeMeta(convUnselected.id),
+      },
+      activeConversationId: convSelected.id,
+    });
+  });
+
+  afterEach(() => {
+    clearBrowserSignals();
+  });
+
+  it('drops a browser signal tagged with a conversation the user did NOT select', async () => {
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: 'https://selected.example' },
+      browserSignalCtx({ conversationId: convSelected.id }),
+    ));
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: 'https://unselected.example' },
+      browserSignalCtx({ conversationId: convUnselected.id }),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [convSelected.id] });
+
+    const exported = String(files['browser/signals.jsonl']);
+    expect(exported).toContain('https://selected.example');
+    expect(exported).not.toContain('https://unselected.example');
+    expect(exported).not.toContain(convUnselected.id);
+  });
+
+  it('keeps a signal with no conversationId regardless of selection (nothing to filter against)', async () => {
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt', origin: 'https://global.example' },
+      browserSignalCtx(),
+    ));
+
+    // Explicit empty selection — a pure environment/feedback bundle.
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    expect(String(files['browser/signals.jsonl'])).toContain('https://global.example');
+  });
+
+  it('drops an unselected conversation signal from the summary aggregation too, not just the raw export', async () => {
+    recordBrowserSignal(buildBrowserSignalRecord(
+      { kind: 'confirm_prompt' },
+      browserSignalCtx({ conversationId: convUnselected.id }),
+    ));
+
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [convSelected.id] });
+    const summary = JSON.parse(String(files['browser/summary.json']));
+    expect(summary.confirmPromptCount).toBe(0);
+  });
+});
+
+describe('collectBundleFiles — manifest privacy bucket for browser/ (fix-wave finding #2)', () => {
+  it('classifies browser/* as scrubbed-config, not the diagnostic-metadata default', async () => {
+    const { files } = await collectBundleFiles({ includeRawText: true, conversationIds: [] });
+    const manifest = JSON.parse(String(files['manifest.json']));
+    const browserEntries = manifest.files.filter((entry: { path: string }) => entry.path.startsWith('browser/'));
+    expect(browserEntries.length).toBeGreaterThan(0);
+    for (const entry of browserEntries) {
+      expect(entry.privacy).toBe('scrubbed-config');
+    }
   });
 });

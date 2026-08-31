@@ -21,7 +21,13 @@ import { useScheduleStore } from '@/stores/scheduleStore';
 import { skillLoader } from '@/core/skill/loader';
 import { getRecentLogs, getLogDirPath } from '@/core/logging/logger';
 import { getRendererRuntimeTraceSnapshot } from '@/core/observability/runtimeTrace';
-import { getRecentBrowserSignals, summarizeBrowserSignals } from '@/core/observability/browserSignals';
+import {
+  BROWSER_SIGNALS_SCOPE_NOTE,
+  getRecentBrowserSignals,
+  getRecentSchedulerDriftSignals,
+  summarizeBrowserSignals,
+  TASK_END_INSTRUMENTED,
+} from '@/core/observability/browserSignals';
 import { catalogGetCount } from '@/core/session/conversationStorage';
 import { getElectronRuntimeDiagnostics } from '@/utils/electronHost';
 import { APP_VERSION } from '@/utils/version';
@@ -242,7 +248,15 @@ type ManifestPrivacy = 'diagnostic-metadata' | 'scrubbed-config' | 'user-content
 
 function manifestPrivacyFor(path: string): ManifestPrivacy {
   if (path.startsWith('conversations/') || path.startsWith('feedback/')) return 'user-content';
-  if (path.startsWith('settings/') || path.startsWith('mcp/') || path.startsWith('permissions/')) {
+  if (
+    path.startsWith('settings/') || path.startsWith('mcp/') || path.startsWith('permissions/')
+    // browser/ carries conversationId-tagged tool-call metadata (targetKey,
+    // origin, timing) — scrubbed and filtered to selected conversations
+    // (see collectBundleFiles), but still conversation-linked, so it belongs
+    // in the same manifest bucket as settings/mcp/permissions, not the
+    // catch-all diagnostic-metadata default.
+    || path.startsWith('browser/')
+  ) {
     return 'scrubbed-config';
   }
   return 'diagnostic-metadata';
@@ -601,32 +615,56 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
     files['logs/runtime.jsonl'] = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
   }
 
-  // ── browser/signals.jsonl + browser/summary.json ────────────────────
+  // ── browser/signals.jsonl + browser/summary.json + browser/scheduler-drift.jsonl ──
   // Raw dump + aggregated "browser task summary" from the browser-automation
   // observability rolling buffer (batch 1, core/observability/
   // browserSignals.ts) — tool_call/confirm_prompt/blocked_page/repeat_action/
-  // fallback_to_script/tab_lifetime/task_end events. In-memory only (never
-  // written to disk outside this export), capped at the module's rolling
-  // limit — see that module's doc for why this mirrors `logs/runtime.jsonl`'s
-  // existing ring-buffer-to-bundle pattern instead of adding a new
-  // continuous disk writer. The summary turns "the user got annoyed and
-  // reported a bug" into "the bundle already says which site/tool degraded"
-  // (F1.2/F1.3 — approximate success rate, confirm-prompt count, degraded/
-  // repeat/blocked counts, per-site×platform breakdown).
+  // fallback_to_script/tab_lifetime/task_end events, plus F1.4 scheduler
+  // trigger-drift signals. In-memory only (never written to disk outside
+  // this export), capped at the module's rolling limit — see that module's
+  // doc for why this mirrors `logs/runtime.jsonl`'s existing
+  // ring-buffer-to-bundle pattern instead of adding a new continuous disk
+  // writer. The summary turns "the user got annoyed and reported a bug"
+  // into "the bundle already says which site/tool degraded" (F1.2/F1.3 —
+  // approximate success rate, confirm-prompt count, degraded/repeat/blocked
+  // counts, per-site×platform breakdown).
+  //
+  // Privacy (fix-wave finding #2): every browser signal carries an OPTIONAL
+  // conversationId. The bundle's own README (see `generateReadme` above)
+  // promises unselected conversations are never included, so a signal
+  // tagged with a conversation the user did NOT select for this export must
+  // be filtered out just like that conversation's messages are — dumping
+  // the whole ring buffer unfiltered would leak which sites/tools an
+  // unselected conversation used. A signal with no conversationId at all
+  // (nothing to filter against) is always kept.
   try {
-    const browserSignals = getRecentBrowserSignals();
+    const selectedConversationIds = new Set(ids);
+    const browserSignals = getRecentBrowserSignals().filter(
+      (s) => s.conversationId === undefined || selectedConversationIds.has(s.conversationId),
+    );
     files['browser/signals.jsonl'] = browserSignals
       .map((s) => JSON.stringify(scrubSecrets(s)))
       .join('\n');
     files['browser/summary.json'] = JSON.stringify(
-      scrubSecrets(summarizeBrowserSignals(browserSignals)),
+      scrubSecrets({
+        ...summarizeBrowserSignals(browserSignals),
+        taskEndInstrumented: TASK_END_INSTRUMENTED,
+        note: BROWSER_SIGNALS_SCOPE_NOTE,
+      }),
       null,
       2,
     );
+    // Scheduler drift (F1.4) is task-scoped, not conversation-scoped — a
+    // ScheduledTask's taskId identifies the schedule, not a conversation —
+    // so it is not subject to the same per-conversation filter above.
+    files['browser/scheduler-drift.jsonl'] = getRecentSchedulerDriftSignals()
+      .map((s) => JSON.stringify(scrubSecrets(s)))
+      .join('\n');
   } catch (e) {
     const errorPayload = JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
     files['browser/signals.jsonl'] = errorPayload;
     files['browser/summary.json'] = errorPayload;
+    files['browser/scheduler-drift.jsonl'] = errorPayload;
   }
 
   // ── logs/YYYY-MM-DD.log ──────────────────────────────────────────────

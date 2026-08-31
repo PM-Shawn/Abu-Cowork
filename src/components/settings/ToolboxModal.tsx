@@ -19,6 +19,7 @@ import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
+import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
 import { Input } from '@/components/ui/input';
 
 // Tab ids surfaced by the Plugin System IA (labs flag LABS_PLUGIN_SYSTEM).
@@ -179,14 +180,10 @@ export default function ToolboxView() {
         : null;
 
     switch (activeTab) {
-      // Plugin IA placeholder — the real plugin list/management UI is Task 10's
-      // scope. This is intentionally minimal.
+      // Plugins own their sub-navigation (installed / marketplace) and the
+      // install-disclosure flow; the shared header search box feeds both.
       case 'plugins': {
-        return (
-          <div className="h-full flex items-center justify-center text-body text-[var(--abu-text-tertiary)]">
-            {t.toolbox.pluginsEmptyState}
-          </div>
-        );
+        return <PluginsTab searchQuery={toolboxSearchQuery} />;
       }
       case 'skills': {
         if (isEnterprise && capabilityScope === 'organization') {
@@ -274,7 +271,9 @@ export default function ToolboxView() {
     } else if (activeTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
     }
-    // activeTab === 'plugins' → no create control yet (Task 10's scope).
+    // activeTab === 'plugins' → no header create control: "add marketplace"
+    // only makes sense on the marketplace sub-tab, which PluginsTab owns, so
+    // the button lives there (and in its empty state) instead of here.
 
     return <>{scopeControl}{searchBox}{createControl}</>;
   };

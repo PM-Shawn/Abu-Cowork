@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Task 9: labs flag LABS_PLUGIN_SYSTEM switches the Toolbox's 3-tab IA from
 // skills/agents/mcp to plugins/skills/mcp. These tests cover only the tab
 // switch itself (registry entry, tab set per flag state, activeTab fallback,
-// plugin-tab placeholder) — not the plugin list UI (Task 10's scope).
+// which panel mounts) — not the plugin list UI itself, which is stubbed below
+// and covered by src/components/toolbox/plugins/*.test.tsx.
 
 const settingsState = {
   activeToolboxTab: 'skills' as 'skills' | 'agents' | 'mcp',
@@ -95,6 +96,14 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 vi.mock('@/core/skill/installer', () => ({ installSkillFromFolder: vi.fn() }));
 vi.mock('@/core/agent/installer', () => ({ installAgentFromFolder: vi.fn() }));
 vi.mock('@/stores/toastStore', () => ({ useToastStore: { getState: () => ({ addToast: vi.fn() }) } }));
+// The plugins panel owns its own filesystem/store plumbing (home resolution,
+// installed.json hydration, marketplace reads). Stub it here so this file
+// keeps testing the tab IA rather than re-testing Task 10's UI.
+vi.mock('@/components/toolbox/plugins/PluginsTab', () => ({
+  default: ({ searchQuery }: { searchQuery: string }) => (
+    <div data-testid="plugins-panel">plugins panel:{searchQuery}</div>
+  ),
+}));
 
 import ToolboxView from './ToolboxModal';
 
@@ -139,20 +148,20 @@ describe('ToolboxModal — Plugin System IA (LABS_PLUGIN_SYSTEM)', () => {
     labsFlagOn = true;
     render(<ToolboxView />);
 
-    // Must not render nothing — the Plugins placeholder content shows instead.
-    expect(screen.getByText('还没有安装任何插件')).toBeInTheDocument();
+    // Must not render nothing — the Plugins panel shows instead.
+    expect(screen.getByTestId('plugins-panel')).toBeInTheDocument();
     // Agents' own content must not render — that tab is gone under the IA.
     expect(screen.queryByText('Personal agents')).not.toBeInTheDocument();
   });
 
-  it('flag on: the Plugins tab shows the "no plugins installed" empty state', () => {
+  it('flag on: the Plugins tab mounts the plugins panel', () => {
     labsFlagOn = true;
     render(<ToolboxView />);
 
     // Default landing tab is 'skills' (mirrors the pre-flip activeToolboxTab);
-    // explicitly select Plugins to see its placeholder content.
+    // explicitly select Plugins to see its content.
     fireEvent.click(screen.getByRole('button', { name: '插件' }));
 
-    expect(screen.getByText('还没有安装任何插件')).toBeInTheDocument();
+    expect(screen.getByTestId('plugins-panel')).toBeInTheDocument();
   });
 });

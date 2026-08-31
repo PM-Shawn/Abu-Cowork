@@ -1396,6 +1396,51 @@ export interface TranslationDict {
      *  from `mcp` (used unchanged for the flag-off MCP tab) because en-US's
      *  `mcp` is literally "MCP", not a Connectors-flavored label. */
     connectors: string;
+    // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
+    pluginsInstalledTab: string;
+    pluginsMarketplaceTab: string;
+    pluginsAddMarketplace: string;
+    pluginsAddMarketplaceTitle: string;
+    pluginsMarketplaceDirLabel: string;
+    pluginsMarketplaceDirPlaceholder: string;
+    pluginsMarketplaceDirHint: string;
+    pluginsBrowseDir: string;
+    pluginsMarketplaceReadFailed: string;
+    pluginsNoMarketplaces: string;
+    pluginsNoMarketplacesHint: string;
+    pluginsRemoveMarketplace: string;
+    pluginsRemoveMarketplaceTitle: string;
+    pluginsRemoveMarketplaceMessage: string;
+    pluginsCategoryAll: string;
+    pluginsNoMatches: string;
+    pluginsEntryCount: string;
+    pluginsInstall: string;
+    pluginsAlreadyInstalled: string;
+    pluginsUninstall: string;
+    pluginsUninstallTitle: string;
+    pluginsUninstallMessage: string;
+    pluginsUninstallFailed: string;
+    pluginsSkillCount: string;
+    pluginsServerCount: string;
+    pluginsFromMarketplace: string;
+    pluginsGoToMarketplace: string;
+    /** Install disclosure — the screen that shows what executable code is coming in. */
+    pluginsDisclosureTitle: string;
+    pluginsDisclosureSubtitle: string;
+    pluginsDisclosureSource: string;
+    pluginsDisclosureSkills: string;
+    pluginsDisclosureServers: string;
+    pluginsDisclosureServersHint: string;
+    pluginsDisclosureCapabilities: string;
+    pluginsDisclosureNone: string;
+    pluginsDisclosureLoading: string;
+    pluginsInstalling: string;
+    pluginsInstallFailed: string;
+    pluginsInstallSucceeded: string;
+    pluginsRemoteSourceBadge: string;
+    pluginsUnsupportedTitle: string;
+    pluginsUnsupportedRemote: string;
+    pluginsPlanFailed: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;

@@ -6,8 +6,8 @@ import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
-import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal } from 'lucide-react';
+import { LABS_TODOS_INBOX , LABS_PLUGIN_SYSTEM } from '@/core/labs/registry';
+import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -84,6 +84,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const importConversation = useChatStore((s) => s.importConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
+  const showPluginIA = useLabsFlag(LABS_PLUGIN_SYSTEM);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -373,8 +374,14 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
               : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Wrench className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.toolbox}</span>
+          {showPluginIA ? (
+            <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          ) : (
+            <Wrench className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          )}
+          {/* The panel this opens is titled 「插件」 under the experiment; a
+              sidebar still reading 「工具箱」 would name the same place twice. */}
+          <span>{showPluginIA ? t.toolbox.plugins : t.sidebar.toolbox}</span>
         </button>
         <button
           onClick={() => { openAutomation(); setShowFileTree(false); }}

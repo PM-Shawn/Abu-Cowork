@@ -321,7 +321,7 @@ function KanbanCard({ task, team, agents, t, onOpen }: {
     ?? (task.memberRoleId ? roleLabel(agents, task.memberRoleId, t.team.unknownMember) : t.team.unknownTeam);
   return (
     <div
-      className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
+      className="rounded-lg bg-[var(--abu-bg-base)] border border-[var(--abu-border-subtle)] shadow-sm px-3 py-2.5 cursor-pointer hover:border-[var(--abu-border-hover)]"
       onClick={() => onOpen(task.id)}
       data-testid={`task-card-${task.id}`}
     >
@@ -459,11 +459,13 @@ export default function TeamView() {
           <div className="p-4 h-full overflow-x-auto">
             <div className="flex gap-3 h-full min-w-[640px]">
               {columns.map((col) => (
-                <div key={col.key} className="flex-1 min-w-0 flex flex-col" data-testid={`kanban-${col.key}`}>
-                  <div className="text-caption font-medium text-[var(--abu-text-secondary)] px-1 pb-2 shrink-0">
+                // Full-height tinted lane per column — a board, not floating
+                // groups (user feedback 2026-08-31).
+                <div key={col.key} className="flex-1 min-w-0 flex flex-col rounded-xl bg-[var(--abu-bg-muted)] p-2" data-testid={`kanban-${col.key}`}>
+                  <div className="text-caption font-medium text-[var(--abu-text-secondary)] px-1.5 pt-0.5 pb-2 shrink-0">
                     {col.title} <span className="text-[var(--abu-text-tertiary)]">{col.items.length}</span>
                   </div>
-                  <div className="space-y-2 overflow-y-auto flex-1">
+                  <div className="space-y-2 overflow-y-auto flex-1 min-h-0">
                     {col.items.map((task) => (
                       <KanbanCard key={task.id} task={task} team={teams.find((tm) => tm.id === task.teamId)} agents={agents} t={t} onOpen={setDetailTaskId} />
                     ))}

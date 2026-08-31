@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { useTeamStore, selectPendingTasks } from './teamStore';
 
 function reset() {
-  useTeamStore.setState({ teams: [], tasks: [] });
+  useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
 }
 
 describe('teamStore', () => {
@@ -117,6 +117,45 @@ describe('teamStore', () => {
       const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] });
       expect(() => useTeamStore.getState().createTask({ teamId: team.id, memberRoleId: 'role-x', goal: 'g' })).toThrow();
       expect(() => useTeamStore.getState().createTask({ goal: 'g' })).toThrow();
+    });
+  });
+
+
+  describe('pipelines', () => {
+    function acceptedTask() {
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'role-l', memberRoleIds: ['role-w'] });
+      const task = useTeamStore.getState().createTask({ teamId: team.id, goal: '出周报' });
+      useTeamStore.getState().proposePlan(task.id, {
+        items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+        doneWhen: ['有周报'],
+      });
+      useTeamStore.getState().updateTaskStatus(task.id, 'done');
+      return task;
+    }
+
+    it('saves a pipeline only from an accepted team task, freezing the template', () => {
+      const task = acceptedTask();
+      const pipe = useTeamStore.getState().savePipeline({ taskId: task.id, name: '周报流水线' });
+      expect(pipe.template).toHaveLength(1);
+      expect(pipe.goal).toBe('出周报');
+      expect(pipe.doneWhen).toEqual(['有周报']);
+      // Not-yet-accepted tasks refuse.
+      const team2 = useTeamStore.getState().createTeam({ name: 't2', leaderRoleId: 'r', memberRoleIds: [] });
+      const running = useTeamStore.getState().createTask({ teamId: team2.id, goal: 'g' });
+      expect(() => useTeamStore.getState().savePipeline({ taskId: running.id, name: 'x' })).toThrow();
+    });
+
+    it('auto-pauses after 2 consecutive failures and resets on success/resume', () => {
+      const task = acceptedTask();
+      const pipe = useTeamStore.getState().savePipeline({ taskId: task.id, name: 'p' });
+      expect(useTeamStore.getState().recordPipelineOutcome(pipe.id, false)).toBe(1);
+      expect(useTeamStore.getState().pipelines[0].pausedAt).toBeUndefined();
+      expect(useTeamStore.getState().recordPipelineOutcome(pipe.id, false)).toBe(2);
+      expect(useTeamStore.getState().pipelines[0].pausedAt).toBeDefined();
+      useTeamStore.getState().resumePipeline(pipe.id);
+      const after = useTeamStore.getState().pipelines[0];
+      expect(after.pausedAt).toBeUndefined();
+      expect(after.consecutiveFailures).toBe(0);
     });
   });
 });

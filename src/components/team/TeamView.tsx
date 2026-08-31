@@ -430,6 +430,14 @@ export default function TeamView() {
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
+  // Notification deep link: a notice click parks the target task id in the
+  // store; consume it once and open the detail.
+  const focusTaskId = useTeamStore((s) => s.focusTaskId);
+  useEffect(() => {
+    if (!focusTaskId) return;
+    setDetailTaskId(focusTaskId);
+    useTeamStore.getState().setFocusTaskId(null);
+  }, [focusTaskId]);
 
   useEffect(() => { setSearch(''); setToolboxSearchQuery(''); }, [activeTeamTab, setToolboxSearchQuery]);
 

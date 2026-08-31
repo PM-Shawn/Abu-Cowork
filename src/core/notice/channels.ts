@@ -125,6 +125,21 @@ async function jumpToConversation(id: string): Promise<void> {
   }
 }
 
+/** Team-task deep link: open the 团队 view and focus that task's detail. */
+async function jumpToTeamTask(taskId: string): Promise<void> {
+  try {
+    const [{ useSettingsStore }, { useTeamStore }] = await Promise.all([
+      import('@/stores/settingsStore'),
+      import('@/stores/teamStore'),
+    ]);
+    if (!useTeamStore.getState().tasks.some((task) => task.id === taskId)) return;
+    useSettingsStore.getState().openTeam('tasks');
+    useTeamStore.getState().setFocusTaskId(taskId);
+  } catch {
+    // Non-critical
+  }
+}
+
 function handleSystemNotification(notice: Notice): void {
   if (!notificationPermission) return;
 
@@ -132,6 +147,8 @@ function handleSystemNotification(notice: Notice): void {
   const body = getBody(notice);
   const conversationId =
     typeof notice.payload.conversationId === 'string' ? notice.payload.conversationId : null;
+  const teamTaskId =
+    typeof notice.payload.teamTaskId === 'string' ? notice.payload.teamTaskId : null;
 
   try {
     // Web Notification directly (the same underlying path plugin-notification's
@@ -141,7 +158,8 @@ function handleSystemNotification(notice: Notice): void {
     const n = new Notification(title, { body });
     n.onclick = () => {
       void focusMainWindow();
-      if (conversationId) void jumpToConversation(conversationId);
+      if (teamTaskId) void jumpToTeamTask(teamTaskId);
+      else if (conversationId) void jumpToConversation(conversationId);
     };
   } catch {
     // Permission might have been revoked

@@ -455,8 +455,8 @@ function notifyTaskSettled(taskId: string): void {
   if (!task) return;
   const team = useTeamStore.getState().teams.find((item) => item.id === task.teamId);
   if (task.status === 'pending_review') {
-    void notifyTeamTaskPendingReview(format(t.team.noticePendingReview, { team: team?.name ?? '', goal: task.goal.split('\n')[0].slice(0, 30) }));
+    void notifyTeamTaskPendingReview(format(t.team.noticePendingReview, { team: team?.name ?? '', goal: task.goal.split('\n')[0].slice(0, 30) }), taskId);
   } else if (task.status === 'blocked') {
-    void notifyTeamTaskBlocked(format(t.team.noticeBlocked, { team: team?.name ?? '', reason: task.statusNote ?? '' }));
+    void notifyTeamTaskBlocked(format(t.team.noticeBlocked, { team: team?.name ?? '', reason: task.statusNote ?? '' }), taskId);
   }
 }

@@ -37,7 +37,7 @@ vi.mock('@/utils/notifications', () => ({
   notifyTeamTaskBlocked: vi.fn(async () => undefined),
 }));
 
-import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask } from './orchestrator';
+import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask, runPipeline } from './orchestrator';
 
 function seed() {
   registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
@@ -49,7 +49,7 @@ function seed() {
 
 describe('team orchestrator', () => {
   beforeEach(() => {
-    useTeamStore.setState({ teams: [], tasks: [] });
+    useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     runCalls.length = 0;
     convCounter = 0;
@@ -211,6 +211,40 @@ describe('team orchestrator', () => {
       expect(after.plan?.items.find((i) => i.id === '2')?.state).toBe('pending');
       // Only the first member run fired.
       expect(runCalls.filter((c) => !c.message.includes('Plan the split'))).toHaveLength(1);
+    });
+  });
+
+  describe('runPipeline', () => {
+    function seedPipeline() {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [{ id: '1', memberRoleId: 'role-w', what: '写周报', produces: '周报.md', dependsOn: [], state: 'pending' }],
+        doneWhen: ['有周报'],
+      });
+      useTeamStore.getState().updateTaskStatus(ids.task.id, 'done');
+      return useTeamStore.getState().savePipeline({ taskId: ids.task.id, name: '周报流水线' });
+    }
+
+    it('runs from the frozen template with NO leader planning run', async () => {
+      const pipe = seedPipeline();
+      const result = await runPipeline(pipe.id);
+      expect(result.ok).toBe(true);
+      // Every run went straight to the member — no 'Plan the split' prompt.
+      expect(runCalls.some((c) => c.message.includes('Plan the split'))).toBe(false);
+      expect(runCalls.some((c) => c.message.includes('@writer'))).toBe(true);
+      const task = useTeamStore.getState().tasks.find((t) => t.id === result.taskId);
+      expect(task?.status).toBe('pending_review');
+      expect(useTeamStore.getState().pipelines[0].consecutiveFailures).toBe(0);
+    });
+
+    it('two failed runs auto-pause the pipeline; a paused pipeline refuses to run', async () => {
+      const pipe = seedPipeline();
+      runBehavior = async () => ({ reason: 'error', error: 'boom' });
+      await runPipeline(pipe.id);
+      await runPipeline(pipe.id);
+      expect(useTeamStore.getState().pipelines[0].pausedAt).toBeDefined();
+      const refused = await runPipeline(pipe.id);
+      expect(refused.ok).toBe(false);
     });
   });
 

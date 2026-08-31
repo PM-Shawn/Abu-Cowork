@@ -119,6 +119,10 @@ interface TeamState {
   teams: Team[];
   tasks: TeamTask[];
   pipelines: TeamPipeline[];
+  /** Ephemeral deep-link target: TeamView opens this task's detail and clears
+   *  it. Not persisted. */
+  focusTaskId: string | null;
+  setFocusTaskId: (id: string | null) => void;
 
   createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean }) => Team;
   updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval'>>) => void;
@@ -157,6 +161,8 @@ export const useTeamStore = create<TeamState>()(
       teams: [],
       tasks: [],
       pipelines: [],
+      focusTaskId: null,
+      setFocusTaskId: (id) => set({ focusTaskId: id }),
 
       createTeam: (input) => {
         const name = input.name.trim();

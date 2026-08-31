@@ -221,10 +221,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   },
 
   openBrowser: (url = '', requestedId) => {
-    const { tabs } = get();
+    const { tabs, activeTabId } = get();
     if (requestedId) {
       const requested = tabs.find((t) => t.id === requestedId);
       if (requested) {
+        // Re-entry for an already-adopted id (main's adoption poll re-finding
+        // the same view) is a deliberate re-open, not a new-tab event — keep
+        // today's re-activate behavior.
         commitTabs(tabs, requested.id);
         return requested.id;
       }
@@ -233,7 +236,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         kind: 'browser',
         url,
       }];
-      commitTabs(nextTabs, requestedId);
+      // Adopting a brand-new agent-created tab must not steal focus from a
+      // user who is actively watching a browser tab — add it in the
+      // background. If the user isn't on a browser tab (or has no tabs at
+      // all), activating it preserves today's single-task first-tab UX.
+      const currentActiveIsBrowser = tabs.find((t) => t.id === activeTabId)?.kind === 'browser';
+      commitTabs(nextTabs, currentActiveIsBrowser ? activeTabId : requestedId);
       return requestedId;
     }
     const existing = tabs.find((t) => t.kind === 'browser' && t.url === url);

@@ -5,12 +5,13 @@
  * then recursively copies the entire directory to ~/.abu/skills/{name}/.
  */
 
-import { readTextFile, readDir, readFile, writeFile, mkdir, exists, remove, rename } from '@tauri-apps/plugin-fs';
+import { readTextFile, readDir, readFile, writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
 import { checkSkill } from '@/core/enterprise/policy/matcher';
+import { atomicInstallDir } from '@/core/fsAtomic';
 
 export type InstallResult =
   | { ok: true; name: string; fileCount: number; skipped: string[] }
@@ -60,45 +61,20 @@ export async function installSkillFromFolder(
   //    "already exists" on the next attempt. On overwrite, the existing target is
   //    moved aside (not deleted) and restored if the swap fails, so a rename error
   //    never leaves the user with neither the old nor the new skill.
-  const stagingDir = joinPath(home, '.abu', 'skill-staging', name);
-  const backupDir = joinPath(home, '.abu', 'skill-staging', `__backup__${name}`);
+  //    (Shared with the agent/plugin installers via atomicInstallDir — see src/core/fsAtomic.ts.)
   const skipped: string[] = [];
+  let fileCount = 0;
   try {
-    if (await exists(stagingDir)) {
-      await remove(stagingDir, { recursive: true });
-    }
-    const fileCount = await copyDirectory(folderPath, stagingDir, skipped, true);
-
-    await mkdir(joinPath(home, '.abu', 'skills'), { recursive: true });
-
-    // Move any existing target aside so a failed swap can be rolled back.
-    const hadExisting = await exists(targetDir);
-    if (hadExisting) {
-      if (await exists(backupDir)) await remove(backupDir, { recursive: true });
-      await rename(targetDir, backupDir);
-    }
-    try {
-      await rename(stagingDir, targetDir);
-    } catch (swapErr) {
-      // Restore the original so the user never ends up with nothing.
-      if (hadExisting) {
-        try { await rename(backupDir, targetDir); } catch { /* best-effort restore */ }
-      }
-      throw swapErr;
-    }
-    // Swap succeeded — drop the backup.
-    if (hadExisting) {
-      try { await remove(backupDir, { recursive: true }); } catch { /* best-effort */ }
-    }
+    await atomicInstallDir({
+      targetDir,
+      workDir: joinPath(home, '.abu', 'skill-staging'),
+      write: async (stagingDir) => {
+        fileCount = await copyDirectory(folderPath, stagingDir, skipped, true);
+      },
+    });
 
     return { ok: true, name, fileCount, skipped };
   } catch (err) {
-    // Roll back the staging dir so nothing partial is left behind.
-    try {
-      await remove(stagingDir, { recursive: true });
-    } catch {
-      /* best-effort cleanup — staging may not exist yet */
-    }
     return { ok: false, code: 'COPY_FAILED', message: String(err) };
   }
 }

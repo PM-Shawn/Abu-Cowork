@@ -737,7 +737,9 @@ export type SkillSource =
   | 'project-standard'
   | 'workspace-auto'
   | 'draft'
-  | 'enterprise';
+  | 'enterprise'
+  /** Shipped inside an installed plugin package. Ranked below the user's own. */
+  | 'plugin';
 
 /**
  * User-facing skill categories surfaced in the Toolbox. This is a

@@ -1,0 +1,37 @@
+/**
+ * Where installed plugins' contributions live, for the systems that consume
+ * them: the skill loader (skills) and the tool approval policy (MCP servers).
+ *
+ * Both read from `installed.json` rather than scanning directories, so what a
+ * plugin is credited with is exactly what it declared at install time — the
+ * same list uninstall uses. Scanning would let a plugin gain contributions
+ * after the user approved its disclosure.
+ */
+
+import { joinPath } from '../../utils/pathUtils';
+import { readInstalled } from './installedStore';
+import { pluginInstallDir } from './paths';
+
+/**
+ * `skills/` root of every installed plugin, in install-record order.
+ *
+ * Ranked *below* the user's own skill directories by the loader: a
+ * hand-written skill must always win a name collision against one a plugin
+ * brought in.
+ */
+export async function pluginSkillDirs(home: string): Promise<string[]> {
+  const installed = await readInstalled(home);
+  return installed.map((p) =>
+    joinPath(pluginInstallDir(home, p.marketplace, p.name, p.version), 'skills'),
+  );
+}
+
+/** Every MCP server name contributed by an installed plugin, de-duplicated. */
+export async function pluginMcpServerNames(home: string): Promise<string[]> {
+  const installed = await readInstalled(home);
+  const names = new Set<string>();
+  for (const plugin of installed) {
+    for (const server of plugin.contributed.mcpServers) names.add(server);
+  }
+  return [...names];
+}

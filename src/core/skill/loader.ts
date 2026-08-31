@@ -4,6 +4,7 @@ import { homeDir, appDataDir, resolve, resolveResource } from '@tauri-apps/api/p
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
 import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
+import { pluginSkillDirs } from '../plugin/skillRoots';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
 
 /**
@@ -138,7 +139,8 @@ export class SkillLoader {
    *   ALWAYS:
    *     5. ~/.abu/skills/                        (user global)
    *     6. ~/.agents/skills/                     (standard cross-client)
-   *     7. <resource>/builtin-skills/            (bundled)
+   *     7. ~/.abu/plugin-packages/…/skills/      (plugin, below the user's own)
+   *     8. <resource>/builtin-skills/            (bundled)
    *
    * With `workspacePath=null`, steps 1-4 are skipped and the loader
    * returns only the global + builtin set.
@@ -205,6 +207,16 @@ export class SkillLoader {
       { path: joinPath(home, '.abu/skills'), source: 'user' },
       { path: joinPath(home, '.agents/skills'), source: 'standard' },
     );
+
+    // Skills contributed by installed plugins. Ranked *below* the user's own
+    // and the cross-client standard dir on purpose: a skill the user wrote by
+    // hand must win a name collision against one a plugin brought in, never
+    // the other way round. Roots come from the install record rather than a
+    // directory scan, so a plugin is credited with exactly what its
+    // disclosure said it would contribute.
+    for (const dir of await pluginSkillDirs(home)) {
+      dirs.push({ path: dir, source: 'plugin' });
+    }
 
     // Enterprise-installed skills (AppData/skills/enterprise/<name>/SKILL.md).
     // Each sub-directory is a separate skill package written by installer.ts.

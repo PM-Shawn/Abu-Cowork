@@ -35,12 +35,12 @@ export interface Marketplace {
 }
 
 export class MarketplaceParseError extends Error {
-  constructor(
-    message: string,
-    public readonly field?: string,
-  ) {
+  readonly field?: string;
+
+  constructor(message: string, field?: string) {
     super(message);
     this.name = 'MarketplaceParseError';
+    this.field = field;
   }
 }
 

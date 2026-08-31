@@ -49,12 +49,12 @@ export interface PluginManifest {
 
 /** 清单校验失败时抛出；field 指向具体不合法的字段路径，便于上层定位报错。 */
 export class PluginManifestError extends Error {
-  constructor(
-    message: string,
-    public readonly field?: string
-  ) {
+  readonly field?: string;
+
+  constructor(message: string, field?: string) {
     super(message);
     this.name = 'PluginManifestError';
+    this.field = field;
   }
 }
 

@@ -46,11 +46,17 @@ function useOutsideClose(
 /**
  * Anchor the dropdown to the trigger with fixed positioning in a portal, so
  * it can never be clipped by a dialog's overflow container (the bug this
- * replaced: absolute positioning inside DialogShell's scroll area). Flips
- * upward when the space below the trigger is too tight, and tracks scroll
- * (capture phase — dialog bodies scroll, not the window) and resize.
+ * replaced: absolute positioning inside DialogShell's scroll area).
+ *
+ * Placement (user feedback 2026-08-31): always open DOWNWARD — when the space
+ * below is short, shrink the list (it scrolls internally) instead of flipping.
+ * Only when the below-space is unusably small (< MIN_BELOW) does it fall back
+ * to opening upward. Tracks capture-phase scroll (dialog bodies scroll, not
+ * the window) and resize.
  */
 const DROPDOWN_MAX_HEIGHT = 300;
+const DROPDOWN_MIN_BELOW = 140;
+const DROPDOWN_MARGIN = 12;
 
 function useAnchoredRect(open: boolean, triggerRef: React.RefObject<HTMLElement | null>) {
   const [style, setStyle] = React.useState<React.CSSProperties | null>(null);
@@ -59,15 +65,25 @@ function useAnchoredRect(open: boolean, triggerRef: React.RefObject<HTMLElement 
     const update = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
-      const openUp = rect.bottom + DROPDOWN_MAX_HEIGHT > window.innerHeight && rect.top > DROPDOWN_MAX_HEIGHT;
-      setStyle({
-        position: 'fixed',
-        left: rect.left,
-        width: rect.width,
-        ...(openUp
-          ? { bottom: window.innerHeight - rect.top + 4 }
-          : { top: rect.bottom + 4 }),
-      });
+      const below = window.innerHeight - rect.bottom - DROPDOWN_MARGIN;
+      if (below >= DROPDOWN_MIN_BELOW) {
+        setStyle({
+          position: 'fixed',
+          left: rect.left,
+          width: rect.width,
+          top: rect.bottom + 4,
+          maxHeight: Math.min(DROPDOWN_MAX_HEIGHT, below),
+        });
+      } else {
+        const above = rect.top - DROPDOWN_MARGIN;
+        setStyle({
+          position: 'fixed',
+          left: rect.left,
+          width: rect.width,
+          bottom: window.innerHeight - rect.top + 4,
+          maxHeight: Math.min(DROPDOWN_MAX_HEIGHT, above),
+        });
+      }
     };
     update();
     window.addEventListener('scroll', update, true);
@@ -120,8 +136,8 @@ const Dropdown = React.forwardRef<HTMLDivElement, {
       o.label.toLowerCase().includes(q) || (o.description ?? '').toLowerCase().includes(q));
   }, [options, query]);
   return (
-    <div ref={ref} style={style} className="z-[10001] rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
-      <div className="relative px-1 pb-1.5">
+    <div ref={ref} style={style} className="z-[10001] flex flex-col rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-lg p-1.5" role="listbox">
+      <div className="relative px-1 pb-1.5 shrink-0">
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
         <Input
           autoFocus
@@ -132,7 +148,7 @@ const Dropdown = React.forwardRef<HTMLDivElement, {
           data-testid="search-select-query"
         />
       </div>
-      <div className="max-h-56 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {filtered.length === 0
           ? <div className="px-3 py-3 text-caption text-[var(--abu-text-tertiary)]">{emptyText}</div>
           : filtered.map((o) => <OptionRow key={o.value} option={o} selected={isSelected(o.value)} onPick={() => onPick(o.value)} />)}

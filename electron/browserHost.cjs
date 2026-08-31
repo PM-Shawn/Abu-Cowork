@@ -140,7 +140,47 @@ const recentDownloads = [];
 
 let browserSession = null;
 let automationRuntime = null;
-let activeAutomationTabId = null;
+
+/**
+ * ## Tab ownership (per conversation)
+ *
+ * Browser automation tabs used to live in one global pool with a single
+ * "current tab": two conversations driving the browser at the same time saw
+ * each other's tabs in `get_tabs`, and either one's action silently moved the
+ * other's current tab. Every automation view now records the conversation that
+ * opened it, and every "current tab" record is keyed by that owner.
+ *
+ * `ownerKey` is `payload.ownerId` (the conversation id threaded down from the
+ * MCP tool call) or `LEGACY_OWNER` when a caller sends none — legacy is also
+ * what the user's own pane tabs get, and it stays visible to everyone so the
+ * single-conversation behavior is unchanged.
+ */
+const LEGACY_OWNER = 'legacy';
+
+/** view id -> { ownerKey, createdAt }. Absent ⇒ legacy (see `ownerKeyOf`). */
+const viewMeta = new Map();
+
+/** ownerKey -> webContents.id of that owner's most recently touched tab. */
+const activeTabIdByOwner = new Map();
+
+/**
+ * view id -> ownerKey, for automation views awaiting renderer adoption.
+ * `createAutomationView()` registers the owner BEFORE emitting
+ * `browser://automation-open`, because the renderer answers by calling
+ * `browser_create` with the same id — possibly before the emit even returns —
+ * and `browserCreate()` is where the adopted view's meta gets written.
+ */
+const pendingAutomationOwners = new Map();
+
+function ownerKeyOf(id) {
+  const meta = viewMeta.get(id);
+  return meta ? meta.ownerKey : LEGACY_OWNER;
+}
+
+function resolveOwnerKey(payload) {
+  const raw = payload && typeof payload.ownerId === 'string' ? payload.ownerId.trim() : '';
+  return raw || LEGACY_OWNER;
+}
 
 function isInspectPayload(value) {
   if (!value || typeof value !== 'object' || typeof value.outerHTML !== 'string') return false;
@@ -315,34 +355,61 @@ function configureBrowserView(id, view) {
     if (isMainFrame) resetAutomationRuntime();
   });
   contents.on('focus', () => {
-    activeAutomationTabId = automationTabId;
+    // The user focusing a view makes it that view OWNER's current tab, never
+    // anyone else's.
+    activeTabIdByOwner.set(ownerKeyOf(id), automationTabId);
   });
   contents.on('did-navigate', onNav);
   contents.on('did-navigate-in-page', onNav);
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
-    if (activeAutomationTabId === automationTabId) activeAutomationTabId = null;
+    viewMeta.delete(id);
+    for (const [ownerKey, tabId] of activeTabIdByOwner) {
+      if (tabId === automationTabId) activeTabIdByOwner.delete(ownerKey);
+    }
     if (views.get(id) === view) views.delete(id);
   });
 }
 
-function findViewByTabId(tabId) {
+/**
+ * @param {unknown} tabId
+ * @param {string} ownerKey the calling conversation's owner key
+ * @returns {{id: string, view: import('electron').WebContentsView} | null}
+ *   null when no live view has that webContents id (callers keep their own
+ *   "not found" message); THROWS when the tab exists but belongs to another
+ *   conversation — a silent miss there would look like "the tab vanished" and
+ *   send the model into a retry loop on someone else's tab.
+ */
+function findViewByTabId(tabId, ownerKey = LEGACY_OWNER) {
   const numeric = Number(tabId);
   if (!Number.isInteger(numeric)) return null;
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (contents && !contents.isDestroyed() && contents.id === numeric) {
+      const tabOwner = ownerKeyOf(id);
+      // A legacy tab (the user's own pane tab) may be driven by anyone, and
+      // doing so does NOT claim it — ownership stays legacy.
+      if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) {
+        throw new Error(
+          `Browser tab ${tabId} belongs to another conversation's task. ` +
+            'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+        );
+      }
       return { id, view };
     }
   }
   return null;
 }
 
-async function createAutomationView() {
+async function createAutomationView(ownerKey = LEGACY_OWNER) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
   const id = `${AUTOMATION_VIEW_PREFIX}-${crypto.randomBytes(8).toString('hex')}`;
+  // Register the owner before emitting: the renderer's adoption calls back
+  // into browserCreate() synchronously on the main process, and that is where
+  // the pending owner is consumed.
+  pendingAutomationOwners.set(id, ownerKey);
   emit('browser://automation-open', { id, url: 'about:blank' });
 
   // The production renderer adopts agent-created tabs into its normal browser
@@ -352,12 +419,19 @@ async function createAutomationView() {
   while (Date.now() < deadline) {
     const adopted = views.get(id);
     if (adopted?.webContents && !adopted.webContents.isDestroyed()) {
-      activeAutomationTabId = adopted.webContents.id;
+      // browserCreate() normally wrote the meta already; keep the owner even if
+      // some other path ever adopts the id.
+      if (!viewMeta.has(id)) viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+      pendingAutomationOwners.delete(id);
+      activeTabIdByOwner.set(ownerKeyOf(id), adopted.webContents.id);
       return adopted;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
+  // Adoption did not happen — drop the pending entry before anything that can
+  // throw, so a failed view construction cannot strand it in the map.
+  pendingAutomationOwners.delete(id);
   const view = new WebContentsView({
     webPreferences: {
       sandbox: true,
@@ -366,22 +440,30 @@ async function createAutomationView() {
       session: browserSessionForViews(),
     },
   });
+  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
   configureBrowserView(id, view);
   win.contentView.addChildView(view);
   view.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
   view.setVisible(false);
   views.set(id, view);
-  activeAutomationTabId = view.webContents.id;
+  activeTabIdByOwner.set(ownerKey, view.webContents.id);
   void view.webContents.loadURL('about:blank');
   return view;
 }
 
-async function automationTabs() {
+/**
+ * The tabs `ownerKey` is allowed to see: its own plus the legacy pool (the
+ * user's pane tabs and any caller that sent no owner). A legacy caller sees
+ * only legacy tabs — never another conversation's.
+ */
+async function automationTabs(ownerKey = LEGACY_OWNER) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (!contents || contents.isDestroyed()) continue;
     if (!automationDocumentAllowed(contents.getURL())) continue;
+    const tabOwner = ownerKeyOf(id);
+    if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) continue;
     tabs.push({
       id,
       view,
@@ -391,7 +473,7 @@ async function automationTabs() {
     });
   }
   if (tabs.length === 0) {
-    const view = await createAutomationView();
+    const view = await createAutomationView(ownerKey);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
@@ -400,8 +482,8 @@ async function automationTabs() {
       title: view.webContents.getTitle(),
     });
   }
-  if (!tabs.some((tab) => tab.tabId === activeAutomationTabId)) {
-    activeAutomationTabId = tabs[0].tabId;
+  if (!tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(ownerKey))) {
+    activeTabIdByOwner.set(ownerKey, tabs[0].tabId);
   }
   return tabs;
 }
@@ -541,18 +623,21 @@ async function screenshotAutomation(view, fullPage) {
 }
 
 async function performBrowserAutomation(action, payload = {}) {
+  const ownerKey = resolveOwnerKey(payload);
+
   if (action === 'get_tabs') {
-    const tabs = await automationTabs();
+    const tabs = await automationTabs(ownerKey);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
+    const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
     return {
       summary: {
         totalWindows: 1,
         totalTabs: tabs.length,
         currentWindowId: windowId,
-        currentTabId: activeAutomationTabId,
-        currentTabUrl: tabs.find((tab) => tab.tabId === activeAutomationTabId)?.url || '',
-        currentTabTitle: tabs.find((tab) => tab.tabId === activeAutomationTabId)?.title || '',
+        currentTabId,
+        currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
+        currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
       },
       windows: [{
@@ -562,8 +647,8 @@ async function performBrowserAutomation(action, payload = {}) {
           tabId: tab.tabId,
           url: tab.url,
           title: tab.title,
-          active: tab.tabId === activeAutomationTabId,
-          isCurrentTab: tab.tabId === activeAutomationTabId,
+          active: tab.tabId === currentTabId,
+          isCurrentTab: tab.tabId === currentTabId,
         })),
       }],
     };
@@ -572,12 +657,12 @@ async function performBrowserAutomation(action, payload = {}) {
   if (action === 'get_downloads') return recentDownloads.map((item) => ({ ...item }));
 
   const targetTabId = payload.tabId === undefined && action === 'get_html'
-    ? activeAutomationTabId
+    ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
-  const match = findViewByTabId(targetTabId);
+  const match = findViewByTabId(targetTabId, ownerKey);
   if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
-  activeAutomationTabId = view.webContents.id;
+  activeTabIdByOwner.set(ownerKey, view.webContents.id);
 
   if (action === 'navigate') return navigateAutomationTab(view, payload);
   assertAutomationDocumentAllowed(view);
@@ -671,6 +756,13 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
     },
   });
 
+  // An id the renderer is adopting on behalf of an automation call carries a
+  // pending owner (see createAutomationView); anything else — a tab the user
+  // opened in the pane — is legacy and stays visible to every caller.
+  const ownerKey = pendingAutomationOwners.get(id) ?? LEGACY_OWNER;
+  pendingAutomationOwners.delete(id);
+  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+
   configureBrowserView(id, view);
 
   const shouldShow = visible !== false;
@@ -682,7 +774,7 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   view.setBounds(toRect(x, y, width, height));
   if (!shouldShow) view.setVisible(false);
   views.set(id, view);
-  activeAutomationTabId = view.webContents.id;
+  activeTabIdByOwner.set(ownerKey, view.webContents.id);
 
   const target = url || 'about:blank';
   void view.webContents.loadURL(parseUrl(target));
@@ -763,7 +855,8 @@ function browserShow({ id }) {
   const view = getView(id);
   if (view) {
     view.setVisible(true);
-    if (view.webContents) activeAutomationTabId = view.webContents.id;
+    // The user switching pane tabs updates that tab OWNER's current tab only.
+    if (view.webContents) activeTabIdByOwner.set(ownerKeyOf(id), view.webContents.id);
   }
   return null;
 }
@@ -787,6 +880,10 @@ function closeView(id, view) {
     /* already gone — best-effort */
   }
   views.delete(id);
+  // `destroyed` also clears these, but it never fires when the window is torn
+  // down under us (app quit) — don't leak the ownership record.
+  viewMeta.delete(id);
+  pendingAutomationOwners.delete(id);
 }
 
 function browserClose({ id }) {

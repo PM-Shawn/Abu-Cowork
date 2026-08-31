@@ -39,6 +39,9 @@ describe('SandboxSection platform gating', () => {
       expect(screen.getByText(t().settings.sandboxProtection)).toBeInTheDocument();
       expect(screen.getByText(t().settings.sandboxProtectionDescription)).toBeInTheDocument();
       expect(screen.queryByText(t().settings.sandboxMacOSOnly)).not.toBeInTheDocument();
+      // App-layer notice is a Windows affordance (there it IS the path
+      // defense); macOS keeps its Seatbelt-focused layout without it.
+      expect(screen.queryByText(t().settings.sandboxAppLayerProtection)).not.toBeInTheDocument();
     });
 
     it('shows the macOS disable warning when toggling off', async () => {
@@ -60,6 +63,17 @@ describe('SandboxSection platform gating', () => {
       // backend sandboxed anyway. Guard against regressing to that.
       expect(screen.queryByText(t().settings.sandboxMacOSOnly)).not.toBeInTheDocument();
       expect(screen.queryByText(t().settings.sandboxProtectionDescription)).not.toBeInTheDocument();
+    });
+
+    it('uses the Windows section description (macOS one claims path isolation)', () => {
+      render(<SandboxSection />);
+      expect(screen.getByText(t().settings.sandboxDescriptionWindows)).toBeInTheDocument();
+      expect(screen.queryByText(t().settings.sandboxDescription)).not.toBeInTheDocument();
+    });
+
+    it('keeps the always-visible app-layer protection notice Windows users had', () => {
+      render(<SandboxSection />);
+      expect(screen.getByText(t().settings.sandboxAppLayerProtection)).toBeInTheDocument();
     });
 
     it('renders network isolation with the Windows (proxy env var) description', () => {

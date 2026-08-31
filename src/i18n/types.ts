@@ -843,6 +843,7 @@ export interface TranslationDict {
     sandboxDisableWarning: string;
     // Sandbox — Windows-specific copy (restricted token + PowerShell CLM,
     // no file-path isolation; see electron/commandHost.cjs + sandbox-launcher)
+    sandboxDescriptionWindows: string;
     sandboxProtectionDescriptionWindows: string;
     sandboxWindowsMechanism: string;
     sandboxWindowsScope: string;

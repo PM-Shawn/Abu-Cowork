@@ -9,15 +9,25 @@ import { isMacOS, isWindows } from '@/utils/platform';
 import { getSettingsReader } from '@/core/agent/ports/settingsReader';
 import { invoke } from '@tauri-apps/api/core';
 
+/**
+ * Whether this platform has an OS-level sandbox backend at all.
+ * Single source of truth for platform capability — the settings UI
+ * (SandboxSection) must gate on this, not re-derive its own platform
+ * list, so adding a platform here can't silently drift from the UI.
+ */
+export function isOsSandboxCapable(): boolean {
+  return isMacOS() || isWindows();
+}
+
 /** Whether OS-level sandbox should be enabled for shell commands */
 export function isSandboxEnabled(): boolean {
-  if (!isMacOS() && !isWindows()) return false;
+  if (!isOsSandboxCapable()) return false;
   return getSettingsReader().getSnapshot().sandboxEnabled;
 }
 
 /** Whether network isolation (proxy-based domain whitelist) is enabled */
 export function isNetworkIsolationEnabled(): boolean {
-  if (!isMacOS() && !isWindows()) return false;
+  if (!isOsSandboxCapable()) return false;
   const state = getSettingsReader().getSnapshot();
   return state.sandboxEnabled && state.networkIsolationEnabled;
 }
@@ -26,7 +36,7 @@ let proxyStarted = false;
 
 /** Start the network proxy if network isolation is enabled. Call once at app init. */
 export async function initNetworkProxy(): Promise<void> {
-  if (proxyStarted || (!isMacOS() && !isWindows())) return;
+  if (proxyStarted || !isOsSandboxCapable()) return;
 
   const state = getSettingsReader().getSnapshot();
   if (!state.networkIsolationEnabled) return;

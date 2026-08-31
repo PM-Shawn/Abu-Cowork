@@ -18,6 +18,15 @@ import { evaluateQueryJsOnHtml } from './queryJs.js';
  */
 export const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
 
+/**
+ * MCP `_meta` key that suppresses `get_tabs`' "provision a tab when the caller
+ * owns none" behavior, for callers that need a strictly read-only tab listing
+ * (the desktop app's browser permission gate resolves the target tab's origin
+ * this way, and must not open a tab while deciding whether to allow one).
+ * Same `_meta`-not-input-schema and duplication rationale as above.
+ */
+export const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
+
 export interface BrowserTransportResponse {
   success: boolean;
   data?: unknown;
@@ -92,6 +101,16 @@ function ownerFromExtra(extra: unknown): string | undefined {
   return typeof owner === 'string' ? owner : undefined;
 }
 
+/**
+ * `false` only when the caller explicitly opted out of tab provisioning;
+ * `undefined` otherwise, so the payload keeps its historical shape (and the
+ * host keeps its create-when-empty default) for every other caller.
+ */
+function createIfEmptyFromExtra(extra: unknown): false | undefined {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  return meta?.[ABU_CREATE_IF_EMPTY_META_KEY] === false ? false : undefined;
+}
+
 function formatResult(response: BrowserTransportResponse): string {
   if (!response.success) {
     return `Error: ${response.error ?? 'Unknown error'}`;
@@ -145,7 +164,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async (extra) => {
       await ensureConnected(transport);
       const ownerId = ownerFromExtra(extra);
-      const res = await transport.send('get_tabs', ownerId ? { ownerId } : {});
+      const createIfEmpty = createIfEmptyFromExtra(extra);
+      const res = await transport.send('get_tabs', {
+        ...(ownerId ? { ownerId } : {}),
+        ...(createIfEmpty === false ? { createIfEmpty: false } : {}),
+      });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

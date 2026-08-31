@@ -165,6 +165,14 @@ function getTabs(host, ownerId) {
   return host.performBrowserAutomation('get_tabs', ownerId ? { ownerId } : {});
 }
 
+/** A read-only listing: never provisions a view for an owner that has none. */
+function probeTabs(host, ownerId) {
+  return host.performBrowserAutomation('get_tabs', {
+    ...(ownerId ? { ownerId } : {}),
+    createIfEmpty: false,
+  });
+}
+
 function tabIds(result) {
   return result.windows[0].tabs.map((tab) => tab.tabId);
 }
@@ -200,6 +208,44 @@ test('get_tabs isolates two conversations from each other', async () => {
     assert.deepEqual(tabIds(aAgain), tabIds(aTabs));
     const bAgain = await getTabs(host, OWNER_B);
     assert.deepEqual(tabIds(bAgain), tabIds(bTabs));
+  } finally {
+    restore();
+  }
+});
+
+test('get_tabs with createIfEmpty:false lists without provisioning a view', async () => {
+  // The desktop app's browser permission gate resolves the target tab's origin
+  // with an internal get_tabs BEFORE deciding whether the action is allowed.
+  // If that query provisioned a view, a denied action would still have left a
+  // phantom tab behind (and, via adoption, a visible one).
+  const { host, emitted, restore } = loadHost();
+  try {
+    const probe = await probeTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(probe), [], 'an owner with no tabs gets an empty list');
+    assert.equal(probe.summary.totalTabs, 0);
+    assert.equal(probe.summary.currentTabId, null);
+    assert.equal(
+      emitted.some((entry) => entry.event === 'browser://automation-open'),
+      false,
+      'a read-only probe must not open an automation view'
+    );
+
+    // Once the owner really has a tab, the probe sees it like any other caller.
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [aTab]);
+
+    // ...and it still respects ownership: another conversation sees nothing.
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B)), []);
+  } finally {
+    restore();
+  }
+});
+
+test('get_tabs still provisions a view by default (unchanged for every other caller)', async () => {
+  const { host, restore } = loadHost();
+  try {
+    assert.equal(tabIds(await getTabs(host, OWNER_A)).length, 1);
+    assert.equal(tabIds(await host.performBrowserAutomation('get_tabs', {})).length, 1);
   } finally {
     restore();
   }

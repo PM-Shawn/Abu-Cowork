@@ -363,11 +363,17 @@ function configureBrowserView(id, view) {
   contents.on('did-navigate-in-page', onNav);
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
-    viewMeta.delete(id);
     for (const [ownerKey, tabId] of activeTabIdByOwner) {
       if (tabId === automationTabId) activeTabIdByOwner.delete(ownerKey);
     }
-    if (views.get(id) === view) views.delete(id);
+    // Identity guard (same as the `views` line below): a view recreated under
+    // the SAME id before this teardown runs must not have its ownership record
+    // wiped — that would silently downgrade the live new view to legacy and
+    // hand it to every other conversation.
+    if (views.get(id) === view) {
+      viewMeta.delete(id);
+      views.delete(id);
+    }
   });
 }
 
@@ -458,8 +464,18 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
  * The tabs `ownerKey` is allowed to see: its own plus the legacy pool (the
  * user's pane tabs and any caller that sent no owner). A legacy caller sees
  * only legacy tabs — never another conversation's.
+ *
+ * `createIfEmpty` (default true, the historical behavior) provisions a fresh
+ * automation view when the owner has none, so `get_tabs` can bootstrap a task
+ * that has not opened a tab yet. Read-only probes — notably the desktop app's
+ * browser permission gate, which resolves a tab's origin BEFORE deciding
+ * whether the action is even allowed — pass false: a query must not be the
+ * thing that opens a tab.
+ *
+ * @param {string} [ownerKey]
+ * @param {boolean} [createIfEmpty]
  */
-async function automationTabs(ownerKey = LEGACY_OWNER) {
+async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
@@ -475,7 +491,7 @@ async function automationTabs(ownerKey = LEGACY_OWNER) {
       title: contents.getTitle(),
     });
   }
-  if (tabs.length === 0) {
+  if (tabs.length === 0 && createIfEmpty) {
     const view = await createAutomationView(ownerKey);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
@@ -485,7 +501,7 @@ async function automationTabs(ownerKey = LEGACY_OWNER) {
       title: view.webContents.getTitle(),
     });
   }
-  if (!tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(ownerKey))) {
+  if (tabs.length > 0 && !tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(ownerKey))) {
     activeTabIdByOwner.set(ownerKey, tabs[0].tabId);
   }
   return tabs;
@@ -629,7 +645,7 @@ async function performBrowserAutomation(action, payload = {}) {
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
-    const tabs = await automationTabs(ownerKey);
+    const tabs = await automationTabs(ownerKey, payload.createIfEmpty !== false);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;

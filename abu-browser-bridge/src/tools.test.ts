@@ -14,7 +14,12 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { ABU_CONVERSATION_META_KEY, registerTools, type BrowserTransport } from './tools.js';
+import {
+  ABU_CONVERSATION_META_KEY,
+  ABU_CREATE_IF_EMPTY_META_KEY,
+  registerTools,
+  type BrowserTransport,
+} from './tools.js';
 
 type ToolHandler = (args: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<unknown>;
 interface RegisteredTool {
@@ -183,6 +188,34 @@ describe('ownerId forwarding', () => {
     expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {});
 
     await getTabs.handler(metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
+  });
+
+  it('get_tabs forwards createIfEmpty:false only when the caller opted out of provisioning', async () => {
+    const { registered, transport } = collectTools();
+    const getTabs = registered.find((t) => t.name === 'get_tabs')!;
+
+    // A read-only probe (the desktop permission gate resolving a tab's origin)
+    // must not be the thing that opens a tab.
+    await getTabs.handler({
+      _meta: {
+        [ABU_CONVERSATION_META_KEY]: 'conv-42',
+        [ABU_CREATE_IF_EMPTY_META_KEY]: false,
+      },
+    });
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {
+      ownerId: 'conv-42',
+      createIfEmpty: false,
+    });
+
+    // Anything other than an explicit `false` keeps the historical payload
+    // shape, so the host keeps its create-when-empty default.
+    await getTabs.handler({
+      _meta: {
+        [ABU_CONVERSATION_META_KEY]: 'conv-42',
+        [ABU_CREATE_IF_EMPTY_META_KEY]: true,
+      },
+    });
     expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
   });
 

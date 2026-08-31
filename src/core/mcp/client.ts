@@ -23,6 +23,15 @@ const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
 const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
 
 /**
+ * MCP request `_meta` key that turns off `get_tabs`' "provision a tab when the
+ * caller owns none" behavior. Rides `_meta` rather than the tool's arguments
+ * on purpose: it is a host-side probe concern, and putting it in the schema
+ * would expose it to the model. Mirrors `ABU_CREATE_IF_EMPTY_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
+
+/**
  * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
  * of the execute() closure built during tool discovery so the mapping is
  * directly unit-testable — the discovery flow itself depends on the MCP SDK,
@@ -761,7 +770,17 @@ export class MCPClientManager {
     serverName: string,
     toolName: string,
     args: Record<string, unknown>,
-    opts?: { conversationId?: string; signal?: AbortSignal }
+    opts?: {
+      conversationId?: string;
+      signal?: AbortSignal;
+      /**
+       * Only meaningful for the browser server's `get_tabs`: pass `false` for a
+       * read-only probe that must not provision an automation view as a side
+       * effect (the permission gate's origin lookup). Omitted ⇒ host default
+       * (create), so every existing caller is unchanged.
+       */
+      createBrowserTabIfEmpty?: boolean;
+    }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
@@ -799,8 +818,15 @@ export class MCPClientManager {
         name: toolName,
         arguments: coercedArgs,
       };
+      const meta: Record<string, unknown> = {};
       if (opts?.conversationId) {
-        params._meta = { [ABU_CONVERSATION_META_KEY]: opts.conversationId };
+        meta[ABU_CONVERSATION_META_KEY] = opts.conversationId;
+      }
+      if (opts?.createBrowserTabIfEmpty === false) {
+        meta[ABU_CREATE_IF_EMPTY_META_KEY] = false;
+      }
+      if (Object.keys(meta).length > 0) {
+        params._meta = meta;
       }
       const result = await Promise.race([
         client.callTool(params),

@@ -5,9 +5,9 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
-import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retryItem, startPlanning } from '@/core/team/orchestrator';
+import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retryItem, startPlanning, stopTask } from '@/core/team/orchestrator';
 import { useI18n, format } from '@/i18n';
-import { Loader2, CheckCircle2, XCircle, Circle, ArrowRight, RotateCcw } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, Circle, ArrowRight, RotateCcw, Square } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import DialogShell from './DialogShell';
@@ -64,6 +64,7 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
       case 'running': return <Loader2 className="h-4 w-4 animate-spin text-[var(--abu-info)]" />;
       case 'done': return <CheckCircle2 className="h-4 w-4 text-[var(--abu-success)]" />;
       case 'failed': return <XCircle className="h-4 w-4 text-[var(--abu-danger)]" />;
+      case 'stopped': return <Square className="h-4 w-4 text-[var(--abu-text-tertiary)]" />;
       default: return <Circle className="h-4 w-4 text-[var(--abu-text-tertiary)]" />;
     }
   };
@@ -95,7 +96,7 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
             {item.conversationId && (
               <Button variant="ghost" size="xs" onClick={() => openRun(item.conversationId)}>{t.team.viewRun}</Button>
             )}
-            {task.status === 'blocked' && item.state === 'failed' && (
+            {task.status === 'blocked' && (item.state === 'failed' || item.state === 'stopped') && (
               <Button variant="outline" size="xs" onClick={() => { void retryItem(task.id, item.id); }}>
                 <RotateCcw className="h-3 w-3" />{t.team.retryItemAction}
               </Button>
@@ -122,11 +123,16 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
       case 'awaiting_plan': {
         if (!task.plan) {
           return (
-            <div className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)]">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {task.memberRoleId
-                ? t.team.memberTaskStarting
-                : format(t.team.planWaiting, { leader: team ? memberName(team.leaderRoleId) : t.team.unknownMember })}
+            <div className="flex items-center justify-between w-full gap-3">
+              <div className="flex items-center gap-2 text-body text-[var(--abu-text-secondary)] min-w-0">
+                <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                {task.memberRoleId
+                  ? t.team.memberTaskStarting
+                  : format(t.team.planWaiting, { leader: team ? memberName(team.leaderRoleId) : t.team.unknownMember })}
+              </div>
+              <Button variant="outline" size="sm" onClick={() => { stopTask(task.id); }} data-testid="task-stop">
+                <Square className="h-3.5 w-3.5" />{t.team.stopTaskAction}
+              </Button>
             </div>
           );
         }
@@ -173,7 +179,15 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
         );
       }
       case 'running':
-        return <div className="text-body text-[var(--abu-text-secondary)]">{t.team.runningHint}</div>;
+        return (
+          <div className="flex items-center justify-between w-full gap-3">
+            <div className="text-body text-[var(--abu-text-secondary)] min-w-0">{t.team.runningHint}</div>
+            {/* The one action while running (PRD §4.5): the brake. */}
+            <Button variant="outline" size="sm" onClick={() => { stopTask(task.id); }} data-testid="task-stop">
+              <Square className="h-3.5 w-3.5" />{t.team.stopTaskAction}
+            </Button>
+          </div>
+        );
       case 'pending_review': {
         if (rejecting) {
           return (

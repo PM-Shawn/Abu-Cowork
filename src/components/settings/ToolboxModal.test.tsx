@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const settingsState = {
-  activeToolboxTab: 'skills' as 'skills' | 'agents' | 'mcp',
+  activeToolboxTab: 'skills' as 'skills' | 'mcp',
   closeToolbox: vi.fn(),
   setActiveToolboxTab: vi.fn(),
   toolboxSearchQuery: '',
@@ -99,15 +99,6 @@ describe('Toolbox capability sources', () => {
     });
   });
 
-  it('uses the same personal and organization source model for agents', async () => {
-    settingsState.activeToolboxTab = 'agents';
-    render(<ToolboxView />);
-
-    expect(screen.getByText('Personal agents')).toBeInTheDocument();
-    expect(screen.getByTestId('create-control')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
-
-    expect(await screen.findByTestId('organization-catalog')).toBeInTheDocument();
-    expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
-  });
+  // The agents tab moved to the 团队 page (队员 tab) on 2026-08-31 — the
+  // plugin surface (插件) is skills + MCP only.
 });

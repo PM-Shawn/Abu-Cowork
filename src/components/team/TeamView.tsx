@@ -8,9 +8,11 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Inbox, ListTodo, Bot, UsersRound, Search } from 'lucide-react';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { Inbox, ListTodo, Bot, UsersRound, Search, Paperclip, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import TaskDetailDialog from './TaskDetailDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import AgentsSection from '@/components/customize/AgentsSection';
@@ -87,6 +89,8 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
+  const archiveTeam = useTeamStore((s) => s.archiveTeam);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const agents = useMemberPool();
 
   const [name, setName] = useState('');
@@ -209,12 +213,33 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
           <Textarea value={leaderNote} onChange={(e) => setLeaderNote(e.target.value)} rows={2} className="mt-1" placeholder={t.team.fieldLeaderNotePlaceholder} />
         </div>
 
-        <div className="flex justify-end gap-2 pt-1">
+        <div className="flex items-center gap-2 pt-1">
+          {team && (
+            <Button variant="ghost" className="text-[var(--abu-danger)]" onClick={() => setConfirmArchive(true)} data-testid="team-archive">
+              {t.team.archiveTeamAction}
+            </Button>
+          )}
+          <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
           <Button onClick={handleSave} disabled={!name.trim() || !leaderName || saving} data-testid="team-save">
             {team ? t.common.save : t.team.createTeamAction}
           </Button>
         </div>
+        <ConfirmDialog
+          open={confirmArchive}
+          title={t.team.archiveTeamTitle}
+          message={format(t.team.archiveTeamMessage, { name: team?.name ?? '' })}
+          confirmText={t.team.archiveTeamAction}
+          cancelText={t.common.cancel}
+          variant="danger"
+          onCancel={() => setConfirmArchive(false)}
+          onConfirm={() => {
+            if (team) archiveTeam(team.id);
+            setConfirmArchive(false);
+            addToast({ type: 'success', title: t.team.teamArchived });
+            onClose();
+          }}
+        />
       </div>
     </DialogShell>
   );
@@ -231,14 +256,23 @@ function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onC
   // first with a kind badge (user feedback 2026-08-31: no flat chips).
   const [assignee, setAssignee] = useState<string | null>(null);
   const [goal, setGoal] = useState('');
+  const [attachments, setAttachments] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     if (open) {
       setGoal('');
+      setAttachments([]);
       setAssignee(teams.length === 1 && agents.length === 0 ? `team:${teams[0].id}` : null);
     }
   }, [open, teams, agents]);
+
+  const pickFiles = async () => {
+    const picked = await openDialog({ multiple: true });
+    if (!picked) return;
+    const paths = (Array.isArray(picked) ? picked : [picked]).filter((p): p is string => typeof p === 'string');
+    setAttachments((prev) => Array.from(new Set([...prev, ...paths])));
+  };
 
   const options: SearchSelectOption[] = [
     ...teams.map((team) => ({ value: `team:${team.id}`, label: team.name, icon: '👥', badge: t.team.kindTeam })),
@@ -251,14 +285,14 @@ function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onC
     try {
       let task;
       if (assignee.startsWith('team:')) {
-        task = createTask({ teamId: assignee.slice(5), goal });
+        task = createTask({ teamId: assignee.slice(5), goal, attachments });
       } else {
         const name = assignee.slice(7);
         const agent = agentRegistry.getAgent(name);
         if (!agent) throw new Error(`agent not found: ${name}`);
         const { roleId, wrote } = await ensureRoleId(agent);
         if (wrote) await refresh();
-        task = createTask({ memberRoleId: roleId, goal });
+        task = createTask({ memberRoleId: roleId, goal, attachments });
       }
       addToast({ type: 'success', title: t.team.taskCreated });
       onClose();
@@ -279,6 +313,24 @@ function TaskCreateDialog({ open, onClose, teams, agents }: { open: boolean; onC
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskGoal}</label>
           <Textarea value={goal} onChange={(e) => setGoal(e.target.value)} rows={4} className="mt-1" placeholder={t.team.fieldTaskGoalPlaceholder} data-testid="task-goal-input" />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskFiles}</label>
+            <Button size="xs" variant="ghost" onClick={() => { void pickFiles(); }} data-testid="task-pick-files">
+              <Paperclip className="h-3.5 w-3.5" />{t.team.addFiles}
+            </Button>
+          </div>
+          {attachments.length > 0 && (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {attachments.map((path) => (
+                <span key={path} className="inline-flex items-center gap-1 rounded-lg bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-secondary)] max-w-[220px]">
+                  <span className="truncate" title={path}>{path.split('/').pop()}</span>
+                  <X className="h-3 w-3 shrink-0 cursor-pointer text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)]" onClick={() => setAttachments((prev) => prev.filter((x) => x !== path))} />
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldTaskAssignee}</label>
@@ -335,7 +387,10 @@ function KanbanCard({ task, team, agents, t, onOpen }: {
 }
 
 function TaskRow({ task, team, t, onOpen }: { task: TeamTask; team: Team | undefined; t: ReturnType<typeof useI18n>['t']; onOpen: (id: string) => void }) {
-  const meta = statusMeta(t, task.status);
+  // A proposal waiting on the user (strict teams) reads 待确认分工, not 准备中.
+  const meta = (task.status === 'awaiting_plan' && task.plan && team?.requirePlanApproval)
+    ? { label: t.team.statusAwaitingPlan, cls: 'text-[var(--abu-warning)] bg-[var(--abu-warning-bg)]' }
+    : statusMeta(t, task.status);
   return (
     <div
       className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
@@ -365,12 +420,16 @@ export default function TeamView() {
   const closeTeam = useSettingsStore((s) => s.closeTeam);
 
   const [search, setSearch] = useState('');
+  // AgentsSection filters by the shared toolbox query — bind the members-tab
+  // search box to it so typing actually filters (bug: local state was ignored).
+  const toolboxSearchQuery = useSettingsStore((s) => s.toolboxSearchQuery);
+  const setToolboxSearchQuery = useSettingsStore((s) => s.setToolboxSearchQuery);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
 
-  useEffect(() => { setSearch(''); }, [activeTeamTab]);
+  useEffect(() => { setSearch(''); setToolboxSearchQuery(''); }, [activeTeamTab, setToolboxSearchQuery]);
 
   const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
   const agents = useMemberPool();
@@ -379,7 +438,7 @@ export default function TeamView() {
   // Tab order user-pinned 2026-08-31: 任务 · 收件箱 · 队员 · 团队.
   const navItems = [
     { id: 'tasks' as TeamTab, label: t.team.tabTasks, icon: ListTodo },
-    { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox },
+    { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox, badgeCount: pending.length },
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
     { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: UsersRound },
   ];
@@ -392,10 +451,17 @@ export default function TeamView() {
   };
 
   const renderHeaderRight = () => {
-    const searchBox = (activeTeamTab === 'tasks' || activeTeamTab === 'members') ? (
+    const isMembers = activeTeamTab === 'members';
+    const searchBox = (activeTeamTab === 'tasks' || isMembers) ? (
       <div className="relative w-52 shrink-0">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-tertiary)] pointer-events-none" />
-        <Input type="text" placeholder={t.team.searchPlaceholder} value={search} onChange={(e) => setSearch(e.target.value)} className="h-8 pl-8 pr-3 text-body" />
+        <Input
+          type="text"
+          placeholder={t.team.searchPlaceholder}
+          value={isMembers ? toolboxSearchQuery : search}
+          onChange={(e) => (isMembers ? setToolboxSearchQuery(e.target.value) : setSearch(e.target.value))}
+          className="h-8 pl-8 pr-3 text-body"
+        />
       </div>
     ) : null;
 
@@ -490,6 +556,7 @@ export default function TeamView() {
             />
           );
         }
+        const archivedTeams = teams.filter((tm) => tm.archivedAt);
         return (
           <div className="p-4 space-y-2 overflow-y-auto h-full">
             {activeTeams.map((team) => (
@@ -511,6 +578,22 @@ export default function TeamView() {
                 </div>
               </div>
             ))}
+            {archivedTeams.length > 0 && (
+              <details className="pt-2">
+                <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
+                  {format(t.team.archivedSection, { count: String(archivedTeams.length) })}
+                </summary>
+                <div className="mt-2 space-y-2">
+                  {archivedTeams.map((team) => (
+                    <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
+                      <UsersRound className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.75} />
+                      <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
+                      <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
           </div>
         );
       }

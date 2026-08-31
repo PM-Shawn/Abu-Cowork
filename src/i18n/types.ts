@@ -1478,6 +1478,17 @@ export interface TranslationDict {
     assigneePlaceholder: string;
     kindTeam: string;
     suggestionTeamHint: string;
+    archiveTeamAction: string;
+    archiveTeamTitle: string;
+    archiveTeamMessage: string;
+    teamArchived: string;
+    archivedSection: string;
+    restoreTeamAction: string;
+    fieldTaskFiles: string;
+    addFiles: string;
+    stopTaskAction: string;
+    stoppedByUser: string;
+    itemStateStopped: string;
   };
 
   toolbox: {

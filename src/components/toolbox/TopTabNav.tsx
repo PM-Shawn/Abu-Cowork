@@ -7,6 +7,8 @@ export interface TopTabNavItem<T extends string = string> {
   id: T;
   label: string;
   icon: LucideIcon;
+  /** Optional count chip after the label (e.g. team inbox pending items). */
+  badgeCount?: number;
 }
 
 interface TopTabNavProps<T extends string> {
@@ -62,7 +64,12 @@ export default function TopTabNav<T extends string>({
                 'h-4 w-4 shrink-0',
                 isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
               )} />
-              <span>{item.label}</span>
+              <span>{item.label}
+          {typeof item.badgeCount === 'number' && item.badgeCount > 0 && (
+            <span className="ml-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[var(--abu-danger-solid)] text-white text-caption font-medium leading-[18px] text-center inline-block">
+              {item.badgeCount > 99 ? '99+' : item.badgeCount}
+            </span>
+          )}</span>
             </button>
           );
         })}

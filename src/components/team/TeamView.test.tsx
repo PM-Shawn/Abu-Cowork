@@ -7,7 +7,10 @@ import { useTeamStore } from '@/stores/teamStore';
 // everything else is mocked at the boundary, mirroring ToolboxModal.test.tsx.
 
 const settingsState = {
-  activeTeamTab: 'inbox' as 'inbox' | 'tasks' | 'members' | 'teams',
+  activeTeamTab: 'tasks' as 'inbox' | 'tasks' | 'members' | 'teams',
+  toolboxSearchQuery: '',
+  setToolboxSearchQuery: vi.fn((value: string) => { settingsState.toolboxSearchQuery = value; }),
+  disabledAgents: [] as string[],
   setActiveTeamTab: vi.fn((tab: 'inbox' | 'tasks' | 'members' | 'teams') => {
     settingsState.activeTeamTab = tab;
   }),

@@ -26,6 +26,57 @@ import { notifyTeamTaskPendingReview, notifyTeamTaskBlocked } from '@/utils/noti
 /** In-flight guard so double-clicks can't double-run a task. */
 const inFlight = new Set<string>();
 
+/** Live abort controllers per task — planning, member and rework runs all
+ *  register here so 停止 reaches every conversation the task owns. */
+const liveRuns = new Map<string, Set<AbortController>>();
+const stopRequested = new Set<string>();
+
+function trackRun(taskId: string): { controller: { signal?: AbortSignal }; register: (c: AbortController) => void; done: () => void } {
+  const registered = new Set<AbortController>();
+  const register = (c: AbortController) => {
+    registered.add(c);
+    let set = liveRuns.get(taskId);
+    if (!set) { set = new Set(); liveRuns.set(taskId, set); }
+    set.add(c);
+    if (stopRequested.has(taskId)) c.abort(new Error('stopped by user'));
+  };
+  const done = () => {
+    const set = liveRuns.get(taskId);
+    for (const c of registered) set?.delete(c);
+    if (set && set.size === 0) liveRuns.delete(taskId);
+  };
+  return { controller: {}, register, done };
+}
+
+/**
+ * 停止 — the user's brake. Aborts every live run the task owns; each run's
+ * settle path then records 'stopped' (user agency), never 'failed'.
+ */
+export function stopTask(taskId: string): void {
+  stopRequested.add(taskId);
+  const set = liveRuns.get(taskId);
+  if (set) for (const c of set) c.abort(new Error('stopped by user'));
+  const t = getI18n();
+  const task = useTeamStore.getState().tasks.find((item) => item.id === taskId);
+  if (!task) return;
+  if (task.status === 'awaiting_plan' || task.status === 'running') {
+    useTeamStore.getState().updateTaskStatus(taskId, 'blocked', t.team.stoppedByUser);
+    if (task.plan) {
+      for (const item of task.plan.items) {
+        if (item.state === 'running' || item.state === 'pending') {
+          useTeamStore.getState().setItemState(taskId, item.id, item.state === 'running' ? 'stopped' : 'pending');
+        }
+      }
+    }
+  }
+}
+
+function consumeStop(taskId: string): boolean {
+  const hit = stopRequested.has(taskId);
+  stopRequested.delete(taskId);
+  return hit;
+}
+
 function resolveMember(roleId: string): SubagentDefinition | null {
   return resolveRoleId(roleId);
 }
@@ -58,6 +109,9 @@ Break the ask into 1-8 clear per-member assignments. Prefer parallel items; use 
 
 /** Sub-task prompt for one member. English scaffold; user goal verbatim. */
 function buildItemPrompt(task: TeamTask, item: TeamPlanItem, member: SubagentDefinition, folder: string, upstream: TeamPlanItem[]): string {
+  const attachments = task.attachments.length > 0
+    ? `\nReference files from the user:\n${task.attachments.map((p) => `- ${p}`).join('\n')}`
+    : '';
   const upstreamNote = upstream.length > 0
     ? `\nAlready completed by teammates (their outputs are in the task folder):\n${upstream.map((u) => `- ${u.what}${u.produces ? ` → ${u.produces}` : ''}`).join('\n')}`
     : '';
@@ -68,7 +122,7 @@ The user's original ask (verbatim, for context — your job is only the assignme
 """
 ${task.goal}
 """
-${upstreamNote}
+${attachments}${upstreamNote}
 Write any output files into the task folder: ${folder}${produces}`;
 }
 
@@ -104,14 +158,25 @@ export async function startPlanning(taskId: string): Promise<void> {
     chatStore.renameConversation(conversationId, format(getI18n().team.planningConversationTitle, { goal: task.goal.split('\n')[0].slice(0, 24) }));
     useTeamStore.getState().setPlanningConversation(taskId, conversationId);
 
-    const result = await runAgentLoopDispatched(conversationId, buildPlanningPrompt(team, task, leader, members));
+    const tracker = trackRun(taskId);
+    let result;
+    try {
+      result = await runAgentLoopDispatched(conversationId, buildPlanningPrompt(team, task, leader, members), {
+        onAbortControllerReady: tracker.register,
+      });
+    } finally {
+      tracker.done();
+    }
     const after = useTeamStore.getState().tasks.find((item) => item.id === taskId);
     if (after?.status === 'awaiting_plan' && !after.plan) {
       // Leader finished without calling the plan tool — visible, not silent.
+      // A user stop is agency, not failure — worded as such.
       useTeamStore.getState().updateTaskStatus(
         taskId,
         'blocked',
-        result.reason === 'completed' ? getI18n().team.blockedNoPlan : format(getI18n().team.blockedPlanFailed, { reason: result.reason }),
+        consumeStop(taskId) || result.reason === 'aborted'
+          ? getI18n().team.stoppedByUser
+          : result.reason === 'completed' ? getI18n().team.blockedNoPlan : format(getI18n().team.blockedPlanFailed, { reason: result.reason }),
       );
     }
   } finally {
@@ -208,8 +273,9 @@ export async function confirmAndExecute(taskId: string): Promise<void> {
 
     // Wave scheduling: run everything whose deps are done; repeat until settled.
     for (;;) {
+      if (stopRequested.has(taskId)) break;
       const items = readItems();
-      if (items.every((item) => item.state === 'done' || item.state === 'failed')) break;
+      if (items.every((item) => item.state === 'done' || item.state === 'failed' || item.state === 'stopped')) break;
       const ready = items.filter((item) =>
         item.state === 'pending' && item.dependsOn.every((dep) => items.find((x) => x.id === dep)?.state === 'done'));
       if (ready.length === 0) {
@@ -221,7 +287,10 @@ export async function confirmAndExecute(taskId: string): Promise<void> {
 
     const finalItems = readItems();
     const failed = finalItems.filter((item) => item.state === 'failed');
-    if (failed.length > 0) {
+    const stopped = consumeStop(taskId) || finalItems.some((item) => item.state === 'stopped');
+    if (stopped) {
+      useTeamStore.getState().updateTaskStatus(taskId, 'blocked', getI18n().team.stoppedByUser);
+    } else if (failed.length > 0) {
       useTeamStore.getState().updateTaskStatus(
         taskId, 'blocked',
         format(getI18n().team.blockedItemsFailed, { count: String(failed.length) }));
@@ -230,7 +299,7 @@ export async function confirmAndExecute(taskId: string): Promise<void> {
       // moment the user hears about it. 完成 stays user-only.
       useTeamStore.getState().updateTaskStatus(taskId, 'pending_review');
     }
-    notifyTaskSettled(taskId);
+    if (!stopped) notifyTaskSettled(taskId);
   } finally {
     inFlight.delete(taskId);
   }
@@ -252,15 +321,22 @@ async function runItem(taskId: string, item: TeamPlanItem, folder: string): Prom
   if (!task) return;
   const upstream = (task.plan?.items ?? []).filter((candidate) => item.dependsOn.includes(candidate.id));
 
+  const tracker = trackRun(taskId);
   try {
-    const result = await runAgentLoopDispatched(conversationId, buildItemPrompt(task, item, member, folder, upstream));
+    const result = await runAgentLoopDispatched(conversationId, buildItemPrompt(task, item, member, folder, upstream), {
+      onAbortControllerReady: tracker.register,
+    });
     if (result.reason === 'completed' || result.reason === 'max_turns') {
       useTeamStore.getState().setItemState(taskId, item.id, 'done');
+    } else if (result.reason === 'aborted' || stopRequested.has(taskId)) {
+      useTeamStore.getState().setItemState(taskId, item.id, 'stopped');
     } else {
       useTeamStore.getState().setItemState(taskId, item.id, 'failed', { error: result.error ?? result.reason });
     }
   } catch (err) {
     useTeamStore.getState().setItemState(taskId, item.id, 'failed', { error: String(err) });
+  } finally {
+    tracker.done();
   }
 }
 
@@ -271,7 +347,7 @@ export async function retryItem(taskId: string, itemId: string): Promise<void> {
   if (!task?.plan || !task.folder || task.status !== 'blocked') return;
   if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
   const target = task.plan.items.find((item) => item.id === itemId);
-  if (!target || target.state !== 'failed') return;
+  if (!target || (target.state !== 'failed' && target.state !== 'stopped')) return;
   if (inFlight.has(taskId)) return;
   inFlight.add(taskId);
   try {

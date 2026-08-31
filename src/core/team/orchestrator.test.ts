@@ -37,7 +37,7 @@ vi.mock('@/utils/notifications', () => ({
   notifyTeamTaskBlocked: vi.fn(async () => undefined),
 }));
 
-import { startPlanning, confirmAndExecute, acceptTask, startMemberTask } from './orchestrator';
+import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask } from './orchestrator';
 
 function seed() {
   registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
@@ -181,6 +181,36 @@ describe('team orchestrator', () => {
       const task = useTeamStore.getState().createTask({ memberRoleId: 'role-ghost', goal: 'g' });
       await startMemberTask(task.id);
       expect(useTeamStore.getState().tasks[0].status).toBe('blocked');
+    });
+  });
+
+  describe('stopTask', () => {
+    it('user stop marks running items stopped (never failed) and words the task as user agency', async () => {
+      const { task } = seed();
+      useTeamStore.getState().proposePlan(task.id, {
+        items: [
+          { id: '1', memberRoleId: 'role-w', what: 'a', dependsOn: [], state: 'pending' },
+          { id: '2', memberRoleId: 'role-l', what: 'b', dependsOn: ['1'], state: 'pending' },
+        ],
+        doneWhen: [],
+      });
+      // First member run "hangs": stop mid-flight, then resolve as aborted.
+      runBehavior = async (_conv, message) => {
+        if (message.includes('@writer')) {
+          stopTask(task.id);
+          return { reason: 'aborted' };
+        }
+        return { reason: 'completed' };
+      };
+      await confirmAndExecute(task.id);
+      const after = useTeamStore.getState().tasks[0];
+      expect(after.status).toBe('blocked');
+      expect(after.statusNote).toMatch(/stop|停止/i);
+      expect(after.plan?.items.find((i) => i.id === '1')?.state).toBe('stopped');
+      // Dependent never started.
+      expect(after.plan?.items.find((i) => i.id === '2')?.state).toBe('pending');
+      // Only the first member run fired.
+      expect(runCalls.filter((c) => !c.message.includes('Plan the split'))).toHaveLength(1);
     });
   });
 

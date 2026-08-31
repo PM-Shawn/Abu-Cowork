@@ -40,7 +40,8 @@ export type TeamTaskStatus =
   | 'blocked'         // 卡住了
   | 'done';           // 完成 — only the user can move a task here
 
-export type TeamPlanItemState = 'pending' | 'running' | 'done' | 'failed';
+// 'stopped' is user agency, 'failed' is the member's — never conflated (PRD §10).
+export type TeamPlanItemState = 'pending' | 'running' | 'done' | 'failed' | 'stopped';
 
 /** One member's share of a confirmed plan. */
 export interface TeamPlanItem {

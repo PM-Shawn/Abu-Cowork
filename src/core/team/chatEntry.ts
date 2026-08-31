@@ -30,10 +30,20 @@ export function tryHandleTeamMention(rawText: string):
   }
   if (!match) return { handled: false };
 
-  const goal = rest.slice(match.name.length).replace(/^[\s,，]+/, '');
+  let goal = rest.slice(match.name.length).replace(/^[\s,，]+/, '');
   if (!goal) return { handled: false, reason: 'empty_goal', teamName: match.name };
 
-  const task = useTeamStore.getState().createTask({ teamId: match.id, goal });
+  // Composer file attachments travel as `[Attachment: \`path\`]` lines inside
+  // the message — lift them into task.attachments so the goal stays clean and
+  // members receive the files as reference paths (PRD §4.3: 附件=任务附件).
+  const attachments: string[] = [];
+  goal = goal.replace(/\[Attachment: `([^`]+)`\]\n?/g, (_m, path: string) => {
+    attachments.push(path);
+    return '';
+  }).trim();
+  if (!goal) return { handled: false, reason: 'empty_goal', teamName: match.name };
+
+  const task = useTeamStore.getState().createTask({ teamId: match.id, goal, attachments });
   kickoffTask(task.id);
   return { handled: true, teamName: match.name, taskId: task.id, goal };
 }

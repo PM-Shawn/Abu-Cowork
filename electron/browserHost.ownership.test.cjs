@@ -116,13 +116,25 @@ class FakeWebContentsView {
   setVisible(visible) { this.visible = visible; }
 }
 
-function fakeSession() {
+/**
+ * `onHeadersReceived` is invoked once per loadHost() (browserSessionForViews()
+ * is memoized inside the fresh module instance), and the real signature is
+ * `(filter, listener)` where the listener takes `(details, callback)`. The
+ * `capture` hook lets a test grab that listener so it can fire synthetic
+ * main-frame 429/2xx responses without a real network round trip.
+ */
+function fakeSession(capture) {
   return {
     setPermissionCheckHandler() {},
     setPermissionRequestHandler() {},
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on() {},
+    webRequest: {
+      onHeadersReceived(_filter, listener) {
+        if (capture) capture(listener);
+      },
+    },
   };
 }
 
@@ -144,6 +156,7 @@ function loadHost({ adopt = true } = {}) {
     contentView: { addChildView() {}, removeChildView() {} },
   };
   let host = null;
+  let webRequestListener = null;
 
   require.cache[electronId] = {
     id: electronId,
@@ -151,7 +164,9 @@ function loadHost({ adopt = true } = {}) {
     loaded: true,
     exports: {
       WebContentsView: FakeWebContentsView,
-      session: { fromPartition: () => fakeSession() },
+      session: {
+        fromPartition: () => fakeSession((listener) => { webRequestListener = listener; }),
+      },
     },
   };
   require.cache[tauriHostId] = {
@@ -186,7 +201,18 @@ function loadHost({ adopt = true } = {}) {
     delete require.cache[browserHostId];
   };
 
-  return { host, emitted, restore };
+  /**
+   * Fire a synthetic `webRequest.onHeadersReceived` event, as if `browserSession`
+   * had just observed a real response. `webRequestListener` is only populated
+   * once something has actually created the browser session (e.g. a `get_tabs`
+   * call has provisioned a view) — callers must do that first.
+   */
+  const fireHeadersReceived = (details) => {
+    if (!webRequestListener) throw new Error('webRequest listener not registered yet');
+    webRequestListener({ resourceType: 'mainFrame', ...details }, () => {});
+  };
+
+  return { host, emitted, restore, fireHeadersReceived };
 }
 
 function getTabs(host, ownerId) {
@@ -588,6 +614,208 @@ test('a destroyed view drops its ownership record', async () => {
     assert.equal(tabIds(aAfter).length, 1);
     assert.notEqual(tabIds(aAfter)[0], aTab, 'a fresh owned view replaces the destroyed one');
     assert.equal(aAfter.summary.currentTabId, tabIds(aAfter)[0]);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * R5 — exponential per-origin backoff after HTTP 429 (docs at the top of
+ * `originBackoff` in browserHost.cjs). All of these fire the fake
+ * `webRequest.onHeadersReceived` listener directly rather than going through
+ * a real navigation, since the fake WebContents has no real network stack.
+ */
+function respond(fireHeadersReceived, url, statusCode, resourceType) {
+  fireHeadersReceived({ url, statusCode, ...(resourceType ? { resourceType } : {}) });
+}
+
+test('a 429 on the current origin blocks a state-changing action with the seconds remaining', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/checkout');
+
+    respond(fireHeadersReceived, 'https://example.com/checkout', 429);
+
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://example.com/checkout?retry=1'),
+      (error) => {
+        assert.equal(
+          error.message,
+          'This site is rate-limiting automated actions (HTTP 429). Backing off for 1s — ' +
+            'retrying immediately would make it worse. Tell the user, wait, or suggest they do this step manually.'
+        );
+        return true;
+      }
+    );
+    // No retry: the action must not have run.
+    assert.equal(contentsFor(aTab).url, 'https://example.com/checkout');
+  } finally {
+    restore();
+  }
+});
+
+test('read-only actions are never blocked by an origin backoff', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+
+    const shot = await host.performBrowserAutomation('screenshot', { ownerId: OWNER_A, tabId: aTab });
+    assert.match(shot, /^data:image\/png;base64,/);
+  } finally {
+    restore();
+  }
+});
+
+test('a backoff window expires on its own and the action is then allowed', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    state.t += 1000; // exactly the 1s (level-1) window — now expired
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/next');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/next', 'the action ran once the window expired');
+  } finally {
+    restore();
+  }
+});
+
+test('consecutive 429s escalate exponentially and cap at 30s', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    // Level 1: 1s.
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 1s/);
+
+    // Level 2: 2s (a second 429 while still gated, before the first window even expires).
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 2s/);
+
+    // Level 3: 4s.
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 4s/);
+
+    // Keep hitting it until the delay would exceed 30s — it must stay capped.
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 4: 8s
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 5: 16s
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 6: would be 32s, capped to 30s
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 30s/);
+
+    state.t += 30000;
+    await navigate(host, OWNER_A, aTab, 'https://example.com/done');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/done');
+  } finally {
+    restore();
+  }
+});
+
+test('a 2xx main-frame response clears that origin\'s backoff window', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off/);
+
+    respond(fireHeadersReceived, 'https://example.com/', 200);
+    await navigate(host, OWNER_A, aTab, 'https://example.com/after-clear');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/after-clear');
+  } finally {
+    restore();
+  }
+});
+
+test('a 429 on a subresource (non-main-frame) is not treated as the page rate-limiting', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/ads/tracker.js', 429, 'script');
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/still-fine');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/still-fine');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Abort-to-main: the MCP loopback server aborts an AbortController when the
+ * client request closes early (see browserAutomationHost.cjs's `handleRequest`),
+ * and threads it through `performBrowserAutomation(action, payload, { signal })`
+ * into whatever gated wait the action is sitting in.
+ */
+test('an aborted signal stops a gated action during the user-idle wait, within one poll', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab); // the user is mid-keystroke, so the gated wait actually starts
+    const controller = new AbortController();
+    // Simulate the run being stopped mid-wait — the request closes, which is
+    // exactly what fires between two polls in the real handler.
+    state.onSleep = () => controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation(
+        'navigate',
+        { ownerId: OWNER_A, tabId: aTab, action: 'goto', url: 'https://example.com/' },
+        { signal: controller.signal }
+      ),
+      (error) => {
+        assert.equal(error.message, 'Browser action cancelled because the run was stopped.');
+        return true;
+      }
+    );
+
+    assert.equal(state.sleeps.length, 1, 'stopped after the very next poll, not the full 10s wait');
+    assert.equal(contentsFor(aTab).url, 'about:blank', 'the aborted action never landed');
+  } finally {
+    restore();
+  }
+});
+
+test('a pre-aborted signal is honored even before the rate-limit gate runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation(
+        'navigate',
+        { ownerId: OWNER_A, tabId: aTab, action: 'goto', url: 'https://example.com/' },
+        { signal: controller.signal }
+      ),
+      /Browser action cancelled because the run was stopped\./
+    );
+    assert.equal(contentsFor(aTab).url, 'about:blank');
   } finally {
     restore();
   }

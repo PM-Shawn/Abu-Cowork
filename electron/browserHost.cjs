@@ -261,15 +261,103 @@ function userIsInteracting(viewId, ownerKey) {
   return typeof last === 'number' && clock.now() - last < USER_INTERACT_QUIET_MS;
 }
 
-async function awaitUserIdle(viewId) {
+async function awaitUserIdle(viewId, signal) {
   const ownerKey = ownerKeyOf(viewId);
   if (!userIsInteracting(viewId, ownerKey)) return;
+  assertNotAborted(signal);
   const deadline = clock.now() + TAKEOVER_WAIT_MS;
   while (clock.now() < deadline) {
     await clock.sleep(TAKEOVER_POLL_MS);
+    assertNotAborted(signal);
     if (!userIsInteracting(viewId, ownerKey)) return;
   }
   throw new Error(USER_TAKEOVER_MESSAGE);
+}
+
+/**
+ * ## Backing off after HTTP 429 (R5)
+ *
+ * A site that starts answering with 429 is telling the automation to slow
+ * down, not to keep hammering it — but nothing upstream of `execute_js`/
+ * `click`/etc previously read the response status at all, so the model would
+ * see a rate-limit page and immediately retry the same action, making the
+ * block worse. `originBackoff` tracks one exponential window PER ORIGIN (not
+ * per tab — a site rate-limits the client, not one specific view), doubling
+ * 1s→2s→4s… and capping at 30s; a 2xx main-frame response clears it, since
+ * that is the site telling us it is no longer objecting. Only main-frame
+ * responses are inspected — a 429 from a third-party subresource (an ad, an
+ * analytics ping) is not "this site" rate-limiting the automated action.
+ *
+ * Gated exactly where the takeover backoff (R4) is gated — reusing
+ * `TAKEOVER_GATED_ACTIONS` rather than a second list — because both guards
+ * answer the same question ("is it safe to act on this page right now?"),
+ * just for a different hazard. Read-only actions are exactly as safe to run
+ * against a rate-limiting origin as against any other page: no retry, no
+ * additional load. There is deliberately no retry-after-backoff path here
+ * either: the caller (the model) decides whether to wait, tell the user, or
+ * give up on this step.
+ */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 30000;
+
+/** origin -> { until: ts, level: n }. Absent/expired ⇒ no backoff in effect. */
+const originBackoff = new Map();
+
+function backoffDelayForLevel(level) {
+  return Math.min(BACKOFF_BASE_MS * 2 ** (level - 1), BACKOFF_CAP_MS);
+}
+
+function originOf(urlString) {
+  try {
+    return new URL(String(urlString || '')).origin;
+  } catch {
+    return null;
+  }
+}
+
+function registerRateLimitHit(origin) {
+  if (!origin) return;
+  const existing = originBackoff.get(origin);
+  const level = existing ? existing.level + 1 : 1;
+  originBackoff.set(origin, { until: clock.now() + backoffDelayForLevel(level), level });
+}
+
+function clearRateLimit(origin) {
+  if (!origin) return;
+  originBackoff.delete(origin);
+}
+
+/**
+ * Remaining backoff time for `origin` in ms; 0 when there is none, or once it
+ * has expired (an expired entry is pruned here so the map does not grow
+ * forever across origins that got rate-limited once and moved on).
+ */
+function backoffRemainingMs(origin) {
+  if (!origin) return 0;
+  const entry = originBackoff.get(origin);
+  if (!entry) return 0;
+  const remaining = entry.until - clock.now();
+  if (remaining <= 0) {
+    originBackoff.delete(origin);
+    return 0;
+  }
+  return remaining;
+}
+
+/**
+ * ## Abort-to-main (Stop button propagation)
+ *
+ * `browserAutomationHost.cjs` builds an `AbortController` per MCP request and
+ * aborts it when the client connection closes early (the run was stopped).
+ * The signal is threaded down through `performBrowserAutomation` into every
+ * wait loop a gated action can be sitting in — the takeover backoff's poll
+ * loop above, and the rate-limit gate below — so a stopped run does not sit
+ * out someone else's 10-second wait before it notices.
+ */
+function assertNotAborted(signal) {
+  if (signal && signal.aborted) {
+    throw new Error('Browser action cancelled because the run was stopped.');
+  }
 }
 
 function resolveOwnerKey(payload) {
@@ -371,6 +459,22 @@ function browserSessionForViews() {
   if (typeof browserSession.setDisplayMediaRequestHandler === 'function') {
     browserSession.setDisplayMediaRequestHandler((_request, callback) => callback({}));
   }
+
+  // R5: watch main-frame responses for the 429/2xx signals that drive the
+  // per-origin backoff above. Registered once per session (this function is
+  // memoized via the `browserSession` singleton), covering every automation
+  // view and every pane tab, since they all share `BROWSER_SESSION_PARTITION`.
+  browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'] }, (details, callback) => {
+    if (details.resourceType === 'mainFrame') {
+      const origin = originOf(details.url);
+      if (details.statusCode === 429) {
+        registerRateLimitHit(origin);
+      } else if (details.statusCode >= 200 && details.statusCode < 300) {
+        clearRateLimit(origin);
+      }
+    }
+    callback({ cancel: false });
+  });
 
   browserSession.on('will-download', (_event, item) => {
     const record = {
@@ -746,18 +850,27 @@ async function screenshotAutomation(view, fullPage) {
   }
 }
 
-async function performBrowserAutomation(action, payload = {}) {
+/**
+ * @param {string} action
+ * @param {Record<string, unknown>} [payload]
+ * @param {{ signal?: AbortSignal }} [opts] `signal` aborts when the run that
+ *   requested this action was stopped (see browserAutomationHost.cjs's
+ *   `handleRequest`) — optional, so the existing 2-arg call sites (and their
+ *   tests) are unaffected.
+ */
+async function performBrowserAutomation(action, payload = {}, opts) {
+  const signal = opts && opts.signal;
   // Everything this call does — including creating and loading views — is
   // automation, so nothing it triggers may be mistaken for the user.
   aiActionDepth += 1;
   try {
-    return await runBrowserAutomation(action, payload);
+    return await runBrowserAutomation(action, payload, signal);
   } finally {
     aiActionDepth -= 1;
   }
 }
 
-async function runBrowserAutomation(action, payload) {
+async function runBrowserAutomation(action, payload, signal) {
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
@@ -799,12 +912,22 @@ async function runBrowserAutomation(action, payload) {
   const { view } = match;
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
+    assertNotAborted(signal);
+
+    const remainingMs = backoffRemainingMs(originOf(view.webContents.getURL()));
+    if (remainingMs > 0) {
+      throw new Error(
+        `This site is rate-limiting automated actions (HTTP 429). Backing off for ${Math.ceil(remainingMs / 1000)}s — ` +
+          'retrying immediately would make it worse. Tell the user, wait, or suggest they do this step manually.'
+      );
+    }
+
     // Step outside the AI-attribution window for the wait itself: observing the
     // user is the entire point of it, and at depth>0 their keystrokes would be
     // filed as automation's own and the wait would end after one quiet poll.
     aiActionDepth -= 1;
     try {
-      await awaitUserIdle(match.id);
+      await awaitUserIdle(match.id, signal);
     } finally {
       aiActionDepth += 1;
     }

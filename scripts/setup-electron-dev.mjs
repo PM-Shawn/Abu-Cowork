@@ -30,10 +30,10 @@ const args = npmExecPath
 console.log('[Abu Electron] 正在按 package-lock.json 安装当前 worktree 的完整依赖...');
 const childEnv = { ...process.env, NODE_ENV: 'development' };
 
-function run(commandArgs, label) {
+function run(commandArgs, label, cwd = repoRoot) {
   console.log(`\n[Abu Electron] ${label}...`);
   const result = spawnSync(command, commandArgs, {
-    cwd: repoRoot,
+    cwd,
     env: childEnv,
     stdio: 'inherit',
   });
@@ -51,6 +51,12 @@ function npmArgs(...npmArguments) {
 }
 
 run(args, '安装锁定依赖');
+// 子包各有独立的 package-lock/node_modules，CI 也是分别 npm ci
+// （.github/workflows/ci.yml）。漏装时 bootstrap 显示成功，但 verify 里
+// abu-browser-bridge 的测试会因 esbuild 解析不到子包依赖（如 linkedom）而失败。
+for (const subPackage of ['abu-browser-bridge', 'abu-chrome-extension']) {
+  run(args, `安装 ${subPackage} 子包依赖`, path.join(repoRoot, subPackage));
+}
 run(npmArgs('run', 'setup:electron-runtimes'), '准备内置 Node 和 Python');
 run(npmArgs('run', 'verify:electron-runtimes'), '校验内置运行时');
 run(npmArgs('run', 'build:electron-browser-runtime'), '构建浏览器能力');

@@ -376,9 +376,10 @@ export default function TeamView() {
   const agents = useMemberPool();
   const pending = useMemo(() => selectPendingTasks(tasks, teams), [tasks, teams]);
 
+  // Tab order user-pinned 2026-08-31: 任务 · 收件箱 · 队员 · 团队.
   const navItems = [
-    { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox },
     { id: 'tasks' as TeamTab, label: t.team.tabTasks, icon: ListTodo },
+    { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox },
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
     { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: UsersRound },
   ];

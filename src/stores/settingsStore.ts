@@ -644,7 +644,7 @@ export const useSettingsStore = create<SettingsStore>()(
       toolboxSearchQuery: '',
       installingItem: null,
       viewMode: 'chat' as ViewMode,
-      activeTeamTab: 'inbox' as TeamTab,
+      activeTeamTab: 'tasks' as TeamTab,
       systemSettingsOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [

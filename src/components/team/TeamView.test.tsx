@@ -89,20 +89,21 @@ function seedAgent(name: string, roleId?: string) {
 describe('TeamView', () => {
   beforeEach(() => {
     useTeamStore.setState({ teams: [], tasks: [] });
-    settingsState.activeTeamTab = 'inbox';
+    settingsState.activeTeamTab = 'tasks';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     vi.clearAllMocks();
   });
 
-  it('renders the four tabs in the pinned order 收件箱·任务·队员·团队', () => {
+  it('renders the four tabs in the pinned order 任务·收件箱·队员·团队', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
       ['收件箱', '任务', '队员', '团队'].includes(label ?? ''));
-    expect(tabs).toEqual(['收件箱', '任务', '队员', '团队']);
+    expect(tabs).toEqual(['任务', '收件箱', '队员', '团队']);
   });
 
   it('shows the inbox empty state when nothing needs the user', () => {
+    settingsState.activeTeamTab = 'inbox';
     render(<TeamView />);
     expect(screen.getByText('没有需要你处理的事')).toBeTruthy();
   });

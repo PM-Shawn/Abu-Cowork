@@ -79,6 +79,19 @@ async function ensureConnected(transport: BrowserTransport): Promise<void> {
   }
 }
 
+/**
+ * Pull the owning conversation id out of a tool handler's `extra` (the MCP SDK's
+ * per-request context, `extra._meta?: RequestMeta`), so every handler can merge
+ * `{ ownerId }` into its `transport.send()` payload without repeating the
+ * `_meta` lookup. `extra` is typed as `unknown` here rather than importing the
+ * SDK's `RequestHandlerExtra` type, to stay decoupled from its exact shape.
+ */
+function ownerFromExtra(extra: unknown): string | undefined {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const owner = meta?.[ABU_CONVERSATION_META_KEY];
+  return typeof owner === 'string' ? owner : undefined;
+}
+
 function formatResult(response: BrowserTransportResponse): string {
   if (!response.success) {
     return `Error: ${response.error ?? 'Unknown error'}`;
@@ -129,9 +142,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   server.tool(
     'get_tabs',
     'Get all open browser tabs grouped by window. Returns a summary with the current window/tab info, plus a list of windows each containing their tabs. Use this first to find the target tab ID for other browser actions.',
-    async () => {
+    async (extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('get_tabs');
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('get_tabs', ownerId ? { ownerId } : {});
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -145,9 +159,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page (e.g. the form you are filling). Use this first when a snapshot comes back truncated.'),
       maxChars: z.coerce.number().optional().describe('Maximum serialized size of the element list (default 30000). Raise it if the snapshot is truncated and you cannot scope it with a selector.'),
     },
-    async ({ tabId, selector, maxChars }) => {
+    async ({ tabId, selector, maxChars }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('snapshot', { tabId, selector, maxChars });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('snapshot', { tabId, selector, maxChars, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -160,10 +175,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
     },
-    async ({ tabId, locator }) => {
+    async ({ tabId, locator }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await transport.send('click', { tabId, locator: parsed });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('click', { tabId, locator: parsed, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -177,10 +193,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The text value to fill into the field'),
     },
-    async ({ tabId, locator, value }) => {
+    async ({ tabId, locator, value }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await transport.send('fill', { tabId, locator: parsed, value });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('fill', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -194,10 +211,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The option value or visible text to select'),
     },
-    async ({ tabId, locator, value }) => {
+    async ({ tabId, locator, value }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const res = await transport.send('select', { tabId, locator: parsed, value });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('select', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -218,10 +236,15 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       ),
       timeout: z.coerce.number().optional().default(30000).describe('Maximum wait time in ms (default: 30000)'),
     },
-    async ({ tabId, condition, timeout }) => {
+    async ({ tabId, condition, timeout }, extra) => {
       await ensureConnected(transport);
       const parsed = parseCondition(condition);
-      const res = await transport.send('wait_for', { tabId, condition: parsed, timeout }, timeout + 5000);
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send(
+        'wait_for',
+        { tabId, condition: parsed, timeout, ...(ownerId ? { ownerId } : {}) },
+        timeout + 5000
+      );
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -234,9 +257,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector to extract text from. If omitted, extracts the full page text (may be large).'),
     },
-    async ({ tabId, selector }) => {
+    async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('extract_text', { tabId, selector });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('extract_text', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -249,9 +273,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector for the target table. If omitted, extracts the largest table on the page.'),
     },
-    async ({ tabId, selector }) => {
+    async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('extract_table', { tabId, selector });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('extract_table', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -266,9 +291,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       amount: z.coerce.number().optional().default(500).describe('Scroll amount in pixels (default: 500)'),
       selector: z.string().optional().describe('CSS selector for the scrollable element. If omitted, scrolls the whole page.'),
     },
-    async ({ tabId, direction, amount, selector }) => {
+    async ({ tabId, direction, amount, selector }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('scroll', { tabId, direction, amount, selector });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('scroll', { tabId, direction, amount, selector, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -282,9 +308,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       url: z.string().optional().describe('URL to navigate to. Omit for back/forward.'),
       action: z.enum(['goto', 'back', 'forward', 'reload']).optional().default('goto').describe('Navigation action (default: goto)'),
     },
-    async ({ tabId, url, action }) => {
+    async ({ tabId, url, action }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('navigate', { tabId, url, action });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('navigate', { tabId, url, action, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -298,9 +325,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       key: z.string().describe('Key to press (e.g., "Enter", "Tab", "Escape", "a", "ArrowDown")'),
       modifiers: z.array(z.enum(['ctrl', 'shift', 'alt', 'meta'])).optional().describe('Modifier keys to hold'),
     },
-    async ({ tabId, key, modifiers }) => {
+    async ({ tabId, key, modifiers }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('keyboard', { tabId, key, modifiers });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('keyboard', { tabId, key, modifiers, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -313,9 +341,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       code: z.string().describe('JavaScript code to execute. The last expression value is returned.'),
     },
-    async ({ tabId, code }) => {
+    async ({ tabId, code }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('execute_js', { tabId, code }, 60_000);
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('execute_js', { tabId, code, ...(ownerId ? { ownerId } : {}) }, 60_000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -329,9 +358,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       code: z.string().describe('Synchronous JavaScript to evaluate against the detached DOM copy. The completion value is returned as JSON.'),
       selector: z.string().optional().describe('Optional CSS selector to serialize only one subtree before running the query. Use this when the page is large or when you only need one region.'),
     },
-    async ({ tabId, code, selector }) => {
+    async ({ tabId, code, selector }, extra) => {
       await ensureConnected(transport);
-      const htmlResponse = await transport.send('get_html', { tabId, selector });
+      const ownerId = ownerFromExtra(extra);
+      const htmlResponse = await transport.send('get_html', { tabId, selector, ...(ownerId ? { ownerId } : {}) });
       if (!htmlResponse.success) {
         throw new Error(htmlResponse.error ?? 'Failed to read page HTML');
       }
@@ -350,9 +380,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
-    async ({ tabId }) => {
+    async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('screenshot', { tabId });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('screenshot', { tabId, ...(ownerId ? { ownerId } : {}) });
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -373,10 +404,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
-    async ({ tabId }) => {
+    async ({ tabId }, extra) => {
       await ensureConnected(transport);
+      const ownerId = ownerFromExtra(extra);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await transport.send('screenshot_full_page', { tabId }, 120_000);
+      const res = await transport.send('screenshot_full_page', { tabId, ...(ownerId ? { ownerId } : {}) }, 120_000);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -410,9 +442,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   server.tool(
     'get_downloads',
     'Get recent file downloads from the browser. Useful for confirming that a file was downloaded after clicking a download button.',
-    async () => {
+    async (extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('get_downloads');
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('get_downloads', ownerId ? { ownerId } : {});
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -424,9 +457,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
-    async ({ tabId }) => {
+    async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('start_recording', { tabId });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('start_recording', { tabId, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -438,9 +472,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
     },
-    async ({ tabId }) => {
+    async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const res = await transport.send('stop_recording', { tabId });
+      const ownerId = ownerFromExtra(extra);
+      const res = await transport.send('stop_recording', { tabId, ...(ownerId ? { ownerId } : {}) });
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

@@ -913,7 +913,9 @@ export async function executeAnyTool(
   if (name.includes('__')) {
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, executionInput);
+      const result = await mcpManager.callTool(serverName, toolName, executionInput, {
+        conversationId: toolContext?.conversationId,
+      });
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

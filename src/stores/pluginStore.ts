@@ -202,22 +202,35 @@ export const usePluginStore = create<PluginStore>()(
               `${req.home}/.abu/plugin-packages/${req.marketplaceName}/${req.entry.name}/_remote`,
             ).catch(() => undefined);
           }
-          // installPlugin only puts the package on disk and describes the
-          // record; persisting it is the caller's job.
-          await upsertInstalled(req.home, record);
-
           // Register the plugin's MCP servers — DISABLED, so nothing runs until
           // the user turns one on in the Connectors tab (see pluginMcpBridge).
           // Specs come from the install outcome, not a second planInstall.
+          //
+          // Registration is done BEFORE persisting, and the record is credited
+          // with only the servers it ACTUALLY created (`registered`), never a
+          // user's pre-existing server of the same name that registration
+          // skipped. Otherwise uninstall/update — which delete every server in
+          // `contributed` — would delete the user's server. (Security review
+          // blocker #1.)
+          let persistedRecord = record;
           if (mcpServers.length > 0) {
             const specs = Object.fromEntries(
               mcpServers.map((s) => [s.name, { command: s.command, args: s.args, url: s.url }]),
             );
-            registerPluginServers(specs, getMcpStoreOps());
+            const { registered } = registerPluginServers(specs, getMcpStoreOps());
+            if (registered.length !== record.contributed.mcpServers.length) {
+              persistedRecord = {
+                ...record,
+                contributed: { ...record.contributed, mcpServers: registered },
+              };
+            }
           }
+          // installPlugin only puts the package on disk and describes the
+          // record; persisting it is the caller's job.
+          await upsertInstalled(req.home, persistedRecord);
 
           await get().refreshInstalled(req.home);
-          return record;
+          return persistedRecord;
         } catch (error) {
           set({ error: messageOf(error) });
           throw error;

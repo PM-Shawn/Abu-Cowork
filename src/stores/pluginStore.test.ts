@@ -364,3 +364,35 @@ describe('update', () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 });
+
+describe('MCP server conflict safety (security review blocker #1)', () => {
+  it('uninstall does NOT delete a user server the plugin only collided with', async () => {
+    // User owns "weather-mcp"; the plugin declares the same name. Registration
+    // must not clobber it (already covered) AND uninstall must not delete it —
+    // the record must credit the plugin with only what it actually created.
+    useMCPStore.setState({
+      servers: {
+        'weather-mcp': { config: { name: 'weather-mcp', enabled: true, command: 'user-cmd' }, status: 'connected', tools: [] },
+      },
+    });
+    vi.mocked(installPlugin).mockResolvedValue({
+      record: weather, // weather.contributed.mcpServers = ['weather-mcp']
+      mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }],
+    });
+    // Capture what install actually persists (the corrected record).
+    let persisted: InstalledPlugin | undefined;
+    vi.mocked(upsertInstalled).mockImplementation(async (_home, rec) => { persisted = rec; });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+
+    await usePluginStore.getState().install({
+      home: HOME, marketplaceName: 'official', marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+    });
+
+    // The persisted record must NOT credit the plugin with the user's server.
+    expect(persisted?.contributed.mcpServers).toEqual([]);
+    // And the user's server is still there after install.
+    expect(useMCPStore.getState().servers['weather-mcp'].config.command).toBe('user-cmd');
+  });
+})

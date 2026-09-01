@@ -39,6 +39,46 @@ function conversation(id: string): Conversation {
   };
 }
 
+const LAID_OUT_RECT = {
+  bottom: 500,
+  height: 400,
+  left: 100,
+  right: 700,
+  top: 100,
+  width: 600,
+  x: 100,
+  y: 100,
+  toJSON: () => ({}),
+} as DOMRect;
+
+const ZERO_RECT = {
+  bottom: 0,
+  height: 0,
+  left: 0,
+  right: 0,
+  top: 0,
+  width: 0,
+  x: 0,
+  y: 0,
+  toJSON: () => ({}),
+} as DOMRect;
+
+/**
+ * happy-dom has no layout engine, so model the ONE geometric fact this suite
+ * depends on: an element under a `display:none` / `[hidden]` ancestor has a
+ * zero rect and a null `offsetParent`. Driving the stubs off the real DOM keeps
+ * BrowserTab's actual visibility branch under test — a constant "laid out"
+ * stub would hide the very code path that keeps a collapsed panel from leaving
+ * a native page painted over the app.
+ */
+function underHiddenAncestor(el: Element | null): boolean {
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.hasAttribute('hidden') || node.style.display === 'none') return true;
+  }
+  return false;
+}
+
 function panelEl(): HTMLElement | null {
   return document.querySelector('[data-abu-right-panel]');
 }
@@ -114,20 +154,16 @@ describe('RightPanel browser view lifecycle', () => {
       fileTreeMode: false,
     });
 
-    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
-      bottom: 500,
-      height: 400,
-      left: 100,
-      right: 700,
-      top: 100,
-      width: 600,
-      x: 100,
-      y: 100,
-      toJSON: () => ({}),
-    });
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      function (this: HTMLElement) {
+        return underHiddenAncestor(this) ? ZERO_RECT : LAID_OUT_RECT;
+      },
+    );
     Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
       configurable: true,
-      get: () => document.body,
+      get(this: HTMLElement) {
+        return underHiddenAncestor(this) ? null : document.body;
+      },
     });
   });
 
@@ -170,6 +206,47 @@ describe('RightPanel browser view lifecycle', () => {
     expect(panelEl()).toHaveAttribute('hidden');
     expect(browserTabMounted()).toBe(true);
     expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
+  });
+
+  // The keep-alive above is only safe because the native layer — which paints
+  // OVER React and ignores CSS — actually goes away with the panel. That rests
+  // entirely on BrowserTab reading a zero rect / null offsetParent, so exercise
+  // it for real rather than stubbing the geometry to "always laid out".
+  it('hides the native layer while the panel is collapsed and shows the same view on re-expand', async () => {
+    await renderPanel();
+    await seedBrowserTab();
+
+    await act(async () => {
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+    });
+
+    // The tab is still mounted, so this hide can only have come from syncBounds
+    // seeing the collapsed panel's zero rect — not from an unmount cleanup.
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('browser_hide', { id: BROWSER_TAB_ID });
+    });
+    expect(browserTabMounted()).toBe(true);
+
+    // Let a few more syncBounds ticks run: a hidden pane must not resume
+    // painting the native layer over whatever replaced it.
+    const hideIndex = invokeMock.mock.calls.findIndex(([command]) => command === 'browser_hide');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    });
+    const afterHide = invokeMock.mock.calls.slice(hideIndex + 1).map(([command]) => command);
+    expect(afterHide).not.toContain('browser_set_bounds');
+    expect(afterHide).not.toContain('browser_show');
+
+    await act(async () => {
+      useSettingsStore.setState({ rightPanelCollapsed: false });
+    });
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('browser_show', { id: BROWSER_TAB_ID });
+    });
+    // Shown, never re-created: same WebContentsView, so the same tab id the
+    // agent is already holding.
+    expect(invokeMock).not.toHaveBeenCalledWith('browser_create', expect.anything());
   });
 
   it('still destroys the native view when the user closes the tab explicitly', async () => {

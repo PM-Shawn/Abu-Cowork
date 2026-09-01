@@ -59,6 +59,14 @@
  * navigated-to URL as a plain string (matches `listen<string>` in
  * BrowserTab.tsx:126).
  *
+ * ## Adoption events: `browser://automation-open` / `browser://automation-cancel`
+ * Electron-only (no Tauri counterpart). `-open` invites the renderer to adopt a
+ * new automation view into the workspace; `-cancel {id}` withdraws that
+ * invitation — the run was stopped, or the conversation that owned the view was
+ * deleted — and asks the renderer to drop the tab record again (App.tsx). See
+ * `cancelledAdoptionIds` for why a withdrawal needs both the event and a
+ * main-side tombstone.
+ *
  * ## window.open / target="_blank"
  * browser.rs injects `NEW_WINDOW_SHIM` (an `initialization_script` that
  * redirects `window.open()`/blank-target link clicks into the SAME webview,
@@ -176,6 +184,46 @@ const activeTabIdByOwner = new Map();
  * and `browserCreate()` is where the adopted view's meta gets written.
  */
 const pendingAutomationOwners = new Map();
+
+/**
+ * ## Cancelled adoptions (tombstones)
+ *
+ * `browser://automation-open` is already on its way to the renderer by the time
+ * an adoption can be cancelled (the run was stopped, or the owning conversation
+ * was deleted), and the renderer answers it unconditionally with
+ * `browser_create`. Dropping only the pending-owner entry would let that late
+ * `browser_create` build the view as LEGACY — a live page every OTHER
+ * conversation could see and drive, while the only record that could destroy it
+ * (the renderer tab, still carrying the dead conversation's owner) is invisible
+ * in every tab strip. So a cancelled id is TOMBSTONED here and `browserCreate`
+ * refuses it.
+ *
+ * Refusal is silent (`return null`): `BrowserTab.tsx` treats a throw from
+ * `browser_create` as a transient failure and retries on a timer, which would
+ * turn one refusal into a retry storm.
+ *
+ * The set is capped and evicts oldest-first — it only has to outlive an
+ * in-flight adoption (milliseconds), never the session. Entries are NOT
+ * consumed on the first refusal: React StrictMode can double-mount a
+ * `BrowserTab` and issue `browser_create` twice for the same id.
+ */
+const MAX_CANCELLED_ADOPTIONS = 64;
+const cancelledAdoptionIds = new Set();
+
+/**
+ * Cancel one adoption: stop refusing it into existence, and tell the renderer to
+ * drop the tab record (which also destroys the view if it already made one —
+ * `previewStore` commits every removal through `closeBrowserViews`).
+ */
+function cancelAutomationAdoption(id) {
+  pendingAutomationOwners.delete(id);
+  cancelledAdoptionIds.add(id);
+  while (cancelledAdoptionIds.size > MAX_CANCELLED_ADOPTIONS) {
+    const oldest = cancelledAdoptionIds.values().next().value;
+    cancelledAdoptionIds.delete(oldest);
+  }
+  emit('browser://automation-cancel', { id });
+}
 
 function ownerKeyOf(id) {
   const meta = viewMeta.get(id);
@@ -664,7 +712,7 @@ async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
     // The run may be stopped at any point during the wait; drop the pending
     // entry before throwing so a cancelled adoption cannot strand one.
     if (signal && signal.aborted) {
-      pendingAutomationOwners.delete(id);
+      cancelAutomationAdoption(id);
       throw new Error(RUN_STOPPED_MESSAGE);
     }
     const adopted = views.get(id);
@@ -683,6 +731,7 @@ async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
     // one means the owning conversation was deleted while we waited (the only
     // other remover, an adoption, is the branch just above). Building the
     // fallback view now would strand a live view no conversation can close.
+    // The tombstone + cancel event were already published by whoever purged it.
     if (!pendingAutomationOwners.has(id)) throw new Error(RUN_STOPPED_MESSAGE);
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1070,6 +1119,13 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
     throw new Error('main window not found');
   }
 
+  // An adoption cancelled while `browser://automation-open` was already in
+  // flight (see `cancelledAdoptionIds`): the renderer is answering an invitation
+  // main has since withdrawn. Do nothing, quietly — creating the view here is
+  // exactly the LEGACY-ghost bug the tombstone exists to prevent, and throwing
+  // would drive BrowserTab's create-retry loop.
+  if (cancelledAdoptionIds.has(id)) return null;
+
   const existing = views.get(id);
   if (existing) {
     // Already created (e.g. StrictMode double-mount) — reuse it, matching
@@ -1243,26 +1299,38 @@ function browserClose({ id }) {
  * destroys the views it knows about; this command is the belt-and-braces half
  * for main-side state no tab record covers — a headless fallback view (no
  * renderer ever adopted it), or an adoption still pending when the delete
- * landed. Scope is exactly one owner: another conversation's views and the
+ * landed. Every id it reaches is also cancelled (tombstoned + a
+ * `browser://automation-cancel` to the renderer), so an adoption still in
+ * flight cannot come back as a legacy ghost. Scope is exactly one owner: another conversation's views and the
  * LEGACY pool (the user's own pane tabs, which every conversation may see) are
  * never touched, so an unknown/blank/legacy owner is a deliberate no-op rather
  * than an error — like `browser_hide`/`browser_close`, this is a cleanup
  * command whose failure mode must never be "kill someone else's tab".
  */
 function disposeOwnerViews(ownerKey) {
+  const cancelledIds = [];
   // Snapshot: closeView deletes from `views` as we go.
   for (const [id, view] of Array.from(views)) {
-    if (ownerKeyOf(id) === ownerKey) closeView(id, view);
+    if (ownerKeyOf(id) !== ownerKey) continue;
+    closeView(id, view);
+    // Tombstone the closed view's id too: BrowserTab may have a create RETRY in
+    // flight for it (its invoke failed once), which would otherwise rebuild the
+    // view as legacy a moment after this teardown.
+    cancelledIds.push(id);
   }
-  // closeView already drops these per view (and `forgetOwnerInteractionIfUnused`
-  // clears the interaction record once the owner's last view is gone), but the
-  // owner may also hold records with no live view behind them — a current-tab
-  // id whose view was destroyed by the window teardown, or a pending adoption.
+  for (const [pendingId, pendingOwner] of Array.from(pendingAutomationOwners)) {
+    if (pendingOwner === ownerKey) cancelledIds.push(pendingId);
+  }
+  // closeView already drops the per-view records (and
+  // `forgetOwnerInteractionIfUnused` clears the interaction record once the
+  // owner's last view is gone), but the owner may also hold records with no live
+  // view behind them — a current-tab id whose view was destroyed by the window
+  // teardown, or a pending adoption.
   activeTabIdByOwner.delete(ownerKey);
   userInteractionAt.delete(ownerKey);
-  for (const [pendingId, pendingOwner] of Array.from(pendingAutomationOwners)) {
-    if (pendingOwner === ownerKey) pendingAutomationOwners.delete(pendingId);
-  }
+  // Emitted last, so the renderer's reaction (dropping the tab record, which
+  // fires `browser_close`) can never race the teardown above.
+  for (const id of cancelledIds) cancelAutomationAdoption(id);
 }
 
 function browserDisposeOwner({ conversationId }) {

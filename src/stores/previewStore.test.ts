@@ -647,6 +647,49 @@ describe('previewStore', () => {
       expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
     });
 
+    // I1 — main withdraws an adoption (`browser://automation-cancel`) when the
+    // run was stopped or the owning conversation was deleted. The record must go
+    // even though it is invisible here: nothing else could ever remove it, and
+    // it is what keeps the native view (and a mounted BrowserTab) alive.
+    it('closeAdoptedBrowserTab drops a withdrawn tab from another conversation', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-a-cancel', 'conv-a');
+      usePreviewStore.getState().openBrowser('https://b.example', 'agent-b-keep', 'conv-b');
+
+      usePreviewStore.getState().closeAdoptedBrowserTab('agent-a-cancel');
+
+      expect(ids(usePreviewStore.getState().tabs)).toEqual(['agent-b-keep']);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-cancel' });
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-b-keep' });
+    });
+
+    it('closeAdoptedBrowserTab re-activates a survivor when the withdrawn tab was active', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openSummary();
+      const summaryId = usePreviewStore.getState().activeTabId!;
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-a-visible', 'conv-a');
+      usePreviewStore.getState().activateTab('agent-a-visible');
+
+      usePreviewStore.getState().closeAdoptedBrowserTab('agent-a-visible');
+
+      const s = usePreviewStore.getState();
+      expect(ids(s.tabs)).toEqual([summaryId]);
+      expect(s.activeTabId).toBe(summaryId);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-visible' });
+    });
+
+    it('closeAdoptedBrowserTab ignores an unknown id and never touches a non-browser tab', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openSummary();
+      const summaryId = usePreviewStore.getState().activeTabId!;
+
+      usePreviewStore.getState().closeAdoptedBrowserTab('no-such-tab');
+      usePreviewStore.getState().closeAdoptedBrowserTab(summaryId);
+
+      expect(ids(usePreviewStore.getState().tabs)).toEqual([summaryId]);
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
+    });
+
     it('a foreign-owned tab never keeps the panel wide or the chat width pinned', () => {
       usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
       usePreviewStore.getState().openBrowser('https://one.example', 'agent-a-9', 'conv-a');

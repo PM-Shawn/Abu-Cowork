@@ -353,6 +353,31 @@ function App() {
     };
   }, []);
 
+  // ...and the matching withdrawal. Main cancels an adoption whose run was
+  // stopped, or whose owning conversation was deleted, and can no longer let
+  // this tab exist: the invitation was already sent, so without this the
+  // renderer would keep (or create) a tab record whose owner conversation is
+  // gone — invisible in every strip, closable from none, and still mounted.
+  // Dropping the record is also what destroys any native view already built for
+  // it (previewStore commits every removal through closeBrowserViews).
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string }>('browser://automation-cancel', (event) => {
+      const { id } = event.payload ?? {};
+      if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
+      usePreviewStore.getState().closeAdoptedBrowserTab(id);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
   // Pet window sends a message to the currently active conversation
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;

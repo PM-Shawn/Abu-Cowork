@@ -191,6 +191,13 @@ interface PreviewState {
   // record is what destroys the native view, so this is the renderer's half of
   // the delete cascade's browser cleanup. Legacy/user-opened tabs are untouched.
   closeOwnedTabsForConversation: (conversationId: string) => void;
+  // Drop one adopted browser tab because MAIN withdrew it
+  // (`browser://automation-cancel`: the run was stopped, or the conversation
+  // that owned the view was deleted). Reaches the tab wherever it sits — a
+  // withdrawn tab is typically invisible in the current conversation, so no
+  // user-facing close path could ever remove it — and destroys any native view
+  // that was already created for it.
+  closeAdoptedBrowserTab: (id: string) => void;
   // Drag-reorder: move the tab with id `fromId` to `toId`'s position.
   reorderTabs: (fromId: string, toId: string) => void;
   // Commit a new URL for a browser tab (address-bar navigation).
@@ -470,6 +477,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   closeOwnedTabsForConversation: (conversationId) => {
     removeTabsWhere((tab) => tab.kind === 'browser' && tab.ownerConversationId === conversationId);
+  },
+
+  closeAdoptedBrowserTab: (id) => {
+    removeTabsWhere((tab) => tab.kind === 'browser' && tab.id === id);
   },
 
   reorderTabs: (fromId, toId) => {

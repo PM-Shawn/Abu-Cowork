@@ -1179,17 +1179,140 @@ test('a stop during the adoption wait cancels it instead of stranding a hidden v
     // proves the loop exited on the abort rather than on its deadline.
     assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
 
-    // The pending-owner entry is gone: re-creating that id as a user pane tab
-    // comes back legacy (a stranded entry would hand it to OWNER_A instead).
+    // The invitation is withdrawn, both ways: the renderer is told to drop the
+    // tab record, and a `browser_create` that was already in flight for that id
+    // builds NOTHING. (Letting it through would create a legacy view — the
+    // pending owner is gone — that every other conversation can see and drive,
+    // while the only record able to destroy it carries the stopped run's owner
+    // and is therefore invisible in every strip.)
+    assert.deepEqual(
+      emitted.filter((entry) => entry.event === 'browser://automation-cancel').map((e) => e.payload),
+      [{ id: openEvent.payload.id }]
+    );
+    assert.equal(
+      host.browserDispatch(null, 'browser_create', {
+        id: openEvent.payload.id,
+        url: 'https://example.com/',
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+      }),
+      null,
+      'a refused adoption resolves quietly — a throw would drive BrowserTab\'s create-retry loop'
+    );
+    assert.deepEqual(tabIds(await probeTabs(host)), [], 'no legacy ghost was created');
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B)), [], 'and no other owner sees one');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I1 (fix round 1) — the cancel/dispose paths drop the pending-owner entry while
+ * `browser://automation-open` is already on its way out, and the renderer
+ * answers it unconditionally with `browser_create`. Both orderings of that race
+ * must end with no view and no record.
+ */
+test('a browser_create landing after a dispose cannot become a legacy ghost', async () => {
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    // `browser://automation-open` is emitted before the wait's first await, so
+    // it has already fired by the time this call yields its promise.
+    const pending = host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A });
+    const openId = emitted.find((item) => item.event === 'browser://automation-open').payload.id;
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+    await assert.rejects(pending, /Browser action cancelled because the run was stopped\./);
+
+    // The renderer's adoption arrives late — exactly the reproduced ghost.
+    assert.equal(
+      host.browserDispatch(null, 'browser_create', {
+        id: openId,
+        url: 'https://ghost.example/',
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 600,
+      }),
+      null
+    );
+
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B)), [], 'no ghost in another owner\'s tabs');
+    assert.deepEqual(tabIds(await probeTabs(host)), [], 'and none in the legacy pool');
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
+    // Even a repeated create (StrictMode double-mount) stays refused.
     host.browserDispatch(null, 'browser_create', {
-      id: openEvent.payload.id,
-      url: 'https://example.com/',
+      id: openId,
+      url: 'https://ghost.example/',
       x: 0,
       y: 0,
       width: 800,
       height: 600,
     });
-    assert.equal(tabIds(await probeTabs(host)).length, 1);
+    assert.deepEqual(tabIds(await probeTabs(host)), []);
+  } finally {
+    restore();
+  }
+});
+
+test('disposing an already-adopted view tells the renderer to drop its record', async () => {
+  // The other ordering: the renderer adopted BEFORE the dispose landed, so the
+  // tab record exists. Closing the view alone would leave that record behind —
+  // invisible in every strip (it carries the deleted conversation's owner) and
+  // still mounted, syncing bounds for a view that is gone.
+  const { host, emitted, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const viewId = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    assert.equal(contentsFor(aTab).isDestroyed(), true);
+    assert.deepEqual(
+      emitted.filter((entry) => entry.event === 'browser://automation-cancel').map((e) => e.payload),
+      [{ id: viewId }]
+    );
+    // A create retry that was already in flight for that view is refused too.
+    host.browserDispatch(null, 'browser_create', {
+      id: viewId,
+      url: 'https://retry.example/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    assert.deepEqual(tabIds(await probeTabs(host)), []);
+  } finally {
+    restore();
+  }
+});
+
+test('the cancelled-adoption tombstone set stays bounded', async () => {
+  // It only has to outlive an in-flight adoption (milliseconds), so it is capped
+  // and evicts oldest-first rather than growing for the life of the session.
+  const { host, emitted, restore } = loadHost();
+  try {
+    const ids = [];
+    for (let i = 0; i < 70; i += 1) {
+      const owner = `conversation-bulk-${i}`;
+      await getTabs(host, owner);
+      ids.push(emitted[emitted.length - 1].payload.id);
+      host.browserDispatch(null, 'browser_dispose_owner', { conversationId: owner });
+    }
+
+    // The newest cancellations are still refused...
+    host.browserDispatch(null, 'browser_create', {
+      id: ids[69], url: 'https://recent.example/', x: 0, y: 0, width: 800, height: 600,
+    });
+    assert.deepEqual(tabIds(await probeTabs(host)), [], 'a recent cancellation still blocks');
+
+    // ...and the oldest have aged out, which is the bound itself: an adoption
+    // 70 cancellations ago is long dead, so re-using its id is not a ghost path.
+    host.browserDispatch(null, 'browser_create', {
+      id: ids[0], url: 'https://aged-out.example/', x: 0, y: 0, width: 800, height: 600,
+    });
+    assert.equal(tabIds(await probeTabs(host)).length, 1, 'the set did not grow past its cap');
   } finally {
     restore();
   }

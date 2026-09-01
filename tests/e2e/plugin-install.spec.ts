@@ -38,7 +38,6 @@ const SCREENSHOT_DIR = path.join(REPO_ROOT, 'test-results');
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
 const TOOLBOX = /^(工具箱|插件|Toolbox|Plugins)$/;
-const PLUGINS_TITLE = /^(插件|Plugins)$/;
 const PLUGINS_TAB = /^(插件|Plugins)$/;
 const MARKETPLACE_TAB = /^(插件市场|Marketplace)$/;
 const INSTALLED_TAB = /^(已安装|Installed)$/;
@@ -142,10 +141,13 @@ async function openPluginsTab(page: Page): Promise<void> {
   // Under the experiment the sidebar entry is renamed 「插件」 too, so both it
   // and the panel's own tab match the same name — scope each to its region.
   await page.getByLabel('Main navigation').getByRole('button', { name: TOOLBOX }).click();
-  await expect(page.getByRole('heading', { name: PLUGINS_TITLE })).toBeVisible({
+  // The plugin page carries no separate title heading — it matches the original
+  // toolbox layout, where the tabs are the header. Wait on the panel's own
+  // Plugins tab button, then select it.
+  const panel = page.getByRole('main');
+  await expect(panel.getByRole('button', { name: PLUGINS_TAB })).toBeVisible({
     timeout: READY_TIMEOUT,
   });
-  const panel = page.getByRole('main');
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
   await expect(panel.getByText(MARKETPLACE_TAB).first()).toBeVisible({ timeout: READY_TIMEOUT });
 }
@@ -183,15 +185,19 @@ test.describe('plugin install loop', () => {
     await page.getByRole('main').getByRole('button', { name: MARKETPLACE_TAB }).first().click();
 
     // --- add the marketplace -------------------------------------------------
+    // Opener testid differs by state: the empty-state CTA when no market exists,
+    // the top-bar button once one does. The built-in abu-official is preloaded,
+    // so in practice it's the top-bar opener.
     await page.getByTestId('plugin-add-marketplace-cta').or(
-      page.getByTestId('plugin-add-marketplace'),
+      page.getByTestId('plugin-add-marketplace-open'),
     ).first().click();
     await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);
     await page.getByTestId('plugin-marketplace-submit').click();
 
-    const entry = page.getByTestId('plugin-marketplace-entry').first();
+    // A freshly added market is auto-selected, so its entries are what shows.
+    const entry = page.getByTestId('plugin-marketplace-entry')
+      .filter({ hasText: 'e2e-weather' }).first();
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(entry).toContainText('e2e-weather');
 
     // --- disclosure must name the executable before anything is installed ----
     await entry.getByText(INSTALL).first().click();

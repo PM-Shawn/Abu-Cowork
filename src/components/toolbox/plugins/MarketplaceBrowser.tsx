@@ -126,13 +126,22 @@ export default function MarketplaceBrowser({
     setFlow({ kind: 'closed' });
   }, []);
 
-  // Keep the selection valid as marketplaces are added/removed.
+  // Keep the selection valid as marketplaces are added/removed, and land the
+  // user on a market they just added. User markets are appended last (the
+  // built-in abu-official is prepended), so when the list grows the newest
+  // entry is last — select it, otherwise adding a market while abu-official is
+  // selected would leave the user staring at abu-official's plugins instead of
+  // the one they just added.
+  const prevMarketCount = useRef(0);
   useEffect(() => {
     if (marketplaces.length === 0) {
       setSelectedName(null);
+      prevMarketCount.current = 0;
       return;
     }
-    if (!selectedName || !marketplaces.some((m) => m.name === selectedName)) {
+    const grew = marketplaces.length > prevMarketCount.current;
+    prevMarketCount.current = marketplaces.length;
+    if (grew || !selectedName || !marketplaces.some((m) => m.name === selectedName)) {
       setSelectedName(marketplaces[marketplaces.length - 1].name);
     }
   }, [marketplaces, selectedName]);
@@ -342,7 +351,12 @@ export default function MarketplaceBrowser({
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={onAddMarketplace}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onAddMarketplace}
+            data-testid="plugin-add-marketplace-open"
+          >
             <Plus className="h-3.5 w-3.5" />
             {tb.pluginsAddMarketplace}
           </Button>

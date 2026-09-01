@@ -1791,12 +1791,17 @@ test('the reclaim window never blocks work on the tabs that are still open', asy
 test('browser_clear_reclaim lifts the window for every run of that conversation', async () => {
   const { host, emitted, restore } = loadHost();
   try {
+    // Every tab is opened BEFORE any close: the first close blocks provisioning
+    // conversation-wide, so a later run could not get one to close.
     await getTabs(host, OWNER_A, RUN_1);
-    userCloses(host, lastAdoptedViewId(emitted));
+    const run1ViewId = lastAdoptedViewId(emitted);
     await getTabs(host, OWNER_A);
-    userCloses(host, lastAdoptedViewId(emitted));
+    const mainViewId = lastAdoptedViewId(emitted);
     await getTabs(host, OWNER_B);
-    userCloses(host, lastAdoptedViewId(emitted));
+    const otherViewId = lastAdoptedViewId(emitted);
+    userCloses(host, run1ViewId);
+    userCloses(host, mainViewId);
+    userCloses(host, otherViewId);
 
     assert.equal(host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A }), null);
 
@@ -1816,22 +1821,114 @@ test('browser_clear_reclaim lifts the window for every run of that conversation'
   }
 });
 
-test('a reclaim window is scoped to the run whose tab was closed', async () => {
+/**
+ * ## The window's two halves are keyed differently, on purpose
+ *
+ * PROVISIONING is blocked conversation-wide; the ACTION gate and the
+ * current-tab rules stay per-run.
+ *
+ * Keying provisioning per-run made the promise escapable by delegation, in both
+ * directions: close a subagent's tab and the conversation's own loop opened a
+ * fresh one; close the main loop's tab and `run_agent` minted a brand-new
+ * `sar-*` whose window had never been opened, so it provisioned immediately.
+ * The user closed A tab and meant "stop opening tabs" — they neither know nor
+ * care which run owned it.
+ *
+ * The action gate stays per-run because it answers a different question: a
+ * sibling run holding a tab of its own is mid-task on a page the user never
+ * touched, and freezing it would punish work the gesture said nothing about.
+ */
+test('the window blocks provisioning conversation-wide while gating actions per run', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    const run1ViewId = lastAdoptedViewId(emitted);
+    const siblingTab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    const mainTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    userCloses(host, run1ViewId);
+
+    // The closed run: nothing left, and no replacement.
+    const reclaimed = await getTabs(host, OWNER_A, RUN_1);
+    assert.deepEqual(tabIds(reclaimed), []);
+    assert.equal(reclaimed.summary.note, USER_RECLAIMED_MESSAGE);
+
+    // A sibling and the main loop KEEP the tabs they already have, and the note
+    // tells them why they will not be getting any more.
+    const sibling = await getTabs(host, OWNER_A, RUN_2);
+    assert.deepEqual(tabIds(sibling), [siblingTab], 'a sibling keeps its own tab');
+    assert.equal(sibling.summary.note, USER_RECLAIMED_MESSAGE);
+    assert.equal(sibling.summary.currentTabId, siblingTab, 'and it is still its current tab');
+    const mainLoop = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(mainLoop), [mainTab]);
+    assert.equal(mainLoop.summary.note, USER_RECLAIMED_MESSAGE);
+
+    // ...and they may still act on them: the gate is per-run.
+    await navigate(host, OWNER_A, siblingTab, 'https://sibling-still-works.example/', RUN_2);
+    assert.equal(contentsFor(siblingTab).getURL(), 'https://sibling-still-works.example/');
+
+    // A sibling with no window of its own that reaches for a tab it does not
+    // have gets the ordinary error, not the reclaim sentence — it was not the
+    // run the user reclaimed from.
+    await assert.rejects(
+      host.performBrowserAutomation('click', { ownerId: OWNER_A, runId: RUN_2, tabId: 999999 }),
+      /Browser tab not found: 999999/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('closing a subagent tab stops the conversation own loop from opening one', async () => {
+  // The escape hatch in the other direction: the user closes the tab a
+  // delegation opened, and the conversation's own loop simply opens another.
   const { host, emitted, restore } = loadHost();
   try {
     await getTabs(host, OWNER_A, RUN_1);
     userCloses(host, lastAdoptedViewId(emitted));
 
-    const reclaimed = await getTabs(host, OWNER_A, RUN_1);
-    assert.deepEqual(tabIds(reclaimed), []);
-    assert.equal(reclaimed.summary.note, USER_RECLAIMED_MESSAGE);
-
-    const sibling = await getTabs(host, OWNER_A, RUN_2);
-    assert.equal(tabIds(sibling).length, 1, 'a sibling run is not muted');
-    assert.equal(sibling.summary.note, undefined);
     const mainLoop = await getTabs(host, OWNER_A);
-    assert.equal(tabIds(mainLoop).length, 1, 'nor is the conversation main loop');
-    assert.equal(mainLoop.summary.note, undefined);
+    assert.deepEqual(tabIds(mainLoop), [], 'the main loop provisions nothing either');
+    assert.equal(mainLoop.summary.note, USER_RECLAIMED_MESSAGE);
+
+    // Another conversation is untouched — the block is conversation-wide, not
+    // app-wide.
+    assert.equal(tabIds(await getTabs(host, OWNER_B)).length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('closing the main loop tab stops a freshly delegated run from opening one', async () => {
+  // The escape hatch by delegation: `run_agent` mints a brand-new `sar-*` whose
+  // window was never opened, so a per-run block would let it provision at once.
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    const freshRun = await getTabs(host, OWNER_A, 'sar-minted-after-the-close');
+    assert.deepEqual(tabIds(freshRun), [], 'a run that never existed yet still cannot provision');
+    assert.equal(freshRun.summary.note, USER_RECLAIMED_MESSAGE);
+  } finally {
+    restore();
+  }
+});
+
+test('clearing the window lets every run of the conversation provision again', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    assert.deepEqual(tabIds(await getTabs(host, OWNER_A)), [], 'blocked before the clear');
+
+    host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A });
+
+    for (const runId of [RUN_1, RUN_2, undefined]) {
+      const listing = await getTabs(host, OWNER_A, runId);
+      assert.equal(tabIds(listing).length, 1, `run ${runId ?? 'main'} provisions again`);
+      assert.equal(listing.summary.note, undefined);
+    }
   } finally {
     restore();
   }
@@ -1887,15 +1984,39 @@ test('disposing an owner clears its reclaim window with the rest of its state', 
 test('a run dispose clears only that run reclaim window', async () => {
   const { host, emitted, restore } = loadHost();
   try {
+    // Both runs get a tab BEFORE either close: once one window is open, the
+    // conversation-wide block means the other run can never provision one.
     await getTabs(host, OWNER_A, RUN_1);
-    userCloses(host, lastAdoptedViewId(emitted));
+    const run1ViewId = lastAdoptedViewId(emitted);
     await getTabs(host, OWNER_A, RUN_2);
-    userCloses(host, lastAdoptedViewId(emitted));
+    const run2ViewId = lastAdoptedViewId(emitted);
+    assert.notEqual(run1ViewId, run2ViewId, 'each run really has its own view');
+    userCloses(host, run1ViewId);
+    userCloses(host, run2ViewId);
 
     host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
 
-    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, undefined);
-    assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.note, USER_RECLAIMED_MESSAGE);
+    // The per-run half is what a per-run dispose moves: RUN_1's gate is lifted
+    // (ordinary error), RUN_2 still holds its own window.
+    await assert.rejects(
+      host.performBrowserAutomation('click', { ownerId: OWNER_A, runId: RUN_1 }),
+      /Browser tab not found/
+    );
+    await assert.rejects(
+      host.performBrowserAutomation('click', { ownerId: OWNER_A, runId: RUN_2 }),
+      (error) => {
+        assert.equal(error.message, USER_RECLAIMED_MESSAGE);
+        return true;
+      }
+    );
+
+    // The conversation-wide half does not move until the LAST window is gone:
+    // RUN_2 still holds one, so nobody provisions.
+    assert.deepEqual(tabIds(await getTabs(host, OWNER_A, RUN_1)), []);
+    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, USER_RECLAIMED_MESSAGE);
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_2 });
+    assert.equal(tabIds(await getTabs(host, OWNER_A, RUN_1)).length, 1, 'the last window lifted it');
   } finally {
     restore();
   }
@@ -1944,7 +2065,10 @@ test('a reclaimed run may not drive the user own pane tab', async () => {
     const paneTab = tabIds(await probeTabs(host))[0];
     userCloses(host, ownViewId);
 
-    for (const action of ['navigate', 'click', 'fill', 'execute_js', 'keyboard', 'scroll']) {
+    // Every member of TAKEOVER_GATED_ACTIONS — a gap here is a hole in the gate.
+    for (const action of [
+      'navigate', 'click', 'fill', 'select', 'keyboard', 'execute_js', 'scroll', 'start_recording',
+    ]) {
       await assert.rejects(
         host.performBrowserAutomation(action, {
           ownerId: OWNER_A,
@@ -2045,6 +2169,30 @@ test('a reclaimed run never gets the user pane tab as its current tab', async ()
     // A bare `get_html` (no tabId) resolves through that record, so an
     // unpromoted legacy tab is the difference between "no tab" and "the page
     // the user is reading".
+    await assert.rejects(
+      host.performBrowserAutomation('get_html', { ownerId: OWNER_A }),
+      /Browser tab not found/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('a permitted look at the user pane tab does not make it the run current tab', async () => {
+  // The drift the post-action guard exists for: read-only work on a legacy tab
+  // is allowed, and without the guard that very call would record it as this
+  // owner's current tab — so the NEXT action, issued with no tabId, lands on
+  // the user's page through a door the gate never sees.
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, ownViewId);
+
+    await host.performBrowserAutomation('screenshot', { ownerId: OWNER_A, tabId: paneTab });
+
     await assert.rejects(
       host.performBrowserAutomation('get_html', { ownerId: OWNER_A }),
       /Browser tab not found/

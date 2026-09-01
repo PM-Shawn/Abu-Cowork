@@ -419,6 +419,34 @@ const userReclaimedAt = new Map();
  * surviving tabs are untouched by all of this: the user closed one tab, not the
  * task.
  */
+/**
+ * ## The window's two halves are keyed differently, on purpose
+ *
+ * PROVISIONING is blocked for the whole CONVERSATION; the action gate and the
+ * current-tab rules stay per-run.
+ *
+ * Keying provisioning per-run left the promise escapable by delegation, in both
+ * directions: close a subagent's tab and the conversation's own loop opened a
+ * fresh one; close the main loop's tab and the next `run_agent` minted a
+ * brand-new `sar-*` whose window had never been opened, so it provisioned
+ * immediately. The user closed A tab and meant "stop opening tabs" — they
+ * neither know nor care which run owned it, and a promise a delegation can walk
+ * around is not a promise.
+ *
+ * The ACTION gate stays per-run because it answers a different question. A
+ * sibling run holding a tab of its own is mid-task on a page the user never
+ * touched; freezing it would punish work the gesture said nothing about. So:
+ * no new tabs for anyone in this conversation, but whoever still has one keeps
+ * working in it.
+ */
+function conversationIsReclaimed(conversationId) {
+  if (!conversationId || conversationId === LEGACY_CONVERSATION) return false;
+  for (const key of userReclaimedAt.keys()) {
+    if (parseOwnerKey(key).conversationId === conversationId) return true;
+  }
+  return false;
+}
+
 /** May a tab become `owner`'s current tab? Not a legacy one, mid-window. */
 function mayBecomeCurrentTab(owner, tabIsLegacy) {
   return !tabIsLegacy || !userReclaimedAt.has(owner.key);
@@ -988,7 +1016,10 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       legacy: isLegacyOwner(tabOwner),
     });
   }
-  if (tabs.length === 0 && createIfEmpty) {
+  // The reclaim block lives HERE rather than at the call site so every path
+  // that could mint a view answers to it — including a run whose own window was
+  // never opened, which is exactly how a fresh delegation used to walk around it.
+  if (tabs.length === 0 && createIfEmpty && !conversationIsReclaimed(owner.conversationId)) {
     const view = await createAutomationView(owner, signal);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
@@ -1180,13 +1211,16 @@ async function runBrowserAutomation(action, payload, signal) {
   const owner = resolveOwnerKey(payload);
   const ownerKey = owner.key;
 
-  const reclaimed = userReclaimedAt.has(ownerKey);
+  // Per-RUN: gates this caller's actions (see `conversationIsReclaimed` for why
+  // the two halves are keyed differently).
+  const runReclaimed = userReclaimedAt.has(ownerKey);
 
   if (action === 'get_tabs') {
-    // A reclaimed owner never provisions, whatever the caller asked for: the
-    // listing is exactly the tabs that still exist, plus the note explaining
-    // why there may now be none.
-    const tabs = await automationTabs(owner, !reclaimed && payload.createIfEmpty !== false, signal);
+    // Conversation-wide: `automationTabs` refuses to provision, so the listing
+    // is exactly the tabs that still exist — plus the note explaining why there
+    // may now be none, shown to every run of the conversation because none of
+    // them will be getting a new tab.
+    const tabs = await automationTabs(owner, payload.createIfEmpty !== false, signal);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -1199,7 +1233,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
-        ...(reclaimed ? { note: USER_RECLAIMED_MESSAGE } : {}),
+        ...(conversationIsReclaimed(owner.conversationId) ? { note: USER_RECLAIMED_MESSAGE } : {}),
       },
       windows: [{
         windowId,
@@ -1229,7 +1263,7 @@ async function runBrowserAutomation(action, payload, signal) {
   // the very complaint this mechanism answers. Read-only actions are exempt —
   // they cannot make it worse, and the model may still report what the user is
   // looking at. The owner's own surviving tabs are never affected.
-  if (reclaimed && TAKEOVER_GATED_ACTIONS.has(action)
+  if (runReclaimed && TAKEOVER_GATED_ACTIONS.has(action)
     && (!match || isLegacyOwner(ownerOf(match.id)))) {
     throw new Error(USER_RECLAIMED_MESSAGE);
   }

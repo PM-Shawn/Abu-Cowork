@@ -381,14 +381,22 @@ const userInteractionAt = new Map();
  * records nothing, as does closing a LEGACY tab (the user closing their own pane
  * tab is just closing a tab).
  *
- * Inside the window, for THAT owner pair (N6 — one subagent's reclaimed tab must
- * not mute its siblings or the conversation's own loop):
+ * While a window is open, the effects are keyed at two DIFFERENT levels (see
+ * `conversationIsReclaimed` for why each is where it is):
+ *
+ * CONVERSATION-wide — every run of it, including runs minted after the close:
  *  - `get_tabs` stops provisioning, and its summary carries `note`;
- *  - a state-changing action or `navigate` left with no tab throws the same
- *    sentence. Deliberately NOT the run-stopped message: the run is alive, and
- *    saying otherwise would have the model report something false to the user.
- *  - anything acting on a tab that IS still open is untouched — the user closed
- *    one tab, not the whole task.
+ *  - no run may state-change the user's LEGACY pane tabs, nor have one promoted
+ *    to its current tab (R1).
+ *
+ * Per-RUN — only the run whose tab was closed:
+ *  - a state-changing action or `navigate` with nothing left to act on throws
+ *    the same sentence. Deliberately NOT the run-stopped message: the run is
+ *    alive, and saying otherwise would have the model report something false to
+ *    the user.
+ *
+ * Untouched either way: read-only work, and anything acting on a tab the RUN
+ * ITSELF still has open — the user closed one tab, not the whole task.
  *
  * The window has no timeout; it is lifted by the user's next message in that
  * conversation (`browser_clear_reclaim`, every run at once — the user is
@@ -402,42 +410,36 @@ const USER_RECLAIMED_MESSAGE =
 const userReclaimedAt = new Map();
 
 /**
- * The window's second half: a reclaimed owner may not TOUCH the legacy pool.
+ * ## What is keyed to the CONVERSATION, and what stays per-RUN
  *
- * The legacy pool is listed to every owner on purpose (the user's own pane tabs
- * are shared). Refusing to provision therefore leaves a reclaimed run seeing
- * exactly one thing it may still reach — the tab the user is reading — and
- * without this it would take it: promote it to its current tab, then click,
- * fill and navigate it. That is a sharper version of the complaint this whole
- * mechanism answers, arrived at BY the mechanism.
+ * Conversation-wide: PROVISIONING, and the bar on touching the user's LEGACY
+ * pane tabs (both the action gate's legacy clause and current-tab promotion).
+ * Per-run: the "nothing left to act on" clause of the action gate.
  *
- * So a legacy tab is look-but-don't-touch for that owner until the window
- * lifts: state-changing work on it is refused with the same sentence, read-only
- * work is not (the model may still report what the user is looking at), and it
- * may never become that owner's current tab — that record is what steers a
- * later `get_html` with no tabId onto the user's page. The owner's OWN
- * surviving tabs are untouched by all of this: the user closed one tab, not the
- * task.
- */
-/**
- * ## The window's two halves are keyed differently, on purpose
+ * Both conversation-wide rules exist because a per-run key let the promise be
+ * walked around by delegation:
  *
- * PROVISIONING is blocked for the whole CONVERSATION; the action gate and the
- * current-tab rules stay per-run.
+ *  - PROVISIONING, both directions: close a subagent's tab and the
+ *    conversation's own loop opened a fresh one; close the main loop's tab and
+ *    the next `run_agent` minted a brand-new `sar-*` whose window had never been
+ *    opened, so it provisioned immediately.
+ *  - THE USER'S TABS (R1): with provisioning blocked, a run holding no window of
+ *    its own sees the user's pane tab as the ONLY tab it can reach — so a
+ *    per-run bar handed that run exactly what the gesture was refusing. The
+ *    legacy pool is listed to every run on purpose (the user's pane tabs are
+ *    shared), which is what makes it reachable in the first place.
  *
- * Keying provisioning per-run left the promise escapable by delegation, in both
- * directions: close a subagent's tab and the conversation's own loop opened a
- * fresh one; close the main loop's tab and the next `run_agent` minted a
- * brand-new `sar-*` whose window had never been opened, so it provisioned
- * immediately. The user closed A tab and meant "stop opening tabs" — they
- * neither know nor care which run owned it, and a promise a delegation can walk
- * around is not a promise.
+ * In both cases the user closed A tab and meant "stop"; they neither know nor
+ * care which run owned it, and a promise a delegation can walk around is not a
+ * promise.
  *
- * The ACTION gate stays per-run because it answers a different question. A
- * sibling run holding a tab of its own is mid-task on a page the user never
- * touched; freezing it would punish work the gesture said nothing about. So:
- * no new tabs for anyone in this conversation, but whoever still has one keeps
- * working in it.
+ * The "nothing left to act on" clause stays per-run because it answers a
+ * different question — it is about THIS run's own closed tab, and a run still
+ * holding tabs is not in that situation at all. Freezing a sibling mid-task on a
+ * page the user never touched would punish work the gesture said nothing about.
+ *
+ * Net: no new tabs for anyone here, nobody touches the user's tabs, and whoever
+ * still has a tab of their own keeps working in it.
  */
 function conversationIsReclaimed(conversationId) {
   if (!conversationId || conversationId === LEGACY_CONVERSATION) return false;
@@ -447,9 +449,18 @@ function conversationIsReclaimed(conversationId) {
   return false;
 }
 
-/** May a tab become `owner`'s current tab? Not a legacy one, mid-window. */
+/**
+ * May a tab become `owner`'s current tab? Not a LEGACY one while any run of
+ * that conversation is reclaimed.
+ *
+ * Keyed on the conversation, not the acting run (R1): the conversation-wide
+ * provisioning block means a run holding no window of its own — a `sar-*`
+ * minted after the user closed the main loop's tab, or the main loop after a
+ * subagent's — sees the user's pane tab as the ONLY tab it can reach. Keying
+ * this per-run handed that run exactly what the gesture was refusing.
+ */
 function mayBecomeCurrentTab(owner, tabIsLegacy) {
-  return !tabIsLegacy || !userReclaimedAt.has(owner.key);
+  return !tabIsLegacy || !conversationIsReclaimed(owner.conversationId);
 }
 
 /**
@@ -1255,16 +1266,26 @@ async function runBrowserAutomation(action, payload, signal) {
     ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
   const match = findViewByTabId(targetTabId, owner);
-  // N7 — inside the reclaim window a state-changing action is refused both when
-  // nothing is left to act on AND when the only thing left is a LEGACY tab (the
-  // user's own pane tab, which every owner can see). Same sentence for both:
-  // "tab not found" reads as a transient glitch and invites the model to open
-  // another one, the exact thing being refused, and driving the user's tab is
-  // the very complaint this mechanism answers. Read-only actions are exempt —
-  // they cannot make it worse, and the model may still report what the user is
-  // looking at. The owner's own surviving tabs are never affected.
-  if (runReclaimed && TAKEOVER_GATED_ACTIONS.has(action)
-    && (!match || isLegacyOwner(ownerOf(match.id)))) {
+  // N7 — a state-changing action is refused in two situations, with the same
+  // sentence: "tab not found" reads as a transient glitch and invites the model
+  // to open another one, the exact thing being refused.
+  //
+  // The two halves are keyed differently (R1):
+  //  - NOTHING LEFT TO ACT ON is per-RUN — it is about this run's own closed
+  //    tab, and a run that still has tabs is not in that situation at all.
+  //  - THE TARGET IS A LEGACY TAB is per-CONVERSATION. The user's pane tabs are
+  //    visible to every run, so while any window in the conversation is open,
+  //    NO run of it may drive them — including one holding no window of its own,
+  //    which the conversation-wide provisioning block leaves seeing the user's
+  //    tab as the only thing it can reach.
+  //
+  // Read-only actions are exempt from both: they cannot make it worse, and the
+  // model may still report what the user is looking at. A run's OWN surviving
+  // tabs are never affected — the user closed one tab, not the task.
+  const targetIsUserTab = Boolean(match)
+    && isLegacyOwner(ownerOf(match.id))
+    && conversationIsReclaimed(owner.conversationId);
+  if (TAKEOVER_GATED_ACTIONS.has(action) && ((runReclaimed && !match) || targetIsUserTab)) {
     throw new Error(USER_RECLAIMED_MESSAGE);
   }
   if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);

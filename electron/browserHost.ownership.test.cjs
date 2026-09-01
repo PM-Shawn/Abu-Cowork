@@ -2256,3 +2256,138 @@ test('an owner with no reclaim window drives legacy tabs exactly as before', asy
     restore();
   }
 });
+
+/**
+ * ## R1 — the legacy bar is the CONVERSATION's, not the reclaimed run's
+ *
+ * Barring a reclaimed RUN from the user's pane tabs left the same harm one step
+ * sideways: the conversation-wide provisioning block means a run that holds no
+ * window of its own — a `sar-*` minted after the user closed the main loop's
+ * tab, or the main loop after a subagent's tab was closed — sees the user's
+ * pane tab as the ONLY tab it can reach, gets it promoted to its current tab,
+ * and drives it. "Sibling runs may act on their own existing tabs" was never a
+ * licence to act on the USER's.
+ *
+ * So the legacy half of both guards keys on the CONVERSATION while any of its
+ * windows is open. The `!match` half stays per-run (it is about the run's own
+ * closed tab), read-only stays allowed, and a run's OWN tabs are untouched.
+ */
+
+test('a non-reclaimed run of a reclaimed conversation still may not drive the user tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // The conversation's own loop opens a tab, the user opens a pane tab, then
+    // the user closes the agent's tab — the reviewer's probe scenario.
+    await getTabs(host, OWNER_A);
+    const mainViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, mainViewId);
+
+    // A run minted AFTER the close holds no window of its own.
+    const freshRun = 'sar-minted-after-the-close';
+    const listing = await getTabs(host, OWNER_A, freshRun);
+    assert.deepEqual(tabIds(listing), [paneTab], 'the user tab is the only one it can see');
+    assert.equal(listing.summary.currentTabId, null, 'and it is NOT promoted to its current tab');
+    assert.equal(listing.summary.note, USER_RECLAIMED_MESSAGE);
+
+    for (const action of [
+      'navigate', 'click', 'fill', 'select', 'keyboard', 'execute_js', 'scroll', 'start_recording',
+    ]) {
+      await assert.rejects(
+        host.performBrowserAutomation(action, {
+          ownerId: OWNER_A,
+          runId: freshRun,
+          tabId: paneTab,
+          action: 'goto',
+          url: 'https://hijacked.example/',
+        }),
+        (error) => {
+          assert.equal(error.message, USER_RECLAIMED_MESSAGE, `wrong message for ${action}`);
+          return true;
+        }
+      );
+    }
+    assert.equal(contentsFor(paneTab).getURL(), 'https://example.com/', 'the user page never moved');
+
+    // And no tabId-less action can drift onto it either.
+    await assert.rejects(
+      host.performBrowserAutomation('get_html', { ownerId: OWNER_A, runId: freshRun }),
+      /Browser tab not found/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('the conversation-wide bar leaves read-only work on the user tab alone', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const mainViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, mainViewId);
+
+    // The model may still report what the user is looking at.
+    await host.performBrowserAutomation('screenshot', {
+      ownerId: OWNER_A, runId: 'sar-read-only', tabId: paneTab,
+    });
+    // ...without that look making the user's tab its current one.
+    assert.equal(
+      (await getTabs(host, OWNER_A, 'sar-read-only')).summary.currentTabId,
+      null
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('the conversation-wide bar does not touch a run own tabs', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // A sibling run with a tab of its own, opened BEFORE any close.
+    const siblingTab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    await getTabs(host, OWNER_A);
+    const mainViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, mainViewId);
+
+    // Its own tab: unrestricted, and still its current tab.
+    await navigate(host, OWNER_A, siblingTab, 'https://still-mine.example/', RUN_2);
+    assert.equal(contentsFor(siblingTab).getURL(), 'https://still-mine.example/');
+    assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.currentTabId, siblingTab);
+
+    // The user's tab, same run, same breath: refused.
+    await assert.rejects(
+      navigate(host, OWNER_A, paneTab, 'https://hijacked.example/', RUN_2),
+      (error) => {
+        assert.equal(error.message, USER_RECLAIMED_MESSAGE);
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('clearing the window restores the user tab to every run of the conversation', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const mainViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, mainViewId);
+
+    host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A });
+
+    const freshRun = 'sar-after-the-clear';
+    await navigate(host, OWNER_A, paneTab, 'https://allowed-again.example/', freshRun);
+    assert.equal(contentsFor(paneTab).getURL(), 'https://allowed-again.example/');
+    assert.equal((await getTabs(host, OWNER_A, freshRun)).summary.currentTabId, paneTab);
+  } finally {
+    restore();
+  }
+});

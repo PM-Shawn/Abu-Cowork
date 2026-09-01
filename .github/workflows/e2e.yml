@@ -92,6 +92,32 @@ jobs:
         env:
           CI: true
 
+      # TEMPORARY diagnostics: capabilities.spec.ts:187 hangs on this runner
+      # inside computer_use_begin_session → check_macos_permissions (each
+      # native-helper call burns the 30s CALL_TIMEOUT). Probe the helper binary
+      # and the two underlying TCC APIs directly to find which layer blocks.
+      # Remove this step once the root cause is fixed.
+      - name: Diagnose native-helper TCC probes (temporary)
+        if: always()
+        run: |
+          BIN=electron/native-helper/target/release/native-helper
+          if [ ! -x "$BIN" ]; then echo "helper binary missing — global setup did not build it"; exit 0; fi
+          echo "--- helper: hello + check_macos_permissions (25s cap) ---"
+          printf '%s\n' \
+            '{"id":1,"method":"hello","params":{}}' \
+            '{"id":2,"method":"check_macos_permissions","params":{}}' \
+            | perl -e 'alarm shift; exec @ARGV' 25 "$BIN" || echo "helper probe exit: $?"
+          echo "--- swift CGPreflightScreenCaptureAccess (60s cap) ---"
+          perl -e 'alarm shift; exec @ARGV' 60 swift -e 'import CoreGraphics; print("preflight:", CGPreflightScreenCaptureAccess())' || echo "swift CG probe exit: $?"
+          echo "--- swift AXIsProcessTrusted (60s cap) ---"
+          perl -e 'alarm shift; exec @ARGV' 60 swift -e 'import ApplicationServices; print("axtrusted:", AXIsProcessTrusted())' || echo "swift AX probe exit: $?"
+          echo "--- SIP status ---"
+          csrutil status || true
+          echo "--- user TCC.db readability ---"
+          sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" 'SELECT count(*) FROM access;' || echo "user TCC.db not readable"
+          echo "--- system TCC.db readability ---"
+          sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" 'SELECT count(*) FROM access;' || echo "system TCC.db not readable"
+
       - name: Upload Electron E2E traces
         uses: actions/upload-artifact@v7
         if: failure()

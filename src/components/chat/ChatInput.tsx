@@ -349,6 +349,76 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
   }
 }
 
+/**
+ * Composer suggestion popup. Teams always occupy the leading indexes of
+ * `suggestions`; they render in a pinned block above the scrollable agent
+ * list so they stay visible no matter where that list is scrolled
+ * (real-machine bug 2026-09-01: ArrowUp wraps to the last row, scrolling
+ * teams out of sight — reported twice as "@ 没有团队").
+ */
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, teamBadge, optionId, onApply }: {
+  listboxId: string;
+  ariaLabel: string;
+  suggestions: SuggestionItem[];
+  selectedIndex: number;
+  suggestionType: 'skill' | 'agent' | null;
+  teamBadge: string;
+  optionId: (index: number) => string;
+  onApply: (item: SuggestionItem) => void;
+}) {
+  const pinnedCount = suggestions.filter((item) => item.team).length;
+  const renderOption = (item: SuggestionItem, idx: number) => (
+    <button
+      key={item.name}
+      id={optionId(idx)}
+      role="option"
+      aria-selected={idx === selectedIndex}
+      onClick={() => onApply(item)}
+      onMouseDown={(event) => event.preventDefault()}
+      className={cn(
+        'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-body text-left',
+        idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <span className={cn(
+          'w-5 text-center font-mono text-minor shrink-0',
+          suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
+        )}>
+          {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
+        </span>
+        <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
+        {item.team && (
+          <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">{teamBadge}</span>
+        )}
+        <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
+      </div>
+      {item.trigger && (
+        <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">
+          TRIGGER: {item.trigger}
+        </div>
+      )}
+    </button>
+  );
+  return (
+    <div
+      id={listboxId}
+      role="listbox"
+      aria-label={ariaLabel}
+      className="absolute bottom-full left-0 right-0 mb-2 flex flex-col bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-hidden max-h-[320px] z-20"
+    >
+      {pinnedCount > 0 && (
+        <div className="shrink-0 max-h-[150px] overflow-y-auto border-b border-[var(--abu-border-subtle)]">
+          {suggestions.slice(0, pinnedCount).map((item, idx) => renderOption(item, idx))}
+        </div>
+      )}
+      <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
+        {suggestions.slice(pinnedCount).map((item, idx) => renderOption(item, pinnedCount + idx))}
+      </div>
+    </div>
+  );
+}
+
 export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
   const isWelcome = variant === 'welcome';
   const activeConv = useActiveConversation();
@@ -384,7 +454,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isMountedRef = useRef(false);
   const compositionResetTimerRef = useRef<number | null>(null);
   const pendingSelectionRef = useRef<ComposerSelection | null>(null);
-  const suggestionOptionRefs = useRef(new Map<number, HTMLButtonElement>());
 
   const currentDraftRef = useRef<ComposerDraft>(initialDraft);
   const currentDraftKeyRef = useRef(draftKey);
@@ -1002,11 +1071,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   useLayoutEffect(() => {
     if (!showSuggestions) return;
-    suggestionOptionRefs.current.get(selectedIndex)?.scrollIntoView({ block: 'nearest' });
+    document.getElementById(suggestionOptionId(selectedIndex))?.scrollIntoView({ block: 'nearest' });
     // suggestionKey: when the query changes the LIST changes while selectedIndex
     // often stays 0 — without this dep the popup keeps its old scrollTop and the
     // top rows (teams) sit out of view (real-machine bug 2026-08-31).
-  }, [selectedIndex, showSuggestions, suggestionKey]);
+  }, [selectedIndex, showSuggestions, suggestionKey, suggestionOptionId]);
 
   // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
   useEffect(() => {
@@ -1430,50 +1499,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       <div className="relative">
         {/* Suggestions Popup (Skills / Agents) */}
         {showSuggestions && suggestions.length > 0 && (
-          <div
-            id={suggestionListboxId}
-            role="listbox"
-            aria-label={t.chat.composerSuggestions}
-            className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20"
-          >
-            {suggestions.map((item, idx) => (
-              <button
-                key={item.name}
-                ref={(element) => {
-                  if (element) suggestionOptionRefs.current.set(idx, element);
-                  else suggestionOptionRefs.current.delete(idx);
-                }}
-                id={suggestionOptionId(idx)}
-                role="option"
-                aria-selected={idx === selectedIndex}
-                onClick={() => applySuggestion(item)}
-                onMouseDown={(event) => event.preventDefault()}
-                className={cn(
-                  'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-body text-left',
-                  idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className={cn(
-                    'w-5 text-center font-mono text-minor shrink-0',
-                    suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
-                  )}>
-                    {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
-                  </span>
-                  <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
-                  {item.team && (
-                    <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">{t.team.kindTeam}</span>
-                  )}
-                  <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
-                </div>
-                {item.trigger && (
-                  <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">
-                    TRIGGER: {item.trigger}
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
+          <SuggestionPopup
+            listboxId={suggestionListboxId}
+            ariaLabel={t.chat.composerSuggestions}
+            suggestions={suggestions}
+            selectedIndex={selectedIndex}
+            suggestionType={suggestionType}
+            teamBadge={t.team.kindTeam}
+            optionId={suggestionOptionId}
+            onApply={applySuggestion}
+          />
         )}
 
         {/* Input Card */}

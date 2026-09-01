@@ -840,6 +840,34 @@ describe('ChatInput inline agent selection', () => {
     expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null);
   });
 
+  it('pins team options above the scrollable agent list so ArrowUp wrap cannot hide them', async () => {
+    const { useTeamStore } = await import('@/stores/teamStore');
+    useTeamStore.setState({
+      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
+      tasks: [], pipelines: [],
+    });
+    try {
+      render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+      const textarea = screen.getByRole('textbox');
+      fireEvent.change(textarea, { target: { value: '@' } });
+
+      const listbox = screen.getByRole('listbox');
+      const teamOption = screen.getByRole('option', { name: /zz数据小队/ });
+      const agentOption = screen.getByRole('option', { name: /publisher/ });
+      // Team lives in the pinned (first) block, agents in the scrollable one.
+      expect(teamOption.parentElement).toBe(listbox.children[0]);
+      expect(agentOption.parentElement).toBe(listbox.children[1]);
+      expect(teamOption.parentElement).not.toBe(agentOption.parentElement);
+
+      // ArrowUp from the top wraps to the last agent; the team option must
+      // still be in the pinned block (visible regardless of list scroll).
+      fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+      expect(screen.getByRole('option', { name: /zz数据小队/ }).parentElement).toBe(listbox.children[0]);
+    } finally {
+      useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
+    }
+  });
+
   it('gives the suggestion listbox a localized accessible name', () => {
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
 

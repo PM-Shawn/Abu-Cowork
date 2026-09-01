@@ -748,4 +748,135 @@ describe('BrowserTab native overlay visibility', () => {
       });
     });
   });
+
+  // Real-device acceptance (2026-09-01, G6/G7): the user typed into the address
+  // bar without pressing Enter; the agent's resumed programmatic navigation
+  // fired a `browser://nav/*` event, which unconditionally rewrote the bound
+  // input value and silently wiped the draft. The address bar must not follow
+  // programmatic URL updates while the user is editing it.
+  describe('address bar draft protection', () => {
+    const navHandlers = new Map<string, (event: { payload: string }) => void>();
+
+    async function renderTabWithNav(tabId: string) {
+      navHandlers.clear();
+      listen.mockImplementation((event: string, handler: (e: { payload: string }) => void) => {
+        navHandlers.set(event, handler);
+        return Promise.resolve(() => {});
+      });
+      const view = render(
+        <TooltipProvider>
+          <BrowserTab tabId={tabId} url="https://example.com" />
+        </TooltipProvider>,
+      );
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
+      });
+      await waitFor(() => {
+        expect(navHandlers.has(`browser://nav/${tabId}`)).toBe(true);
+      });
+      const fireNav = (url: string) => {
+        act(() => {
+          navHandlers.get(`browser://nav/${tabId}`)!({ payload: url });
+        });
+      };
+      const input = view.getByPlaceholderText('Enter a URL or search') as HTMLInputElement;
+      return { view, input, fireNav };
+    }
+
+    it('follows programmatic navigation while the address bar is untouched', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-follow');
+
+      fireNav('https://agent-went-here.example.com/page');
+
+      expect(input.value).toBe('https://agent-went-here.example.com/page');
+    });
+
+    it('keeps a focused draft when a programmatic navigation updates the tab URL', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-focused');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: 'weather tomor' } });
+      fireNav('https://agent-went-here.example.com/page');
+
+      expect(input.value).toBe('weather tomor');
+    });
+
+    it('keeps a blurred draft that was never committed', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-blurred');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: 'half-typed query' } });
+      fireEvent.blur(input);
+      fireNav('https://agent-went-here.example.com/page');
+
+      expect(input.value).toBe('half-typed query');
+    });
+
+    it('protects a clean focused input, then resyncs to the latest URL on blur', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-clean-focus');
+
+      fireEvent.focus(input);
+      fireNav('https://agent-went-here.example.com/page');
+      // Still showing what the user was looking at while focused…
+      expect(input.value).toBe('https://example.com');
+
+      fireEvent.blur(input);
+      // …and following again once they leave without edits.
+      expect(input.value).toBe('https://agent-went-here.example.com/page');
+    });
+
+    it('resyncs an emptied draft to the current URL on blur', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-emptied');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: '' } });
+      fireNav('https://agent-went-here.example.com/page');
+      fireEvent.blur(input);
+
+      expect(input.value).toBe('https://agent-went-here.example.com/page');
+      fireNav('https://agent-next.example.com/');
+      expect(input.value).toBe('https://agent-next.example.com/');
+    });
+
+    it('reverts the draft to the current page URL on Escape and resumes following', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-escape');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: 'abandoned draft' } });
+      fireNav('https://agent-went-here.example.com/page');
+      fireEvent.keyDown(input, { key: 'Escape' });
+
+      expect(input.value).toBe('https://agent-went-here.example.com/page');
+
+      fireEvent.blur(input);
+      fireNav('https://agent-next.example.com/');
+      expect(input.value).toBe('https://agent-next.example.com/');
+    });
+
+    it('committing a draft with Enter clears protection so navigation follows again', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-commit');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: 'https://typed.example.com' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.blur(input);
+
+      fireNav('https://redirected.example.com/landing');
+      expect(input.value).toBe('https://redirected.example.com/landing');
+    });
+
+    it('still records the programmatic navigation as the committed URL while a draft is held', async () => {
+      const { input, fireNav } = await renderTabWithNav('browser-draft-committed-url');
+
+      fireEvent.focus(input);
+      fireEvent.change(input, { target: { value: 'draft in progress' } });
+      fireNav('https://agent-went-here.example.com/page');
+      expect(input.value).toBe('draft in progress');
+
+      // Escape reveals the committed URL the tab actually tracked underneath.
+      fireEvent.keyDown(input, { key: 'Escape' });
+      expect(input.value).toBe('https://agent-went-here.example.com/page');
+    });
+  });
+
 });

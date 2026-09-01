@@ -169,6 +169,14 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // one IPC call per 500ms so a typing storm in the address bar does not spam
   // `browser_note_user_interaction`.
   const lastNoteUserInteractionAtRef = useRef(0);
+  // Address-bar draft protection: while the input is focused, or holds an
+  // uncommitted edit, a programmatic navigation (`browser://nav/*`) must not
+  // rewrite the bound value — real-device acceptance (2026-09-01, G6/G7)
+  // showed the agent's resumed navigation silently wiping a half-typed draft.
+  // `committedUrl` still tracks the real page underneath; the input resyncs on
+  // blur once it is clean (untouched, emptied, or reverted).
+  const addressFocusedRef = useRef(false);
+  const addressDirtyRef = useRef(false);
 
   // Freeze-frame shown while the native view is hidden for an overlay. The
   // native view paints above React, so hiding it for a modal/menu would flash
@@ -401,7 +409,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       const unlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
         const u = e.payload;
         if (u && u !== 'about:blank') {
-          setAddressInput(u);
+          if (!addressFocusedRef.current && !addressDirtyRef.current) {
+            setAddressInput(u);
+          }
           setCommittedUrl(u);
           updateBrowserUrl(tabId, u);
         }
@@ -537,6 +547,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const commit = (raw: string) => {
     const trimmed = raw.trim();
     if (!trimmed) return;
+    addressDirtyRef.current = false;
     const normalized = normalizeBrowserUrl(trimmed);
     setAddressInput(normalized);
     setCommittedUrl(normalized);
@@ -578,10 +589,33 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           ref={addressInputRef}
           value={addressInput}
           placeholder={t.workspace.browser.addressPlaceholder}
-          onFocus={() => noteUserInteraction()}
-          onChange={(e) => { noteUserInteraction(); setAddressInput(e.target.value); }}
+          onFocus={() => { addressFocusedRef.current = true; noteUserInteraction(); }}
+          onBlur={() => {
+            addressFocusedRef.current = false;
+            // A clean, emptied, or reverted input resumes following the page;
+            // a real uncommitted draft survives blur (acceptance G6/G7).
+            if (
+              !addressDirtyRef.current
+              || !addressInput.trim()
+              || addressInput === committedUrl
+            ) {
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
+          }}
+          onChange={(e) => {
+            addressDirtyRef.current = true;
+            noteUserInteraction();
+            setAddressInput(e.target.value);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit(addressInput);
+            if (e.key === 'Escape') {
+              // Standard browser behavior — and the only way out of a held
+              // draft without committing it: show the page's real URL again.
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
           }}
           className="flex-1 h-7 text-minor"
         />

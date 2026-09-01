@@ -209,12 +209,19 @@ test.describe('plugin install loop', () => {
     // the install genuinely lands in the developer's ~/.abu — hence the
     // distinctive `e2e-` names and the afterAll cleanup below.
     const pkgDir = path.join(INSTALL_ROOT, 'e2e-market', 'e2e-weather', '1.0.0');
+    // The copy lands file by file, and this probe watches it from *outside* the
+    // process, so both expected artifacts must be in the poll: `.abu-plugin/`
+    // (a dot-directory) is copied before `skills/`, so a poll that waits only
+    // on the manifest can resolve mid-copy and then find `SKILL.md` not yet
+    // written. Poll the whole postcondition — manifest dot-directory intact AND
+    // the skill file present — so a partially-copied snapshot never passes.
+    const manifestPath = path.join(pkgDir, '.abu-plugin', 'plugin.json');
+    const skillPath = path.join(pkgDir, 'skills', 'today', 'SKILL.md');
     await expect
-      .poll(() => fs.existsSync(path.join(pkgDir, '.abu-plugin', 'plugin.json')), {
+      .poll(() => fs.existsSync(manifestPath) && fs.existsSync(skillPath), {
         timeout: READY_TIMEOUT,
       })
       .toBe(true);
-    expect(fs.existsSync(path.join(pkgDir, 'skills', 'today', 'SKILL.md'))).toBe(true);
 
     await page.getByText(INSTALLED_TAB).first().click();
     const row = page.getByTestId('installed-plugin-row').first();

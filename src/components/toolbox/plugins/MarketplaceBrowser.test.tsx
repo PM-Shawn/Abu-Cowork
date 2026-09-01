@@ -6,8 +6,17 @@
  * single click, with the disclosure reduced to decoration.
  */
 
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+/** A promise whose resolution this test controls, to drive plan ordering. */
+function makeDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 vi.mock('./loadMarketplace', () => ({ loadMarketplaceFromDir: vi.fn() }));
 vi.mock('@/core/plugin/installer', async (importOriginal) => ({
@@ -124,6 +133,90 @@ describe('MarketplaceBrowser', () => {
       marketplaceDir: '/m/official',
       entry: localEntry,
     });
+  });
+
+  it('does not let a superseded plan resolution overwrite the current disclosure', async () => {
+    // A single flow drives both "which entry is pending" and "what its plan
+    // says". If those were two independent states with no staleness guard, a
+    // plan request the user has already moved on from could resolve late and
+    // paint its data over the entry now on screen — the user would confirm one
+    // plugin while reading another plugin's command line.
+    const deferredWeather = makeDeferred<InstallDisclosure>();
+    const deferredCloud = makeDeferred<InstallDisclosure>();
+    const weatherPlan: InstallDisclosure = {
+      ...disclosure,
+      name: 'weather',
+      mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', '@acme/weather-mcp'] }],
+    };
+    const cloudPlan: InstallDisclosure = {
+      ...disclosure,
+      key: 'cloud-thing@official',
+      name: 'cloud-thing',
+      sourceDir: '/m/official/plugins/cloud-thing',
+      mcpServers: [{ name: 'cloud-mcp', command: 'node', args: ['cloud.js'] }],
+    };
+    vi.mocked(planInstall).mockImplementation((opts) =>
+      opts.entry.name === 'weather' ? deferredWeather.promise : deferredCloud.promise,
+    );
+
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    // Plan weather, then abandon it before it resolves.
+    fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
+
+    // Now plan cloud-thing and let *its* plan resolve.
+    fireEvent.click(screen.getByRole('button', { name: /cloud-thing$/ }));
+    deferredCloud.resolve(cloudPlan);
+    await waitFor(() => expect(screen.getByTestId('plugin-install-confirm')).toBeInTheDocument());
+    const dialog = screen.getByTestId('plugin-install-disclosure');
+    expect(dialog).toHaveTextContent('cloud-mcp');
+
+    // The abandoned weather plan resolves late. It must be dropped, not painted
+    // over the cloud-thing disclosure the user is currently reading.
+    await act(async () => {
+      deferredWeather.resolve(weatherPlan);
+      await Promise.resolve();
+    });
+    expect(dialog).toHaveTextContent('cloud-mcp');
+    expect(dialog).not.toHaveTextContent('weather-mcp');
+  });
+
+  it('gates the confirm button on the current plan, never a leftover ready one', async () => {
+    const first = makeDeferred<InstallDisclosure>();
+    const second = makeDeferred<InstallDisclosure>();
+    const deferreds = [first, second];
+    let call = 0;
+    vi.mocked(planInstall).mockImplementation(() => deferreds[call++].promise);
+
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    // Plan and install the first entry to completion. This is the path that
+    // used to leave a `ready` plan behind after the dialog closed.
+    fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
+    expect(screen.queryByTestId('plugin-install-confirm')).toBeNull(); // still planning
+    await act(async () => {
+      first.resolve(disclosure);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId('plugin-install-confirm')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('plugin-install-confirm'));
+    await waitFor(() => expect(installPlugin).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
+
+    // Opening the next plan must present a loading dialog, not flash a
+    // confirm button carried over from the install that just finished.
+    fireEvent.click(screen.getByRole('button', { name: /cloud-thing$/ }));
+    expect(screen.getByTestId('plugin-install-disclosure')).toBeInTheDocument();
+    expect(screen.queryByTestId('plugin-install-confirm')).toBeNull();
+    await act(async () => {
+      second.resolve({ ...disclosure, key: 'cloud-thing@official', name: 'cloud-thing' });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByTestId('plugin-install-confirm')).toBeInTheDocument());
   });
 
   it('installs nothing when the user dismisses the disclosure', async () => {

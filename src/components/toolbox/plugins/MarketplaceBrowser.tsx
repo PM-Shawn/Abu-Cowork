@@ -18,7 +18,7 @@
  * notice in the same dialog rather than a toast-shaped failure.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, Package, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -26,12 +26,32 @@ import { Select } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
-import { planInstall, UnsupportedSourceError } from '@/core/plugin/installer';
-import { resolveRename, type Marketplace, type MarketplaceEntry } from '@/core/plugin/marketplace';
+import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
+import {
+  resolveRename,
+  type Marketplace,
+  type MarketplaceEntry,
+  type PluginSource,
+} from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from './loadMarketplace';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 
 const ALL_CATEGORIES = '__all__';
+
+/**
+ * The whole install-disclosure flow as one value. `pendingEntry` (is the dialog
+ * open?) and the plan result used to be two independent states, which let them
+ * disagree: the dialog could be open for entry B while the plan data still
+ * described entry A. Carrying the entry *inside* every non-closed state makes
+ * that mismatch unrepresentable — the dialog can only ever show a plan that
+ * belongs to the entry it is open for.
+ */
+type InstallFlow =
+  | { kind: 'closed' }
+  | { kind: 'planning'; entry: MarketplaceEntry }
+  | { kind: 'ready'; entry: MarketplaceEntry; disclosure: InstallDisclosure }
+  | { kind: 'unsupported'; entry: MarketplaceEntry; sourceKind: PluginSource['kind'] }
+  | { kind: 'error'; entry: MarketplaceEntry; message: string };
 
 interface MarketplaceBrowserProps {
   home: string;
@@ -82,10 +102,24 @@ export default function MarketplaceBrowser({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [entriesState, setEntriesState] = useState<EntriesState>({ kind: 'idle' });
   const [category, setCategory] = useState(ALL_CATEGORIES);
-  const [pendingEntry, setPendingEntry] = useState<MarketplaceEntry | null>(null);
-  const [planState, setPlanState] = useState<InstallPlanState>({ kind: 'loading' });
+  const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+
+  /**
+   * Bumped on every new plan request and on every close. A `planInstall` that
+   * resolves after its epoch is stale (the user cancelled, or moved on to
+   * another entry) is dropped instead of writing itself over the current flow —
+   * the same staleness guard the marketplace-load effect above uses, which the
+   * async plan path was missing.
+   */
+  const planEpochRef = useRef(0);
+  useEffect(() => () => void (planEpochRef.current += 1), []);
+
+  const closeFlow = useCallback(() => {
+    planEpochRef.current += 1;
+    setFlow({ kind: 'closed' });
+  }, []);
 
   // Keep the selection valid as marketplaces are added/removed.
   useEffect(() => {
@@ -165,24 +199,27 @@ export default function MarketplaceBrowser({
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
       if (!selected) return;
-      setPendingEntry(entry);
-      setPlanState({ kind: 'loading' });
+      const epoch = (planEpochRef.current += 1);
+      setFlow({ kind: 'planning', entry });
       try {
         const disclosure = await planInstall({
           marketplaceName: selected.name,
           marketplaceDir: selected.dir,
           entry,
         });
-        setPlanState({ kind: 'ready', disclosure });
+        if (planEpochRef.current !== epoch) return; // superseded or cancelled
+        setFlow({ kind: 'ready', entry, disclosure });
       } catch (err) {
+        if (planEpochRef.current !== epoch) return; // superseded or cancelled
         // Remote-source entries are the majority of a real marketplace, so
         // this branch is a first-class outcome with its own explanation.
         if (err instanceof UnsupportedSourceError) {
-          setPlanState({ kind: 'unsupported', sourceKind: err.kind });
+          setFlow({ kind: 'unsupported', entry, sourceKind: err.kind });
           return;
         }
-        setPlanState({
+        setFlow({
           kind: 'error',
+          entry,
           message: err instanceof Error ? err.message : String(err),
         });
       }
@@ -191,20 +228,21 @@ export default function MarketplaceBrowser({
   );
 
   const handleConfirmInstall = useCallback(async () => {
-    if (!selected || !pendingEntry || planState.kind !== 'ready') return;
+    if (!selected || flow.kind !== 'ready') return;
+    const { entry } = flow;
     setInstalling(true);
     try {
       await install({
         home,
         marketplaceName: selected.name,
         marketplaceDir: selected.dir,
-        entry: pendingEntry,
+        entry,
       });
       addToast({
         type: 'success',
-        title: format(tb.pluginsInstallSucceeded, { name: pendingEntry.name }),
+        title: format(tb.pluginsInstallSucceeded, { name: entry.name }),
       });
-      setPendingEntry(null);
+      closeFlow();
     } catch (err) {
       addToast({
         type: 'error',
@@ -214,7 +252,16 @@ export default function MarketplaceBrowser({
     } finally {
       setInstalling(false);
     }
-  }, [selected, pendingEntry, planState.kind, install, home, addToast, tb]);
+  }, [selected, flow, install, home, addToast, tb, closeFlow]);
+
+  const dialogState: InstallPlanState =
+    flow.kind === 'ready'
+      ? { kind: 'ready', disclosure: flow.disclosure }
+      : flow.kind === 'unsupported'
+        ? { kind: 'unsupported', sourceKind: flow.sourceKind }
+        : flow.kind === 'error'
+          ? { kind: 'error', message: flow.message }
+          : { kind: 'loading' };
 
   if (marketplaces.length === 0) {
     return (
@@ -372,12 +419,12 @@ export default function MarketplaceBrowser({
       </div>
 
       <InstallDisclosureDialog
-        open={pendingEntry !== null}
-        entryName={pendingEntry?.name ?? ''}
-        state={planState}
+        open={flow.kind !== 'closed'}
+        entryName={flow.kind === 'closed' ? '' : flow.entry.name}
+        state={dialogState}
         installing={installing}
         onConfirm={() => void handleConfirmInstall()}
-        onCancel={() => setPendingEntry(null)}
+        onCancel={closeFlow}
       />
 
       <ConfirmDialog

@@ -30,6 +30,13 @@ export default function RightPanel() {
   const hasWideContent = usePreviewStore(
     (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
   );
+  // The conversation the tab set is currently scoped to. Read from the STORE
+  // (not `conversationId` below, which is the chat's active conversation and
+  // changes one commit earlier): this and `hasWideContent` come from the same
+  // store snapshot, so they always move together in a single commit. The
+  // wide-content effect relies on that to tell "content appeared" apart from
+  // "a different conversation's tabs came into view".
+  const scopedConversationId = usePreviewStore((s) => s.currentConversationId);
   const conversation = useActiveConversation();
   const prevHasMessagesRef = useRef(false);
   // Track whether auto-expand already fired for this conversation
@@ -177,22 +184,35 @@ export default function RightPanel() {
 
   // Auto-expand right panel + collapse left sidebar when WIDE content opens
   // (preview/browser/terminal — not the summary tab, which is the default and
-  // shouldn't fight the sidebar).
+  // shouldn't fight the sidebar), and reset the drag width whenever the panel
+  // crosses between the narrow and wide layouts.
+  //
+  // Both react to the SAME edge, so they share one guard: only a narrow↔wide
+  // flip WITHIN one conversation counts. A conversation switch swaps the whole
+  // visible tab set at once, and the resulting flip is not the user opening or
+  // closing anything — it is a conversation's own layout leaving and coming
+  // back. Treating that as an open would re-expand the panel and re-collapse
+  // the sidebar on every return to a conversation with an agent browser tab,
+  // overriding a collapse the user had just made.
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
+  const wideEdgeRef = useRef<{ conversationId: string | null; wide: boolean } | null>(null);
   useEffect(() => {
+    const previous = wideEdgeRef.current;
+    // Re-seed first: after a switch, whatever this conversation already had
+    // open becomes the new baseline rather than an edge.
+    wideEdgeRef.current = { conversationId: scopedConversationId, wide: hasWideContent };
+    if (!previous || previous.conversationId !== scopedConversationId) return;
+    if (previous.wide === hasWideContent) return;
+
+    setDragWidth(null);
     if (!hasWideContent) return;
     if (collapsed) setRightPanelCollapsed(false);
     // In file-tree mode the sidebar hosts the tree the user is browsing, so
     // collapsing it on file-open would hide the tree — keep it open then.
     if (!sidebarCollapsed && !usePreviewStore.getState().fileTreeMode) toggleSidebar();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasWideContent]);
-
-  // Reset drag width when switching between narrow/wide layout
-  useEffect(() => {
-    setDragWidth(null);
-  }, [hasWideContent]);
+  }, [hasWideContent, scopedConversationId]);
 
   // Narrow-panel width (only meaningful when NOT wide — in wide mode the panel
   // flex-fills and the chat owns the width).

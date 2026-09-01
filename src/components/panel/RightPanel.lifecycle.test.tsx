@@ -28,7 +28,7 @@ const invokeMock = vi.mocked(invoke);
 const BROWSER_TAB_ID = 'browser-lifecycle-view';
 const OWNED_TAB_ID = 'browser-owned-view';
 
-function conversation(id: string): Conversation {
+function conversation(id: string, workspacePath: string | null = '/tmp/workspace'): Conversation {
   return {
     id,
     title: id,
@@ -36,7 +36,7 @@ function conversation(id: string): Conversation {
     createdAt: 1,
     updatedAt: 1,
     status: 'idle',
-    workspacePath: '/tmp/workspace',
+    ...(workspacePath ? { workspacePath } : {}),
   };
 }
 
@@ -320,6 +320,77 @@ describe('RightPanel browser view lifecycle', () => {
     });
     // Same WebContentsView the agent is still driving.
     expect(invokeMock).not.toHaveBeenCalledWith('browser_create', expect.anything());
+  });
+
+  // The wide-content effect auto-expands the panel and collapses the sidebar.
+  // Once C2 scoped tabs per conversation, `hasWideContent` started flipping on
+  // every switch, so returning to a conversation with an agent browser tab
+  // replayed that "content just opened" reaction — overriding whatever the user
+  // had arranged. Only a flip WITHIN one conversation may trigger it.
+  it('auto-expands and collapses the sidebar the first time wide content appears', async () => {
+    await renderPanel();
+    await act(async () => {
+      useSettingsStore.setState({ rightPanelCollapsed: true, sidebarCollapsed: false });
+    });
+
+    await seedOwnedBrowserTab('a');
+
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    expect(useSettingsStore.getState().sidebarCollapsed).toBe(true);
+  });
+
+  it('does not replay the auto-expand reaction on an A → B → A round trip', async () => {
+    await renderPanel();
+    await seedOwnedBrowserTab('a');
+    // The user's arrangement: sidebar deliberately open next to the browser tab.
+    await act(async () => {
+      useSettingsStore.setState({ sidebarCollapsed: false });
+    });
+
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'b' });
+    });
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'a' });
+    });
+
+    // A's tab is visible again (a false→true flip of hasWideContent), but it is
+    // the same content coming back, not new content — the sidebar stays as the
+    // user left it.
+    expect(getVisibleTabs().map((tab) => tab.id)).toEqual([OWNED_TAB_ID]);
+    expect(useSettingsStore.getState().sidebarCollapsed).toBe(false);
+  });
+
+  it('leaves a manually collapsed panel collapsed across a round trip', async () => {
+    // Workspace-less conversations on purpose: the panel's OTHER auto-expand
+    // (once per conversation, gated on `hasWorkspace`) would otherwise re-expand
+    // on return for its own long-standing reasons, masking what this pins.
+    useChatStore.setState({
+      conversations: { a: conversation('a', null), b: conversation('b', null) },
+      activeConversationId: 'a',
+    });
+    render(
+      <TooltipProvider>
+        <RightPanel />
+      </TooltipProvider>,
+    );
+    await act(async () => {
+      useSettingsStore.setState({ rightPanelCollapsed: false, sidebarCollapsed: true });
+    });
+    await seedOwnedBrowserTab('a');
+    // The user collapses the panel while the agent keeps browsing.
+    await act(async () => {
+      useSettingsStore.setState({ rightPanelCollapsed: true });
+    });
+
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'b' });
+    });
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'a' });
+    });
+
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
   });
 
   it('still destroys the native view when the user closes the tab explicitly', async () => {

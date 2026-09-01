@@ -161,9 +161,26 @@ function loadHost({ adopt = true } = {}) {
   delete require.cache[browserHostId];
 
   const emitted = [];
+  // The main window's own webContents can receive input (the chat composer,
+  // the address bar) and be handed focus back after a guest steal (F1), so the
+  // fake carries listeners and a focus-call counter like FakeWebContents does.
+  const mainWindowListeners = new Map();
   const mainWindow = {
     isDestroyed: () => false,
-    webContents: { id: 1 },
+    webContents: {
+      id: 1,
+      focusCalls: 0,
+      on(event, handler) {
+        if (!mainWindowListeners.has(event)) mainWindowListeners.set(event, []);
+        mainWindowListeners.get(event).push(handler);
+        return this;
+      },
+      fire(event, ...args) {
+        for (const handler of mainWindowListeners.get(event) || []) handler(...args);
+      },
+      focus() { this.focusCalls += 1; },
+      isDestroyed: () => false,
+    },
     contentView: { addChildView() {}, removeChildView() {} },
   };
   let host = null;
@@ -223,7 +240,7 @@ function loadHost({ adopt = true } = {}) {
     webRequestListener({ resourceType: 'mainFrame', ...details }, () => {});
   };
 
-  return { host, emitted, restore, fireHeadersReceived };
+  return { host, emitted, restore, fireHeadersReceived, mainWin: mainWindow };
 }
 
 function getTabs(host, ownerId, runId) {
@@ -2610,6 +2627,126 @@ test('a missing tab is refused with a reason and a next step', async () => {
         return true;
       }
     );
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ## F1 — a navigation-commit focus steal must not blur the user's typing
+ *
+ * Chromium focuses a WebContentsView's frame when a navigation commits, with
+ * no host code involved: real-device acceptance (2026-09-02) showed a page's
+ * own redirect firing a genuine `focusout` on the main window's address bar
+ * at exactly the moment the guest landed. Two harms:
+ *  - the user typing in the MAIN window (composer, address bar) silently
+ *    loses keyboard focus — their next keystrokes go nowhere;
+ *  - the guest `focus` event is misread by R4 as the user being on that tab
+ *    (recording interaction, promoting it to current).
+ *
+ * The steal is distinguished from a real user entering the guest by two
+ * signals: the user typed in the main window UI inside the quiet window, and
+ * NO direct input (pointer/keyboard) landed on the guest just before its
+ * `focus`. In exactly that case the host hands focus straight back and does
+ * not attribute the event to the user.
+ */
+
+function typeInMainUi(mainWin) {
+  mainWin.webContents.fire('before-input-event', {}, { type: 'keyDown', key: 'a' });
+}
+
+test('F1: a focus steal while the user types in the main window bounces back and is not the user', async () => {
+  const { host, restore, mainWin } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInMainUi(mainWin);
+    contentsFor(aTab).fire('focus'); // Chromium's navigation-commit steal
+
+    assert.equal(mainWin.webContents.focusCalls, 1, 'focus handed straight back to the main window');
+
+    // Not the user: a state-changing action runs without any takeover wait.
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, [], 'no quiet-window wait was triggered by the steal');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/');
+  } finally {
+    restore();
+  }
+});
+
+test('F1: a real user click into the guest neither bounces nor loses its attribution', async () => {
+  const { host, restore, mainWin } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    // Worst case: the user was typing in the composer moments ago, then
+    // deliberately clicks into the page — the pointer landing on the guest is
+    // what separates this from a steal.
+    typeInMainUi(mainWin);
+    contentsFor(aTab).fire('input-event', {}, { type: 'mouseDown' });
+    contentsFor(aTab).fire('focus');
+
+    assert.equal(mainWin.webContents.focusCalls, 0, 'a real entry into the guest keeps focus');
+
+    // Attributed to the user: a state-changing action waits out the window.
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.equal(state.sleeps.length, 6, 'waited out the full 3s quiet window');
+  } finally {
+    restore();
+  }
+});
+
+test('F1: a steal while the user is idle keeps the pre-F1 behavior (recorded, no bounce)', async () => {
+  const { host, restore, mainWin } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    // No main-window typing: nothing distinguishes this from the user
+    // focusing the view, so it stays attributed (a missed bounce is harmless
+    // when nobody is typing).
+    contentsFor(aTab).fire('focus');
+
+    assert.equal(mainWin.webContents.focusCalls, 0);
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.equal(state.sleeps.length, 6, 'the focus stays a user-presence signal');
+  } finally {
+    restore();
+  }
+});
+
+test('F1: a steal does not promote the stolen-onto tab to the owner current tab', async () => {
+  const { host, restore, mainWin } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+
+    // Two user pane (legacy) tabs.
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-1', url: 'https://one.example/', x: 0, y: 0, width: 800, height: 600,
+    });
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-2', url: 'https://two.example/', x: 0, y: 0, width: 800, height: 600,
+    });
+    const listing = await probeTabs(host);
+    const [tabOne, tabTwo] = tabIds(listing);
+
+    // The user really is on tab one.
+    contentsFor(tabOne).fire('input-event', {}, { type: 'mouseDown' });
+    contentsFor(tabOne).fire('focus');
+    assert.equal((await probeTabs(host)).summary.currentTabId, tabOne);
+
+    // Tab two's page redirects in the background and steals focus while the
+    // user types in the main window: current tab must not move.
+    typeInMainUi(mainWin);
+    contentsFor(tabTwo).fire('focus');
+    assert.equal((await probeTabs(host)).summary.currentTabId, tabOne, 'steal must not move the current tab');
+    assert.equal(mainWin.webContents.focusCalls, 1);
   } finally {
     restore();
   }

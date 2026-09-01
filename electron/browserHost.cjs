@@ -347,6 +347,42 @@ const USER_INTERACT_QUIET_MS = 3000;
 const TAKEOVER_WAIT_MS = 10000;
 const TAKEOVER_POLL_MS = 500;
 
+/**
+ * ## F1 — navigation-commit focus steal
+ *
+ * Chromium hands a WebContentsView's frame keyboard focus when a navigation
+ * commits — no host code involved (real-device acceptance 2026-09-02: a
+ * page's own redirect fired a genuine `focusout` on the main window's address
+ * bar at exactly the moment the guest landed). Left alone that (a) silently
+ * blurs whatever the user is typing into in the MAIN window, and (b) makes
+ * the guest's `focus` event look like the user being on that tab to the R4
+ * attribution below.
+ *
+ * A steal is told apart from the user really entering the guest by two
+ * signals: the user typed in the main window inside the quiet window, and no
+ * direct input (pointer/keyboard) landed on the guest just before its
+ * `focus`. In exactly that case focus is handed straight back and the event
+ * is not attributed. When nobody is typing in the main window the pre-F1
+ * behavior stands — a missed bounce is harmless with no typing to protect.
+ */
+const GUEST_INPUT_ATTRIBUTION_MS = 1000;
+
+/** ts of the user's last keyboard input in the MAIN window's own webContents. */
+let mainWindowKeyInputAt = 0;
+const mainInputHookedContents = new WeakSet();
+function ensureMainWindowInputHook() {
+  const win = mainWindow();
+  if (!win || win.isDestroyed()) return;
+  const contents = win.webContents;
+  if (!contents || typeof contents.on !== 'function' || mainInputHookedContents.has(contents)) {
+    return;
+  }
+  mainInputHookedContents.add(contents);
+  contents.on('before-input-event', () => {
+    mainWindowKeyInputAt = clock.now();
+  });
+}
+
 /** Fixed text: it tells the model to re-read the page, not to retry blindly. */
 const USER_TAKEOVER_MESSAGE =
   'The user is currently interacting with this browser tab. Automation paused to avoid ' +
@@ -904,14 +940,41 @@ function configureBrowserView(id, view) {
   contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame) resetAutomationRuntime();
   });
+  ensureMainWindowInputHook();
   // Attribution for the takeover backoff: outside an automation action, input
   // landing here is the user working in this view's owner's tab.
   const recordUserInteraction = () => {
     if (aiActionDepth > 0) return;
     userInteractionAt.set(ownerKeyOf(id), clock.now());
   };
-  contents.on('before-input-event', recordUserInteraction);
+  // Direct input on THIS view (keyboard or pointer) is what separates the
+  // user really entering the guest from a navigation-commit focus steal (F1).
+  let lastDirectGuestInputAt = 0;
+  const recordDirectGuestInput = () => {
+    if (aiActionDepth > 0) return;
+    lastDirectGuestInputAt = clock.now();
+  };
+  contents.on('before-input-event', () => {
+    recordDirectGuestInput();
+    recordUserInteraction();
+  });
+  // `before-input-event` is keyboard-only; a pointer entering the guest is
+  // only visible here.
+  contents.on('input-event', (_event, inputEvent) => {
+    if (inputEvent && inputEvent.type === 'mouseDown') recordDirectGuestInput();
+  });
   contents.on('focus', () => {
+    const now = clock.now();
+    const userTypingInMainUi = now - mainWindowKeyInputAt < USER_INTERACT_QUIET_MS;
+    const enteredGuestDirectly = now - lastDirectGuestInputAt < GUEST_INPUT_ATTRIBUTION_MS;
+    if (userTypingInMainUi && !enteredGuestDirectly) {
+      // Navigation-commit steal (F1): the user is typing in the main window
+      // and never touched this view — hand focus straight back, and do not
+      // let the steal read as the user being on this tab.
+      const win = mainWindow();
+      if (win && !win.isDestroyed()) win.webContents.focus();
+      return;
+    }
     recordUserInteraction();
     // The user focusing a view makes it that view OWNER's current tab, never
     // anyone else's.

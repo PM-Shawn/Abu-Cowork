@@ -636,4 +636,92 @@ describe('BrowserTab native overlay visibility', () => {
     expect(invoke).toHaveBeenCalledWith('browser_hide', { id: 'browser-unmount-keepalive' });
     expect(invoke).not.toHaveBeenCalledWith('browser_close', expect.anything());
   });
+
+  // N3: address-bar focus/typing and back/forward/reload clicks all live in
+  // this MAIN-window React layer, never touching the guest webContents that
+  // the takeover backoff (R4, electron/browserHost.cjs) listens on — so using
+  // them was invisible to the backoff. `browser_note_user_interaction`
+  // bridges that gap; these tests pin the renderer side of the wiring.
+  describe('N3 — React-layer takeover signal (browser_note_user_interaction)', () => {
+    async function renderReadyTab(tabId: string) {
+      const view = render(
+        <TooltipProvider>
+          <BrowserTab tabId={tabId} url="https://example.com" />
+        </TooltipProvider>,
+      );
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({ id: tabId }));
+      });
+      invoke.mockClear();
+      return view;
+    }
+
+    it('notes user interaction when the address bar receives focus', async () => {
+      const { getByPlaceholderText } = await renderReadyTab('browser-n3-focus');
+
+      fireEvent.focus(getByPlaceholderText('Enter a URL or search'));
+
+      expect(invoke).toHaveBeenCalledWith('browser_note_user_interaction', { id: 'browser-n3-focus' });
+    });
+
+    it('notes user interaction on address-bar input, throttled to one call per window', async () => {
+      const { getByPlaceholderText } = await renderReadyTab('browser-n3-typing');
+      const input = getByPlaceholderText('Enter a URL or search');
+
+      // A typing storm: many changes fired back-to-back, well inside the
+      // 500ms throttle window.
+      for (const ch of ['h', 'ht', 'htt', 'http', 'https']) {
+        fireEvent.change(input, { target: { value: ch } });
+      }
+
+      const noteCalls = invoke.mock.calls.filter(([command]) => command === 'browser_note_user_interaction');
+      expect(noteCalls).toHaveLength(1);
+      expect(noteCalls[0][1]).toEqual({ id: 'browser-n3-typing' });
+    });
+
+    it('notes user interaction on back/forward/reload button clicks', async () => {
+      // waitFor's internal polling needs real timers, so render (and its
+      // waitFor above) happens first; fake time is only frozen afterwards,
+      // for the throttle-window assertions below.
+      const { container } = await renderReadyTab('browser-n3-navbuttons');
+      vi.useFakeTimers();
+      try {
+        const fixedNow = new Date('2026-01-01T00:00:00.000Z');
+        vi.setSystemTime(fixedNow);
+        const [backButton, forwardButton, reloadButton] = container.querySelectorAll('button');
+
+        fireEvent.click(backButton);
+        expect(invoke).toHaveBeenCalledWith('browser_note_user_interaction', { id: 'browser-n3-navbuttons' });
+        expect(invoke).toHaveBeenCalledWith('browser_back', { id: 'browser-n3-navbuttons' });
+
+        // Past the throttle window so forward/reload each independently note it.
+        invoke.mockClear();
+        vi.setSystemTime(new Date(fixedNow.getTime() + 1000));
+        fireEvent.click(forwardButton);
+        expect(invoke).toHaveBeenCalledWith('browser_note_user_interaction', { id: 'browser-n3-navbuttons' });
+
+        invoke.mockClear();
+        vi.setSystemTime(new Date(fixedNow.getTime() + 2000));
+        fireEvent.click(reloadButton);
+        expect(invoke).toHaveBeenCalledWith('browser_note_user_interaction', { id: 'browser-n3-navbuttons' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not gate browser_navigate itself — the renderer path stays un-gated for the user', async () => {
+      const { getByPlaceholderText } = await renderReadyTab('browser-n3-navigate-ungated');
+      const input = getByPlaceholderText('Enter a URL or search');
+
+      fireEvent.change(input, { target: { value: 'https://new.example.com' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      await waitFor(() => {
+        expect(invoke).toHaveBeenCalledWith('browser_navigate', expect.objectContaining({
+          id: 'browser-n3-navigate-ungated',
+          url: 'https://new.example.com',
+        }));
+      });
+    });
+  });
 });

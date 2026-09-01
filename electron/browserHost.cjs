@@ -106,6 +106,7 @@ const BROWSER_CMDS = new Set([
   'browser_capture',
   'browser_close',
   'browser_inspect_set',
+  'browser_note_user_interaction',
 ]);
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
@@ -1203,6 +1204,28 @@ function browserClose({ id }) {
 }
 
 /**
+ * N3 — React-layer takeover signal.
+ *
+ * The takeover backoff (R4, above) only hears the USER on the guest
+ * webContents itself (`before-input-event` / `focus`): typing in the address
+ * bar or clicking back/forward/reload happens in the MAIN window's React
+ * layer (`BrowserTab.tsx`), which never touches the guest webContents, so
+ * none of it produced a signal — automation could act while the user was
+ * mid-navigation. `BrowserTab.tsx` calls this on address-bar focus/input and
+ * nav-button clicks; it records presence exactly like `recordUserInteraction`
+ * does for real input, reusing the same map/clock rather than adding new
+ * state. An unknown id (a tab that already closed under a stale ref) is a
+ * silent no-op — this is a best-effort presence ping, not a validated
+ * command.
+ */
+function browserNoteUserInteraction({ id }) {
+  const view = getView(id);
+  if (!view) return null;
+  userInteractionAt.set(ownerKeyOf(id), clock.now());
+  return null;
+}
+
+/**
  * @param {import('electron').App} app unused — kept for signature parity
  *   with the other *Dispatch(app, cmd, args) families (e.g. ptyDispatch).
  * @param {string} cmd
@@ -1237,6 +1260,8 @@ function browserDispatch(app, cmd, args) {
       return browserClose(a);
     case 'browser_inspect_set':
       return browserInspectSet(a);
+    case 'browser_note_user_interaction':
+      return browserNoteUserInteraction(a);
     default:
       return BROWSER_MISS;
   }

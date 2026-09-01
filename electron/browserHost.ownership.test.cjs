@@ -988,3 +988,54 @@ test('a pre-aborted signal stops get_tabs before it can provision or open a tab'
     restore();
   }
 });
+
+/**
+ * N3 — the React layer (address bar, back/forward/reload) never touches the
+ * guest webContents, so it produces none of the `before-input-event`/`focus`
+ * signals R4's backoff relies on. `browser_note_user_interaction` is the
+ * bridge: `BrowserTab.tsx` calls it on address-bar focus/input and nav-button
+ * clicks, and it must gate a state-changing action exactly like real
+ * `before-input-event`/`focus` input does (reusing the same `userInteractionAt`
+ * record — see `typeInto`-driven scenarios above).
+ */
+test('browser_note_user_interaction gates a state-changing action like real input does', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    // `browser_note_user_interaction` takes the view's own string id — same
+    // as `browser_create`/`browser_inspect_set` — NOT the automation `tabId`
+    // (the guest's numeric webContents id) that `navigate`/`get_tabs` use.
+    const viewId = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+
+    host.browserDispatch(null, 'browser_note_user_interaction', { id: viewId });
+    state.t += 2000; // 2s into the 3s quiet window — still "hands on keyboard"
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    assert.deepEqual(state.sleeps, [500, 500], 'polled twice, then the window went quiet');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/', 'the action ran after the wait');
+  } finally {
+    restore();
+  }
+});
+
+test('browser_note_user_interaction on an unknown id is a silent no-op', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    const result = host.browserDispatch(null, 'browser_note_user_interaction', { id: 'no-such-view' });
+    assert.equal(result, null, 'unknown id resolves to null, not an error');
+
+    // Nothing should have been recorded against any owner — the action runs
+    // immediately with no wait.
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, []);
+  } finally {
+    restore();
+  }
+});

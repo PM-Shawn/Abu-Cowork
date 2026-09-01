@@ -1444,6 +1444,7 @@ const enUS: TranslationDict = {
     categoryBuiltin: 'Marketplace',
     skillSourceBuiltin: 'Built-in',
     skillSourceUser: 'User',
+    skillSourcePlugin: 'From a plugin',
     skillSourceStandard: 'Installed',
     skillSourceProject: 'Project',
     skillSourceWorkspaceAuto: 'Self-evolved',

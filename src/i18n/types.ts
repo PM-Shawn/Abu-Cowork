@@ -1632,6 +1632,7 @@ export interface TranslationDict {
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
     skillSourceBuiltin: string;
     skillSourceUser: string;
+    skillSourcePlugin: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;

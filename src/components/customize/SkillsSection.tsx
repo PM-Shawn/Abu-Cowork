@@ -491,6 +491,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                 selected.source === 'user' ? t.toolbox.skillSourceUser :
                 selected.source === 'standard' ? t.toolbox.skillSourceStandard :
                 (selected.source === 'project' || selected.source === 'project-standard') ? t.toolbox.skillSourceProject :
+                selected.source === 'plugin' ? t.toolbox.skillSourcePlugin :
                 (isSystemSkill(selected) ? t.toolbox.skillSourceBuiltin : t.toolbox.skillSourceUser)
               }</div>
             </div>

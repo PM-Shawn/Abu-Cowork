@@ -39,6 +39,7 @@ import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plu
 import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore } from '@/stores/mcpStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
@@ -176,6 +177,11 @@ export const usePluginStore = create<PluginStore>()(
         const serverNames = await pluginMcpServerNames(home);
         set({ knownMcpServerNames: serverNames });
         setPluginServerNames(serverNames);
+        // Re-scan skills so a plugin's skills appear immediately, without an
+        // app restart. Plugin skills live under ~/.abu/plugin-packages, which
+        // the registry fs-watcher does NOT observe (it watches ~/.abu/skills
+        // and ~/.abu/agents only), so nothing else triggers this discovery.
+        await useDiscoveryStore.getState().refresh().catch(() => undefined);
       },
 
       install: async (req) => {

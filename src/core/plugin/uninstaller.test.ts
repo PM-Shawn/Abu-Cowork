@@ -56,7 +56,7 @@ describe('uninstallPlugin', () => {
 
     await uninstallPlugin({ home: '/home/u', key: 'weather@official', removeDir });
 
-    expect(removeDir).toHaveBeenCalledWith('/home/u/.abu/plugin-packages/official/weather/1.2.0');
+    expect(removeDir).toHaveBeenCalledWith('/home/u/.abu/plugin-packages/official/weather');
   });
 
   it('drops only the uninstalled plugin from the install record', async () => {

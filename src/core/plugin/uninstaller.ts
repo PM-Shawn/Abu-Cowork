@@ -14,6 +14,7 @@
 
 import { findInstalled, removeInstalled } from './installedStore';
 import { pluginInstallDir } from './paths';
+import { getParentDir } from '../../utils/pathUtils';
 
 export class PluginNotInstalledError extends Error {
   readonly key: string;
@@ -54,7 +55,10 @@ export async function uninstallPlugin(opts: UninstallPluginOptions): Promise<Uni
   const record = await findInstalled(opts.home, opts.key);
   if (!record) throw new PluginNotInstalledError(opts.key);
 
-  const dir = pluginInstallDir(opts.home, record.marketplace, record.name, record.version);
+  // Remove the plugin's whole <market>/<name>/ dir, not just the <version>
+  // subdir — otherwise an empty <name>/ (and any _remote staging) is left
+  // behind, which reads as a ghost install on disk.
+  const dir = getParentDir(pluginInstallDir(opts.home, record.marketplace, record.name, record.version));
   try {
     await opts.removeDir(dir);
   } catch (error) {

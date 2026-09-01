@@ -21,6 +21,7 @@ vi.mock('@/core/plugin/installedStore', () => ({
 vi.mock('@/core/plugin/fsOps', () => ({ copyPluginDir: vi.fn(), removePluginDir: vi.fn() }));
 vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn() }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
+vi.mock('@/stores/discoveryStore', () => ({ useDiscoveryStore: { getState: () => ({ refresh: mockDiscoveryRefresh }) } }));
 
 import { installPlugin } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
@@ -32,6 +33,7 @@ type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
 import { useMCPStore } from './mcpStore';
 import { usePluginStore } from './pluginStore';
 
+const mockDiscoveryRefresh = vi.fn(async () => {});
 const HOME = '/Users/tester';
 
 const weather: InstalledPlugin = {
@@ -157,6 +159,18 @@ describe('uninstall', () => {
 });
 
 describe('refreshInstalled', () => {
+
+  it('re-scans skills so a newly installed plugin skill appears without restart', async () => {
+    vi.mocked(readInstalled).mockResolvedValue([]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+    mockDiscoveryRefresh.mockClear();
+    await usePluginStore.getState().refreshInstalled(HOME);
+    // Plugin skills live under ~/.abu/plugin-packages, which the registry
+    // fs-watcher does NOT watch — so install must trigger the re-scan itself,
+    // or the skill never appears in the Skills tab (or to the model) in-session.
+    expect(mockDiscoveryRefresh).toHaveBeenCalledTimes(1);
+  });
+
   it('hydrates from disk and arms the gate for plugins installed in a past session', async () => {
     vi.mocked(readInstalled).mockResolvedValue([weather]);
     vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);

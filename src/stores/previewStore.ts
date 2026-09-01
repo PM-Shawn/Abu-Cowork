@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
+import { closeBrowserViews } from '@/core/browser/browserViewLifecycle';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 
 /**
@@ -51,6 +52,17 @@ function genId(): string {
 function computePreviewFilePath(tabs: WorkspaceTab[], activeTabId: string | null): string | null {
   const active = tabs.find((t) => t.id === activeTabId);
   return active && active.kind === 'preview' ? active.filePath : null;
+}
+
+/**
+ * Ids of the browser tabs that exist in `oldTabs` but not in `nextTabs` — the
+ * tabs whose native views this transition must destroy.
+ */
+function removedBrowserTabIds(oldTabs: WorkspaceTab[], nextTabs: WorkspaceTab[]): string[] {
+  const surviving = new Set(nextTabs.map((tab) => tab.id));
+  return oldTabs
+    .filter((tab) => tab.kind === 'browser' && !surviving.has(tab.id))
+    .map((tab) => tab.id);
 }
 
 function activeSubagentIdentity(tabs: WorkspaceTab[], activeTabId: string | null): BatchIdentity | undefined {
@@ -131,6 +143,10 @@ interface PreviewState {
   closeOtherTabs: (id: string) => void;
   // Close every tab.
   closeAllTabs: () => void;
+  // Reset the panel for a conversation switch: closes every conversation-scoped
+  // tab (summary / preview / terminal / subagent) but KEEPS browser tabs, whose
+  // native views belong to a running agent rather than to the panel.
+  closeTabsForConversationSwitch: () => void;
   // Close subagent tabs owned by one conversation. Other workspace tabs stay
   // open; used by chatStore's synchronous delete cascade.
   closeSubagentTabsForConversation: (conversationId: string) => void;
@@ -171,6 +187,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   ): void => {
     const prev = get();
     reconcileSubagentLeases(prev.tabs, prev.activeTabId, nextTabs, nextActiveId);
+    // Dropping a browser tab record is the ONLY thing that destroys its native
+    // view — see closeBrowserViews. Doing it here (rather than per action)
+    // makes it an invariant of the store: no removal path can leak a view, and
+    // no UI unmount can kill one.
+    closeBrowserViews(removedBrowserTabIds(prev.tabs, nextTabs));
     const previewFilePath = computePreviewFilePath(nextTabs, nextActiveId);
     set({
       tabs: nextTabs,
@@ -319,6 +340,20 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   closeAllTabs: () => {
     commitTabs([], null);
+  },
+
+  closeTabsForConversationSwitch: () => {
+    const { tabs, activeTabId } = get();
+    // Everything except a browser tab is scoped to the conversation that
+    // opened it. A browser tab is a live native view an agent may still be
+    // driving — closing it here used to kill the page mid-task (and, on the
+    // agent's next action, hand back a brand-new tab id).
+    const nextTabs = tabs.filter((tab) => tab.kind === 'browser');
+    if (nextTabs.length === tabs.length) return;
+    const nextActiveId = activeTabId && nextTabs.some((tab) => tab.id === activeTabId)
+      ? activeTabId
+      : nextTabs[0]?.id ?? null;
+    commitTabs(nextTabs, nextActiveId);
   },
 
   closeSubagentTabsForConversation: (conversationId) => {

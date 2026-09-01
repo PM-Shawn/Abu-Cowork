@@ -614,4 +614,26 @@ describe('BrowserTab native overlay visibility', () => {
     // The beforeEach rect: 600×400 at (100, 100).
     expect(createArgs).toMatchObject({ x: 100, y: 100, width: 600, height: 400 });
   });
+
+  it('hides the native view on unmount instead of destroying it', async () => {
+    const { unmount } = render(
+      <TooltipProvider>
+        <BrowserTab tabId="browser-unmount-keepalive" url="https://example.com" />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-unmount-keepalive',
+      }));
+    });
+    invoke.mockClear();
+
+    unmount();
+
+    // The view outlives this component — only the tab record (previewStore)
+    // may destroy it.
+    expect(invoke).toHaveBeenCalledWith('browser_hide', { id: 'browser-unmount-keepalive' });
+    expect(invoke).not.toHaveBeenCalledWith('browser_close', expect.anything());
+  });
 });

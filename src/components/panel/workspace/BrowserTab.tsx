@@ -432,7 +432,12 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       disposed = true;
       navUnlisten?.();
       elementUnlisten?.();
-      void invoke('browser_close', { id: tabId }).catch(() => {});
+      // Unmount is NOT a close. The native view's lifetime belongs to the tab
+      // record in previewStore (which destroys it when the tab is really
+      // closed); this component can unmount while the tab stays open, and an
+      // agent's page / login state / half-filled form must survive that.
+      // Hide instead, and let the remount reconcile visibility.
+      void invoke('browser_hide', { id: tabId }).catch(() => {});
       createdRef.current = false;
       shownRef.current = false;
       desiredVisibleRef.current = false;

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
@@ -392,6 +393,80 @@ describe('previewStore', () => {
       expect(s.tabs).toHaveLength(0);
       expect(s.activeTabId).toBeNull();
       expect(s.previewFilePath).toBeNull();
+    });
+  });
+
+  // A browser tab's native WebContentsView is owned by the tab RECORD here, not
+  // by the React component that renders it: removing the record destroys the
+  // view, and nothing else may.
+  describe('native browser view ownership', () => {
+    // This suite runs in the `node` environment, so stub the desktop host
+    // marker `isTauriEnv()` looks for on `window`.
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const invokeMock = vi.mocked(invoke);
+
+    beforeEach(() => {
+      runtime.window = { __TAURI_INTERNALS__: {} };
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      delete runtime.window;
+      invokeMock.mockReset();
+    });
+
+    it('closeTab destroys the native view behind a browser tab', () => {
+      const id = usePreviewStore.getState().openBrowser('https://example.com');
+      usePreviewStore.getState().closeTab(id);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id });
+    });
+
+    it('closeTab of a non-browser tab touches no native view', () => {
+      usePreviewStore.getState().openPreview('/a/1.md');
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().closeTab(id);
+      expect(invokeMock).not.toHaveBeenCalled();
+    });
+
+    it('closeOtherTabs and closeAllTabs destroy every browser view they remove', () => {
+      const kept = usePreviewStore.getState().openBrowser('https://kept.example');
+      const dropped = usePreviewStore.getState().openBrowser('https://dropped.example');
+
+      usePreviewStore.getState().closeOtherTabs(kept);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: dropped });
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: kept });
+
+      invokeMock.mockClear();
+      usePreviewStore.getState().closeAllTabs();
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: kept });
+    });
+
+    it('closeTabsForConversationSwitch keeps browser tabs and their views alive', () => {
+      const browserId = usePreviewStore.getState().openBrowser('https://example.com');
+      usePreviewStore.getState().openPreview('/a/1.md');
+      usePreviewStore.getState().openSummary();
+      usePreviewStore.getState().openTerminal();
+
+      usePreviewStore.getState().closeTabsForConversationSwitch();
+
+      const s = usePreviewStore.getState();
+      expect(s.tabs.map((t) => t.id)).toEqual([browserId]);
+      expect(s.activeTabId).toBe(browserId);
+      expect(s.previewFilePath).toBeNull();
+      expect(invokeMock).not.toHaveBeenCalled();
+    });
+
+    it('closeTabsForConversationSwitch clears everything when no browser tab is open', () => {
+      usePreviewStore.getState().openPreview('/a/1.md');
+      usePreviewStore.setState({ chatWidth: 400 });
+
+      usePreviewStore.getState().closeTabsForConversationSwitch();
+
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toHaveLength(0);
+      expect(s.activeTabId).toBeNull();
+      expect(s.chatWidth).toBeNull();
     });
   });
 

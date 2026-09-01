@@ -127,11 +127,16 @@ export default function RightPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // Close all workspace tabs when switching conversations (tabs are
-  // conversation-scoped). Defined BEFORE the summary-open effect so that runs
-  // against a cleared tab list.
+  // Close the conversation-scoped workspace tabs when switching conversations
+  // (summary / preview / terminal / subagent). Defined BEFORE the summary-open
+  // effect so that runs against a cleared tab list.
+  //
+  // Browser tabs are exempt: their native view is a page an agent may still be
+  // driving in the background, and closing the tab destroyed it mid-task
+  // (losing the page, its login state and any typed form data) — the panel's
+  // per-conversation reset must not reach into the agent's runtime.
   useEffect(() => {
-    usePreviewStore.getState().closeAllTabs();
+    usePreviewStore.getState().closeTabsForConversationSwitch();
   }, [conversationId]);
 
   // Default the panel to the "task summary" tab: once per conversation, when the
@@ -184,15 +189,15 @@ export default function RightPanel() {
   // flex-fills and the chat owns the width).
   const currentWidth = dragWidth ?? PANEL_WIDTH;
 
-  // Hide panel when not in chat view or no conversation has started yet
-  if (viewMode !== 'chat' || (!hasMessages && !hasAnyTab)) {
-    return null;
-  }
-
-  // When collapsed, render nothing (toggle button is in the title bar)
-  if (collapsed) {
-    return null;
-  }
+  // Hide the panel when collapsed (the toggle lives in the title bar), when the
+  // app is not on the chat view, or before a conversation has anything to show.
+  //
+  // HIDE, never unmount: unmounting tears down every tab body, and a browser
+  // tab body owns a live native webview an agent may be driving. Same
+  // keep-alive contract WorkspacePanel already applies to its inactive tabs —
+  // the hidden placeholder yields a zero rect, which is exactly the signal
+  // BrowserTab uses to hide its native layer.
+  const panelHidden = viewMode !== 'chat' || (!hasMessages && !hasAnyTab) || collapsed;
 
   // When expanded, render the tabbed workspace.
   // Wide content: flex-fill the space the chat column leaves (chat owns width).
@@ -201,6 +206,7 @@ export default function RightPanel() {
     <div
       data-abu-right-panel
       data-electron-no-drag
+      hidden={panelHidden}
       className={cn(
         // Raised content card floating on the canvas (matches dev's panel redesign):
         // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
@@ -210,9 +216,14 @@ export default function RightPanel() {
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
       )}
       style={
-        hasWideContent
-          ? { minWidth: PREVIEW_MIN_WIDTH }
-          : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
+        // Inline `display: none` (not just the `hidden` attribute): the layout
+        // classes above set `display: flex`, which would otherwise win over the
+        // UA stylesheet's `[hidden] { display: none }`.
+        panelHidden
+          ? { display: 'none' }
+          : hasWideContent
+            ? { minWidth: PREVIEW_MIN_WIDTH }
+            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
       }
     >
       {/* Full-screen overlay during drag — blocks iframe/webview from stealing mouse events */}

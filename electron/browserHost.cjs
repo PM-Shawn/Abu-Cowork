@@ -402,6 +402,29 @@ const USER_RECLAIMED_MESSAGE =
 const userReclaimedAt = new Map();
 
 /**
+ * The window's second half: a reclaimed owner may not TOUCH the legacy pool.
+ *
+ * The legacy pool is listed to every owner on purpose (the user's own pane tabs
+ * are shared). Refusing to provision therefore leaves a reclaimed run seeing
+ * exactly one thing it may still reach — the tab the user is reading — and
+ * without this it would take it: promote it to its current tab, then click,
+ * fill and navigate it. That is a sharper version of the complaint this whole
+ * mechanism answers, arrived at BY the mechanism.
+ *
+ * So a legacy tab is look-but-don't-touch for that owner until the window
+ * lifts: state-changing work on it is refused with the same sentence, read-only
+ * work is not (the model may still report what the user is looking at), and it
+ * may never become that owner's current tab — that record is what steers a
+ * later `get_html` with no tabId onto the user's page. The owner's OWN
+ * surviving tabs are untouched by all of this: the user closed one tab, not the
+ * task.
+ */
+/** May a tab become `owner`'s current tab? Not a legacy one, mid-window. */
+function mayBecomeCurrentTab(owner, tabIsLegacy) {
+  return !tabIsLegacy || !userReclaimedAt.has(owner.key);
+}
+
+/**
  * Unknown/absent values are `lifecycle`: a reason that fails to arrive intact
  * must never be read as a user gesture that gates the run.
  */
@@ -962,6 +985,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       tabId: contents.id,
       url: contents.getURL(),
       title: contents.getTitle(),
+      legacy: isLegacyOwner(tabOwner),
     });
   }
   if (tabs.length === 0 && createIfEmpty) {
@@ -972,10 +996,23 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       tabId: view.webContents.id,
       url: view.webContents.getURL(),
       title: view.webContents.getTitle(),
+      legacy: isLegacyOwner(owner),
     });
   }
-  if (tabs.length > 0 && !tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(owner.key))) {
-    activeTabIdByOwner.set(owner.key, tabs[0].tabId);
+  if (tabs.length > 0) {
+    const held = tabs.find((tab) => tab.tabId === activeTabIdByOwner.get(owner.key));
+    // Re-point when the record names nothing this owner can see any more — and,
+    // mid-reclaim, when it names a LEGACY tab: the run may have been driving the
+    // user's pane tab perfectly legitimately a moment before the window opened,
+    // so declining to PROMOTE one is not enough on its own. With no eligible
+    // candidate the owner is left with no current tab at all, which is the
+    // honest answer (and what makes a bare `get_html` say "no tab" rather than
+    // reach for the user's page).
+    if (!held || !mayBecomeCurrentTab(owner, held.legacy)) {
+      const candidate = tabs.find((tab) => mayBecomeCurrentTab(owner, tab.legacy));
+      if (candidate) activeTabIdByOwner.set(owner.key, candidate.tabId);
+      else activeTabIdByOwner.delete(owner.key);
+    }
   }
   return tabs;
 }
@@ -1184,17 +1221,19 @@ async function runBrowserAutomation(action, payload, signal) {
     ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
   const match = findViewByTabId(targetTabId, owner);
-  if (!match) {
-    // N7: the user closed this owner's tab and nothing is left to act on. Say
-    // that, rather than "tab not found" — which reads as a transient glitch and
-    // invites the model to open another one, the exact thing being refused.
-    // Read-only actions keep the plain not-found error: they cannot make the
-    // situation worse, and the note on `get_tabs` already told the model why.
-    if (reclaimed && TAKEOVER_GATED_ACTIONS.has(action)) {
-      throw new Error(USER_RECLAIMED_MESSAGE);
-    }
-    throw new Error(`Browser tab not found: ${String(targetTabId)}`);
+  // N7 — inside the reclaim window a state-changing action is refused both when
+  // nothing is left to act on AND when the only thing left is a LEGACY tab (the
+  // user's own pane tab, which every owner can see). Same sentence for both:
+  // "tab not found" reads as a transient glitch and invites the model to open
+  // another one, the exact thing being refused, and driving the user's tab is
+  // the very complaint this mechanism answers. Read-only actions are exempt —
+  // they cannot make it worse, and the model may still report what the user is
+  // looking at. The owner's own surviving tabs are never affected.
+  if (reclaimed && TAKEOVER_GATED_ACTIONS.has(action)
+    && (!match || isLegacyOwner(ownerOf(match.id)))) {
+    throw new Error(USER_RECLAIMED_MESSAGE);
   }
+  if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
@@ -1236,7 +1275,12 @@ async function runBrowserAutomation(action, payload, signal) {
     }
   }
 
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  // Same rule as the listing's promotion: a read-only look at the user's pane
+  // tab mid-window must not leave that tab as this owner's current one, or the
+  // next tabId-less action drifts onto the user's page anyway.
+  if (mayBecomeCurrentTab(owner, isLegacyOwner(ownerOf(match.id)))) {
+    activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  }
 
   if (action === 'navigate') return navigateAutomationTab(view, payload);
   assertAutomationDocumentAllowed(view);

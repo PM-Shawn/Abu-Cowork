@@ -1911,3 +1911,200 @@ test('browser_clear_reclaim refuses the legacy conversation and blank input', as
     restore();
   }
 });
+
+/**
+ * ## N7 fix round 1 — the window must not funnel the agent onto the user's tab
+ *
+ * `automationTabs` lists the LEGACY pool to every owner (the user's own pane
+ * tabs are shared on purpose). Denying provisioning therefore left a reclaimed
+ * run with exactly one tab it could still see — the tab the user is reading —
+ * which it would promote to its current tab and then click, fill and navigate.
+ * That is a sharper version of the complaint N7 answers, arrived at BY N7.
+ *
+ * So inside the window a legacy tab is look-but-don't-touch for that owner:
+ * state-changing actions on it are refused with the same sentence, read-only
+ * work is not, and the tab may still be LISTED but may never become that
+ * owner's current tab (which is what steers a later `get_html` with no tabId
+ * onto the user's page). The owner's OWN surviving tabs are unaffected.
+ */
+
+function openPaneTab(host, id = 'pane-tab-1', url = 'https://example.com/') {
+  host.browserDispatch(null, 'browser_create', { id, url, x: 0, y: 0, width: 800, height: 600 });
+}
+
+test('a reclaimed run may not drive the user own pane tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // Order matters: the owner provisions its OWN view first — once a legacy
+    // tab exists, `get_tabs` is satisfied by the shared pool and never creates
+    // one, so there would be nothing of the owner's for the user to close.
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, ownViewId);
+
+    for (const action of ['navigate', 'click', 'fill', 'execute_js', 'keyboard', 'scroll']) {
+      await assert.rejects(
+        host.performBrowserAutomation(action, {
+          ownerId: OWNER_A,
+          tabId: paneTab,
+          action: 'goto',
+          url: 'https://example.com/',
+        }),
+        (error) => {
+          assert.equal(error.message, USER_RECLAIMED_MESSAGE, `wrong message for ${action}`);
+          return true;
+        }
+      );
+    }
+
+    assert.equal(contentsFor(paneTab).getURL(), 'https://example.com/', 'the page never moved');
+  } finally {
+    restore();
+  }
+});
+
+test('a reclaimed run may still LOOK at the user pane tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // Order matters: the owner provisions its OWN view first — once a legacy
+    // tab exists, `get_tabs` is satisfied by the shared pool and never creates
+    // one, so there would be nothing of the owner's for the user to close.
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, ownViewId);
+
+    // Read-only: it can report what the user is looking at, which is exactly
+    // what "ask them before opening a new one" needs it to be able to do.
+    await host.performBrowserAutomation('screenshot', { ownerId: OWNER_A, tabId: paneTab });
+
+    const listing = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(listing), [paneTab], 'the legacy tab is still listed');
+    assert.equal(listing.summary.note, USER_RECLAIMED_MESSAGE);
+  } finally {
+    restore();
+  }
+});
+
+test('a reclaimed run keeps full use of its own surviving tabs', async () => {
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    const [first, second] = await Promise.all([getTabs(host, OWNER_A), getTabs(host, OWNER_A)]);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    const ownTabs = [first, second].map((result) => tabIds(result)[0]);
+    assert.notEqual(ownTabs[0], ownTabs[1], 'the owner really has two of its own views');
+
+    const opens = emitted
+      .filter((entry) => entry.event === 'browser://automation-open')
+      .map((entry) => entry.payload.id);
+    host.browserDispatch(null, 'browser_close', { id: opens[0], reason: 'user_close' });
+    const survivor = ownTabs.find((tab) => !contentsFor(tab).isDestroyed());
+    assert.ok(survivor, 'exactly one of its own views was closed');
+
+    // Its own tab: unrestricted. The user closed one tab, not the task.
+    await navigate(host, OWNER_A, survivor, 'https://still-mine.example/');
+    assert.equal(contentsFor(survivor).getURL(), 'https://still-mine.example/');
+
+    // The user's tab, in the same breath: refused.
+    await assert.rejects(
+      navigate(host, OWNER_A, paneTab, 'https://not-yours.example/'),
+      (error) => {
+        assert.equal(error.message, USER_RECLAIMED_MESSAGE);
+        return true;
+      }
+    );
+
+    // ...and its own tab is what get_tabs points at, not the user's.
+    assert.equal((await getTabs(host, OWNER_A)).summary.currentTabId, survivor);
+  } finally {
+    restore();
+  }
+});
+
+test('a reclaimed run never gets the user pane tab as its current tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // Order matters: the owner provisions its OWN view first — once a legacy
+    // tab exists, `get_tabs` is satisfied by the shared pool and never creates
+    // one, so there would be nothing of the owner's for the user to close.
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, ownViewId);
+
+    const listing = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(listing), [paneTab], 'listed…');
+    assert.equal(listing.summary.currentTabId, null, '…but never promoted');
+    assert.equal(listing.windows[0].tabs[0].isCurrentTab, false);
+
+    // A bare `get_html` (no tabId) resolves through that record, so an
+    // unpromoted legacy tab is the difference between "no tab" and "the page
+    // the user is reading".
+    await assert.rejects(
+      host.performBrowserAutomation('get_html', { ownerId: OWNER_A }),
+      /Browser tab not found/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('a current-tab record already pointing at the user pane tab is dropped when the window opens', async () => {
+  // The run drove the user's pane tab legitimately BEFORE the reclaim, so the
+  // record already names it — refusing to promote is not enough on its own.
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    await navigate(host, OWNER_A, paneTab, 'https://example.com/before/');
+    assert.equal((await getTabs(host, OWNER_A)).summary.currentTabId, paneTab, 'it was current');
+
+    userCloses(host, ownViewId);
+
+    assert.equal((await getTabs(host, OWNER_A)).summary.currentTabId, null);
+  } finally {
+    restore();
+  }
+});
+
+test('clearing the window hands the user pane tab back to the run', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // Order matters: the owner provisions its OWN view first — once a legacy
+    // tab exists, `get_tabs` is satisfied by the shared pool and never creates
+    // one, so there would be nothing of the owner's for the user to close.
+    await getTabs(host, OWNER_A);
+    const ownViewId = lastAdoptedViewId(emitted);
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+    userCloses(host, ownViewId);
+
+    host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A });
+
+    await navigate(host, OWNER_A, paneTab, 'https://allowed-again.example/');
+    assert.equal(contentsFor(paneTab).getURL(), 'https://allowed-again.example/');
+  } finally {
+    restore();
+  }
+});
+
+test('an owner with no reclaim window drives legacy tabs exactly as before', async () => {
+  const { host, restore } = loadHost();
+  try {
+    openPaneTab(host);
+    const paneTab = tabIds(await probeTabs(host))[0];
+
+    await navigate(host, OWNER_A, paneTab, 'https://unchanged.example/');
+    assert.equal(contentsFor(paneTab).getURL(), 'https://unchanged.example/');
+    assert.equal((await getTabs(host, OWNER_A)).summary.currentTabId, paneTab);
+  } finally {
+    restore();
+  }
+});

@@ -5,7 +5,7 @@ import {
   BATCH_PROGRESS_GLOBAL_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from './batchProgressStore';
-import { subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
+import { getVisibleTabs, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
 
 function reset() {
   usePreviewStore.setState({
@@ -18,6 +18,8 @@ function reset() {
     chatWidth: null,
     reloadNonce: 0,
     fileTreeMode: false,
+    currentConversationId: null,
+    lastActiveTabByConversation: {},
   });
   useBatchProgressStore.setState({
     batches: {},
@@ -467,6 +469,149 @@ describe('previewStore', () => {
       expect(s.tabs).toHaveLength(0);
       expect(s.activeTabId).toBeNull();
       expect(s.chatWidth).toBeNull();
+    });
+  });
+
+  // An adopted agent browser tab belongs to the conversation that asked for it.
+  // Its native view must stay alive across conversation switches (C1), but it
+  // must only be listed/activatable in its owner's panel — otherwise switching
+  // to another conversation shows that conversation someone else's live page.
+  describe('conversation-scoped browser tabs', () => {
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const invokeMock = vi.mocked(invoke);
+
+    beforeEach(() => {
+      runtime.window = { __TAURI_INTERNALS__: {} };
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      delete runtime.window;
+      invokeMock.mockReset();
+    });
+
+    function ids(tabs: WorkspaceTab[]): string[] {
+      return tabs.map((tab) => tab.id);
+    }
+
+    it('records the owner on an adopted tab and keeps it visible in its own conversation', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      const id = usePreviewStore.getState().openBrowser('about:blank', 'agent-a-1', 'conv-a');
+
+      const s = usePreviewStore.getState();
+      expect(s.tabs).toEqual([
+        { id: 'agent-a-1', kind: 'browser', url: 'about:blank', ownerConversationId: 'conv-a' },
+      ]);
+      expect(ids(getVisibleTabs())).toEqual([id]);
+      expect(s.activeTabId).toBe(id);
+    });
+
+    it('adoption for the CURRENT conversation still respects the no-steal rule', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      const watched = usePreviewStore.getState().openBrowser('https://user-is-watching.example');
+
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-a-2', 'conv-a');
+
+      const s = usePreviewStore.getState();
+      expect(ids(getVisibleTabs())).toEqual([watched, 'agent-a-2']);
+      expect(s.activeTabId).toBe(watched);
+    });
+
+    it('adoption for a BACKGROUND conversation never enters this conversation view', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().openSummary();
+      const summaryId = usePreviewStore.getState().activeTabId;
+
+      usePreviewStore.getState().openBrowser('https://baidu.com', 'agent-a-3', 'conv-a');
+
+      const s = usePreviewStore.getState();
+      // Present in the store (its native view is alive) but invisible here.
+      expect(ids(s.tabs)).toContain('agent-a-3');
+      expect(ids(getVisibleTabs())).toEqual([summaryId!]);
+      expect(s.activeTabId).toBe(summaryId);
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
+    });
+
+    it('adoption for a BACKGROUND conversation leaves an empty panel empty', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+
+      usePreviewStore.getState().openBrowser('https://baidu.com', 'agent-a-4', 'conv-a');
+
+      const s = usePreviewStore.getState();
+      expect(getVisibleTabs()).toEqual([]);
+      expect(s.activeTabId).toBeNull();
+      expect(ids(s.tabs)).toEqual(['agent-a-4']);
+    });
+
+    it('an adopted tab with no owner (legacy) stays visible in every conversation', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('about:blank', 'legacy-view');
+
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+
+      expect(ids(getVisibleTabs())).toEqual(['legacy-view']);
+    });
+
+    it('A → B → A hides then restores A’s tabs, keeping every native view alive', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('https://one.example', 'agent-a-5', 'conv-a');
+      usePreviewStore.getState().openBrowser('https://two.example', 'agent-a-6', 'conv-a');
+      usePreviewStore.getState().activateTab('agent-a-6');
+
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      const inB = usePreviewStore.getState();
+      expect(getVisibleTabs()).toEqual([]);
+      expect(inB.activeTabId).toBeNull();
+      expect(ids(inB.tabs)).toEqual(['agent-a-5', 'agent-a-6']);
+
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      const backInA = usePreviewStore.getState();
+      expect(ids(getVisibleTabs())).toEqual(['agent-a-5', 'agent-a-6']);
+      // A's last active tab comes back, not just the first one.
+      expect(backInA.activeTabId).toBe('agent-a-6');
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
+    });
+
+    it('activateTab cannot activate another conversation’s browser tab', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('https://one.example', 'agent-a-7', 'conv-a');
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().openSummary();
+      const summaryId = usePreviewStore.getState().activeTabId;
+
+      usePreviewStore.getState().activateTab('agent-a-7');
+
+      expect(usePreviewStore.getState().activeTabId).toBe(summaryId);
+    });
+
+    it('closeAllTabs / closeOtherTabs only reach the tabs this conversation can see', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('https://one.example', 'agent-a-8', 'conv-a');
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+      usePreviewStore.getState().openSummary();
+      usePreviewStore.getState().openBrowser('https://b.example', 'agent-b-1', 'conv-b');
+
+      usePreviewStore.getState().closeOtherTabs('agent-b-1');
+      expect(ids(usePreviewStore.getState().tabs)).toEqual(['agent-a-8', 'agent-b-1']);
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-a-8' });
+
+      usePreviewStore.getState().closeAllTabs();
+      const s = usePreviewStore.getState();
+      expect(ids(s.tabs)).toEqual(['agent-a-8']);
+      expect(getVisibleTabs()).toEqual([]);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-b-1' });
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-a-8' });
+    });
+
+    it('a foreign-owned tab never keeps the panel wide or the chat width pinned', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('https://one.example', 'agent-a-9', 'conv-a');
+      usePreviewStore.setState({ chatWidth: 400 });
+
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
+
+      expect(usePreviewStore.getState().chatWidth).toBeNull();
     });
   });
 

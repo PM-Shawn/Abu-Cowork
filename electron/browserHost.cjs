@@ -632,7 +632,15 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
   // into browserCreate() synchronously on the main process, and that is where
   // the pending owner is consumed.
   pendingAutomationOwners.set(id, ownerKey);
-  emit('browser://automation-open', { id, url: 'about:blank' });
+  // Tell the renderer WHOSE view this is: it hangs the adopted tab on that
+  // conversation, so a background task's tab never lands in the conversation
+  // the user happens to be looking at. LEGACY_OWNER sends no ownerId at all —
+  // a legacy view belongs to the shared pool and every conversation may see it.
+  emit('browser://automation-open', {
+    id,
+    url: 'about:blank',
+    ...(ownerKey !== LEGACY_OWNER ? { ownerId: ownerKey } : {}),
+  });
 
   // The production renderer adopts agent-created tabs into its normal browser
   // workspace so the user can watch and intervene. Headless harnesses have no

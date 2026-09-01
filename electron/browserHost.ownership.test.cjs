@@ -323,6 +323,28 @@ test('get_tabs with createIfEmpty:false lists without provisioning a view', asyn
   }
 });
 
+test('browser://automation-open carries the owner so the renderer can route the tab', async () => {
+  // Without this the renderer has no way to tell whose tab it just adopted, so
+  // a background conversation's view lands in whatever conversation the user is
+  // currently looking at.
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const owned = emitted.filter((entry) => entry.event === 'browser://automation-open');
+    assert.equal(owned.length, 1);
+    assert.equal(owned[0].payload.ownerId, OWNER_A);
+
+    // A caller that sends no owner is the legacy shared pool: no ownerId at
+    // all, so every conversation may see the tab (today's behavior).
+    await host.performBrowserAutomation('get_tabs', {});
+    const all = emitted.filter((entry) => entry.event === 'browser://automation-open');
+    assert.equal(all.length, 2);
+    assert.equal('ownerId' in all[1].payload, false);
+  } finally {
+    restore();
+  }
+});
+
 test('get_tabs still provisions a view by default (unchanged for every other caller)', async () => {
   const { host, restore } = loadHost();
   try {

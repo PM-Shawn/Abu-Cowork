@@ -6,7 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 import RightPanel from './RightPanel';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { usePreviewStore } from '@/stores/previewStore';
+import { getVisibleTabs, usePreviewStore, workspaceTabButtonId } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { Conversation } from '@/types';
@@ -26,6 +26,7 @@ vi.mock('./workspace/SummaryBody', () => ({
 const invokeMock = vi.mocked(invoke);
 
 const BROWSER_TAB_ID = 'browser-lifecycle-view';
+const OWNED_TAB_ID = 'browser-owned-view';
 
 function conversation(id: string): Conversation {
   return {
@@ -103,18 +104,32 @@ async function renderPanel() {
 /** Seed one agent browser tab plus a conversation-scoped summary tab. */
 async function seedBrowserTab() {
   act(() => {
-    usePreviewStore.setState({
-      tabs: [
-        { id: 'summary-tab', kind: 'summary' },
-        { id: BROWSER_TAB_ID, kind: 'browser', url: 'https://example.com' },
-      ],
-      activeTabId: BROWSER_TAB_ID,
-    });
+    usePreviewStore.getState().openSummary();
+    // No owner id — the legacy/user-opened shape, visible in any conversation.
+    usePreviewStore.getState().openBrowser('https://example.com', BROWSER_TAB_ID);
   });
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith(
       'browser_create',
       expect.objectContaining({ id: BROWSER_TAB_ID }),
+    );
+  });
+  invokeMock.mockClear();
+}
+
+/**
+ * Seed an agent browser tab ADOPTED FOR `conversationId` — the production path
+ * (`browser://automation-open` → `openBrowser(url, id, ownerId)`), so the tab
+ * carries its owner rather than being a legacy any-conversation tab.
+ */
+async function seedOwnedBrowserTab(conversationId: string) {
+  act(() => {
+    usePreviewStore.getState().openBrowser('https://example.com', OWNED_TAB_ID, conversationId);
+  });
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith(
+      'browser_create',
+      expect.objectContaining({ id: OWNED_TAB_ID }),
     );
   });
   invokeMock.mockClear();
@@ -152,6 +167,8 @@ describe('RightPanel browser view lifecycle', () => {
       chatWidth: null,
       reloadNonce: 0,
       fileTreeMode: false,
+      currentConversationId: null,
+      lastActiveTabByConversation: {},
     });
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
@@ -246,6 +263,62 @@ describe('RightPanel browser view lifecycle', () => {
     });
     // Shown, never re-created: same WebContentsView, so the same tab id the
     // agent is already holding.
+    expect(invokeMock).not.toHaveBeenCalledWith('browser_create', expect.anything());
+  });
+
+  // C1 left the surviving browser tab active for whatever conversation the user
+  // switched to, so B's panel opened on A's live page and B never got its own
+  // summary. An adopted tab belongs to its owner conversation only.
+  it('hides conversation A’s agent tab from B, which opens its own summary instead', async () => {
+    await renderPanel();
+    await seedOwnedBrowserTab('a');
+
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'b' });
+    });
+
+    const s = usePreviewStore.getState();
+    // The view is alive — just not B's business.
+    expect(s.tabs.map((tab) => tab.id)).toContain(OWNED_TAB_ID);
+    expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
+    expect(browserTabMounted()).toBe(true);
+    // B sees only its own freshly opened summary.
+    expect(getVisibleTabs().map((tab) => tab.kind)).toEqual(['summary']);
+    expect(s.activeTabId).toBe(getVisibleTabs()[0].id);
+    // ...and the tab strip does not offer A's tab.
+    expect(document.getElementById(workspaceTabButtonId(OWNED_TAB_ID))).toBeNull();
+
+    // The native layer paints over React, so an invisible tab MUST be hidden.
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('browser_hide', { id: OWNED_TAB_ID });
+    });
+  });
+
+  it('restores conversation A’s agent tab when the user switches back', async () => {
+    await renderPanel();
+    await seedOwnedBrowserTab('a');
+
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'b' });
+    });
+    // Let the native layer actually go down in B before coming back, so the
+    // re-show below is a real state transition rather than a no-op.
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('browser_hide', { id: OWNED_TAB_ID });
+    });
+    invokeMock.mockClear();
+    await act(async () => {
+      useChatStore.setState({ activeConversationId: 'a' });
+    });
+
+    const s = usePreviewStore.getState();
+    expect(getVisibleTabs().map((tab) => tab.id)).toEqual([OWNED_TAB_ID]);
+    expect(s.activeTabId).toBe(OWNED_TAB_ID);
+    expect(document.getElementById(workspaceTabButtonId(OWNED_TAB_ID))).not.toBeNull();
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('browser_show', { id: OWNED_TAB_ID });
+    });
+    // Same WebContentsView the agent is still driving.
     expect(invokeMock).not.toHaveBeenCalledWith('browser_create', expect.anything());
   });
 

@@ -21,7 +21,7 @@ import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import RightPanel from '@/components/panel/RightPanel';
-import { usePreviewStore } from '@/stores/previewStore';
+import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToastContainer from '@/components/common/ToastContainer';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
@@ -162,8 +162,12 @@ function App() {
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
-  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
-  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  // `visibleTabs`: a browser tab adopted for another conversation stays alive
+  // in the store but must not size or reveal THIS conversation's panel.
+  const hasAnyTab = useHasTabs();
+  const hasWideContent = usePreviewStore(
+    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+  );
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
@@ -323,14 +327,22 @@ function App() {
   // WebContentsView into the normal workspace. Keeping this in the existing
   // BrowserTab UI gives users a visible address bar, history controls, and a
   // close button while the agent operates the page.
+  //
+  // `ownerId` is the conversation main created the view for. It is what keeps a
+  // background conversation's adoption out of whatever conversation happens to
+  // be on screen; absent (legacy owner) means "any conversation may see it".
   useEffect(() => {
     if (!isTauriEnv()) return;
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<{ id: string; url: string }>('browser://automation-open', (event) => {
-      const { id, url } = event.payload ?? {};
+    listen<{ id: string; url: string; ownerId?: string }>('browser://automation-open', (event) => {
+      const { id, url, ownerId } = event.payload ?? {};
       if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
-      usePreviewStore.getState().openBrowser(typeof url === 'string' ? url : 'about:blank', id);
+      usePreviewStore.getState().openBrowser(
+        typeof url === 'string' ? url : 'about:blank',
+        id,
+        typeof ownerId === 'string' && ownerId ? ownerId : undefined,
+      );
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;

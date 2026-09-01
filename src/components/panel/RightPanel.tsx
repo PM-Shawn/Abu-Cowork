@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
+import { getVisibleTabs, isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { useActiveConversation } from '@/stores/chatStore';
 import { cn } from '@/lib/utils';
 import WorkspacePanel from './workspace/WorkspacePanel';
@@ -21,10 +21,15 @@ export default function RightPanel() {
   const collapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
   const viewMode = useSettingsStore((s) => s.viewMode);
-  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
+  // `visibleTabs`, not `tabs`: a browser tab adopted for ANOTHER conversation
+  // stays in the store (its native view is alive) but is not this
+  // conversation's content and must not size or open this conversation's panel.
+  const hasAnyTab = useHasTabs();
   // "Wide" content (preview/browser/terminal) flex-fills; the summary tab and
   // the empty state stay at the narrow fixed width.
-  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  const hasWideContent = usePreviewStore(
+    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+  );
   const conversation = useActiveConversation();
   const prevHasMessagesRef = useRef(false);
   // Track whether auto-expand already fired for this conversation
@@ -65,7 +70,7 @@ export default function RightPanel() {
     const startX = e.clientX;
     // Wide content flex-fills, so the divider resizes the chat; otherwise it
     // resizes the narrow panel itself.
-    const isWide = usePreviewStore.getState().tabs.some((t) => t.kind !== 'summary');
+    const isWide = getVisibleTabs().some((t) => t.kind !== 'summary');
     const sidebarOpen = !useSettingsStore.getState().sidebarCollapsed;
 
     setIsDragging(true);
@@ -134,9 +139,11 @@ export default function RightPanel() {
   // Browser tabs are exempt: their native view is a page an agent may still be
   // driving in the background, and closing the tab destroyed it mid-task
   // (losing the page, its login state and any typed form data) — the panel's
-  // per-conversation reset must not reach into the agent's runtime.
+  // per-conversation reset must not reach into the agent's runtime. Passing the
+  // conversation id re-scopes visibility instead: an agent tab adopted for
+  // another conversation goes hidden here and comes back when the user does.
   useEffect(() => {
-    usePreviewStore.getState().closeTabsForConversationSwitch();
+    usePreviewStore.getState().closeTabsForConversationSwitch(conversationId);
   }, [conversationId]);
 
   // Default the panel to the "task summary" tab: once per conversation, when the
@@ -144,7 +151,9 @@ export default function RightPanel() {
   // the summary tab afterwards leaves the "从这里开始" empty state (not reopened).
   useEffect(() => {
     if (collapsed || !hasMessages || summaryInitedRef.current) return;
-    if (usePreviewStore.getState().tabs.length === 0) {
+    // "No tab" means no tab THIS conversation can see: another conversation's
+    // surviving agent browser tab must not suppress this one's summary.
+    if (getVisibleTabs().length === 0) {
       summaryInitedRef.current = true;
       usePreviewStore.getState().openSummary();
     }

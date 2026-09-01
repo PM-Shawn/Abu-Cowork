@@ -22,6 +22,7 @@ const disclosure: InstallDisclosure = {
     { name: 'remote-weather', url: 'https://mcp.example.com/sse' },
   ],
   capabilities: ['network'],
+  ignoredPayloads: [],
 };
 
 function renderDialog(overrides: Partial<React.ComponentProps<typeof InstallDisclosureDialog>> = {}) {
@@ -67,6 +68,21 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.getByText('radar')).toBeInTheDocument();
     expect(screen.getByText('/m/official/plugins/weather')).toBeInTheDocument();
     expect(screen.getByText('network')).toBeInTheDocument();
+  });
+
+
+  it('flags payload types Abu does not consume so nothing silently disappears', () => {
+    renderDialog({
+      state: { kind: 'ready', disclosure: { ...disclosure, ignoredPayloads: ['commands', 'hooks'] } } as const,
+    });
+    const notice = screen.getByTestId('plugin-disclosure-ignored');
+    expect(notice.textContent).toContain('commands');
+    expect(notice.textContent).toContain('hooks');
+  });
+
+  it('shows no ignored-payload notice when the plugin only ships supported payloads', () => {
+    renderDialog();
+    expect(screen.queryByTestId('plugin-disclosure-ignored')).toBeNull();
   });
 
   it('only reports a decision when the user acts on it', () => {

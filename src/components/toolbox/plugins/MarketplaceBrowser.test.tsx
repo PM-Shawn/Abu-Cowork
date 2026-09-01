@@ -70,6 +70,7 @@ const disclosure: InstallDisclosure = {
   sourceDir: '/m/official/plugins/weather',
   skills: ['forecast'],
   mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', '@acme/weather-mcp'] }],
+  ignoredPayloads: [],
 };
 
 function renderBrowser() {

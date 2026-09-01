@@ -306,3 +306,30 @@ describe('remote sources', () => {
     expect(record.version).toBe('2.0.0');
   });
 });
+
+describe('ignored payloads', () => {
+  const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
+
+  it('reports payload dirs Abu does not consume so the disclosure can say so', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({ name: 'weather' }),
+      '/mkt/plugins/weather/skills/today/SKILL.md': '---\nname: today\n---\n',
+      '/mkt/plugins/weather/commands/deploy.md': '# deploy',
+      '/mkt/plugins/weather/agents/helper/AGENT.md': '---\nname: helper\n---\n',
+      '/mkt/plugins/weather/hooks/hooks.json': '{}',
+    });
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    // Abu consumes skills + mcpServers; the rest is surfaced so the user is not
+    // surprised when part of a plugin silently does nothing here.
+    expect(d.ignoredPayloads.sort()).toEqual(['agents', 'commands', 'hooks']);
+  });
+
+  it('reports an empty list when the plugin only ships supported payloads', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({ name: 'weather' }),
+      '/mkt/plugins/weather/skills/today/SKILL.md': '---\nname: today\n---\n',
+    });
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(d.ignoredPayloads).toEqual([]);
+  });
+})

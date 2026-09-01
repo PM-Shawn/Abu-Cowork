@@ -133,6 +133,25 @@ export interface InstallDisclosure {
   /** MCP servers it will register — the command is the part users must see. */
   mcpServers: { name: string; command?: string; args?: string[]; url?: string }[];
   capabilities?: string[];
+  /**
+   * Top-level payload dirs Abu does NOT consume (commands / agents / hooks —
+   * the Claude/Codex ecosystem ships these; Abu routes agents to the Team view
+   * and does not run the others). Surfaced so the user is not surprised when
+   * part of a plugin silently does nothing here.
+   */
+  ignoredPayloads: string[];
+}
+
+/** Payload dirs the ecosystem uses that Abu deliberately does not consume. */
+const IGNORED_PAYLOAD_DIRS = ['commands', 'agents', 'hooks'] as const;
+
+/** Which of the ignored payload dirs this package actually ships. */
+async function discoverIgnoredPayloads(packageDir: string): Promise<string[]> {
+  const present: string[] = [];
+  for (const dir of IGNORED_PAYLOAD_DIRS) {
+    if (await exists(joinPath(packageDir, dir))) present.push(dir);
+  }
+  return present;
 }
 
 export interface PlanInstallOptions {
@@ -193,6 +212,7 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   }
 
   const skills = await discoverSkills(sourceDir);
+  const ignoredPayloads = await discoverIgnoredPayloads(sourceDir);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
     command: spec.command,
@@ -210,6 +230,7 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
     skills,
     mcpServers,
     capabilities: manifest.interface?.capabilities,
+    ignoredPayloads,
   };
 }
 

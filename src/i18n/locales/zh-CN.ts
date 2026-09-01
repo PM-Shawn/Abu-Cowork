@@ -1251,6 +1251,8 @@ const zhCN: TranslationDict = {
     pluginsDisclosureServers: '将注册的连接器',
     pluginsDisclosureServersHint: '这些命令会在你的电脑上运行，请先确认你信任它们的来源。',
     pluginsDisclosureCapabilities: '声明的能力',
+    pluginsDisclosureIgnoredTitle: '阿布暂不支持的内容',
+    pluginsDisclosureIgnoredHint: '这个插件还带了 {payloads}，阿布暂不使用这些（技能和连接器会正常装）。',
     pluginsDisclosureNone: '无',
     pluginsDisclosureLoading: '正在读取插件包…',
     pluginsInstalling: '安装中…',

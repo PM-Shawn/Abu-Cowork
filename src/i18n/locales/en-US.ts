@@ -1249,6 +1249,8 @@ const enUS: TranslationDict = {
     pluginsDisclosureServers: 'Connectors it will register',
     pluginsDisclosureServersHint: 'These commands run on your computer. Make sure you trust where they came from.',
     pluginsDisclosureCapabilities: 'Declared capabilities',
+    pluginsDisclosureIgnoredTitle: "Not used by Abu",
+    pluginsDisclosureIgnoredHint: 'This plugin also ships {payloads}, which Abu does not use (skills and connectors still install).',
     pluginsDisclosureNone: 'None',
     pluginsDisclosureLoading: 'Reading the plugin package…',
     pluginsInstalling: 'Installing…',

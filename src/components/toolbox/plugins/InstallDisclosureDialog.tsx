@@ -202,6 +202,19 @@ export default function InstallDisclosureDialog({
                 </div>
               </Section>
             )}
+
+            {d.ignoredPayloads.length > 0 && (
+              <Section icon={AlertTriangle} title={tb.pluginsDisclosureIgnoredTitle}>
+                <p
+                  data-testid="plugin-disclosure-ignored"
+                  className="text-minor text-[var(--abu-text-muted)]"
+                >
+                  {format(tb.pluginsDisclosureIgnoredHint, {
+                    payloads: d.ignoredPayloads.join('、'),
+                  })}
+                </p>
+              </Section>
+            )}
           </div>
         );
       }

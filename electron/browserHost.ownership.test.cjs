@@ -1807,7 +1807,9 @@ test('browser_clear_reclaim lifts the window for every run of that conversation'
 
     const run1 = await getTabs(host, OWNER_A, RUN_1);
     assert.equal(tabIds(run1).length, 1, 'the subagent run may open a tab again');
-    assert.equal(run1.summary.note, undefined);
+    // C8: the first listing after the lift is told the window WAS open, once —
+    // silence here is what let the model carry on as if nothing had happened.
+    assert.equal(run1.summary.note, RECLAIM_LIFTED_NOTICE);
     const mainLoop = await getTabs(host, OWNER_A);
     assert.equal(tabIds(mainLoop).length, 1, 'so may the conversation main loop');
     assert.equal(mainLoop.summary.note, undefined);
@@ -1924,10 +1926,18 @@ test('clearing the window lets every run of the conversation provision again', a
 
     host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A });
 
+    let listings = 0;
     for (const runId of [RUN_1, RUN_2, undefined]) {
       const listing = await getTabs(host, OWNER_A, runId);
       assert.equal(tabIds(listing).length, 1, `run ${runId ?? 'main'} provisions again`);
-      assert.equal(listing.summary.note, undefined);
+      // C8: the lift is announced to the conversation exactly once — the first
+      // run to look — and never gates anyone's provisioning.
+      listings += 1;
+      assert.equal(
+        listing.summary.note,
+        listings === 1 ? RECLAIM_LIFTED_NOTICE : undefined,
+        `run ${runId ?? 'main'} note`
+      );
     }
   } finally {
     restore();
@@ -2387,6 +2397,193 @@ test('clearing the window restores the user tab to every run of the conversation
     await navigate(host, OWNER_A, paneTab, 'https://allowed-again.example/', freshRun);
     assert.equal(contentsFor(paneTab).getURL(), 'https://allowed-again.example/');
     assert.equal((await getTabs(host, OWNER_A, freshRun)).summary.currentTabId, paneTab);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ## C8 — lifting the window is itself news
+ *
+ * `browser_clear_reclaim` used to lift the window in total silence: the user's
+ * next message simply made provisioning work again, and the next tool result
+ * said nothing about any of it. The model therefore opened a fresh tab and
+ * carried on as though the user had never closed one — the same "the app
+ * ignored me" the reclaim window exists to prevent, one turn later.
+ *
+ * Lifting now arms a ONE-SHOT notice on the conversation, and the conversation's
+ * next MODEL-FACING `get_tabs` carries it and clears it. Exactly one run sees
+ * it (whoever looks first), because the fact is about the conversation, not
+ * about any one delegation.
+ *
+ * Three things deliberately do NOT arm or consume it: a user message that lifted
+ * nothing (there is no news), a dispose (the conversation is being deleted or
+ * the run reaped — nobody left to tell), and the permission gate's
+ * `createIfEmpty:false` probe (its result is read by the gate and thrown away,
+ * so consuming the notice there would delete it unread).
+ */
+
+const RECLAIM_LIFTED_NOTICE =
+  'Note: the user previously closed your browser tab. Confirm they want the browser again '
+  + 'before acting on the page.';
+
+function clearReclaim(host, conversationId = OWNER_A) {
+  return host.browserDispatch(null, 'browser_clear_reclaim', { conversationId });
+}
+
+test('the first listing after the window is lifted says so, exactly once', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    const first = await getTabs(host, OWNER_A);
+    assert.equal(first.summary.note, RECLAIM_LIFTED_NOTICE, 'the first look is told');
+    assert.equal(tabIds(first).length, 1, 'and provisioning works again');
+
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined, 'not a second time');
+  } finally {
+    restore();
+  }
+});
+
+test('the lifted notice belongs to the conversation, so only one run gets it', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    // A sibling run that never owned the closed tab is just as entitled to the
+    // news — whoever looks first gets it, and nobody gets it twice.
+    assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.note, RECLAIM_LIFTED_NOTICE);
+    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, undefined);
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('the permission gate probe neither reads nor eats the lifted notice', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    // The gate's listing is resolved internally and discarded; carrying the
+    // one-shot there would lose it before any model saw it.
+    assert.equal((await probeTabs(host, OWNER_A)).summary.note, undefined);
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, RECLAIM_LIFTED_NOTICE);
+  } finally {
+    restore();
+  }
+});
+
+test('a user message that lifted nothing arms no notice', async () => {
+  const { host, restore } = loadHost();
+  try {
+    // `clearBrowserReclaim` fires on EVERY user message, so arming on the call
+    // rather than on an actual lift would put the notice on every conversation.
+    await getTabs(host, OWNER_A);
+    clearReclaim(host);
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('a window opened again outranks a notice still owed', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    // The user closes the replacement too, before anything listed. The live
+    // refusal is the more important of the two facts, and the owed notice is
+    // not spent on a listing that is already being told to ask first.
+    const replacement = await getTabs(host, OWNER_A, RUN_1);
+    assert.equal(replacement.summary.note, RECLAIM_LIFTED_NOTICE);
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, USER_RECLAIMED_MESSAGE);
+
+    clearReclaim(host);
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, RECLAIM_LIFTED_NOTICE);
+  } finally {
+    restore();
+  }
+});
+
+test('deleting the conversation drops the notice it was owed', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('a finished subagent run does not swallow the conversation notice', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    // A run being reaped (A2) is not the conversation going away — the news is
+    // still owed to whoever is left.
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
+
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, RECLAIM_LIFTED_NOTICE);
+  } finally {
+    restore();
+  }
+});
+
+test('a conversation that was never reclaimed sees no note at any point', async () => {
+  const { host, restore } = loadHost();
+  try {
+    for (let i = 0; i < 3; i += 1) {
+      assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+      clearReclaim(host);
+    }
+    assert.equal((await probeTabs(host, OWNER_A)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ## C8 — a refusal the model can repeat to the user
+ *
+ * "Browser tab not found: 41" gave the model no reason and one internal
+ * identifier, and the observed failure was the model handing that identifier
+ * straight to the user ("the tab id changed from 2 to 3"). The refusal now
+ * carries a reason phrase and the next step; the id stays in the text for the
+ * log, and the narration rules in the browser guidance keep it out of the
+ * user-facing sentence.
+ */
+test('a missing tab is refused with a reason and a next step', async () => {
+  const { host, restore } = loadHost();
+  try {
+    await assert.rejects(
+      host.performBrowserAutomation('click', { ownerId: OWNER_A, tabId: 999999 }),
+      (error) => {
+        assert.match(error.message, /Browser tab not found: 999999/);
+        assert.match(error.message, /no longer open/, 'says why it is refused');
+        assert.match(error.message, /get_tabs/, 'says what to do next');
+        return true;
+      }
+    );
   } finally {
     restore();
   }

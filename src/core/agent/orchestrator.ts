@@ -688,6 +688,16 @@ ${isWindows()
 - Only when the user explicitly asks to use their existing Chrome tabs, cookies, extensions, or signed-in state, call use_skill("Abu-Chrome-Bridge") and use the \`abu-browser-bridge__\` tools${chromeBridgeConnected ? ' (the Chrome bridge is connected)' : ''}
 - Do not substitute the \`computer\` tool or launch a system browser for web-page screenshots and interaction unless the user explicitly asks for whole-desktop Computer Use or an external browser`;
 
+    // How to TALK about browser work, as opposed to which tool to reach for.
+    // Unconditional: these hold for every browser path above, because what may
+    // be said about a result is not a property of the runtime that produced it.
+    // Each line answers an observed break — the model relaying "tab id 2 became
+    // 3", reporting a refusal with no reason, and narrating its own retries.
+    browserNote += `
+- Never repeat internal identifiers to the user — tab or view ids, tool and runtime names, raw error text. Refer to a page by its visible title or site
+- When a browser result says the user closed the tab, is interacting with the page, or the site is rate-limiting, state that reason plainly and do not try again until the user says to
+- Do not narrate your troubleshooting; report what happened and the one question or next step that follows from it`;
+
     if (playwrightConnected) {
       browserNote += `
 - The playwright tool launches a **brand-new blank browser** — not the user's existing browser. Do not use it to view pages the user already has open`;

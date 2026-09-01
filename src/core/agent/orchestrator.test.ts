@@ -238,6 +238,26 @@ describe('buildSystemPrompt - structure', () => {
     expect(prompt).toContain('Do not substitute the `computer` tool or launch a system browser');
   });
 
+  // C8 — the three narration rules ride the same browser-guide section as the
+  // routing rules above, and apply to every browser path (built-in, Chrome
+  // bridge, legacy host): what the model may say about a browser result is not
+  // a property of which runtime produced it.
+  it('forbids surfacing internal identifiers and blind retries after a refusal', async () => {
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain('Never repeat internal identifiers to the user');
+    expect(prompt).toContain('by its visible title or site');
+    expect(prompt).toContain('state that reason plainly and do not try again until the user says to');
+    expect(prompt).toContain('Do not narrate your troubleshooting');
+  });
+
+  it('keeps the narration rules when only the Chrome bridge is available', async () => {
+    browserMocks.hasElectronCommandHost.mockReturnValue(false);
+    browserMocks.isConnected.mockReturnValue(false);
+    const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
+    expect(prompt).toContain('Never repeat internal identifiers to the user');
+    expect(prompt).toContain('Do not narrate your troubleshooting');
+  });
+
   it('does not silently fall back when the Electron browser runtime is unavailable', async () => {
     browserMocks.isConnected.mockReturnValue(false);
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');

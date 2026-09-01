@@ -54,7 +54,9 @@
  *   `disposeOwnerViews`).
  * - `browser_clear_reclaim {conversationId}` → lift the reclaim window on every
  *   run of that conversation (Electron-only; sent when the user posts their next
- *   message there — see `userReclaimedAt`).
+ *   message there — see `userReclaimedAt`). A lift that actually closed a window
+ *   owes that conversation a one-shot notice on its next model-facing `get_tabs`
+ *   (see `RECLAIM_LIFTED_NOTICE`).
  *
  * ## Navigation event: `browser://nav/{id}`
  * browser.rs's `on_navigation(move |u| { emit(...); true })` fires on every
@@ -410,6 +412,43 @@ const USER_RECLAIMED_MESSAGE =
 const userReclaimedAt = new Map();
 
 /**
+ * ## Lifting the window is itself news (C8)
+ *
+ * `browser_clear_reclaim` lifted the window in total silence: the user's next
+ * message simply made provisioning work again, and the next tool result said
+ * nothing about any of it. The model therefore opened a fresh tab and carried
+ * on as though the user had never closed one — the same "the app ignored me"
+ * the window exists to prevent, one turn later.
+ *
+ * So a lift arms a ONE-SHOT notice and the conversation's next MODEL-FACING
+ * `get_tabs` carries it and clears it. Keyed to the CONVERSATION, like the
+ * window itself: the fact is about the task, not about whichever delegation
+ * happens to look first, and exactly one run is told (there is one fact, and
+ * repeating it every listing would turn it into noise the model learns to skip).
+ *
+ * Three paths deliberately arm or consume nothing:
+ *  - a `browser_clear_reclaim` that lifted no window. The renderer fires it on
+ *    EVERY user message, so arming on the call rather than on a real lift would
+ *    put the notice on every conversation that ever sent one.
+ *  - a dispose. It also clears the window, but there is nobody left to tell:
+ *    the conversation is being deleted or the run reaped. Only a
+ *    CONVERSATION-wide dispose drops a notice already owed — a finished
+ *    subagent (A2) is not the conversation going away.
+ *  - the permission gate's `createIfEmpty:false` probe (`registry.ts`), whose
+ *    listing is resolved internally and thrown away; spending the one-shot
+ *    there would delete it unread.
+ *
+ * While a window is open again, `USER_RECLAIMED_MESSAGE` wins the `note` slot —
+ * the live refusal outranks a past one — and the owed notice simply waits.
+ */
+const RECLAIM_LIFTED_NOTICE =
+  'Note: the user previously closed your browser tab. Confirm they want the browser again '
+  + 'before acting on the page.';
+
+/** conversationIds owed the one-shot notice above. */
+const reclaimNoticePending = new Set();
+
+/**
  * ## What is keyed to the CONVERSATION, and what stays per-RUN
  *
  * Conversation-wide: PROVISIONING, and the bar on touching the user's LEGACY
@@ -471,13 +510,34 @@ function isUserCloseReason(reason) {
   return reason === 'user_close';
 }
 
-/** Lift the reclaim window; `runKey === undefined` means every run (see `ownerInDisposeScope`). */
-function clearUserReclaim(conversationId, runKey) {
+/**
+ * Lift the reclaim window; `runKey === undefined` means every run (see
+ * `ownerInDisposeScope`).
+ *
+ * @param {boolean} [armNotice] true ONLY on the user-message path
+ *   (`browser_clear_reclaim`), and only then does an actual lift owe the
+ *   conversation the one-shot notice (see `RECLAIM_LIFTED_NOTICE`). A dispose
+ *   passes false: it clears the same window, but with nobody left to tell.
+ */
+function clearUserReclaim(conversationId, runKey, armNotice = false) {
+  let lifted = false;
   for (const key of Array.from(userReclaimedAt.keys())) {
     if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
       userReclaimedAt.delete(key);
+      lifted = true;
     }
   }
+  if (armNotice && lifted) reclaimNoticePending.add(conversationId);
+}
+
+/**
+ * Take the one-shot notice owed to `conversationId`, if any. Take-and-clear in
+ * one step (`Set.delete` reports whether it was there) so two runs listing back
+ * to back cannot both be told.
+ */
+function takeReclaimLiftedNotice(conversationId) {
+  if (!conversationId || conversationId === LEGACY_CONVERSATION) return null;
+  return reclaimNoticePending.delete(conversationId) ? RECLAIM_LIFTED_NOTICE : null;
 }
 
 /** >0 while an automation action is executing — its own events are not the user. */
@@ -1231,7 +1291,15 @@ async function runBrowserAutomation(action, payload, signal) {
     // is exactly the tabs that still exist — plus the note explaining why there
     // may now be none, shown to every run of the conversation because none of
     // them will be getting a new tab.
-    const tabs = await automationTabs(owner, payload.createIfEmpty !== false, signal);
+    const modelFacing = payload.createIfEmpty !== false;
+    const tabs = await automationTabs(owner, modelFacing, signal);
+    // One `note` slot, two mutually interesting facts. A window that is open
+    // NOW outranks one the user already lifted, and the owed one-shot is only
+    // spent on a listing a model will actually read (see
+    // `RECLAIM_LIFTED_NOTICE`).
+    const note = conversationIsReclaimed(owner.conversationId)
+      ? USER_RECLAIMED_MESSAGE
+      : (modelFacing ? takeReclaimLiftedNotice(owner.conversationId) : null);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -1244,7 +1312,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
-        ...(conversationIsReclaimed(owner.conversationId) ? { note: USER_RECLAIMED_MESSAGE } : {}),
+        ...(note ? { note } : {}),
       },
       windows: [{
         windowId,
@@ -1288,7 +1356,17 @@ async function runBrowserAutomation(action, payload, signal) {
   if (TAKEOVER_GATED_ACTIONS.has(action) && ((runReclaimed && !match) || targetIsUserTab)) {
     throw new Error(USER_RECLAIMED_MESSAGE);
   }
-  if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
+  // The one refusal in this file that carried no reason at all — just an id the
+  // model had nothing to say about, which is how "the tab id changed from 2 to
+  // 3" ended up addressed to a user who never asked about tab ids. The id stays
+  // (it is what makes the log readable); the sentence now also says WHY and what
+  // to do next, so the model has something it can repeat in plain language.
+  if (!match) {
+    throw new Error(
+      `Browser tab not found: ${String(targetTabId)}. That tab is no longer open — it was ` +
+        'closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.'
+    );
+  }
   const { view } = match;
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
@@ -1644,6 +1722,10 @@ function disposeOwnerViews(conversationId, runKey) {
   // never ask again, and a deleted conversation's window would otherwise outlive
   // everything it referred to.
   clearUserReclaim(conversationId, runKey);
+  // A CONVERSATION-wide dispose is the conversation going away, so a notice it
+  // was still owed dies with it. A run dispose (A2) is a subagent finishing —
+  // the conversation lives on and the news is still owed to whoever is left.
+  if (!runKey) reclaimNoticePending.delete(conversationId);
   // Emitted last, so the renderer's reaction (dropping the tab record, which
   // fires `browser_close`) can never race the teardown above.
   for (const id of cancelledIds) cancelAutomationAdoption(id);
@@ -1671,7 +1753,9 @@ function browserDisposeOwner({ conversationId, runKey }) {
 function browserClearReclaim({ conversationId }) {
   const conversation = sanitizeOwnerPart(conversationId);
   if (!conversation || conversation === LEGACY_CONVERSATION) return null;
-  clearUserReclaim(conversation, undefined);
+  // The one path that arms the one-shot notice: this is the user re-engaging,
+  // so there is somebody to tell (see `RECLAIM_LIFTED_NOTICE`).
+  clearUserReclaim(conversation, undefined, true);
   return null;
 }
 

@@ -93,6 +93,11 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
       ...process.env,
       [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
       [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
+      // Native modal dialogs cannot be driven by Playwright. On hosts where
+      // the OS grants Computer Use permissions (hosted CI runners), the CU
+      // approval prompts would block a headless run forever — this makes them
+      // auto-DECLINE (fail-closed; see tauriHost.cjs).
+      ABU_E2E_DECLINE_CU_APPROVALS: '1',
     },
     timeout: 60_000,
   });

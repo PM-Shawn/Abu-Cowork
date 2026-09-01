@@ -246,7 +246,8 @@ describe('buildSystemPrompt - structure', () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('Never repeat internal identifiers to the user');
     expect(prompt).toContain('by its visible title or site');
-    expect(prompt).toContain('state that reason plainly and do not try again until the user says to');
+    expect(prompt).toContain('explains why an action was refused or cancelled');
+    expect(prompt).toContain("do not retry without the user's go-ahead");
     expect(prompt).toContain('Do not narrate your troubleshooting');
   });
 

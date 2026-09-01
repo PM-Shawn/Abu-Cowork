@@ -52,6 +52,7 @@ import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { browserNarrationSection } from './browserNarrationRules';
 import {
   ActiveToolResultAdmission,
   type ActiveToolResultToken,
@@ -695,6 +696,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // a toolCallId injected by the main harness that sub-agents never receive —
     // leaving it visible causes a confusing "内部错误" response, so strip it here.
     const offeredToolNames = new Set(tools.map((tool) => tool.name));
+
+    // C8 — narration discipline, conditional on the roster this run actually
+    // got. It has to live HERE rather than with the other prompt blocks above
+    // because the roster is only known now, and it is worth the placement: a
+    // subagent owns its browser tabs per RUN (N6), so it hits the same
+    // refusals the main loop does, while `buildSystemPromptSections` — where
+    // the main loop gets these rules — never runs for a delegation.
+    systemPrompt += browserNarrationSection(offeredToolNames);
 
     // 4. Create LLM adapter
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).

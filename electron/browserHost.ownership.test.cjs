@@ -1807,12 +1807,14 @@ test('browser_clear_reclaim lifts the window for every run of that conversation'
 
     const run1 = await getTabs(host, OWNER_A, RUN_1);
     assert.equal(tabIds(run1).length, 1, 'the subagent run may open a tab again');
-    // C8: the first listing after the lift is told the window WAS open, once —
-    // silence here is what let the model carry on as if nothing had happened.
+    // C8: listings after the lift are told the window WAS open — silence here
+    // is what let the model carry on as if nothing had happened. The subagent
+    // reads it; the main loop, which can actually ask the user, spends it.
     assert.equal(run1.summary.note, RECLAIM_LIFTED_NOTICE);
     const mainLoop = await getTabs(host, OWNER_A);
     assert.equal(tabIds(mainLoop).length, 1, 'so may the conversation main loop');
-    assert.equal(mainLoop.summary.note, undefined);
+    assert.equal(mainLoop.summary.note, RECLAIM_LIFTED_NOTICE);
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined, 'and only once');
 
     // Another conversation's window is its own and is untouched.
     const other = await getTabs(host, OWNER_B);
@@ -1926,19 +1928,15 @@ test('clearing the window lets every run of the conversation provision again', a
 
     host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A });
 
-    let listings = 0;
     for (const runId of [RUN_1, RUN_2, undefined]) {
       const listing = await getTabs(host, OWNER_A, runId);
       assert.equal(tabIds(listing).length, 1, `run ${runId ?? 'main'} provisions again`);
-      // C8: the lift is announced to the conversation exactly once — the first
-      // run to look — and never gates anyone's provisioning.
-      listings += 1;
-      assert.equal(
-        listing.summary.note,
-        listings === 1 ? RECLAIM_LIFTED_NOTICE : undefined,
-        `run ${runId ?? 'main'} note`
-      );
+      // C8: every run is told the window was lifted, and the notice never gates
+      // anyone's provisioning. The main loop (last here) is the one that spends
+      // it, which the following assertion pins.
+      assert.equal(listing.summary.note, RECLAIM_LIFTED_NOTICE, `run ${runId ?? 'main'} note`);
     }
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined, 'spent by the main loop');
   } finally {
     restore();
   }
@@ -2411,10 +2409,15 @@ test('clearing the window restores the user tab to every run of the conversation
  * carried on as though the user had never closed one — the same "the app
  * ignored me" the reclaim window exists to prevent, one turn later.
  *
- * Lifting now arms a ONE-SHOT notice on the conversation, and the conversation's
- * next MODEL-FACING `get_tabs` carries it and clears it. Exactly one run sees
- * it (whoever looks first), because the fact is about the conversation, not
- * about any one delegation.
+ * Lifting now arms a ONE-SHOT notice on the conversation, which a model-facing
+ * `get_tabs` carries.
+ *
+ * Every run READS it; only the MAIN run SPENDS it. The notice asks the model to
+ * confirm with the user, and a subagent cannot: `ask_user_question` is blocked
+ * for delegations. "Whoever looks first" therefore retired the request on a run
+ * structurally unable to honour it, and told the conversation's own loop — the
+ * only run with a channel to the user — nothing at all. A subagent still sees
+ * the text, so it can decline and hand the question up to its parent.
  *
  * Three things deliberately do NOT arm or consume it: a user message that lifted
  * nothing (there is no news), a dispose (the conversation is being deleted or
@@ -2424,8 +2427,8 @@ test('clearing the window restores the user tab to every run of the conversation
  */
 
 const RECLAIM_LIFTED_NOTICE =
-  'Note: the user previously closed your browser tab. Confirm they want the browser again '
-  + 'before acting on the page.';
+  "Note: the user previously closed the assistant's browser tab. Confirm they want the "
+  + 'browser again before acting on the page.';
 
 function clearReclaim(host, conversationId = OWNER_A) {
   return host.browserDispatch(null, 'browser_clear_reclaim', { conversationId });
@@ -2448,18 +2451,41 @@ test('the first listing after the window is lifted says so, exactly once', async
   }
 });
 
-test('the lifted notice belongs to the conversation, so only one run gets it', async () => {
+test('a subagent listing first reads the notice but does not spend it', async () => {
   const { host, emitted, restore } = loadHost();
   try {
     await getTabs(host, OWNER_A, RUN_1);
     userCloses(host, lastAdoptedViewId(emitted));
     clearReclaim(host);
 
-    // A sibling run that never owned the closed tab is just as entitled to the
-    // news — whoever looks first gets it, and nobody gets it twice.
+    // Subagents first, twice over: they see it (so they can decline and hand
+    // the question up) and it survives them, because neither can ask the user.
+    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, RECLAIM_LIFTED_NOTICE);
     assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.note, RECLAIM_LIFTED_NOTICE);
-    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, undefined);
+
+    // The main loop is the run that can act on it, so it is the run that spends
+    // it — and nobody, itself included, is told twice afterwards.
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, RECLAIM_LIFTED_NOTICE);
     assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('a subagent-only conversation keeps the notice owed rather than losing it', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    clearReclaim(host);
+
+    // Ten subagent listings later the request is still outstanding: nothing
+    // that cannot ask the user may retire it on the user's behalf.
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.note, RECLAIM_LIFTED_NOTICE);
+    }
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, RECLAIM_LIFTED_NOTICE);
   } finally {
     restore();
   }

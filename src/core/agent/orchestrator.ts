@@ -15,6 +15,7 @@ import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
+import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString, orderSectionsForCaching } from '../llm/promptSections';
 
@@ -691,12 +692,9 @@ ${isWindows()
     // How to TALK about browser work, as opposed to which tool to reach for.
     // Unconditional: these hold for every browser path above, because what may
     // be said about a result is not a property of the runtime that produced it.
-    // Each line answers an observed break — the model relaying "tab id 2 became
-    // 3", reporting a refusal with no reason, and narrating its own retries.
-    browserNote += `
-- Never repeat internal identifiers to the user — tab or view ids, tool and runtime names, raw error text. Refer to a page by its visible title or site
-- When a browser result says the user closed the tab, is interacting with the page, or the site is rate-limiting, state that reason plainly and do not try again until the user says to
-- Do not narrate your troubleshooting; report what happened and the one question or next step that follows from it`;
+    // Shared with `subagentLoop.ts`'s prompt build — delegations own browser
+    // tabs per run, and the two copies must not drift.
+    browserNote += `\n${BROWSER_NARRATION_RULES}`;
 
     if (playwrightConnected) {
       browserNote += `

@@ -420,11 +420,23 @@ const userReclaimedAt = new Map();
  * on as though the user had never closed one — the same "the app ignored me"
  * the window exists to prevent, one turn later.
  *
- * So a lift arms a ONE-SHOT notice and the conversation's next MODEL-FACING
- * `get_tabs` carries it and clears it. Keyed to the CONVERSATION, like the
- * window itself: the fact is about the task, not about whichever delegation
- * happens to look first, and exactly one run is told (there is one fact, and
- * repeating it every listing would turn it into noise the model learns to skip).
+ * So a lift arms a ONE-SHOT notice, keyed to the CONVERSATION like the window
+ * itself, and a model-facing `get_tabs` carries it.
+ *
+ * ## Who SPENDS it: the main loop, and only the main loop
+ *
+ * The notice asks the model to confirm with the user before using the browser
+ * again — and a subagent CANNOT do that: `ask_user_question` is in
+ * `ALWAYS_BLOCKED_SUBAGENT_TOOLS`, so a delegation has no channel to the user
+ * at all. Letting whoever listed first consume it therefore lost the notice to
+ * a run structurally unable to obey it, and handed the conversation's own loop
+ * — the one run that can actually ask — a listing that said nothing.
+ *
+ * So every run READS it (a subagent that knows the user just took the browser
+ * back can decline to act and hand the question up to its parent, which costs
+ * nothing and is strictly better than acting blind), and only the MAIN run
+ * CLEARS it. The wording is neutral about whose tab it was for the same reason:
+ * "your browser tab" is simply false told to a sibling run that never owned it.
  *
  * Three paths deliberately arm or consume nothing:
  *  - a `browser_clear_reclaim` that lifted no window. The renderer fires it on
@@ -442,8 +454,8 @@ const userReclaimedAt = new Map();
  * the live refusal outranks a past one — and the owed notice simply waits.
  */
 const RECLAIM_LIFTED_NOTICE =
-  'Note: the user previously closed your browser tab. Confirm they want the browser again '
-  + 'before acting on the page.';
+  "Note: the user previously closed the assistant's browser tab. Confirm they want the "
+  + 'browser again before acting on the page.';
 
 /** conversationIds owed the one-shot notice above. */
 const reclaimNoticePending = new Set();
@@ -531,13 +543,20 @@ function clearUserReclaim(conversationId, runKey, armNotice = false) {
 }
 
 /**
- * Take the one-shot notice owed to `conversationId`, if any. Take-and-clear in
- * one step (`Set.delete` reports whether it was there) so two runs listing back
- * to back cannot both be told.
+ * The one-shot notice owed to `owner`'s conversation, if any.
+ *
+ * Every run READS it; only the MAIN run SPENDS it. A subagent cannot ask the
+ * user anything (`ask_user_question` is blocked for delegations), so spending
+ * the notice on one would retire the request on a run that cannot honour it and
+ * leave the conversation's own loop — the only run with a channel to the user —
+ * told nothing.
  */
-function takeReclaimLiftedNotice(conversationId) {
+function takeReclaimLiftedNotice(owner) {
+  const { conversationId, runKey } = owner;
   if (!conversationId || conversationId === LEGACY_CONVERSATION) return null;
-  return reclaimNoticePending.delete(conversationId) ? RECLAIM_LIFTED_NOTICE : null;
+  if (!reclaimNoticePending.has(conversationId)) return null;
+  if (runKey === MAIN_RUN_KEY) reclaimNoticePending.delete(conversationId);
+  return RECLAIM_LIFTED_NOTICE;
 }
 
 /** >0 while an automation action is executing — its own events are not the user. */
@@ -1295,11 +1314,11 @@ async function runBrowserAutomation(action, payload, signal) {
     const tabs = await automationTabs(owner, modelFacing, signal);
     // One `note` slot, two mutually interesting facts. A window that is open
     // NOW outranks one the user already lifted, and the owed one-shot is only
-    // spent on a listing a model will actually read (see
-    // `RECLAIM_LIFTED_NOTICE`).
+    // read (and, for the main loop, spent) on a listing a model will actually
+    // see — see `RECLAIM_LIFTED_NOTICE`.
     const note = conversationIsReclaimed(owner.conversationId)
       ? USER_RECLAIMED_MESSAGE
-      : (modelFacing ? takeReclaimLiftedNotice(owner.conversationId) : null);
+      : (modelFacing ? takeReclaimLiftedNotice(owner) : null);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;

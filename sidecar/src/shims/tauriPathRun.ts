@@ -56,10 +56,23 @@
  */
 import { homedir, tmpdir } from 'node:os';
 import { resolve as nodeResolve, join as nodeJoin } from 'node:path';
-import { getBootstrap } from '../bootstrap';
+import { getBootstrap, resolveHomeDir } from '../bootstrap';
 
+/**
+ * Shell-aligned home, not raw `os.homedir()`: the shell's tauriHost resolves
+ * `BaseDirectory.Home` via `app.getPath('home')`, which E2E launches redirect
+ * into an isolated data root — `resolveHomeDir()` follows it through the
+ * `ABU_HOME_DIR` spawn env var (falling back to `os.homedir()`, the identical
+ * value in every non-redirected run). Keeps sidecar-side `~/.abu` consumers
+ * (skill/loader.ts, outputSnapshots.ts) resolving the same paths as the
+ * renderer. The Desktop/Documents/Downloads helpers below intentionally stay
+ * on raw `os.homedir()`: tauriHost resolves those from their own
+ * `app.getPath('desktop'|'documents'|'downloads')` keys, which the E2E home
+ * redirect deliberately does NOT move (tests/e2e/infra-hygiene.spec.ts
+ * exercises permission scoping against the real ~/Documents).
+ */
 export async function homeDir(): Promise<string> {
-  return homedir();
+  return resolveHomeDir();
 }
 
 export async function appDataDir(): Promise<string> {

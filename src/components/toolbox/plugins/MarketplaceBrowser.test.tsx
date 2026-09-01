@@ -88,6 +88,18 @@ beforeEach(() => {
   });
   vi.mocked(loadMarketplaceFromDir).mockResolvedValue(marketplace);
   vi.mocked(planInstall).mockResolvedValue(disclosure);
+  // installPlugin now returns { record, mcpServers } (single-plan outcome).
+  vi.mocked(installPlugin).mockResolvedValue({
+    record: {
+      key: `${disclosure.name}@official`,
+      marketplace: 'official',
+      name: disclosure.name,
+      version: disclosure.version ?? '0.0.0',
+      installedAt: '2026-09-01T00:00:00.000Z',
+      contributed: { skills: disclosure.skills, mcpServers: disclosure.mcpServers.map((s) => s.name) },
+    },
+    mcpServers: disclosure.mcpServers,
+  });
 });
 
 describe('MarketplaceBrowser', () => {

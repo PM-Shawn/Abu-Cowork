@@ -37,6 +37,8 @@ import { installPlugin } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
+import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
+import { useMCPStore } from '@/stores/mcpStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
@@ -100,6 +102,18 @@ interface PluginActions {
 
 export type PluginStore = PluginState & PluginActions;
 
+/**
+ * Adapt the MCP store to the small surface the plugin bridge needs. Read at
+ * call time so it always reflects the live store.
+ */
+function getMcpStoreOps(): McpStoreOps {
+  return {
+    has: (name) => name in useMCPStore.getState().servers,
+    addServer: (config) => useMCPStore.getState().addServer(config),
+    removeServer: (name) => useMCPStore.getState().removeServer(name),
+  };
+}
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -154,7 +168,7 @@ export const usePluginStore = create<PluginStore>()(
       install: async (req) => {
         set({ loading: true, error: null });
         try {
-          const record = await installPlugin({
+          const { record, mcpServers } = await installPlugin({
             home: req.home,
             marketplaceName: req.marketplaceName,
             marketplaceDir: req.marketplaceDir,
@@ -168,6 +182,17 @@ export const usePluginStore = create<PluginStore>()(
           // installPlugin only puts the package on disk and describes the
           // record; persisting it is the caller's job.
           await upsertInstalled(req.home, record);
+
+          // Register the plugin's MCP servers — DISABLED, so nothing runs until
+          // the user turns one on in the Connectors tab (see pluginMcpBridge).
+          // Specs come from the install outcome, not a second planInstall.
+          if (mcpServers.length > 0) {
+            const specs = Object.fromEntries(
+              mcpServers.map((s) => [s.name, { command: s.command, args: s.args, url: s.url }]),
+            );
+            registerPluginServers(specs, getMcpStoreOps());
+          }
+
           await get().refreshInstalled(req.home);
           return record;
         } catch (error) {
@@ -181,7 +206,7 @@ export const usePluginStore = create<PluginStore>()(
       uninstall: async (home, key) => {
         set({ loading: true, error: null });
         try {
-          await uninstallPlugin({
+          const { withdrawn } = await uninstallPlugin({
             home,
             key,
             removeDir: removePluginDir,
@@ -189,6 +214,10 @@ export const usePluginStore = create<PluginStore>()(
             // clear the record instead of being stuck with a ghost entry.
             tolerateMissingDir: true,
           });
+          // Withdraw its MCP servers too, so a connector never outlives its
+          // plugin. By name — the plugin was only ever credited with servers
+          // it created (registration refuses to overwrite existing names).
+          deregisterPluginServers(withdrawn.mcpServers, getMcpStoreOps());
           await get().refreshInstalled(home);
         } catch (error) {
           set({ error: messageOf(error) });

@@ -29,6 +29,7 @@ import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
+import { useMCPStore } from './mcpStore';
 import { usePluginStore } from './pluginStore';
 
 const HOME = '/Users/tester';
@@ -81,7 +82,7 @@ describe('marketplaces', () => {
 
 describe('install', () => {
   it('re-arms the MCP approval gate with the newly installed server name', async () => {
-    vi.mocked(installPlugin).mockResolvedValue(weather);
+    vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
     vi.mocked(readInstalled).mockResolvedValue([weather]);
     vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
 
@@ -254,5 +255,71 @@ describe('built-in marketplace', () => {
     usePluginStore.getState().addMarketplace('mine', '/tmp/mine');
     usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
     expect(usePluginStore.getState().marketplaces[0].name).toBe('abu-official');
+  });
+});
+
+describe('plugin MCP server wiring', () => {
+  it('registers the plugin server DISABLED so nothing auto-connects', async () => {
+    useMCPStore.setState({ servers: {} });
+    vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
+
+    await usePluginStore.getState().install({
+      home: HOME,
+      marketplaceName: 'official',
+      marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+    });
+
+    const entry = useMCPStore.getState().servers['weather-mcp'];
+    expect(entry).toBeTruthy();
+    // The safety invariant: installing a plugin must NOT arm auto-connect.
+    expect(entry.config.enabled).toBe(false);
+    expect(entry.config.command).toBe('npx');
+  });
+
+  it('removes the plugin server on uninstall', async () => {
+    useMCPStore.setState({
+      servers: {
+        'weather-mcp': { config: { name: 'weather-mcp', enabled: false }, status: 'disconnected', tools: [] },
+        'user-own': { config: { name: 'user-own', enabled: true }, status: 'disconnected', tools: [] },
+      },
+    });
+    vi.mocked(uninstallPlugin).mockResolvedValue({
+      key: 'weather@official',
+      withdrawn: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
+    });
+    vi.mocked(readInstalled).mockResolvedValue([]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+
+    await usePluginStore.getState().uninstall(HOME, 'weather@official');
+
+    expect(useMCPStore.getState().servers['weather-mcp']).toBeUndefined();
+    // A user's own server of a different name is untouched.
+    expect(useMCPStore.getState().servers['user-own']).toBeTruthy();
+  });
+
+  it('does not clobber a user server that shares the plugin server name', async () => {
+    useMCPStore.setState({
+      servers: {
+        'weather-mcp': { config: { name: 'weather-mcp', enabled: true, command: 'user-cmd' }, status: 'connected', tools: [] },
+      },
+    });
+    vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
+
+    await usePluginStore.getState().install({
+      home: HOME,
+      marketplaceName: 'official',
+      marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+    });
+
+    // The user's server is left exactly as it was — not overwritten, not disabled.
+    const entry = useMCPStore.getState().servers['weather-mcp'];
+    expect(entry.config.command).toBe('user-cmd');
+    expect(entry.config.enabled).toBe(true);
   });
 });

@@ -192,7 +192,18 @@ export interface InstallPluginOptions extends PlanInstallOptions {
 /** Version segment used on disk when a manifest omits `version`. */
 const UNVERSIONED = '0.0.0';
 
-export async function installPlugin(opts: InstallPluginOptions): Promise<InstalledPlugin> {
+export interface InstallOutcome {
+  record: InstalledPlugin;
+  /**
+   * The MCP server specs this install brought in, carried out of the single
+   * `planInstall` already done here. Callers register these without re-planning
+   * — a second `planInstall` would re-read the package and, worse, is a
+   * distinct call some callers mock statefully.
+   */
+  mcpServers: InstallDisclosure['mcpServers'];
+}
+
+export async function installPlugin(opts: InstallPluginOptions): Promise<InstallOutcome> {
   const disclosure = await planInstall(opts);
   const version = disclosure.version ?? UNVERSIONED;
   const targetDir = pluginInstallDir(opts.home, opts.marketplaceName, disclosure.name, version);
@@ -200,14 +211,17 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
   await opts.copyDir(disclosure.sourceDir, targetDir);
 
   return {
-    key: disclosure.key,
-    marketplace: opts.marketplaceName,
-    name: disclosure.name,
-    version,
-    installedAt: (opts.now?.() ?? new Date()).toISOString(),
-    contributed: {
-      skills: disclosure.skills,
-      mcpServers: disclosure.mcpServers.map((s) => s.name),
+    record: {
+      key: disclosure.key,
+      marketplace: opts.marketplaceName,
+      name: disclosure.name,
+      version,
+      installedAt: (opts.now?.() ?? new Date()).toISOString(),
+      contributed: {
+        skills: disclosure.skills,
+        mcpServers: disclosure.mcpServers.map((s) => s.name),
+      },
     },
+    mcpServers: disclosure.mcpServers,
   };
 }

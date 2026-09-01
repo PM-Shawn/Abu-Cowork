@@ -185,7 +185,7 @@ describe('installPlugin', () => {
 
   it('copies the package into place and records what it contributed', async () => {
     const copyDir = vi.fn(async () => {});
-    const record = await installPlugin({
+    const { record, mcpServers } = await installPlugin({
       home: '/home/u',
       marketplaceName: 'official',
       marketplaceDir: '/mkt',
@@ -202,6 +202,9 @@ describe('installPlugin', () => {
     // re-derived by scanning directories after the fact.
     expect(record.contributed).toEqual({ skills: ['today'], mcpServers: ['forecast'] });
     expect(record.installedAt).toBeTruthy();
+    // The outcome also carries the mcp specs (for registration) out of the one
+    // planInstall, so no caller has to re-plan.
+    expect(mcpServers).toEqual([{ name: 'forecast', command: 'npx', args: undefined, url: undefined }]);
   });
 
   it('does not record an install when the copy fails', async () => {

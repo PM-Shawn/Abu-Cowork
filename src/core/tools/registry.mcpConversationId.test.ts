@@ -93,6 +93,21 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     expect(mockCallTool.mock.calls[0][0]._meta).toEqual({ 'abu/conversationId': 'c1' });
   });
 
+  // The other half of the main-loop neutralization (agentLoopRunner's
+  // `contextForSession` sets `agentRunId: undefined` to overwrite a
+  // sidecar-supplied one). That leaves the property PRESENT with an undefined
+  // value, so this pins the last hop: a neutralized run id must produce no
+  // `abu/runKey` at all — an `abu/runKey: undefined` on the wire would reach
+  // the host as a malformed owner half rather than as "the main loop".
+  it('emits no run key when the context carries an explicitly neutralized agentRunId', async () => {
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+      agentRunId: undefined,
+    });
+
+    expect(mockCallTool.mock.calls[0][0]._meta).toEqual({ 'abu/conversationId': 'c1' });
+  });
+
   it('omits _meta when the run has no conversationId in context', async () => {
     await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, undefined);
 

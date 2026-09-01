@@ -26,14 +26,17 @@ import {
  */
 
 const READY_TIMEOUT = 45_000;
-/**
- * Where installs actually land. `launchAbuElectron` redirects userData and
- * appData, but the plugin root comes from `homeDir()`, which it does not
- * redirect — so this test writes into the real home and must clean up after
- * itself. Everything it creates is prefixed `e2e-`.
- */
-const INSTALL_ROOT = path.join(os.homedir(), '.abu', 'plugin-packages');
 const SCREENSHOT_DIR = path.join(REPO_ROOT, 'test-results');
+
+/**
+ * Plugin install root inside the ISOLATED E2E home. `launchAbuElectron`
+ * redirects `homeDir()` to `<appDataDir>/Home` (electron/main.cjs), so installs
+ * land there, not in the developer's real ~/.abu — the whole run is torn down
+ * by `removeElectronDataRoot`, so no manual cleanup is needed.
+ */
+function installRoot(dataRoot: ElectronDataRoot): string {
+  return path.join(dataRoot.appDataDir, 'Home', '.abu', 'plugin-packages');
+}
 
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
@@ -89,27 +92,6 @@ function seedMarketplace(): string {
   return dir;
 }
 
-/**
- * Remove anything this spec installed into the real home.
- *
- * Both the package directory AND the install record must go: dropping only the
- * directory leaves a record that makes the marketplace row render as "已安装"
- * on the next run, so the test would then find no Install button and fail for
- * a reason that has nothing to do with the code under test.
- */
-function purgeE2EInstalls(): void {
-  fs.rmSync(path.join(INSTALL_ROOT, 'e2e-market'), { recursive: true, force: true });
-  const record = path.join(INSTALL_ROOT, 'installed.json');
-  if (!fs.existsSync(record)) return;
-  try {
-    const kept = (JSON.parse(fs.readFileSync(record, 'utf8')) as Array<{ name?: string }>)
-      .filter((p) => !String(p.name ?? '').startsWith('e2e-'));
-    fs.writeFileSync(record, JSON.stringify(kept, null, 2));
-  } catch {
-    // A corrupt record is not this spec's problem to repair.
-  }
-}
-
 async function waitForWelcomeScreen(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(
@@ -159,7 +141,6 @@ test.describe('plugin install loop', () => {
   let marketDir: string;
 
   test.beforeAll(async () => {
-    purgeE2EInstalls();   // a previous failed run may have left a record behind
     marketDir = seedMarketplace();
     const launched = await launchAbuElectron();
     dataRoot = launched;
@@ -174,7 +155,6 @@ test.describe('plugin install loop', () => {
     if (app) await closeAbuElectron(app);
     if (dataRoot) removeElectronDataRoot(dataRoot);
     if (marketDir) fs.rmSync(marketDir, { recursive: true, force: true });
-    purgeE2EInstalls();
   });
 
   test('installs from a local marketplace, keeps the manifest, and uninstalls', async () => {
@@ -214,7 +194,7 @@ test.describe('plugin install loop', () => {
     // does NOT redirect (`ElectronDataRoot` only moves userData/appData). So
     // the install genuinely lands in the developer's ~/.abu — hence the
     // distinctive `e2e-` names and the afterAll cleanup below.
-    const pkgDir = path.join(INSTALL_ROOT, 'e2e-market', 'e2e-weather', '1.0.0');
+    const pkgDir = path.join(installRoot(dataRoot), 'e2e-market', 'e2e-weather', '1.0.0');
     // The copy lands file by file, and this probe watches it from *outside* the
     // process, so both expected artifacts must be in the poll: `.abu-plugin/`
     // (a dot-directory) is copied before `skills/`, so a poll that waits only

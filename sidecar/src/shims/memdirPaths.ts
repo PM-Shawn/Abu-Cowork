@@ -13,13 +13,15 @@
  * left unshimmed — that's a silent, total feature loss, not an acceptable
  * degradation. So this gets a real shim, not a stub.
  *
- * `os.homedir()` is the direct Node equivalent of Tauri's `homeDir()` —
- * both resolve to the OS user home directory on the same machine (the
- * sidecar and the webview are separate PROCESSES but always run on the
- * SAME machine as siblings under one Tauri app instance), so both sides
- * resolve to the identical `~/.abu/...` paths for the same workspace,
- * which matters because the shell and the sidecar may both read/write the
- * same memory files across different runs.
+ * Home comes from `bootstrap.ts`'s `resolveHomeDir()` — the shell's own
+ * resolved home passed down as the `ABU_HOME_DIR` spawn env var, falling
+ * back to `os.homedir()` (the direct Node equivalent of Tauri's `homeDir()`
+ * — sidecar and webview are separate PROCESSES but always siblings on the
+ * SAME machine). The env var matters because the shell's home is NOT always
+ * the OS home: E2E launches redirect `app.getPath('home')` into an isolated
+ * data root (see electron/main.cjs), and both sides must keep resolving the
+ * identical `~/.abu/...` paths for the same workspace — the shell and the
+ * sidecar both read/write the same memory files across different runs.
  *
  * `sanitizePath`/`djb2Hash`/directory-composition logic is copied
  * VERBATIM from the real `paths.ts` (not reimplemented from scratch) to
@@ -33,7 +35,7 @@
  * `getMemoryDir`), so they're intentionally omitted rather than
  * speculatively duplicated.
  */
-import { homedir } from 'node:os';
+import { resolveHomeDir } from '../bootstrap';
 
 const MAX_SANITIZED_LENGTH = 200;
 
@@ -75,7 +77,7 @@ export function sanitizePath(name: string): string {
 }
 
 export async function getMemoryDir(workspacePath?: string | null): Promise<string> {
-  const home = homedir();
+  const home = resolveHomeDir();
   if (workspacePath) {
     const normalized = normalizeSeparators(workspacePath);
     const key = sanitizePath(normalized);

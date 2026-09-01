@@ -64,6 +64,12 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
 /**
  * Launch electron/main.cjs with fully isolated Chromium userData and appData.
  *
+ * `--lang=zh-CN` pins the renderer's `navigator.language` (and therefore the
+ * i18n system's resolved locale — see src/i18n/index.ts detectSystemLocale)
+ * to zh-CN regardless of the host OS language. The suite asserts the zh-CN
+ * UI; without this, an English-locale host (hosted CI runners, contributors'
+ * machines) renders the en-US UI and every Chinese-text locator times out.
+ *
  * main.cjs calls `app.requestSingleInstanceLock()`; if a second instance's
  * lock loses the race against an already-running instance sharing the same
  * userData dir, it calls `app.quit()` and NO window is ever created. Chromium/
@@ -81,7 +87,7 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`],
+    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
     cwd: REPO_ROOT,
     env: {
       ...process.env,

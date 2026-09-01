@@ -122,12 +122,17 @@ interface ChatInputProps {
   /**
    * Deliver the composed message. Resolving to `false` means the send was not
    * accepted (no API key, conversation busy) and the composer restores the
-   * draft it optimistically cleared.
+   * draft it optimistically cleared. `onAccepted` fires as soon as the message
+   * is durably taken (its transcript row exists) — the composer releases its
+   * pending-send lock there instead of holding it for the whole run, so a new
+   * draft under the same key (welcome composer, post-run follow-up) can send
+   * while the previous run is still executing.
    */
   onSend: (
     message: string,
     images?: ImageAttachment[],
     workspacePath?: string | null,
+    onAccepted?: () => void,
   ) => void | Promise<boolean | void>;
   disabled?: boolean;
   /** Custom placeholder from scenario guide (welcome variant only) */
@@ -1227,6 +1232,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const sentDraftKey = draftKey;
     const finishPendingSend = tryBeginComposerDraftSend(sentDraftKey);
     if (!finishPendingSend) {
+      // The guard is released only when the previous dispatch PROMISE settles,
+      // which happens after the run's visible terminal (reply rendered,
+      // status no longer 'running', send button back). An Enter in that
+      // settling window misses the isRunning staging branch above, so stage it
+      // here instead of dropping it: a held guard proves the previous dispatch
+      // chain is still live, and that chain's final queue drain runs in the
+      // same microtask turn as the guard release — a keydown can never land
+      // between them, so a message staged now is always picked up.
+      if (activeConv?.id && message && !hasRuntimeAttachments) {
+        enqueueUserInput(activeConv.id, message);
+        resetInput();
+        return;
+      }
       useToastStore.getState().addToast({
         type: 'info',
         title: t.chat.sendAlreadyPending,
@@ -1250,6 +1268,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         message,
         images.length > 0 ? images : undefined,
         isWelcome ? localWorkspace : undefined,
+        // Release the lock at acceptance: once the message is in the
+        // transcript it can never be handed back (see
+        // shouldRestoreComposerAfterDispatch), so double-send protection is no
+        // longer needed and holding on would drop sends made while the run is
+        // still executing. finishPendingSend is idempotent — the .finally
+        // below stays as the release path for never-accepted sends.
+        () => finishPendingSend(),
       );
     } catch (error) {
       finishPendingSend();

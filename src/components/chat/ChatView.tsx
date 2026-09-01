@@ -741,6 +741,7 @@ export default function ChatView({
     text: string,
     images?: ImageAttachment[],
     workspacePath?: string | null,
+    onAccepted?: () => void,
   ) => {
     // Block sending if API key is not configured (Ollama doesn't need one).
     // Returning false hands the text back to the composer — opening settings
@@ -783,7 +784,10 @@ export default function ChatView({
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
     let dispatch: AgentLoopDispatchResult;
     try {
-      dispatch = await runAgentLoopDispatched(convId, text, { images });
+      dispatch = await runAgentLoopDispatched(convId, text, {
+        images,
+        onMessageTaken: () => onAccepted?.(),
+      });
     } catch (error) {
       // The runner deliberately keeps persistence/transport failures as
       // rejections for non-UI callers. Once it has appended the user message,

@@ -121,9 +121,8 @@ describe('ToolboxModal — Plugin System IA (LABS_PLUGIN_SYSTEM)', () => {
     expect(screen.getByRole('button', { name: '技能' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '代理' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '连接器' })).toBeInTheDocument();
-    // No Plugins tab and no Plugin IA title when the flag is off.
+    // No Plugins tab when the flag is off.
     expect(screen.queryByRole('button', { name: '插件' })).not.toBeInTheDocument();
-    expect(screen.queryByTestId('toolbox-plugin-title')).not.toBeInTheDocument();
   });
 
   it('flag on: renders Plugins/Skills/Connectors, and drops Agents', () => {
@@ -136,11 +135,13 @@ describe('ToolboxModal — Plugin System IA (LABS_PLUGIN_SYSTEM)', () => {
     expect(screen.queryByRole('button', { name: '代理' })).not.toBeInTheDocument();
   });
 
-  it('flag on: the view title reads "插件"', () => {
+  it('flag on: carries no separate page title — the tabs are the header (matches the pre-experiment toolbox)', () => {
     labsFlagOn = true;
     render(<ToolboxView />);
 
-    expect(screen.getByTestId('toolbox-plugin-title')).toHaveTextContent('插件');
+    // No big "插件" heading above the tabs; the "插件" tab button is the identity.
+    expect(screen.queryByTestId('toolbox-plugin-title')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '插件' })).toBeInTheDocument();
   });
 
   it('flag on with a stale activeTab of "agents": falls back to Plugins, not a blank screen', () => {

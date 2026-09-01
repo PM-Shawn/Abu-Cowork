@@ -25,10 +25,6 @@ interface TopTabNavProps<T extends string> {
    *  so it skips the `sidebarCollapsed` clearance hack and instead gets a bit of
    *  top breathing room so it doesn't look jammed against the card's top edge. */
   belowChrome?: boolean;
-  /** belowChrome only: a title row already cleared the traffic lights above
-   *  this nav, so the nav drops its own `pt-12` chrome clearance to a small gap
-   *  (otherwise the title + nav double-clear and leave a large empty band). */
-  titleAbove?: boolean;
 }
 
 /**
@@ -44,7 +40,6 @@ interface TopTabNavProps<T extends string> {
  */
 export default function TopTabNav<T extends string>({
   items, activeId, onSelect, sidebarCollapsed = false, right, belowChrome = false,
-  titleAbove = false,
 }: TopTabNavProps<T>) {
   const content = (
     <>
@@ -81,7 +76,7 @@ export default function TopTabNav<T extends string>({
   // the cards below.
   if (belowChrome) {
     return (
-      <nav {...windowDragRowProps()} className={cn('shrink-0 pb-3 px-8', titleAbove ? 'pt-1' : 'pt-12')}>
+      <nav {...windowDragRowProps()} className="shrink-0 pt-12 pb-3 px-8">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           {content}
         </div>

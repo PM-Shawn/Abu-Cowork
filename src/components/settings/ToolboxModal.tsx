@@ -17,7 +17,6 @@ import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
-import { windowDragRowProps } from '@/utils/windowDrag';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
@@ -284,31 +283,17 @@ export default function ToolboxView() {
       {/* Plugin IA title — only rendered when the flag is on, so the flag-off
           layout stays pixel-identical to pre-experiment (no title bar existed
           here before this experiment). */}
-      {isPluginIA && (
-        <div
-          {...windowDragRowProps()}
-          className="shrink-0 px-8 pt-12"
-        >
-          <h1
-            data-testid="toolbox-plugin-title"
-            className="max-w-5xl mx-auto text-h-md font-semibold text-[var(--abu-text-primary)]"
-          >
-            {t.toolbox.plugins}
-          </h1>
-        </div>
-      )}
-
       {/* Content-area header row — tabs left, search + create right. Sits below
           the window's floating title-bar controls (traffic lights / sidebar
-          toggle / search / new-task). When the plugin-IA title row is present
-          it already cleared those controls, so pass `titleAbove` to drop the
-          nav's own pt-12 clearance and avoid a double gap. */}
+          toggle / search / new-task) via belowChrome's top clearance. The
+          Plugin IA carries no separate page title: the tabs themselves
+          (插件/技能/连接器) are the header, matching the pre-experiment toolbox
+          layout exactly. */}
       <TopTabNav
         items={navItems}
         activeId={activeTab}
         onSelect={handleSelectTab}
         belowChrome
-        titleAbove={isPluginIA}
         right={renderHeaderRight()}
       />
 

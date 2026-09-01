@@ -1021,6 +1021,201 @@ test('browser_note_user_interaction gates a state-changing action like real inpu
   }
 });
 
+/**
+ * N4 — `browser_dispose_owner`.
+ *
+ * A conversation used to be able to disappear (the user deletes it) while its
+ * agent's browser views kept running: no tab strip listed them any more, so
+ * nothing could close them, and main held a live WebContentsView per deleted
+ * conversation for the rest of the session. The renderer's delete cascade now
+ * drops those tab records (which destroys their views) AND sends this command,
+ * which is the only path that can reach main-side state the renderer has no
+ * tab record for — a headless fallback view, or a view adopted after the tab
+ * record was already gone.
+ */
+test('browser_dispose_owner closes every view the deleted conversation owned, and nothing else', async () => {
+  // Two owned views for OWNER_A: with no renderer answering
+  // `browser://automation-open`, two concurrent provisioning calls both see an
+  // empty tab set and both fall through to the headless fallback branch — the
+  // branch whose views the renderer has no record of at all.
+  const { host, restore } = loadHost({ adopt: false });
+  try {
+    const [aFirst, aSecond, bTabs] = await Promise.all([
+      getTabs(host, OWNER_A),
+      getTabs(host, OWNER_A),
+      getTabs(host, OWNER_B),
+    ]);
+    const aTab1 = tabIds(aFirst)[0];
+    const aTab2 = tabIds(aSecond)[0];
+    const bTab = tabIds(bTabs)[0];
+    assert.notEqual(aTab1, aTab2, 'the owner really has two views to dispose');
+
+    // A tab the user opened in the pane — legacy, shared, and never a
+    // conversation's to dispose.
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-tab-1',
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    const paneTab = tabIds(await probeTabs(host))[0];
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    assert.equal(contentsFor(aTab1).isDestroyed(), true);
+    assert.equal(contentsFor(aTab2).isDestroyed(), true);
+    assert.equal(contentsFor(bTab).isDestroyed(), false, 'another conversation keeps its tab');
+    assert.equal(contentsFor(paneTab).isDestroyed(), false, 'the user pane tab survives');
+
+    // Neither view is listed any more; the other owner's current tab is intact.
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [paneTab]);
+    const bAfter = await probeTabs(host, OWNER_B);
+    assert.deepEqual(tabIds(bAfter).sort(), [bTab, paneTab].sort());
+    assert.equal(bAfter.summary.currentTabId, bTab);
+  } finally {
+    restore();
+  }
+});
+
+test('browser_dispose_owner leaves no ownership state behind for the deleted conversation', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    typeInto(aTab); // the user was typing in that tab a moment ago
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    // The current-tab record is gone: a read-only probe reports no tab at all,
+    // not a destroyed one.
+    const probe = await probeTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(probe), []);
+    assert.equal(probe.summary.currentTabId, null);
+
+    // The interaction record is gone too: virtual time never advanced, so a
+    // surviving timestamp would still be inside the 3s quiet window and hold
+    // this action back for the full 10s wait.
+    const fresh = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, fresh, 'https://example.com/');
+    assert.deepEqual(state.sleeps, [], 'no stale takeover record survived the dispose');
+  } finally {
+    restore();
+  }
+});
+
+test('disposing an owner twice, or closing a disposed view, is harmless', async () => {
+  // The renderer removes the tab records (each firing `browser_close`) AND
+  // sends the dispose command; the two race, so every combination must be a
+  // no-op after the first one lands.
+  const { host, emitted, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const viewId = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+    assert.equal(host.browserDispatch(null, 'browser_close', { id: viewId }), null);
+
+    assert.equal(contentsFor(aTab).isDestroyed(), true);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
+  } finally {
+    restore();
+  }
+});
+
+test('browser_dispose_owner never reaps the legacy shared pool', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-tab-1',
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    const paneTab = tabIds(await probeTabs(host))[0];
+
+    for (const conversationId of ['legacy', '', '   ', undefined, 42]) {
+      assert.equal(host.browserDispatch(null, 'browser_dispose_owner', { conversationId }), null);
+    }
+
+    assert.equal(contentsFor(paneTab).isDestroyed(), false);
+    assert.deepEqual(tabIds(await probeTabs(host)), [paneTab]);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * N8 — the adoption wait had no abort check, so a run stopped while main was
+ * waiting for the renderer to adopt still sat out the full 2.5s and then built
+ * a hidden fallback view for a run that no longer existed.
+ */
+test('a stop during the adoption wait cancels it instead of stranding a hidden view', async () => {
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    const controller = new AbortController();
+    const pending = host.performBrowserAutomation(
+      'get_tabs',
+      { ownerId: OWNER_A },
+      { signal: controller.signal },
+    );
+    // The call is already inside the adoption wait (the top-of-call abort
+    // check ran before this line), so this is the real "Stop mid-wait" shape.
+    controller.abort();
+
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, 'Browser action cancelled because the run was stopped.');
+      return true;
+    });
+
+    const openEvent = emitted.find((entry) => entry.event === 'browser://automation-open');
+    assert.ok(openEvent, 'the wait had really started');
+    // Running the wait out ALWAYS ends in a fallback view, so an empty owner
+    // proves the loop exited on the abort rather than on its deadline.
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
+
+    // The pending-owner entry is gone: re-creating that id as a user pane tab
+    // comes back legacy (a stranded entry would hand it to OWNER_A instead).
+    host.browserDispatch(null, 'browser_create', {
+      id: openEvent.payload.id,
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    assert.equal(tabIds(await probeTabs(host)).length, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('disposing an owner mid-adoption does not strand a fallback view for it', async () => {
+  // The delete cascade can land while an automation call is still waiting for
+  // adoption. Without the pending-entry check the wait would run to its
+  // deadline and build a view for a conversation that no longer exists — the
+  // exact orphan the dispose command is meant to prevent.
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    const pending = host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A });
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    await assert.rejects(pending, (error) => {
+      assert.equal(error.message, 'Browser action cancelled because the run was stopped.');
+      return true;
+    });
+    assert.ok(emitted.some((entry) => entry.event === 'browser://automation-open'));
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
+  } finally {
+    restore();
+  }
+});
+
 test('browser_note_user_interaction on an unknown id is a silent no-op', async () => {
   const { host, restore } = loadHost();
   try {

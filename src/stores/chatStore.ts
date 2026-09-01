@@ -32,6 +32,7 @@ import { useEnterpriseStore } from './enterpriseStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
+import { disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
 
@@ -1012,6 +1013,16 @@ export const useChatStore = create<ChatStore>()(
         // clearing their ephemeral batches so the active view lease is
         // released synchronously and no clickable dead tab survives deletion.
         usePreviewStore.getState().closeSubagentTabsForConversation(id);
+        // Browser tabs an agent adopted for this conversation are owned by the
+        // tab RECORD, so dropping it here is what destroys the native view.
+        // Without this the view keeps running with no strip anywhere able to
+        // show or close it: the tab is invisible in every other conversation,
+        // and this one is about to stop existing.
+        usePreviewStore.getState().closeOwnedTabsForConversation(id);
+        // ...and the same for main-side views this renderer holds no record of
+        // (a headless fallback view, an adoption still in flight). Fire-and-
+        // forget, failure-swallowed, like the disk cleanups below.
+        disposeOwnedBrowserViews(id);
         useBatchProgressStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,

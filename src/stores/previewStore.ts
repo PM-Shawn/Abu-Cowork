@@ -185,6 +185,12 @@ interface PreviewState {
   // Close subagent tabs owned by one conversation. Other workspace tabs stay
   // open; used by chatStore's synchronous delete cascade.
   closeSubagentTabsForConversation: (conversationId: string) => void;
+  // Close the browser tabs an agent adopted for one conversation, wherever they
+  // sit in the strip — including while another conversation is on screen (they
+  // are invisible there, so no UI path could ever close them). Removing the
+  // record is what destroys the native view, so this is the renderer's half of
+  // the delete cascade's browser cleanup. Legacy/user-opened tabs are untouched.
+  closeOwnedTabsForConversation: (conversationId: string) => void;
   // Drag-reorder: move the tab with id `fromId` to `toId`'s position.
   reorderTabs: (fromId: string, toId: string) => void;
   // Commit a new URL for a browser tab (address-bar navigation).
@@ -252,6 +258,29 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         : {}),
     });
     useBatchProgressStore.getState().setActiveVisibleBatch(activeSubagentIdentity(nextTabs, nextActiveId));
+  };
+
+  /**
+   * Remove every tab `matches` selects, keeping the active tab on the nearest
+   * VISIBLE survivor (forward from the old slot, then backward). Shared by the
+   * two delete-cascade removals — subagent tabs and owned browser tabs — which
+   * differ only in what they select: both take out a set of tabs a deleted
+   * conversation owned, from anywhere in the strip.
+   */
+  const removeTabsWhere = (matches: (tab: WorkspaceTab) => boolean): void => {
+    const { tabs, activeTabId, currentConversationId } = get();
+    if (!tabs.some(matches)) return;
+    const nextTabs = tabs.filter((tab) => !matches(tab));
+    let nextActiveId = activeTabId;
+    if (activeTabId && !nextTabs.some((tab) => tab.id === activeTabId)) {
+      const oldIdx = tabs.findIndex((tab) => tab.id === activeTabId);
+      const survives = (tab: WorkspaceTab): boolean =>
+        nextTabs.some((next) => next.id === tab.id) && isTabVisibleFor(tab, currentConversationId);
+      const after = tabs.slice(oldIdx + 1).find(survives);
+      const before = tabs.slice(0, oldIdx).reverse().find(survives);
+      nextActiveId = (after ?? before)?.id ?? null;
+    }
+    commitTabs(nextTabs, nextActiveId);
   };
 
   /** Tabs the panel currently shows, recomputed from `tabs` (never stale). */
@@ -436,21 +465,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   },
 
   closeSubagentTabsForConversation: (conversationId) => {
-    const { tabs, activeTabId, currentConversationId } = get();
-    const matches = (tab: WorkspaceTab): boolean =>
-      tab.kind === 'subagent' && tab.identity.conversationId === conversationId;
-    if (!tabs.some(matches)) return;
-    const nextTabs = tabs.filter((tab) => !matches(tab));
-    let nextActiveId = activeTabId;
-    if (activeTabId && !nextTabs.some((tab) => tab.id === activeTabId)) {
-      const oldIdx = tabs.findIndex((tab) => tab.id === activeTabId);
-      const survives = (tab: WorkspaceTab): boolean =>
-        nextTabs.some((next) => next.id === tab.id) && isTabVisibleFor(tab, currentConversationId);
-      const after = tabs.slice(oldIdx + 1).find(survives);
-      const before = tabs.slice(0, oldIdx).reverse().find(survives);
-      nextActiveId = (after ?? before)?.id ?? null;
-    }
-    commitTabs(nextTabs, nextActiveId);
+    removeTabsWhere((tab) => tab.kind === 'subagent' && tab.identity.conversationId === conversationId);
+  },
+
+  closeOwnedTabsForConversation: (conversationId) => {
+    removeTabsWhere((tab) => tab.kind === 'browser' && tab.ownerConversationId === conversationId);
   },
 
   reorderTabs: (fromId, toId) => {

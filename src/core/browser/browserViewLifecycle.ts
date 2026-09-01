@@ -24,3 +24,21 @@ export function closeBrowserViews(tabIds: readonly string[]): void {
     void Promise.resolve(invoke('browser_close', { id })).catch(() => {});
   }
 }
+
+/**
+ * Tear down every browser view the host still holds for `conversationId`.
+ *
+ * Removing the tab records (above) already destroys the views this renderer
+ * knows about; this is the belt-and-braces half for main-side state no tab
+ * record covers — a headless fallback view nothing ever adopted, or an
+ * adoption still in flight when the conversation was deleted. Ordering against
+ * the per-tab `browser_close` calls does not matter: both are idempotent in the
+ * host, and whichever lands second finds nothing left to close.
+ *
+ * Fire-and-forget like its sibling: a delete cascade must never be blocked (or
+ * failed) by browser cleanup.
+ */
+export function disposeOwnedBrowserViews(conversationId: string): void {
+  if (!conversationId || !isTauriEnv()) return;
+  void Promise.resolve(invoke('browser_dispose_owner', { conversationId })).catch(() => {});
+}

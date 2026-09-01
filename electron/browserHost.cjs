@@ -45,6 +45,9 @@
  * - `browser_close {id}` → `mainWin.contentView.removeChildView(view)` +
  *   `view.webContents.close()` + delete from the id→view map; also silently
  *   no-ops if unknown.
+ * - `browser_dispose_owner {conversationId}` → close every view that
+ *   conversation owns and drop its ownership records (Electron-only; no Tauri
+ *   counterpart — see `disposeOwnerViews`).
  *
  * ## Navigation event: `browser://nav/{id}`
  * browser.rs's `on_navigation(move |u| { emit(...); true })` fires on every
@@ -107,6 +110,7 @@ const BROWSER_CMDS = new Set([
   'browser_close',
   'browser_inspect_set',
   'browser_note_user_interaction',
+  'browser_dispose_owner',
 ]);
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
@@ -355,9 +359,11 @@ function backoffRemainingMs(origin) {
  * loop above, and the rate-limit gate below — so a stopped run does not sit
  * out someone else's 10-second wait before it notices.
  */
+const RUN_STOPPED_MESSAGE = 'Browser action cancelled because the run was stopped.';
+
 function assertNotAborted(signal) {
   if (signal && signal.aborted) {
-    throw new Error('Browser action cancelled because the run was stopped.');
+    throw new Error(RUN_STOPPED_MESSAGE);
   }
 }
 
@@ -624,7 +630,14 @@ function findViewByTabId(tabId, ownerKey = LEGACY_OWNER) {
   return null;
 }
 
-async function createAutomationView(ownerKey = LEGACY_OWNER) {
+/**
+ * @param {string} [ownerKey] the conversation this view is being opened for
+ * @param {AbortSignal} [signal] aborts when the run that asked for this tab was
+ *   stopped — checked on every iteration of the adoption wait below, so a
+ *   stopped run neither sits out the rest of the wait nor ends up owning a
+ *   hidden fallback view it can never close (N8).
+ */
+async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -647,7 +660,13 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
   // workspace so the user can watch and intervene. Headless harnesses have no
   // App listener, so fall back to a hidden view after a short bounded wait.
   const deadline = Date.now() + 2500;
-  while (Date.now() < deadline) {
+  for (;;) {
+    // The run may be stopped at any point during the wait; drop the pending
+    // entry before throwing so a cancelled adoption cannot strand one.
+    if (signal && signal.aborted) {
+      pendingAutomationOwners.delete(id);
+      throw new Error(RUN_STOPPED_MESSAGE);
+    }
     const adopted = views.get(id);
     if (adopted?.webContents && !adopted.webContents.isDestroyed()) {
       // The requesting conversation is the authority on this view's owner —
@@ -660,6 +679,12 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
       activeTabIdByOwner.set(ownerKey, adopted.webContents.id);
       return adopted;
     }
+    // N4: `disposeOwnerViews` purges this owner's pending entries, so a missing
+    // one means the owning conversation was deleted while we waited (the only
+    // other remover, an adoption, is the branch just above). Building the
+    // fallback view now would strand a live view no conversation can close.
+    if (!pendingAutomationOwners.has(id)) throw new Error(RUN_STOPPED_MESSAGE);
+    if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
@@ -699,8 +724,11 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
  *
  * @param {string} [ownerKey]
  * @param {boolean} [createIfEmpty]
+ * @param {AbortSignal} [signal] forwarded to the adoption wait (see
+ *   `createAutomationView`) — provisioning is the one listing path that can
+ *   block for seconds, so a stopped run must not sit it out.
  */
-async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true) {
+async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true, signal) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
@@ -717,7 +745,7 @@ async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true) {
     });
   }
   if (tabs.length === 0 && createIfEmpty) {
-    const view = await createAutomationView(ownerKey);
+    const view = await createAutomationView(ownerKey, signal);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
@@ -895,7 +923,7 @@ async function runBrowserAutomation(action, payload, signal) {
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
-    const tabs = await automationTabs(ownerKey, payload.createIfEmpty !== false);
+    const tabs = await automationTabs(ownerKey, payload.createIfEmpty !== false, signal);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -1204,6 +1232,47 @@ function browserClose({ id }) {
 }
 
 /**
+ * N4 — tear down everything one conversation owns.
+ *
+ * Deleting a conversation used to leave its agent's browser views running for
+ * the rest of the session: no conversation's tab strip listed them, so nothing
+ * could close them, while main kept a live `WebContentsView` (and the renderer
+ * a mounted `BrowserTab` syncing its bounds) per deleted conversation.
+ *
+ * The renderer's delete cascade removes those tab records, which already
+ * destroys the views it knows about; this command is the belt-and-braces half
+ * for main-side state no tab record covers — a headless fallback view (no
+ * renderer ever adopted it), or an adoption still pending when the delete
+ * landed. Scope is exactly one owner: another conversation's views and the
+ * LEGACY pool (the user's own pane tabs, which every conversation may see) are
+ * never touched, so an unknown/blank/legacy owner is a deliberate no-op rather
+ * than an error — like `browser_hide`/`browser_close`, this is a cleanup
+ * command whose failure mode must never be "kill someone else's tab".
+ */
+function disposeOwnerViews(ownerKey) {
+  // Snapshot: closeView deletes from `views` as we go.
+  for (const [id, view] of Array.from(views)) {
+    if (ownerKeyOf(id) === ownerKey) closeView(id, view);
+  }
+  // closeView already drops these per view (and `forgetOwnerInteractionIfUnused`
+  // clears the interaction record once the owner's last view is gone), but the
+  // owner may also hold records with no live view behind them — a current-tab
+  // id whose view was destroyed by the window teardown, or a pending adoption.
+  activeTabIdByOwner.delete(ownerKey);
+  userInteractionAt.delete(ownerKey);
+  for (const [pendingId, pendingOwner] of Array.from(pendingAutomationOwners)) {
+    if (pendingOwner === ownerKey) pendingAutomationOwners.delete(pendingId);
+  }
+}
+
+function browserDisposeOwner({ conversationId }) {
+  const ownerKey = typeof conversationId === 'string' ? conversationId.trim() : '';
+  if (!ownerKey || ownerKey === LEGACY_OWNER) return null;
+  disposeOwnerViews(ownerKey);
+  return null;
+}
+
+/**
  * N3 — React-layer takeover signal.
  *
  * The takeover backoff (R4, above) only hears the USER on the guest
@@ -1262,6 +1331,8 @@ function browserDispatch(app, cmd, args) {
       return browserInspectSet(a);
     case 'browser_note_user_interaction':
       return browserNoteUserInteraction(a);
+    case 'browser_dispose_owner':
+      return browserDisposeOwner(a);
     default:
       return BROWSER_MISS;
   }

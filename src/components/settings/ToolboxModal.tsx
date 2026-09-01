@@ -17,6 +17,7 @@ import SkillsSection from '../customize/SkillsSection';
 import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
+import { windowDragRowProps } from '@/utils/windowDrag';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
@@ -284,23 +285,30 @@ export default function ToolboxView() {
           layout stays pixel-identical to pre-experiment (no title bar existed
           here before this experiment). */}
       {isPluginIA && (
-        <h1
-          data-testid="toolbox-plugin-title"
-          className="shrink-0 px-8 pt-3 text-h-sm font-semibold text-[var(--abu-text-primary)]"
+        <div
+          {...windowDragRowProps()}
+          className="shrink-0 px-8 pt-12"
         >
-          {t.toolbox.plugins}
-        </h1>
+          <h1
+            data-testid="toolbox-plugin-title"
+            className="max-w-5xl mx-auto text-h-md font-semibold text-[var(--abu-text-primary)]"
+          >
+            {t.toolbox.plugins}
+          </h1>
+        </div>
       )}
 
       {/* Content-area header row — tabs left, search + create right. Sits below
           the window's floating title-bar controls (traffic lights / sidebar
-          toggle / search / new-task), so it no longer needs the sidebarCollapsed
-          horizontal-clearance hack (see TopTabNav's `belowChrome` mode). */}
+          toggle / search / new-task). When the plugin-IA title row is present
+          it already cleared those controls, so pass `titleAbove` to drop the
+          nav's own pt-12 clearance and avoid a double gap. */}
       <TopTabNav
         items={navItems}
         activeId={activeTab}
         onSelect={handleSelectTab}
         belowChrome
+        titleAbove={isPluginIA}
         right={renderHeaderRight()}
       />
 

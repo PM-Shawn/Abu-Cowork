@@ -665,18 +665,42 @@ describe('BrowserTab native overlay visibility', () => {
     });
 
     it('notes user interaction on address-bar input, throttled to one call per window', async () => {
+      // waitFor's internal polling needs real timers, so render (and its
+      // waitFor inside renderReadyTab) happens first; fake time is only
+      // frozen afterwards, for the throttle-window assertions below. Mirrors
+      // the nav-buttons test above — real timers here let a slow/loaded CI
+      // box spend real wall-clock time on the typing storm and blow past the
+      // 500ms window, which is exactly the flake this pins down.
       const { getByPlaceholderText } = await renderReadyTab('browser-n3-typing');
       const input = getByPlaceholderText('Enter a URL or search');
 
-      // A typing storm: many changes fired back-to-back, well inside the
-      // 500ms throttle window.
-      for (const ch of ['h', 'ht', 'htt', 'http', 'https']) {
-        fireEvent.change(input, { target: { value: ch } });
-      }
+      vi.useFakeTimers();
+      try {
+        const fixedNow = new Date('2026-01-01T00:00:00.000Z');
+        vi.setSystemTime(fixedNow);
 
-      const noteCalls = invoke.mock.calls.filter(([command]) => command === 'browser_note_user_interaction');
-      expect(noteCalls).toHaveLength(1);
-      expect(noteCalls[0][1]).toEqual({ id: 'browser-n3-typing' });
+        // A typing storm: many changes fired back-to-back, well inside the
+        // 500ms throttle window (frozen, so this can never flake).
+        for (const ch of ['h', 'ht', 'htt', 'http', 'https']) {
+          fireEvent.change(input, { target: { value: ch } });
+        }
+
+        let noteCalls = invoke.mock.calls.filter(([command]) => command === 'browser_note_user_interaction');
+        expect(noteCalls).toHaveLength(1);
+        expect(noteCalls[0][1]).toEqual({ id: 'browser-n3-typing' });
+
+        // Past the throttle window: the next change is allowed through,
+        // pinning window-expiry behavior alongside suppression.
+        invoke.mockClear();
+        vi.setSystemTime(new Date(fixedNow.getTime() + 501));
+        fireEvent.change(input, { target: { value: 'https://' } });
+
+        noteCalls = invoke.mock.calls.filter(([command]) => command === 'browser_note_user_interaction');
+        expect(noteCalls).toHaveLength(1);
+        expect(noteCalls[0][1]).toEqual({ id: 'browser-n3-typing' });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('notes user interaction on back/forward/reload button clicks', async () => {

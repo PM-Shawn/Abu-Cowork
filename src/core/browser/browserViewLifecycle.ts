@@ -2,6 +2,22 @@ import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
 
 /**
+ * Why a browser view is being destroyed.
+ *
+ * `user_close` means a HUMAN closed the tab (the tab strip's ×, close others,
+ * close all) — the host reads that as "stop using the browser" and refuses to
+ * open another tab for that owner until the user speaks again (N7). Everything
+ * else is `lifecycle`: the app tidying up after itself (a withdrawn adoption, a
+ * conversation delete), which must never be mistaken for a gesture.
+ *
+ * The distinction can only be made at the ACTION that removes the record — by
+ * the time the ids reach the host they all look identical — so it is threaded
+ * from `previewStore`'s user-facing close actions and defaults to `lifecycle`
+ * for every other path.
+ */
+export type BrowserCloseReason = 'user_close' | 'lifecycle';
+
+/**
  * Destroy the native webviews behind the given workspace browser tab ids.
  *
  * A browser tab's native view (an Electron `WebContentsView` painted over the
@@ -16,12 +32,15 @@ import { isTauriEnv } from '@/utils/tauriEnv';
  * Best-effort and non-blocking: `browser_close` is idempotent in the host and a
  * tab whose view was never created (empty "start" tab) is a no-op there.
  */
-export function closeBrowserViews(tabIds: readonly string[]): void {
+export function closeBrowserViews(
+  tabIds: readonly string[],
+  reason: BrowserCloseReason = 'lifecycle',
+): void {
   if (tabIds.length === 0 || !isTauriEnv()) return;
   for (const id of tabIds) {
     // `Promise.resolve` so a host stub that returns a non-promise can't throw
     // inside a store action.
-    void Promise.resolve(invoke('browser_close', { id })).catch(() => {});
+    void Promise.resolve(invoke('browser_close', { id, reason })).catch(() => {});
   }
 }
 
@@ -62,4 +81,22 @@ export function disposeRunBrowserViews(conversationId?: string, runKey?: string)
   void Promise.resolve(
     invoke('browser_dispose_owner', { conversationId, runKey })
   ).catch(() => {});
+}
+
+/**
+ * Lift the reclaim window a `user_close` opened for `conversationId` (N7).
+ *
+ * The user closing an agent's tab tells the host to stop opening new ones; the
+ * user then WRITING to that conversation is them re-engaging with the task, and
+ * is the signal that lifts it. Scope is the whole conversation — every subagent
+ * run — because the user is addressing the task, not one of its delegations, and
+ * has no way to know which run owned the tab they closed.
+ *
+ * Fire-and-forget: sending a message must never be blocked, delayed or failed by
+ * browser bookkeeping. A lost call costs the run one more "ask the user first",
+ * which the next message clears.
+ */
+export function clearBrowserReclaim(conversationId: string): void {
+  if (!conversationId || !isTauriEnv()) return;
+  void Promise.resolve(invoke('browser_clear_reclaim', { conversationId })).catch(() => {});
 }

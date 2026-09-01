@@ -401,7 +401,11 @@ describe('RightPanel browser view lifecycle', () => {
       usePreviewStore.getState().closeTab(BROWSER_TAB_ID);
     });
 
-    expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: BROWSER_TAB_ID });
+    expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+      id: BROWSER_TAB_ID,
+      // Closing the tab is a gesture, and the host treats it as one (N7).
+      reason: 'user_close',
+    });
     expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).not.toContain(BROWSER_TAB_ID);
   });
 });

@@ -90,7 +90,18 @@ class FakeWebContents {
 
   sendInputEvent() {}
   reload() {}
-  close() { this.destroyed = true; }
+
+  /**
+   * Electron tears the contents down and fires `destroyed`, which is where
+   * browserHost drops the per-view ownership records (`browser_close` itself
+   * only removes the view). A fake that flipped the flag without the event
+   * would leave every test looking at state production never has.
+   */
+  close() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.fire('destroyed');
+  }
 
   async loadURL(url) {
     this.url = url;
@@ -1642,6 +1653,260 @@ test('a runId is never enough on its own to escape the legacy pool', async () =>
     const strayTab = tabIds(await getTabs(host, undefined, RUN_1))[0];
     assert.deepEqual(tabIds(await probeTabs(host)), [strayTab], 'it landed in the shared pool');
     assert.deepEqual(tabIds(await probeTabs(host, undefined, RUN_2)), [strayTab]);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ## N7 — the user closing an agent's tab is a first-class reclaim signal
+ *
+ * Closing a tab used to be pure teardown: the view died, and the agent's very
+ * next `get_tabs` silently provisioned a brand-new one and carried on. From the
+ * user's side that reads as "the app ignored me" — the one gesture that means
+ * "stop using the browser" was the one gesture with no effect on the run.
+ *
+ * A close now carries a REASON. `user_close` (the tab strip's ×, close
+ * others/all — a real gesture) on a view an agent owns opens a RECLAIM WINDOW
+ * for that owner:
+ *  - `get_tabs` stops provisioning (as if `createIfEmpty:false`) and the summary
+ *    carries a note telling the model to ask first;
+ *  - a state-changing action or `navigate` with no tab left throws that same
+ *    sentence — deliberately NOT the run-stopped message, which would tell the
+ *    model something false about the run;
+ *  - read-only work on tabs that are still open is untouched.
+ *
+ * The window is scoped to the owner PAIR (N6), so one subagent's reclaimed tab
+ * does not mute its siblings, and it is lifted by the user's next message in
+ * that conversation (`browser_clear_reclaim`) or by the conversation's dispose.
+ * `lifecycle` closes — the C1 commit path's teardown, the C4 cancel cascade,
+ * conversation delete — record nothing, and neither does closing a LEGACY tab:
+ * the user closing their own pane tab is just closing a tab.
+ */
+
+const USER_RECLAIMED_MESSAGE =
+  'The user closed your browser tab. Ask them before opening a new one.';
+
+/** The view id main last invited the renderer to adopt. */
+function lastAdoptedViewId(emitted) {
+  const opens = emitted.filter((entry) => entry.event === 'browser://automation-open');
+  assert.ok(opens.length > 0, 'no automation view was ever offered for adoption');
+  return opens[opens.length - 1].payload.id;
+}
+
+function userCloses(host, viewId) {
+  return host.browserDispatch(null, 'browser_close', { id: viewId, reason: 'user_close' });
+}
+
+function countOpens(emitted) {
+  return emitted.filter((entry) => entry.event === 'browser://automation-open').length;
+}
+
+test('a user-closed agent tab stops get_tabs from opening another, and says why', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    const viewId = lastAdoptedViewId(emitted);
+    const opensBefore = countOpens(emitted);
+
+    userCloses(host, viewId);
+
+    const after = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(after), [], 'the run gets no replacement tab');
+    assert.equal(after.summary.totalTabs, 0);
+    assert.equal(after.summary.currentTabId, null);
+    assert.equal(after.summary.note, USER_RECLAIMED_MESSAGE);
+    assert.equal(countOpens(emitted), opensBefore, 'no new adoption was offered');
+  } finally {
+    restore();
+  }
+});
+
+test('a state-changing action with no tab left reports the reclaim, not a missing tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    for (const action of ['navigate', 'click', 'fill', 'execute_js']) {
+      await assert.rejects(
+        host.performBrowserAutomation(action, { ownerId: OWNER_A, action: 'goto', url: 'https://example.com/' }),
+        (error) => {
+          assert.equal(error.message, USER_RECLAIMED_MESSAGE, `wrong message for ${action}`);
+          return true;
+        }
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('a run with no reclaim window still gets the ordinary tab-not-found error', async () => {
+  const { host, restore } = loadHost();
+  try {
+    await assert.rejects(
+      host.performBrowserAutomation('click', { ownerId: OWNER_A, tabId: 999999 }),
+      /Browser tab not found: 999999/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('the reclaim window never blocks work on the tabs that are still open', async () => {
+  // Two views for one owner (no renderer adoption ⇒ both fall through to the
+  // headless branch), then the user closes exactly one of them.
+  const { host, emitted, restore } = loadHost({ adopt: false });
+  try {
+    const [first, second] = await Promise.all([getTabs(host, OWNER_A), getTabs(host, OWNER_A)]);
+    const bothTabs = [tabIds(first)[0], tabIds(second)[0]];
+    assert.notEqual(bothTabs[0], bothTabs[1], 'the owner really has two views');
+
+    // A headless fallback view keeps the id main offered for adoption, so the
+    // two offers name the two views; which one backs which tab does not matter
+    // — the survivor is simply the one still alive after the close.
+    const opens = emitted
+      .filter((entry) => entry.event === 'browser://automation-open')
+      .map((entry) => entry.payload.id);
+    assert.equal(opens.length, 2);
+    host.browserDispatch(null, 'browser_close', { id: opens[0], reason: 'user_close' });
+    const survivor = bothTabs.find((tab) => !contentsFor(tab).isDestroyed());
+    assert.ok(survivor, 'exactly one view was closed');
+
+    const stillListed = await probeTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(stillListed), [survivor]);
+    assert.equal(stillListed.summary.note, USER_RECLAIMED_MESSAGE, 'the note is still on');
+
+    // Read-only work on the surviving tab is exactly what a model should keep
+    // doing, and a state-changing action on a tab that IS available is not the
+    // case the window is about ("no tab left" is).
+    await host.performBrowserAutomation('screenshot', { ownerId: OWNER_A, tabId: survivor });
+    await navigate(host, OWNER_A, survivor, 'https://example.com/');
+  } finally {
+    restore();
+  }
+});
+
+test('browser_clear_reclaim lifts the window for every run of that conversation', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    await getTabs(host, OWNER_A);
+    userCloses(host, lastAdoptedViewId(emitted));
+    await getTabs(host, OWNER_B);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    assert.equal(host.browserDispatch(null, 'browser_clear_reclaim', { conversationId: OWNER_A }), null);
+
+    const run1 = await getTabs(host, OWNER_A, RUN_1);
+    assert.equal(tabIds(run1).length, 1, 'the subagent run may open a tab again');
+    assert.equal(run1.summary.note, undefined);
+    const mainLoop = await getTabs(host, OWNER_A);
+    assert.equal(tabIds(mainLoop).length, 1, 'so may the conversation main loop');
+    assert.equal(mainLoop.summary.note, undefined);
+
+    // Another conversation's window is its own and is untouched.
+    const other = await getTabs(host, OWNER_B);
+    assert.deepEqual(tabIds(other), []);
+    assert.equal(other.summary.note, USER_RECLAIMED_MESSAGE);
+  } finally {
+    restore();
+  }
+});
+
+test('a reclaim window is scoped to the run whose tab was closed', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    const reclaimed = await getTabs(host, OWNER_A, RUN_1);
+    assert.deepEqual(tabIds(reclaimed), []);
+    assert.equal(reclaimed.summary.note, USER_RECLAIMED_MESSAGE);
+
+    const sibling = await getTabs(host, OWNER_A, RUN_2);
+    assert.equal(tabIds(sibling).length, 1, 'a sibling run is not muted');
+    assert.equal(sibling.summary.note, undefined);
+    const mainLoop = await getTabs(host, OWNER_A);
+    assert.equal(tabIds(mainLoop).length, 1, 'nor is the conversation main loop');
+    assert.equal(mainLoop.summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('closing a legacy pane tab, or a lifecycle close, records no reclaim', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    // The user's own pane tab: closing it is just closing a tab.
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-tab-1',
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    host.browserDispatch(null, 'browser_close', { id: 'pane-tab-1', reason: 'user_close' });
+    const legacyAfter = await getTabs(host);
+    assert.equal(tabIds(legacyAfter).length, 1, 'the shared pool still provisions');
+    assert.equal(legacyAfter.summary.note, undefined);
+
+    // A programmatic teardown of an OWNED view records nothing either — and an
+    // unknown reason is treated as one (never as a user gesture).
+    await getTabs(host, OWNER_A);
+    host.browserDispatch(null, 'browser_close', { id: lastAdoptedViewId(emitted) });
+    assert.equal((await getTabs(host, OWNER_A)).summary.note, undefined);
+
+    await getTabs(host, OWNER_B);
+    host.browserDispatch(null, 'browser_close', { id: lastAdoptedViewId(emitted), reason: 'nonsense' });
+    assert.equal((await getTabs(host, OWNER_B)).summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('disposing an owner clears its reclaim window with the rest of its state', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    const fresh = await getTabs(host, OWNER_A, RUN_1);
+    assert.equal(tabIds(fresh).length, 1);
+    assert.equal(fresh.summary.note, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('a run dispose clears only that run reclaim window', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await getTabs(host, OWNER_A, RUN_1);
+    userCloses(host, lastAdoptedViewId(emitted));
+    await getTabs(host, OWNER_A, RUN_2);
+    userCloses(host, lastAdoptedViewId(emitted));
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
+
+    assert.equal((await getTabs(host, OWNER_A, RUN_1)).summary.note, undefined);
+    assert.equal((await getTabs(host, OWNER_A, RUN_2)).summary.note, USER_RECLAIMED_MESSAGE);
+  } finally {
+    restore();
+  }
+});
+
+test('browser_clear_reclaim refuses the legacy conversation and blank input', async () => {
+  const { host, restore } = loadHost();
+  try {
+    for (const conversationId of ['legacy', '', '   ', undefined, 42]) {
+      assert.equal(host.browserDispatch(null, 'browser_clear_reclaim', { conversationId }), null);
+    }
   } finally {
     restore();
   }

@@ -10,7 +10,12 @@
 // every sibling delegation.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { disposeOwnedBrowserViews, disposeRunBrowserViews } from './browserViewLifecycle';
+import {
+  clearBrowserReclaim,
+  closeBrowserViews,
+  disposeOwnedBrowserViews,
+  disposeRunBrowserViews,
+} from './browserViewLifecycle';
 
 const invokeMock = vi.mocked(invoke);
 const runtimeWindow = (globalThis as unknown as { window: Record<string, unknown> }).window;
@@ -75,5 +80,73 @@ describe('disposeRunBrowserViews', () => {
     expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
       conversationId: 'conv-1',
     });
+  });
+});
+
+// N7 — a close now says WHY, because the host treats a user gesture as a signal
+// to stop opening tabs and treats everything else as ordinary teardown.
+describe('closeBrowserViews reason', () => {
+  let previousInternals: unknown;
+
+  beforeEach(() => {
+    previousInternals = runtimeWindow.__TAURI_INTERNALS__;
+    runtimeWindow.__TAURI_INTERNALS__ = {};
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    runtimeWindow.__TAURI_INTERNALS__ = previousInternals;
+    invokeMock.mockReset();
+  });
+
+  it('defaults to lifecycle, so only a caller that KNOWS it is a gesture can claim one', () => {
+    closeBrowserViews(['tab-1']);
+
+    expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'tab-1', reason: 'lifecycle' });
+  });
+
+  it('stamps every id in a user-gesture close', () => {
+    closeBrowserViews(['tab-1', 'tab-2'], 'user_close');
+
+    expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'tab-1', reason: 'user_close' });
+    expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'tab-2', reason: 'user_close' });
+  });
+});
+
+describe('clearBrowserReclaim', () => {
+  let previousInternals: unknown;
+
+  beforeEach(() => {
+    previousInternals = runtimeWindow.__TAURI_INTERNALS__;
+    runtimeWindow.__TAURI_INTERNALS__ = {};
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    runtimeWindow.__TAURI_INTERNALS__ = previousInternals;
+    invokeMock.mockReset();
+  });
+
+  it('lifts the window for the whole conversation', () => {
+    clearBrowserReclaim('conv-1');
+
+    expect(invokeMock).toHaveBeenCalledWith('browser_clear_reclaim', { conversationId: 'conv-1' });
+  });
+
+  it('does nothing without a conversation id, or outside the desktop shell', () => {
+    clearBrowserReclaim('');
+    runtimeWindow.__TAURI_INTERNALS__ = undefined;
+    clearBrowserReclaim('conv-1');
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('never rejects when the host command fails — a send must not fail on cleanup', async () => {
+    invokeMock.mockRejectedValue(new Error('host is gone'));
+
+    expect(() => clearBrowserReclaim('conv-1')).not.toThrow();
+    await Promise.resolve();
   });
 });

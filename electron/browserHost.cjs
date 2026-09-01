@@ -42,13 +42,19 @@
  *   an existing asymmetry in browser.rs, not a divergence introduced here).
  * - `browser_hide/show {id}` → `view.setVisible(false/true)`; silently
  *   no-ops if `id` is unknown (matches Rust's `if let Some(wv) = ...`).
- * - `browser_close {id}` → `mainWin.contentView.removeChildView(view)` +
+ * - `browser_close {id, reason?}` → `mainWin.contentView.removeChildView(view)` +
  *   `view.webContents.close()` + delete from the id→view map; also silently
- *   no-ops if unknown.
+ *   no-ops if unknown. `reason: 'user_close'` additionally records a reclaim
+ *   window for that view's owner (N7 — see `userReclaimedAt`); anything else,
+ *   including an absent or unrecognised value, is a `lifecycle` teardown and
+ *   records nothing.
  * - `browser_dispose_owner {conversationId, runKey?}` → close every view that
  *   conversation owns and drop its ownership records; with `runKey`, only that
  *   subagent run's (Electron-only; no Tauri counterpart — see
  *   `disposeOwnerViews`).
+ * - `browser_clear_reclaim {conversationId}` → lift the reclaim window on every
+ *   run of that conversation (Electron-only; sent when the user posts their next
+ *   message there — see `userReclaimedAt`).
  *
  * ## Navigation event: `browser://nav/{id}`
  * browser.rs's `on_navigation(move |u| { emit(...); true })` fires on every
@@ -120,6 +126,7 @@ const BROWSER_CMDS = new Set([
   'browser_inspect_set',
   'browser_note_user_interaction',
   'browser_dispose_owner',
+  'browser_clear_reclaim',
 ]);
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
@@ -357,6 +364,59 @@ const TAKEOVER_GATED_ACTIONS = new Set([
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
 const userInteractionAt = new Map();
+
+/**
+ * ## The user closing a tab is a reclaim signal, not just a teardown (N7)
+ *
+ * The takeover backoff above handles "the user is typing here right now". The
+ * stronger gesture — closing the agent's tab outright — used to have no effect
+ * on the run at all: the view died and the very next `get_tabs` silently
+ * provisioned a replacement, so the one action that unambiguously means "stop
+ * using the browser" was the one action the agent could not hear.
+ *
+ * A close therefore carries a REASON. Only a real user gesture (`user_close`,
+ * stamped by `previewStore`'s user-facing close actions) opens a RECLAIM WINDOW
+ * for the closed view's owner; every programmatic teardown — the commit path's
+ * own destroy, the cancel cascade, a conversation delete — is `lifecycle` and
+ * records nothing, as does closing a LEGACY tab (the user closing their own pane
+ * tab is just closing a tab).
+ *
+ * Inside the window, for THAT owner pair (N6 — one subagent's reclaimed tab must
+ * not mute its siblings or the conversation's own loop):
+ *  - `get_tabs` stops provisioning, and its summary carries `note`;
+ *  - a state-changing action or `navigate` left with no tab throws the same
+ *    sentence. Deliberately NOT the run-stopped message: the run is alive, and
+ *    saying otherwise would have the model report something false to the user.
+ *  - anything acting on a tab that IS still open is untouched — the user closed
+ *    one tab, not the whole task.
+ *
+ * The window has no timeout; it is lifted by the user's next message in that
+ * conversation (`browser_clear_reclaim`, every run at once — the user is
+ * addressing the task, not one of its delegations) or by that owner's dispose.
+ * Nothing else reopens it, so a run cannot wait it out.
+ */
+const USER_RECLAIMED_MESSAGE =
+  'The user closed your browser tab. Ask them before opening a new one.';
+
+/** ownerKey -> ts the user closed one of that owner's tabs. Present ⇒ reclaimed. */
+const userReclaimedAt = new Map();
+
+/**
+ * Unknown/absent values are `lifecycle`: a reason that fails to arrive intact
+ * must never be read as a user gesture that gates the run.
+ */
+function isUserCloseReason(reason) {
+  return reason === 'user_close';
+}
+
+/** Lift the reclaim window; `runKey === undefined` means every run (see `ownerInDisposeScope`). */
+function clearUserReclaim(conversationId, runKey) {
+  for (const key of Array.from(userReclaimedAt.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      userReclaimedAt.delete(key);
+    }
+  }
+}
 
 /** >0 while an automation action is executing — its own events are not the user. */
 let aiActionDepth = 0;
@@ -1083,8 +1143,13 @@ async function runBrowserAutomation(action, payload, signal) {
   const owner = resolveOwnerKey(payload);
   const ownerKey = owner.key;
 
+  const reclaimed = userReclaimedAt.has(ownerKey);
+
   if (action === 'get_tabs') {
-    const tabs = await automationTabs(owner, payload.createIfEmpty !== false, signal);
+    // A reclaimed owner never provisions, whatever the caller asked for: the
+    // listing is exactly the tabs that still exist, plus the note explaining
+    // why there may now be none.
+    const tabs = await automationTabs(owner, !reclaimed && payload.createIfEmpty !== false, signal);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -1097,6 +1162,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
+        ...(reclaimed ? { note: USER_RECLAIMED_MESSAGE } : {}),
       },
       windows: [{
         windowId,
@@ -1118,7 +1184,17 @@ async function runBrowserAutomation(action, payload, signal) {
     ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
   const match = findViewByTabId(targetTabId, owner);
-  if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
+  if (!match) {
+    // N7: the user closed this owner's tab and nothing is left to act on. Say
+    // that, rather than "tab not found" — which reads as a transient glitch and
+    // invites the model to open another one, the exact thing being refused.
+    // Read-only actions keep the plain not-found error: they cannot make the
+    // situation worse, and the note on `get_tabs` already told the model why.
+    if (reclaimed && TAKEOVER_GATED_ACTIONS.has(action)) {
+      throw new Error(USER_RECLAIMED_MESSAGE);
+    }
+    throw new Error(`Browser tab not found: ${String(targetTabId)}`);
+  }
   const { view } = match;
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
@@ -1393,9 +1469,16 @@ function closeView(id, view) {
   forgetOwnerInteractionIfUnused(ownerKey);
 }
 
-function browserClose({ id }) {
+function browserClose({ id, reason }) {
   const view = getView(id);
-  if (view) closeView(id, view);
+  if (!view) return null;
+  // Read the owner BEFORE the teardown — `closeView` drops `viewMeta`, after
+  // which every view looks legacy.
+  const owner = ownerOf(id);
+  if (isUserCloseReason(reason) && !isLegacyOwner(owner)) {
+    userReclaimedAt.set(owner.key, clock.now());
+  }
+  closeView(id, view);
   return null;
 }
 
@@ -1458,6 +1541,10 @@ function disposeOwnerViews(conversationId, runKey) {
       userInteractionAt.delete(key);
     }
   }
+  // N7: the reclaim window dies with the owner it gated. A run being reaped can
+  // never ask again, and a deleted conversation's window would otherwise outlive
+  // everything it referred to.
+  clearUserReclaim(conversationId, runKey);
   // Emitted last, so the renderer's reaction (dropping the tab record, which
   // fires `browser_close`) can never race the teardown above.
   for (const id of cancelledIds) cancelAutomationAdoption(id);
@@ -1471,6 +1558,21 @@ function browserDisposeOwner({ conversationId, runKey }) {
   // must not silently narrow a full teardown into a no-op.
   const run = sanitizeOwnerPart(runKey) || undefined;
   disposeOwnerViews(conversation, run);
+  return null;
+}
+
+/**
+ * N7 — the user's next message in a conversation lifts its reclaim window.
+ *
+ * Scope is the whole CONVERSATION, every run: the user is addressing the task,
+ * not one of its delegations, and they have no way to tell which subagent run
+ * owned the tab they closed. Refuses the legacy conversation and blank input for
+ * the same reason `browser_dispose_owner` does — those name no owner at all.
+ */
+function browserClearReclaim({ conversationId }) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return null;
+  clearUserReclaim(conversation, undefined);
   return null;
 }
 
@@ -1535,6 +1637,8 @@ function browserDispatch(app, cmd, args) {
       return browserNoteUserInteraction(a);
     case 'browser_dispose_owner':
       return browserDisposeOwner(a);
+    case 'browser_clear_reclaim':
+      return browserClearReclaim(a);
     default:
       return BROWSER_MISS;
   }

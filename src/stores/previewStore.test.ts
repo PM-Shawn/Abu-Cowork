@@ -421,7 +421,49 @@ describe('previewStore', () => {
     it('closeTab destroys the native view behind a browser tab', () => {
       const id = usePreviewStore.getState().openBrowser('https://example.com');
       usePreviewStore.getState().closeTab(id);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id, reason: 'user_close' });
+    });
+
+    // N7 — the host reads `reason` as "did a human do this?", and answers a
+    // human by refusing to open another tab until they say so. Attribution
+    // therefore belongs to the ACTION: `closeTab`/`closeOtherTabs`/
+    // `closeAllTabs` exist only behind a tab-strip gesture, and every other
+    // removal path (conversation switch, delete cascade, a withdrawn adoption)
+    // is the app tidying up after itself.
+    it('user-gesture close actions stamp user_close', () => {
+      const kept = usePreviewStore.getState().openBrowser('https://kept.example');
+      const dropped = usePreviewStore.getState().openBrowser('https://dropped.example');
+
+      usePreviewStore.getState().closeOtherTabs(kept);
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: dropped, reason: 'user_close' });
+
+      invokeMock.mockClear();
+      usePreviewStore.getState().closeAllTabs();
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: kept, reason: 'user_close' });
+    });
+
+    it('programmatic teardown stamps lifecycle, never a gesture', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
+      usePreviewStore.getState().openBrowser('https://a.example', 'agent-a-reason', 'conv-a');
+      usePreviewStore.getState().openBrowser('https://b.example', 'agent-b-reason', 'conv-b');
+
+      // A withdrawn adoption (C4's `browser://automation-cancel`)…
+      usePreviewStore.getState().closeAdoptedBrowserTab('agent-b-reason');
+      // …and the conversation delete cascade.
+      usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
+
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+        id: 'agent-b-reason',
+        reason: 'lifecycle',
+      });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+        id: 'agent-a-reason',
+        reason: 'lifecycle',
+      });
+      expect(invokeMock).not.toHaveBeenCalledWith(
+        'browser_close',
+        expect.objectContaining({ reason: 'user_close' }),
+      );
     });
 
     it('closeTab of a non-browser tab touches no native view', () => {
@@ -436,12 +478,12 @@ describe('previewStore', () => {
       const dropped = usePreviewStore.getState().openBrowser('https://dropped.example');
 
       usePreviewStore.getState().closeOtherTabs(kept);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: dropped });
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: kept });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: dropped }));
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: kept }));
 
       invokeMock.mockClear();
       usePreviewStore.getState().closeAllTabs();
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: kept });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: kept }));
     });
 
     it('closeTabsForConversationSwitch keeps browser tabs and their views alive', () => {
@@ -594,14 +636,14 @@ describe('previewStore', () => {
 
       usePreviewStore.getState().closeOtherTabs('agent-b-1');
       expect(ids(usePreviewStore.getState().tabs)).toEqual(['agent-a-8', 'agent-b-1']);
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-a-8' });
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-8' }));
 
       usePreviewStore.getState().closeAllTabs();
       const s = usePreviewStore.getState();
       expect(ids(s.tabs)).toEqual(['agent-a-8']);
       expect(getVisibleTabs()).toEqual([]);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-b-1' });
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-a-8' });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-b-1' }));
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-8' }));
     });
 
     // C2-I1 / N4 — a deleted conversation's browser tab is invisible in every
@@ -617,10 +659,10 @@ describe('previewStore', () => {
       usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
 
       expect(ids(usePreviewStore.getState().tabs)).toEqual(['agent-b-keep', paneTab]);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-del-1' });
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-del-2' });
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-b-keep' });
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: paneTab });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-del-1' }));
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-del-2' }));
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-b-keep' }));
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: paneTab }));
     });
 
     it('closeOwnedTabsForConversation lands the active tab on a visible survivor', () => {
@@ -659,8 +701,8 @@ describe('previewStore', () => {
       usePreviewStore.getState().closeAdoptedBrowserTab('agent-a-cancel');
 
       expect(ids(usePreviewStore.getState().tabs)).toEqual(['agent-b-keep']);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-cancel' });
-      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-b-keep' });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-cancel' }));
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-b-keep' }));
     });
 
     it('closeAdoptedBrowserTab re-activates a survivor when the withdrawn tab was active', () => {
@@ -675,7 +717,7 @@ describe('previewStore', () => {
       const s = usePreviewStore.getState();
       expect(ids(s.tabs)).toEqual([summaryId]);
       expect(s.activeTabId).toBe(summaryId);
-      expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-a-visible' });
+      expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: 'agent-a-visible' }));
     });
 
     it('closeAdoptedBrowserTab ignores an unknown id and never touches a non-browser tab', () => {

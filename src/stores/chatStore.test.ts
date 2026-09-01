@@ -269,9 +269,19 @@ describe('chatStore', () => {
           'agent-survivor',
           paneTab,
         ]);
-        expect(invokeMock).toHaveBeenCalledWith('browser_close', { id: 'agent-deleted' });
-        expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: 'agent-survivor' });
-        expect(invokeMock).not.toHaveBeenCalledWith('browser_close', { id: paneTab });
+        expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+          id: 'agent-deleted',
+          // A delete cascade is the app tidying up, never a user gesture (N7).
+          reason: 'lifecycle',
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+          'browser_close',
+          expect.objectContaining({ id: 'agent-survivor' }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+          'browser_close',
+          expect.objectContaining({ id: paneTab }),
+        );
         expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
           conversationId: deletedId,
         });
@@ -612,6 +622,59 @@ describe('chatStore', () => {
       const reindexIdx = calls.findIndex((c) => c[0] === 'catalog_reindex_conversation');
       expect(indexWriteIdx).toBeGreaterThanOrEqual(0);
       expect(indexWriteIdx).toBeLessThan(reindexIdx);
+    });
+  });
+
+  // N7 — the user closing an agent's browser tab tells the host to stop opening
+  // new ones. Writing to that conversation again is them re-engaging with the
+  // task, and is what lifts the window. `addMessage` is the single point every
+  // send path (sidecar dispatch and the in-process fallbacks alike) commits a
+  // user message through, so the signal is taken there rather than in each.
+  describe('browser reclaim window', () => {
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const invokeMock = vi.mocked(invoke);
+    let previousInternals: unknown;
+
+    beforeEach(() => {
+      previousInternals = (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__;
+      (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = previousInternals;
+      invokeMock.mockReset();
+    });
+
+    it('lifts on the user’s next message in that conversation', () => {
+      const id = useChatStore.getState().createConversation();
+
+      useChatStore.getState().addMessage(id, {
+        id: 'user-1', role: 'user', content: 'go on', timestamp: FIXED_TIMESTAMP,
+      });
+
+      expect(invokeMock).toHaveBeenCalledWith('browser_clear_reclaim', { conversationId: id });
+    });
+
+    it('does not lift on anything the user did not write', () => {
+      const id = useChatStore.getState().createConversation();
+
+      useChatStore.getState().addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: 'working', timestamp: FIXED_TIMESTAMP,
+      });
+      // A system-injected wake-up rides the `user` role (agentLoop drains the
+      // system queue as user turns) — it is the app talking to itself, and must
+      // not hand the browser back on the user's behalf.
+      useChatStore.getState().addMessage(id, {
+        id: 'wakeup-1',
+        role: 'user',
+        content: 'continue',
+        timestamp: FIXED_TIMESTAMP,
+        isSystem: true,
+      });
+
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_clear_reclaim', expect.anything());
     });
   });
 

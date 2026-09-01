@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
-import { closeBrowserViews } from '@/core/browser/browserViewLifecycle';
+import { closeBrowserViews, type BrowserCloseReason } from '@/core/browser/browserViewLifecycle';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 
 /**
@@ -231,7 +231,15 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   const commitTabs = (
     nextTabs: WorkspaceTab[],
     requestedActiveId: string | null,
-    options: { focusTabId?: string | null; conversationId?: string | null } = {},
+    options: {
+      focusTabId?: string | null;
+      conversationId?: string | null;
+      // Why any browser views this commit removes are being destroyed (N7).
+      // Defaults to 'lifecycle': only a caller that KNOWS it is running behind
+      // a user gesture may claim one, so a new removal path can never
+      // accidentally look like the user reclaiming the browser.
+      closeReason?: BrowserCloseReason;
+    } = {},
   ): void => {
     const prev = get();
     const conversationId = options.conversationId !== undefined
@@ -249,7 +257,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     // view — see closeBrowserViews. Doing it here (rather than per action)
     // makes it an invariant of the store: no removal path can leak a view, and
     // no UI unmount can kill one.
-    closeBrowserViews(removedBrowserTabIds(prev.tabs, nextTabs));
+    closeBrowserViews(removedBrowserTabIds(prev.tabs, nextTabs), options.closeReason);
     const previewFilePath = computePreviewFilePath(nextTabs, nextActiveId);
     set({
       tabs: nextTabs,
@@ -436,7 +444,10 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const focusTabId = options?.focusAfterClose && nextActiveId && nextTabs.some((tab) => tab.id === nextActiveId)
       ? nextActiveId
       : null;
-    commitTabs(nextTabs, nextActiveId, { focusTabId });
+    // The three actions below exist only behind a tab-strip gesture (×, middle
+    // click, the context menu) — closing an agent's tab there is the user
+    // reclaiming the browser, which the host must hear (N7).
+    commitTabs(nextTabs, nextActiveId, { focusTabId, closeReason: 'user_close' });
   },
 
   // "Close other / close all" are tab-strip commands, so they reach exactly
@@ -446,12 +457,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const { tabs, currentConversationId } = get();
     if (!tabs.some((t) => t.id === id)) return;
     const nextTabs = tabs.filter((t) => t.id === id || !isTabVisibleFor(t, currentConversationId));
-    commitTabs(nextTabs, id);
+    commitTabs(nextTabs, id, { closeReason: 'user_close' });
   },
 
   closeAllTabs: () => {
     const { tabs, currentConversationId } = get();
-    commitTabs(tabs.filter((t) => !isTabVisibleFor(t, currentConversationId)), null);
+    commitTabs(
+      tabs.filter((t) => !isTabVisibleFor(t, currentConversationId)),
+      null,
+      { closeReason: 'user_close' },
+    );
   },
 
   closeTabsForConversationSwitch: (conversationId = null) => {

@@ -357,6 +357,67 @@ async function nativeBrowserViewStates(
   });
 }
 
+/**
+ * Stamp a variable into the LIVE DOCUMENT behind the fixture's native view.
+ *
+ * A surviving URL is not proof of a surviving page: a view that was torn down
+ * and rebuilt, or silently reloaded, comes back showing the same URL with a
+ * fresh document — and everything an agent actually cares about (scroll
+ * position, a half-filled form, a logged-in session's in-page state) is gone.
+ * An in-page variable is destroyed by both, so this is the assertion that tells
+ * "the same document is still here" apart from "something is showing that URL".
+ */
+async function stampLivePageMarker(
+  electronApp: ElectronApplication,
+  fixtureUrl: string,
+  marker: string,
+): Promise<void> {
+  const stamped = await electronApp.evaluate(async ({ BrowserWindow }, payload) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return false;
+    for (const child of window.contentView.children) {
+      const contents = (child as unknown as {
+        webContents?: {
+          getURL: () => string;
+          isDestroyed: () => boolean;
+          executeJavaScript: (code: string) => Promise<unknown>;
+        };
+      }).webContents;
+      if (!contents || contents.isDestroyed() || contents.getURL() !== payload.fixtureUrl) continue;
+      await contents.executeJavaScript(
+        `window.__abuE2eLivePageMarker = ${JSON.stringify(payload.marker)}; true`,
+      );
+      return true;
+    }
+    return false;
+  }, { fixtureUrl, marker });
+  if (!stamped) throw new Error('No native view was showing the fixture page to stamp');
+}
+
+/** Read that variable back; null when the document (or the view) is gone. */
+async function readLivePageMarker(
+  electronApp: ElectronApplication,
+  fixtureUrl: string,
+): Promise<string | null> {
+  return electronApp.evaluate(async ({ BrowserWindow }, url) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return null;
+    for (const child of window.contentView.children) {
+      const contents = (child as unknown as {
+        webContents?: {
+          getURL: () => string;
+          isDestroyed: () => boolean;
+          executeJavaScript: (code: string) => Promise<unknown>;
+        };
+      }).webContents;
+      if (!contents || contents.isDestroyed() || contents.getURL() !== url) continue;
+      const value = await contents.executeJavaScript('window.__abuE2eLivePageMarker ?? null');
+      return typeof value === 'string' ? value : null;
+    }
+    return null;
+  }, fixtureUrl);
+}
+
 /** Find our fixture's native view state, or null while it hasn't been created (yet). */
 async function ourNativeViewState(
   electronApp: ElectronApplication,
@@ -562,6 +623,12 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
       { timeout: READY_TIMEOUT },
     ).toBe(true);
 
+    // Stamp the live document, so the round trip below has to prove the PAGE
+    // survived, not just that something is showing the same URL.
+    const liveMarker = `abu-e2e-live-page-${randomUUID()}`;
+    await stampLivePageMarker(app, fixture.url, liveMarker);
+    expect(await readLivePageMarker(app, fixture.url)).toBe(liveMarker);
+
     // --- Switch to a brand-new conversation B ---
     await clickNewTask(page);
     const promptB = `abu-e2e-lc-b-${randomUUID().slice(0, 8)}`;
@@ -604,6 +671,8 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     // never handed a rebuilt tab that had to reload it.
     const finalStates = await nativeBrowserViewStates(app!);
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
+    // ...and it is the SAME DOCUMENT: a silent reload would have wiped this.
+    expect(await readLivePageMarker(app!, fixture.url)).toBe(liveMarker);
   });
 
   test('keeps the same browser tab and page alive across collapsing and expanding the right panel', async () => {

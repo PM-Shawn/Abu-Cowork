@@ -393,6 +393,69 @@ describe('RightPanel browser view lifecycle', () => {
     expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
   });
 
+  // Packaged first-run journey: brand-new profile, a conversation with messages
+  // but NO workspace. That conversation legitimately starts with the panel
+  // closed (the no-workspace auto-collapse, unchanged by C1/C2), and the user
+  // opens it from the title-bar toggle.
+  //
+  // Under C1's keep-alive the node is mounted the whole time, so DOM PRESENCE
+  // no longer means "open" — the packaged Windows smoke used `count()` as its
+  // open/closed probe, stopped clicking the toggle, and then waited 45s for a
+  // panel nothing had opened. Pin both halves of that contract.
+  describe('fresh first conversation with no workspace', () => {
+    beforeEach(() => {
+      useChatStore.setState({
+        conversations: { fresh: conversation('fresh', null) },
+        activeConversationId: 'fresh',
+      });
+      // A fresh profile's persisted default (settingsStore: false).
+      useSettingsStore.setState({ rightPanelCollapsed: false });
+    });
+
+    it('stays mounted but hidden until the user opens it', async () => {
+      render(
+        <TooltipProvider>
+          <RightPanel />
+        </TooltipProvider>,
+      );
+
+      // No workspace → the panel auto-collapses, so it is CLOSED...
+      await waitFor(() => {
+        expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+      });
+      // ...but still in the DOM. Presence is not openness under keep-alive:
+      // anything probing `querySelector` to decide whether to open the panel
+      // would wrongly conclude it is already open.
+      expect(panelEl()).toBeInTheDocument();
+      expect(panelEl()).not.toBeVisible();
+    });
+
+    it('becomes visible and opens the summary when the title-bar toggle expands it', async () => {
+      render(
+        <TooltipProvider>
+          <RightPanel />
+        </TooltipProvider>,
+      );
+      await waitFor(() => {
+        expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+      });
+
+      // The title-bar toggle — the only affordance that opens a workspace-less
+      // conversation's panel.
+      await act(async () => {
+        useSettingsStore.getState().setRightPanelCollapsed(false);
+      });
+
+      await waitFor(() => {
+        expect(panelEl()).toBeVisible();
+      });
+      expect(panelEl()).not.toHaveAttribute('hidden');
+      // The summary effect re-runs on the `collapsed` edge and seeds the
+      // default tab, so the opened panel has content rather than an empty shell.
+      expect(getVisibleTabs().map((tab) => tab.kind)).toEqual(['summary']);
+    });
+  });
+
   it('still destroys the native view when the user closes the tab explicitly', async () => {
     await renderPanel();
     await seedBrowserTab();

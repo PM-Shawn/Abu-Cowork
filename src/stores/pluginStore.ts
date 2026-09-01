@@ -63,6 +63,11 @@ export interface InstallRequest {
   entry: Pick<MarketplaceEntry, 'name' | 'source'>;
 }
 
+/** Install request plus the installed key to replace. */
+export interface UpdateRequest extends InstallRequest {
+  key: string;
+}
+
 interface PluginState {
   /** Persisted: local marketplace directories the user added. */
   marketplaces: MarketplaceRef[];
@@ -98,6 +103,13 @@ interface PluginActions {
   refreshInstalled: (home: string) => Promise<void>;
   install: (req: InstallRequest) => Promise<InstalledPlugin>;
   uninstall: (home: string, key: string) => Promise<void>;
+  /**
+   * Replace an installed plugin with a newer version: uninstall the old
+   * (removes its version dir + deregisters its MCP servers) then install the
+   * new. A plugin server re-registers DISABLED, so a new version's connector
+   * requires fresh consent — reasonable when its command may have changed.
+   */
+  update: (req: UpdateRequest) => Promise<InstalledPlugin>;
   clearError: () => void;
 }
 
@@ -236,6 +248,18 @@ export const usePluginStore = create<PluginStore>()(
         } finally {
           set({ loading: false });
         }
+      },
+
+      update: async (req) => {
+        // Uninstall first; if it throws, install never runs and the old
+        // version stays intact (no half-updated state).
+        await get().uninstall(req.home, req.key);
+        return get().install({
+          home: req.home,
+          marketplaceName: req.marketplaceName,
+          marketplaceDir: req.marketplaceDir,
+          entry: req.entry,
+        });
       },
 
       clearError: () => set({ error: null }),

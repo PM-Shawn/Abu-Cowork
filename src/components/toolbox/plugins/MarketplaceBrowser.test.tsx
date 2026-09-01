@@ -44,6 +44,7 @@ import MarketplaceBrowser from './MarketplaceBrowser';
 
 const localEntry: MarketplaceEntry = {
   name: 'weather',
+  version: '1.0.0',
   description: 'Local forecast tools',
   category: 'productivity',
   source: { kind: 'relative', path: './plugins/weather' },
@@ -293,5 +294,31 @@ describe('MarketplaceBrowser', () => {
     renderBrowser();
 
     expect(await screen.findByText(/No marketplace manifest in \/m\/official/)).toBeInTheDocument();
+  });
+
+
+  it('shows an Update button when an installed plugin has a newer marketplace version', async () => {
+    usePluginStore.setState({
+      installed: [{
+        key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [] },
+      }],
+    });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
+    // weather is installed at 0.9.0, marketplace offers 1.0.0 → updatable.
+    expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument();
+  });
+
+  it('shows a disabled Already-installed button when versions match', async () => {
+    usePluginStore.setState({
+      installed: [{
+        key: 'weather@official', marketplace: 'official', name: 'weather', version: '1.0.0',
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [] },
+      }],
+    });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('plugin-update-button')).toBeNull();
   });
 });

@@ -1416,6 +1416,9 @@ export interface TranslationDict {
     pluginsEntryCount: string;
     pluginsInstall: string;
     pluginsAlreadyInstalled: string;
+    pluginsUpdate: string;
+    pluginsUpdateSucceeded: string;
+    pluginsUpdateReloadHint: string;
     pluginsUninstall: string;
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;

@@ -323,3 +323,44 @@ describe('plugin MCP server wiring', () => {
     expect(entry.config.enabled).toBe(true);
   });
 });
+
+describe('update', () => {
+  it('replaces an installed plugin by uninstalling the old version then installing the new', async () => {
+    const installOrder: string[] = [];
+    vi.mocked(uninstallPlugin).mockImplementation(async () => {
+      installOrder.push('uninstall');
+      return { key: 'weather@official', withdrawn: { skills: [], mcpServers: ['weather-mcp'] } };
+    });
+    vi.mocked(installPlugin).mockImplementation(async () => {
+      installOrder.push('install');
+      return { record: { ...weather, version: '2.0.0' }, mcpServers: [] };
+    });
+    vi.mocked(readInstalled).mockResolvedValue([{ ...weather, version: '2.0.0' }]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+
+    await usePluginStore.getState().update({
+      home: HOME,
+      marketplaceName: 'official',
+      marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+      key: 'weather@official',
+    });
+
+    // Old version must be torn down before the new one lands, so no orphan
+    // version dir and no stale MCP registration survive.
+    expect(installOrder).toEqual(['uninstall', 'install']);
+    expect(usePluginStore.getState().installed[0].version).toBe('2.0.0');
+  });
+
+  it('does not install a new version if uninstalling the old one fails', async () => {
+    vi.mocked(uninstallPlugin).mockRejectedValue(new Error('EPERM'));
+    await expect(
+      usePluginStore.getState().update({
+        home: HOME, marketplaceName: 'official', marketplaceDir: '/m/official',
+        entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+        key: 'weather@official',
+      }),
+    ).rejects.toThrow('EPERM');
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+});

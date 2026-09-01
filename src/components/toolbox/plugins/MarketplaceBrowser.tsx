@@ -30,6 +30,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
+import { entryUpdateStatus } from '@/core/plugin/updateCheck';
 import {
   resolveRename,
   type Marketplace,
@@ -100,6 +101,7 @@ export default function MarketplaceBrowser({
   const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
+  const update = usePluginStore((s) => s.update);
   const addToast = useToastStore((s) => s.addToast);
 
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -171,6 +173,16 @@ export default function MarketplaceBrowser({
    * marketplace's rename table so a plugin installed under its old name still
    * reads as installed after an upstream rename.
    */
+  const installedByName = useMemo(() => {
+    const renames = marketplace?.renames ?? {};
+    const byName = new Map<string, typeof installed[number]>();
+    for (const p of installed) {
+      if (p.marketplace !== selected?.name) continue;
+      byName.set(resolveRename(p.name, renames), p);
+    }
+    return byName;
+  }, [installed, marketplace, selected]);
+
   const installedNames = useMemo(() => {
     if (!marketplace) return new Set<string>();
     return new Set(
@@ -237,17 +249,29 @@ export default function MarketplaceBrowser({
   const handleConfirmInstall = useCallback(async () => {
     if (!selected || flow.kind !== 'ready') return;
     const { entry } = flow;
+    const existing = installedByName.get(entry.name);
     setInstalling(true);
     try {
-      await install({
-        home,
-        marketplaceName: selected.name,
-        marketplaceDir: selected.dir,
-        entry,
-      });
+      if (existing) {
+        await update({
+          home,
+          marketplaceName: selected.name,
+          marketplaceDir: selected.dir,
+          entry,
+          key: existing.key,
+        });
+      } else {
+        await install({
+          home,
+          marketplaceName: selected.name,
+          marketplaceDir: selected.dir,
+          entry,
+        });
+      }
       addToast({
         type: 'success',
-        title: format(tb.pluginsInstallSucceeded, { name: entry.name }),
+        title: format(existing ? tb.pluginsUpdateSucceeded : tb.pluginsInstallSucceeded, { name: entry.name }),
+        message: tb.pluginsUpdateReloadHint,
       });
       closeFlow();
     } catch (err) {
@@ -259,7 +283,7 @@ export default function MarketplaceBrowser({
     } finally {
       setInstalling(false);
     }
-  }, [selected, flow, install, home, addToast, tb, closeFlow]);
+  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow]);
 
   const dialogState: InstallPlanState =
     flow.kind === 'ready'
@@ -368,6 +392,8 @@ export default function MarketplaceBrowser({
           <ul className="space-y-1.5">
             {visibleEntries.map((entry) => {
               const isInstalled = installedNames.has(entry.name);
+              const updateStatus = entryUpdateStatus(entry, installedByName.get(entry.name));
+              const hasUpdate = updateStatus === 'update-available';
               return (
                 <li
                   key={entry.name}
@@ -410,12 +436,15 @@ export default function MarketplaceBrowser({
                   </div>
                   <Button
                     size="sm"
-                    variant={isInstalled ? 'outline' : 'default'}
-                    disabled={isInstalled}
+                    variant={hasUpdate ? 'default' : isInstalled ? 'outline' : 'default'}
+                    disabled={isInstalled && !hasUpdate}
+                    data-testid={hasUpdate ? 'plugin-update-button' : undefined}
                     onClick={() => void handlePlan(entry)}
-                    aria-label={`${isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}: ${entry.name}`}
+                    aria-label={`${
+                      hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall
+                    }: ${entry.name}`}
                   >
-                    {isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}
+                    {hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}
                   </Button>
                 </li>
               );

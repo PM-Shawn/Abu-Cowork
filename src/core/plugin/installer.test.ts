@@ -226,3 +226,83 @@ describe('installPlugin', () => {
     );
   });
 });
+
+describe('remote sources', () => {
+  const remoteEntry = {
+    name: 'cloud-thing',
+    source: { kind: 'url', url: 'https://github.com/o/cloud.git', sha: 'abc123' } as PluginSource,
+  };
+
+  it('planInstall fetches a url source, then discloses from the verified package', async () => {
+    mountFiles({
+      '/home/u/.abu/plugin-packages/official/cloud-thing/_remote/abc123/.abu-plugin/plugin.json':
+        JSON.stringify({ name: 'cloud-thing', version: '2.0.0', mcpServers: { c: { command: 'node' } } }),
+    });
+    const fetchRemote = vi.fn(async (_src: PluginSource, destDir: string) => ({ destDir, sha: 'abc123' }));
+
+    const d = await planInstall({
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry: remoteEntry,
+      home: '/home/u',
+      fetchRemote,
+    });
+
+    // Fetched into a sha-scoped staging area under the packages root — the
+    // only root the privileged side will accept.
+    expect(fetchRemote).toHaveBeenCalledWith(
+      remoteEntry.source,
+      '/home/u/.abu/plugin-packages/official/cloud-thing/_remote/abc123',
+    );
+    // Disclosure comes from the *verified, fetched* package, not the entry.
+    expect(d.name).toBe('cloud-thing');
+    expect(d.version).toBe('2.0.0');
+    expect(d.mcpServers).toEqual([{ name: 'c', command: 'node', args: undefined, url: undefined }]);
+    expect(d.sourceDir).toBe('/home/u/.abu/plugin-packages/official/cloud-thing/_remote/abc123');
+  });
+
+  it('planInstall still refuses remote sources when no fetcher is provided', async () => {
+    await expect(
+      planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry: remoteEntry }),
+    ).rejects.toThrow(UnsupportedSourceError);
+  });
+
+  it('planInstall refuses a remote entry with no sha before fetching anything', async () => {
+    const fetchRemote = vi.fn();
+    await expect(
+      planInstall({
+        marketplaceName: 'official',
+        marketplaceDir: '/mkt',
+        entry: { name: 'x', source: { kind: 'url', url: 'https://x/y.git' } as PluginSource },
+        home: '/home/u',
+        fetchRemote,
+      }),
+    ).rejects.toThrow(/sha/i);
+    expect(fetchRemote).not.toHaveBeenCalled();
+  });
+
+  it('installPlugin moves the fetched package into its final versioned dir', async () => {
+    mountFiles({
+      '/home/u/.abu/plugin-packages/official/cloud-thing/_remote/abc123/.abu-plugin/plugin.json':
+        JSON.stringify({ name: 'cloud-thing', version: '2.0.0' }),
+    });
+    const fetchRemote = vi.fn(async (_s: PluginSource, destDir: string) => ({ destDir, sha: 'abc123' }));
+    const copyDir = vi.fn(async () => {});
+
+    const { record } = await installPlugin({
+      home: '/home/u',
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry: remoteEntry,
+      copyDir,
+      fetchRemote,
+    });
+
+    expect(copyDir).toHaveBeenCalledWith(
+      '/home/u/.abu/plugin-packages/official/cloud-thing/_remote/abc123',
+      '/home/u/.abu/plugin-packages/official/cloud-thing/2.0.0',
+    );
+    expect(record.sha).toBe('abc123');
+    expect(record.version).toBe('2.0.0');
+  });
+});

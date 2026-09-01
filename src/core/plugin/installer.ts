@@ -28,7 +28,7 @@ import { readTextFile, exists, readDir } from '@tauri-apps/plugin-fs';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from './manifest';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
-import { pluginInstallDir, pluginKey } from './paths';
+import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
 import type { InstalledPlugin } from './installedStore';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
@@ -139,6 +139,25 @@ export interface PlanInstallOptions {
   marketplaceName: string;
   marketplaceDir: string;
   entry: Pick<MarketplaceEntry, 'name' | 'source'>;
+  /** Required for remote (`url`/`git-subdir`) sources; unused for relative. */
+  home?: string;
+  /**
+   * Privileged fetcher (the `plugin_git_fetch` IPC). When absent, remote
+   * sources keep failing with `UnsupportedSourceError` — callers that cannot
+   * fetch (tests, headless surfaces) degrade exactly as before.
+   */
+  fetchRemote?: (source: PluginSource, destDir: string) => Promise<{ destDir: string; sha: string }>;
+}
+
+/**
+ * Where a remote source is fetched before the user confirms: a sha-scoped
+ * staging area *inside* the packages root (the only root the privileged side
+ * accepts), separate from the versioned install dirs. Downloading is not
+ * granting — nothing is recorded or registered until the user confirms; this
+ * directory is just verified bytes waiting for a decision.
+ */
+function remoteStagingDir(home: string, marketplace: string, name: string, sha: string): string {
+  return joinPath(pluginRoot(home), marketplace, name, '_remote', sha);
 }
 
 /**
@@ -147,7 +166,24 @@ export interface PlanInstallOptions {
  * MCP server commands, which are arbitrary executables.
  */
 export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisclosure> {
-  const sourceDir = resolveSourceDir(opts.entry.source, opts.marketplaceDir);
+  const source = opts.entry.source;
+  let sourceDir: string;
+  if (source.kind === 'relative') {
+    sourceDir = resolveSourceDir(source, opts.marketplaceDir);
+  } else if (opts.fetchRemote && opts.home) {
+    // Refuse unpinned entries before any network work; the privileged side
+    // enforces this too, but failing here keeps the error close to the data.
+    if (!('sha' in source) || !source.sha) {
+      throw new PluginSecurityError('remote plugin source must declare a sha');
+    }
+    const staging = remoteStagingDir(opts.home, opts.marketplaceName, opts.entry.name, source.sha);
+    const fetched = await opts.fetchRemote(source, staging);
+    // Disclose from the fetched, sha-verified package — what the user reads is
+    // what will actually install, not what the marketplace claims.
+    sourceDir = fetched.destDir;
+  } else {
+    throw new UnsupportedSourceError(source.kind);
+  }
   const manifest = await readManifestFrom(sourceDir);
 
   if (manifest.name !== opts.entry.name) {
@@ -216,6 +252,9 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       marketplace: opts.marketplaceName,
       name: disclosure.name,
       version,
+      // Pin the record to the verified sha for remote sources, so "what is
+      // installed" is answerable down to the commit.
+      sha: 'sha' in opts.entry.source ? opts.entry.source.sha : undefined,
       installedAt: (opts.now?.() ?? new Date()).toISOString(),
       contributed: {
         skills: disclosure.skills,

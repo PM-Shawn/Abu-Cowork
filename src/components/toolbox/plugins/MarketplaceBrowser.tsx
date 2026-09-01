@@ -13,9 +13,11 @@
  *    This is the invariant the tests pin: no confirmation, no `installPlugin`.
  *
  * Most entries in the real world (~82% of the 291 in `claude-plugins-official`)
- * point at remote git sources this build cannot fetch, so `UnsupportedSourceError`
- * is a *normal* outcome, not an exception path — it renders as an explanatory
- * notice in the same dialog rather than a toast-shaped failure.
+ * are remote git sources. Those now install too: `planInstall` fetches the
+ * package (sha-verified, in the main process) before disclosing it, so the
+ * user still reads the real contents before confirming. `UnsupportedSourceError`
+ * remains only as the graceful degradation when no fetcher is wired (headless
+ * surfaces) — it renders as an explanatory notice, not a toast-shaped failure.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -27,6 +29,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
+import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import {
   resolveRename,
   type Marketplace,
@@ -206,6 +209,10 @@ export default function MarketplaceBrowser({
           marketplaceName: selected.name,
           marketplaceDir: selected.dir,
           entry,
+          home,
+          // Remote sources are fetched (sha-verified, in the main process)
+          // before disclosure, so what the user reads is what will install.
+          fetchRemote: fetchRemotePluginSource,
         });
         if (planEpochRef.current !== epoch) return; // superseded or cancelled
         setFlow({ kind: 'ready', entry, disclosure });
@@ -224,7 +231,7 @@ export default function MarketplaceBrowser({
         });
       }
     },
-    [selected],
+    [selected, home],
   );
 
   const handleConfirmInstall = useCallback(async () => {
@@ -383,10 +390,9 @@ export default function MarketplaceBrowser({
                         </span>
                       )}
                       {/* Most of a real marketplace (238 of the official 291)
-                          is remote-sourced and cannot install yet. Saying so
-                          on the row beats letting the user find out only
-                          after clicking Install; the button stays live so the
-                          full explanation is still one click away. */}
+                          is remote-sourced: installing one fetches it from git
+                          (sha-verified) rather than copying a local folder, so
+                          the row flags it up front. */}
                       {entry.source.kind !== 'relative' && (
                         <span
                           data-testid="plugin-remote-source-badge"

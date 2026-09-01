@@ -40,6 +40,7 @@ import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore } from '@/stores/mcpStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
+import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 import type { MarketplaceEntry } from '@/core/plugin/marketplace';
@@ -178,7 +179,17 @@ export const usePluginStore = create<PluginStore>()(
             copyDir: async (from, to) => {
               await copyPluginDir(from, to);
             },
+            // Privileged fetch for remote (url/git-subdir) sources; the main
+            // process re-validates url, sha, and destination scope.
+            fetchRemote: fetchRemotePluginSource,
           });
+          // A remote install planned+copied out of a sha-scoped _remote
+          // staging dir; drop it now the versioned dir owns the bytes.
+          if (req.entry.source.kind !== 'relative') {
+            await removePluginDir(
+              `${req.home}/.abu/plugin-packages/${req.marketplaceName}/${req.entry.name}/_remote`,
+            ).catch(() => undefined);
+          }
           // installPlugin only puts the package on disk and describes the
           // record; persisting it is the caller's job.
           await upsertInstalled(req.home, record);

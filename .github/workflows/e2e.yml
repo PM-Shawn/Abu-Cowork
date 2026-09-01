@@ -40,3 +40,62 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # Real-Electron E2E (tests/e2e/, playwright.electron.config.ts). Until this
+  # job existed, the Electron suite ran nowhere in CI — a green "E2E Tests"
+  # check only covered the browser suite above, so desktop-only regressions
+  # (e.g. the composer pending-send drop fixed in 03c35086) shipped invisibly.
+  # `continue-on-error` keeps it advisory while it builds a track record on
+  # hosted macOS runners; drop that line once it has been reliably green.
+  e2e-electron:
+    runs-on: macos-14
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Setup Rust (native helper + sandbox launcher)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache pinned Electron runtimes
+        uses: actions/cache@v4
+        with:
+          path: electron/.runtime
+          key: electron-runtimes-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-electron-runtimes.mjs') }}
+
+      - name: Cache cargo builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            electron/native-helper/target
+            electron/sandbox-launcher/target
+          key: cargo-electron-e2e-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('electron/native-helper/Cargo.lock', 'electron/sandbox-launcher/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Not covered by the suite's global-setup (which prepares runtimes,
+      # sidecar, and renderer) but required by the tool-approval specs.
+      - name: Build sandbox launcher
+        run: npm run build:sandbox-launcher
+
+      - name: Run Electron E2E tests
+        run: npm run test:e2e:electron
+        env:
+          CI: true
+
+      - name: Upload Electron E2E traces
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: electron-e2e-test-results
+          path: test-results/
+          retention-days: 7

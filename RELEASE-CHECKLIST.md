@@ -9,6 +9,10 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 - All release work is merged into `dev`; the release worktree is clean.
 - `dev` is up to date and CI is green. Resolve feature/main conflicts before
   promotion; do not repair them directly on `main`.
+- Open the `e2e-electron` job (E2E Tests workflow) and confirm it actually
+  passed: it is advisory (`continue-on-error`), so a green overall check does
+  NOT prove the real-Electron suite passed. (Delete this line once the job is a
+  required gate.)
 - `git rev-list --right-only --count origin/dev...origin/main` returns `0`:
   `main` must never contain a commit that is absent from `dev`.
 - The release commit contains no `.env.local`, signing material, private module,

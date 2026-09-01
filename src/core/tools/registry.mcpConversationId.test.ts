@@ -64,6 +64,35 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     });
   });
 
+  // N6: browser tab ownership is the pair {conversationId, runKey}, so a
+  // subagent run's id has to reach the server the same way its conversation id
+  // does — through `_meta`, never through the tool's input schema (the model
+  // must not see, or be able to forge, either half).
+  it('forwards the subagent run id from ToolExecutionContext into the MCP request _meta', async () => {
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+      agentRunId: 'sar-xyz',
+    });
+
+    expect(mockCallTool).toHaveBeenCalledTimes(1);
+    expect(mockCallTool.mock.calls[0][0]).toMatchObject({
+      name: 'test_tool',
+      arguments: { a: 1 },
+      _meta: { 'abu/conversationId': 'c1', 'abu/runKey': 'sar-xyz' },
+    });
+  });
+
+  // Degenerate-case compat: the main loop sends no run id, and its request must
+  // stay byte-identical to what it was before N6 — the host owns the
+  // "absent ⇒ main" default.
+  it('omits the run key entirely for a main-loop call', async () => {
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+    });
+
+    expect(mockCallTool.mock.calls[0][0]._meta).toEqual({ 'abu/conversationId': 'c1' });
+  });
+
   it('omits _meta when the run has no conversationId in context', async () => {
     await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, undefined);
 

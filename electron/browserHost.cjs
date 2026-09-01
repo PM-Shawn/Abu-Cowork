@@ -45,9 +45,10 @@
  * - `browser_close {id}` → `mainWin.contentView.removeChildView(view)` +
  *   `view.webContents.close()` + delete from the id→view map; also silently
  *   no-ops if unknown.
- * - `browser_dispose_owner {conversationId}` → close every view that
- *   conversation owns and drop its ownership records (Electron-only; no Tauri
- *   counterpart — see `disposeOwnerViews`).
+ * - `browser_dispose_owner {conversationId, runKey?}` → close every view that
+ *   conversation owns and drop its ownership records; with `runKey`, only that
+ *   subagent run's (Electron-only; no Tauri counterpart — see
+ *   `disposeOwnerViews`).
  *
  * ## Navigation event: `browser://nav/{id}`
  * browser.rs's `on_navigation(move |u| { emit(...); true })` fires on every
@@ -155,29 +156,105 @@ let browserSession = null;
 let automationRuntime = null;
 
 /**
- * ## Tab ownership (per conversation)
+ * ## Tab ownership (per conversation, per subagent run)
  *
  * Browser automation tabs used to live in one global pool with a single
  * "current tab": two conversations driving the browser at the same time saw
  * each other's tabs in `get_tabs`, and either one's action silently moved the
- * other's current tab. Every automation view now records the conversation that
- * opened it, and every "current tab" record is keyed by that owner.
+ * other's current tab. Every automation view now records the OWNER that opened
+ * it, and every "current tab" record is keyed by that owner.
  *
- * `ownerKey` is `payload.ownerId` (the conversation id threaded down from the
- * MCP tool call) or `LEGACY_OWNER` when a caller sends none — legacy is also
- * what the user's own pane tabs get, and it stays visible to everyone so the
- * single-conversation behavior is unchanged.
+ * An owner is the PAIR `{conversationId, runKey}` (N6), not a bare conversation
+ * id: one conversation can drive the browser from its own loop and from any
+ * number of delegated subagent runs at the same time, and keying on the
+ * conversation alone reproduced the very bug the per-conversation keying fixed
+ * — sibling subagents seeing and stealing each other's tabs — one level down.
+ *
+ * - `conversationId` is `payload.ownerId` (threaded down from the MCP tool call
+ *   via `_meta['abu/conversationId']`).
+ * - `runKey` is `payload.runId` (`_meta['abu/runKey']`, the `sar-*` subagent run
+ *   id). A caller that sends none — the conversation's own main loop, and every
+ *   pre-N6 caller — is `MAIN_RUN_KEY`, so the single-run world is the degenerate
+ *   one-dimensional case of the same code, not a second path.
+ * - A caller that sends no `ownerId` at all is `LEGACY_OWNER`, which is also
+ *   what the user's own pane tabs get: the shared pool, visible to everyone.
+ *
+ * The pair is parsed ONCE per call (`resolveOwnerKey`) into a frozen record that
+ * also carries `key` — the canonical composite string every Map is keyed on.
+ * `makeOwner` is the only place that string is built, and `parseOwnerKey` the
+ * only place it is taken apart, so no call site ever concatenates or splits it.
  */
-const LEGACY_OWNER = 'legacy';
+const LEGACY_CONVERSATION = 'legacy';
+const MAIN_RUN_KEY = 'main';
+/**
+ * Separator inside the canonical composite key. NUL is used rather than a
+ * printable pair like `::` because it cannot appear in any id this app mints
+ * (base36 timestamps, `sar-*` run ids) NOR be typed into one; `makeOwner` also
+ * strips it from both halves, so `{a, b}` and `{a<NUL>b, main}` can never
+ * collapse onto the same key.
+ */
+const OWNER_KEY_SEPARATOR = String.fromCharCode(0);
 
-/** view id -> { ownerKey, createdAt }. Absent ⇒ legacy (see `ownerKeyOf`). */
+function sanitizeOwnerPart(value) {
+  return typeof value === 'string' ? value.split(OWNER_KEY_SEPARATOR).join('').trim() : '';
+}
+
+/**
+ * The one place a composite owner key is built.
+ * @returns {{conversationId: string, runKey: string, key: string}}
+ */
+function makeOwner(conversationId, runKey) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return LEGACY_OWNER;
+  const run = sanitizeOwnerPart(runKey) || MAIN_RUN_KEY;
+  return Object.freeze({
+    conversationId: conversation,
+    runKey: run,
+    key: `${conversation}${OWNER_KEY_SEPARATOR}${run}`,
+  });
+}
+
+/** The one place a composite owner key is taken apart. */
+function parseOwnerKey(key) {
+  const at = String(key).indexOf(OWNER_KEY_SEPARATOR);
+  if (at < 0) return { conversationId: String(key), runKey: MAIN_RUN_KEY };
+  return { conversationId: String(key).slice(0, at), runKey: String(key).slice(at + 1) };
+}
+
+/**
+ * The shared pool: the user's own pane tabs, and any caller that sent no owner.
+ * Deliberately a single owner — a caller with a `runId` but no conversation is
+ * folded into it by `makeOwner`, so a stray run id can never mint a private pool
+ * that `browser_dispose_owner` (which refuses the legacy conversation) could
+ * never reap.
+ */
+const LEGACY_OWNER = Object.freeze({
+  conversationId: LEGACY_CONVERSATION,
+  runKey: MAIN_RUN_KEY,
+  key: `${LEGACY_CONVERSATION}${OWNER_KEY_SEPARATOR}${MAIN_RUN_KEY}`,
+});
+
+function isLegacyOwner(owner) {
+  return owner.conversationId === LEGACY_CONVERSATION;
+}
+
+/**
+ * Does `owner` fall inside a dispose request? `runKey === undefined` means the
+ * whole conversation (every run), which is the pre-N6 delete-cascade scope.
+ */
+function ownerInDisposeScope(owner, conversationId, runKey) {
+  if (owner.conversationId !== conversationId) return false;
+  return runKey === undefined || owner.runKey === runKey;
+}
+
+/** view id -> { owner, createdAt }. Absent ⇒ legacy (see `ownerOf`). */
 const viewMeta = new Map();
 
-/** ownerKey -> webContents.id of that owner's most recently touched tab. */
+/** owner key -> webContents.id of that owner's most recently touched tab. */
 const activeTabIdByOwner = new Map();
 
 /**
- * view id -> ownerKey, for automation views awaiting renderer adoption.
+ * view id -> owner record, for automation views awaiting renderer adoption.
  * `createAutomationView()` registers the owner BEFORE emitting
  * `browser://automation-open`, because the renderer answers by calling
  * `browser_create` with the same id — possibly before the emit even returns —
@@ -225,9 +302,15 @@ function cancelAutomationAdoption(id) {
   emit('browser://automation-cancel', { id });
 }
 
-function ownerKeyOf(id) {
+/** @returns {{conversationId: string, runKey: string, key: string}} */
+function ownerOf(id) {
   const meta = viewMeta.get(id);
-  return meta ? meta.ownerKey : LEGACY_OWNER;
+  return meta ? meta.owner : LEGACY_OWNER;
+}
+
+/** The composite key every per-owner Map is keyed on. */
+function ownerKeyOf(id) {
+  return ownerOf(id).key;
 }
 
 /**
@@ -415,9 +498,14 @@ function assertNotAborted(signal) {
   }
 }
 
+/**
+ * The ONE place a wire payload becomes an owner record. `ownerId` carries the
+ * conversation, `runId` the subagent run (absent ⇒ `main`, the conversation's
+ * own loop). Everything downstream passes the record around; nothing re-parses.
+ */
 function resolveOwnerKey(payload) {
-  const raw = payload && typeof payload.ownerId === 'string' ? payload.ownerId.trim() : '';
-  return raw || LEGACY_OWNER;
+  if (!payload) return LEGACY_OWNER;
+  return makeOwner(payload.ownerId, payload.runId);
 }
 
 function isInspectPayload(value) {
@@ -650,42 +738,56 @@ function configureBrowserView(id, view) {
 
 /**
  * @param {unknown} tabId
- * @param {string} ownerKey the calling conversation's owner key
+ * @param {{conversationId: string, runKey: string, key: string}} owner the
+ *   calling run's owner record
  * @returns {{id: string, view: import('electron').WebContentsView} | null}
  *   null when no live view has that webContents id (callers keep their own
  *   "not found" message); THROWS when the tab exists but belongs to another
  *   conversation — a silent miss there would look like "the tab vanished" and
  *   send the model into a retry loop on someone else's tab.
+ *
+ * Reaching a SIBLING RUN's tab inside the same conversation is allowed (N6):
+ * every caller here named the tab EXPLICITLY, and an explicit id is exactly how
+ * a parent hands a tab to a child ("continue on tab 42" in the task text) —
+ * `get_tabs` never lists it, so the id cannot have been guessed from the
+ * listing. It is recorded rather than silent, because it is the one place a run
+ * touches a page it did not open.
  */
-function findViewByTabId(tabId, ownerKey = LEGACY_OWNER) {
+function findViewByTabId(tabId, owner = LEGACY_OWNER) {
   const numeric = Number(tabId);
   if (!Number.isInteger(numeric)) return null;
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (contents && !contents.isDestroyed() && contents.id === numeric) {
-      const tabOwner = ownerKeyOf(id);
+      const tabOwner = ownerOf(id);
       // A legacy tab (the user's own pane tab) may be driven by anyone, and
       // doing so does NOT claim it — ownership stays legacy.
-      if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) {
-        throw new Error(
-          `Browser tab ${tabId} belongs to another conversation's task. ` +
-            'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+      if (tabOwner.key === owner.key || isLegacyOwner(tabOwner)) return { id, view };
+      if (tabOwner.conversationId === owner.conversationId) {
+        console.log(
+          `[browserHost] cross-run tab access: run ${owner.runKey} acting on tab ${tabId} `
+            + `owned by run ${tabOwner.runKey} of the same conversation (explicit tabId hand-over)`
         );
+        return { id, view };
       }
-      return { id, view };
+      throw new Error(
+        `Browser tab ${tabId} belongs to another conversation's task. ` +
+          'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+      );
     }
   }
   return null;
 }
 
 /**
- * @param {string} [ownerKey] the conversation this view is being opened for
+ * @param {{conversationId: string, runKey: string, key: string}} [owner] the
+ *   run this view is being opened for
  * @param {AbortSignal} [signal] aborts when the run that asked for this tab was
  *   stopped — checked on every iteration of the adoption wait below, so a
  *   stopped run neither sits out the rest of the wait nor ends up owning a
  *   hidden fallback view it can never close (N8).
  */
-async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
+async function createAutomationView(owner = LEGACY_OWNER, signal) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -693,15 +795,21 @@ async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
   // Register the owner before emitting: the renderer's adoption calls back
   // into browserCreate() synchronously on the main process, and that is where
   // the pending owner is consumed.
-  pendingAutomationOwners.set(id, ownerKey);
+  pendingAutomationOwners.set(id, owner);
   // Tell the renderer WHOSE view this is: it hangs the adopted tab on that
   // conversation, so a background task's tab never lands in the conversation
   // the user happens to be looking at. LEGACY_OWNER sends no ownerId at all —
   // a legacy view belongs to the shared pool and every conversation may see it.
+  //
+  // Deliberately the CONVERSATION only, never the runKey: renderer visibility
+  // stays conversation-granular (C2), because the user watching the pane wants
+  // every tab their conversation opened, whichever run opened it. Run isolation
+  // is a model-facing boundary (get_tabs / current tab / reclaim), not a
+  // user-facing one.
   emit('browser://automation-open', {
     id,
     url: 'about:blank',
-    ...(ownerKey !== LEGACY_OWNER ? { ownerId: ownerKey } : {}),
+    ...(isLegacyOwner(owner) ? {} : { ownerId: owner.conversationId }),
   });
 
   // The production renderer adopts agent-created tabs into its normal browser
@@ -722,9 +830,9 @@ async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
       // if any other path got there first its guess must not win (that would
       // hand the tab to the wrong owner AND leave this caller without a current
       // tab). Same authority model as the fallback branch below.
-      viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+      viewMeta.set(id, { owner, createdAt: Date.now() });
       pendingAutomationOwners.delete(id);
-      activeTabIdByOwner.set(ownerKey, adopted.webContents.id);
+      activeTabIdByOwner.set(owner.key, adopted.webContents.id);
       return adopted;
     }
     // N4: `disposeOwnerViews` purges this owner's pending entries, so a missing
@@ -748,43 +856,46 @@ async function createAutomationView(ownerKey = LEGACY_OWNER, signal) {
       session: browserSessionForViews(),
     },
   });
-  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+  viewMeta.set(id, { owner, createdAt: Date.now() });
   configureBrowserView(id, view);
   win.contentView.addChildView(view);
   view.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
   view.setVisible(false);
   views.set(id, view);
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  activeTabIdByOwner.set(owner.key, view.webContents.id);
   void view.webContents.loadURL('about:blank');
   return view;
 }
 
 /**
- * The tabs `ownerKey` is allowed to see: its own plus the legacy pool (the
+ * The tabs `owner` is allowed to see: its OWN RUN's plus the legacy pool (the
  * user's pane tabs and any caller that sent no owner). A legacy caller sees
- * only legacy tabs — never another conversation's.
+ * only legacy tabs — never a conversation's. A sibling run of the same
+ * conversation is NOT listed (N6, user-approved): parent and child agents are
+ * invisible to each other by default, and the only hand-over channel is the
+ * parent naming an explicit tabId in the task description.
  *
  * `createIfEmpty` (default true, the historical behavior) provisions a fresh
- * automation view when the owner has none, so `get_tabs` can bootstrap a task
+ * automation view when THIS RUN has none, so `get_tabs` can bootstrap a task
  * that has not opened a tab yet. Read-only probes — notably the desktop app's
  * browser permission gate, which resolves a tab's origin BEFORE deciding
  * whether the action is even allowed — pass false: a query must not be the
  * thing that opens a tab.
  *
- * @param {string} [ownerKey]
+ * @param {{conversationId: string, runKey: string, key: string}} [owner]
  * @param {boolean} [createIfEmpty]
  * @param {AbortSignal} [signal] forwarded to the adoption wait (see
  *   `createAutomationView`) — provisioning is the one listing path that can
  *   block for seconds, so a stopped run must not sit it out.
  */
-async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true, signal) {
+async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (!contents || contents.isDestroyed()) continue;
     if (!automationDocumentAllowed(contents.getURL())) continue;
-    const tabOwner = ownerKeyOf(id);
-    if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) continue;
+    const tabOwner = ownerOf(id);
+    if (tabOwner.key !== owner.key && !isLegacyOwner(tabOwner)) continue;
     tabs.push({
       id,
       view,
@@ -794,7 +905,7 @@ async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true, sig
     });
   }
   if (tabs.length === 0 && createIfEmpty) {
-    const view = await createAutomationView(ownerKey, signal);
+    const view = await createAutomationView(owner, signal);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
@@ -803,8 +914,8 @@ async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true, sig
       title: view.webContents.getTitle(),
     });
   }
-  if (tabs.length > 0 && !tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(ownerKey))) {
-    activeTabIdByOwner.set(ownerKey, tabs[0].tabId);
+  if (tabs.length > 0 && !tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(owner.key))) {
+    activeTabIdByOwner.set(owner.key, tabs[0].tabId);
   }
   return tabs;
 }
@@ -969,10 +1080,11 @@ async function runBrowserAutomation(action, payload, signal) {
   // and open a brand-new tab (or leak any other side effect) after Stop.
   assertNotAborted(signal);
 
-  const ownerKey = resolveOwnerKey(payload);
+  const owner = resolveOwnerKey(payload);
+  const ownerKey = owner.key;
 
   if (action === 'get_tabs') {
-    const tabs = await automationTabs(ownerKey, payload.createIfEmpty !== false, signal);
+    const tabs = await automationTabs(owner, payload.createIfEmpty !== false, signal);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -1005,7 +1117,7 @@ async function runBrowserAutomation(action, payload, signal) {
   const targetTabId = payload.tabId === undefined && action === 'get_html'
     ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
-  const match = findViewByTabId(targetTabId, ownerKey);
+  const match = findViewByTabId(targetTabId, owner);
   if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
 
@@ -1152,9 +1264,9 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   // An id the renderer is adopting on behalf of an automation call carries a
   // pending owner (see createAutomationView); anything else — a tab the user
   // opened in the pane — is legacy and stays visible to every caller.
-  const ownerKey = pendingAutomationOwners.get(id) ?? LEGACY_OWNER;
+  const owner = pendingAutomationOwners.get(id) ?? LEGACY_OWNER;
   pendingAutomationOwners.delete(id);
-  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+  viewMeta.set(id, { owner, createdAt: Date.now() });
 
   configureBrowserView(id, view);
 
@@ -1167,7 +1279,7 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   view.setBounds(toRect(x, y, width, height));
   if (!shouldShow) view.setVisible(false);
   views.set(id, view);
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  activeTabIdByOwner.set(owner.key, view.webContents.id);
 
   const target = url || 'about:blank';
   void view.webContents.loadURL(parseUrl(target));
@@ -1306,12 +1418,21 @@ function browserClose({ id }) {
  * never touched, so an unknown/blank/legacy owner is a deliberate no-op rather
  * than an error — like `browser_hide`/`browser_close`, this is a cleanup
  * command whose failure mode must never be "kill someone else's tab".
+ *
+ * N6 gives it a second, narrower scope. `runKey`:
+ *  - omitted ⇒ EVERY run of that conversation (the delete cascade — unchanged
+ *    from before N6, when a conversation had exactly one owner key);
+ *  - given ⇒ only that run, so a finished subagent releases its own tabs
+ *    without touching a sibling run's or the conversation's own loop (A2).
+ *
+ * @param {string} conversationId
+ * @param {string} [runKey]
  */
-function disposeOwnerViews(ownerKey) {
+function disposeOwnerViews(conversationId, runKey) {
   const cancelledIds = [];
   // Snapshot: closeView deletes from `views` as we go.
   for (const [id, view] of Array.from(views)) {
-    if (ownerKeyOf(id) !== ownerKey) continue;
+    if (!ownerInDisposeScope(ownerOf(id), conversationId, runKey)) continue;
     closeView(id, view);
     // Tombstone the closed view's id too: BrowserTab may have a create RETRY in
     // flight for it (its invoke failed once), which would otherwise rebuild the
@@ -1319,24 +1440,37 @@ function disposeOwnerViews(ownerKey) {
     cancelledIds.push(id);
   }
   for (const [pendingId, pendingOwner] of Array.from(pendingAutomationOwners)) {
-    if (pendingOwner === ownerKey) cancelledIds.push(pendingId);
+    if (ownerInDisposeScope(pendingOwner, conversationId, runKey)) cancelledIds.push(pendingId);
   }
   // closeView already drops the per-view records (and
   // `forgetOwnerInteractionIfUnused` clears the interaction record once the
   // owner's last view is gone), but the owner may also hold records with no live
   // view behind them — a current-tab id whose view was destroyed by the window
-  // teardown, or a pending adoption.
-  activeTabIdByOwner.delete(ownerKey);
-  userInteractionAt.delete(ownerKey);
+  // teardown, or a pending adoption. Both maps are keyed on the composite owner
+  // key, so a conversation-wide dispose has to sweep every run's entry.
+  for (const key of Array.from(activeTabIdByOwner.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      activeTabIdByOwner.delete(key);
+    }
+  }
+  for (const key of Array.from(userInteractionAt.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      userInteractionAt.delete(key);
+    }
+  }
   // Emitted last, so the renderer's reaction (dropping the tab record, which
   // fires `browser_close`) can never race the teardown above.
   for (const id of cancelledIds) cancelAutomationAdoption(id);
 }
 
-function browserDisposeOwner({ conversationId }) {
-  const ownerKey = typeof conversationId === 'string' ? conversationId.trim() : '';
-  if (!ownerKey || ownerKey === LEGACY_OWNER) return null;
-  disposeOwnerViews(ownerKey);
+function browserDisposeOwner({ conversationId, runKey }) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return null;
+  // A blank/non-string runKey is "the whole conversation", not "a run literally
+  // named ''": the delete cascade sends no runKey at all, and a malformed one
+  // must not silently narrow a full teardown into a no-op.
+  const run = sanitizeOwnerPart(runKey) || undefined;
+  disposeOwnerViews(conversation, run);
   return null;
 }
 

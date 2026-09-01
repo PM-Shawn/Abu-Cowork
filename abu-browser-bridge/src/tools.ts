@@ -27,6 +27,19 @@ export const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
  */
 export const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
 
+/**
+ * MCP `_meta` key carrying the SUBAGENT RUN that issued the call, alongside
+ * `ABU_CONVERSATION_META_KEY`'s conversation id. Browser tab ownership in the
+ * Abu host is the pair `{conversationId, runKey}` (N6) — one conversation can
+ * drive the browser from its own loop and from several delegated subagent runs
+ * at once, and without the second half they would share one tab pool and one
+ * "current tab" and steal each other's pages. Absent ⇒ the conversation's own
+ * loop, which the host reads as the run key `main`, so a caller that never
+ * sends this key behaves exactly as it did before. Same
+ * `_meta`-not-input-schema and duplication rationale as above.
+ */
+export const ABU_RUN_META_KEY = 'abu/runKey';
+
 export interface BrowserTransportResponse {
   success: boolean;
   data?: unknown;
@@ -89,17 +102,31 @@ async function ensureConnected(transport: BrowserTransport): Promise<void> {
   }
 }
 
-/**
- * Pull the owning conversation id out of a tool handler's `extra` (the MCP SDK's
- * per-request context, `extra._meta?: RequestMeta`), so every handler can merge
- * `{ ownerId }` into its `transport.send()` payload without repeating the
- * `_meta` lookup. `extra` is typed as `unknown` here rather than importing the
- * SDK's `RequestHandlerExtra` type, to stay decoupled from its exact shape.
- */
-function ownerFromExtra(extra: unknown): string | undefined {
+function metaString(extra: unknown, key: string): string | undefined {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
-  const owner = meta?.[ABU_CONVERSATION_META_KEY];
-  return typeof owner === 'string' ? owner : undefined;
+  const value = meta?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/**
+ * Pull the calling OWNER — conversation id plus subagent run key — out of a tool
+ * handler's `extra` (the MCP SDK's per-request context, `extra._meta?:
+ * RequestMeta`), already shaped as the payload fragment every handler merges
+ * into its `transport.send()` call, so the `_meta` lookup is not repeated at the
+ * 19 call sites below. `extra` is typed as `unknown` here rather than importing
+ * the SDK's `RequestHandlerExtra` type, to stay decoupled from its exact shape.
+ *
+ * Absent keys are OMITTED rather than defaulted: the host owns the "no run id ⇒
+ * the conversation's own loop" default, and a payload that never carries the
+ * field keeps its exact pre-N6 shape for every caller that sends no run.
+ */
+function ownerPayloadFromExtra(extra: unknown): Record<string, string> {
+  const ownerId = metaString(extra, ABU_CONVERSATION_META_KEY);
+  const runId = metaString(extra, ABU_RUN_META_KEY);
+  return {
+    ...(ownerId ? { ownerId } : {}),
+    ...(runId ? { runId } : {}),
+  };
 }
 
 /**
@@ -194,10 +221,10 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     'Get all open browser tabs grouped by window. Returns a summary with the current window/tab info, plus a list of windows each containing their tabs. Use this first to find the target tab ID for other browser actions.',
     async (extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
+      const owner = ownerPayloadFromExtra(extra);
       const createIfEmpty = createIfEmptyFromExtra(extra);
       const res = await sendWithSignal(transport, 'get_tabs', {
-        ...(ownerId ? { ownerId } : {}),
+        ...owner,
         ...(createIfEmpty === false ? { createIfEmpty: false } : {}),
       }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
@@ -215,8 +242,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, selector, maxChars }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -232,8 +259,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, locator }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'click', { tabId, locator: parsed, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'click', { tabId, locator: parsed, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -250,8 +277,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, locator, value }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'fill', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'fill', { tabId, locator: parsed, value, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -268,8 +295,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, locator, value }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -293,11 +320,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     async ({ tabId, condition, timeout }, extra) => {
       await ensureConnected(transport);
       const parsed = parseCondition(condition);
-      const ownerId = ownerFromExtra(extra);
+      const owner = ownerPayloadFromExtra(extra);
       const res = await sendWithSignal(
         transport,
         'wait_for',
-        { tabId, condition: parsed, timeout, ...(ownerId ? { ownerId } : {}) },
+        { tabId, condition: parsed, timeout, ...owner },
         extra,
         timeout + 5000
       );
@@ -315,8 +342,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'extract_text', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'extract_text', { tabId, selector, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -331,8 +358,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, selector }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'extract_table', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'extract_table', { tabId, selector, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -349,8 +376,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, direction, amount, selector }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'scroll', { tabId, direction, amount, selector, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'scroll', { tabId, direction, amount, selector, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -366,8 +393,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, url, action }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'navigate', { tabId, url, action, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'navigate', { tabId, url, action, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -383,8 +410,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, key, modifiers }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'keyboard', { tabId, key, modifiers, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'keyboard', { tabId, key, modifiers, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -399,8 +426,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, code }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'execute_js', { tabId, code, ...(ownerId ? { ownerId } : {}) }, extra, 60_000);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'execute_js', { tabId, code, ...owner }, extra, 60_000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -416,8 +443,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId, code, selector }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const htmlResponse = await sendWithSignal(transport, 'get_html', { tabId, selector, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const htmlResponse = await sendWithSignal(transport, 'get_html', { tabId, selector, ...owner }, extra);
       if (!htmlResponse.success) {
         throw new Error(htmlResponse.error ?? 'Failed to read page HTML');
       }
@@ -438,8 +465,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'screenshot', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'screenshot', { tabId, ...owner }, extra);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -462,9 +489,9 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
+      const owner = ownerPayloadFromExtra(extra);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await sendWithSignal(transport, 'screenshot_full_page', { tabId, ...(ownerId ? { ownerId } : {}) }, extra, 120_000);
+      const res = await sendWithSignal(transport, 'screenshot_full_page', { tabId, ...owner }, extra, 120_000);
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -500,8 +527,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     'Get recent file downloads from the browser. Useful for confirming that a file was downloaded after clicking a download button.',
     async (extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'get_downloads', ownerId ? { ownerId } : {}, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'get_downloads', owner, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -515,8 +542,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'start_recording', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'start_recording', { tabId, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -530,8 +557,8 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     },
     async ({ tabId }, extra) => {
       await ensureConnected(transport);
-      const ownerId = ownerFromExtra(extra);
-      const res = await sendWithSignal(transport, 'stop_recording', { tabId, ...(ownerId ? { ownerId } : {}) }, extra);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'stop_recording', { tabId, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

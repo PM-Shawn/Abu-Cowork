@@ -215,14 +215,18 @@ function loadHost({ adopt = true } = {}) {
   return { host, emitted, restore, fireHeadersReceived };
 }
 
-function getTabs(host, ownerId) {
-  return host.performBrowserAutomation('get_tabs', ownerId ? { ownerId } : {});
+function getTabs(host, ownerId, runId) {
+  return host.performBrowserAutomation('get_tabs', {
+    ...(ownerId ? { ownerId } : {}),
+    ...(runId ? { runId } : {}),
+  });
 }
 
 /** A read-only listing: never provisions a view for an owner that has none. */
-function probeTabs(host, ownerId) {
+function probeTabs(host, ownerId, runId) {
   return host.performBrowserAutomation('get_tabs', {
     ...(ownerId ? { ownerId } : {}),
+    ...(runId ? { runId } : {}),
     createIfEmpty: false,
   });
 }
@@ -231,9 +235,10 @@ function tabIds(result) {
   return result.windows[0].tabs.map((tab) => tab.tabId);
 }
 
-function navigate(host, ownerId, tabId, url) {
+function navigate(host, ownerId, tabId, url, runId) {
   return host.performBrowserAutomation('navigate', {
     ...(ownerId ? { ownerId } : {}),
+    ...(runId ? { runId } : {}),
     tabId,
     action: 'goto',
     url,
@@ -1353,6 +1358,290 @@ test('browser_note_user_interaction on an unknown id is a silent no-op', async (
     // immediately with no wait.
     await navigate(host, OWNER_A, aTab, 'https://example.com/');
     assert.deepEqual(state.sleeps, []);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ── N6 — ownership refined from "one conversation" to "one subagent run" ──
+ *
+ * A conversation can drive the browser from several places at once: its own
+ * main loop, and any number of delegated subagent runs. With ownership keyed on
+ * the conversation alone all of them shared one pool and one "current tab", so
+ * two sibling subagents researching two different sites saw each other's tabs in
+ * `get_tabs` and silently stole each other's current tab — the exact bug the
+ * per-conversation keying fixed BETWEEN conversations, reproduced inside one.
+ *
+ * The owner is now the pair `{conversationId, runKey}`:
+ *  - `runKey` comes from `payload.runId` (the `sar-*` subagent run id, threaded
+ *    down through `_meta['abu/runKey']`); a caller that sends none — the main
+ *    loop, and every pre-N6 caller — is `main`, so single-run behavior is
+ *    byte-for-byte what it was.
+ *  - `get_tabs` / current-tab / takeover records are all per pair.
+ *  - An EXPLICIT tabId naming a sibling run's tab in the SAME conversation is
+ *    allowed (that is how a parent hands a tab to a child: it puts the id in the
+ *    task description); another CONVERSATION's tab still fails loud, with the
+ *    message unchanged.
+ *  - `browser_dispose_owner` takes an optional `runKey`: with it, exactly that
+ *    run is reaped (a finished subagent releasing its tabs); without it, every
+ *    run of that conversation is (the conversation was deleted) — the pre-N6
+ *    behavior of that command.
+ */
+
+const RUN_1 = 'sar-run-one';
+const RUN_2 = 'sar-run-two';
+
+test('two subagent runs of the same conversation do not see each other tabs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const run1 = await getTabs(host, OWNER_A, RUN_1);
+    const run2 = await getTabs(host, OWNER_A, RUN_2);
+    const mainLoop = await getTabs(host, OWNER_A);
+
+    assert.equal(tabIds(run1).length, 1);
+    assert.equal(tabIds(run2).length, 1);
+    assert.equal(tabIds(mainLoop).length, 1);
+    const distinct = new Set([tabIds(run1)[0], tabIds(run2)[0], tabIds(mainLoop)[0]]);
+    assert.equal(distinct.size, 3, 'each run provisioned its own tab');
+
+    // Neither sibling leaks into the other listing, and neither leaks into the
+    // conversation main loop's.
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), tabIds(run1));
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_2)), tabIds(run2));
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), tabIds(mainLoop));
+  } finally {
+    restore();
+  }
+});
+
+test('each run keeps its own current tab', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const run2Tab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    assert.notEqual(run1Tab, run2Tab, 'the two runs really provisioned separate tabs');
+
+    // Run 2 acting on its own tab must not move run 1's current tab.
+    await navigate(host, OWNER_A, run2Tab, 'https://example.com/', RUN_2);
+
+    assert.equal((await probeTabs(host, OWNER_A, RUN_1)).summary.currentTabId, run1Tab);
+    assert.equal((await probeTabs(host, OWNER_A, RUN_2)).summary.currentTabId, run2Tab);
+  } finally {
+    restore();
+  }
+});
+
+test('a run may act on a sibling run tab when the parent hands it the explicit tabId', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    await getTabs(host, OWNER_A, RUN_2);
+
+    const logs = [];
+    const realLog = console.log;
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    try {
+      await navigate(host, OWNER_A, run1Tab, 'https://handed-over.example/', RUN_2);
+    } finally {
+      console.log = realLog;
+    }
+
+    assert.equal(contentsFor(run1Tab).getURL(), 'https://handed-over.example/');
+    assert.equal(
+      logs.some((line) => line.includes(RUN_2) && line.includes(RUN_1)),
+      true,
+      'the cross-run access is recorded so it is not invisible'
+    );
+    // Handing a tab over does NOT reassign it: it stays run 1's, and run 2's
+    // own listing is unchanged.
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), [run1Tab]);
+    assert.equal(
+      tabIds(await probeTabs(host, OWNER_A, RUN_2)).includes(run1Tab),
+      false,
+      'an explicit hand-over does not make the tab visible to the borrower'
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('a tab owned by another conversation is still refused, message unchanged', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const foreignTab = tabIds(await getTabs(host, OWNER_B, RUN_1))[0];
+    await getTabs(host, OWNER_A, RUN_2);
+
+    await assert.rejects(
+      navigate(host, OWNER_A, foreignTab, 'https://example.com/', RUN_2),
+      (error) => {
+        assert.equal(
+          error.message,
+          `Browser tab ${foreignTab} belongs to another conversation's task. `
+            + 'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+        );
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('browser_dispose_owner with a runKey reaps only that run', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const run2Tab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    const mainTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const otherConversationTab = tabIds(await getTabs(host, OWNER_B, RUN_1))[0];
+
+    host.browserDispatch(null, 'browser_dispose_owner', {
+      conversationId: OWNER_A,
+      runKey: RUN_1,
+    });
+
+    assert.equal(contentsFor(run1Tab).isDestroyed(), true, 'the finished run released its tab');
+    assert.equal(contentsFor(run2Tab).isDestroyed(), false, 'a sibling run is untouched');
+    assert.equal(contentsFor(mainTab).isDestroyed(), false, 'the conversation main loop is untouched');
+    assert.equal(contentsFor(otherConversationTab).isDestroyed(), false);
+
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), []);
+    assert.equal((await probeTabs(host, OWNER_A, RUN_1)).summary.currentTabId, null);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_2)), [run2Tab]);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [mainTab]);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B, RUN_1)), [otherConversationTab]);
+  } finally {
+    restore();
+  }
+});
+
+test('browser_dispose_owner without a runKey still reaps every run of the conversation', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const run2Tab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    const mainTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const otherConversationTab = tabIds(await getTabs(host, OWNER_B, RUN_1))[0];
+
+    host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A });
+
+    assert.equal(contentsFor(run1Tab).isDestroyed(), true);
+    assert.equal(contentsFor(run2Tab).isDestroyed(), true);
+    assert.equal(contentsFor(mainTab).isDestroyed(), true);
+    assert.equal(contentsFor(otherConversationTab).isDestroyed(), false);
+
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), []);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_2)), []);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), []);
+  } finally {
+    restore();
+  }
+});
+
+test('a per-run dispose clears that run takeover record only', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const run2Tab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    typeInto(run1Tab);
+    typeInto(run2Tab);
+
+    host.browserDispatch(null, 'browser_dispose_owner', {
+      conversationId: OWNER_A,
+      runKey: RUN_1,
+    });
+
+    // Run 1's record is gone with its views; run 2's is not, so run 2 still
+    // backs off (virtual time never advanced, so its timestamp is still fresh).
+    const freshRun1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    await navigate(host, OWNER_A, freshRun1Tab, 'https://example.com/', RUN_1);
+    assert.deepEqual(state.sleeps, [], 'no stale takeover record survived the per-run dispose');
+
+    // Run 2's record survived, so run 2 still backs off — proving the sweep was
+    // scoped to one run rather than to the whole conversation.
+    await navigate(host, OWNER_A, run2Tab, 'https://example.com/', RUN_2);
+    assert.ok(state.sleeps.length > 0, 'the sibling run still yields to the user');
+  } finally {
+    restore();
+  }
+});
+
+test('a caller that sends no runId is the same owner as runKey "main"', async () => {
+  // Byte-compat: the single-conversation, no-subagent world is the degenerate
+  // one-dimensional case of the pair, not a second code path.
+  const { host, restore } = loadHost();
+  try {
+    const mainTab = tabIds(await getTabs(host, OWNER_A))[0];
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, 'main')), [mainTab]);
+    assert.equal((await probeTabs(host, OWNER_A, 'main')).summary.currentTabId, mainTab);
+  } finally {
+    restore();
+  }
+});
+
+test('legacy pane tabs stay visible to every run of every conversation', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-tab-1',
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    const paneTab = tabIds(await probeTabs(host))[0];
+
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), [paneTab]);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B, RUN_2)), [paneTab]);
+
+    // ...and a run may drive it without claiming it.
+    await navigate(host, OWNER_A, paneTab, 'https://still-legacy.example/', RUN_1);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_B, RUN_2)), [paneTab]);
+  } finally {
+    restore();
+  }
+});
+
+test('a run dispose never reaps the legacy pool, whatever the runKey', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.browserDispatch(null, 'browser_create', {
+      id: 'pane-tab-1',
+      url: 'https://example.com/',
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+    });
+    const paneTab = tabIds(await probeTabs(host))[0];
+
+    for (const runKey of [RUN_1, 'main', '', '   ', undefined, 42]) {
+      assert.equal(
+        host.browserDispatch(null, 'browser_dispose_owner', { conversationId: 'legacy', runKey }),
+        null
+      );
+    }
+
+    assert.equal(contentsFor(paneTab).isDestroyed(), false);
+    assert.deepEqual(tabIds(await probeTabs(host)), [paneTab]);
+  } finally {
+    restore();
+  }
+});
+
+test('a runId is never enough on its own to escape the legacy pool', async () => {
+  // An `ownerId`-less caller is legacy no matter what run it claims to be:
+  // otherwise a stray runId would mint a private pool nothing can dispose (the
+  // dispose command refuses the legacy conversation by design).
+  const { host, restore } = loadHost();
+  try {
+    const strayTab = tabIds(await getTabs(host, undefined, RUN_1))[0];
+    assert.deepEqual(tabIds(await probeTabs(host)), [strayTab], 'it landed in the shared pool');
+    assert.deepEqual(tabIds(await probeTabs(host, undefined, RUN_2)), [strayTab]);
   } finally {
     restore();
   }

@@ -32,6 +32,17 @@ const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
 const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
 
 /**
+ * MCP request `_meta` key carrying the SUBAGENT RUN that issued the call. The
+ * browser host owns tabs by the pair `{conversationId, runKey}` (N6), so the
+ * conversation id above is only half the owner: without this, a conversation's
+ * own loop and each of its delegated subagent runs share one tab pool and one
+ * "current tab" and steal each other's pages. Absent ⇒ the conversation's own
+ * loop (the host reads that as `main`). Mirrors `ABU_RUN_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_RUN_META_KEY = 'abu/runKey';
+
+/**
  * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
  * of the execute() closure built during tool discovery so the mapping is
  * directly unit-testable — the discovery flow itself depends on the MCP SDK,
@@ -39,9 +50,10 @@ const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
  */
 export function toCallToolOpts(
   context?: ToolExecutionContext
-): { conversationId?: string; signal?: AbortSignal } {
+): { conversationId?: string; agentRunId?: string; signal?: AbortSignal } {
   return {
     conversationId: context?.conversationId,
+    agentRunId: context?.agentRunId,
     signal: context?.abortSignal,
   };
 }
@@ -769,6 +781,12 @@ export class MCPClientManager {
     args: Record<string, unknown>,
     opts?: {
       conversationId?: string;
+      /**
+       * The `sar-*` subagent run that issued the call, or omitted for the
+       * conversation's own loop. Second half of the browser host's tab-owner
+       * pair — see `ABU_RUN_META_KEY`.
+       */
+      agentRunId?: string;
       signal?: AbortSignal;
       /**
        * Only meaningful for the browser server's `get_tabs`: pass `false` for a
@@ -822,6 +840,11 @@ export class MCPClientManager {
       const meta: Record<string, unknown> = {};
       if (opts?.conversationId) {
         meta[ABU_CONVERSATION_META_KEY] = opts.conversationId;
+      }
+      // Only when there IS one: a main-loop call keeps its exact pre-N6 `_meta`
+      // shape, and the host owns the "absent ⇒ main" default.
+      if (opts?.agentRunId) {
+        meta[ABU_RUN_META_KEY] = opts.agentRunId;
       }
       if (opts?.createBrowserTabIfEmpty === false) {
         meta[ABU_CREATE_IF_EMPTY_META_KEY] = false;

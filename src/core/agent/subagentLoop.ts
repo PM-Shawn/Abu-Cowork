@@ -430,6 +430,14 @@ export interface SubagentLoopOptions {
   agent: SubagentDefinition;
   task: string;
   context?: string;
+  /**
+   * App-owned identity for THIS run (`sar-*`), stamped by
+   * `scopeSubagentLoopProgress` — the same value that namespaces the run's
+   * progress ids. It reaches tools as `ToolExecutionContext.agentRunId` so
+   * per-run resources (browser tab ownership) can tell sibling delegations
+   * apart; a run without one is treated as the conversation's own loop.
+   */
+  agentRunId?: string;
   /** Summary of parent conversation context for better task understanding */
   parentConversationSummary?: string;
   /** Shell-materialized source user turn for multimodal delegation. */
@@ -1073,6 +1081,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           const subagentToolContext: ToolExecutionContext = {
             workspacePath,
             conversationId: options.parentConversationId,
+            // Per-run resources (browser tabs) are owned by the pair
+            // {conversation, run}: without this, sibling delegations of one
+            // conversation share one pool and steal each other's tabs.
+            agentRunId: options.agentRunId,
             loopId: options.parentLoopId,
             interactionMode: resolveSubagentInteractionMode(options),
             authorizationScopeId: options.authorizationScopeId,

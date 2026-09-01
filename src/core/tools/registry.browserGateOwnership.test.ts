@@ -128,6 +128,44 @@ describe('browser permission gate ↔ per-conversation tab ownership', () => {
     });
   });
 
+  // N6 extends the same argument one level down: ownership is the pair
+  // {conversationId, runKey}, so a probe that sent only the conversation would
+  // be the CONVERSATION MAIN LOOP asking, see none of the subagent's tabs, and
+  // resolve null for every action a subagent takes — the identical fail-open
+  // this suite exists to prevent, moved from "between conversations" to
+  // "between a conversation and its own delegations".
+  it('sends the subagent run key too, so a delegated run can see its own tab', async () => {
+    const RUN = 'sar-delegated';
+    mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+      Promise.resolve(
+        params._meta?.['abu/conversationId'] === OWNER
+          && params._meta?.['abu/runKey'] === RUN
+          ? tabsPayload([{ tabId: OWNED_TAB_ID, url: 'https://example.com/dashboard' }])
+          : tabsPayload([]),
+      ),
+    );
+    const asked: ConfirmInfo[] = [];
+    const confirm = async (info: ConfirmInfo) => { asked.push(info); return true; };
+
+    const decision = await checkToolApproval(
+      'abu-browser__click',
+      { tabId: OWNED_TAB_ID, locator: '{"ref":"e1"}' },
+      { conversationId: OWNER, agentRunId: RUN } as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(mockCallTool.mock.calls[0][0]).toMatchObject({
+      name: 'get_tabs',
+      _meta: {
+        'abu/conversationId': OWNER,
+        'abu/runKey': RUN,
+        'abu/createIfEmpty': false,
+      },
+    });
+    expect(asked[0].browserOrigin).toBe('https://example.com');
+  });
+
   it('still DENIES a user-blocked site reached through an owned tab (no fail-open)', async () => {
     mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
       Promise.resolve(

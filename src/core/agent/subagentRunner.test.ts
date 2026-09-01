@@ -190,6 +190,13 @@ vi.mock('../enterprise/llm-resolver', () => ({
   resolveEffectiveLlmCreds: (...a: unknown[]) => resolveEffectiveLlmCredsMock(...a),
 }));
 
+const disposeRunBrowserViewsMock = vi.fn();
+vi.mock('../browser/browserViewLifecycle', () => ({
+  disposeRunBrowserViews: (...a: unknown[]) => disposeRunBrowserViewsMock(...a),
+  disposeOwnedBrowserViews: vi.fn(),
+  closeBrowserViews: vi.fn(),
+}));
+
 const emitHookMock = vi.fn((event: unknown) => event);
 vi.mock('./lifecycleHooks', () => ({
   emitHook: (...a: unknown[]) => emitHookMock(...a),
@@ -285,6 +292,7 @@ describe('subagentRunner', () => {
     resolveEffectiveLlmCredsMock.mockReset();
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
     emitHookMock.mockClear();
+    disposeRunBrowserViewsMock.mockReset();
   });
 
   describe('wire projection contract', () => {
@@ -357,6 +365,9 @@ describe('subagentRunner', () => {
         'capsPort',
         'workspaceReader',
         'skillCommandApprovalFactory',
+        // N6: run identity is shell-stamped into the trusted tool context, so
+        // sending it would create a second, forgeable source of the same fact.
+        'agentRunId',
       ]);
     });
 
@@ -529,6 +540,9 @@ describe('subagentRunner', () => {
         agent,
         task: 'do the thing',
         skillCommandApprovalFactory: expect.any(Function),
+        // The in-process loop reads its run identity straight off the options
+        // (there is no shell/sidecar boundary to stamp it at).
+        agentRunId: expect.stringMatching(/^sar-/),
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result.text).toBe('in-process result');
@@ -1369,6 +1383,85 @@ describe('subagentRunner', () => {
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
 
       await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: {} })).rejects.toThrow(/unknown runId/);
+    });
+
+    // N6: browser tab ownership is the pair {conversationId, runKey}, so every
+    // tool call has to carry the run that issued it. Like workspacePath and the
+    // abort signal, it is stamped from the SHELL's session — never taken from
+    // the sidecar's `context`, which decides nothing about which run's tabs a
+    // call may see and reclaim.
+    it('stamps the shell-owned run id into the trusted tool context, overriding any sidecar-supplied value', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: {},
+        context: { agentRunId: 'sar-forged-by-sidecar' },
+      });
+
+      expect(runId).toMatch(/^sar-/);
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        {},
+        undefined,
+        undefined,
+        expect.objectContaining({ conversationId: 'conv-1', agentRunId: runId }),
+      );
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+  });
+
+  // A2 — a finished run's browser tabs are visible to nobody else, so nothing
+  // but the run's own settlement can ever release them. The seal is the point
+  // after which the run can no longer start another tool.
+  describe('per-run browser view release', () => {
+    it('releases exactly this run of this conversation when the sidecar run settles', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalledWith('conv-1', runId);
+    });
+
+    it('releases the run even when it fails', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockRejectedValue(new Error('transport died'));
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalled();
+      for (const call of disposeRunBrowserViewsMock.mock.calls) {
+        expect(call[0]).toBe('conv-1');
+        expect(call[1]).toMatch(/^sar-/);
+      }
+    });
+
+    it('releases an in-process run too — it owns tabs the same way', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalledTimes(1);
+      const [conversationId, runKey] = disposeRunBrowserViewsMock.mock.calls[0];
+      expect(conversationId).toBe('conv-1');
+      // The same id the in-process loop stamped into its tool contexts.
+      expect(runKey).toBe((runSubagentLoopMock.mock.calls[0][0] as { agentRunId?: string }).agentRunId);
+      expect(runKey).toMatch(/^sar-/);
     });
   });
 

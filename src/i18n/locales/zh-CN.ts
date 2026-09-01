@@ -1508,6 +1508,7 @@ const zhCN: TranslationDict = {
     // Connection test
     testConnection: '测试连接',
     testSuccess: '连接成功',
+    mcpFromPlugin: '来自插件 {name}',
     testFailed: '连接失败',
     testing: '测试中...',
     // Tool count

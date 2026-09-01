@@ -1,6 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
+import { usePluginStore } from '@/stores/pluginStore';
+import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useI18n, format } from '@/i18n';
@@ -81,6 +83,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const { t, locale } = useI18n();
 
   const mcpServers = useMemo(() => Object.values(servers), [servers]);
+  const installedPlugins = usePluginStore((s) => s.installed);
+  // server name → owning plugin, so a plugin-contributed connector is
+  // distinguishable from one the user configured by hand.
+  const serverOwners = useMemo(() => pluginServerOwners(installedPlugins), [installedPlugins]);
   const availableTemplates = useMemo(() => getMCPTemplatesForHost(), []);
 
   // Selection
@@ -513,7 +519,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const renderServerCard = (entry: MCPServerEntry) => {
     const c = entry.config;
     const isHttp = !!(c.url || c.transport === 'http');
-    const description = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
+    const baseDescription = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
+    const owner = serverOwners[c.name];
+    const description = owner
+      ? `${format(t.toolbox.mcpFromPlugin, { name: owner })} · ${baseDescription ?? ''}`
+      : baseDescription;
     return (
       <ToolCard
         key={c.name}

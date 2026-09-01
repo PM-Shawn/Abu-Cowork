@@ -1696,6 +1696,7 @@ export interface TranslationDict {
     // Connection test
     testConnection: string;
     testSuccess: string;
+    mcpFromPlugin: string;
     testFailed: string;
     testing: string;
     // Tool count

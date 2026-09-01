@@ -1506,6 +1506,7 @@ const enUS: TranslationDict = {
     // Connection test
     testConnection: 'Test Connection',
     testSuccess: 'Connection successful',
+    mcpFromPlugin: 'From plugin {name}',
     testFailed: 'Connection failed',
     testing: 'Testing...',
     // Tool count

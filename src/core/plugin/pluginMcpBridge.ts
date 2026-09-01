@@ -23,6 +23,7 @@
  */
 
 import type { McpServerSpec } from './manifest';
+import type { InstalledPlugin } from './installedStore';
 
 /** The slice of the MCP store this bridge needs; injected for testing. */
 export interface McpStoreOps {
@@ -80,4 +81,17 @@ export function deregisterPluginServers(names: string[], store: McpStoreOps): vo
   for (const name of names) {
     if (store.has(name)) store.removeServer(name);
   }
+}
+
+/**
+ * server name → owning plugin name, across all installed plugins. Lets the
+ * Connectors tab label a server "from plugin X" so users can tell a
+ * plugin-contributed connector apart from one they configured by hand.
+ */
+export function pluginServerOwners(installed: InstalledPlugin[]): Record<string, string> {
+  const owners: Record<string, string> = {};
+  for (const plugin of installed) {
+    for (const server of plugin.contributed.mcpServers) owners[server] = plugin.name;
+  }
+  return owners;
 }

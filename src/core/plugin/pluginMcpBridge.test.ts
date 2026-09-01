@@ -103,3 +103,21 @@ describe('deregisterPluginServers', () => {
     expect(store.removeServer).not.toHaveBeenCalled();
   });
 });
+
+describe('pluginServerOwners', () => {
+  const mk = (name: string, mcpServers: string[]) => ({
+    key: `${name}@official`, marketplace: 'official', name, version: '1.0.0',
+    installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers },
+  });
+
+  it('maps each contributed server name to its owning plugin', async () => {
+    const { pluginServerOwners } = await import('./pluginMcpBridge');
+    const owners = pluginServerOwners([mk('weather', ['forecast', 'radar']), mk('notes', ['notes-db'])]);
+    expect(owners).toEqual({ forecast: 'weather', radar: 'weather', 'notes-db': 'notes' });
+  });
+
+  it('is empty when nothing is installed', async () => {
+    const { pluginServerOwners } = await import('./pluginMcpBridge');
+    expect(pluginServerOwners([])).toEqual({});
+  });
+});

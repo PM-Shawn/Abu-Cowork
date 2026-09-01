@@ -5,7 +5,7 @@
  * management journeys only (execution paths live in orchestrator unit tests).
  *
  * Journey: enable the labs flag → sidebar entry appears → tab order
- * 任务·收件箱·队员·团队·流水线 → create a team with a builtin leader →
+ * 任务·收件箱·队员·团队 → create a team with a builtin leader →
  * task tab loses its dead end → team survives an app restart → archive
  * moves it to the 已归档 section and 恢复 brings it back.
  */
@@ -67,8 +67,8 @@ test.describe('team management surface (labs)', () => {
       const labels = await nav.locator('button').allInnerTexts();
       const tabLabels = labels
         .map((l) => l.trim().replace(/\d+$/, '').trim())
-        .filter((l) => ['任务', '收件箱', '队员', '团队', '流水线'].includes(l));
-      expect(tabLabels).toEqual(['任务', '收件箱', '队员', '团队', '流水线']);
+        .filter((l) => ['任务', '收件箱', '队员', '团队'].includes(l));
+      expect(tabLabels).toEqual(['任务', '收件箱', '队员', '团队']);
 
       // Default tab is 任务; builtin agents exist, so the empty state offers
       // 新建任务 (single-member tasks are legal) — no dead end either way.

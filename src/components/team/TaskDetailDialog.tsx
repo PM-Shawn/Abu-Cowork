@@ -9,7 +9,6 @@ import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retry
 import { useI18n, format } from '@/i18n';
 import { Loader2, CheckCircle2, XCircle, Circle, ArrowRight, RotateCcw, Square } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
-import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import DialogShell from './DialogShell';
 
@@ -36,8 +35,6 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
   const [rejecting, setRejecting] = useState(false);
   const [rejectText, setRejectText] = useState('');
   const [rejectTarget, setRejectTarget] = useState<string | null>(null);
-  const [savingPipeline, setSavingPipeline] = useState(false);
-  const [pipelineName, setPipelineName] = useState('');
 
   useEffect(() => {
     if (!taskId) { setAdjusting(false); setAdjustText(''); setRejecting(false); setRejectText(''); setRejectTarget(null); }
@@ -246,44 +243,6 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
             )}
           </div>
         );
-      case 'done': {
-        // Team tasks with a confirmed plan can be frozen into a pipeline —
-        // the split is reused verbatim, planning is skipped on future runs.
-        if (!task.teamId || !task.plan) return null;
-        if (savingPipeline) {
-          return (
-            <div className="w-full space-y-2">
-              <Input value={pipelineName} onChange={(e) => setPipelineName(e.target.value)} placeholder={t.team.pipelineNamePlaceholder} data-testid="pipeline-name-input" />
-              <div className="flex justify-end gap-2">
-                <Button variant="ghost" onClick={() => setSavingPipeline(false)}>{t.common.cancel}</Button>
-                <Button
-                  disabled={!pipelineName.trim()}
-                  data-testid="pipeline-save"
-                  onClick={() => {
-                    try {
-                      useTeamStore.getState().savePipeline({ taskId: task.id, name: pipelineName.trim() });
-                      addToast({ type: 'success', title: t.team.pipelineSaved });
-                      setSavingPipeline(false);
-                      onClose();
-                    } catch (err) {
-                      addToast({ type: 'error', title: t.team.pipelineSaveFailed, message: String(err) });
-                    }
-                  }}
-                >
-                  {t.common.save}
-                </Button>
-              </div>
-            </div>
-          );
-        }
-        return (
-          <div className="flex justify-end w-full">
-            <Button variant="outline" size="sm" onClick={() => { setPipelineName(task.goal.split('\n')[0].slice(0, 16)); setSavingPipeline(true); }} data-testid="save-pipeline">
-              {t.team.savePipelineAction}
-            </Button>
-          </div>
-        );
-      }
     }
   };
 

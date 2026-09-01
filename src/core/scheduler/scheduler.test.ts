@@ -55,7 +55,7 @@ vi.mock('../../utils/notifications', () => ({
 }));
 
 // Import after mocks
-import { schedulerEngine } from './scheduler';
+import { countLeadingErrorRuns, schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { outputSender } from '../im/outputSender';
 
@@ -405,5 +405,17 @@ describe('SchedulerEngine permission tier', () => {
     await schedulerEngine.runNow(task.id);
 
     expect(latestRunError(task.id)).toBe('boom');
+  });
+});
+
+describe('countLeadingErrorRuns', () => {
+  const run = (status: string) => ({ status });
+  it('counts the newest consecutive failures, skipping in-flight runs', () => {
+    expect(countLeadingErrorRuns([])).toBe(0);
+    expect(countLeadingErrorRuns([run('error')])).toBe(1);
+    expect(countLeadingErrorRuns([run('error'), run('running'), run('error')])).toBe(2);
+    // A success ends the streak — older failures don't count.
+    expect(countLeadingErrorRuns([run('error'), run('completed'), run('error')])).toBe(1);
+    expect(countLeadingErrorRuns([run('completed'), run('error'), run('error')])).toBe(0);
   });
 });

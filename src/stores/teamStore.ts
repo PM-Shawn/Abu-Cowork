@@ -91,34 +91,9 @@ export interface TeamTask {
   updatedAt: number;
 }
 
-/**
- * A pipeline is a confirmed split, frozen for reuse: running it seeds the plan
- * from the template and skips leader planning entirely (that is the value —
- * no planning cost, no drift). Saved from an accepted task (PRD 流水线).
- */
-export interface TeamPipeline {
-  id: string;
-  teamId: string;
-  name: string;
-  /** Default goal text for runs (editable per run later; v1 uses it verbatim). */
-  goal: string;
-  /** Frozen plan template — items without runtime state. */
-  template: Array<Pick<TeamPlanItem, 'id' | 'memberRoleId' | 'what' | 'produces' | 'dependsOn'>>;
-  doneWhen: string[];
-  createdFromTaskId: string;
-  createdAt: number;
-  /** Set when 2 consecutive runs failed — unattended loops must fail loud,
-   *  not quietly burn money (PRD §7). Cleared by 恢复. */
-  pausedAt?: number;
-  consecutiveFailures: number;
-  lastRunTaskId?: string;
-  lastRunAt?: number;
-}
-
 interface TeamState {
   teams: Team[];
   tasks: TeamTask[];
-  pipelines: TeamPipeline[];
   /** Ephemeral deep-link target: TeamView opens this task's detail and clears
    *  it. Not persisted. */
   focusTaskId: string | null;
@@ -131,15 +106,6 @@ interface TeamState {
 
   createTask: (input: { teamId?: string; memberRoleId?: string; goal: string; attachments?: string[] }) => TeamTask;
   updateTaskStatus: (id: string, status: TeamTaskStatus, statusNote?: string) => void;
-
-  // --- pipelines ---
-  savePipeline: (input: { taskId: string; name: string }) => TeamPipeline;
-  deletePipeline: (id: string) => void;
-  pausePipeline: (id: string) => void;
-  resumePipeline: (id: string) => void;
-  recordPipelineRun: (id: string, taskId: string) => void;
-  /** Returns the new consecutiveFailures count (auto-pauses at 2). */
-  recordPipelineOutcome: (id: string, ok: boolean) => number;
 
   // --- planning / execution (R2) — called by the team orchestrator only ---
   setPlanningConversation: (taskId: string, conversationId: string) => void;
@@ -160,7 +126,6 @@ export const useTeamStore = create<TeamState>()(
     (set, get) => ({
       teams: [],
       tasks: [],
-      pipelines: [],
       focusTaskId: null,
       setFocusTaskId: (id) => set({ focusTaskId: id }),
 
@@ -235,53 +200,6 @@ export const useTeamStore = create<TeamState>()(
           tasks: s.tasks.map((t) => (t.id === id ? { ...t, status, statusNote, updatedAt: Date.now() } : t)),
         })),
 
-      savePipeline: (input) => {
-        const task = get().tasks.find((t) => t.id === input.taskId);
-        if (!task?.plan || !task.teamId) throw new Error('only accepted team tasks can become pipelines');
-        if (task.status !== 'done') throw new Error('accept the task before saving it as a pipeline');
-        const name = input.name.trim();
-        if (!name) throw new Error('pipeline name required');
-        if (get().pipelines.some((p) => p.name === name)) throw new Error('duplicate pipeline name');
-        const pipeline: TeamPipeline = {
-          id: genId('pipe'),
-          teamId: task.teamId,
-          name,
-          goal: task.goal,
-          template: task.plan.items.map((item) => ({
-            id: item.id, memberRoleId: item.memberRoleId, what: item.what,
-            produces: item.produces, dependsOn: item.dependsOn,
-          })),
-          doneWhen: task.plan.doneWhen,
-          createdFromTaskId: task.id,
-          createdAt: Date.now(),
-          consecutiveFailures: 0,
-        };
-        set((s) => ({ pipelines: [pipeline, ...s.pipelines] }));
-        return pipeline;
-      },
-
-      deletePipeline: (id) => set((s) => ({ pipelines: s.pipelines.filter((p) => p.id !== id) })),
-      pausePipeline: (id) => set((s) => ({
-        pipelines: s.pipelines.map((p) => (p.id === id ? { ...p, pausedAt: Date.now() } : p)),
-      })),
-      resumePipeline: (id) => set((s) => ({
-        pipelines: s.pipelines.map((p) => (p.id === id ? { ...p, pausedAt: undefined, consecutiveFailures: 0 } : p)),
-      })),
-      recordPipelineRun: (id, taskId) => set((s) => ({
-        pipelines: s.pipelines.map((p) => (p.id === id ? { ...p, lastRunTaskId: taskId, lastRunAt: Date.now() } : p)),
-      })),
-      recordPipelineOutcome: (id, ok) => {
-        let count = 0;
-        set((s) => ({
-          pipelines: s.pipelines.map((p) => {
-            if (p.id !== id) return p;
-            count = ok ? 0 : p.consecutiveFailures + 1;
-            return { ...p, consecutiveFailures: count, pausedAt: !ok && count >= 2 ? Date.now() : p.pausedAt };
-          }),
-        }));
-        return count;
-      },
-
       setPlanningConversation: (taskId, conversationId) =>
         set((s) => ({
           tasks: s.tasks.map((t) => (t.id === taskId ? { ...t, planningConversationId: conversationId, updatedAt: Date.now() } : t)),
@@ -341,14 +259,17 @@ export const useTeamStore = create<TeamState>()(
     }),
     {
       name: 'abu-team',
-      version: 3,
+      version: 4,
       // v1 → v2: additive optional fields (memberRoleId, requirePlanApproval).
-      // v2 → v3: pipelines array added — older payloads just get [].
+      // v2 → v3: pipelines array added; v3 → v4: pipelines removed again —
+      // the concept folded into 自动化 (scheduled tasks pick a team executor;
+      // plan reuse is an internal optimization, user decision 2026-09-01).
       migrate: (persisted: unknown) => {
-        const state = persisted as { teams: Team[]; tasks: TeamTask[]; pipelines?: TeamPipeline[] };
-        return { ...state, pipelines: state.pipelines ?? [] };
+        const state = persisted as { teams: Team[]; tasks: TeamTask[]; pipelines?: unknown };
+        const { pipelines: _dropped, ...rest } = state;
+        return rest;
       },
-      partialize: (s) => ({ teams: s.teams, tasks: s.tasks, pipelines: s.pipelines }),
+      partialize: (s) => ({ teams: s.teams, tasks: s.tasks }),
     },
   ),
 );

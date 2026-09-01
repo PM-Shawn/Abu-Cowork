@@ -149,8 +149,8 @@ interface ScheduleActions {
     outputChannelId?: string;
     outputChatIds?: string;
     outputUserIds?: string;
-    /** Dispatch a saved team pipeline instead of running `prompt` directly. */
-    teamPipelineId?: string;
+    /** Hand `prompt` to this team as a task goal (labs 团队 executor). */
+    teamId?: string;
     /** undefined = follow the global settings permission mode (default). */
     permissionMode?: PermissionMode;
   }) => string;
@@ -167,7 +167,7 @@ interface ScheduleActions {
       outputChannelId: string | undefined;
       outputChatIds: string | undefined;
       outputUserIds: string | undefined;
-      teamPipelineId: string | undefined;
+      teamId: string | undefined;
       /** undefined = follow the global settings permission mode. Distinct
        *  from the key being omitted — see the `'permissionMode' in data`
        *  check in the implementation below, which lets a caller explicitly
@@ -226,7 +226,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           outputChannelId: data.outputChannelId,
           outputChatIds: data.outputChatIds,
           outputUserIds: data.outputUserIds,
-          teamPipelineId: data.teamPipelineId,
+          teamId: data.teamId,
           // undefined = follow the global settings permission mode (default) —
           // NOT the strictest tier. See PermissionMode's doc comment.
           permissionMode: data.permissionMode,
@@ -255,7 +255,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
           if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
           if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
-          if ('teamPipelineId' in data) task.teamPipelineId = data.teamPipelineId;
+          if ('teamId' in data) task.teamId = data.teamId;
           // 'permissionMode' in data (not `!== undefined`): a caller must be
           // able to explicitly reset a task back to "follow settings"
           // (undefined) — the key being *provided* is what matters, not

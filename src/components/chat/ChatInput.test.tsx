@@ -844,7 +844,7 @@ describe('ChatInput inline agent selection', () => {
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
       teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [], pipelines: [],
+      tasks: [],
     });
     try {
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
@@ -864,7 +864,7 @@ describe('ChatInput inline agent selection', () => {
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
       expect(screen.getByRole('option', { name: /zz数据小队/ }).parentElement).toBe(listbox.children[0]);
     } finally {
-      useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
+      useTeamStore.setState({ teams: [], tasks: [] });
     }
   });
 

@@ -7,11 +7,11 @@ import { useTeamStore } from '@/stores/teamStore';
 // everything else is mocked at the boundary, mirroring ToolboxModal.test.tsx.
 
 const settingsState = {
-  activeTeamTab: 'tasks' as 'inbox' | 'tasks' | 'members' | 'teams' | 'pipelines',
+  activeTeamTab: 'tasks' as 'inbox' | 'tasks' | 'members' | 'teams',
   toolboxSearchQuery: '',
   setToolboxSearchQuery: vi.fn((value: string) => { settingsState.toolboxSearchQuery = value; }),
   disabledAgents: [] as string[],
-  setActiveTeamTab: vi.fn((tab: 'inbox' | 'tasks' | 'members' | 'teams' | 'pipelines') => {
+  setActiveTeamTab: vi.fn((tab: 'inbox' | 'tasks' | 'members' | 'teams') => {
     settingsState.activeTeamTab = tab;
   }),
   closeTeam: vi.fn(),
@@ -67,7 +67,7 @@ vi.mock('@/core/team/orchestrator', () => ({
   rejectTask: vi.fn(async () => undefined),
   retryItem: vi.fn(async () => undefined),
   stopTask: vi.fn(async () => undefined),
-  runPipeline: vi.fn(async () => ({ ok: true, taskId: 'tk' })),
+  runScheduledTeamTask: vi.fn(async () => ({ ok: true, taskId: 'tk' })),
 }));
 
 vi.mock('@/core/team/roleIdentity', () => ({
@@ -93,7 +93,7 @@ function seedAgent(name: string, roleId?: string) {
 
 describe('TeamView', () => {
   beforeEach(() => {
-    useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
+    useTeamStore.setState({ teams: [], tasks: [] });
     settingsState.activeTeamTab = 'tasks';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
@@ -170,24 +170,6 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('task-create'));
     await waitFor(() => expect(useTeamStore.getState().tasks).toHaveLength(1));
     expect(useTeamStore.getState().tasks[0].status).toBe('awaiting_plan');
-  });
-
-  it('pipelines tab: empty state, then a saved pipeline renders with a 运行 action', () => {
-    settingsState.activeTeamTab = 'pipelines';
-    const { unmount } = render(<TeamView />);
-    expect(screen.getByText('还没有流水线')).toBeTruthy();
-    unmount();
-    useTeamStore.setState({
-      teams: [{ id: 'tm1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      pipelines: [{
-        id: 'pl1', teamId: 'tm1', name: '周报流水线', goal: '出周报',
-        template: [{ id: '1', memberRoleId: 'r1', what: '写', dependsOn: [] }],
-        doneWhen: [], createdFromTaskId: 'tk0', createdAt: 1, consecutiveFailures: 0,
-      }],
-    });
-    render(<TeamView />);
-    expect(screen.getByText('周报流水线')).toBeTruthy();
-    expect(screen.getByText('运行')).toBeTruthy();
   });
 
   it('members tab renders the shared AgentsSection (single identity source)', () => {

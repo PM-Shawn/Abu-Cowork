@@ -214,36 +214,46 @@ export async function startMemberTask(taskId: string): Promise<void> {
 }
 
 /**
- * Run a pipeline: create a task, seed the plan from the frozen template and
- * execute immediately — leader planning is skipped entirely (the whole point
- * of a pipeline: the split was already confirmed by acceptance). Outcome
- * bookkeeping auto-pauses the pipeline after 2 consecutive failures so an
- * unattended loop can never fail quietly forever.
+ * Scheduled dispatch: hand `goal` to a team unattended (自动化 executor —
+ * user decision 2026-09-01: no user-facing "pipeline" concept).
+ *
+ * If this team has already run the SAME goal to acceptance, the accepted
+ * split is reused verbatim and leader planning is skipped (faster, cheaper,
+ * no drift). Any other goal goes through normal leader planning; non-strict
+ * teams then execute immediately, strict teams wait on the confirm screen.
  */
-export async function runPipeline(pipelineId: string, goalOverride?: string): Promise<{ ok: boolean; taskId?: string; reason?: string }> {
+export async function runScheduledTeamTask(teamId: string, goal: string): Promise<{ ok: boolean; taskId?: string; reason?: string }> {
   const store = useTeamStore.getState();
-  const pipeline = store.pipelines.find((p) => p.id === pipelineId);
   const t = getI18n();
-  if (!pipeline) return { ok: false, reason: 'pipeline not found' };
-  if (pipeline.pausedAt) return { ok: false, reason: t.team.pipelinePausedReason };
-  const team = store.teams.find((item) => item.id === pipeline.teamId && !item.archivedAt);
+  const team = store.teams.find((item) => item.id === teamId && !item.archivedAt);
   if (!team) return { ok: false, reason: t.team.blockedTeamMissing };
+  const cleanGoal = goal.trim();
+  if (!cleanGoal) return { ok: false, reason: 'empty goal' };
 
-  const task = useTeamStore.getState().createTask({ teamId: pipeline.teamId, goal: goalOverride?.trim() || pipeline.goal });
-  useTeamStore.getState().recordPipelineRun(pipelineId, task.id);
-  useTeamStore.getState().proposePlan(task.id, {
-    items: pipeline.template.map((item) => ({ ...item, dependsOn: [...item.dependsOn], state: 'pending' })),
-    doneWhen: [...pipeline.doneWhen],
-  });
-  await confirmAndExecute(task.id);
+  // Latest accepted run of the same goal → frozen-split reuse.
+  const donePrior = store.tasks.find((item) =>
+    item.teamId === teamId && item.status === 'done' && item.plan && item.goal.trim() === cleanGoal);
+
+  const task = useTeamStore.getState().createTask({ teamId, goal: cleanGoal });
+  if (donePrior?.plan) {
+    useTeamStore.getState().proposePlan(task.id, {
+      items: donePrior.plan.items.map((item) => ({
+        id: item.id, memberRoleId: item.memberRoleId, what: item.what,
+        produces: item.produces, dependsOn: [...item.dependsOn], state: 'pending',
+      })),
+      doneWhen: [...donePrior.plan.doneWhen],
+    });
+    await confirmAndExecute(task.id);
+  } else {
+    await startPlanning(task.id);
+  }
 
   const after = useTeamStore.getState().tasks.find((item) => item.id === task.id);
-  const ok = after?.status === 'pending_review';
-  const failures = useTeamStore.getState().recordPipelineOutcome(pipelineId, ok);
-  if (!ok && failures >= 2) {
-    void notifyTeamTaskBlocked(format(t.team.pipelineAutoPaused, { name: pipeline.name }));
-  }
-  return { ok, taskId: task.id };
+  // Blocked (or planning that produced nothing) is the failure shape; a
+  // strict team parked on its confirm screen still counts as a successful
+  // dispatch — the task is waiting on the user, not broken.
+  const ok = after !== undefined && after.status !== 'blocked';
+  return { ok, taskId: task.id, reason: ok ? undefined : after?.statusNote };
 }
 
 /** Route a freshly created task to its execution path. */

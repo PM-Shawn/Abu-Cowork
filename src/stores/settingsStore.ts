@@ -162,7 +162,7 @@ export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sa
 // 'agents' tab removed 2026-08-31: agents (队员) live solely in the 团队 page;
 // the toolbox is now the plugin surface (插件): skills + MCP.
 export type ToolboxTab = 'skills' | 'mcp';
-export type TeamTab = 'inbox' | 'tasks' | 'members' | 'teams' | 'pipelines';
+export type TeamTab = 'inbox' | 'tasks' | 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================

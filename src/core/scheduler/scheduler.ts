@@ -131,6 +131,20 @@ function describeDenials(denials: string[], mode: PermissionMode): string {
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
 
+/**
+ * Consecutive most-recent failed runs (runs are unshifted, newest first).
+ * Drives the fail-loud auto-pause for unattended team dispatch.
+ */
+export function countLeadingErrorRuns(runs: Array<{ status: string }>): number {
+  let count = 0;
+  for (const run of runs) {
+    if (run.status === 'error') count += 1;
+    else if (run.status === 'running') continue; // an unrelated in-flight run doesn't break the streak
+    else break;
+  }
+  return count;
+}
+
 class SchedulerEngine {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private runningTasks = new Set<string>();
@@ -167,26 +181,34 @@ class SchedulerEngine {
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
 
-    // Team pipeline dispatch: the pipeline owns its own conversations, plan
-    // seeding and outcome bookkeeping (incl. auto-pause after 2 failures) —
-    // the scheduler only triggers it and records the run outcome.
-    if (task.teamPipelineId) {
+    // Team dispatch (labs 团队 executor): the orchestrator owns conversations
+    // and plan handling (reusing an accepted split for a repeated goal); the
+    // scheduler records the run and enforces fail-loud — after 2 consecutive
+    // failed runs the SCHEDULE pauses instead of quietly burning money.
+    if (task.teamId) {
       const scheduleStore = useScheduleStore.getState();
       const runId = scheduleStore.startRun(task.id, '');
       this.runningTasks.add(task.id);
+      const onFailure = (reason: string) => {
+        scheduleStore.errorRun(task.id, runId, reason);
+        notifyScheduledTaskError(task.name);
+        const fresh = useScheduleStore.getState().tasks[task.id];
+        if (fresh && countLeadingErrorRuns(fresh.runs) >= 2) {
+          useScheduleStore.getState().pauseTask(task.id);
+          notifyScheduledTaskError(format(getI18n().schedule.teamAutoPaused, { name: task.name }));
+        }
+      };
       try {
-        const { runPipeline } = await import('@/core/team/orchestrator');
-        const outcome = await runPipeline(task.teamPipelineId);
+        const { runScheduledTeamTask } = await import('@/core/team/orchestrator');
+        const outcome = await runScheduledTeamTask(task.teamId, task.prompt);
         if (outcome.ok) {
           scheduleStore.completeRun(task.id, runId);
           notifyScheduledTaskCompleted(task.name);
         } else {
-          scheduleStore.errorRun(task.id, runId, outcome.reason ?? 'pipeline run failed');
-          notifyScheduledTaskError(task.name);
+          onFailure(outcome.reason ?? 'team dispatch failed');
         }
       } catch (err) {
-        scheduleStore.errorRun(task.id, runId, String(err));
-        notifyScheduledTaskError(task.name);
+        onFailure(String(err));
       } finally {
         this.runningTasks.delete(task.id);
       }

@@ -37,7 +37,7 @@ vi.mock('@/utils/notifications', () => ({
   notifyTeamTaskBlocked: vi.fn(async () => undefined),
 }));
 
-import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask, runPipeline } from './orchestrator';
+import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask, runScheduledTeamTask } from './orchestrator';
 
 function seed() {
   registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
@@ -49,7 +49,7 @@ function seed() {
 
 describe('team orchestrator', () => {
   beforeEach(() => {
-    useTeamStore.setState({ teams: [], tasks: [], pipelines: [] });
+    useTeamStore.setState({ teams: [], tasks: [] });
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     runCalls.length = 0;
     convCounter = 0;
@@ -214,37 +214,41 @@ describe('team orchestrator', () => {
     });
   });
 
-  describe('runPipeline', () => {
-    function seedPipeline() {
+  describe('runScheduledTeamTask', () => {
+    function seedAcceptedRun(goal: string) {
       const ids = seed();
+      useTeamStore.setState((s) => ({
+        tasks: s.tasks.map((t) => (t.id === ids.task.id ? { ...t, goal } : t)),
+      }));
       useTeamStore.getState().proposePlan(ids.task.id, {
         items: [{ id: '1', memberRoleId: 'role-w', what: '写周报', produces: '周报.md', dependsOn: [], state: 'pending' }],
         doneWhen: ['有周报'],
       });
       useTeamStore.getState().updateTaskStatus(ids.task.id, 'done');
-      return useTeamStore.getState().savePipeline({ taskId: ids.task.id, name: '周报流水线' });
+      return ids;
     }
 
-    it('runs from the frozen template with NO leader planning run', async () => {
-      const pipe = seedPipeline();
-      const result = await runPipeline(pipe.id);
+    it('reuses the accepted split for the same goal — no leader planning run', async () => {
+      const ids = seedAcceptedRun('出周报');
+      const result = await runScheduledTeamTask(ids.team.id, '出周报');
       expect(result.ok).toBe(true);
-      // Every run went straight to the member — no 'Plan the split' prompt.
       expect(runCalls.some((c) => c.message.includes('Plan the split'))).toBe(false);
       expect(runCalls.some((c) => c.message.includes('@writer'))).toBe(true);
       const task = useTeamStore.getState().tasks.find((t) => t.id === result.taskId);
       expect(task?.status).toBe('pending_review');
-      expect(useTeamStore.getState().pipelines[0].consecutiveFailures).toBe(0);
     });
 
-    it('two failed runs auto-pause the pipeline; a paused pipeline refuses to run', async () => {
-      const pipe = seedPipeline();
-      runBehavior = async () => ({ reason: 'error', error: 'boom' });
-      await runPipeline(pipe.id);
-      await runPipeline(pipe.id);
-      expect(useTeamStore.getState().pipelines[0].pausedAt).toBeDefined();
-      const refused = await runPipeline(pipe.id);
-      expect(refused.ok).toBe(false);
+    it('a new goal goes through normal leader planning', async () => {
+      const ids = seedAcceptedRun('出周报');
+      await runScheduledTeamTask(ids.team.id, '出月报');
+      expect(runCalls.some((c) => c.message.includes('Plan the split'))).toBe(true);
+    });
+
+    it('refuses archived or missing teams', async () => {
+      const ids = seedAcceptedRun('出周报');
+      useTeamStore.getState().archiveTeam(ids.team.id);
+      const result = await runScheduledTeamTask(ids.team.id, '出周报');
+      expect(result.ok).toBe(false);
     });
   });
 

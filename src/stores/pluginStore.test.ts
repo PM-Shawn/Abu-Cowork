@@ -28,6 +28,7 @@ import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plu
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
+type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
 import { usePluginStore } from './pluginStore';
 
 const HOME = '/Users/tester';
@@ -206,5 +207,52 @@ describe('boot-time approval gate', () => {
       marketplaces: [],
       knownMcpServerNames: [],
     });
+  });
+});
+
+describe('built-in marketplace', () => {
+  beforeEach(() => {
+    usePluginStore.setState({ marketplaces: [], installed: [], knownMcpServerNames: [] });
+  });
+
+  it('injects the built-in market into the list without persisting it', () => {
+    usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
+    const list = usePluginStore.getState().marketplaces;
+    expect(list.some((m) => m.name === 'abu-official' && m.builtin === true)).toBe(true);
+
+    // partialize must drop the built-in — its dir is a runtime-resolved
+    // resource path, not something to freeze into persisted state.
+    const partialize = usePluginStore.persist.getOptions().partialize as
+      (s: unknown) => { marketplaces: MarketplaceRefLike[] };
+    const persisted = partialize(usePluginStore.getState());
+    expect(persisted.marketplaces.some((m) => m.name === 'abu-official')).toBe(false);
+  });
+
+  it('is idempotent and refreshes the resolved dir', () => {
+    usePluginStore.getState().ensureBuiltinMarketplace('/old');
+    usePluginStore.getState().ensureBuiltinMarketplace('/new');
+    const builtins = usePluginStore.getState().marketplaces.filter((m) => m.name === 'abu-official');
+    expect(builtins).toHaveLength(1);
+    expect(builtins[0].dir).toBe('/new');
+  });
+
+  it('refuses to remove the built-in market', () => {
+    usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
+    usePluginStore.getState().removeMarketplace('abu-official');
+    expect(usePluginStore.getState().marketplaces.some((m) => m.name === 'abu-official')).toBe(true);
+  });
+
+  it('refuses to let a user market shadow the built-in name', () => {
+    usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
+    usePluginStore.getState().addMarketplace('abu-official', '/tmp/evil');
+    const abuOfficial = usePluginStore.getState().marketplaces.filter((m) => m.name === 'abu-official');
+    expect(abuOfficial).toHaveLength(1);
+    expect(abuOfficial[0].dir).toBe('/app/builtin-plugin-market'); // still the built-in
+  });
+
+  it('keeps the built-in first so it leads the market picker', () => {
+    usePluginStore.getState().addMarketplace('mine', '/tmp/mine');
+    usePluginStore.getState().ensureBuiltinMarketplace('/app/builtin-plugin-market');
+    expect(usePluginStore.getState().marketplaces[0].name).toBe('abu-official');
   });
 });

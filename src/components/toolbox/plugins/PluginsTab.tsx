@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
+import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import { useI18n } from '@/i18n';
 import SubTabBar from '@/components/customize/SubTabBar';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -36,6 +37,7 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
   const [addOpen, setAddOpen] = useState(false);
   const installed = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
+  const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,10 +49,18 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
         await refreshInstalled(dir);
       })
       .catch((err) => console.error('Plugins tab: failed to resolve home', err));
+    // Preload the built-in Abu market so a fresh install already has a market
+    // to browse. Best-effort: a missing bundle degrades to no built-in market.
+    resolveBuiltinMarketDir()
+      .then((marketDir) => {
+        if (cancelled || !marketDir) return;
+        ensureBuiltinMarketplace(marketDir);
+      })
+      .catch((err) => console.error('Plugins tab: failed to resolve built-in market', err));
     return () => {
       cancelled = true;
     };
-  }, [refreshInstalled]);
+  }, [refreshInstalled, ensureBuiltinMarketplace]);
 
   return (
     <div className="flex h-full flex-col">

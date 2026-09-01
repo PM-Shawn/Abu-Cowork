@@ -36,6 +36,7 @@ import { persist } from 'zustand/middleware';
 import { installPlugin } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
+import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
@@ -45,6 +46,11 @@ import type { MarketplaceEntry } from '@/core/plugin/marketplace';
 export interface MarketplaceRef {
   name: string;
   dir: string;
+  /**
+   * The Abu official market that ships with the app. Injected at runtime (its
+   * dir is a resolved resource path), never persisted, and not user-removable.
+   */
+  builtin?: boolean;
 }
 
 export interface InstallRequest {
@@ -83,6 +89,8 @@ interface PluginActions {
   /** Add (or replace, by name) a marketplace pointer. */
   addMarketplace: (name: string, dir: string) => void;
   removeMarketplace: (name: string) => void;
+  /** Inject/refresh the always-present built-in market at a resolved dir. */
+  ensureBuiltinMarketplace: (dir: string) => void;
   /** Re-read installed.json and re-arm the MCP approval gate. */
   refreshInstalled: (home: string) => Promise<void>;
   install: (req: InstallRequest) => Promise<InstalledPlugin>;
@@ -106,13 +114,29 @@ export const usePluginStore = create<PluginStore>()(
       error: null,
 
       addMarketplace: (name, dir) => {
+        // The built-in name is reserved; a user market must not be able to
+        // shadow the official one out of the picker.
+        if (name === BUILTIN_MARKET_NAME) return;
         set((state) => {
           const rest = state.marketplaces.filter((m) => m.name !== name);
-          return { marketplaces: [...rest, { name, dir }] };
+          const builtin = state.marketplaces.filter((m) => m.builtin);
+          const users = rest.filter((m) => !m.builtin);
+          return { marketplaces: [...builtin, ...users, { name, dir }] };
+        });
+      },
+
+      ensureBuiltinMarketplace: (dir) => {
+        set((state) => {
+          const others = state.marketplaces.filter((m) => m.name !== BUILTIN_MARKET_NAME);
+          // Built-in leads the list so it is the market users land on first.
+          return {
+            marketplaces: [{ name: BUILTIN_MARKET_NAME, dir, builtin: true }, ...others],
+          };
         });
       },
 
       removeMarketplace: (name) => {
+        if (name === BUILTIN_MARKET_NAME) return; // the official market stays
         set((state) => ({ marketplaces: state.marketplaces.filter((m) => m.name !== name) }));
       },
 
@@ -182,7 +206,7 @@ export const usePluginStore = create<PluginStore>()(
       // Marketplace pointers + the approval-gate server names survive a reload.
       // `installed` is re-derived from disk on mount.
       partialize: (state) => ({
-        marketplaces: state.marketplaces,
+        marketplaces: state.marketplaces.filter((m) => !m.builtin),
         knownMcpServerNames: state.knownMcpServerNames,
       }),
       migrate: (persisted, version) => {

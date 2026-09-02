@@ -95,8 +95,14 @@ jobs:
           path: test-results/
           retention-days: 14
 
+      # The two steps below write through GITHUB_TOKEN (checks / PR comments).
+      # That token is read-only on Dependabot PRs (same-repo branch, but
+      # dependabot's token) and on fork PRs, so the actions would fail with
+      # "Resource not accessible by integration" and red the whole job — which
+      # would also silently disable dependabot-auto-merge (it waits on `check`).
+      # Skip them there; the artifact uploads and job summary need no token.
       - name: Test report (junit → check)
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: dorny/test-reporter@v2
         with:
           name: Vitest results
@@ -115,7 +121,7 @@ jobs:
           ' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Coverage comment on PR
-        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         uses: davelosert/vitest-coverage-report-action@v2
         with:
           json-summary-path: coverage/coverage-summary.json
@@ -176,9 +182,13 @@ jobs:
       - name: Set quarantine SLA as-of date
         shell: bash
         run: echo "QUARANTINE_ASOF=$(date -u +%F)" >> "$GITHUB_ENV"
+      # The config's junit reporter writes test-results/junit.xml; the artifact
+      # name (test-results-windows) disambiguates it from the Linux run. A CLI
+      # --outputFile would be inert here: in Vitest 4.1 a named --reporter keeps
+      # its config-file options, and JUnitReporter reads options.outputFile first.
       - name: Unit tests (no coverage)
         shell: bash
-        run: npx vitest run --reporter=default --reporter=junit --outputFile=test-results/junit-windows.xml
+        run: npx vitest run
       - name: Upload Windows test results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

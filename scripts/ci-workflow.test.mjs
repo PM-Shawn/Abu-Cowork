@@ -47,3 +47,24 @@ test('Windows unit-test job and npm audit job exist and are advisory for now', (
 test('CI checks that TESTING.md test inventory is up to date', () => {
   assert.match(ci, /npm run test:inventory:check/);
 });
+
+test('token-writing report steps are skipped when GITHUB_TOKEN is read-only (dependabot / fork PRs)', () => {
+  const guard = "github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)";
+  for (const step of ['Test report (junit → check)', 'Coverage comment on PR']) {
+    const start = ci.indexOf(`- name: ${step}`);
+    assert.ok(start > -1, `${step} step missing`);
+    const next = ci.indexOf('\n      - name:', start + 1);
+    const block = ci.slice(start, next === -1 ? undefined : next);
+    assert.ok(block.includes(guard), `${step} must be guarded with: ${guard}`);
+  }
+});
+
+test('Windows job relies on the config junit reporter (CLI --outputFile is inert in Vitest 4.1)', () => {
+  const start = ci.indexOf('\n  test-windows:');
+  assert.ok(start > -1, 'test-windows job missing');
+  const windows = ci.slice(start, ci.indexOf('\n  audit:'));
+  // Check the commands themselves, not the explanatory comment above them.
+  const runLines = windows.split('\n').filter((l) => /^\s*run:/.test(l));
+  assert.ok(runLines.every((l) => !l.includes('--outputFile')), 'Windows step must not pass --outputFile');
+  assert.match(windows, /run: npx vitest run\n/);
+});

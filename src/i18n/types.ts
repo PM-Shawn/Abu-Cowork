@@ -2380,6 +2380,9 @@ export interface TranslationDict {
     wechatRebind: string;
     wechatAccount: string;
     wechatSessionExpired: string;
+    /** Unattended approval request pushed into the IM chat. The user answers
+     *  by replying with a bare 同意 / 拒绝. {action} {reason} {minutes} */
+    approvalPrompt: string;
   };
 
   // Window Close Dialog
@@ -2519,6 +2522,18 @@ export interface TranslationDict {
     /** Unattended run whose target site could not be determined (the browser
      *  host did not answer, or the action names no resolvable page). */
     browserUnattendedOriginUnverified: string;
+    /** The user answered the IM approval prompt with "拒绝". */
+    browserUnattendedImDenied: string;
+    /** Nobody answered the IM approval prompt before it expired. {minutes} */
+    browserUnattendedImTimeout: string;
+    /** The run needed approval, but its conversation is bound to no IM chat —
+     *  a system notification was raised instead. */
+    browserUnattendedImNoBinding: string;
+    /** Too many approval prompts are already outstanding for this
+     *  conversation. {max} */
+    browserUnattendedImTooMany: string;
+    /** The approval prompt could not be delivered to the IM chat. */
+    browserUnattendedImUndeliverable: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */

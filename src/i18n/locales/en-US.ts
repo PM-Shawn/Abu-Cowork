@@ -2184,6 +2184,8 @@ const enUS: TranslationDict = {
     wechatRebind: 'Re-bind account',
     wechatAccount: 'Bound account',
     wechatSessionExpired: 'Session expired, please re-bind',
+    approvalPrompt:
+      '⚠️ Abu needs you to approve an action\n{action}\n{reason}\n\nReply "yes" or "no" — just that one word, since anything else is treated as an ordinary message. No answer within {minutes} minutes is an automatic denial.',
   },
 
   windowClose: {
@@ -2303,6 +2305,11 @@ const enUS: TranslationDict = {
     browserUnattendedConfirmUnavailable: 'This action needs confirmation, and an unattended run has no confirmation channel',
     browserUnattendedCapabilityDenied: 'This unattended run\'s capability tier does not include browser actions (change it in the task / trigger / channel permission settings)',
     browserUnattendedOriginUnverified: 'The site this action targets could not be determined, and an unattended run must not act on a page it cannot verify',
+    browserUnattendedImDenied: 'You declined this action in chat, so it was cancelled',
+    browserUnattendedImTimeout: 'You were asked to approve this in chat, and no answer arrived within {minutes} minutes, so it was denied',
+    browserUnattendedImNoBinding: 'This run needed your approval, but its conversation is bound to no IM chat to ask in — a system notification was raised and the action denied',
+    browserUnattendedImTooMany: 'This conversation already has the maximum of {max} approval requests waiting for you, so this action was denied — answer the pending ones first',
+    browserUnattendedImUndeliverable: 'The approval request could not be delivered to the IM chat, so the action was denied',
     browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
     browserBlockSite: 'Block this site',

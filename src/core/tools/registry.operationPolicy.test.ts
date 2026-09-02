@@ -332,6 +332,65 @@ describe('browser gate — operation-class policy', () => {
         { opClass: 'interactive', origin: ALLOWED_SITE, source: 'im' },
       ]);
     });
+
+    // The approval channel coalesces per run: without a run key it cannot tell
+    // "the same ask again in this turn" from "a new ask next week", so a
+    // chatty tool would push one chat message per call.
+    it('carries the run key so an approval channel can scope its coalescing', async () => {
+      const runKeys: (string | undefined)[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        runKeys.push(request.runKey);
+        return { approved: false, reason: 'no' };
+      });
+
+      await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { conversationId: 'run-1', interactionMode: 'background', loopId: 'loop-77' } as never,
+        undefined,
+      );
+
+      expect(runKeys).toEqual(['loop-77']);
+    });
+
+    // "You declined this in chat" and "nobody answered in ten minutes" are not
+    // the same event as "there is no confirmation channel". The channel knows
+    // which; the gate's generic sentence would be wrong about all three.
+    it("reports the channel's own localized refusal when it supplies one", async () => {
+      const denials: string[] = [];
+      setUnattendedConfirmationResolver(async () => ({
+        approved: false,
+        reason: 'denied over IM by the user',
+        userFacingReason: '你在 IM 里回复了「拒绝」',
+      }));
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended,
+        (async (info: { deniedNotice?: string }) => {
+          if (info.deniedNotice) denials.push(info.deniedNotice);
+          return false;
+        }) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(denials).toEqual(['你在 IM 里回复了「拒绝」']);
+    });
+
+    it('keeps its own wording when the channel has nothing better to say', async () => {
+      const denials: string[] = [];
+      setUnattendedConfirmationResolver(async () => ({ approved: false, reason: 'nope' }));
+
+      await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended,
+        (async (info: { deniedNotice?: string }) => {
+          if (info.deniedNotice) denials.push(info.deniedNotice);
+          return false;
+        }) as never,
+      );
+
+      // The generic key, not the resolver's English diagnostic.
+      expect(denials).toHaveLength(1);
+      expect(denials[0]).not.toContain('nope');
+    });
   });
 
   describe('run-mode derivation', () => {

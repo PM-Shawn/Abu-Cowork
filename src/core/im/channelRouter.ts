@@ -540,6 +540,9 @@ class IMChannelRouter {
           platform: message.platform,
           channelId: channel.id,
           chatId: message.replyContext.chatId,
+          // Only the person whose message started this run may answer an
+          // approval it raises — in a group chat everyone else is a bystander.
+          senderId: message.senderId,
         },
       });
       const filePermissionCallback = async (...args: Parameters<typeof baseCallbacks.filePermissionCallback>) => {

@@ -51,6 +51,14 @@ export interface UnattendedImTarget {
    *  Absent when the inbound message carried no reply target, which is itself
    *  a reason an approval can never be delivered. */
   chatId?: string;
+  /**
+   * The person this run belongs to. When set, only their reply counts as an
+   * answer: a group chat is not a voting booth, and a bystander must not be
+   * able to approve automation running inside someone else's logged-in
+   * browser sessions. Absent means "anyone in that chat may answer", which is
+   * correct for a 1:1 chat and the only option when the binding names nobody.
+   */
+  senderId?: string;
 }
 
 export type UnattendedRunSource = 'scheduler' | 'trigger' | 'im';
@@ -62,14 +70,33 @@ export interface UnattendedConfirmationRequest {
   /** Which unattended entry point this run came from. */
   source: UnattendedRunSource;
   conversationId?: string;
+  /**
+   * Identity of the single agent run this request belongs to (the loop id).
+   * An approval channel uses it to scope coalescing and answer caching to ONE
+   * run: a tool like `execute_js` can be called dozens of times in a turn, and
+   * without a run key every call would be a separate message to a human.
+   * Absent means "this run cannot be identified", and a channel must then
+   * refuse to cache — a cached answer with no run boundary would silently
+   * outlive the decision it belongs to.
+   */
+  runKey?: string;
   imTarget?: UnattendedImTarget;
 }
 
 export interface UnattendedConfirmationResult {
   approved: boolean;
   /** Why — recorded in the run's denial log and surfaced to the user. Always
-   *  set, including on approval, so an audit line can say what happened. */
+   *  set, including on approval, so an audit line can say what happened.
+   *  Diagnostic English, aimed at logs and the tool result. */
   reason: string;
+  /**
+   * The localized sentence a human should read instead of `reason`, when the
+   * channel knows something the caller's generic copy cannot say — "you
+   * declined this in chat" and "nobody answered within 10 minutes" are not the
+   * same event as "there is no confirmation channel". Optional: a channel that
+   * has nothing better to say omits it and the caller keeps its own wording.
+   */
+  userFacingReason?: string;
 }
 
 export type UnattendedConfirmationResolver = (
@@ -117,9 +144,18 @@ export async function resolveUnattendedConfirmation(
       return {
         approved: false,
         reason: result?.reason ?? 'unattended confirmation was refused',
+        ...(typeof result?.userFacingReason === 'string' && result.userFacingReason !== ''
+          ? { userFacingReason: result.userFacingReason }
+          : {}),
       };
     }
-    return { approved: true, reason: result.reason ?? 'approved' };
+    return {
+      approved: true,
+      reason: result.reason ?? 'approved',
+      ...(typeof result.userFacingReason === 'string' && result.userFacingReason !== ''
+        ? { userFacingReason: result.userFacingReason }
+        : {}),
+    };
   } catch (error) {
     return {
       approved: false,

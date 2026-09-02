@@ -1030,10 +1030,21 @@ export async function checkToolApproval(
             ...(toolContext?.conversationId !== undefined
               ? { conversationId: toolContext.conversationId }
               : {}),
+            // Scopes the approval channel's coalescing and answer cache to
+            // THIS run. Without it a chatty tool would push one approval
+            // message per call, and an answer would have no boundary to
+            // expire at.
+            ...(toolContext?.loopId !== undefined ? { runKey: toolContext.loopId } : {}),
           });
           if (!approval.approved) {
+            // The channel's own sentence when it has one — "you declined this
+            // in chat" and "nobody answered in 10 minutes" are different
+            // events, and reporting both as "no confirmation channel" would
+            // be wrong about what happened. The generic key stays the
+            // fallback for the fail-closed default resolver, whose reason is
+            // an English diagnostic.
             return await denyUnattendedBrowser(
-              t.commandConfirm.browserUnattendedConfirmUnavailable,
+              approval.userFacingReason ?? t.commandConfirm.browserUnattendedConfirmUnavailable,
             );
           }
         }

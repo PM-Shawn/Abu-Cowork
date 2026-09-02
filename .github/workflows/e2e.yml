@@ -45,12 +45,12 @@ jobs:
   # job existed, the Electron suite ran nowhere in CI — a green "E2E Tests"
   # check only covered the browser suite above, so desktop-only regressions
   # (e.g. the composer pending-send drop fixed in 03c35086) shipped invisibly.
-  # `continue-on-error` keeps it advisory while it builds a track record on
-  # hosted macOS runners; drop that line once it has been reliably green.
+  # The suite pins the app to the zh-CN UI at launch (see
+  # tests/e2e/electronHelpers.ts `--lang=zh-CN`), so the English system locale
+  # of hosted runners does not change what the tests see.
   e2e-electron:
     runs-on: macos-14
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 

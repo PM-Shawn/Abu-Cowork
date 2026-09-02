@@ -27,7 +27,10 @@ import {
   toLegacyBrowserToolConsequence,
   DEFAULT_BROWSER_OPERATION_POLICY,
 } from '../permissions/browserToolPolicy';
-import { resolveUnattendedConfirmation } from '../permissions/unattendedConfirmation';
+import {
+  notifyUnattendedDenial,
+  resolveUnattendedConfirmation,
+} from '../permissions/unattendedConfirmation';
 import { deriveRunInteractionMode } from '../agent/runInteractionMode';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import {
@@ -867,18 +870,17 @@ export async function checkToolApproval(
 
       const settingsSnapshot = getSettingsReader().getSnapshot();
       const masterSwitchUnattended = settingsSnapshot.allowUnattendedBrowser === true;
-      // With the unattended master switch off, nothing on this surface can run
-      // and no other input can change that (`decideBrowserOperation` gives the
-      // same answer). Refuse before paying for the origin lookup below, which
-      // is an MCP round-trip to the browser host on every single call.
-      if (runMode === 'unattended' && !masterSwitchUnattended) {
-        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserUnattendedDisabled}` };
-      }
 
-      // Resolving the origin costs that round-trip, and read-only tools
-      // (snapshot/screenshot/extract) run constantly — only the classes that
-      // have ever consulted a site verdict pay for it.
-      const origin = consequence === 'state-changing'
+      // Resolving the origin is an MCP round-trip to the browser host.
+      // ATTENDED read-only skips it: snapshot/screenshot/extract run
+      // constantly, a human is watching, and that path has never consulted a
+      // site verdict. UNATTENDED pays it for EVERY class — reading a page the
+      // user explicitly blocked is exactly the exfiltration an unattended run
+      // must not do quietly, and "it was only a read" is not a defense when
+      // nobody is there to notice. (`get_tabs` and other tab-less tools cost
+      // nothing here: `resolveBrowserActionOrigin` returns null without a
+      // round-trip when there is no `tabId`/`url` to resolve.)
+      const origin = consequence === 'state-changing' || runMode === 'unattended'
         ? await resolveBrowserActionOrigin(
           name,
           input,
@@ -886,9 +888,36 @@ export async function checkToolApproval(
           toolContext?.agentRunId,
         )
         : null;
-      const siteVerdict = consequence === 'state-changing'
+      const siteVerdict = consequence === 'state-changing' || runMode === 'unattended'
         ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
         : 'default';
+
+      const browserActionLabel = origin
+        ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+        : `${t.commandConfirm.browserAction}: ${name}`;
+      /**
+       * Refuse, and tell the run's own callback why so it can account for it.
+       * The gate decides; the callback only records (see
+       * `ConfirmationInfo.deniedNotice`). Without this, every unattended
+       * browser refusal below would be invisible in the run result — a
+       * scheduled task would report "failed" and nothing else, which is the
+       * exact failure the scheduler's denial accounting exists to prevent.
+       */
+      const denyUnattendedBrowser = async (
+        userFacingReason: string,
+      ): Promise<ToolApprovalDecision> => {
+        await notifyUnattendedDenial(onRequireConfirmation, {
+          command: browserActionLabel,
+          level: 'warn',
+          reason: userFacingReason,
+          kind: 'browser',
+          browserOperationClass: opClass,
+          ...(origin !== null ? { browserOrigin: origin } : {}),
+          allowPersistentGrant: false,
+          deniedNotice: userFacingReason,
+        }, toolContext?.loopId);
+        return { decision: 'deny', reason: `Error: ${userFacingReason}` };
+      };
       // An absent policy is the KNOWN-absent case (a store that predates v46),
       // so it takes the reviewed product default rather than
       // normalizeBrowserOperationPolicy's strictest-cell clamp, which is for a
@@ -909,17 +938,35 @@ export async function checkToolApproval(
           policyVerdict,
         );
         if (browserCeilingDecision.decision === 'deny') {
+          if (runMode === 'unattended') {
+            await notifyUnattendedDenial(onRequireConfirmation, {
+              command: browserActionLabel,
+              level: 'warn',
+              reason: browserCeilingDecision.reason ?? '',
+              kind: 'browser',
+              browserOperationClass: opClass,
+              ...(origin !== null ? { browserOrigin: origin } : {}),
+              allowPersistentGrant: false,
+              deniedNotice: browserCeilingDecision.reason ?? t.commandConfirm.browserPolicyDenied,
+            }, toolContext?.loopId);
+          }
           return browserCeilingDecision;
         }
       }
       if (siteVerdict === 'denied') {
-        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
+        // Now reachable for read-only actions too, in unattended runs: a
+        // blocked site is blocked for READING as well when nobody is watching.
+        return runMode === 'unattended'
+          ? await denyUnattendedBrowser(t.commandConfirm.browserSiteDenied)
+          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
       if (policyVerdict === 'deny') {
-        // The master-switch case already returned above, and a denied site is
-        // reported by its own branch — reaching here means this operation
-        // class is configured to deny in this run mode's column.
-        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
+        const reason = runMode === 'unattended' && !masterSwitchUnattended
+          ? t.commandConfirm.browserUnattendedDisabled
+          : t.commandConfirm.browserPolicyDenied;
+        return runMode === 'unattended'
+          ? await denyUnattendedBrowser(reason)
+          : { decision: 'deny', reason: `Error: ${reason}` };
       }
 
       if (runMode === 'unattended') {
@@ -930,9 +977,7 @@ export async function checkToolApproval(
         if (policyVerdict === 'ask') {
           const approval = await resolveUnattendedConfirmation({
             info: {
-              command: origin
-                ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
-                : `${t.commandConfirm.browserAction}: ${name}`,
+              command: browserActionLabel,
               level: 'warn',
               reason: opClass === 'scripting'
                 ? t.commandConfirm.browserScriptReason
@@ -954,10 +999,9 @@ export async function checkToolApproval(
               : {}),
           });
           if (!approval.approved) {
-            return {
-              decision: 'deny',
-              reason: `Error: ${t.commandConfirm.browserUnattendedConfirmUnavailable}`,
-            };
+            return await denyUnattendedBrowser(
+              t.commandConfirm.browserUnattendedConfirmUnavailable,
+            );
           }
         }
         // Cross-origin fail-closed baseline: an unattended run acts only where
@@ -965,10 +1009,7 @@ export async function checkToolApproval(
         // exempt (it changes nothing); clicking, navigating and scripting are
         // not. A later task refines this per-origin.
         if (consequence === 'state-changing' && siteVerdict !== 'allowed') {
-          return {
-            decision: 'deny',
-            reason: `Error: ${t.commandConfirm.browserUnattendedSiteNotAllowed}`,
-          };
+          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedSiteNotAllowed);
         }
         // Approved by policy (+ site grant) — an unattended run has no
         // conversation-grant/dialog concept, so nothing further to do.
@@ -1004,9 +1045,7 @@ export async function checkToolApproval(
             buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
           ));
           const confirmed = await onRequireConfirmation({
-            command: origin
-              ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
-              : `${t.commandConfirm.browserAction}: ${name}`,
+            command: browserActionLabel,
             level: 'warn',
             reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
             kind: 'browser',
@@ -1030,7 +1069,7 @@ export async function checkToolApproval(
           return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
         }
         const confirmed = await onRequireConfirmation({
-          command: `${t.commandConfirm.browserAction}: ${name}`,
+          command: browserActionLabel,
           level: 'warn',
           reason: t.commandConfirm.browserReason,
           kind: 'browser',

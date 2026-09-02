@@ -109,12 +109,19 @@ function resolveScheduledRunPermissions(
     commandConfirmCallback: createUnattendedConfirmation({
       source: 'scheduler',
       ...(conversationId !== undefined ? { conversationId } : {}),
-      onDenied: (_reason, info) => {
+      onDenied: (reason, info) => {
         const t = getI18n();
         denials.add(
-          info.kind === 'browser' && info.browserOrigin
-            ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
-            : format(t.schedule.denialCommand, { command: info.command }),
+          // A refusal the gate already explained (`deniedNotice`) carries the
+          // precise cause — master switch off, policy, blocked site — which is
+          // strictly better than re-deriving "site not authorized" from the
+          // origin alone. Name the site too when there is one, so the user
+          // knows WHERE it happened as well as why.
+          info.deniedNotice !== undefined
+            ? (info.browserOrigin ? `${reason} (${info.browserOrigin})` : reason)
+            : info.kind === 'browser' && info.browserOrigin
+              ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
+              : format(t.schedule.denialCommand, { command: info.command }),
         );
       },
     }),

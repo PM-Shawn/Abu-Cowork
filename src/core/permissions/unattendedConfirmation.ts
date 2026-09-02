@@ -147,6 +147,14 @@ export function createUnattendedConfirmation(
   options: CreateUnattendedConfirmationOptions,
 ): UnattendedConfirmCallback {
   return async (info: ConfirmationInfo) => {
+    // Already-refused notification (see `ConfirmationInfo.deniedNotice`):
+    // account for it and stop. It must never reach the resolver — asking a
+    // human to approve something that is already denied would be a lie, and
+    // once the resolver is a real IM round-trip it would also spam the chat.
+    if (info.deniedNotice !== undefined) {
+      options.onDenied?.(info.deniedNotice, info);
+      return false;
+    }
     const result = await resolveUnattendedConfirmation({
       info,
       source: options.source,
@@ -156,6 +164,33 @@ export function createUnattendedConfirmation(
     if (!result.approved) options.onDenied?.(result.reason, info);
     return result.approved;
   };
+}
+
+/**
+ * Tell an unattended run's confirmation callback that an action was refused,
+ * so the run can account for it — the scheduler turns these into the
+ * "blocked acting on example.com" line in its run result, which before this
+ * existed was the ONLY way a 3am task explained why it achieved nothing.
+ *
+ * This is needed because the browser gate now refuses unattended actions on
+ * its own (master switch off, policy deny, blocked site, unallowed site)
+ * instead of refusing by way of a callback that returned false — which is
+ * what used to feed the accounting. Notifying keeps that record without
+ * giving the callback a vote: the decision is already made, the return value
+ * is discarded, and a throwing callback cannot change the outcome.
+ */
+export async function notifyUnattendedDenial(
+  callback: ((info: ConfirmationInfo, loopId?: string) => Promise<boolean>) | undefined,
+  info: ConfirmationInfo & { deniedNotice: string },
+  loopId?: string,
+): Promise<void> {
+  if (!callback) return;
+  try {
+    await callback(info, loopId);
+  } catch {
+    // Accounting is best-effort bookkeeping. A callback that throws must not
+    // turn a clean refusal into a thrown tool error.
+  }
 }
 
 /**

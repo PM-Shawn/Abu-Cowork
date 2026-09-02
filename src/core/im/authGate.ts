@@ -98,6 +98,12 @@ export function getCallbacksForLevel(
         // this is the second lock, so a future gate refactor or a new caller
         // of `getCallbacksForLevel` cannot reopen the hole.)
         commandConfirmCallback: async (info) => {
+          // A refusal notice is not a request (see `deniedNotice`) — the
+          // decision is already made, so the tier answers "no" and only logs.
+          if (info.deniedNotice !== undefined) {
+            console.log(`[IM] full: denied "${info.command}" (${info.deniedNotice})`);
+            return false;
+          }
           if (info.kind === 'browser' && !mayUnattendedTierApproveBrowser(info)) {
             console.log(`[IM] full: browser action "${info.command}" denied by the unattended browser policy`);
             return false;

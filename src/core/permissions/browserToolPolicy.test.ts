@@ -10,6 +10,7 @@ import {
   hasBrowserGrant,
   isScriptingBrowserTool,
   listAllBrowserToolPatterns,
+  browserOperationStatesFor,
   normalizeBrowserOperationPolicy,
   normalizeBrowserOrigin,
   revokeBrowserGrant,
@@ -291,6 +292,33 @@ describe('browser tool policy', () => {
       expect(normalizeBrowserOperationPolicy(VALID_POLICY)).toEqual(VALID_POLICY);
     });
 
+    // A site grant is minted from a human approving a CLICK. Letting
+    // unattended scripting be 'allow' would turn that consent into standing
+    // permission to run arbitrary code in the logged-in session.
+    it('clamps unattended scripting "allow" to "ask" — that cell has no allow', () => {
+      const withAllow: BrowserOperationPolicy = {
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+      };
+      const normalized = normalizeBrowserOperationPolicy(withAllow);
+
+      expect(normalized.unattended.scripting).toBe('ask');
+      // Only that one cell — attended scripting and the unattended siblings
+      // keep what they were given.
+      expect(normalized.attended.scripting).toBe('allow');
+      expect(normalized.unattended.interactive).toBe('allow');
+      expect(normalized.unattended.readOnly).toBe('allow');
+    });
+
+    it('leaves an explicit unattended scripting deny/ask alone', () => {
+      for (const state of ['deny', 'ask'] as const) {
+        expect(normalizeBrowserOperationPolicy({
+          ...VALID_POLICY,
+          unattended: { ...VALID_POLICY.unattended, scripting: state },
+        }).unattended.scripting).toBe(state);
+      }
+    });
+
     it('clamps a completely missing input to strictest-everywhere (attended=ask, unattended=deny)', () => {
       expect(normalizeBrowserOperationPolicy(undefined)).toEqual({
         attended: { readOnly: 'ask', interactive: 'ask', scripting: 'ask' },
@@ -369,7 +397,15 @@ describe('browser tool policy', () => {
       for (const runMode of ['attended', 'unattended'] as const) {
         for (const opClass of OP_CLASSES) {
           for (const state of STATES) {
-            it(`${runMode}/${opClass} configured '${state}' → '${state}'`, () => {
+            // The one cell that cannot say what it was configured to say:
+            // unattended scripting has no 'allow' (see
+            // `browserOperationStatesFor`), so a configured 'allow' resolves
+            // to 'ask' — a site grant minted from a click must never buy
+            // silent page scripting in a run nobody is watching.
+            const expected = runMode === 'unattended' && opClass === 'scripting' && state === 'allow'
+              ? 'ask'
+              : state;
+            it(`${runMode}/${opClass} configured '${state}' → '${expected}'`, () => {
               expect(
                 decideBrowserOperation({
                   opClass,
@@ -378,11 +414,57 @@ describe('browser tool policy', () => {
                   masterSwitchUnattended: true,
                   siteVerdict: 'allowed',
                 }),
-              ).toBe(state);
+              ).toBe(expected);
             });
           }
         }
       }
+    });
+
+    describe('unattended scripting has no allow', () => {
+      it('never returns allow, even for a policy object that says allow', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'scripting',
+            runMode: 'unattended',
+            policy: {
+              attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+              unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+            },
+            masterSwitchUnattended: true,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('ask');
+      });
+
+      it('still lets ATTENDED scripting be allowed — the restriction is unattended-only', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'scripting',
+            runMode: 'attended',
+            policy: {
+              attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+              unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+            },
+            masterSwitchUnattended: true,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('allow');
+      });
+
+      it('offers only ask/deny for that cell, all three everywhere else', () => {
+        expect(browserOperationStatesFor('unattended', 'scripting')).toEqual(['ask', 'deny']);
+        for (const [runMode, opClass] of [
+          ['attended', 'scripting'],
+          ['attended', 'interactive'],
+          ['attended', 'read-only'],
+          ['unattended', 'interactive'],
+          ['unattended', 'read-only'],
+        ] as const) {
+          expect(browserOperationStatesFor(runMode, opClass), `${runMode}/${opClass}`)
+            .toEqual(['allow', 'ask', 'deny']);
+        }
+      });
     });
 
     describe('precedence', () => {

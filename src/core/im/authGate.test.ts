@@ -217,6 +217,16 @@ describe('getCallbacksForLevel — full tier cannot loosen the browser operation
     })).resolves.toBe(true);
   });
 
+  it('answers no to a refusal notice, whatever the tier would otherwise say', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive', // a class the tier WOULD approve
+      deniedNotice: 'the gate already refused this',
+    })).resolves.toBe(false);
+  });
+
   it('leaves non-browser confirmations at the tier\'s own answer', async () => {
     const callbacks = getCallbacksForLevel('full');
     await expect(callbacks.commandConfirmCallback({

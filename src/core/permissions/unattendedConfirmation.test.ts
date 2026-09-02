@@ -3,6 +3,7 @@ import {
   __resetUnattendedConfirmationForTests,
   createUnattendedConfirmation,
   mayUnattendedTierApproveBrowser,
+  notifyUnattendedDenial,
   resolveUnattendedConfirmation,
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
@@ -100,6 +101,42 @@ describe('createUnattendedConfirmation', () => {
       conversationId: 'conv-1',
       imTarget: { platform: 'feishu', chatId: 'chat-1' },
     }]);
+  });
+});
+
+describe('denial notices (accounting without a vote)', () => {
+  afterEach(() => {
+    __resetUnattendedConfirmationForTests();
+  });
+
+  it('records a notice without ever consulting the approval resolver', async () => {
+    const resolver = vi.fn(async () => ({ approved: true, reason: 'yes' }));
+    setUnattendedConfirmationResolver(resolver);
+    const onDenied = vi.fn();
+    const callback = createUnattendedConfirmation({ source: 'scheduler', onDenied });
+
+    const answer = await callback({ ...command, deniedNotice: 'master switch is off' });
+
+    expect(answer).toBe(false);
+    expect(onDenied).toHaveBeenCalledWith('master switch is off', expect.objectContaining({
+      deniedNotice: 'master switch is off',
+    }));
+    // Asking a human to approve something already refused would be a lie —
+    // and once the resolver is a real IM round-trip, chat spam.
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('notifyUnattendedDenial is a no-op without a callback', async () => {
+    await expect(notifyUnattendedDenial(undefined, { ...command, deniedNotice: 'x' }))
+      .resolves.toBeUndefined();
+  });
+
+  it('swallows a throwing callback — accounting must not break the refusal', async () => {
+    const callback = vi.fn(async () => { throw new Error('recorder exploded'); });
+
+    await expect(notifyUnattendedDenial(callback, { ...command, deniedNotice: 'x' }))
+      .resolves.toBeUndefined();
+    expect(callback).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -18,6 +18,11 @@ import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
+import {
+  browserOperationStatesFor,
+  type BrowserOperationClass,
+  type BrowserOperationState,
+} from '@/core/permissions/browserToolPolicy';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useToastStore } from '@/stores/toastStore';
 import {
@@ -224,15 +229,27 @@ function BrowserOperationPolicySection() {
   const setBrowserOperationState = useSettingsStore((s) => s.setBrowserOperationState);
   const setAllowUnattendedBrowser = useSettingsStore((s) => s.setAllowUnattendedBrowser);
 
-  const stateOptions = [
-    { value: 'allow', label: t.settings.browserOpStateAllow },
-    { value: 'ask', label: t.settings.browserOpStateAsk },
-    { value: 'deny', label: t.settings.browserOpStateDeny },
-  ];
-  const rows: Array<{ key: 'readOnly' | 'interactive' | 'scripting'; label: string }> = [
-    { key: 'readOnly', label: t.settings.browserOpClassReadOnly },
-    { key: 'interactive', label: t.settings.browserOpClassInteractive },
-    { key: 'scripting', label: t.settings.browserOpClassScripting },
+  const stateLabels: Record<BrowserOperationState, string> = {
+    allow: t.settings.browserOpStateAllow,
+    ask: t.settings.browserOpStateAsk,
+    deny: t.settings.browserOpStateDeny,
+  };
+  // The option list is asked for per cell, not shared: unattended scripting
+  // offers no "allow" (see `browserOperationStatesFor`), and offering one the
+  // gate would refuse to honor is worse than offering fewer.
+  const optionsFor = (runMode: 'attended' | 'unattended', opClass: BrowserOperationClass) =>
+    browserOperationStatesFor(runMode, opClass).map((state) => ({
+      value: state,
+      label: stateLabels[state],
+    }));
+  const rows: Array<{
+    key: 'readOnly' | 'interactive' | 'scripting';
+    opClass: BrowserOperationClass;
+    label: string;
+  }> = [
+    { key: 'readOnly', opClass: 'read-only', label: t.settings.browserOpClassReadOnly },
+    { key: 'interactive', opClass: 'interactive', label: t.settings.browserOpClassInteractive },
+    { key: 'scripting', opClass: 'scripting', label: t.settings.browserOpClassScripting },
   ];
 
   return (
@@ -280,14 +297,14 @@ function BrowserOperationPolicySection() {
               <Select
                 variant="inline"
                 value={policy.attended[row.key]}
-                options={stateOptions}
+                options={optionsFor('attended', row.opClass)}
                 onChange={(v) => setBrowserOperationState('attended', row.key, v as 'allow' | 'deny' | 'ask')}
                 className="w-28 shrink-0 justify-center"
               />
               <Select
                 variant="inline"
                 value={policy.unattended[row.key]}
-                options={stateOptions}
+                options={optionsFor('unattended', row.opClass)}
                 onChange={(v) => setBrowserOperationState('unattended', row.key, v as 'allow' | 'deny' | 'ask')}
                 disabled={!allowUnattended}
                 className={cn('w-28 shrink-0 justify-center', !allowUnattended && 'opacity-50')}

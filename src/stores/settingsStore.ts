@@ -1057,11 +1057,15 @@ export const useSettingsStore = create<SettingsStore>()(
         delete next[origin];
         return { browserSitePermissions: next };
       }),
+      // Normalized on write, not just on read: `unattended.scripting` has no
+      // 'allow' value (see `browserOperationStatesFor`), and a setter that
+      // stored one would leave the persisted policy saying something the gate
+      // will never honor — a setting that lies about what it does.
       setBrowserOperationState: (runMode, opClass, verdict) => set((state) => ({
-        browserOperationPolicy: {
+        browserOperationPolicy: normalizeBrowserOperationPolicy({
           ...state.browserOperationPolicy,
           [runMode]: { ...state.browserOperationPolicy[runMode], [opClass]: verdict },
-        },
+        }),
       })),
       setAllowUnattendedBrowser: (allowUnattendedBrowser) => set({ allowUnattendedBrowser }),
       setComputerUseEnabled: (computerUseEnabled) => {

@@ -17,6 +17,7 @@ import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
 import { checkWritePath, hasFullShellAuthorizationScope, revokeWorkspace } from '../tools/pathSafety';
+import { checkToolApproval } from '../tools/registry';
 
 const getSchedulerToolsMock = vi.fn(() => [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
@@ -336,6 +337,55 @@ describe('SchedulerEngine permission tier', () => {
     expect(latestRunError(task.id)).toContain('https://example.com');
     expect(latestRunError(task.id)).toContain('设置');
     expect(latestRunError(task.id)).toContain('完全自主');
+  });
+
+  // The gate now refuses unattended browser actions itself instead of refusing
+  // by way of a callback that answered false — so it NOTIFIES the run's
+  // callback (ConfirmationInfo.deniedNotice) to keep this accounting alive.
+  // Without it a 3am task would report "failed" and nothing else. These drive
+  // the REAL gate so the whole chain is covered, not just the recorder.
+  describe('unattended browser refusals still explain themselves in the run result', () => {
+    function runWithRealGate(toolName: string, input: Record<string, unknown>) {
+      vi.mocked(runAgentLoop).mockImplementation(async (conversationId, _msg, options) => {
+        await checkToolApproval(
+          toolName,
+          input,
+          { conversationId } as never,
+          (options as { commandConfirmCallback: never }).commandConfirmCallback,
+        );
+        return { reason: 'error', error: 'boom' } as never;
+      });
+    }
+
+    it('names the master switch and the site when unattended browser use is off', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: { 'https://example.com': 'allowed' },
+      });
+      const task = makeTask({ id: 'task-browser-master-off', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      expect(latestRunError(task.id)).toContain('https://example.com');
+      expect(latestRunError(task.id)).toContain('设置');
+    });
+
+    it('names the site when the run may use the browser but not on that site', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: {},
+      });
+      const task = makeTask({ id: 'task-browser-site', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://unlisted.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      expect(latestRunError(task.id)).toContain('https://unlisted.com');
+      expect(latestRunError(task.id)).toContain('无人值守');
+    });
   });
 
   it('labels the denial with the global settings mode when the task follows settings', async () => {

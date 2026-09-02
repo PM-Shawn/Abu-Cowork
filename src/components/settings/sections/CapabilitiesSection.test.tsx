@@ -734,6 +734,34 @@ describe('CapabilitiesSection', () => {
       expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
     });
 
+    // The unattended scripting cell has no "allow": a site grant minted from a
+    // human approving a click must never buy silent page scripting.
+    it('offers only ask/deny for unattended scripting, all three elsewhere', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
+      const scriptingRow = within(grid).getByText('Scripting (running code on the page)').closest('li') as HTMLElement;
+      const [attendedCell, unattendedCell] = within(scriptingRow).getAllByRole('button');
+
+      // Read the OPEN dropdown, not the row: a closed trigger also renders its
+      // current value as button text and would match by name.
+      const openedOptions = (trigger: HTMLElement) => {
+        const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+        if (!dropdown) throw new Error('dropdown not open');
+        return within(dropdown).getAllByRole('button').map((b) => b.textContent);
+      };
+
+      await user.click(unattendedCell);
+      expect(openedOptions(unattendedCell)).toEqual(['Ask every time', 'Deny']);
+
+      // The attended half of the same row still offers all three.
+      await user.keyboard('{Escape}');
+      await user.click(attendedCell);
+      expect(openedOptions(attendedCell)).toEqual(['Allow', 'Ask every time', 'Deny']);
+    });
+
     it('toggles the unattended master switch', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);

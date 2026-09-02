@@ -9,6 +9,7 @@
 // for a human who is not there.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
+import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import {
@@ -37,12 +38,46 @@ vi.mock('@/core/enterprise/policy/matcher', () => ({
 const ALLOWED_SITE = 'https://allowed.com';
 const ALLOWED_URL = `${ALLOWED_SITE}/report`;
 const UNKNOWN_URL = 'https://unknown.com/report';
+const BLOCKED_SITE = 'https://blocked.com';
+const OWNER = 'run-owner';
+const OWNED_TAB_ID = 77;
+
+// Tools that carry only a `tabId` (screenshot, extract_text, click, ...) make
+// the gate resolve the tab's origin through the browser server's `get_tabs`.
+// This fake models the host's ownership rule the same way
+// registry.browserGateOwnership.test.ts does.
+interface FakeConnectedServer {
+  config: { name: string };
+  client: { callTool: ReturnType<typeof vi.fn> };
+  transport: unknown;
+  tools: Map<string, never>;
+}
+
+let mockCallTool: ReturnType<typeof vi.fn>;
+
+function withTabOrigin(url: string) {
+  mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+    Promise.resolve(
+      params._meta?.['abu/conversationId'] === OWNER
+        ? {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url }] }] }),
+            }],
+          }
+        : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }] },
+    ),
+  );
+}
 
 /** An unattended tool context: the flag the agent loop derives for scheduled /
  *  trigger / IM runs. */
 const unattended = { conversationId: 'run-1', interactionMode: 'background' } as never;
 /** An attended one — no provenance at all, which is what a chat turn carries. */
 const attended = { conversationId: 'conv-1' } as never;
+/** Same two, for the conversation that owns the fake tab above. */
+const unattendedOwner = { conversationId: OWNER, interactionMode: 'background' } as never;
+const attendedOwner = { conversationId: OWNER } as never;
 
 function policyWith(
   column: 'attended' | 'unattended',
@@ -57,6 +92,19 @@ function policyWith(
 
 describe('browser gate — operation-class policy', () => {
   beforeEach(() => {
+    mockCallTool = vi.fn(() => Promise.resolve({
+      content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
+    }));
+    const fakeServer: FakeConnectedServer = {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      tools: new Map(),
+    };
+    (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
+      'abu-browser',
+      fakeServer,
+    );
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
     useSettingsStore.setState({
       permissionMode: 'standard',
@@ -69,6 +117,7 @@ describe('browser gate — operation-class policy', () => {
   });
 
   afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetUnattendedConfirmationForTests();
     __resetBrowserGrantsForTests();
   });
@@ -110,13 +159,35 @@ describe('browser gate — operation-class policy', () => {
       expect(asked).toHaveLength(1);
     });
 
-    it('never consults the run\'s confirmation callback when the switch is off', async () => {
-      const confirm = vi.fn(async () => true);
-      await checkToolApproval(
+    // The gate refuses on its own, but the run still has to be able to EXPLAIN
+    // the refusal — a scheduled task that reports only "failed" is the exact
+    // failure the scheduler's denial accounting exists to prevent. So the
+    // callback is notified, not consulted: it is told the decision and its
+    // answer is discarded.
+    it('notifies the run\'s callback of the refusal instead of asking it', async () => {
+      const confirm = vi.fn(async () => true); // says "yes" — must not matter
+      const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, confirm as never,
       );
 
-      expect(confirm).not.toHaveBeenCalled();
+      expect(decision.decision).toBe('deny');
+      expect(confirm).toHaveBeenCalledTimes(1);
+      const notice = confirm.mock.calls[0][0] as unknown as {
+        deniedNotice?: string; browserOrigin?: string; kind?: string;
+      };
+      expect(notice.deniedNotice).toContain('Settings');
+      expect(notice.kind).toBe('browser');
+      // The origin rides along so the run result can say WHERE it happened.
+      expect(notice.browserOrigin).toBe(ALLOWED_SITE);
+    });
+
+    it('is not derailed by a callback that throws while being notified', async () => {
+      const confirm = vi.fn(async () => { throw new Error('recorder exploded'); });
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, confirm as never,
+      );
+
+      expect(decision.decision).toBe('deny');
     });
   });
 
@@ -201,10 +272,12 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('deny');
-      // The entry point's own callback must never be the thing that answers an
-      // unattended approval: an IM `full` tier's auto-approve would otherwise
-      // rubber-stamp it.
-      expect(confirm).not.toHaveBeenCalled();
+      // The entry point's own callback must never ANSWER an unattended
+      // approval — an IM `full` tier's auto-approve would rubber-stamp it. It
+      // is only told the outcome afterwards, as a refusal notice.
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect((confirm.mock.calls[0][0] as unknown as { deniedNotice?: string }).deniedNotice)
+        .toBeDefined();
     });
 
     it('an installed resolver can approve, and the action then still needs its site grant', async () => {
@@ -309,6 +382,107 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(sources).toEqual(['scheduler']);
+    });
+  });
+
+  // I3: an unattended run must not be able to read a site the user blocked.
+  // "It was only a screenshot" is not a defense when the page is a logged-in
+  // bank statement and nobody is watching the run.
+  describe('blocked sites bind read-only actions too, in unattended runs', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
+      });
+    });
+
+    it.each(['screenshot', 'extract_text', 'snapshot', 'query_js'])(
+      'denies %s on a blocked site',
+      async (tool) => {
+        withTabOrigin(`${BLOCKED_SITE}/statement`);
+
+        const decision = await checkToolApproval(
+          `abu-browser__${tool}`, { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      },
+    );
+
+    it('still allows the same read on a site with no verdict', async () => {
+      withTabOrigin('https://neutral.com/page');
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+    });
+
+    it('reports the blocked read through the denial accounting, with the origin', async () => {
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+      const confirm = vi.fn(async () => true);
+
+      await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, unattendedOwner, confirm as never,
+      );
+
+      const notice = confirm.mock.calls[0]?.[0] as unknown as {
+        deniedNotice?: string; browserOrigin?: string;
+      };
+      expect(notice?.deniedNotice).toBeDefined();
+      expect(notice?.browserOrigin).toBe(BLOCKED_SITE);
+    });
+
+    it('leaves ATTENDED read-only on the cheap path — no origin probe at all', async () => {
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(mockCallTool).not.toHaveBeenCalled();
+    });
+
+    it('does not probe for a tool that carries no tab (get_tabs stays free)', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__get_tabs', {}, unattendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(mockCallTool).not.toHaveBeenCalled();
+    });
+  });
+
+  // I2: the unattended scripting cell has no 'allow' — a policy that claims
+  // otherwise resolves to 'ask', which fails closed until U3's approval lands.
+  describe('unattended scripting can never be silently allowed', () => {
+    it('treats a stored unattended scripting "allow" as "ask", not allow', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserOperationPolicy: policyWith('unattended', 'scripting', 'allow'),
+      });
+      const approvals: string[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        approvals.push(request.info.browserOperationClass ?? 'none');
+        return { approved: false, reason: 'no channel' };
+      });
+
+      const decision = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: 1, url: ALLOWED_URL, code: '1' },
+        unattended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      // Routed to the approval seam (the 'ask' behavior), not allowed outright.
+      expect(approvals).toEqual(['scripting']);
+    });
+
+    it('cannot be stored as allow in the first place', () => {
+      useSettingsStore.getState().setBrowserOperationState('unattended', 'scripting', 'allow');
+
+      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('ask');
     });
   });
 

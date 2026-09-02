@@ -142,6 +142,12 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
     case 'full':
       return {
         commandConfirmCallback: async (info) => {
+          // A refusal notice is not a request (see `deniedNotice`) — the
+          // decision is already made, so the tier answers "no" and only logs.
+          if (info.deniedNotice !== undefined) {
+            console.log(`[Trigger] full: denied "${info.command}" (${info.deniedNotice})`);
+            return false;
+          }
           // A capability tier is a CEILING — it may only remove authority. The
           // browser operation-class policy is therefore evaluated independently
           // of the tier: `full` must not be able to auto-approve page scripting
@@ -180,6 +186,10 @@ function buildCustomCallbacks(
 
   return {
     commandConfirmCallback: async (info) => {
+      if (info.deniedNotice !== undefined) {
+        console.log(`[Trigger] custom: denied "${info.command}" (${info.deniedNotice})`);
+        return false;
+      }
       if (info.level === 'block') return false;
       // See the `full` tier: allowedCommands is a COMMAND allowlist and says
       // nothing about browser operations, so a browser confirmation reaching

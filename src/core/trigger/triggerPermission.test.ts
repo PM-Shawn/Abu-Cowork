@@ -397,6 +397,20 @@ describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation 
     dispose();
   });
 
+  it('full and custom answer no to a refusal notice', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    for (const capability of ['full', 'custom'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls',
+        level: 'safe',
+        reason: '',
+        deniedNotice: 'the gate already refused this',
+      })).resolves.toBe(false);
+      dispose();
+    }
+  });
+
   it('full leaves non-browser commands at its own answer', async () => {
     const { callbacks, dispose } = callbacksFor('full');
     await expect(callbacks.commandConfirmCallback({

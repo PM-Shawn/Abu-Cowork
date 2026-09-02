@@ -286,13 +286,41 @@ export interface BrowserOperationPolicy {
 }
 
 /**
+ * The states one policy cell may hold. Every cell offers all three EXCEPT
+ * unattended scripting, which offers `deny | ask` only.
+ *
+ * Why that cell is special: a site grant is minted from a human approving a
+ * CLICK ("always allow this site"), and page scripting is a categorically
+ * stronger capability — it reads cookies and the whole DOM and acts with the
+ * page's full authority. Letting `unattended.scripting` be `allow` would mean
+ * consent given for clicking silently authorizes arbitrary code execution in
+ * that logged-in session, forever, with nobody watching. `ask` is the
+ * strongest thing this cell may express: it routes to an approval round-trip
+ * where a human answers THIS request. This is enforced in three places —
+ * here (the option list the UI renders), `normalizeBrowserOperationPolicy`
+ * (which clamps a stored 'allow'), and `decideBrowserOperation` (which never
+ * returns 'allow' for the pair) — because a value that reaches any one of
+ * them can bypass the other two.
+ */
+export function browserOperationStatesFor(
+  runMode: 'attended' | 'unattended',
+  opClass: BrowserOperationClass,
+): readonly BrowserOperationState[] {
+  return runMode === 'unattended' && opClass === 'scripting'
+    ? (['ask', 'deny'] as const)
+    : (['allow', 'ask', 'deny'] as const);
+}
+
+/**
  * Product-spec defaults (§二 table). Attended equals today's shipped
  * semantics exactly — read-only and interactive already run unconfirmed
  * (interactive still passes through the existing per-site gate elsewhere;
  * this policy layer does not relax that), scripting still asks every time.
- * Unattended is fail-safe: only read-only runs free, interactive still needs
- * its per-site allow (site verdict is a separate input to
- * `decideBrowserOperation`, not encoded here), scripting is denied outright.
+ * Unattended is fail-safe: read-only runs free EXCEPT on a site the user
+ * blocked, interactive still needs its per-site allow (site verdict is a
+ * separate input to `decideBrowserOperation`, not encoded here), and scripting
+ * is denied outright — the one cell that cannot be set to 'allow' at all
+ * (`browserOperationStatesFor`).
  * Exported so settingsStore's default state and v45→v46 migration share the
  * exact same object instead of two hand-copied literals drifting apart.
  */
@@ -388,9 +416,18 @@ function normalizeClassPolicy(
  */
 export function normalizeBrowserOperationPolicy(input: unknown): BrowserOperationPolicy {
   const raw = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+  const unattended = normalizeClassPolicy(raw.unattended, 'deny');
   return {
     attended: normalizeClassPolicy(raw.attended, 'ask'),
-    unattended: normalizeClassPolicy(raw.unattended, 'deny'),
+    unattended: {
+      ...unattended,
+      // `unattended.scripting` has no 'allow' value — see
+      // UNATTENDED_SCRIPTING_STATES. A stored/hand-edited 'allow' is clamped
+      // to 'ask' (the strongest thing the cell may express) rather than to
+      // 'deny', so a user who deliberately opted into unattended scripting
+      // still gets the approval round-trip instead of a silent hard block.
+      scripting: unattended.scripting === 'allow' ? 'ask' : unattended.scripting,
+    },
   };
 }
 
@@ -423,5 +460,9 @@ export function decideBrowserOperation(
   const policy = normalizeBrowserOperationPolicy(input.policy);
   if (siteVerdict === 'denied') return 'deny';
   if (runMode === 'unattended' && !masterSwitchUnattended) return 'deny';
-  return policy[runMode][OPERATION_CLASS_TO_POLICY_KEY[opClass]];
+  const state = policy[runMode][OPERATION_CLASS_TO_POLICY_KEY[opClass]];
+  // Belt and braces on top of the normalizer: this function must never hand
+  // back 'allow' for unattended scripting, whatever the policy object said.
+  if (runMode === 'unattended' && opClass === 'scripting' && state === 'allow') return 'ask';
+  return state;
 }

@@ -568,6 +568,21 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /**
+   * The app-owned subagent run (`sar-*`) this tool call belongs to, or absent
+   * for the conversation's own agent loop.
+   *
+   * Set by the TRUSTED runtime only (`subagentRunner`'s shell-side session for
+   * a sidecar-hosted run, `subagentLoop` for an in-process one) — never taken
+   * from model input, and never from the sidecar's copy of the context.
+   *
+   * Consumed by resources that must be owned per RUN rather than per
+   * conversation, because one conversation can drive them from its own loop and
+   * from several delegated subagents at the same time: today that is browser tab
+   * ownership (it rides `_meta['abu/runKey']` to the browser host, which keys
+   * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
+   */
+  agentRunId?: string;
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
   /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */

@@ -363,6 +363,7 @@ async function resolveBrowserActionOrigin(
   namespacedName: string,
   input: Record<string, unknown>,
   conversationId?: string,
+  agentRunId?: string,
 ): Promise<string | null> {
   const separator = namespacedName.indexOf('__');
   const serverName = namespacedName.slice(0, separator);
@@ -400,6 +401,13 @@ async function resolveBrowserActionOrigin(
     const result = await Promise.race([
       mcpManager.callTool(serverName, 'get_tabs', {}, {
         conversationId,
+        // The run id is as REQUIRED as the conversation id, and for the same
+        // reason: the host owns tabs by the pair, so a probe that sent only the
+        // conversation would list the MAIN loop's tabs and resolve null for
+        // every tab a subagent opened — silently re-opening the exact fail-open
+        // (blocked sites stop being denied, unattended runs deny everything)
+        // that threading the conversation id closed.
+        agentRunId,
         createBrowserTabIfEmpty: false,
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
@@ -832,6 +840,7 @@ export async function checkToolApproval(
         name,
         input,
         toolContext?.conversationId,
+        toolContext?.agentRunId,
       );
       const siteVerdict = getSiteVerdict(
         origin,
@@ -1043,6 +1052,7 @@ export async function executeAnyTool(
       try {
         result = await mcpManager.callTool(serverName, toolName, executionInput, {
           conversationId: toolContext?.conversationId,
+          agentRunId: toolContext?.agentRunId,
           signal: toolContext?.abortSignal,
         });
       } catch (err) {

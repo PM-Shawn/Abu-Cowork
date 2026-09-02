@@ -2729,6 +2729,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     loopId: runId,
   });
   ownership.messageTaken = true;
+  // The documented onMessageTaken contract ("invoked once the initial user
+  // message is present in the transcript") applies to the sidecar path too —
+  // the shell row was just added above.
+  options?.onMessageTaken?.(clientMessageId);
   shellChatDelta.setConversationStatus(conversationId, 'running');
   try {
     await waitForConversationPersistence(conversationId);

@@ -117,7 +117,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { resolveResource, appDataDir, resourceDir } from '@tauri-apps/api/path';
+import { resolveResource, appDataDir, homeDir, resourceDir } from '@tauri-apps/api/path';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { createLogger } from '@/core/logging/logger';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -693,6 +693,21 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     spawnEnv.ABU_RESOURCE_DIR = await resourceDir();
   } catch (err) {
     logger.warn('Failed to resolve resourceDir for sidecar bootstrap', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  // Home is derivable in plain Node (os.homedir()), but the SHELL's home can
+  // legitimately differ from it: electron/main.cjs redirects
+  // app.getPath('home') into the launch-scoped E2E data root so isolated runs
+  // never touch the developer's real ~/.abu state. Passing the shell-resolved
+  // value keeps sidecar-side ~/.abu paths (memdir, skills) identical to the
+  // renderer's BY CONSTRUCTION in every mode — in a normal run it equals
+  // os.homedir(), so behavior is unchanged. Fail-soft like the two above:
+  // sidecar/src/bootstrap.ts falls back to os.homedir() when absent.
+  try {
+    spawnEnv.ABU_HOME_DIR = await homeDir();
+  } catch (err) {
+    logger.warn('Failed to resolve homeDir for sidecar bootstrap', {
       error: err instanceof Error ? err.message : String(err),
     });
   }

@@ -21,6 +21,17 @@ export interface BridgeResponse {
   error?: string;
 }
 
+/**
+ * Sent Bridge → Extension when the caller aborts before a response for
+ * `requestId` arrived. The extension is not required to act on it (this PR
+ * only asks it not to crash on an unrecognized message shape); it exists so a
+ * future extension version can stop in-flight work early.
+ */
+export interface BridgeCancelMessage {
+  type: 'cancel';
+  requestId: string;
+}
+
 // --- Element Locator (multi-strategy targeting) ---
 // All fields optional — only one strategy should be specified per locator.
 

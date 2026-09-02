@@ -64,13 +64,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache pinned Electron runtimes
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: electron/.runtime
           key: electron-runtimes-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/setup-electron-runtimes.mjs') }}
 
       - name: Cache cargo builds
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

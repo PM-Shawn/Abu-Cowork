@@ -3018,12 +3018,18 @@ print(json.dumps({"executable": sys.executable, "files": [str(p) for p in [docx_
       checks.packagedTaskSurvivesChildFrameNavigation = true;
 
       if (process.platform === 'win32') {
-        let rightPanel = window.locator('[data-abu-right-panel]');
-        if (!(await rightPanel.count())) {
+        // This conversation has no workspace, so the panel auto-collapses and
+        // the user opens it from the title-bar toggle. Probe VISIBILITY, never
+        // DOM presence: the panel is kept mounted while closed (its tab bodies
+        // own live native browser views that unmounting would destroy), so
+        // `count()` is 1 whether it is open or closed. Reading presence as
+        // "already open" skips the toggle and then waits out the timeout on a
+        // panel nothing opened.
+        const rightPanel = window.locator('[data-abu-right-panel]');
+        if (!(await rightPanel.isVisible())) {
           const rightPanelToggle = window.locator('[data-window-control="right-panel"]');
           await rightPanelToggle.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
           await rightPanelToggle.click();
-          rightPanel = window.locator('[data-abu-right-panel]');
         }
         await rightPanel.waitFor({ state: 'visible', timeout: READY_TIMEOUT });
         const rightPanelLayout = await window.evaluate(() => {

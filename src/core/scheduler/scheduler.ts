@@ -22,6 +22,10 @@ import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import {
+  buildSchedulerDriftSignal,
+  safeRecordSchedulerDriftSignal,
+} from '../observability/browserSignals';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
@@ -166,6 +170,21 @@ class SchedulerEngine {
 
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
+
+    // F1.4 (batch 1, observation only): planned-vs-actual trigger drift.
+    // `task.nextRunAt` must be read here, before completeRun/errorRun
+    // recompute it for the task's NEXT occurrence — this is the slot that
+    // made the task due for THIS run. No nextRunAt (e.g. a bare "run now" on
+    // a task not currently due) means there's nothing to compare against.
+    // Token cost is intentionally left unset — see docs/plans/
+    // 2026-09-01-browser-batch1-observability.md's delivery notes: neither
+    // the main agent loop nor ScheduledTask exposes a per-run token figure
+    // today (ConversationMeta.totalCost is declared but never written), so
+    // this batch reports drift only rather than inventing a ledger.
+    if (typeof task.nextRunAt === 'number') {
+      const plannedAt = task.nextRunAt;
+      safeRecordSchedulerDriftSignal(() => buildSchedulerDriftSignal(task.id, plannedAt, Date.now()));
+    }
 
     const chatStore = useChatStore.getState();
     const scheduleStore = useScheduleStore.getState();

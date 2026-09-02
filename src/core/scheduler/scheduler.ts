@@ -22,6 +22,7 @@ import { outputSender } from '../im/outputSender';
 import type { OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { createUnattendedConfirmation } from '../permissions/unattendedConfirmation';
 import {
   buildSchedulerDriftSignal,
   safeRecordSchedulerDriftSignal,
@@ -75,7 +76,11 @@ function permissionModeLabel(mode: PermissionMode): string {
  * "blocked on example.com, authorize it in Settings" message possible without
  * a separate accounting layer.
  */
-function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeId: string): {
+function resolveScheduledRunPermissions(
+  task: ScheduledTask,
+  authorizationScopeId: string,
+  conversationId?: string,
+): {
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
@@ -96,15 +101,23 @@ function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeI
   const denials = new Set<string>();
 
   return {
-    commandConfirmCallback: async (info) => {
-      const t = getI18n();
-      denials.add(
-        info.kind === 'browser' && info.browserOrigin
-          ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
-          : format(t.schedule.denialCommand, { command: info.command }),
-      );
-      return false;
-    },
+    // One seam for "an unattended run needs approval" (see
+    // `unattendedConfirmation.ts`) instead of a hand-rolled always-false
+    // closure per entry point. Today it still resolves false — the recorder
+    // below is what turns that into a user-readable line — but when an IM
+    // approval round-trip lands, all three entry points gain it at once.
+    commandConfirmCallback: createUnattendedConfirmation({
+      source: 'scheduler',
+      ...(conversationId !== undefined ? { conversationId } : {}),
+      onDenied: (_reason, info) => {
+        const t = getI18n();
+        denials.add(
+          info.kind === 'browser' && info.browserOrigin
+            ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
+            : format(t.schedule.denialCommand, { command: info.command }),
+        );
+      },
+    }),
     filePermissionCallback: async (request) => {
       const t = getI18n();
       denials.add(format(t.schedule.denialFile, { path: request.path }));
@@ -228,7 +241,7 @@ class SchedulerEngine {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
       // the finally below must still dispose the scope and release runningTasks.
-      const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
+      const permissions = resolveScheduledRunPermissions(task, authorizationScopeId, conversationId);
       const runPermissionCeiling = buildScheduledRunPermissionCeiling(
         getToolInvoker().getAllTools().map((tool) => tool.name),
       );

@@ -6,6 +6,7 @@
 import { getI18n } from '../../i18n';
 import { isWindows } from '../../utils/platform';
 import { isReadOnlyCommand } from './readOnlyDetector';
+import type { BrowserOperationClass } from '../permissions/browserToolPolicy';
 
 export type DangerLevel = 'safe' | 'warn' | 'danger' | 'block';
 
@@ -43,6 +44,15 @@ export interface ConfirmationInfo {
    * guess.
    */
   allowPersistentGrant?: boolean;
+  /**
+   * Browser confirmations only: which operation class the action belongs to.
+   * Carried so a callback that is NOT the desktop dialog — an unattended
+   * tier's auto-approve callback, a future IM approval round-trip — can apply
+   * the operation-class policy itself instead of trusting that whoever built
+   * the request already did. Absent means "unclassified", and every consumer
+   * treats that as the strictest class.
+   */
+  browserOperationClass?: BrowserOperationClass;
 }
 
 /**

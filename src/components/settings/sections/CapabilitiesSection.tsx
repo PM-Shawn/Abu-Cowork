@@ -15,6 +15,7 @@ import {
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
+import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -203,6 +204,98 @@ function BrowserSitePermissionsList() {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * The operation-class policy: three rows (read-only / interaction &
+ * navigation / scripting) × two columns (attended / unattended), plus the
+ * master switch that turns the whole unattended browser surface off.
+ *
+ * The master switch is above the grid because it OVERRIDES it — with the
+ * switch off, no unattended cell can allow anything, and the grid's unattended
+ * column is disabled to say so rather than showing settings that do nothing.
+ */
+function BrowserOperationPolicySection() {
+  const { t } = useI18n();
+  const policy = useSettingsStore((s) => s.browserOperationPolicy);
+  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
+  const setBrowserOperationState = useSettingsStore((s) => s.setBrowserOperationState);
+  const setAllowUnattendedBrowser = useSettingsStore((s) => s.setAllowUnattendedBrowser);
+
+  const stateOptions = [
+    { value: 'allow', label: t.settings.browserOpStateAllow },
+    { value: 'ask', label: t.settings.browserOpStateAsk },
+    { value: 'deny', label: t.settings.browserOpStateDeny },
+  ];
+  const rows: Array<{ key: 'readOnly' | 'interactive' | 'scripting'; label: string }> = [
+    { key: 'readOnly', label: t.settings.browserOpClassReadOnly },
+    { key: 'interactive', label: t.settings.browserOpClassInteractive },
+    { key: 'scripting', label: t.settings.browserOpClassScripting },
+  ];
+
+  return (
+    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
+      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
+        {t.settings.browserOpPolicyTitle}
+      </h4>
+      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {t.settings.browserOpPolicyDesc}
+      </p>
+
+      <div className="mt-3 flex items-start gap-3 border-t border-[var(--abu-border)] pt-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-body text-[var(--abu-text-secondary)]">
+            {t.settings.browserUnattendedMasterSwitchLabel}
+          </p>
+          <p className="mt-0.5 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+            {t.settings.browserUnattendedMasterSwitchDesc}
+          </p>
+        </div>
+        <Toggle
+          checked={allowUnattended}
+          onChange={() => setAllowUnattendedBrowser(!allowUnattended)}
+          size="lg"
+          className="mt-0.5 shrink-0"
+        />
+      </div>
+
+      <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
+        <div className="flex items-center gap-3 pb-1">
+          <span className="min-w-0 flex-1" />
+          <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
+            {t.settings.browserOpPolicyColumnAttended}
+          </span>
+          <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
+            {t.settings.browserOpPolicyColumnUnattended}
+          </span>
+        </div>
+        <ul className="divide-y divide-[var(--abu-border)]">
+          {rows.map((row) => (
+            <li key={row.key} className="flex items-center gap-3 py-2">
+              <span className="min-w-0 flex-1 text-body text-[var(--abu-text-secondary)]">
+                {row.label}
+              </span>
+              <Select
+                variant="inline"
+                value={policy.attended[row.key]}
+                options={stateOptions}
+                onChange={(v) => setBrowserOperationState('attended', row.key, v as 'allow' | 'deny' | 'ask')}
+                className="w-28 shrink-0 justify-center"
+              />
+              <Select
+                variant="inline"
+                value={policy.unattended[row.key]}
+                options={stateOptions}
+                onChange={(v) => setBrowserOperationState('unattended', row.key, v as 'allow' | 'deny' | 'ask')}
+                disabled={!allowUnattended}
+                className={cn('w-28 shrink-0 justify-center', !allowUnattended && 'opacity-50')}
+              />
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -817,6 +910,7 @@ export default function CapabilitiesSection({
           </CapabilityCard>
         </div>
 
+        <BrowserOperationPolicySection />
         <BrowserSitePermissionsList />
       </section>
 

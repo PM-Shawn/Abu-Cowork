@@ -2501,6 +2501,18 @@ export interface TranslationDict {
     browserDescription: string;
     browserSiteDenied: string;
     browserScriptReason: string;
+    /** Unattended run, master switch off — the whole browser surface is
+     *  unavailable regardless of the per-class policy. */
+    browserUnattendedDisabled: string;
+    /** Unattended or attended run whose operation-class policy is set to
+     *  'deny' for this kind of browser action. */
+    browserPolicyDenied: string;
+    /** Unattended run on a site that carries no standing "allowed" verdict —
+     *  the cross-origin fail-closed baseline. */
+    browserUnattendedSiteNotAllowed: string;
+    /** Unattended run whose policy says "ask", with no approval channel able
+     *  to answer. */
+    browserUnattendedConfirmUnavailable: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */

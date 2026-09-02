@@ -10,6 +10,9 @@ import {
   revokeWorkspace,
 } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import { __resetUnattendedConfirmationForTests } from '../permissions/unattendedConfirmation';
 
 describe('resolveTriggerCallbacks', () => {
   function resolveForTest(action: Parameters<typeof resolveTriggerCallbacks>[0]) {
@@ -333,5 +336,82 @@ describe('resolveTriggerCallbacks', () => {
       dispose();
       expect(allowed.some((p) => matchesToolName('run_command', p))).toBe(false);
     });
+  });
+});
+
+// The trigger tiers are the twin of `authGate`'s IM tiers, and carried the
+// same shape of hole: `full` answered every confirmation with "allowed unless
+// hard-blocked", which for a browser confirmation meant page scripting ran in
+// an unattended trigger with nobody approving it. A tier is a ceiling — it may
+// only remove authority — so the browser operation-class policy is evaluated
+// independently of the tier.
+describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation policy', () => {
+  const scriptingConfirm = {
+    command: 'Browser action: abu-browser__execute_js',
+    level: 'warn' as const,
+    reason: 'runs a script in the page',
+    kind: 'browser' as const,
+    browserOperationClass: 'scripting' as const,
+    browserOrigin: 'https://allowed.com',
+  };
+
+  function callbacksFor(capability: 'full' | 'custom' | 'read_tools' | 'safe_tools') {
+    const scopeId = createAuthorizationScope();
+    const callbacks = resolveTriggerCallbacks(
+      capability === 'custom'
+        ? { prompt: 'x', capability, permissions: { allowedCommands: ['*'] } }
+        : { prompt: 'x', capability },
+      { authorizationScopeId: scopeId },
+    );
+    return { callbacks, dispose: () => disposeAuthorizationScope(scopeId) };
+  }
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://allowed.com': 'allowed' },
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+    });
+    __resetUnattendedConfirmationForTests();
+  });
+
+  it('full denies execute_js under the default policy', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('custom denies a browser action even with a wide-open command allowlist', async () => {
+    const { callbacks, dispose } = callbacksFor('custom');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('full still approves an interactive action the unattended policy allows', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('full leaves non-browser commands at its own answer', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      command: 'ls', level: 'safe', reason: '',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('read_tools and safe_tools stay fail-closed through the unattended seam', async () => {
+    for (const capability of ['read_tools', 'safe_tools'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls', level: 'safe', reason: '',
+      })).resolves.toBe(false);
+      dispose();
+    }
   });
 });

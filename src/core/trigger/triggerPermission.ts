@@ -18,6 +18,10 @@ import {
   normalizeTriggerRunCapability,
 } from '../permissions/runPermissionCeiling';
 import { scopedAuthorizeWorkspace } from '../tools/pathSafety';
+import {
+  createUnattendedConfirmation,
+  mayUnattendedTierApproveBrowser,
+} from '../permissions/unattendedConfirmation';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 /** Simple glob matching for command patterns (e.g. "npm run *", "git *") */
@@ -100,10 +104,12 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
         // the strategy resolves a workspace-internal `safe` command to
         // 'allow' without ever calling it (RB-02). `allowedTools` below is
         // the actual ceiling.
-        commandConfirmCallback: async (info) => {
-          console.log(`[Trigger] read_tools: denied command "${info.command}"`);
-          return false;
-        },
+        commandConfirmCallback: createUnattendedConfirmation({
+          source: 'trigger',
+          onDenied: (reason, info) => {
+            console.log(`[Trigger] read_tools: denied "${info.command}" (${reason})`);
+          },
+        }),
         filePermissionCallback: async (req) => {
           // The run's declared workspace was already pre-authorized above.
           // Reaching this callback means the path is outside that run-local
@@ -117,10 +123,12 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
 
     case 'safe_tools':
       return {
-        commandConfirmCallback: async (info) => {
-          console.log(`[Trigger] safe_tools: denied command "${info.command}"`);
-          return false;
-        },
+        commandConfirmCallback: createUnattendedConfirmation({
+          source: 'trigger',
+          onDenied: (reason, info) => {
+            console.log(`[Trigger] safe_tools: denied "${info.command}" (${reason})`);
+          },
+        }),
         filePermissionCallback: async (req) => {
           // Workspace access is already present in this run's scope. Never
           // import unrelated interactive grants into an unattended run.
@@ -134,6 +142,16 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
     case 'full':
       return {
         commandConfirmCallback: async (info) => {
+          // A capability tier is a CEILING — it may only remove authority. The
+          // browser operation-class policy is therefore evaluated independently
+          // of the tier: `full` must not be able to auto-approve page scripting
+          // in a run nobody is watching (the same hole `authGate.ts`'s `full`
+          // tier carried; `registry.ts` closes it at the gate, this closes it
+          // at the tier so a future refactor cannot reopen it).
+          if (info.kind === 'browser' && !mayUnattendedTierApproveBrowser(info)) {
+            console.log(`[Trigger] full: browser action "${info.command}" denied by the unattended browser policy`);
+            return false;
+          }
           // Allow everything except hard-blocked commands
           const allowed = info.level !== 'block';
           if (!allowed) {
@@ -163,6 +181,10 @@ function buildCustomCallbacks(
   return {
     commandConfirmCallback: async (info) => {
       if (info.level === 'block') return false;
+      // See the `full` tier: allowedCommands is a COMMAND allowlist and says
+      // nothing about browser operations, so a browser confirmation reaching
+      // here is decided by the operation-class policy, never by a glob.
+      if (info.kind === 'browser') return mayUnattendedTierApproveBrowser(info);
       if (!allowedCommands || allowedCommands.length === 0) {
         console.log(`[Trigger] custom: no allowedCommands, denied "${info.command}"`);
         return false;

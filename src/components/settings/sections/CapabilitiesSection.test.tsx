@@ -10,6 +10,7 @@ import { useMCPStore } from '@/stores/mcpStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import type { SkillMetadata } from '@/types';
 import type { ProviderInstance } from '@/types/provider';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
@@ -672,6 +673,75 @@ describe('CapabilitiesSection', () => {
       await user.click(within(row as HTMLElement).getByRole('button', { name: 'Remove' }));
 
       expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+    });
+  });
+
+  // The operation-class policy grid + its master switch. The switch overrides
+  // the unattended column entirely, so the column must not offer live controls
+  // while it is off.
+  describe('browser operation policy', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: false,
+      });
+    });
+
+    it('renders three operation classes for both run modes, with the shipped defaults', () => {
+      render(<CapabilitiesSection />);
+
+      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
+      expect(within(grid).getByText('Attended')).toBeInTheDocument();
+      expect(within(grid).getByText('Unattended')).toBeInTheDocument();
+      for (const label of [
+        'Read-only (viewing page content)',
+        'Interaction & navigation (click/fill/navigate)',
+        'Scripting (running code on the page)',
+      ]) {
+        expect(within(grid).getByText(label)).toBeInTheDocument();
+      }
+      const scriptingRow = within(grid).getByText('Scripting (running code on the page)').closest('li') as HTMLElement;
+      // attended = ask, unattended = deny (the product default table)
+      expect(within(scriptingRow).getByText('Ask every time')).toBeInTheDocument();
+      expect(within(scriptingRow).getByText('Deny')).toBeInTheDocument();
+    });
+
+    it('disables the unattended column while the master switch is off', () => {
+      render(<CapabilitiesSection />);
+
+      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
+      const readOnlyRow = within(grid).getByText('Read-only (viewing page content)').closest('li') as HTMLElement;
+      const [attendedCell, unattendedCell] = within(readOnlyRow).getAllByRole('button');
+
+      expect(attendedCell).not.toBeDisabled();
+      expect(unattendedCell).toBeDisabled();
+    });
+
+    it('writes a changed cell to the store', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
+      const interactiveRow = within(grid).getByText('Interaction & navigation (click/fill/navigate)').closest('li') as HTMLElement;
+      const [, unattendedCell] = within(interactiveRow).getAllByRole('button');
+
+      await user.click(unattendedCell);
+      await user.click(within(interactiveRow).getByRole('button', { name: 'Deny' }));
+
+      expect(useSettingsStore.getState().browserOperationPolicy.unattended.interactive).toBe('deny');
+      // The other column is untouched — the two run modes are independent.
+      expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
+    });
+
+    it('toggles the unattended master switch', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
+      await user.click(within(grid).getByRole('switch'));
+
+      expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
     });
   });
 });

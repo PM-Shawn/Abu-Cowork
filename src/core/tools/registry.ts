@@ -18,13 +18,17 @@ import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
   classifyBrowserTool,
+  decideBrowserOperation,
   grantBrowserAutomation,
   hasBrowserGrant,
   getSiteVerdict,
   isScriptingBrowserTool,
   normalizeBrowserOrigin,
   toLegacyBrowserToolConsequence,
+  DEFAULT_BROWSER_OPERATION_POLICY,
 } from '../permissions/browserToolPolicy';
+import { resolveUnattendedConfirmation } from '../permissions/unattendedConfirmation';
+import { deriveRunInteractionMode } from '../agent/runInteractionMode';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import {
   analyzeCommandBoundary,
@@ -577,9 +581,10 @@ export async function checkToolApproval(
   onRequireFilePermission?: FilePermissionCallback,
 ): Promise<ToolApprovalDecision> {
   const t = getI18n();
-  const convPermissionMode = toolContext?.conversationId
-    ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
+  const conversation = toolContext?.conversationId
+    ? useChatStore.getState().conversations[toolContext.conversationId]
     : undefined;
+  const convPermissionMode = conversation?.permissionMode;
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
   const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
@@ -820,78 +825,221 @@ export async function checkToolApproval(
   }
 
   // Browser automation acts inside the user's live, logged-in sessions — the
-  // same consequence Computer Use already gates for browser apps. Gate the
-  // state-changing subset here so the cheaper mechanism is not the ungated one.
-  // Two grant scopes: a persistent per-site verdict (settingsStore, written
-  // from the dialog's "always allow this site" / revocable in Settings) and
-  // the per-conversation TTL grant ("just this once"). Precedence:
-  // denied site > allowed site > conversation grant > ask. Scripting tools
-  // (execute_js) never ride a site grant — each use is its own ask.
+  // same consequence Computer Use already gates for browser apps, so the
+  // cheaper mechanism must not be the ungated one.
+  //
+  // The decision is made per OPERATION CLASS (read-only / interactive /
+  // scripting) and per RUN MODE (attended / unattended), because the two
+  // columns are genuinely different questions: attended, a dialog can ask;
+  // unattended, there is nobody to ask, so the run may act only where the
+  // user pre-authorized it. Order of the checks below, all fail-closed:
+  //   1. unattended master switch off        → deny the whole surface
+  //   2. run-permission ceiling              → deny (routing the policy verdict)
+  //   3. site explicitly blocked             → deny
+  //   4. operation class configured to deny  → deny
+  //   5. unattended: 'ask' → the confirmation seam; then require an
+  //      'allowed' site for anything that changes page state
+  //   6. attended: the shipped per-site + permission-mode gate, unchanged
   {
-    // classifyBrowserTool now returns the three-state BrowserOperationClass
-    // ('read-only' | 'interactive' | 'scripting'); this gate has not migrated
-    // to the operation-class policy yet (that lands in a later task), so it
-    // maps back down to the legacy two-state shape it already understands.
     const opClass = classifyBrowserTool(name);
-    const consequence = opClass === null ? null : toLegacyBrowserToolConsequence(opClass);
-    if (consequence === 'state-changing') {
-      const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
-        runPermissionCeiling,
-        'browser',
-      );
-      if (browserCeilingDecision.decision === 'deny') {
-        return browserCeilingDecision;
+    if (opClass !== null) {
+      const consequence = toLegacyBrowserToolConsequence(opClass);
+      // Which column of the operation policy applies. `interactionMode` is the
+      // flag the agent loop already derives for exactly this question, but it
+      // is optional on the context, so re-derive from the provenance fields a
+      // background run always carries and take the STRICTER of the two: a
+      // context that lost its `interactionMode` on the way here must not be
+      // read as "a human is watching".
+      const derivedMode = deriveRunInteractionMode({
+        ...(toolContext?.authorizationScopeId !== undefined
+          ? { authorizationScopeId: toolContext.authorizationScopeId }
+          : {}),
+        ...(runPermissionCeiling !== null ? { runPermissionCeiling } : {}),
+        ...(conversation?.triggerId !== undefined ? { triggerId: conversation.triggerId } : {}),
+        ...(conversation?.scheduledTaskId !== undefined
+          ? { scheduledTaskId: conversation.scheduledTaskId }
+          : {}),
+      });
+      const runMode: 'attended' | 'unattended' =
+        toolContext?.interactionMode === 'background' || derivedMode === 'background'
+          ? 'unattended'
+          : 'attended';
+
+      const settingsSnapshot = getSettingsReader().getSnapshot();
+      const masterSwitchUnattended = settingsSnapshot.allowUnattendedBrowser === true;
+      // With the unattended master switch off, nothing on this surface can run
+      // and no other input can change that (`decideBrowserOperation` gives the
+      // same answer). Refuse before paying for the origin lookup below, which
+      // is an MCP round-trip to the browser host on every single call.
+      if (runMode === 'unattended' && !masterSwitchUnattended) {
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserUnattendedDisabled}` };
       }
-      const origin = await resolveBrowserActionOrigin(
-        name,
-        input,
-        toolContext?.conversationId,
-        toolContext?.agentRunId,
-      );
-      const siteVerdict = getSiteVerdict(
-        origin,
-        getSettingsReader().getSnapshot().browserSitePermissions ?? {},
-      );
+
+      // Resolving the origin costs that round-trip, and read-only tools
+      // (snapshot/screenshot/extract) run constantly — only the classes that
+      // have ever consulted a site verdict pay for it.
+      const origin = consequence === 'state-changing'
+        ? await resolveBrowserActionOrigin(
+          name,
+          input,
+          toolContext?.conversationId,
+          toolContext?.agentRunId,
+        )
+        : null;
+      const siteVerdict = consequence === 'state-changing'
+        ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
+        : 'default';
+      // An absent policy is the KNOWN-absent case (a store that predates v46),
+      // so it takes the reviewed product default rather than
+      // normalizeBrowserOperationPolicy's strictest-cell clamp, which is for a
+      // present-but-malformed value (decideBrowserOperation applies that one).
+      const policyVerdict = decideBrowserOperation({
+        opClass,
+        runMode,
+        policy: settingsSnapshot.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
+        masterSwitchUnattended,
+        siteVerdict,
+        ...(origin !== null ? { targetOrigin: origin } : {}),
+      });
+
+      if (consequence === 'state-changing') {
+        const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
+          runPermissionCeiling,
+          'browser',
+          policyVerdict,
+        );
+        if (browserCeilingDecision.decision === 'deny') {
+          return browserCeilingDecision;
+        }
+      }
       if (siteVerdict === 'denied') {
         return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
-      // Scripting (execute_js) is a stronger capability than clicking: the
-      // dialog promises "each run asks separately", so it must neither ride
-      // the conversation grant nor a persistent site grant.
-      const scripting = isScriptingBrowserTool(name);
-      const granted =
-        !scripting &&
-        (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
-      const decision = strategy.decideOtherTool(consequence, granted);
-      if (decision !== 'allow') {
+      if (policyVerdict === 'deny') {
+        // The master-switch case already returned above, and a denied site is
+        // reported by its own branch — reaching here means this operation
+        // class is configured to deny in this run mode's column.
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
+      }
+
+      if (runMode === 'unattended') {
+        // Nobody is in front of the screen: `onRequireConfirmation` here is the
+        // entry point's own auto-deny (or, in a later task, an IM approval
+        // round-trip), never a dialog. Route 'ask' through the single seam
+        // that owns that question instead of the per-entry-point callback.
+        if (policyVerdict === 'ask') {
+          const approval = await resolveUnattendedConfirmation({
+            info: {
+              command: origin
+                ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+                : `${t.commandConfirm.browserAction}: ${name}`,
+              level: 'warn',
+              reason: opClass === 'scripting'
+                ? t.commandConfirm.browserScriptReason
+                : t.commandConfirm.browserReason,
+              kind: 'browser',
+              browserOperationClass: opClass,
+              ...(origin !== null ? { browserOrigin: origin } : {}),
+              allowPersistentGrant: false,
+            },
+            // Provenance for whoever will deliver the approval. The
+            // conversation carries the scheduler/trigger markers; anything
+            // else unattended came in over a channel, so 'im' is the
+            // fallback rather than a positive identification.
+            source: conversation?.scheduledTaskId !== undefined
+              ? 'scheduler'
+              : conversation?.triggerId !== undefined ? 'trigger' : 'im',
+            ...(toolContext?.conversationId !== undefined
+              ? { conversationId: toolContext.conversationId }
+              : {}),
+          });
+          if (!approval.approved) {
+            return {
+              decision: 'deny',
+              reason: `Error: ${t.commandConfirm.browserUnattendedConfirmUnavailable}`,
+            };
+          }
+        }
+        // Cross-origin fail-closed baseline: an unattended run acts only where
+        // the user granted a standing "allowed" verdict. Reading a page is
+        // exempt (it changes nothing); clicking, navigating and scripting are
+        // not. A later task refines this per-origin.
+        if (consequence === 'state-changing' && siteVerdict !== 'allowed') {
+          return {
+            decision: 'deny',
+            reason: `Error: ${t.commandConfirm.browserUnattendedSiteNotAllowed}`,
+          };
+        }
+        // Approved by policy (+ site grant) — an unattended run has no
+        // conversation-grant/dialog concept, so nothing further to do.
+      } else if (consequence === 'state-changing') {
+        // ── Attended, state-changing: unchanged from before the policy layer.
+        // In this column the policy is a RESTRICTION layer only — 'deny' short
+        // circuits above, and both 'allow' and 'ask' fall through to the
+        // shipped per-site + permission-mode gate. Making 'allow' skip that
+        // gate would silently drop the confirmation dialog for click/fill,
+        // which the default attended column marks 'allow'.
+        //
+        // Two grant scopes: a persistent per-site verdict (settingsStore,
+        // written from the dialog's "always allow this site" / revocable in
+        // Settings) and the per-conversation TTL grant ("just this once").
+        // Precedence: denied site > allowed site > conversation grant > ask.
+        // Scripting (execute_js) is a stronger capability than clicking: the
+        // dialog promises "each run asks separately", so it must neither ride
+        // the conversation grant nor a persistent site grant.
+        const scripting = isScriptingBrowserTool(name);
+        const granted =
+          !scripting &&
+          (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
+        const decision = strategy.decideOtherTool(consequence, granted);
+        if (decision !== 'allow') {
+          if (!onRequireConfirmation) {
+            // No confirmation channel — fail closed rather than silently
+            // acting in the user's session. Sites the user explicitly allowed
+            // were already let through above.
+            return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
+          }
+          safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+            { kind: 'confirm_prompt', origin: origin ?? undefined },
+            buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
+          ));
+          const confirmed = await onRequireConfirmation({
+            command: origin
+              ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+              : `${t.commandConfirm.browserAction}: ${name}`,
+            level: 'warn',
+            reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
+            kind: 'browser',
+            browserOperationClass: opClass,
+            browserOrigin: origin ?? undefined,
+            allowPersistentGrant: !scripting && origin !== null,
+          }, toolContext?.loopId);
+          if (!confirmed) {
+            return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          }
+          // A script approval covers that one run only — minting the
+          // conversation grant from it would silently unlock 30 minutes of
+          // click/fill/navigate the user never approved.
+          if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
+        }
+      } else if (policyVerdict === 'ask') {
+        // Attended read-only explicitly configured to ask. Never reached under
+        // the default policy (attended read-only is 'allow'), but the setting
+        // must do something when a user picks it.
         if (!onRequireConfirmation) {
-          // No confirmation channel (headless/background run) — fail closed
-          // rather than silently acting in the user's session. Sites the user
-          // explicitly allowed were already let through above, which is what
-          // makes pre-authorized unattended runs (scheduled tasks) possible.
           return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
         }
-        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-          { kind: 'confirm_prompt', origin: origin ?? undefined },
-          buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
-        ));
         const confirmed = await onRequireConfirmation({
-          command: origin
-            ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
-            : `${t.commandConfirm.browserAction}: ${name}`,
+          command: `${t.commandConfirm.browserAction}: ${name}`,
           level: 'warn',
-          reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
+          reason: t.commandConfirm.browserReason,
           kind: 'browser',
-          browserOrigin: origin ?? undefined,
-          allowPersistentGrant: !scripting && origin !== null,
+          browserOperationClass: opClass,
+          allowPersistentGrant: false,
         }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
-        // A script approval covers that one run only — minting the
-        // conversation grant from it would silently unlock 30 minutes of
-        // click/fill/navigate the user never approved.
-        if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
       }
     }
   }

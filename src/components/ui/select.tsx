@@ -35,10 +35,15 @@ export interface SelectProps {
   /** 'default' = full-width form field, 'inline' = compact boxed settings row,
    *  'ghost' = borderless value + small chevron (iOS-style quick-setting row) */
   variant?: 'default' | 'inline' | 'ghost';
+  /** Renders the trigger as inert (dimmed, not focusable, cannot open). Use
+   *  when a setting exists but is currently overridden by another control —
+   *  hiding it would lose the explanation, leaving it live would let the user
+   *  change something that does nothing. */
+  disabled?: boolean;
   className?: string;
 }
 
-export function Select({ value, onChange, options, placeholder, ariaLabel, variant = 'default', className }: SelectProps) {
+export function Select({ value, onChange, options, placeholder, ariaLabel, variant = 'default', disabled = false, className }: SelectProps) {
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const dropdownId = React.useId();
@@ -47,6 +52,10 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
   const selectedOption = allOptions.find((opt) => opt.value === value);
   const isInline = variant === 'inline';
   const isGhost = variant === 'ghost';
+
+  React.useEffect(() => {
+    if (disabled && open) setOpen(false);
+  }, [disabled, open]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -107,9 +116,11 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
         aria-label={ariaLabel ? `${ariaLabel}: ${selectedOption?.label ?? placeholder ?? '...'}` : undefined}
         aria-expanded={open}
         aria-controls={dropdownId}
+        disabled={disabled}
         onClick={() => setOpen(!open)}
         className={cn(
           'flex items-center text-body text-left transition-all',
+          disabled && 'cursor-not-allowed opacity-50',
           isGhost
             ? 'gap-1 text-body focus:outline-none'
             : cn(

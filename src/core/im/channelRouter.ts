@@ -532,7 +532,16 @@ class IMChannelRouter {
           capability === 'read_tools' ? ['read'] : ['read', 'write'],
         );
       }
-      const baseCallbacks = getCallbacksForLevel(capability);
+      const baseCallbacks = getCallbacksForLevel(capability, {
+        conversationId: session.conversationId,
+        // Where an approval request would be delivered once the unattended
+        // confirmation seam has a real channel behind it.
+        imTarget: {
+          platform: message.platform,
+          channelId: channel.id,
+          chatId: message.replyContext.chatId,
+        },
+      });
       const filePermissionCallback = async (...args: Parameters<typeof baseCallbacks.filePermissionCallback>) => {
         const [request] = args;
         const granted = await baseCallbacks.filePermissionCallback(...args);

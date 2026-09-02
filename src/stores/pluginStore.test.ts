@@ -130,6 +130,21 @@ describe('install', () => {
     expect(usePluginStore.getState().error).toBe('disk full');
     expect(usePluginStore.getState().loading).toBe(false);
   });
+
+  it('forwards the caller-supplied checksum to installPlugin', async () => {
+    vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [] });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+
+    await usePluginStore.getState().install({
+      home: HOME,
+      marketplaceName: 'official',
+      marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+      checksum: 'a'.repeat(64),
+    });
+
+    expect(vi.mocked(installPlugin).mock.calls[0][0].checksum).toBe('a'.repeat(64));
+  });
 });
 
 describe('uninstall', () => {
@@ -382,6 +397,27 @@ describe('update', () => {
       }),
     ).rejects.toThrow('EPERM');
     expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it('forwards the caller-supplied checksum through to the nested install', async () => {
+    vi.mocked(uninstallPlugin).mockResolvedValue({
+      key: 'weather@official',
+      withdrawn: { skills: [], mcpServers: ['weather-mcp'] },
+    });
+    vi.mocked(installPlugin).mockResolvedValue({ record: { ...weather, version: '2.0.0' }, mcpServers: [] });
+    vi.mocked(readInstalled).mockResolvedValue([{ ...weather, version: '2.0.0' }]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+
+    await usePluginStore.getState().update({
+      home: HOME,
+      marketplaceName: 'official',
+      marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+      key: 'weather@official',
+      checksum: 'b'.repeat(64),
+    });
+
+    expect(vi.mocked(installPlugin).mock.calls[0][0].checksum).toBe('b'.repeat(64));
   });
 });
 

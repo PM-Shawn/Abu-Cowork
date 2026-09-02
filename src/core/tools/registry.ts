@@ -23,6 +23,7 @@ import {
   getSiteVerdict,
   isScriptingBrowserTool,
   normalizeBrowserOrigin,
+  toLegacyBrowserToolConsequence,
 } from '../permissions/browserToolPolicy';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import {
@@ -827,7 +828,12 @@ export async function checkToolApproval(
   // denied site > allowed site > conversation grant > ask. Scripting tools
   // (execute_js) never ride a site grant — each use is its own ask.
   {
-    const consequence = classifyBrowserTool(name);
+    // classifyBrowserTool now returns the three-state BrowserOperationClass
+    // ('read-only' | 'interactive' | 'scripting'); this gate has not migrated
+    // to the operation-class policy yet (that lands in a later task), so it
+    // maps back down to the legacy two-state shape it already understands.
+    const opClass = classifyBrowserTool(name);
+    const consequence = opClass === null ? null : toLegacyBrowserToolConsequence(opClass);
     if (consequence === 'state-changing') {
       const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
         runPermissionCeiling,

@@ -3,6 +3,8 @@ import {
   __resetBrowserGrantsForTests,
   BROWSER_GRANT_TTL_MS,
   classifyBrowserTool,
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  decideBrowserOperation,
   getSiteVerdict,
   grantBrowserAutomation,
   hasBrowserGrant,
@@ -10,8 +12,45 @@ import {
   listAllBrowserToolPatterns,
   normalizeBrowserOrigin,
   revokeBrowserGrant,
+  toLegacyBrowserToolConsequence,
+  type BrowserOperationClass,
+  type BrowserOperationPolicy,
+  type BrowserOperationState,
 } from './browserToolPolicy';
 import { matchesToolName } from '../skill/toolFilter';
+
+/**
+ * The 19 tool suffixes the browser-automation MCP servers actually expose
+ * (source of truth: `BROWSER_TOOL_SUFFIXES` in `../tools/toolPrefetch.ts`),
+ * each paired with the operation class the product spec assigns it
+ * (`docs/abu-browser-batch2-brief-2026-09.md` §二). Table-driven so adding a
+ * 20th tool without updating this table fails loudly instead of silently
+ * defaulting to read-only.
+ */
+const ALL_BROWSER_TOOLS: Array<[string, BrowserOperationClass]> = [
+  // read-only (10)
+  ['get_tabs', 'read-only'],
+  ['snapshot', 'read-only'],
+  ['wait_for', 'read-only'],
+  ['extract_text', 'read-only'],
+  ['extract_table', 'read-only'],
+  ['query_js', 'read-only'],
+  ['screenshot', 'read-only'],
+  ['screenshot_full_page', 'read-only'],
+  ['connection_status', 'read-only'],
+  ['get_downloads', 'read-only'],
+  // interactive (8)
+  ['click', 'interactive'],
+  ['fill', 'interactive'],
+  ['select', 'interactive'],
+  ['scroll', 'interactive'],
+  ['keyboard', 'interactive'],
+  ['navigate', 'interactive'],
+  ['start_recording', 'interactive'],
+  ['stop_recording', 'interactive'],
+  // scripting (1)
+  ['execute_js', 'scripting'],
+];
 
 describe('browser tool policy', () => {
   beforeEach(() => {
@@ -19,17 +58,17 @@ describe('browser tool policy', () => {
   });
 
   describe('classifyBrowserTool', () => {
-    it('classifies actions that act inside the logged-in session as state-changing', () => {
-      for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate']) {
-        expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe('state-changing');
-        expect(classifyBrowserTool(`abu-browser-bridge__${tool}`)).toBe('state-changing');
-      }
+    it.each(ALL_BROWSER_TOOLS)('classifies %s as %s on both browser servers', (tool, expected) => {
+      expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe(expected);
+      expect(classifyBrowserTool(`abu-browser-bridge__${tool}`)).toBe(expected);
     });
 
-    it('leaves observation tools ungated', () => {
-      for (const tool of ['snapshot', 'get_tabs', 'extract_text', 'extract_table', 'query_js', 'screenshot', 'scroll']) {
-        expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe('read-only');
-      }
+    it('covers every tool the browser-automation servers expose — no gaps, no extras', () => {
+      // Fails loudly if a tool is added to the servers without a row in
+      // ALL_BROWSER_TOOLS (or vice versa), rather than silently classifying
+      // an unlisted tool as read-only.
+      expect(ALL_BROWSER_TOOLS).toHaveLength(19);
+      expect(new Set(ALL_BROWSER_TOOLS.map(([tool]) => tool)).size).toBe(19);
     });
 
     it('ignores non-browser tools so other MCP servers keep their current behavior', () => {
@@ -40,6 +79,17 @@ describe('browser tool policy', () => {
 
     it('does not let a server name ending in the browser name slip through', () => {
       expect(classifyBrowserTool('evil-abu-browser__click')).toBeNull();
+    });
+  });
+
+  describe('toLegacyBrowserToolConsequence', () => {
+    it('maps read-only straight through', () => {
+      expect(toLegacyBrowserToolConsequence('read-only')).toBe('read-only');
+    });
+
+    it('maps both interactive and scripting to the old state-changing bucket', () => {
+      expect(toLegacyBrowserToolConsequence('interactive')).toBe('state-changing');
+      expect(toLegacyBrowserToolConsequence('scripting')).toBe('state-changing');
     });
   });
 
@@ -176,6 +226,193 @@ describe('browser tool policy', () => {
       expect(isScriptingBrowserTool('abu-browser__navigate')).toBe(false);
       expect(isScriptingBrowserTool('other-server__execute_js')).toBe(false);
       expect(isScriptingBrowserTool('execute_js')).toBe(false);
+    });
+  });
+
+  describe('decideBrowserOperation', () => {
+    const OP_CLASSES: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting'];
+    const STATES: BrowserOperationState[] = ['allow', 'deny', 'ask'];
+
+    /** A policy where every cell is forced to `filler`, except the one cell
+     *  under test — isolates the matrix test from DEFAULT_BROWSER_OPERATION_POLICY. */
+    function policyWith(
+      runMode: 'attended' | 'unattended',
+      key: 'readOnly' | 'interactive' | 'scripting',
+      state: BrowserOperationState,
+      filler: BrowserOperationState = 'allow',
+    ): BrowserOperationPolicy {
+      const row = { readOnly: filler, interactive: filler, scripting: filler };
+      return {
+        attended: { ...row },
+        unattended: { ...row },
+        [runMode]: { ...row, [key]: state },
+      } as BrowserOperationPolicy;
+    }
+
+    const POLICY_KEY: Record<BrowserOperationClass, 'readOnly' | 'interactive' | 'scripting'> = {
+      'read-only': 'readOnly',
+      interactive: 'interactive',
+      scripting: 'scripting',
+    };
+
+    describe('exhaustive matrix — runMode × opClass × configured state (site allowed, master switch on)', () => {
+      for (const runMode of ['attended', 'unattended'] as const) {
+        for (const opClass of OP_CLASSES) {
+          for (const state of STATES) {
+            it(`${runMode}/${opClass} configured '${state}' → '${state}'`, () => {
+              expect(
+                decideBrowserOperation({
+                  opClass,
+                  runMode,
+                  policy: policyWith(runMode, POLICY_KEY[opClass], state),
+                  masterSwitchUnattended: true,
+                  siteVerdict: 'allowed',
+                }),
+              ).toBe(state);
+            });
+          }
+        }
+      }
+    });
+
+    describe('precedence', () => {
+      it('a denied site overrides an otherwise-allowing policy', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'read-only',
+            runMode: 'attended',
+            policy: DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended: true,
+            siteVerdict: 'denied',
+          }),
+        ).toBe('deny');
+      });
+
+      it('a denied site overrides the unattended master switch and policy alike', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'interactive',
+            runMode: 'unattended',
+            policy: policyWith('unattended', 'interactive', 'allow'),
+            masterSwitchUnattended: true,
+            siteVerdict: 'denied',
+          }),
+        ).toBe('deny');
+      });
+
+      it('unattended with the master switch off denies even a read-only, allow-everywhere policy', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'read-only',
+            runMode: 'unattended',
+            policy: DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended: false,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('deny');
+      });
+
+      it('the master switch is irrelevant when attended', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'read-only',
+            runMode: 'attended',
+            policy: DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended: false,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('allow');
+      });
+
+      it('a default (unset) site verdict falls through to policy, not to deny', () => {
+        expect(
+          decideBrowserOperation({
+            opClass: 'read-only',
+            runMode: 'unattended',
+            policy: DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended: true,
+            siteVerdict: 'default',
+          }),
+        ).toBe('allow');
+      });
+    });
+
+    describe('default policy = current shipped semantics (fail-safe defaults)', () => {
+      it('attended: read-only and interactive allow, scripting asks — today\'s behavior unchanged', () => {
+        const base = {
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed' as const,
+          runMode: 'attended' as const,
+        };
+        expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('allow');
+        expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('allow');
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('ask');
+      });
+
+      it('unattended with the master switch on: read-only and interactive allow, scripting is denied', () => {
+        const base = {
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed' as const,
+          runMode: 'unattended' as const,
+        };
+        expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('allow');
+        expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('allow');
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('deny');
+      });
+
+      it('unattended with the master switch off (the shipped default): everything denies', () => {
+        const base = {
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: false,
+          siteVerdict: 'allowed' as const,
+          runMode: 'unattended' as const,
+        };
+        expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('deny');
+        expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('deny');
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('deny');
+      });
+    });
+
+    describe('reserved inputs (siteVerdict: \'high-risk\', targetOrigin) — accepted, no effect yet (U5)', () => {
+      it('a \'high-risk\' site verdict falls through to policy exactly like \'default\' — no deny yet', () => {
+        const withDefault = decideBrowserOperation({
+          opClass: 'interactive',
+          runMode: 'unattended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'default',
+        });
+        const withHighRisk = decideBrowserOperation({
+          opClass: 'interactive',
+          runMode: 'unattended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'high-risk',
+        });
+        expect(withHighRisk).toBe(withDefault);
+        expect(withHighRisk).toBe('allow');
+      });
+
+      it('passing targetOrigin does not change the outcome', () => {
+        const withoutOrigin = decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'attended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed',
+        });
+        const withOrigin = decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'attended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed',
+          targetOrigin: 'https://evil.example.com',
+        });
+        expect(withOrigin).toBe(withoutOrigin);
+      });
     });
   });
 });

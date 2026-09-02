@@ -18,18 +18,33 @@
 const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
 
 /**
- * Actions that change page state or run code in the page's origin.
+ * Actions that change page state by driving the UI — clicking, typing,
+ * navigating — as opposed to running arbitrary code in the page's origin
+ * (see `SCRIPTING_TOOLS` below, a stronger and separately-gated capability).
  * `navigate` is included because it drives the session somewhere new (and GET
- * endpoints can act); `keyboard` because Enter submits.
+ * endpoints can act); `keyboard` because Enter submits; `scroll` because it
+ * can trigger infinite-scroll loads / lazy actions and because it belongs
+ * with the rest of the "drives the live page" tools rather than pure
+ * observation; the two recording tools because they start/stop capturing the
+ * user's screen, a capability-changing action in its own right.
  */
-const STATE_CHANGING_TOOLS = new Set([
+const INTERACTIVE_TOOLS = new Set([
   'click',
   'fill',
   'select',
+  'scroll',
   'keyboard',
-  'execute_js',
   'navigate',
+  'start_recording',
+  'stop_recording',
 ]);
+
+/**
+ * Union of `INTERACTIVE_TOOLS` and `SCRIPTING_TOOLS` (defined below) — the
+ * legacy two-state classification's "state-changing" bucket. Kept only for
+ * `toLegacyBrowserToolConsequence`; new code should branch on the three-state
+ * `BrowserOperationClass` from `classifyBrowserTool` instead.
+ */
 
 /**
  * Wildcard patterns matching every tool exposed by the browser-automation MCP
@@ -54,7 +69,36 @@ export function listAllBrowserToolPatterns(): string[] {
   return [...BROWSER_SERVER_NAMES].map((server) => `${server}__*`);
 }
 
+/**
+ * @deprecated Legacy two-state classification, kept only for callers that
+ * have not migrated to the three-state `BrowserOperationClass` (registry.ts's
+ * `strategy.decideOtherTool` gate, migrated in a later task). Derive it from
+ * `BrowserOperationClass` via `toLegacyBrowserToolConsequence` rather than
+ * re-classifying — the two must never diverge.
+ */
 export type BrowserToolConsequence = 'read-only' | 'state-changing';
+
+/**
+ * Three-class model (batch-二 authorization redesign, `docs/abu-browser-batch2-brief-2026-09.md`
+ * §二). Replaces the old read-only/state-changing split with the axis the
+ * unattended policy actually gates on:
+ * - `read-only`: observation — never gated, allowed in every run mode.
+ * - `interactive`: drives the UI (click/fill/navigate/…) — gated by the
+ *   existing per-site verdict today; the unattended column additionally
+ *   fail-closes navigation outside the allowed-site set (see product spec).
+ * - `scripting`: runs arbitrary code in the page's origin — the strongest
+ *   capability, never covered by a site grant, asked every time when
+ *   attended and denied by default when unattended.
+ */
+export type BrowserOperationClass = 'read-only' | 'interactive' | 'scripting';
+
+/** Map the three-state class down to the legacy two-state shape, for callers
+ *  that have not migrated (see `BrowserToolConsequence`'s deprecation note). */
+export function toLegacyBrowserToolConsequence(
+  opClass: BrowserOperationClass,
+): BrowserToolConsequence {
+  return opClass === 'read-only' ? 'read-only' : 'state-changing';
+}
 
 /**
  * Running page code is a different decision from clicking a button: it can
@@ -123,16 +167,18 @@ export function getSiteVerdict(
 }
 
 /**
- * Classify a namespaced MCP tool name (`server__tool`).
- * Returns null when the tool is not a browser-automation tool.
+ * Classify a namespaced MCP tool name (`server__tool`) into the three-class
+ * model. Returns null when the tool is not a browser-automation tool.
  */
-export function classifyBrowserTool(namespacedName: string): BrowserToolConsequence | null {
+export function classifyBrowserTool(namespacedName: string): BrowserOperationClass | null {
   const separator = namespacedName.indexOf('__');
   if (separator === -1) return null;
   const serverName = namespacedName.slice(0, separator);
   if (!BROWSER_SERVER_NAMES.has(serverName)) return null;
   const toolName = namespacedName.slice(separator + 2);
-  return STATE_CHANGING_TOOLS.has(toolName) ? 'state-changing' : 'read-only';
+  if (SCRIPTING_TOOLS.has(toolName)) return 'scripting';
+  if (INTERACTIVE_TOOLS.has(toolName)) return 'interactive';
+  return 'read-only';
 }
 
 /**
@@ -181,4 +227,108 @@ export function revokeBrowserGrant(conversationId: string): void {
 
 export function __resetBrowserGrantsForTests(): void {
   grantedConversations.clear();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Operation-class three-state policy + unattended master switch
+// (batch-二「无人值守授权闭环」T1, `docs/abu-browser-batch2-brief-2026-09.md` §二)
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Per-operation-class verdict. `ask` means "route through the confirmation
+ *  channel available for the current run mode" — a dialog when attended, an
+ *  IM approval round-trip when unattended (wired in a later task; this
+ *  module only classifies the *policy*, not the channel). */
+export type BrowserOperationState = 'allow' | 'deny' | 'ask';
+
+/** One run mode's three-row policy, keyed by operation class (camelCase to
+ *  match the settingsStore field naming convention — `BrowserOperationClass`
+ *  itself stays kebab-case because it is also a tool-classification value). */
+export interface BrowserOperationClassPolicy {
+  readOnly: BrowserOperationState;
+  interactive: BrowserOperationState;
+  scripting: BrowserOperationState;
+}
+
+/** The full two-column policy persisted in settingsStore. */
+export interface BrowserOperationPolicy {
+  attended: BrowserOperationClassPolicy;
+  unattended: BrowserOperationClassPolicy;
+}
+
+/**
+ * Product-spec defaults (§二 table). Attended equals today's shipped
+ * semantics exactly — read-only and interactive already run unconfirmed
+ * (interactive still passes through the existing per-site gate elsewhere;
+ * this policy layer does not relax that), scripting still asks every time.
+ * Unattended is fail-safe: only read-only runs free, interactive still needs
+ * its per-site allow (site verdict is a separate input to
+ * `decideBrowserOperation`, not encoded here), scripting is denied outright.
+ * Exported so settingsStore's default state and v45→v46 migration share the
+ * exact same object instead of two hand-copied literals drifting apart.
+ */
+export const DEFAULT_BROWSER_OPERATION_POLICY: BrowserOperationPolicy = {
+  attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+  unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+};
+
+const OPERATION_CLASS_TO_POLICY_KEY: Record<
+  BrowserOperationClass,
+  keyof BrowserOperationClassPolicy
+> = {
+  'read-only': 'readOnly',
+  interactive: 'interactive',
+  scripting: 'scripting',
+};
+
+/**
+ * `SiteVerdict` plus a reserved `'high-risk'` value for a later task (U5,
+ * §三 T2's "high-risk site" classification — payment/transfer/checkout URL
+ * patterns). Accepted by `decideBrowserOperation` now so U5 does not need a
+ * signature break, but it currently has NO effect on the decision: it is not
+ * `'denied'`, so it falls through to the ordinary policy lookup exactly like
+ * `'default'` does, until U5 gives it teeth.
+ */
+export type DecideBrowserOperationSiteVerdict = SiteVerdict | 'high-risk';
+
+export interface DecideBrowserOperationInput {
+  opClass: BrowserOperationClass;
+  runMode: 'attended' | 'unattended';
+  policy: BrowserOperationPolicy;
+  /** The global "allow unattended tasks to use the browser at all" switch —
+   *  defaults to false (settingsStore `allowUnattendedBrowser`). Irrelevant
+   *  when `runMode === 'attended'`. */
+  masterSwitchUnattended: boolean;
+  siteVerdict: DecideBrowserOperationSiteVerdict;
+  /**
+   * RESERVED for a later task (U5, per-origin scoping of the fail-closed
+   * cross-domain navigation rule). Accepted so callers can pass it through
+   * now without a signature break later, but it has no effect on the
+   * decision yet.
+   */
+  targetOrigin?: string;
+}
+
+/**
+ * Decide whether one browser operation may proceed, purely from policy state
+ * — no I/O, no side effects, no confirmation dialogs. Callers turn `'ask'`
+ * into an actual prompt (dialog or IM round-trip); this function only says
+ * which of the three outcomes applies.
+ *
+ * Precedence (fixed, matches the product spec):
+ * 1. `siteVerdict === 'denied'` → deny. A site the user explicitly blocked
+ *    stays blocked regardless of operation class or master switch.
+ * 2. `runMode === 'unattended' && !masterSwitchUnattended` → deny. The
+ *    master switch is the fail-safe global gate: off means no unattended
+ *    browser use at all, independent of how permissive the per-class policy
+ *    looks.
+ * 3. Otherwise, the configured three-state policy for
+ *    `policy[runMode][opClass]` decides.
+ */
+export function decideBrowserOperation(
+  input: DecideBrowserOperationInput,
+): BrowserOperationState {
+  const { opClass, runMode, policy, masterSwitchUnattended, siteVerdict } = input;
+  if (siteVerdict === 'denied') return 'deny';
+  if (runMode === 'unattended' && !masterSwitchUnattended) return 'deny';
+  return policy[runMode][OPERATION_CLASS_TO_POLICY_KEY[opClass]];
 }

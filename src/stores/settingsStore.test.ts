@@ -549,6 +549,52 @@ describe('settingsStore labs flags', () => {
     });
   });
 
+  describe('v46 migration (operation-class browser policy + unattended master switch)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+      });
+    });
+
+    it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+
+    it('preserves an already-customized policy rather than overwriting it', () => {
+      const customPolicy = {
+        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+      };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        45,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does NOT re-run for users already at v46', () => {
+      const customPolicy = {
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+  });
+
   describe('v39 migration', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {

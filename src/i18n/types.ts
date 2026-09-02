@@ -877,6 +877,21 @@ export interface TranslationDict {
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
     browserSitePermsRevoke: string;
+    // Operation-class three-state policy + unattended master switch (batch-二
+    // 「无人值守授权闭环」T1). No UI consumes these yet — added ahead of the
+    // settings-page task (U2) so that task only has to build the view.
+    browserOpPolicyTitle: string;
+    browserOpPolicyDesc: string;
+    browserOpPolicyColumnAttended: string;
+    browserOpPolicyColumnUnattended: string;
+    browserOpClassReadOnly: string;
+    browserOpClassInteractive: string;
+    browserOpClassScripting: string;
+    browserOpStateAllow: string;
+    browserOpStateDeny: string;
+    browserOpStateAsk: string;
+    browserUnattendedMasterSwitchLabel: string;
+    browserUnattendedMasterSwitchDesc: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
     capabilityExtensionsTitle: string;

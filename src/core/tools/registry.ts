@@ -347,6 +347,7 @@ export interface ToolApprovalDecision {
 async function resolveBrowserActionOrigin(
   namespacedName: string,
   input: Record<string, unknown>,
+  conversationId?: string,
 ): Promise<string | null> {
   const separator = namespacedName.indexOf('__');
   const serverName = namespacedName.slice(0, separator);
@@ -368,11 +369,24 @@ async function resolveBrowserActionOrigin(
   try {
     // Approval must never hang on a wedged browser server: the MCP browser
     // timeout is 120s, so race a short deadline and fall back to "unknown
-    // origin" (which just asks). Known residual: the builtin server's
-    // get_tabs provisions an automation view when none exists — acceptable
-    // here because an approved action would do the same a moment later.
+    // origin" (which just asks).
+    //
+    // The conversation id is REQUIRED here, not optional: every agent tab is
+    // owned by the conversation that opened it, and a caller that sends none
+    // is a legacy caller that can only see legacy tabs. Without it the gate
+    // resolves null for every owned tab — the site the user explicitly
+    // blocked stops being denied, persistent site grants stop applying, and
+    // unattended runs deny everything.
+    //
+    // `createIfEmpty: false` keeps this probe read-only: the host's get_tabs
+    // provisions an automation view when the caller owns none, and a *gate*
+    // query must never be the thing that opens a tab (the action it is gating
+    // may well be denied).
     const result = await Promise.race([
-      mcpManager.callTool(serverName, 'get_tabs', {}),
+      mcpManager.callTool(serverName, 'get_tabs', {}, {
+        conversationId,
+        createBrowserTabIfEmpty: false,
+      }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
     if (result === null || typeof result !== 'string') return null;
@@ -712,7 +726,11 @@ export async function checkToolApproval(
       if (browserCeilingDecision.decision === 'deny') {
         return browserCeilingDecision;
       }
-      const origin = await resolveBrowserActionOrigin(name, input);
+      const origin = await resolveBrowserActionOrigin(
+        name,
+        input,
+        toolContext?.conversationId,
+      );
       const siteVerdict = getSiteVerdict(
         origin,
         getSettingsReader().getSnapshot().browserSitePermissions ?? {},
@@ -913,7 +931,9 @@ export async function executeAnyTool(
   if (name.includes('__')) {
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, executionInput);
+      const result = await mcpManager.callTool(serverName, toolName, executionInput, {
+        conversationId: toolContext?.conversationId,
+      });
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

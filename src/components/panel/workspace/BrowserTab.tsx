@@ -35,6 +35,35 @@ import { createDomElementReference, type BrowserElementPayload } from '@/types/c
 const browserLogger = createLogger('browser-tab');
 const BROWSER_CREATE_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 
+/**
+ * Size a native view gets when it is created while its placeholder is not laid
+ * out. Matches `browserHost.cjs`'s own headless fallback so an agent-adopted
+ * background tab renders at a realistic viewport instead of 1×1.
+ */
+const HIDDEN_CREATE_FALLBACK_SIZE = { width: 1024, height: 768 } as const;
+
+/**
+ * The width/height to create the native view at.
+ *
+ * A tab created hidden (adopted in the background, or living behind an
+ * inactive keep-alive tab) hangs under a `display:none` ancestor, so its
+ * placeholder rect is all zeros. Clamping that to 1×1 produced a real 1×1
+ * webview: the page laid out at one pixel, and `syncBounds` — which returns
+ * early while invisible — never corrected it until the tab was shown.
+ *
+ * A real, non-collapsed rect always wins; the fallback only fills in for a
+ * collapsed axis, so the visible create path is untouched.
+ */
+function resolveCreateSize(rect: { width: number; height: number }): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: rect.width >= 1 ? rect.width : HIDDEN_CREATE_FALLBACK_SIZE.width,
+    height: rect.height >= 1 ? rect.height : HIDDEN_CREATE_FALLBACK_SIZE.height,
+  };
+}
+
 function resolveInspectTheme() {
   const styles = getComputedStyle(document.documentElement);
   const read = (name: string) => styles.getPropertyValue(name).trim();
@@ -274,13 +303,14 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           // single frame from painting above a dialog that was already open.
           // Tauri keeps its historical create-then-hide contract.
           shownRef.current = electronHost ? initiallyVisible : true;
+          const createSize = resolveCreateSize(r);
           await invoke('browser_create', {
             id: tabId,
             url: targetUrl,
             x: r.left,
             y: r.top,
-            width: Math.max(r.width, 1),
-            height: Math.max(r.height, 1),
+            width: createSize.width,
+            height: createSize.height,
             ...(electronHost ? { visible: initiallyVisible } : {}),
           });
           lastBoundsRef.current = { x: r.left, y: r.top, w: r.width, h: r.height };

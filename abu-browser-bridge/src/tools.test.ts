@@ -14,9 +14,14 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { registerTools, type BrowserTransport } from './tools.js';
+import {
+  ABU_CONVERSATION_META_KEY,
+  ABU_CREATE_IF_EMPTY_META_KEY,
+  registerTools,
+  type BrowserTransport,
+} from './tools.js';
 
-type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
+type ToolHandler = (args: Record<string, unknown>, extra?: Record<string, unknown>) => Promise<unknown>;
 interface RegisteredTool {
   name: string;
   description: string;
@@ -168,6 +173,117 @@ describe('tool surface', () => {
     expect(result.content[0].text).toContain('"title": "Hello"');
     expect(result.content[0].text).toContain('"count": 1');
     expect(result.content[0].text).toContain('note: this ran against a read-only copy');
+  });
+});
+
+describe('ownerId forwarding', () => {
+  const metaWithOwner = { _meta: { [ABU_CONVERSATION_META_KEY]: 'conv-42' } };
+
+  it('get_tabs sends {} without a conversation id, and { ownerId } with one', async () => {
+    const { registered, transport } = collectTools();
+    const getTabs = registered.find((t) => t.name === 'get_tabs')!;
+
+    // get_tabs takes no input schema, so its only parameter is `extra`.
+    await getTabs.handler({});
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {});
+
+    await getTabs.handler(metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
+  });
+
+  it('get_tabs forwards createIfEmpty:false only when the caller opted out of provisioning', async () => {
+    const { registered, transport } = collectTools();
+    const getTabs = registered.find((t) => t.name === 'get_tabs')!;
+
+    // A read-only probe (the desktop permission gate resolving a tab's origin)
+    // must not be the thing that opens a tab.
+    await getTabs.handler({
+      _meta: {
+        [ABU_CONVERSATION_META_KEY]: 'conv-42',
+        [ABU_CREATE_IF_EMPTY_META_KEY]: false,
+      },
+    });
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', {
+      ownerId: 'conv-42',
+      createIfEmpty: false,
+    });
+
+    // Anything other than an explicit `false` keeps the historical payload
+    // shape, so the host keeps its create-when-empty default.
+    await getTabs.handler({
+      _meta: {
+        [ABU_CONVERSATION_META_KEY]: 'conv-42',
+        [ABU_CREATE_IF_EMPTY_META_KEY]: true,
+      },
+    });
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { ownerId: 'conv-42' });
+  });
+
+  it('click omits ownerId without a conversation id, and includes it with one', async () => {
+    const { registered, transport } = collectTools();
+    const click = registered.find((t) => t.name === 'click')!;
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' });
+    expect(transport.send).toHaveBeenLastCalledWith('click', { tabId: 1, locator: { css: '#a' } });
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith('click', {
+      tabId: 1,
+      locator: { css: '#a' },
+      ownerId: 'conv-42',
+    });
+  });
+
+  it('navigate omits ownerId without a conversation id, and includes it with one', async () => {
+    const { registered, transport } = collectTools();
+    const navigate = registered.find((t) => t.name === 'navigate')!;
+
+    await navigate.handler({ tabId: 2, url: 'https://example.com', action: 'goto' });
+    expect(transport.send).toHaveBeenLastCalledWith('navigate', {
+      tabId: 2,
+      url: 'https://example.com',
+      action: 'goto',
+    });
+
+    await navigate.handler({ tabId: 2, url: 'https://example.com', action: 'goto' }, metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith('navigate', {
+      tabId: 2,
+      url: 'https://example.com',
+      action: 'goto',
+      ownerId: 'conv-42',
+    });
+  });
+
+  it('screenshot omits ownerId without a conversation id, and includes it with one', async () => {
+    const { registered, transport } = collectTools();
+    const screenshot = registered.find((t) => t.name === 'screenshot')!;
+
+    await screenshot.handler({ tabId: 3 });
+    expect(transport.send).toHaveBeenLastCalledWith('screenshot', { tabId: 3 });
+
+    await screenshot.handler({ tabId: 3 }, metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith('screenshot', { tabId: 3, ownerId: 'conv-42' });
+  });
+
+  it('query_js omits ownerId without a conversation id, and includes it with one on the get_html call', async () => {
+    // What matters for this test is the `get_html` payload query_js sends
+    // *before* it hands the HTML to evaluateQueryJsOnHtml — the DOM evaluation
+    // itself is exercised (and already known-flaky in this environment, see
+    // the pre-existing "reads HTML first..." failure above) by other tests, so
+    // swallow any rejection from that step and assert on the transport call.
+    const { registered, transport } = collectTools();
+    const query = registered.find((t) => t.name === 'query_js')!;
+    vi.mocked(transport.send).mockResolvedValue({ success: true, data: '<html></html>' });
+
+    await query.handler({ tabId: 9, code: '1' }).catch(() => {});
+    expect(transport.send).toHaveBeenLastCalledWith('get_html', { tabId: 9, selector: undefined });
+
+    await query.handler({ tabId: 9, code: '1' }, metaWithOwner).catch(() => {});
+    expect(transport.send).toHaveBeenLastCalledWith('get_html', {
+      tabId: 9,
+      selector: undefined,
+      ownerId: 'conv-42',
+    });
   });
 });
 

@@ -16,6 +16,8 @@ export interface RemoteFetchResult {
   destDir: string;
   /** The sha that was checked out and asserted. */
   sha: string;
+  /** How it was fetched; `archive` = root-folder name assertion only, weaker than git rev-parse. */
+  via?: 'git' | 'archive';
 }
 
 /**

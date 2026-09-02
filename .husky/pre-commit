@@ -1,1 +1,13 @@
-npx lint-staged
+# Make the hook safe against an abrupt kill (e.g. an outer timeout under heavy
+# multi-worktree load SIGKILLing the hook mid-run). lint-staged loses uncommitted
+# work in two ways, and BOTH flags are needed (verified on lint-staged 17):
+#   --no-hide-partially-staged: don't remove the unstaged hunks of a partially
+#     staged file during the run. This is the one that prevents the "工作树变干净"
+#     data loss — otherwise a mid-run kill skips the restore and those hunks are
+#     gone from the working tree, surviving only in a dropped backup stash.
+#   --no-stash: don't create the backup stash at all, so a kill can't leave an
+#     orphan "lint-staged automatic backup" stash behind.
+# No task below mutates files (eslint has no --fix), so neither mechanism buys us
+# anything. Trade-off: a partially staged file is checked in full, not just its
+# staged hunks — acceptable, and far cheaper than losing work.
+npx lint-staged --no-stash --no-hide-partially-staged

@@ -98,4 +98,21 @@ describe('InstalledPluginList', () => {
     expect(screen.queryByTestId('installed-plugin-row')).toBeNull();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
+
+  it('hides organization (enterprise-market) installs from the personal list', () => {
+    const orgPlugin: InstalledPlugin = {
+      key: 'compliance-bot@enterprise',
+      marketplace: 'enterprise',
+      name: 'compliance-bot',
+      version: '3.0.0',
+      installedAt: '2026-09-01T00:00:00.000Z',
+      contributed: { skills: ['audit'], mcpServers: [] },
+    };
+    usePluginStore.setState({ installed: [weather, orgPlugin] });
+    renderList();
+    const rows = screen.getAllByTestId('installed-plugin-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('weather');
+    expect(screen.queryByText('compliance-bot')).toBeNull();
+  });
 });

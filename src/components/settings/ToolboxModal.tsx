@@ -183,6 +183,12 @@ export default function ToolboxView() {
       // Plugins own their sub-navigation (installed / marketplace) and the
       // install-disclosure flow; the shared header search box feeds both.
       case 'plugins': {
+        if (isEnterprise && capabilityScope === 'organization') {
+          if (!binding) return null;
+          const PluginTab = getEnterpriseMount('pluginTab');
+          if (!PluginTab) return null;
+          return <PluginTab binding={binding} config={config} searchQuery={toolboxSearchQuery} />;
+        }
         return <PluginsTab searchQuery={toolboxSearchQuery} />;
       }
       case 'skills': {

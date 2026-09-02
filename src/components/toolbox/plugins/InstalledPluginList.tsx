@@ -20,6 +20,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
+import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
 
 interface InstalledPluginListProps {
   home: string;
@@ -41,11 +42,12 @@ export default function InstalledPluginList({
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const visible = useMemo(() => {
+    // The personal view never lists organization-installed plugins — those
+    // are managed (and uninstalled) from the 组织 view only, same as skills.
+    const { personal } = partitionInstalled(installed);
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return installed;
-    return installed.filter((p) =>
-      `${p.name} ${p.marketplace}`.toLowerCase().includes(query),
-    );
+    if (!query) return personal;
+    return personal.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
   }, [installed, searchQuery]);
 
   const handleConfirmUninstall = async () => {

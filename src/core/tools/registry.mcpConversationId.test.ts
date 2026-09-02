@@ -71,4 +71,41 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
     const params = mockCallTool.mock.calls[0][0];
     expect(params._meta).toBeUndefined();
   });
+
+  // Task B1: ToolExecutionContext.abortSignal (already injected by toolExecutor
+  // at every dispatch site) must reach the underlying MCP SDK client.callTool()
+  // as its RequestOptions.signal (3rd positional param), the same way
+  // conversationId reaches `_meta` above — this is the real dispatch path a
+  // model tool_use goes through, not just the last-hop unit in client.test.ts.
+  it('forwards the abort signal from ToolExecutionContext into the MCP request options', async () => {
+    const controller = new AbortController();
+
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+      abortSignal: controller.signal,
+    });
+
+    expect(mockCallTool).toHaveBeenCalledTimes(1);
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
+      undefined,
+      { signal: controller.signal, timeout: 30000 }
+    );
+  });
+
+  // Task B2 (controller addendum): `timeout: serverTimeout` is always passed
+  // to the SDK now (not only alongside a signal) — see client.test.ts's
+  // "always passes options.timeout" for why: the SDK's own internal request
+  // timeout otherwise fires ahead of callTool's manual race.
+  it('still passes options.timeout when the context has no abort signal', async () => {
+    await executeAnyTool('test-server__test_tool', { a: 1 }, undefined, undefined, {
+      conversationId: 'c1',
+    });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'test_tool', arguments: { a: 1 }, _meta: { 'abu/conversationId': 'c1' } },
+      undefined,
+      { timeout: 30000 }
+    );
+  });
 });

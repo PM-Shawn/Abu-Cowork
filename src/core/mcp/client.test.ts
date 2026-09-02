@@ -94,4 +94,137 @@ describe('toCallToolOpts', () => {
   it('returns conversationId: undefined when context itself is undefined', () => {
     expect(toCallToolOpts(undefined)).toEqual({ conversationId: undefined, signal: undefined });
   });
+
+  it('carries abortSignal from context into opts.signal', () => {
+    const controller = new AbortController();
+    expect(toCallToolOpts({ abortSignal: controller.signal })).toEqual({
+      conversationId: undefined,
+      signal: controller.signal,
+    });
+  });
+});
+
+// Task B1: the conversation run's AbortSignal (ToolExecutionContext.abortSignal,
+// threaded through toCallToolOpts()/executeAnyTool's opts) is passed to the MCP
+// SDK's client.callTool() as its RequestOptions.signal (3rd positional param) —
+// see the SDK's client/index.d.ts: callTool(params, resultSchema?, options?).
+// Passing it makes the SDK itself send `notifications/cancelled` and reject
+// promptly when the signal fires; this suite proves the plumbing, not the SDK's
+// internal cancellation (that's the sdk's own tested behavior).
+describe('abort signal propagation into MCP callTool', () => {
+  let manager: MCPClientManager;
+  let mockCallTool: ReturnType<typeof vi.fn>;
+
+  function setFakeServer(name: string): void {
+    const fakeServer: FakeConnectedServer = {
+      config: { name },
+      client: { callTool: mockCallTool },
+      transport: {},
+      tools: new Map(),
+    };
+    (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
+      name,
+      fakeServer
+    );
+  }
+
+  beforeEach(() => {
+    manager = new MCPClientManager();
+    mockCallTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
+    setFakeServer('test-server');
+  });
+
+  it('passes opts.signal through to the SDK callTool as RequestOptions (3rd param)', async () => {
+    const controller = new AbortController();
+
+    await manager.callTool('test-server', 'some_tool', { a: 1 }, { signal: controller.signal });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'some_tool', arguments: { a: 1 } },
+      undefined,
+      { signal: controller.signal, timeout: 30000 }
+    );
+  });
+
+  // Task B2 (controller addendum): the SDK's own request/response cycle has
+  // an internal default request timeout (60s, DEFAULT_REQUEST_TIMEOUT_MSEC)
+  // that used to fire independently of the manual Promise.race above it —
+  // for a browser server, whose manual race allows 120s, that meant the
+  // SDK's internal 60s timeout could reject a long `wait_for` first. Passing
+  // `timeout: serverTimeout` aligns the SDK's own timeout with the race.
+  it('always passes options.timeout (serverTimeout) to the SDK, signal or not', async () => {
+    await manager.callTool('test-server', 'some_tool', { a: 1 });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'some_tool', arguments: { a: 1 } },
+      undefined,
+      { timeout: 30000 }
+    );
+  });
+
+  it('passes options.timeout=120000 for a browser server (120s manual race)', async () => {
+    setFakeServer('abu-browser');
+
+    await manager.callTool('abu-browser', 'wait_for', { tabId: 1 });
+
+    expect(mockCallTool).toHaveBeenCalledWith(
+      { name: 'wait_for', arguments: { tabId: 1 } },
+      undefined,
+      { timeout: 120000 }
+    );
+  });
+
+  it('resolves normally when the signal is provided but never aborted', async () => {
+    const controller = new AbortController();
+
+    const result = await manager.callTool(
+      'test-server',
+      'some_tool',
+      { a: 1 },
+      { signal: controller.signal }
+    );
+
+    expect(result).toBe('ok');
+  });
+
+  it('rejects promptly with the normalized browser-cancel message when the tool belongs to a browser server and the signal is aborted', async () => {
+    setFakeServer('abu-browser');
+    const controller = new AbortController();
+    controller.abort();
+    // Simulates the MCP SDK's own abort handling (protocol.ts): an aborted
+    // signal causes the SDK's callTool() promise to reject promptly.
+    mockCallTool.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'));
+
+    await expect(
+      manager.callTool('abu-browser', 'click', {}, { signal: controller.signal })
+    ).rejects.toThrow('Browser action cancelled because the run was stopped.');
+  });
+
+  it('applies the same normalization for the abu-browser-bridge server', async () => {
+    setFakeServer('abu-browser-bridge');
+    const controller = new AbortController();
+    controller.abort();
+    mockCallTool.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'));
+
+    await expect(
+      manager.callTool('abu-browser-bridge', 'click', {}, { signal: controller.signal })
+    ).rejects.toThrow('Browser action cancelled because the run was stopped.');
+  });
+
+  it('keeps the SDK error message unnormalized for non-browser MCP servers even when aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    mockCallTool.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'));
+
+    await expect(
+      manager.callTool('test-server', 'some_tool', {}, { signal: controller.signal })
+    ).rejects.toThrow(/Tool call failed: This operation was aborted/);
+  });
+
+  it('does not normalize a browser server error when the signal was never aborted (real failure stays real)', async () => {
+    setFakeServer('abu-browser');
+    mockCallTool.mockRejectedValue(new Error('boom'));
+
+    await expect(manager.callTool('abu-browser', 'click', {}, {})).rejects.toThrow(/boom/);
+  });
 });

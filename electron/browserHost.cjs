@@ -177,6 +177,189 @@ function ownerKeyOf(id) {
   return meta ? meta.ownerKey : LEGACY_OWNER;
 }
 
+/**
+ * ## Backing off while the user takes over (R4)
+ *
+ * Agent tabs are adopted into the visible browser pane, so the user can grab
+ * the keyboard mid-task — and used to lose: automation kept clicking and
+ * filling under their hands, and the model then reasoned about a page state
+ * that neither side had produced alone.
+ *
+ * Attribution is a plain time window. `before-input-event` and `focus` on a
+ * view are the USER only while `aiActionDepth === 0`; every automation action
+ * runs with that depth raised, so `keyboardAutomation`'s own
+ * `webContents.focus()` + `sendInputEvent()` are excluded without needing to
+ * tag individual events. The depth is deliberately GLOBAL, not per owner:
+ * during owner A's action, owner B's real input is misread as automation. That
+ * error is one-directional (a missed backoff, never a new block) and the window
+ * is milliseconds wide, so it is accepted rather than tracked per owner.
+ *
+ * State-changing actions then wait for a quiet window before running. Read-only
+ * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
+ * never wait — they are exactly what a model should do while the user works.
+ */
+const USER_INTERACT_QUIET_MS = 3000;
+const TAKEOVER_WAIT_MS = 10000;
+const TAKEOVER_POLL_MS = 500;
+
+/** Fixed text: it tells the model to re-read the page, not to retry blindly. */
+const USER_TAKEOVER_MESSAGE =
+  'The user is currently interacting with this browser tab. Automation paused to avoid ' +
+  'conflicting with their input. Wait for them to finish, then re-read the page state ' +
+  '(snapshot) before continuing.';
+
+const TAKEOVER_GATED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'navigate',
+  'execute_js',
+  'scroll',
+  'start_recording',
+]);
+
+/** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
+const userInteractionAt = new Map();
+
+/** >0 while an automation action is executing — its own events are not the user. */
+let aiActionDepth = 0;
+
+/**
+ * The backoff is a wall-clock wait of up to 10 seconds, which no test can sit
+ * through. Both reads of "now" and the poll sleep go through this one seam so a
+ * test can drive virtual time (see `__testing.setClock`).
+ */
+const REAL_CLOCK = {
+  now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+let clock = REAL_CLOCK;
+
+/**
+ * Drop an owner's interaction record once none of its views survive, so a long
+ * session does not accumulate one timestamp per conversation that ever typed.
+ */
+function forgetOwnerInteractionIfUnused(ownerKey) {
+  for (const id of views.keys()) {
+    if (ownerKeyOf(id) === ownerKey) return;
+  }
+  userInteractionAt.delete(ownerKey);
+}
+
+/**
+ * @param {string} viewId the view the action is about to touch
+ * @param {string} ownerKey that view's owner (NOT necessarily the caller's —
+ *   an agent may be driving the user's own legacy pane tab, and it is the pane
+ *   tab's user we must yield to)
+ */
+function userIsInteracting(viewId, ownerKey) {
+  // Picking an element is a live, multi-second user gesture that never emits an
+  // input event of its own — treat the armed session itself as "hands on".
+  if (inspectSessions.has(viewId)) return true;
+  const last = userInteractionAt.get(ownerKey);
+  return typeof last === 'number' && clock.now() - last < USER_INTERACT_QUIET_MS;
+}
+
+async function awaitUserIdle(viewId, signal) {
+  const ownerKey = ownerKeyOf(viewId);
+  if (!userIsInteracting(viewId, ownerKey)) return;
+  assertNotAborted(signal);
+  const deadline = clock.now() + TAKEOVER_WAIT_MS;
+  while (clock.now() < deadline) {
+    await clock.sleep(TAKEOVER_POLL_MS);
+    assertNotAborted(signal);
+    if (!userIsInteracting(viewId, ownerKey)) return;
+  }
+  throw new Error(USER_TAKEOVER_MESSAGE);
+}
+
+/**
+ * ## Backing off after HTTP 429 (R5)
+ *
+ * A site that starts answering with 429 is telling the automation to slow
+ * down, not to keep hammering it — but nothing upstream of `execute_js`/
+ * `click`/etc previously read the response status at all, so the model would
+ * see a rate-limit page and immediately retry the same action, making the
+ * block worse. `originBackoff` tracks one exponential window PER ORIGIN (not
+ * per tab — a site rate-limits the client, not one specific view), doubling
+ * 1s→2s→4s… and capping at 30s; a 2xx main-frame response clears it, since
+ * that is the site telling us it is no longer objecting. Only main-frame
+ * responses are inspected — a 429 from a third-party subresource (an ad, an
+ * analytics ping) is not "this site" rate-limiting the automated action.
+ *
+ * Gated exactly where the takeover backoff (R4) is gated — reusing
+ * `TAKEOVER_GATED_ACTIONS` rather than a second list — because both guards
+ * answer the same question ("is it safe to act on this page right now?"),
+ * just for a different hazard. Read-only actions are exactly as safe to run
+ * against a rate-limiting origin as against any other page: no retry, no
+ * additional load. There is deliberately no retry-after-backoff path here
+ * either: the caller (the model) decides whether to wait, tell the user, or
+ * give up on this step.
+ */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 30000;
+
+/** origin -> { until: ts, level: n }. Absent/expired ⇒ no backoff in effect. */
+const originBackoff = new Map();
+
+function backoffDelayForLevel(level) {
+  return Math.min(BACKOFF_BASE_MS * 2 ** (level - 1), BACKOFF_CAP_MS);
+}
+
+function originOf(urlString) {
+  try {
+    return new URL(String(urlString || '')).origin;
+  } catch {
+    return null;
+  }
+}
+
+function registerRateLimitHit(origin) {
+  if (!origin) return;
+  const existing = originBackoff.get(origin);
+  const level = existing ? existing.level + 1 : 1;
+  originBackoff.set(origin, { until: clock.now() + backoffDelayForLevel(level), level });
+}
+
+function clearRateLimit(origin) {
+  if (!origin) return;
+  originBackoff.delete(origin);
+}
+
+/**
+ * Remaining backoff time for `origin` in ms; 0 when there is none, or once it
+ * has expired (an expired entry is pruned here so the map does not grow
+ * forever across origins that got rate-limited once and moved on).
+ */
+function backoffRemainingMs(origin) {
+  if (!origin) return 0;
+  const entry = originBackoff.get(origin);
+  if (!entry) return 0;
+  const remaining = entry.until - clock.now();
+  if (remaining <= 0) {
+    originBackoff.delete(origin);
+    return 0;
+  }
+  return remaining;
+}
+
+/**
+ * ## Abort-to-main (Stop button propagation)
+ *
+ * `browserAutomationHost.cjs` builds an `AbortController` per MCP request and
+ * aborts it when the client connection closes early (the run was stopped).
+ * The signal is threaded down through `performBrowserAutomation` into every
+ * wait loop a gated action can be sitting in — the takeover backoff's poll
+ * loop above, and the rate-limit gate below — so a stopped run does not sit
+ * out someone else's 10-second wait before it notices.
+ */
+function assertNotAborted(signal) {
+  if (signal && signal.aborted) {
+    throw new Error('Browser action cancelled because the run was stopped.');
+  }
+}
+
 function resolveOwnerKey(payload) {
   const raw = payload && typeof payload.ownerId === 'string' ? payload.ownerId.trim() : '';
   return raw || LEGACY_OWNER;
@@ -277,6 +460,29 @@ function browserSessionForViews() {
     browserSession.setDisplayMediaRequestHandler((_request, callback) => callback({}));
   }
 
+  // R5: watch main-frame responses for the 429/2xx signals that drive the
+  // per-origin backoff above. Registered once per session (this function is
+  // memoized via the `browserSession` singleton), covering every automation
+  // view and every pane tab, since they all share `BROWSER_SESSION_PARTITION`.
+  // `types: ['mainFrame']` (Electron 43's WebRequestFilter) narrows the native
+  // event stream itself, on top of the `resourceType === 'mainFrame'` check
+  // below — belt-and-braces, since the JS check alone still means every
+  // subresource response on every page marshals into this process first.
+  // NOTE: Electron allows only ONE `onHeadersReceived` listener per session —
+  // registering a second one on `BROWSER_SESSION_PARTITION` anywhere else
+  // would silently REPLACE this one (last registration wins), not add to it.
+  browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['mainFrame'] }, (details, callback) => {
+    if (details.resourceType === 'mainFrame') {
+      const origin = originOf(details.url);
+      if (details.statusCode === 429) {
+        registerRateLimitHit(origin);
+      } else if (details.statusCode >= 200 && details.statusCode < 300) {
+        clearRateLimit(origin);
+      }
+    }
+    callback({ cancel: false });
+  });
+
   browserSession.on('will-download', (_event, item) => {
     const record = {
       id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
@@ -354,7 +560,15 @@ function configureBrowserView(id, view) {
   contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame) resetAutomationRuntime();
   });
+  // Attribution for the takeover backoff: outside an automation action, input
+  // landing here is the user working in this view's owner's tab.
+  const recordUserInteraction = () => {
+    if (aiActionDepth > 0) return;
+    userInteractionAt.set(ownerKeyOf(id), clock.now());
+  };
+  contents.on('before-input-event', recordUserInteraction);
   contents.on('focus', () => {
+    recordUserInteraction();
     // The user focusing a view makes it that view OWNER's current tab, never
     // anyone else's.
     activeTabIdByOwner.set(ownerKeyOf(id), automationTabId);
@@ -371,8 +585,10 @@ function configureBrowserView(id, view) {
     // wiped — that would silently downgrade the live new view to legacy and
     // hand it to every other conversation.
     if (views.get(id) === view) {
+      const ownerKey = ownerKeyOf(id);
       viewMeta.delete(id);
       views.delete(id);
+      forgetOwnerInteractionIfUnused(ownerKey);
     }
   });
 }
@@ -641,7 +857,32 @@ async function screenshotAutomation(view, fullPage) {
   }
 }
 
-async function performBrowserAutomation(action, payload = {}) {
+/**
+ * @param {string} action
+ * @param {Record<string, unknown>} [payload]
+ * @param {{ signal?: AbortSignal }} [opts] `signal` aborts when the run that
+ *   requested this action was stopped (see browserAutomationHost.cjs's
+ *   `handleRequest`) — optional, so the existing 2-arg call sites (and their
+ *   tests) are unaffected.
+ */
+async function performBrowserAutomation(action, payload = {}, opts) {
+  const signal = opts && opts.signal;
+  // Everything this call does — including creating and loading views — is
+  // automation, so nothing it triggers may be mistaken for the user.
+  aiActionDepth += 1;
+  try {
+    return await runBrowserAutomation(action, payload, signal);
+  } finally {
+    aiActionDepth -= 1;
+  }
+}
+
+async function runBrowserAutomation(action, payload, signal) {
+  // Checked before EVERYTHING else — including get_tabs/get_downloads, which
+  // bypass every per-tab gate below — so a stopped run cannot still provision
+  // and open a brand-new tab (or leak any other side effect) after Stop.
+  assertNotAborted(signal);
+
   const ownerKey = resolveOwnerKey(payload);
 
   if (action === 'get_tabs') {
@@ -681,6 +922,46 @@ async function performBrowserAutomation(action, payload = {}) {
   const match = findViewByTabId(targetTabId, ownerKey);
   if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
   const { view } = match;
+
+  if (TAKEOVER_GATED_ACTIONS.has(action)) {
+    assertNotAborted(signal);
+
+    // A `navigate` to a NEW page (the default `goto`, or an explicit one) is
+    // rate-limit-checked against the URL it is ABOUT TO LOAD, not the tab's
+    // current origin — otherwise a tab sitting on a backed-off site could
+    // never navigate away (false block), and a tab sitting on a clean site
+    // could freely navigate INTO a backed-off one (missed block: the escape
+    // hatch away from a bad origin must stay open, but a fresh navigation
+    // INTO it must not). Every other gated action (click/fill/.../reload/
+    // back/forward) acts on the page already loaded, so it keeps checking the
+    // view's current origin. An unparseable target URL yields no origin
+    // (`originOf` returns null on a parse failure), so `backoffRemainingMs`
+    // sees nothing to check and this gate falls through — the malformed URL
+    // is still caught by `allowedAutomationUrl()` inside
+    // `navigateAutomationTab()`, which is the right place to report it.
+    const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
+    const backoffOrigin = isGotoNavigate
+      ? originOf(payload.url)
+      : originOf(view.webContents.getURL());
+    const remainingMs = backoffRemainingMs(backoffOrigin);
+    if (remainingMs > 0) {
+      throw new Error(
+        `This site is rate-limiting automated actions (HTTP 429). Backing off for ${Math.ceil(remainingMs / 1000)}s — ` +
+          'retrying immediately would make it worse. Tell the user, wait, or suggest they do this step manually.'
+      );
+    }
+
+    // Step outside the AI-attribution window for the wait itself: observing the
+    // user is the entire point of it, and at depth>0 their keystrokes would be
+    // filed as automation's own and the wait would end after one quiet poll.
+    aiActionDepth -= 1;
+    try {
+      await awaitUserIdle(match.id, signal);
+    } finally {
+      aiActionDepth += 1;
+    }
+  }
+
   activeTabIdByOwner.set(ownerKey, view.webContents.id);
 
   if (action === 'navigate') return navigateAutomationTab(view, payload);
@@ -898,11 +1179,13 @@ function closeView(id, view) {
   } catch {
     /* already gone — best-effort */
   }
+  const ownerKey = ownerKeyOf(id);
   views.delete(id);
   // `destroyed` also clears these, but it never fires when the window is torn
   // down under us (app quit) — don't leak the ownership record.
   viewMeta.delete(id);
   pendingAutomationOwners.delete(id);
+  forgetOwnerInteractionIfUnused(ownerKey);
 }
 
 function browserClose({ id }) {
@@ -965,4 +1248,8 @@ module.exports = {
   BROWSER_MISS,
   closeAllBrowserViews,
   performBrowserAutomation,
+  __testing: {
+    /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
+    setClock(next) { clock = next || REAL_CLOCK; },
+  },
 };

@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * browserHost — per-conversation tab ownership.
+ * browserHost — per-conversation tab ownership, and backing off when the user
+ * takes the page over.
  *
  * Before this suite, `browserHost.cjs` kept ONE global `activeAutomationTabId`
  * and `get_tabs` returned every live view, so two conversations running browser
@@ -17,6 +18,15 @@
  *  4. The "current tab" is per owner, not global.
  *  5. Touching another owner's tab fails loud with a next-step hint.
  *  6. An empty (filtered) tab set creates a view for THAT owner.
+ *
+ * The takeover contract (R4) is layered on top of the same ownership keys:
+ *  7. Keyboard input / focus landing on a view while no automation action is
+ *     running is the USER, recorded against that view's owner; the same events
+ *     fired by automation itself (keyboard's focus + sendInputEvent) are not.
+ *  8. A state-changing action (click/fill/select/keyboard/navigate/execute_js/
+ *     scroll/start_recording) waits for a 3s quiet window before running, and
+ *     gives up after 10s with a fixed "the user is interacting" message.
+ *     Read-only actions never wait.
  *
  * browserHost.cjs is a main-process module (`require('electron')` +
  * `require('./tauriHost.cjs')`), so this runs it under plain Node with both of
@@ -47,6 +57,13 @@ class FakeWebContents {
     this.destroyed = false;
     this.listeners = new Map();
     this.navigationHistory = { goBack() {}, goForward() {} };
+    this.isolatedScripts = [];
+    this.debugger = {
+      isAttached: () => false,
+      attach() {},
+      detach() {},
+      async sendCommand() { return { data: 'AAAA', cssContentSize: { width: 10, height: 10 } }; },
+    };
   }
 
   on(event, handler) {
@@ -67,13 +84,24 @@ class FakeWebContents {
   isDestroyed() { return this.destroyed; }
   getURL() { return this.url; }
   getTitle() { return this.title; }
-  focus() {}
+
+  /** Electron focuses the real webContents here, which fires its `focus` event. */
+  focus() { this.fire('focus'); }
+
+  sendInputEvent() {}
   reload() {}
   close() { this.destroyed = true; }
 
   async loadURL(url) {
     this.url = url;
     return undefined;
+  }
+
+  async executeJavaScriptInIsolatedWorld(_worldId, scripts) {
+    this.isolatedScripts.push(scripts);
+    // `drainSelections` is the only inspect call whose return value matters
+    // here; an empty drain keeps the session armed without emitting.
+    return [];
   }
 }
 
@@ -88,13 +116,25 @@ class FakeWebContentsView {
   setVisible(visible) { this.visible = visible; }
 }
 
-function fakeSession() {
+/**
+ * `onHeadersReceived` is invoked once per loadHost() (browserSessionForViews()
+ * is memoized inside the fresh module instance), and the real signature is
+ * `(filter, listener)` where the listener takes `(details, callback)`. The
+ * `capture` hook lets a test grab that listener so it can fire synthetic
+ * main-frame 429/2xx responses without a real network round trip.
+ */
+function fakeSession(capture) {
   return {
     setPermissionCheckHandler() {},
     setPermissionRequestHandler() {},
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on() {},
+    webRequest: {
+      onHeadersReceived(_filter, listener) {
+        if (capture) capture(listener);
+      },
+    },
   };
 }
 
@@ -116,6 +156,7 @@ function loadHost({ adopt = true } = {}) {
     contentView: { addChildView() {}, removeChildView() {} },
   };
   let host = null;
+  let webRequestListener = null;
 
   require.cache[electronId] = {
     id: electronId,
@@ -123,7 +164,9 @@ function loadHost({ adopt = true } = {}) {
     loaded: true,
     exports: {
       WebContentsView: FakeWebContentsView,
-      session: { fromPartition: () => fakeSession() },
+      session: {
+        fromPartition: () => fakeSession((listener) => { webRequestListener = listener; }),
+      },
     },
   };
   require.cache[tauriHostId] = {
@@ -158,7 +201,18 @@ function loadHost({ adopt = true } = {}) {
     delete require.cache[browserHostId];
   };
 
-  return { host, emitted, restore };
+  /**
+   * Fire a synthetic `webRequest.onHeadersReceived` event, as if `browserSession`
+   * had just observed a real response. `webRequestListener` is only populated
+   * once something has actually created the browser session (e.g. a `get_tabs`
+   * call has provisioned a view) — callers must do that first.
+   */
+  const fireHeadersReceived = (details) => {
+    if (!webRequestListener) throw new Error('webRequest listener not registered yet');
+    webRequestListener({ resourceType: 'mainFrame', ...details }, () => {});
+  };
+
+  return { host, emitted, restore, fireHeadersReceived };
 }
 
 function getTabs(host, ownerId) {
@@ -191,6 +245,34 @@ function contentsFor(tabId) {
   const found = contentsRegistry.get(tabId);
   assert.ok(found, `no fake webContents for tab ${tabId}`);
   return found;
+}
+
+/**
+ * The takeover backoff is a real-time wait (up to 10s), so the tests drive it
+ * through the module's injectable clock instead: `sleep()` advances virtual
+ * time by exactly the polling interval and records it, and `onSleep` lets a
+ * test simulate the user typing straight through the wait.
+ */
+function fakeClock(start = 1_000_000) {
+  const state = { t: start, sleeps: [], onSleep: null };
+  const clock = {
+    now: () => state.t,
+    async sleep(ms) {
+      state.t += ms;
+      state.sleeps.push(ms);
+      if (state.onSleep) state.onSleep();
+    },
+  };
+  return { state, clock };
+}
+
+const USER_TAKEOVER_MESSAGE =
+  'The user is currently interacting with this browser tab. Automation paused to avoid ' +
+  'conflicting with their input. Wait for them to finish, then re-read the page state ' +
+  '(snapshot) before continuing.';
+
+function typeInto(tabId) {
+  contentsFor(tabId).fire('before-input-event', {}, { type: 'keyDown', key: 'a' });
 }
 
 test('get_tabs isolates two conversations from each other', async () => {
@@ -404,6 +486,122 @@ test('a headless fallback view still belongs to the requesting conversation', as
   }
 });
 
+test('a state-changing action waits out the user\'s input, then proceeds', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab);
+    state.t += 2000; // 2s into the 3s quiet window — still "hands on keyboard"
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    assert.deepEqual(state.sleeps, [500, 500], 'polled twice, then the window went quiet');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/', 'the action ran after the wait');
+  } finally {
+    restore();
+  }
+});
+
+test('a state-changing action gives up with the pause message if the user never stops', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab);
+    // The user keeps typing through every poll — the recording must survive the
+    // wait, i.e. the wait itself must not be inside the AI-attribution window.
+    state.onSleep = () => typeInto(aTab);
+
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), (error) => {
+      assert.equal(error.message, USER_TAKEOVER_MESSAGE);
+      return true;
+    });
+
+    assert.equal(state.sleeps.length, 20, '10s of 500ms polls, then it stops trying');
+    assert.equal(contentsFor(aTab).url, 'about:blank', 'the action never ran');
+  } finally {
+    restore();
+  }
+});
+
+test('read-only actions are never held back by user interaction', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab); // the user is mid-keystroke right now
+
+    const shot = await host.performBrowserAutomation('screenshot', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+    });
+    assert.match(shot, /^data:image\/png;base64,/);
+    const tabs = await getTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(tabs), [aTab]);
+
+    assert.deepEqual(state.sleeps, [], 'reading the page never waits on the user');
+  } finally {
+    restore();
+  }
+});
+
+test('automation\'s own focus and input do not count as user interaction', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    // `keyboard` focuses the webContents and injects key events — all of it
+    // inside the AI-attribution window, so none of it is the user.
+    await host.performBrowserAutomation('keyboard', { ownerId: OWNER_A, tabId: aTab, key: 'a' });
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, [], 'automation must not back off from itself');
+
+    // The same event, fired while no action is running, IS the user.
+    contentsFor(aTab).fire('focus');
+    await navigate(host, OWNER_A, aTab, 'https://example.org/');
+    assert.equal(state.sleeps.length, 6, 'waited out the full 3s quiet window');
+    assert.equal(contentsFor(aTab).url, 'https://example.org/');
+  } finally {
+    restore();
+  }
+});
+
+test('an armed inspect session backs automation off like live input', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const viewId = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+
+    // The user is picking an element in this very view.
+    await host.browserDispatch(null, 'browser_inspect_set', { id: viewId, enabled: true });
+
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), (error) => {
+      assert.equal(error.message, USER_TAKEOVER_MESSAGE);
+      return true;
+    });
+    assert.equal(state.sleeps.length, 20);
+
+    // Disarmed (also clears the poll timer, which would otherwise outlive the test).
+    await host.browserDispatch(null, 'browser_inspect_set', { id: viewId, enabled: false });
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, []);
+  } finally {
+    restore();
+  }
+});
+
 test('a destroyed view drops its ownership record', async () => {
   const { host, restore } = loadHost();
   try {
@@ -416,6 +614,354 @@ test('a destroyed view drops its ownership record', async () => {
     assert.equal(tabIds(aAfter).length, 1);
     assert.notEqual(tabIds(aAfter)[0], aTab, 'a fresh owned view replaces the destroyed one');
     assert.equal(aAfter.summary.currentTabId, tabIds(aAfter)[0]);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * R5 — exponential per-origin backoff after HTTP 429 (docs at the top of
+ * `originBackoff` in browserHost.cjs). All of these fire the fake
+ * `webRequest.onHeadersReceived` listener directly rather than going through
+ * a real navigation, since the fake WebContents has no real network stack.
+ */
+function respond(fireHeadersReceived, url, statusCode, resourceType) {
+  fireHeadersReceived({ url, statusCode, ...(resourceType ? { resourceType } : {}) });
+}
+
+test('a 429 on the current origin blocks a state-changing action with the seconds remaining', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/checkout');
+
+    respond(fireHeadersReceived, 'https://example.com/checkout', 429);
+
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://example.com/checkout?retry=1'),
+      (error) => {
+        assert.equal(
+          error.message,
+          'This site is rate-limiting automated actions (HTTP 429). Backing off for 1s — ' +
+            'retrying immediately would make it worse. Tell the user, wait, or suggest they do this step manually.'
+        );
+        return true;
+      }
+    );
+    // No retry: the action must not have run.
+    assert.equal(contentsFor(aTab).url, 'https://example.com/checkout');
+  } finally {
+    restore();
+  }
+});
+
+test('read-only actions are never blocked by an origin backoff', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+
+    const shot = await host.performBrowserAutomation('screenshot', { ownerId: OWNER_A, tabId: aTab });
+    assert.match(shot, /^data:image\/png;base64,/);
+  } finally {
+    restore();
+  }
+});
+
+test('a backoff window expires on its own and the action is then allowed', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    state.t += 1000; // exactly the 1s (level-1) window — now expired
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/next');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/next', 'the action ran once the window expired');
+  } finally {
+    restore();
+  }
+});
+
+test('consecutive 429s escalate exponentially and cap at 30s', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    // Level 1: 1s.
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 1s/);
+
+    // Level 2: 2s (a second 429 while still gated, before the first window even expires).
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 2s/);
+
+    // Level 3: 4s.
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 4s/);
+
+    // Keep hitting it until the delay would exceed 30s — it must stay capped.
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 4: 8s
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 5: 16s
+    respond(fireHeadersReceived, 'https://example.com/', 429); // level 6: would be 32s, capped to 30s
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off for 30s/);
+
+    state.t += 30000;
+    await navigate(host, OWNER_A, aTab, 'https://example.com/done');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/done');
+  } finally {
+    restore();
+  }
+});
+
+test('a 2xx main-frame response clears that origin\'s backoff window', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/', 429);
+    await assert.rejects(navigate(host, OWNER_A, aTab, 'https://example.com/'), /Backing off/);
+
+    respond(fireHeadersReceived, 'https://example.com/', 200);
+    await navigate(host, OWNER_A, aTab, 'https://example.com/after-clear');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/after-clear');
+  } finally {
+    restore();
+  }
+});
+
+test('a 429 returned after a redirect is attributed to the post-redirect origin, not the pre-redirect one', async () => {
+  // Electron's webRequest fires onHeadersReceived once per hop of a
+  // navigation, each carrying THAT hop's own response URL — a redirect
+  // Y -> X therefore fires twice: once for Y's 3xx, once for X's final
+  // response. Simulate exactly that shape and confirm the backoff lands on
+  // X (the origin that actually answered 429), not Y (the one the agent
+  // originally asked to visit).
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/start');
+
+    respond(fireHeadersReceived, 'https://y.example.com/start', 302); // redirect hop from Y
+    respond(fireHeadersReceived, 'https://x.example.com/final', 429); // final hop from X
+
+    // The redirect landed the tab on X — driven directly on the fake
+    // webContents, exactly like a real redirect: Chromium's OWN navigation
+    // engine follows a 3xx without ever re-entering the automation gate (only
+    // the ORIGINAL `goto` call from the agent goes through it). Routing this
+    // through another `navigate()` call would (correctly, per I-1) get
+    // blocked as a fresh navigation INTO the now-backed-off X — which is not
+    // what is being simulated here.
+    await contentsFor(aTab).loadURL('https://x.example.com/final');
+
+    // A further gated action on that (now X-origin) tab is blocked.
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://x.example.com/final?retry=1'),
+      /Backing off for 1s/
+    );
+    assert.equal(contentsFor(aTab).url, 'https://x.example.com/final', 'no retry landed');
+
+    // A second, unrelated tab still on Y's origin is unaffected — the backoff
+    // must be keyed by X, not by Y (nor by anything else the redirect touched).
+    const bTab = tabIds(await getTabs(host, OWNER_B))[0];
+    await navigate(host, OWNER_B, bTab, 'https://y.example.com/other-page');
+    await navigate(host, OWNER_B, bTab, 'https://y.example.com/still-fine');
+    assert.equal(contentsFor(bTab).url, 'https://y.example.com/still-fine');
+  } finally {
+    restore();
+  }
+});
+
+test('a 429 on a subresource (non-main-frame) is not treated as the page rate-limiting', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+
+    respond(fireHeadersReceived, 'https://example.com/ads/tracker.js', 429, 'script');
+
+    await navigate(host, OWNER_A, aTab, 'https://example.com/still-fine');
+    assert.equal(contentsFor(aTab).url, 'https://example.com/still-fine');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I-1 — the R5 gate must check the NAVIGATION TARGET's origin, not the tab's
+ * current origin, for a `navigate`/`goto` action. Checking the current origin
+ * (the pre-fix behavior) gets both directions wrong: it lets automation
+ * navigate FROM a clean tab INTO a backed-off origin (missed block), and it
+ * traps a tab that happens to be sitting ON a backed-off origin so it can
+ * never navigate away to safety (false block, and the escape hatch — leaving
+ * the bad site — is exactly what should NOT be gated).
+ */
+test('navigating INTO a backed-off origin is blocked, even from a clean tab', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://x.example.com/'),
+      /Backing off for 1s/
+    );
+    assert.equal(contentsFor(aTab).url, 'https://y.example.com/', 'the navigation to x.com never happened');
+  } finally {
+    restore();
+  }
+});
+
+test('navigating AWAY FROM a backed-off origin is the escape hatch and is never gated', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://x.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await navigate(host, OWNER_A, aTab, 'https://y.example.com/');
+    assert.equal(contentsFor(aTab).url, 'https://y.example.com/', 'leaving the backed-off origin is allowed');
+  } finally {
+    restore();
+  }
+});
+
+test('an in-page action on a backed-off origin still uses the current-origin check', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://x.example.com/');
+
+    respond(fireHeadersReceived, 'https://x.example.com/', 429);
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: aTab,
+        selector: '#submit',
+      }),
+      /Backing off for 1s/
+    );
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Abort-to-main: the MCP loopback server aborts an AbortController when the
+ * client request closes early (see browserAutomationHost.cjs's `handleRequest`),
+ * and threads it through `performBrowserAutomation(action, payload, { signal })`
+ * into whatever gated wait the action is sitting in.
+ */
+test('an aborted signal stops a gated action during the user-idle wait, within one poll', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    typeInto(aTab); // the user is mid-keystroke, so the gated wait actually starts
+    const controller = new AbortController();
+    // Simulate the run being stopped mid-wait — the request closes, which is
+    // exactly what fires between two polls in the real handler.
+    state.onSleep = () => controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation(
+        'navigate',
+        { ownerId: OWNER_A, tabId: aTab, action: 'goto', url: 'https://example.com/' },
+        { signal: controller.signal }
+      ),
+      (error) => {
+        assert.equal(error.message, 'Browser action cancelled because the run was stopped.');
+        return true;
+      }
+    );
+
+    assert.equal(state.sleeps.length, 1, 'stopped after the very next poll, not the full 10s wait');
+    assert.equal(contentsFor(aTab).url, 'about:blank', 'the aborted action never landed');
+  } finally {
+    restore();
+  }
+});
+
+test('a pre-aborted signal is honored even before the rate-limit gate runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation(
+        'navigate',
+        { ownerId: OWNER_A, tabId: aTab, action: 'goto', url: 'https://example.com/' },
+        { signal: controller.signal }
+      ),
+      /Browser action cancelled because the run was stopped\./
+    );
+    assert.equal(contentsFor(aTab).url, 'about:blank');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I-3 — `get_tabs`/`get_downloads` sit entirely outside `TAKEOVER_GATED_ACTIONS`
+ * (they are read-only, and `get_tabs` is the one action that PROVISIONS a tab
+ * for an owner that has none), so the per-gate `assertNotAborted` never ran for
+ * them. A Stop mid-flight could still land after the abort, opening a brand new
+ * tab for a run that no longer exists. `assertNotAborted` at the very top of
+ * `runBrowserAutomation` closes that gap for every action, gated or not.
+ */
+test('a pre-aborted signal stops get_tabs before it can provision or open a tab', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+
+    await assert.rejects(
+      host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A }, { signal: controller.signal }),
+      /Browser action cancelled because the run was stopped\./
+    );
+
+    assert.equal(
+      emitted.some((entry) => entry.event === 'browser://automation-open'),
+      false,
+      'an aborted get_tabs must not open a new automation view'
+    );
+    // Confirm no view exists for OWNER_A at all (a live, un-aborted get_tabs
+    // would have provisioned exactly one).
+    const probe = await probeTabs(host, OWNER_A);
+    assert.deepEqual(tabIds(probe), []);
   } finally {
     restore();
   }

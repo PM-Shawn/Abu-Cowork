@@ -6,6 +6,7 @@ import {
   useBatchProgressStore,
 } from './batchProgressStore';
 import { getVisibleTabs, subagentTabId, usePreviewStore, type WorkspaceTab } from './previewStore';
+import { clearBrowserSignals, getRecentBrowserSignals } from '@/core/observability/browserSignals';
 
 function reset() {
   usePreviewStore.setState({
@@ -374,6 +375,75 @@ describe('previewStore', () => {
     });
   });
 
+  // ── tab_lifetime observability (batch 1, T5) ──────────────────────────
+  // Only the agent-automation adoption branch of openBrowser (a main-provided
+  // requestedId) counts as a browser-automation tab's "creation" — a plain
+  // user-opened browser tab is not necessarily automation-driven. closeTab
+  // reports 'closed' for any 'browser'-kind tab regardless of how it was
+  // opened, since the alive-duration signal degrades safely (aliveMs
+  // omitted) when there was no matching 'created' record.
+  describe('tab_lifetime signals', () => {
+    beforeEach(() => {
+      clearBrowserSignals();
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+    });
+
+    afterEach(() => {
+      clearBrowserSignals();
+      vi.useRealTimers();
+    });
+
+    function tabLifetimeSignals() {
+      return getRecentBrowserSignals().filter((s) => s.kind === 'tab_lifetime');
+    }
+
+    it('records "created" when an agent-adopted browser view is newly opened', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      expect(tabLifetimeSignals()).toEqual([
+        expect.objectContaining({ kind: 'tab_lifetime', event: 'created' }),
+      ]);
+    });
+
+    it('does not record "created" again when the same requestedId is re-adopted (reactivation, not a new tab)', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      expect(tabLifetimeSignals()).toHaveLength(1);
+    });
+
+    it('does not record "created" for a plain user-opened browser tab (no requestedId)', () => {
+      usePreviewStore.getState().openBrowser('https://example.com');
+      expect(tabLifetimeSignals()).toEqual([]);
+    });
+
+    it('records "closed" with the elapsed aliveMs for an agent-adopted tab', () => {
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+      vi.advanceTimersByTime(2500);
+      usePreviewStore.getState().closeTab('agent-browser-1');
+
+      const closed = tabLifetimeSignals().find((s) => s.kind === 'tab_lifetime' && s.event === 'closed');
+      expect(closed).toMatchObject({ kind: 'tab_lifetime', event: 'closed', aliveMs: 2500 });
+    });
+
+    it('records "closed" without aliveMs for a browser tab that was never tracked as created', () => {
+      usePreviewStore.getState().openBrowser('https://example.com'); // plain branch — no 'created' recorded
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().closeTab(id);
+
+      const closed = tabLifetimeSignals();
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toMatchObject({ kind: 'tab_lifetime', event: 'closed' });
+      expect((closed[0] as { aliveMs?: number }).aliveMs).toBeUndefined();
+    });
+
+    it('does not record any tab_lifetime signal when closing a non-browser tab', () => {
+      usePreviewStore.getState().openPreview('/a/1.md');
+      const id = usePreviewStore.getState().tabs[0].id;
+      usePreviewStore.getState().closeTab(id);
+      expect(tabLifetimeSignals()).toEqual([]);
+    });
+  });
+
   describe('closeOtherTabs / closeAllTabs', () => {
     it('closeOtherTabs keeps only the given tab and activates it', () => {
       usePreviewStore.getState().openPreview('/a/1.md');
@@ -395,6 +465,76 @@ describe('previewStore', () => {
       expect(s.tabs).toHaveLength(0);
       expect(s.activeTabId).toBeNull();
       expect(s.previewFilePath).toBeNull();
+    });
+
+    // Fix-wave finding: closeOtherTabs/closeAllTabs used to bypass closeTab
+    // entirely, so a discarded browser tab got neither a `tab_lifetime`
+    // 'closed' signal nor its noteTabCreated bookkeeping cleaned up — a real
+    // leak in browserSignals.ts's internal tabCreatedAt map (every entry
+    // lived forever, since only noteTabClosed deletes it).
+    describe('tab_lifetime signals for browser tabs discarded via bulk close (fix-wave)', () => {
+      beforeEach(() => {
+        clearBrowserSignals();
+        vi.useFakeTimers();
+        vi.setSystemTime(0);
+      });
+
+      afterEach(() => {
+        clearBrowserSignals();
+        vi.useRealTimers();
+      });
+
+      function tabLifetimeSignals() {
+        return getRecentBrowserSignals().filter((s) => s.kind === 'tab_lifetime');
+      }
+
+      it('closeOtherTabs records a closed signal (with aliveMs) for each discarded browser tab', () => {
+        usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+        usePreviewStore.getState().openPreview('/a/1.md');
+        const keep = usePreviewStore.getState().tabs.find((t) => t.kind === 'preview')!;
+
+        vi.advanceTimersByTime(3000);
+        usePreviewStore.getState().closeOtherTabs(keep.id);
+
+        const closed = tabLifetimeSignals().filter((s) => s.kind === 'tab_lifetime' && s.event === 'closed');
+        expect(closed).toHaveLength(1);
+        expect(closed[0]).toMatchObject({ event: 'closed', aliveMs: 3000 });
+      });
+
+      it('closeOtherTabs does not record a signal for the kept tab itself', () => {
+        const keptId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-kept');
+        usePreviewStore.getState().openPreview('/a/1.md');
+        usePreviewStore.getState().closeOtherTabs(keptId);
+        expect(tabLifetimeSignals().filter((s) => s.kind === 'tab_lifetime' && s.event === 'closed')).toHaveLength(0);
+      });
+
+      it('closeAllTabs records a closed signal for every open browser tab', () => {
+        usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-a');
+        usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-b');
+        usePreviewStore.getState().openPreview('/a/1.md'); // non-browser — no signal expected for this one
+
+        usePreviewStore.getState().closeAllTabs();
+
+        const closed = tabLifetimeSignals().filter((s) => s.kind === 'tab_lifetime' && s.event === 'closed');
+        expect(closed).toHaveLength(2);
+      });
+
+      it('a tab re-created with the same id after a bulk close starts a fresh aliveMs clock (no stale leftover state)', () => {
+        usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+        vi.advanceTimersByTime(1000);
+        usePreviewStore.getState().closeAllTabs();
+        clearBrowserSignals();
+
+        // Re-adopt the same id fresh — if the earlier close had leaked
+        // instead of cleaning up, this could report a bogus aliveMs spanning
+        // both lifetimes instead of starting over.
+        usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-1');
+        vi.advanceTimersByTime(500);
+        usePreviewStore.getState().closeTab('agent-browser-1');
+
+        const closed = tabLifetimeSignals().filter((s) => s.kind === 'tab_lifetime' && s.event === 'closed');
+        expect(closed[0]).toMatchObject({ aliveMs: 500 });
+      });
     });
   });
 

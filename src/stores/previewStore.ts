@@ -4,6 +4,50 @@ import { useSettingsStore } from './settingsStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { closeBrowserViews, type BrowserCloseReason } from '@/core/browser/browserViewLifecycle';
 import { makeBatchKey, type BatchIdentity } from '@/types';
+import {
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  noteTabClosed,
+  noteTabCreated,
+  safeRecordBrowserSignal,
+} from '@/core/observability/browserSignals';
+
+/** This tracks the in-app right-panel browser workspace tab, not a
+ *  Chrome-extension-bridge action — `channel` is always 'builtin'. Uses the
+ *  shared `buildBrowserSignalContext` (fix-wave: single cached-platform
+ *  reader, see that function's doc) rather than duplicating the
+ *  getPlatform() caching here. */
+function tabLifetimeSignalContext() {
+  return buildBrowserSignalContext('builtin');
+}
+
+/**
+ * Emits a `tab_lifetime` 'closed' signal (+ `noteTabClosed` bookkeeping) for
+ * every browser tab id this commit removed. Called from ONE place —
+ * `commitTabs`, off the same `removedBrowserTabIds` set that destroys the
+ * native views — so every removal path is covered by construction:
+ * `closeTab`/`closeOtherTabs`/`closeAllTabs` and the `removeTabsWhere`
+ * removals (delete cascade `closeOwnedTabsForConversation`, host withdrawal
+ * `closeAdoptedBrowserTab`). Fix-wave finding this keeps closed: a bulk or
+ * cascade close that discarded browser tabs without going through `closeTab`
+ * emitted no `closed` signal AND leaked its entry in `browserSignals.ts`'s
+ * internal `tabCreatedAt` map, which only `noteTabClosed` deletes.
+ *
+ * Observability only: it reads the removal set that has already been decided
+ * and writes nothing back into the store.
+ */
+function noteBrowserTabsClosed(removedIds: string[]): void {
+  for (const id of removedIds) {
+    // aliveMs is omitted when this tab was opened via the plain,
+    // non-agent-adopted branch of openBrowser, which never called
+    // noteTabCreated — safe degrade, not an error.
+    const aliveMs = noteTabClosed(id);
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { kind: 'tab_lifetime', event: 'closed', ...(aliveMs !== undefined ? { aliveMs } : {}) },
+      tabLifetimeSignalContext(),
+    ));
+  }
+}
 
 /**
  * Opening workspace content is an explicit "show me this" intent, so it must
@@ -257,7 +301,11 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     // view — see closeBrowserViews. Doing it here (rather than per action)
     // makes it an invariant of the store: no removal path can leak a view, and
     // no UI unmount can kill one.
-    closeBrowserViews(removedBrowserTabIds(prev.tabs, nextTabs), options.closeReason);
+    const removedBrowserIds = removedBrowserTabIds(prev.tabs, nextTabs);
+    closeBrowserViews(removedBrowserIds, options.closeReason);
+    // Observability only (batch 1): same removal set, recorded after the
+    // views are destroyed so a throw here could never skip the destruction.
+    noteBrowserTabsClosed(removedBrowserIds);
     const previewFilePath = computePreviewFilePath(nextTabs, nextActiveId);
     set({
       tabs: nextTabs,
@@ -373,6 +421,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       const currentActiveIsBrowser = tabs.find((t) => t.id === activeTabId)?.kind === 'browser';
       const steals = !isTabVisibleFor(adopted, currentConversationId) || currentActiveIsBrowser;
       commitTabs(nextTabs, steals ? activeTabId : requestedId);
+      // Observability only (batch 1): a genuinely new agent-adopted browser
+      // view — never for the reactivation branch above, which is the same
+      // tab still alive, not a new one. Independent of which tab ends up
+      // active (and of whether this adoption is visible here), so the focus
+      // rule above is untouched.
+      noteTabCreated(requestedId);
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { kind: 'tab_lifetime', event: 'created' },
+        tabLifetimeSignalContext(),
+      ));
       return requestedId;
     }
     // Dedupe only against tabs this conversation can see — matching a hidden

@@ -46,6 +46,21 @@ import {
   getRunPermissionCeilingFromContext,
 } from '../permissions/runPermissionCeiling';
 import { getLargeWriteBlockReason } from '../agent/hooks/largeWriteGuard';
+import {
+  browserChannelForTool,
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  classifyBlockedPage,
+  classifyBrowserToolError,
+  deriveTargetKey,
+  detectFrameHint,
+  getCachedTabOrigin,
+  isBrowserToolResultError,
+  noteBrowserToolOutcome,
+  noteTabOrigin,
+  safeRecordBrowserSignal,
+} from '../observability/browserSignals';
+import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
 /**
  * Builtin tools whose availability is gated on a Labs experiment. A gated-off
@@ -413,6 +428,93 @@ async function resolveBrowserActionOrigin(
 }
 
 /**
+ * Records the tool_call signal (+ any derived fallback_to_script/
+ * repeat_action/blocked_page signals) for one browser MCP tool invocation,
+ * at the execution boundary in `executeAnyTool` — after the approval gate,
+ * around the actual `mcpManager.callTool` call. Never throws: every
+ * `safeRecordBrowserSignal` call already swallows its own errors, and this
+ * function performs no I/O of its own.
+ *
+ * `origin` is best-effort and NEVER does its own `get_tabs` round trip
+ * (unlike `resolveBrowserActionOrigin` above, which the approval gate can
+ * afford once per state-changing call) — resolving a bare `tabId` to an
+ * origin for every read-only call too would double this app's browser
+ * traffic just for telemetry. Instead: a successful `navigate` resolves its
+ * own origin for free (its `url` input is right there), which is cached by
+ * tabId (`noteTabOrigin`) so every LATER call against that same tab —
+ * click, fill, extract_text, ... — can reuse it via `getCachedTabOrigin`
+ * with zero additional round trips, giving `bySiteAndPlatform` real
+ * per-site coverage beyond navigate calls alone.
+ *
+ * `frameHint`/`blockedClass` are only computed when the call FAILED (`!ok`):
+ * a SUCCESSFUL result's content can legitimately contain "iframe" (a
+ * snapshot's DOM tree), "429" (a price/item count), or "cloudflare" (a page
+ * footer) without any of that meaning the page blocked the agent — see
+ * `browserSignals.ts`'s `classifyBlockedPage`/`detectFrameHint` docs.
+ */
+function recordBrowserToolCallSignal(
+  namespacedName: string,
+  toolContext: ToolExecutionContext | undefined,
+  input: Record<string, unknown>,
+  startedAt: number,
+  resultText: string,
+): void {
+  const separator = namespacedName.indexOf('__');
+  const bareToolName = separator === -1 ? namespacedName : namespacedName.slice(separator + 2);
+  const durationMs = Date.now() - startedAt;
+  const ok = !isBrowserToolResultError(resultText);
+  const conversationId = toolContext?.conversationId;
+  const targetKey = deriveTargetKey(bareToolName, input);
+  const { repeat, fallback } = noteBrowserToolOutcome(conversationId, bareToolName, targetKey, ok);
+
+  const tabIdRaw = input.tabId;
+  const tabId = typeof tabIdRaw === 'number'
+    ? tabIdRaw
+    : typeof tabIdRaw === 'string' && tabIdRaw.trim() !== '' && Number.isFinite(Number(tabIdRaw))
+      ? Number(tabIdRaw)
+      : undefined;
+
+  let origin: string | undefined;
+  if (bareToolName === 'navigate' && typeof input.url === 'string') {
+    origin = normalizeBrowserOrigin(input.url) ?? undefined;
+    if (ok && origin && tabId !== undefined) noteTabOrigin(conversationId, tabId, origin);
+  } else if (tabId !== undefined) {
+    origin = getCachedTabOrigin(conversationId, tabId);
+  }
+
+  const context = buildBrowserSignalContext(browserChannelForTool(namespacedName) ?? 'builtin', conversationId);
+  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+    {
+      kind: 'tool_call',
+      tool: namespacedName,
+      ok,
+      durationMs,
+      ...(tabId !== undefined ? { tabId } : {}),
+      ...(origin ? { origin } : {}),
+      ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+      ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
+    },
+    context,
+  ));
+
+  if (fallback) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
+  }
+  if (repeat.shouldEmit) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { kind: 'repeat_action', tool: bareToolName, targetKey, count: repeat.count },
+      context,
+    ));
+  }
+  if (!ok) {
+    const blockedClass = classifyBlockedPage(resultText);
+    if (blockedClass) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'blocked_page', className: blockedClass }, context));
+    }
+  }
+}
+
+/**
  * Why a scoped (unattended) run's non-read-only command was refused, so the
  * denial the model reads says what to change instead of just "no".
  *
@@ -763,6 +865,10 @@ export async function checkToolApproval(
           // makes pre-authorized unattended runs (scheduled tasks) possible.
           return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
         }
+        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+          { kind: 'confirm_prompt', origin: origin ?? undefined },
+          buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
+        ));
         const confirmed = await onRequireConfirmation({
           command: origin
             ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
@@ -940,11 +1046,33 @@ export async function executeAnyTool(
   if (name.includes('__')) {
     const [serverName, toolName] = name.split('__', 2);
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, executionInput, {
-        conversationId: toolContext?.conversationId,
-        agentRunId: toolContext?.agentRunId,
-        signal: toolContext?.abortSignal,
-      });
+      const isBrowserTool = classifyBrowserTool(name) !== null;
+      const startedAt = Date.now();
+      let result: ToolResult;
+      try {
+        result = await mcpManager.callTool(serverName, toolName, executionInput, {
+          conversationId: toolContext?.conversationId,
+          agentRunId: toolContext?.agentRunId,
+          signal: toolContext?.abortSignal,
+        });
+      } catch (err) {
+        if (isBrowserTool) {
+          try {
+            const message = err instanceof Error ? err.message : String(err);
+            recordBrowserToolCallSignal(name, toolContext, executionInput, startedAt, `Error: ${message}`);
+          } catch {
+            // Observability must never change product behavior.
+          }
+        }
+        throw err;
+      }
+      if (isBrowserTool) {
+        try {
+          recordBrowserToolCallSignal(name, toolContext, executionInput, startedAt, browserSignalToolResultToString(result));
+        } catch {
+          // Observability must never change product behavior.
+        }
+      }
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

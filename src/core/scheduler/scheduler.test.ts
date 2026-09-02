@@ -9,7 +9,7 @@
  * runAgentLoop is mocked so we control the exit reason; outputSender is mocked so
  * `buildMessage` being called is the observable "delivery happened" signal.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -58,6 +58,10 @@ vi.mock('../../utils/notifications', () => ({
 import { schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { outputSender } from '../im/outputSender';
+import {
+  clearSchedulerDriftSignals,
+  getRecentSchedulerDriftSignals,
+} from '../observability/browserSignals';
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -405,5 +409,83 @@ describe('SchedulerEngine permission tier', () => {
     await schedulerEngine.runNow(task.id);
 
     expect(latestRunError(task.id)).toBe('boom');
+  });
+});
+
+// ── F1.4: scheduler trigger drift (batch 1, T5) ─────────────────────────
+// "调度漂移" — planned fire time (task.nextRunAt, read BEFORE the run
+// recomputes it in completeRun/errorRun) vs. actual fire time. Observation
+// only: never gates or alters what the run does.
+describe('SchedulerEngine trigger drift signal (F1.4)', () => {
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useChatStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      currentUsage: null,
+      pendingInput: null,
+      agentStates: new Map(),
+    });
+    vi.clearAllMocks();
+    clearSchedulerDriftSignals();
+  });
+
+  afterEach(() => {
+    clearSchedulerDriftSignals();
+  });
+
+  it('records planned vs. actual fire time when the task carries a nextRunAt', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_700_000_010_000); // fires 10s after its planned slot
+      const task = makeTask({ id: 'task-drift', nextRunAt: 1_700_000_000_000 });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+      await schedulerEngine.runNow(task.id);
+
+      const drifts = getRecentSchedulerDriftSignals();
+      expect(drifts).toHaveLength(1);
+      expect(drifts[0]).toMatchObject({
+        kind: 'scheduler_drift',
+        taskId: 'task-drift',
+        plannedAt: 1_700_000_000_000,
+        actualAt: 1_700_000_010_000,
+        driftMs: 10_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not record a drift signal when the task has no nextRunAt (nothing to compare against)', async () => {
+    const task = makeTask({ id: 'task-no-next-run' });
+    delete (task as { nextRunAt?: number }).nextRunAt;
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(getRecentSchedulerDriftSignals()).toHaveLength(0);
+  });
+
+  it('still records the drift signal when the run ultimately errors (observation is independent of outcome)', async () => {
+    const task = makeTask({ id: 'task-drift-error', nextRunAt: 1_700_000_000_000 });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'error', error: 'boom' });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(getRecentSchedulerDriftSignals()).toHaveLength(1);
+  });
+
+  it('never lets drift recording block or alter the run result', async () => {
+    const task = makeTask({ id: 'task-drift-normal', nextRunAt: 1_700_000_000_000 });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(latestRunStatus(task.id)).toBe('completed');
   });
 });

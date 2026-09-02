@@ -4,7 +4,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
-import { useI18n } from '@/i18n';
+import { usePluginStore } from '@/stores/pluginStore';
+import { useI18n, format } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX , LABS_PLUGIN_SYSTEM } from '@/core/labs/registry';
 import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
@@ -85,6 +86,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openToolbox = useSettingsStore((s) => s.openToolbox);
   const showPluginIA = useLabsFlag(LABS_PLUGIN_SYSTEM);
+  const updateCount = usePluginStore((s) => s.updateAvailableKeys.length);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -382,6 +384,12 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           {/* The panel this opens is titled 「插件」 under the experiment; a
               sidebar still reading 「工具箱」 would name the same place twice. */}
           <span>{showPluginIA ? t.toolbox.plugins : t.sidebar.toolbox}</span>
+          {showPluginIA && updateCount > 0 && (
+            <span
+              className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0"
+              aria-label={format(t.toolbox.pluginsUpdatesAvailable, { count: updateCount })}
+            />
+          )}
         </button>
         <button
           onClick={() => { openAutomation(); setShowFileTree(false); }}

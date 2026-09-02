@@ -45,6 +45,7 @@ import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 import { ENTERPRISE_MARKET_NAME } from '@/core/plugin/enterpriseMarket';
+import { parsePluginKey } from '@/core/plugin/paths';
 import type { MarketplaceEntry } from '@/core/plugin/marketplace';
 
 /** A marketplace directory the user added. `dir` is absolute (tilde expanded). */
@@ -93,6 +94,16 @@ interface PluginState {
    * (silent third-party execution). `refreshInstalled` reconciles from disk.
    */
   knownMcpServerNames: string[];
+  /**
+   * Keys (`pluginKey(name, marketplace)`) of installs with a newer version
+   * available, split by scope (personal marketplace vs. the enterprise
+   * catalog) via {@link setUpdateAvailableKeys}. **Not persisted** —
+   * unlike `knownMcpServerNames` this drives a UI badge, not a security
+   * gate, and staleness across reloads (a plugin updated by someone else
+   * while the app was closed) is the correct default rather than a bug to
+   * work around: the next browse/sync recomputes it from scratch.
+   */
+  updateAvailableKeys: string[];
   loading: boolean;
   error: string | null;
 }
@@ -115,6 +126,14 @@ interface PluginActions {
    */
   update: (req: UpdateRequest) => Promise<InstalledPlugin>;
   clearError: () => void;
+  /**
+   * Replace the update-available keys for one scope, leaving the other
+   * scope's keys untouched. A private enterprise sync calls this with
+   * `'organization'`; the marketplace browser calls it with `'personal'`.
+   * De-duped and sorted so the sidebar badge and Plugins-tab count read a
+   * stable, order-independent list.
+   */
+  setUpdateAvailableKeys: (keys: string[], scope: 'personal' | 'organization') => void;
 }
 
 export type PluginStore = PluginState & PluginActions;
@@ -141,6 +160,7 @@ export const usePluginStore = create<PluginStore>()(
       marketplaces: [],
       installed: [],
       knownMcpServerNames: [],
+      updateAvailableKeys: [],
       loading: false,
       error: null,
 
@@ -293,6 +313,13 @@ export const usePluginStore = create<PluginStore>()(
       },
 
       clearError: () => set({ error: null }),
+
+      setUpdateAvailableKeys: (keys, scope) => {
+        const isOrg = (k: string) => parsePluginKey(k)?.marketplace === ENTERPRISE_MARKET_NAME;
+        const kept = get().updateAvailableKeys.filter((k) => (scope === 'organization' ? !isOrg(k) : isOrg(k)));
+        const next = [...new Set([...kept, ...keys.filter((k) => (scope === 'organization') === isOrg(k))])].sort();
+        set({ updateAvailableKeys: next });
+      },
     }),
     {
       name: 'abu-plugins',

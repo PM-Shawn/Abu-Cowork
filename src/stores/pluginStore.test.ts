@@ -452,3 +452,26 @@ describe('MCP server conflict safety (security review blocker #1)', () => {
     expect(useMCPStore.getState().servers['weather-mcp'].config.command).toBe('user-cmd');
   });
 })
+
+describe('updateAvailableKeys', () => {
+  it('replaces only the given scope and keeps the other', () => {
+    const s = usePluginStore.getState();
+    s.setUpdateAvailableKeys(['a@abu-official', 'b@my-market'], 'personal');
+    s.setUpdateAvailableKeys(['c@enterprise'], 'organization');
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['a@abu-official', 'b@my-market', 'c@enterprise']);
+    s.setUpdateAvailableKeys([], 'personal');
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['c@enterprise']);
+  });
+
+  it('is not persisted', () => {
+    // partialize whitelist: marketplaces + knownMcpServerNames only.
+    const partialize = usePluginStore.persist.getOptions().partialize as
+      (s: unknown) => Record<string, unknown>;
+    const persisted = partialize({
+      marketplaces: [{ name: 'official', dir: '/m' }],
+      knownMcpServerNames: ['forecast'],
+      updateAvailableKeys: ['a@abu-official'],
+    });
+    expect(persisted.updateAvailableKeys).toBeUndefined();
+  });
+});

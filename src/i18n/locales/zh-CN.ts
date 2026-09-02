@@ -1239,6 +1239,7 @@ const zhCN: TranslationDict = {
     pluginsUpdate: '更新',
     pluginsUpdateSucceeded: '已更新「{name}」',
     pluginsUpdateReloadHint: '开个新会话即可用上新版本。',
+    pluginsUpdatesAvailable: '{count} 个更新可用',
     pluginsUninstall: '卸载',
     pluginsUninstallTitle: '卸载插件',
     pluginsUninstallMessage: '确定要卸载「{name}」吗？它带来的 {skills} 个技能和 {servers} 个连接器会一并移除。',

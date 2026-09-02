@@ -1419,6 +1419,8 @@ export interface TranslationDict {
     pluginsUpdate: string;
     pluginsUpdateSucceeded: string;
     pluginsUpdateReloadHint: string;
+    /** Sidebar red-dot a11y label / Plugins-tab badge — "{count} updates available". */
+    pluginsUpdatesAvailable: string;
     pluginsUninstall: string;
     pluginsUninstallTitle: string;
     pluginsUninstallMessage: string;

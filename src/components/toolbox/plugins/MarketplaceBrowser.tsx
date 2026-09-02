@@ -31,6 +31,7 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { entryUpdateStatus } from '@/core/plugin/updateCheck';
+import { pluginKey } from '@/core/plugin/paths';
 import {
   resolveRename,
   type Marketplace,
@@ -102,6 +103,7 @@ export default function MarketplaceBrowser({
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
+  const setUpdateAvailableKeys = usePluginStore((s) => s.setUpdateAvailableKeys);
   const addToast = useToastStore((s) => s.addToast);
 
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -191,6 +193,28 @@ export default function MarketplaceBrowser({
     }
     return byName;
   }, [installed, marketplace, selected]);
+
+  // Reports which entries of the *currently displayed* market have an update,
+  // to drive the sidebar red dot and the Plugins-tab count badge.
+  //
+  // Known limitation (kept deliberately small for this P1 pass): the store's
+  // personal-scope key set is REPLACED, not merged, on every run of this
+  // effect — so switching markets makes the badge reflect only the market
+  // last browsed, not the union of every personal market with an update.
+  // Browsing market A (which has an update) then market B (which does not)
+  // will clear the update signal from A even though it is still true on disk.
+  // A full cross-market signal would need a background scan of every personal
+  // marketplace, which is out of scope here.
+  useEffect(() => {
+    if (!marketplace || !selected) return;
+    // Keyed by `selected.name` (the marketplace pointer's name), matching how
+    // `installer.ts` builds `installed.json` keys — NOT the manifest's own
+    // internal `name` field, which need not match the pointer name.
+    const keys = marketplace.plugins
+      .filter((e) => entryUpdateStatus(e, installedByName.get(e.name)) === 'update-available')
+      .map((e) => pluginKey(e.name, selected.name));
+    setUpdateAvailableKeys(keys, 'personal');
+  }, [marketplace, selected, installedByName, setUpdateAvailableKeys]);
 
   const installedNames = useMemo(() => {
     if (!marketplace) return new Set<string>();

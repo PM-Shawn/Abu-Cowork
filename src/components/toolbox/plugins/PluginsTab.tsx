@@ -12,9 +12,10 @@
  * hydrate belongs with the skill loader's bootstrap and is tracked separately.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
+import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
 import { useI18n } from '@/i18n';
 import SubTabBar from '@/components/customize/SubTabBar';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -38,6 +39,10 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
   const installed = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
+  // Organization (enterprise-market) installs are shown in their own surface
+  // (private module), so the installed-tab count should read as "how many of
+  // MY installs" rather than being inflated by an org-managed catalog.
+  const personalInstalledCount = useMemo(() => partitionInstalled(installed).personal.length, [installed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,7 +73,7 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
         <div className="inline-block">
           <SubTabBar
             tabs={[
-              { id: 'installed', label: tb.pluginsInstalledTab, count: installed.length },
+              { id: 'installed', label: tb.pluginsInstalledTab, count: personalInstalledCount },
               { id: 'marketplace', label: tb.pluginsMarketplaceTab },
             ]}
             activeTab={subTab}

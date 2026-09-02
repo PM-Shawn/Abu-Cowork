@@ -11,6 +11,8 @@
 import { joinPath } from '../../utils/pathUtils';
 import { readInstalled } from './installedStore';
 import { pluginInstallDir } from './paths';
+import { isEnterpriseModuleActive } from '../enterprise/entitlement';
+import { isEnterpriseInstall } from './enterpriseMarket';
 
 /**
  * `skills/` root of every installed plugin, in install-record order.
@@ -21,9 +23,13 @@ import { pluginInstallDir } from './paths';
  */
 export async function pluginSkillDirs(home: string): Promise<string[]> {
   const installed = await readInstalled(home);
-  return installed.map((p) =>
-    joinPath(pluginInstallDir(home, p.marketplace, p.name, p.version), 'skills'),
-  );
+  // Organization plugins are entitlement-gated the same way enterprise skills
+  // are (loader.ts): licence lapsed/offline → their skills stop loading,
+  // files stay on disk.
+  const entitled = isEnterpriseModuleActive('skills');
+  return installed
+    .filter((p) => entitled || !isEnterpriseInstall(p))
+    .map((p) => joinPath(pluginInstallDir(home, p.marketplace, p.name, p.version), 'skills'));
 }
 
 /** Every MCP server name contributed by an installed plugin, de-duplicated. */

@@ -24,6 +24,7 @@
 
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import { getSettingsReader } from '../agent/ports/settingsReader';
+import { getLoopContext } from '../agent/permissionBridge';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   decideBrowserOperation,
@@ -187,11 +188,19 @@ export interface CreateUnattendedConfirmationOptions {
  * Build the `commandConfirmCallback` an unattended entry point hands to the
  * agent loop. Same shape as the desktop dialog callback, so no caller needs to
  * know whether a human is reachable.
+ *
+ * The registry calls this as `(info, loopId)` on the run_command and
+ * self-extension paths (its browser path builds the seam request itself). The
+ * loop id is the run: it becomes the request's `runKey`, and the run's abort
+ * signal is looked up from the loop-context registry the same way the
+ * registry resolves it for its AI reviewer (`getLoopContext(loopId)?.signal`).
+ * Dropping it here would hand the approval channel a prompt Stop cannot
+ * cancel and no boundary to coalesce inside.
  */
 export function createUnattendedConfirmation(
   options: CreateUnattendedConfirmationOptions,
 ): UnattendedConfirmCallback {
-  return async (info: ConfirmationInfo) => {
+  return async (info: ConfirmationInfo, loopId?: string) => {
     // Already-refused notification (see `ConfirmationInfo.deniedNotice`):
     // account for it and stop. It must never reach the resolver — asking a
     // human to approve something that is already denied would be a lie, and
@@ -200,11 +209,14 @@ export function createUnattendedConfirmation(
       options.onDenied?.(info.deniedNotice, info);
       return false;
     }
+    const abortSignal = loopId !== undefined ? getLoopContext(loopId)?.signal : undefined;
     const result = await resolveUnattendedConfirmation({
       info,
       source: options.source,
       ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
+      ...(loopId !== undefined ? { runKey: loopId } : {}),
       ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+      ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
     if (!result.approved) options.onDenied?.(result.reason, info);
     return result.approved;

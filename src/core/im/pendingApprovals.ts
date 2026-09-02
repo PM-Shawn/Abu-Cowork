@@ -182,7 +182,14 @@ interface PendingApproval {
   settle?: (outcome: ImApprovalOutcome) => void;
 }
 
-/** Insertion-ordered: index 0 is the oldest outstanding prompt. */
+/**
+ * Ordered by ARMING, not by reservation: an entry is pushed when its slot is
+ * reserved and moved to the end when its prompt is delivered, so among the
+ * armed entries index order is the order the user saw them. A bare `同意`
+ * answers the first armed entry, and "first" must mean "delivered first" —
+ * two parallel asks whose sends complete out of order would otherwise resolve
+ * the ask the user has not seen yet.
+ */
 const pending: PendingApproval[] = [];
 
 /**
@@ -199,16 +206,31 @@ const consumedMessageIds = new Map<string, number>();
 const CONSUMED_MESSAGE_TTL_MS = 30 * 60 * 1000;
 const MAX_CONSUMED_MESSAGE_IDS = 500;
 
-function rememberConsumedMessage(key: string, now: number): void {
-  consumedMessageIds.set(key, now);
-  for (const [id, at] of consumedMessageIds) {
-    if (now - at >= CONSUMED_MESSAGE_TTL_MS) consumedMessageIds.delete(id);
+/**
+ * Fallback for platforms whose adapters supply no message id (DingTalk, WeCom,
+ * Slack): the same answer, from the same person, in the same chat, within
+ * this window is a redelivery. Outside it, it is a person answering a second
+ * prompt with the same word — which is why the window is short. A redelivery
+ * arrives within seconds; a human answering two prompts takes longer.
+ */
+export const CONTENT_REPLAY_WINDOW_MS = 10 * 1000;
+const consumedContents = new Map<string, number>();
+
+function remember(map: Map<string, number>, key: string, now: number, ttlMs: number): void {
+  map.set(key, now);
+  for (const [id, at] of map) {
+    if (now - at >= ttlMs) map.delete(id);
   }
-  while (consumedMessageIds.size > MAX_CONSUMED_MESSAGE_IDS) {
-    const oldest = consumedMessageIds.keys().next();
+  while (map.size > MAX_CONSUMED_MESSAGE_IDS) {
+    const oldest = map.keys().next();
     if (oldest.done) break;
-    consumedMessageIds.delete(oldest.value);
+    map.delete(oldest.value);
   }
+}
+
+function seenWithin(map: Map<string, number>, key: string, now: number, ttlMs: number): boolean {
+  const at = map.get(key);
+  return at !== undefined && now - at < ttlMs;
 }
 
 function releasePending(entry: PendingApproval): void {
@@ -235,6 +257,7 @@ export function __resetPendingApprovalsForTests(): void {
   inFlight.clear();
   answered.clear();
   consumedMessageIds.clear();
+  consumedContents.clear();
   sentReceipts.clear();
 }
 
@@ -249,15 +272,26 @@ export function __resetPendingApprovalsForTests(): void {
  */
 export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
   const messageId = message.replyContext.messageId;
-  const dedupKey = messageId ? `${message.platform}:${messageId}` : null;
+  const idKey = messageId ? `${message.platform}:${messageId}` : null;
   const now = Date.now();
 
   // A redelivery of a message we already consumed. Swallow it rather than
   // returning false: it is not new user input either, and forwarding it would
   // hand the model a bare "同意".
-  if (dedupKey) {
-    const consumedAt = consumedMessageIds.get(dedupKey);
-    if (consumedAt !== undefined && now - consumedAt < CONSUMED_MESSAGE_TTL_MS) return true;
+  if (idKey && seenWithin(consumedMessageIds, idKey, now, CONSUMED_MESSAGE_TTL_MS)) return true;
+
+  const verdict = classifyApprovalReply(message.text);
+  // Without a platform id, the content itself is the only replay signal. The
+  // key carries the normalized reply verbatim rather than a digest: it is a
+  // member of a closed set of a handful of short words (only answers are ever
+  // remembered), so there is nothing a hash would bound or hide, and the hook
+  // is synchronous — the renderer has no synchronous digest to call.
+  const contentKey =
+    idKey === null && verdict !== null
+      ? `${message.platform}:${message.chatId}:${message.senderId}:${normalizeReply(message.text)}`
+      : null;
+  if (contentKey && seenWithin(consumedContents, contentKey, now, CONTENT_REPLAY_WINDOW_MS)) {
+    return true;
   }
 
   if (pending.length === 0) return false;
@@ -275,14 +309,13 @@ export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
         : message.isDirect === true),
   );
   if (index === -1) return false;
-
-  const verdict = classifyApprovalReply(message.text);
   if (verdict === null) return false;
 
   const [entry] = pending.splice(index, 1);
   if (entry.timer !== undefined) clearTimeout(entry.timer);
   entry.detachAbort?.();
-  if (dedupKey) rememberConsumedMessage(dedupKey, now);
+  if (idKey) remember(consumedMessageIds, idKey, now, CONSUMED_MESSAGE_TTL_MS);
+  else if (contentKey) remember(consumedContents, contentKey, now, CONTENT_REPLAY_WINDOW_MS);
   entry.settle?.(verdict === 'approve' ? 'approved' : 'denied');
   return true;
 }
@@ -422,6 +455,14 @@ async function sendOutcomeReceipt(
 }
 
 /**
+ * Longest an outbound prompt may take to be delivered before the ask is
+ * abandoned as undeliverable. The adapters have no bound of their own, and an
+ * unbounded send would hold a cap slot forever — three hung sends and every
+ * later ask in that conversation is refused as `too_many` until restart.
+ */
+export const SEND_TIMEOUT_MS = 30 * 1000;
+
+/**
  * Ask a human over IM and wait for a plain-text answer.
  *
  * Slot handling is two-phase on purpose. The cap slot is RESERVED
@@ -431,6 +472,12 @@ async function sendOutcomeReceipt(
  * until the message is actually on screen — which preserves the reason the
  * original code sent first: an unrelated `同意` must never resolve a prompt
  * nobody ever saw.
+ *
+ * Every way out — an answer, the deadline, an abort, a failed or hung send —
+ * goes through one `finish`, so the slot is released exactly once and a send
+ * that settles after the ask has already ended cannot resurrect it. The abort
+ * listener is attached BEFORE the send: Stop during delivery must release the
+ * slot too, not wait on an adapter that may never come back.
  */
 export interface RequestImApprovalOptions {
   conversationId: string;
@@ -469,40 +516,52 @@ export async function requestImApprovalDetailed(
   };
   pending.push(entry);
 
-  const sent = await sendToChat(channelId, chatId, prompt);
-  if (!sent.success) {
-    releasePending(entry);
-    log.warn(`approval prompt undelivered (${chatId}): ${sent.error ?? 'unknown error'}`);
-    return { outcome: 'denied', cause: 'undeliverable' };
-  }
-  // Aborted while the message was in flight: release the slot rather than arm
-  // a prompt for a run that is already gone.
-  if (options.abortSignal?.aborted) {
-    releasePending(entry);
-    return { outcome: 'denied', cause: 'aborted' };
-  }
-
-  let aborted = false;
-  const outcome = await new Promise<ImApprovalOutcome>((resolve) => {
-    entry.settle = resolve;
-    entry.armed = true;
-    entry.timer = setTimeout(() => {
+  return await new Promise<ImApprovalResult>((resolve) => {
+    let done = false;
+    // Fires asynchronously, so `finish` below is initialized by the time it runs.
+    const sendTimer = setTimeout(() => {
+      log.warn(`approval prompt send timed out (${chatId}) after ${SEND_TIMEOUT_MS}ms`);
+      finish({ outcome: 'denied', cause: 'undeliverable' });
+    }, SEND_TIMEOUT_MS);
+    const finish = (result: ImApprovalResult) => {
+      if (done) return;
+      done = true;
+      clearTimeout(sendTimer);
       releasePending(entry);
-      resolve('timeout');
-    }, timeoutMs);
+      resolve(result);
+    };
+    // The inbound hook settles an answered entry through here.
+    entry.settle = (outcome) =>
+      finish({ outcome, cause: outcome === 'timeout' ? 'timeout' : 'answered' });
+
     const signal = options.abortSignal;
     if (signal) {
-      const onAbort = () => {
-        aborted = true;
-        releasePending(entry);
-        resolve('denied');
-      };
+      const onAbort = () => finish({ outcome: 'denied', cause: 'aborted' });
       signal.addEventListener('abort', onAbort, { once: true });
       entry.detachAbort = () => signal.removeEventListener('abort', onAbort);
     }
+
+    void sendToChat(channelId, chatId, prompt).then((sent) => {
+      clearTimeout(sendTimer);
+      // Aborted or timed out while the message was in flight: the ask is
+      // already over, whatever the adapter now says.
+      if (done) return;
+      if (!sent.success) {
+        log.warn(`approval prompt undelivered (${chatId}): ${sent.error ?? 'unknown error'}`);
+        finish({ outcome: 'denied', cause: 'undeliverable' });
+        return;
+      }
+      // Delivered: arm, and move to the END so armed entries stay in the
+      // order the user saw them (see `pending`).
+      const at = pending.indexOf(entry);
+      if (at !== -1) {
+        pending.splice(at, 1);
+        pending.push(entry);
+      }
+      entry.armed = true;
+      entry.timer = setTimeout(() => entry.settle?.('timeout'), timeoutMs);
+    });
   });
-  if (aborted) return { outcome: 'denied', cause: 'aborted' };
-  return { outcome, cause: outcome === 'timeout' ? 'timeout' : 'answered' };
 }
 
 /** The primitive in its contract shape — the outcome only. */

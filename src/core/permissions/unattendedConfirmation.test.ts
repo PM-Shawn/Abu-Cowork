@@ -9,6 +9,7 @@ import {
 } from './unattendedConfirmation';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from './browserToolPolicy';
+import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 
 const command = { command: 'ls', level: 'safe' as const, reason: '' };
 
@@ -101,6 +102,55 @@ describe('createUnattendedConfirmation', () => {
       conversationId: 'conv-1',
       imTarget: { platform: 'feishu', chatId: 'chat-1' },
     }]);
+  });
+
+  // [I3 residual] The registry hands the callback `(info, loopId)` on the
+  // run_command and self-extension paths. The wrapper used to drop the loop
+  // id, so those confirmations reached the IM channel with no run key (no
+  // coalescing) and no abort signal (Stop could not cancel the prompt).
+  it('forwards the run key and the run\'s abort signal for the loop it is called with', async () => {
+    const seen: unknown[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request);
+      return { approved: false, reason: 'no' };
+    });
+    const controller = new AbortController();
+    setLoopContext('loop-9', {
+      loopId: 'loop-9',
+      conversationId: 'conv-1',
+      signal: controller.signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: {} as never,
+      toolCallToStepId: new Map(),
+    });
+    try {
+      const callback = createUnattendedConfirmation({ source: 'im', conversationId: 'conv-1' });
+      await callback(command, 'loop-9');
+    } finally {
+      clearLoopContext('loop-9');
+    }
+
+    expect(seen).toEqual([{
+      info: command,
+      source: 'im',
+      conversationId: 'conv-1',
+      runKey: 'loop-9',
+      abortSignal: controller.signal,
+    }]);
+  });
+
+  it('still forwards the run key when no loop context is registered for it', async () => {
+    const seen: unknown[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request);
+      return { approved: false, reason: 'no' };
+    });
+    const callback = createUnattendedConfirmation({ source: 'scheduler' });
+
+    await callback(command, 'loop-unregistered');
+
+    expect(seen).toEqual([{ info: command, source: 'scheduler', runKey: 'loop-unregistered' }]);
   });
 });
 

@@ -14,8 +14,10 @@ import type { NormalizedIMMessage } from './inboundRouter';
 import type { UnattendedConfirmationRequest } from '../permissions/unattendedConfirmation';
 import {
   __resetUnattendedConfirmationForTests,
+  createUnattendedConfirmation,
   resolveUnattendedConfirmation,
 } from '../permissions/unattendedConfirmation';
+import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import type { IMSession } from '../../types/imChannel';
 import { format, getI18n } from '../../i18n';
@@ -57,7 +59,9 @@ vi.mock('../notice/bus', () => ({
 
 import {
   APPROVAL_TIMEOUT_MS,
+  CONTENT_REPLAY_WINDOW_MS,
   MAX_PENDING_APPROVALS_PER_CONVERSATION,
+  SEND_TIMEOUT_MS,
   __resetPendingApprovalsForTests,
   classifyApprovalReply,
   getImApprovalTimeoutMs,
@@ -65,6 +69,7 @@ import {
   installImApprovalResolver,
   pendingApprovalCountForTests,
   requestImApproval,
+  requestImApprovalDetailed,
   resolveImTargetForConversation,
   sanitizeUntrustedPromptField,
   setImApprovalTimeoutMs,
@@ -104,6 +109,13 @@ function inbound(text: string, overrides: Partial<NormalizedIMMessage> = {}): No
     raw: {},
     ...overrides,
   };
+}
+
+/** An answer carrying the platform message id Feishu attaches in production.
+ *  Two DISTINCT answers sent in the same instant must not read as one replayed
+ *  message, and the id is what tells them apart. */
+function answer(text: string, messageId: string): NormalizedIMMessage {
+  return inbound(text, { replyContext: { platform: 'feishu', chatId: CHAT, messageId } });
 }
 
 /** A gate-shaped seam request: what `registry.ts` hands the resolver for an
@@ -494,8 +506,8 @@ describe('imApprovalResolver', () => {
 
     expect(mocks.send).toHaveBeenCalledTimes(2);
 
-    tryConsumeApprovalReply(inbound('同意'));
-    tryConsumeApprovalReply(inbound('同意'));
+    tryConsumeApprovalReply(answer('同意', 'om_a'));
+    tryConsumeApprovalReply(answer('同意', 'om_b'));
     await Promise.all([a, b]);
   });
 
@@ -526,28 +538,28 @@ describe('imApprovalResolver', () => {
   it('does not carry an answer into a different run', async () => {
     const first = imApprovalResolver(seamRequest());
     await settle();
-    tryConsumeApprovalReply(inbound('同意'));
+    tryConsumeApprovalReply(answer('同意', 'om_1'));
     await first;
 
     const nextRun = imApprovalResolver(seamRequest({ runKey: 'loop-2' }));
     await settle();
     expect(mocks.send).toHaveBeenCalledTimes(2);
 
-    tryConsumeApprovalReply(inbound('同意'));
+    tryConsumeApprovalReply(answer('同意', 'om_2'));
     await nextRun;
   });
 
   it('never caches when the run cannot be identified', async () => {
     const first = imApprovalResolver(seamRequest({ runKey: undefined }));
     await settle();
-    tryConsumeApprovalReply(inbound('同意'));
+    tryConsumeApprovalReply(answer('同意', 'om_1'));
     await first;
 
     const second = imApprovalResolver(seamRequest({ runKey: undefined }));
     await settle();
     expect(mocks.send).toHaveBeenCalledTimes(2);
 
-    tryConsumeApprovalReply(inbound('同意'));
+    tryConsumeApprovalReply(answer('同意', 'om_2'));
     await second;
   });
 
@@ -704,15 +716,216 @@ describe('replayed platform messages', () => {
     await expect(second).resolves.toBe('approved');
   });
 
+  // [C2 gap] DingTalk / WeCom / Slack set no `replyContext.messageId`, so the
+  // id dedup never fires there. Fallback: the same answer from the same person
+  // in the same chat inside a SHORT window is a redelivery; outside it, it is a
+  // person answering a second prompt with the same word.
   it('still lets a genuinely repeated answer through when the platform gives no id', async () => {
+    vi.useFakeTimers();
     const first = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'first' });
     await settle();
     const second = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'second' });
     await settle();
 
     expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    await expect(first).resolves.toBe('approved');
+    await vi.advanceTimersByTimeAsync(CONTENT_REPLAY_WINDOW_MS + 1);
     expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
-    await expect(Promise.all([first, second])).resolves.toEqual(['approved', 'approved']);
+    await expect(second).resolves.toBe('approved');
+  });
+
+  it('treats the same id-less answer repeated inside the window as a replay', async () => {
+    vi.useFakeTimers();
+    const first = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'first' });
+    await settle();
+    const second = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'second' });
+    await settle();
+
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    await expect(first).resolves.toBe('approved');
+
+    // Swallowed (not forwarded to the model either) and the second prompt is
+    // untouched by it.
+    await vi.advanceTimersByTimeAsync(CONTENT_REPLAY_WINDOW_MS - 1);
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    // A DIFFERENT answer is not a replay of the first one.
+    expect(tryConsumeApprovalReply(inbound('拒绝'))).toBe(true);
+    await expect(second).resolves.toBe('denied');
+  });
+
+  it('scopes the id-less replay window to the sender and chat', async () => {
+    const groupTarget = { platform: 'feishu', channelId: 'ch-1', chatId: CHAT };
+    const first = requestImApproval({
+      conversationId: CONV, imTarget: groupTarget, prompt: 'first', senderId: 'alice',
+    });
+    await settle();
+    const second = requestImApproval({
+      conversationId: CONV, imTarget: groupTarget, prompt: 'second', senderId: 'bob',
+    });
+    await settle();
+
+    expect(tryConsumeApprovalReply(inbound('同意', { senderId: 'alice', isDirect: false }))).toBe(true);
+    await expect(first).resolves.toBe('approved');
+    // Bob's identical word, seconds later, is Bob's own answer — not Alice's echo.
+    expect(tryConsumeApprovalReply(inbound('同意', { senderId: 'bob', isDirect: false }))).toBe(true);
+    await expect(second).resolves.toBe('approved');
+  });
+});
+
+// [N1] Slots are reserved in call order but armed in DELIVERY order. The
+// answer must bind to the prompt the user actually saw first, which is the
+// one whose send completed first — not the one whose call came first.
+describe('answers bind in delivery order, not reservation order', () => {
+  const target = { platform: 'feishu', channelId: 'ch-1', chatId: CHAT, senderId: SENDER };
+
+  it('resolves the prompt that was delivered first when sends complete out of order', async () => {
+    const releases: Array<(v: { success: boolean; error: undefined }) => void> = [];
+    mocks.send.mockImplementation(() => new Promise((r) => { releases.push(r as never); }));
+    const first = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'first' });
+    const second = requestImApproval({ conversationId: CONV, imTarget: target, prompt: 'second' });
+    await settle();
+    expect(releases).toHaveLength(2);
+    expect(pendingApprovalCountForTests()).toBe(2);
+
+    // The SECOND ask lands on screen first, then the first; both are armed
+    // by the time the user answers — and they answer what they saw first.
+    releases[1]({ success: true, error: undefined });
+    await settle();
+    releases[0]({ success: true, error: undefined });
+    await settle();
+    expect(pendingApprovalCountForTests()).toBe(2);
+
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    await expect(second).resolves.toBe('approved');
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    expect(tryConsumeApprovalReply(inbound('拒绝'))).toBe(true);
+    await expect(first).resolves.toBe('denied');
+  });
+});
+
+// [N2] A send that never settles used to hold a cap slot forever: the abort
+// listener was attached only after the awaited send, and the outbound path had
+// no bound of its own.
+describe('a hung send cannot hold a slot', () => {
+  const target = { platform: 'feishu', channelId: 'ch-1', chatId: CHAT, senderId: SENDER };
+
+  it('releases the slot and reports aborted when Stop arrives mid-send', async () => {
+    let release!: (v: { success: boolean; error: undefined }) => void;
+    mocks.send.mockReturnValue(new Promise((r) => { release = r as never; }));
+    const controller = new AbortController();
+    const promise = requestImApprovalDetailed({
+      conversationId: CONV, imTarget: target, prompt: 'a', abortSignal: controller.signal,
+    });
+    await settle();
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    controller.abort();
+    await expect(promise).resolves.toEqual({ outcome: 'denied', cause: 'aborted' });
+    expect(pendingApprovalCountForTests()).toBe(0);
+
+    // The send completing afterwards must not resurrect the prompt.
+    release({ success: true, error: undefined });
+    await settle();
+    expect(pendingApprovalCountForTests()).toBe(0);
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(false);
+  });
+
+  it('gives up on a send that never settles, and the slot is usable again', async () => {
+    vi.useFakeTimers();
+    mocks.send.mockReturnValue(new Promise(() => {}));
+    const hung = requestImApprovalDetailed({ conversationId: CONV, imTarget: target, prompt: 'a' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(SEND_TIMEOUT_MS);
+    await expect(hung).resolves.toEqual({ outcome: 'denied', cause: 'undeliverable' });
+    expect(pendingApprovalCountForTests()).toBe(0);
+
+    // Not a permanent too_many: the next ask sends, arms and is answerable.
+    mocks.send.mockResolvedValue({ success: true, error: undefined });
+    const next = requestImApprovalDetailed({ conversationId: CONV, imTarget: target, prompt: 'b' });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pendingApprovalCountForTests()).toBe(1);
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    await expect(next).resolves.toEqual({ outcome: 'approved', cause: 'answered' });
+  });
+
+  it('a send that settles late, after the deadline, changes nothing', async () => {
+    vi.useFakeTimers();
+    let release!: (v: { success: boolean; error: undefined }) => void;
+    mocks.send.mockReturnValue(new Promise((r) => { release = r as never; }));
+    const hung = requestImApprovalDetailed({ conversationId: CONV, imTarget: target, prompt: 'a' });
+    await vi.advanceTimersByTimeAsync(SEND_TIMEOUT_MS + 1);
+    await expect(hung).resolves.toMatchObject({ cause: 'undeliverable' });
+
+    release({ success: true, error: undefined });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pendingApprovalCountForTests()).toBe(0);
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(false);
+  });
+});
+
+// [I3 residual] The registry's run_command / self-extension paths call the
+// callback as `(info, loopId)`; the wrapper must turn that loop id into the
+// run's abort signal and its run key, or the live IM path gets neither.
+describe('command confirmations over the live IM path', () => {
+  const LOOP = 'loop-cmd';
+  const commandInfo = { command: 'rm -rf ./build', level: 'warn' as const, reason: 'deletes files' };
+
+  function installLoop(signal: AbortSignal): void {
+    setLoopContext(LOOP, {
+      loopId: LOOP,
+      conversationId: CONV,
+      signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: {} as never,
+      toolCallToStepId: new Map(),
+    });
+  }
+
+  beforeEach(() => {
+    useIMChannelStore.setState({ sessions: { k1: session() }, archivedSessions: {} });
+    installImApprovalResolver();
+  });
+
+  afterEach(() => {
+    clearLoopContext(LOOP);
+  });
+
+  it('Stop cancels a run_command prompt, and a later 同意 reaches the model', async () => {
+    const controller = new AbortController();
+    installLoop(controller.signal);
+    const callback = createUnattendedConfirmation({ source: 'im', conversationId: CONV });
+
+    const promise = callback(commandInfo, LOOP);
+    await settle();
+    expect(promptSends()).toHaveLength(1);
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    controller.abort();
+    await expect(promise).resolves.toBe(false);
+    expect(pendingApprovalCountForTests()).toBe(0);
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(false);
+  });
+
+  it('coalesces repeated command asks within one run — the run key rides the loop id', async () => {
+    installLoop(new AbortController().signal);
+    const callback = createUnattendedConfirmation({ source: 'im', conversationId: CONV });
+
+    const a = callback(commandInfo, LOOP);
+    const b = callback(commandInfo, LOOP);
+    await settle();
+    expect(promptSends()).toHaveLength(1);
+
+    expect(tryConsumeApprovalReply(inbound('同意'))).toBe(true);
+    await expect(Promise.all([a, b])).resolves.toEqual([true, true]);
+    // And the answer is remembered for the rest of the run.
+    await expect(callback(commandInfo, LOOP)).resolves.toBe(true);
+    expect(promptSends()).toHaveLength(1);
   });
 });
 
@@ -912,12 +1125,12 @@ describe('outcome receipts', () => {
   it('does not narrate every refused call — receipts are deduped', async () => {
     const first = imApprovalResolver(seamRequest());
     await settle();
-    tryConsumeApprovalReply(inbound('拒绝'));
+    tryConsumeApprovalReply(answer('拒绝', 'om_1'));
     await first;
 
     const second = imApprovalResolver(seamRequest({ runKey: 'loop-2' }));
     await settle();
-    tryConsumeApprovalReply(inbound('拒绝'));
+    tryConsumeApprovalReply(answer('拒绝', 'om_2'));
     await second;
 
     expect(promptSends()).toHaveLength(2);

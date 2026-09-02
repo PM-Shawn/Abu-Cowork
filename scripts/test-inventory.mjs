@@ -58,7 +58,7 @@ export function renderBlock(inv) {
     `| Quarantined (\`src/__tests__/quarantine/\`) | ${inv.quarantine} |`,
     `| Web E2E (\`e2e/*.spec.ts\`, Playwright) | ${inv.e2eWeb} |`,
     `| Real-Electron E2E (\`tests/e2e/*.spec.ts\`) | ${inv.e2eElectron} |`,
-    `| Node \`node:test\` scripts (\`*.test.mjs|cjs\`) | ${inv.nodeTest} |`,
+    `| Node \`node:test\` scripts (\`*.test.mjs\` / \`*.test.cjs\`) | ${inv.nodeTest} |`,
     END,
   ].join('\n');
 }

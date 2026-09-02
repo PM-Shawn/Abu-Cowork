@@ -50,7 +50,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
 | Real-Electron E2E (`tests/e2e/*.spec.ts`) | 16 |
-| Node `node:test` scripts (`*.test.mjs|cjs`) | 42 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 42 |
 <!-- test-inventory:end -->
 
 ---
@@ -135,10 +135,11 @@ npm run lint && npm run typecheck && vitest run --changed
 ### verify:full
 
 ```sh
-npm run lint && npm run typecheck && npm run gen:models:check && npm run test:coverage
+npm run lint && npm run typecheck && npm run gen:models:check && npm run check:browser-artifacts && npm run test:inventory:check && npm run test:coverage
 ```
 
 - Full quality gate: lint + type errors + model-data freshness check + the full suite (file counts in §2 "Current inventory") + coverage threshold enforcement.
+- Two further freshness checks sit between `gen:models:check` and the suite: `check:browser-artifacts` verifies the built browser bundles (chrome-extension `dist/`, `electron/*-runtime/dist/`) are not older than their sources (the app loads the artifacts, not the sources), and `test:inventory:check` verifies the generated inventory block in §2 of this file matches the files on disk (regenerate with `npm run test:inventory`).
 - Use before marking a task complete and before opening a PR. Locally equivalent to what CI runs as independent steps.
 - Coverage below the committed thresholds causes non-zero exit and fails the gate.
 
@@ -370,9 +371,9 @@ npm test              # includes contract tests
 
 ### SLA: 4 weeks
 
-A meta-test (`src/__tests__/quarantine-sla.test.ts`) runs inside the **main gate** and asserts that every quarantined file's date is within 4 weeks of the fixed `BASE_DATE` constant. If a file exceeds the SLA, the meta-test fails and CI is red until the file is fixed or deleted.
+A meta-test (`src/__tests__/quarantine-sla.test.ts`) runs inside the **main gate** and asserts that every quarantined file's date is within 4 weeks of an "as-of" date resolved by `resolveQuarantineAsOf()` in `src/test/quarantineAsOf.ts`. If a file exceeds the SLA, the meta-test fails and CI is red until the file is fixed or deleted.
 
-> `BASE_DATE` is a hardcoded constant (not `Date.now()`) to prevent time-based test flakiness. Update it in a dedicated "extend quarantine SLA" commit when the window is intentionally extended.
+> The as-of date is **not** `Date.now()`. CI injects `QUARANTINE_ASOF=YYYY-MM-DD` (see `.github/workflows/ci.yml`), so the SLA window advances on every CI run. Locally the env var is normally absent and the committed `FALLBACK_ASOF` constant in the meta-test applies, keeping the test deterministic. A malformed `QUARANTINE_ASOF` throws instead of silently falling back. Bump `FALLBACK_ASOF` whenever you touch the meta-test.
 
 ### Commands
 

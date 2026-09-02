@@ -105,4 +105,29 @@ describe('subagent progress identity', () => {
     expect(onProgress.mock.calls[0][0].id).toBe('subagent-v1:nested%2Fa:call_1');
     expect(onProgress.mock.calls[1][0]).toBe(turn);
   });
+
+  // N6: the same scope id is the run's identity for per-run RESOURCES too
+  // (browser tab ownership), which the in-process loop reads off the options
+  // and puts in every ToolExecutionContext.
+  it('stamps the scope id onto the options as the run identity', () => {
+    const options = scopeSubagentLoopProgress(makeOptions(vi.fn()), 'sar-explicit');
+
+    expect(options.agentRunId).toBe('sar-explicit');
+  });
+
+  it('stamps it even for a run with no progress sink — the two consumers are independent', () => {
+    const withoutProgress = { ...makeOptions(vi.fn()), onProgress: undefined };
+
+    const options = scopeSubagentLoopProgress(withoutProgress, 'sar-silent');
+
+    expect(options.agentRunId).toBe('sar-silent');
+  });
+
+  it('mints a distinct identity per run when none is given', () => {
+    const first = scopeSubagentLoopProgress(makeOptions(vi.fn()));
+    const second = scopeSubagentLoopProgress(makeOptions(vi.fn()));
+
+    expect(first.agentRunId).toMatch(/^sar-/);
+    expect(first.agentRunId).not.toBe(second.agentRunId);
+  });
 });

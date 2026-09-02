@@ -42,9 +42,21 @@
  *   an existing asymmetry in browser.rs, not a divergence introduced here).
  * - `browser_hide/show {id}` → `view.setVisible(false/true)`; silently
  *   no-ops if `id` is unknown (matches Rust's `if let Some(wv) = ...`).
- * - `browser_close {id}` → `mainWin.contentView.removeChildView(view)` +
+ * - `browser_close {id, reason?}` → `mainWin.contentView.removeChildView(view)` +
  *   `view.webContents.close()` + delete from the id→view map; also silently
- *   no-ops if unknown.
+ *   no-ops if unknown. `reason: 'user_close'` additionally records a reclaim
+ *   window for that view's owner (N7 — see `userReclaimedAt`); anything else,
+ *   including an absent or unrecognised value, is a `lifecycle` teardown and
+ *   records nothing.
+ * - `browser_dispose_owner {conversationId, runKey?}` → close every view that
+ *   conversation owns and drop its ownership records; with `runKey`, only that
+ *   subagent run's (Electron-only; no Tauri counterpart — see
+ *   `disposeOwnerViews`).
+ * - `browser_clear_reclaim {conversationId}` → lift the reclaim window on every
+ *   run of that conversation (Electron-only; sent when the user posts their next
+ *   message there — see `userReclaimedAt`). A lift that actually closed a window
+ *   owes that conversation a one-shot notice on its next model-facing `get_tabs`
+ *   (see `RECLAIM_LIFTED_NOTICE`).
  *
  * ## Navigation event: `browser://nav/{id}`
  * browser.rs's `on_navigation(move |u| { emit(...); true })` fires on every
@@ -55,6 +67,14 @@
  * parity with the Rust single-callback's broader coverage. Payload is the
  * navigated-to URL as a plain string (matches `listen<string>` in
  * BrowserTab.tsx:126).
+ *
+ * ## Adoption events: `browser://automation-open` / `browser://automation-cancel`
+ * Electron-only (no Tauri counterpart). `-open` invites the renderer to adopt a
+ * new automation view into the workspace; `-cancel {id}` withdraws that
+ * invitation — the run was stopped, or the conversation that owned the view was
+ * deleted — and asks the renderer to drop the tab record again (App.tsx). See
+ * `cancelledAdoptionIds` for why a withdrawal needs both the event and a
+ * main-side tombstone.
  *
  * ## window.open / target="_blank"
  * browser.rs injects `NEW_WINDOW_SHIM` (an `initialization_script` that
@@ -106,6 +126,9 @@ const BROWSER_CMDS = new Set([
   'browser_capture',
   'browser_close',
   'browser_inspect_set',
+  'browser_note_user_interaction',
+  'browser_dispose_owner',
+  'browser_clear_reclaim',
 ]);
 const BROWSER_MISS = Symbol('browser-dispatch-miss');
 
@@ -142,29 +165,105 @@ let browserSession = null;
 let automationRuntime = null;
 
 /**
- * ## Tab ownership (per conversation)
+ * ## Tab ownership (per conversation, per subagent run)
  *
  * Browser automation tabs used to live in one global pool with a single
  * "current tab": two conversations driving the browser at the same time saw
  * each other's tabs in `get_tabs`, and either one's action silently moved the
- * other's current tab. Every automation view now records the conversation that
- * opened it, and every "current tab" record is keyed by that owner.
+ * other's current tab. Every automation view now records the OWNER that opened
+ * it, and every "current tab" record is keyed by that owner.
  *
- * `ownerKey` is `payload.ownerId` (the conversation id threaded down from the
- * MCP tool call) or `LEGACY_OWNER` when a caller sends none — legacy is also
- * what the user's own pane tabs get, and it stays visible to everyone so the
- * single-conversation behavior is unchanged.
+ * An owner is the PAIR `{conversationId, runKey}` (N6), not a bare conversation
+ * id: one conversation can drive the browser from its own loop and from any
+ * number of delegated subagent runs at the same time, and keying on the
+ * conversation alone reproduced the very bug the per-conversation keying fixed
+ * — sibling subagents seeing and stealing each other's tabs — one level down.
+ *
+ * - `conversationId` is `payload.ownerId` (threaded down from the MCP tool call
+ *   via `_meta['abu/conversationId']`).
+ * - `runKey` is `payload.runId` (`_meta['abu/runKey']`, the `sar-*` subagent run
+ *   id). A caller that sends none — the conversation's own main loop, and every
+ *   pre-N6 caller — is `MAIN_RUN_KEY`, so the single-run world is the degenerate
+ *   one-dimensional case of the same code, not a second path.
+ * - A caller that sends no `ownerId` at all is `LEGACY_OWNER`, which is also
+ *   what the user's own pane tabs get: the shared pool, visible to everyone.
+ *
+ * The pair is parsed ONCE per call (`resolveOwnerKey`) into a frozen record that
+ * also carries `key` — the canonical composite string every Map is keyed on.
+ * `makeOwner` is the only place that string is built, and `parseOwnerKey` the
+ * only place it is taken apart, so no call site ever concatenates or splits it.
  */
-const LEGACY_OWNER = 'legacy';
+const LEGACY_CONVERSATION = 'legacy';
+const MAIN_RUN_KEY = 'main';
+/**
+ * Separator inside the canonical composite key. NUL is used rather than a
+ * printable pair like `::` because it cannot appear in any id this app mints
+ * (base36 timestamps, `sar-*` run ids) NOR be typed into one; `makeOwner` also
+ * strips it from both halves, so `{a, b}` and `{a<NUL>b, main}` can never
+ * collapse onto the same key.
+ */
+const OWNER_KEY_SEPARATOR = String.fromCharCode(0);
 
-/** view id -> { ownerKey, createdAt }. Absent ⇒ legacy (see `ownerKeyOf`). */
+function sanitizeOwnerPart(value) {
+  return typeof value === 'string' ? value.split(OWNER_KEY_SEPARATOR).join('').trim() : '';
+}
+
+/**
+ * The one place a composite owner key is built.
+ * @returns {{conversationId: string, runKey: string, key: string}}
+ */
+function makeOwner(conversationId, runKey) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return LEGACY_OWNER;
+  const run = sanitizeOwnerPart(runKey) || MAIN_RUN_KEY;
+  return Object.freeze({
+    conversationId: conversation,
+    runKey: run,
+    key: `${conversation}${OWNER_KEY_SEPARATOR}${run}`,
+  });
+}
+
+/** The one place a composite owner key is taken apart. */
+function parseOwnerKey(key) {
+  const at = String(key).indexOf(OWNER_KEY_SEPARATOR);
+  if (at < 0) return { conversationId: String(key), runKey: MAIN_RUN_KEY };
+  return { conversationId: String(key).slice(0, at), runKey: String(key).slice(at + 1) };
+}
+
+/**
+ * The shared pool: the user's own pane tabs, and any caller that sent no owner.
+ * Deliberately a single owner — a caller with a `runId` but no conversation is
+ * folded into it by `makeOwner`, so a stray run id can never mint a private pool
+ * that `browser_dispose_owner` (which refuses the legacy conversation) could
+ * never reap.
+ */
+const LEGACY_OWNER = Object.freeze({
+  conversationId: LEGACY_CONVERSATION,
+  runKey: MAIN_RUN_KEY,
+  key: `${LEGACY_CONVERSATION}${OWNER_KEY_SEPARATOR}${MAIN_RUN_KEY}`,
+});
+
+function isLegacyOwner(owner) {
+  return owner.conversationId === LEGACY_CONVERSATION;
+}
+
+/**
+ * Does `owner` fall inside a dispose request? `runKey === undefined` means the
+ * whole conversation (every run), which is the pre-N6 delete-cascade scope.
+ */
+function ownerInDisposeScope(owner, conversationId, runKey) {
+  if (owner.conversationId !== conversationId) return false;
+  return runKey === undefined || owner.runKey === runKey;
+}
+
+/** view id -> { owner, createdAt }. Absent ⇒ legacy (see `ownerOf`). */
 const viewMeta = new Map();
 
-/** ownerKey -> webContents.id of that owner's most recently touched tab. */
+/** owner key -> webContents.id of that owner's most recently touched tab. */
 const activeTabIdByOwner = new Map();
 
 /**
- * view id -> ownerKey, for automation views awaiting renderer adoption.
+ * view id -> owner record, for automation views awaiting renderer adoption.
  * `createAutomationView()` registers the owner BEFORE emitting
  * `browser://automation-open`, because the renderer answers by calling
  * `browser_create` with the same id — possibly before the emit even returns —
@@ -172,9 +271,55 @@ const activeTabIdByOwner = new Map();
  */
 const pendingAutomationOwners = new Map();
 
-function ownerKeyOf(id) {
+/**
+ * ## Cancelled adoptions (tombstones)
+ *
+ * `browser://automation-open` is already on its way to the renderer by the time
+ * an adoption can be cancelled (the run was stopped, or the owning conversation
+ * was deleted), and the renderer answers it unconditionally with
+ * `browser_create`. Dropping only the pending-owner entry would let that late
+ * `browser_create` build the view as LEGACY — a live page every OTHER
+ * conversation could see and drive, while the only record that could destroy it
+ * (the renderer tab, still carrying the dead conversation's owner) is invisible
+ * in every tab strip. So a cancelled id is TOMBSTONED here and `browserCreate`
+ * refuses it.
+ *
+ * Refusal is silent (`return null`): `BrowserTab.tsx` treats a throw from
+ * `browser_create` as a transient failure and retries on a timer, which would
+ * turn one refusal into a retry storm.
+ *
+ * The set is capped and evicts oldest-first — it only has to outlive an
+ * in-flight adoption (milliseconds), never the session. Entries are NOT
+ * consumed on the first refusal: React StrictMode can double-mount a
+ * `BrowserTab` and issue `browser_create` twice for the same id.
+ */
+const MAX_CANCELLED_ADOPTIONS = 64;
+const cancelledAdoptionIds = new Set();
+
+/**
+ * Cancel one adoption: stop refusing it into existence, and tell the renderer to
+ * drop the tab record (which also destroys the view if it already made one —
+ * `previewStore` commits every removal through `closeBrowserViews`).
+ */
+function cancelAutomationAdoption(id) {
+  pendingAutomationOwners.delete(id);
+  cancelledAdoptionIds.add(id);
+  while (cancelledAdoptionIds.size > MAX_CANCELLED_ADOPTIONS) {
+    const oldest = cancelledAdoptionIds.values().next().value;
+    cancelledAdoptionIds.delete(oldest);
+  }
+  emit('browser://automation-cancel', { id });
+}
+
+/** @returns {{conversationId: string, runKey: string, key: string}} */
+function ownerOf(id) {
   const meta = viewMeta.get(id);
-  return meta ? meta.ownerKey : LEGACY_OWNER;
+  return meta ? meta.owner : LEGACY_OWNER;
+}
+
+/** The composite key every per-owner Map is keyed on. */
+function ownerKeyOf(id) {
+  return ownerOf(id).key;
 }
 
 /**
@@ -202,6 +347,42 @@ const USER_INTERACT_QUIET_MS = 3000;
 const TAKEOVER_WAIT_MS = 10000;
 const TAKEOVER_POLL_MS = 500;
 
+/**
+ * ## F1 — navigation-commit focus steal
+ *
+ * Chromium hands a WebContentsView's frame keyboard focus when a navigation
+ * commits — no host code involved (real-device acceptance 2026-09-02: a
+ * page's own redirect fired a genuine `focusout` on the main window's address
+ * bar at exactly the moment the guest landed). Left alone that (a) silently
+ * blurs whatever the user is typing into in the MAIN window, and (b) makes
+ * the guest's `focus` event look like the user being on that tab to the R4
+ * attribution below.
+ *
+ * A steal is told apart from the user really entering the guest by two
+ * signals: the user typed in the main window inside the quiet window, and no
+ * direct input (pointer/keyboard) landed on the guest just before its
+ * `focus`. In exactly that case focus is handed straight back and the event
+ * is not attributed. When nobody is typing in the main window the pre-F1
+ * behavior stands — a missed bounce is harmless with no typing to protect.
+ */
+const GUEST_INPUT_ATTRIBUTION_MS = 1000;
+
+/** ts of the user's last keyboard input in the MAIN window's own webContents. */
+let mainWindowKeyInputAt = 0;
+const mainInputHookedContents = new WeakSet();
+function ensureMainWindowInputHook() {
+  const win = mainWindow();
+  if (!win || win.isDestroyed()) return;
+  const contents = win.webContents;
+  if (!contents || typeof contents.on !== 'function' || mainInputHookedContents.has(contents)) {
+    return;
+  }
+  mainInputHookedContents.add(contents);
+  contents.on('before-input-event', () => {
+    mainWindowKeyInputAt = clock.now();
+  });
+}
+
 /** Fixed text: it tells the model to re-read the page, not to retry blindly. */
 const USER_TAKEOVER_MESSAGE =
   'The user is currently interacting with this browser tab. Automation paused to avoid ' +
@@ -221,6 +402,198 @@ const TAKEOVER_GATED_ACTIONS = new Set([
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
 const userInteractionAt = new Map();
+
+/**
+ * ## The user closing a tab is a reclaim signal, not just a teardown (N7)
+ *
+ * The takeover backoff above handles "the user is typing here right now". The
+ * stronger gesture — closing the agent's tab outright — used to have no effect
+ * on the run at all: the view died and the very next `get_tabs` silently
+ * provisioned a replacement, so the one action that unambiguously means "stop
+ * using the browser" was the one action the agent could not hear.
+ *
+ * A close therefore carries a REASON. Only a real user gesture (`user_close`,
+ * stamped by `previewStore`'s user-facing close actions) opens a RECLAIM WINDOW
+ * for the closed view's owner; every programmatic teardown — the commit path's
+ * own destroy, the cancel cascade, a conversation delete — is `lifecycle` and
+ * records nothing, as does closing a LEGACY tab (the user closing their own pane
+ * tab is just closing a tab).
+ *
+ * While a window is open, the effects are keyed at two DIFFERENT levels (see
+ * `conversationIsReclaimed` for why each is where it is):
+ *
+ * CONVERSATION-wide — every run of it, including runs minted after the close:
+ *  - `get_tabs` stops provisioning, and its summary carries `note`;
+ *  - no run may state-change the user's LEGACY pane tabs, nor have one promoted
+ *    to its current tab (R1).
+ *
+ * Per-RUN — only the run whose tab was closed:
+ *  - a state-changing action or `navigate` with nothing left to act on throws
+ *    the same sentence. Deliberately NOT the run-stopped message: the run is
+ *    alive, and saying otherwise would have the model report something false to
+ *    the user.
+ *
+ * Untouched either way: read-only work, and anything acting on a tab the RUN
+ * ITSELF still has open — the user closed one tab, not the whole task.
+ *
+ * The window has no timeout; it is lifted by the user's next message in that
+ * conversation (`browser_clear_reclaim`, every run at once — the user is
+ * addressing the task, not one of its delegations) or by that owner's dispose.
+ * Nothing else reopens it, so a run cannot wait it out.
+ */
+const USER_RECLAIMED_MESSAGE =
+  'The user closed your browser tab. Ask them before opening a new one.';
+
+/** ownerKey -> ts the user closed one of that owner's tabs. Present ⇒ reclaimed. */
+const userReclaimedAt = new Map();
+
+/**
+ * ## Lifting the window is itself news (C8)
+ *
+ * `browser_clear_reclaim` lifted the window in total silence: the user's next
+ * message simply made provisioning work again, and the next tool result said
+ * nothing about any of it. The model therefore opened a fresh tab and carried
+ * on as though the user had never closed one — the same "the app ignored me"
+ * the window exists to prevent, one turn later.
+ *
+ * So a lift arms a ONE-SHOT notice, keyed to the CONVERSATION like the window
+ * itself, and a model-facing `get_tabs` carries it.
+ *
+ * ## Who SPENDS it: the main loop, and only the main loop
+ *
+ * The notice asks the model to confirm with the user before using the browser
+ * again — and a subagent CANNOT do that: `ask_user_question` is in
+ * `ALWAYS_BLOCKED_SUBAGENT_TOOLS`, so a delegation has no channel to the user
+ * at all. Letting whoever listed first consume it therefore lost the notice to
+ * a run structurally unable to obey it, and handed the conversation's own loop
+ * — the one run that can actually ask — a listing that said nothing.
+ *
+ * So every run READS it (a subagent that knows the user just took the browser
+ * back can decline to act and hand the question up to its parent, which costs
+ * nothing and is strictly better than acting blind), and only the MAIN run
+ * CLEARS it. The wording is neutral about whose tab it was for the same reason:
+ * "your browser tab" is simply false told to a sibling run that never owned it.
+ *
+ * Three paths deliberately arm or consume nothing:
+ *  - a `browser_clear_reclaim` that lifted no window. The renderer fires it on
+ *    EVERY user message, so arming on the call rather than on a real lift would
+ *    put the notice on every conversation that ever sent one.
+ *  - a dispose. It also clears the window, but there is nobody left to tell:
+ *    the conversation is being deleted or the run reaped. Only a
+ *    CONVERSATION-wide dispose drops a notice already owed — a finished
+ *    subagent (A2) is not the conversation going away.
+ *  - the permission gate's `createIfEmpty:false` probe (`registry.ts`), whose
+ *    listing is resolved internally and thrown away; spending the one-shot
+ *    there would delete it unread.
+ *
+ * While a window is open again, `USER_RECLAIMED_MESSAGE` wins the `note` slot —
+ * the live refusal outranks a past one — and the owed notice simply waits.
+ */
+const RECLAIM_LIFTED_NOTICE =
+  "Note: the user previously closed the assistant's browser tab. Confirm they want the "
+  + 'browser again before acting on the page.';
+
+/** conversationIds owed the one-shot notice above. */
+const reclaimNoticePending = new Set();
+
+/**
+ * ## What is keyed to the CONVERSATION, and what stays per-RUN
+ *
+ * Conversation-wide: PROVISIONING, and the bar on touching the user's LEGACY
+ * pane tabs (both the action gate's legacy clause and current-tab promotion).
+ * Per-run: the "nothing left to act on" clause of the action gate.
+ *
+ * Both conversation-wide rules exist because a per-run key let the promise be
+ * walked around by delegation:
+ *
+ *  - PROVISIONING, both directions: close a subagent's tab and the
+ *    conversation's own loop opened a fresh one; close the main loop's tab and
+ *    the next `run_agent` minted a brand-new `sar-*` whose window had never been
+ *    opened, so it provisioned immediately.
+ *  - THE USER'S TABS (R1): with provisioning blocked, a run holding no window of
+ *    its own sees the user's pane tab as the ONLY tab it can reach — so a
+ *    per-run bar handed that run exactly what the gesture was refusing. The
+ *    legacy pool is listed to every run on purpose (the user's pane tabs are
+ *    shared), which is what makes it reachable in the first place.
+ *
+ * In both cases the user closed A tab and meant "stop"; they neither know nor
+ * care which run owned it, and a promise a delegation can walk around is not a
+ * promise.
+ *
+ * The "nothing left to act on" clause stays per-run because it answers a
+ * different question — it is about THIS run's own closed tab, and a run still
+ * holding tabs is not in that situation at all. Freezing a sibling mid-task on a
+ * page the user never touched would punish work the gesture said nothing about.
+ *
+ * Net: no new tabs for anyone here, nobody touches the user's tabs, and whoever
+ * still has a tab of their own keeps working in it.
+ */
+function conversationIsReclaimed(conversationId) {
+  if (!conversationId || conversationId === LEGACY_CONVERSATION) return false;
+  for (const key of userReclaimedAt.keys()) {
+    if (parseOwnerKey(key).conversationId === conversationId) return true;
+  }
+  return false;
+}
+
+/**
+ * May a tab become `owner`'s current tab? Not a LEGACY one while any run of
+ * that conversation is reclaimed.
+ *
+ * Keyed on the conversation, not the acting run (R1): the conversation-wide
+ * provisioning block means a run holding no window of its own — a `sar-*`
+ * minted after the user closed the main loop's tab, or the main loop after a
+ * subagent's — sees the user's pane tab as the ONLY tab it can reach. Keying
+ * this per-run handed that run exactly what the gesture was refusing.
+ */
+function mayBecomeCurrentTab(owner, tabIsLegacy) {
+  return !tabIsLegacy || !conversationIsReclaimed(owner.conversationId);
+}
+
+/**
+ * Unknown/absent values are `lifecycle`: a reason that fails to arrive intact
+ * must never be read as a user gesture that gates the run.
+ */
+function isUserCloseReason(reason) {
+  return reason === 'user_close';
+}
+
+/**
+ * Lift the reclaim window; `runKey === undefined` means every run (see
+ * `ownerInDisposeScope`).
+ *
+ * @param {boolean} [armNotice] true ONLY on the user-message path
+ *   (`browser_clear_reclaim`), and only then does an actual lift owe the
+ *   conversation the one-shot notice (see `RECLAIM_LIFTED_NOTICE`). A dispose
+ *   passes false: it clears the same window, but with nobody left to tell.
+ */
+function clearUserReclaim(conversationId, runKey, armNotice = false) {
+  let lifted = false;
+  for (const key of Array.from(userReclaimedAt.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      userReclaimedAt.delete(key);
+      lifted = true;
+    }
+  }
+  if (armNotice && lifted) reclaimNoticePending.add(conversationId);
+}
+
+/**
+ * The one-shot notice owed to `owner`'s conversation, if any.
+ *
+ * Every run READS it; only the MAIN run SPENDS it. A subagent cannot ask the
+ * user anything (`ask_user_question` is blocked for delegations), so spending
+ * the notice on one would retire the request on a run that cannot honour it and
+ * leave the conversation's own loop — the only run with a channel to the user —
+ * told nothing.
+ */
+function takeReclaimLiftedNotice(owner) {
+  const { conversationId, runKey } = owner;
+  if (!conversationId || conversationId === LEGACY_CONVERSATION) return null;
+  if (!reclaimNoticePending.has(conversationId)) return null;
+  if (runKey === MAIN_RUN_KEY) reclaimNoticePending.delete(conversationId);
+  return RECLAIM_LIFTED_NOTICE;
+}
 
 /** >0 while an automation action is executing — its own events are not the user. */
 let aiActionDepth = 0;
@@ -354,15 +727,22 @@ function backoffRemainingMs(origin) {
  * loop above, and the rate-limit gate below — so a stopped run does not sit
  * out someone else's 10-second wait before it notices.
  */
+const RUN_STOPPED_MESSAGE = 'Browser action cancelled because the run was stopped.';
+
 function assertNotAborted(signal) {
   if (signal && signal.aborted) {
-    throw new Error('Browser action cancelled because the run was stopped.');
+    throw new Error(RUN_STOPPED_MESSAGE);
   }
 }
 
+/**
+ * The ONE place a wire payload becomes an owner record. `ownerId` carries the
+ * conversation, `runId` the subagent run (absent ⇒ `main`, the conversation's
+ * own loop). Everything downstream passes the record around; nothing re-parses.
+ */
 function resolveOwnerKey(payload) {
-  const raw = payload && typeof payload.ownerId === 'string' ? payload.ownerId.trim() : '';
-  return raw || LEGACY_OWNER;
+  if (!payload) return LEGACY_OWNER;
+  return makeOwner(payload.ownerId, payload.runId);
 }
 
 function isInspectPayload(value) {
@@ -560,14 +940,41 @@ function configureBrowserView(id, view) {
   contents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
     if (isMainFrame) resetAutomationRuntime();
   });
+  ensureMainWindowInputHook();
   // Attribution for the takeover backoff: outside an automation action, input
   // landing here is the user working in this view's owner's tab.
   const recordUserInteraction = () => {
     if (aiActionDepth > 0) return;
     userInteractionAt.set(ownerKeyOf(id), clock.now());
   };
-  contents.on('before-input-event', recordUserInteraction);
+  // Direct input on THIS view (keyboard or pointer) is what separates the
+  // user really entering the guest from a navigation-commit focus steal (F1).
+  let lastDirectGuestInputAt = 0;
+  const recordDirectGuestInput = () => {
+    if (aiActionDepth > 0) return;
+    lastDirectGuestInputAt = clock.now();
+  };
+  contents.on('before-input-event', () => {
+    recordDirectGuestInput();
+    recordUserInteraction();
+  });
+  // `before-input-event` is keyboard-only; a pointer entering the guest is
+  // only visible here.
+  contents.on('input-event', (_event, inputEvent) => {
+    if (inputEvent && inputEvent.type === 'mouseDown') recordDirectGuestInput();
+  });
   contents.on('focus', () => {
+    const now = clock.now();
+    const userTypingInMainUi = now - mainWindowKeyInputAt < USER_INTERACT_QUIET_MS;
+    const enteredGuestDirectly = now - lastDirectGuestInputAt < GUEST_INPUT_ATTRIBUTION_MS;
+    if (userTypingInMainUi && !enteredGuestDirectly) {
+      // Navigation-commit steal (F1): the user is typing in the main window
+      // and never touched this view — hand focus straight back, and do not
+      // let the steal read as the user being on this tab.
+      const win = mainWindow();
+      if (win && !win.isDestroyed()) win.webContents.focus();
+      return;
+    }
     recordUserInteraction();
     // The user focusing a view makes it that view OWNER's current tab, never
     // anyone else's.
@@ -595,35 +1002,56 @@ function configureBrowserView(id, view) {
 
 /**
  * @param {unknown} tabId
- * @param {string} ownerKey the calling conversation's owner key
+ * @param {{conversationId: string, runKey: string, key: string}} owner the
+ *   calling run's owner record
  * @returns {{id: string, view: import('electron').WebContentsView} | null}
  *   null when no live view has that webContents id (callers keep their own
  *   "not found" message); THROWS when the tab exists but belongs to another
  *   conversation — a silent miss there would look like "the tab vanished" and
  *   send the model into a retry loop on someone else's tab.
+ *
+ * Reaching a SIBLING RUN's tab inside the same conversation is allowed (N6):
+ * every caller here named the tab EXPLICITLY, and an explicit id is exactly how
+ * a parent hands a tab to a child ("continue on tab 42" in the task text) —
+ * `get_tabs` never lists it, so the id cannot have been guessed from the
+ * listing. It is recorded rather than silent, because it is the one place a run
+ * touches a page it did not open.
  */
-function findViewByTabId(tabId, ownerKey = LEGACY_OWNER) {
+function findViewByTabId(tabId, owner = LEGACY_OWNER) {
   const numeric = Number(tabId);
   if (!Number.isInteger(numeric)) return null;
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (contents && !contents.isDestroyed() && contents.id === numeric) {
-      const tabOwner = ownerKeyOf(id);
+      const tabOwner = ownerOf(id);
       // A legacy tab (the user's own pane tab) may be driven by anyone, and
       // doing so does NOT claim it — ownership stays legacy.
-      if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) {
-        throw new Error(
-          `Browser tab ${tabId} belongs to another conversation's task. ` +
-            'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+      if (tabOwner.key === owner.key || isLegacyOwner(tabOwner)) return { id, view };
+      if (tabOwner.conversationId === owner.conversationId) {
+        console.log(
+          `[browserHost] cross-run tab access: run ${owner.runKey} acting on tab ${tabId} `
+            + `owned by run ${tabOwner.runKey} of the same conversation (explicit tabId hand-over)`
         );
+        return { id, view };
       }
-      return { id, view };
+      throw new Error(
+        `Browser tab ${tabId} belongs to another conversation's task. ` +
+          'Call get_tabs to see your own tabs, or open a new tab with navigate.'
+      );
     }
   }
   return null;
 }
 
-async function createAutomationView(ownerKey = LEGACY_OWNER) {
+/**
+ * @param {{conversationId: string, runKey: string, key: string}} [owner] the
+ *   run this view is being opened for
+ * @param {AbortSignal} [signal] aborts when the run that asked for this tab was
+ *   stopped — checked on every iteration of the adoption wait below, so a
+ *   stopped run neither sits out the rest of the wait nor ends up owning a
+ *   hidden fallback view it can never close (N8).
+ */
+async function createAutomationView(owner = LEGACY_OWNER, signal) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -631,14 +1059,34 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
   // Register the owner before emitting: the renderer's adoption calls back
   // into browserCreate() synchronously on the main process, and that is where
   // the pending owner is consumed.
-  pendingAutomationOwners.set(id, ownerKey);
-  emit('browser://automation-open', { id, url: 'about:blank' });
+  pendingAutomationOwners.set(id, owner);
+  // Tell the renderer WHOSE view this is: it hangs the adopted tab on that
+  // conversation, so a background task's tab never lands in the conversation
+  // the user happens to be looking at. LEGACY_OWNER sends no ownerId at all —
+  // a legacy view belongs to the shared pool and every conversation may see it.
+  //
+  // Deliberately the CONVERSATION only, never the runKey: renderer visibility
+  // stays conversation-granular (C2), because the user watching the pane wants
+  // every tab their conversation opened, whichever run opened it. Run isolation
+  // is a model-facing boundary (get_tabs / current tab / reclaim), not a
+  // user-facing one.
+  emit('browser://automation-open', {
+    id,
+    url: 'about:blank',
+    ...(isLegacyOwner(owner) ? {} : { ownerId: owner.conversationId }),
+  });
 
   // The production renderer adopts agent-created tabs into its normal browser
   // workspace so the user can watch and intervene. Headless harnesses have no
   // App listener, so fall back to a hidden view after a short bounded wait.
   const deadline = Date.now() + 2500;
-  while (Date.now() < deadline) {
+  for (;;) {
+    // The run may be stopped at any point during the wait; drop the pending
+    // entry before throwing so a cancelled adoption cannot strand one.
+    if (signal && signal.aborted) {
+      cancelAutomationAdoption(id);
+      throw new Error(RUN_STOPPED_MESSAGE);
+    }
     const adopted = views.get(id);
     if (adopted?.webContents && !adopted.webContents.isDestroyed()) {
       // The requesting conversation is the authority on this view's owner —
@@ -646,11 +1094,18 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
       // if any other path got there first its guess must not win (that would
       // hand the tab to the wrong owner AND leave this caller without a current
       // tab). Same authority model as the fallback branch below.
-      viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+      viewMeta.set(id, { owner, createdAt: Date.now() });
       pendingAutomationOwners.delete(id);
-      activeTabIdByOwner.set(ownerKey, adopted.webContents.id);
+      activeTabIdByOwner.set(owner.key, adopted.webContents.id);
       return adopted;
     }
+    // N4: `disposeOwnerViews` purges this owner's pending entries, so a missing
+    // one means the owning conversation was deleted while we waited (the only
+    // other remover, an adoption, is the branch just above). Building the
+    // fallback view now would strand a live view no conversation can close.
+    // The tombstone + cancel event were already published by whoever purged it.
+    if (!pendingAutomationOwners.has(id)) throw new Error(RUN_STOPPED_MESSAGE);
+    if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
@@ -665,60 +1120,83 @@ async function createAutomationView(ownerKey = LEGACY_OWNER) {
       session: browserSessionForViews(),
     },
   });
-  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+  viewMeta.set(id, { owner, createdAt: Date.now() });
   configureBrowserView(id, view);
   win.contentView.addChildView(view);
   view.setBounds({ x: 0, y: 0, width: 1024, height: 768 });
   view.setVisible(false);
   views.set(id, view);
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  activeTabIdByOwner.set(owner.key, view.webContents.id);
   void view.webContents.loadURL('about:blank');
   return view;
 }
 
 /**
- * The tabs `ownerKey` is allowed to see: its own plus the legacy pool (the
+ * The tabs `owner` is allowed to see: its OWN RUN's plus the legacy pool (the
  * user's pane tabs and any caller that sent no owner). A legacy caller sees
- * only legacy tabs — never another conversation's.
+ * only legacy tabs — never a conversation's. A sibling run of the same
+ * conversation is NOT listed (N6, user-approved): parent and child agents are
+ * invisible to each other by default, and the only hand-over channel is the
+ * parent naming an explicit tabId in the task description.
  *
  * `createIfEmpty` (default true, the historical behavior) provisions a fresh
- * automation view when the owner has none, so `get_tabs` can bootstrap a task
+ * automation view when THIS RUN has none, so `get_tabs` can bootstrap a task
  * that has not opened a tab yet. Read-only probes — notably the desktop app's
  * browser permission gate, which resolves a tab's origin BEFORE deciding
  * whether the action is even allowed — pass false: a query must not be the
  * thing that opens a tab.
  *
- * @param {string} [ownerKey]
+ * @param {{conversationId: string, runKey: string, key: string}} [owner]
  * @param {boolean} [createIfEmpty]
+ * @param {AbortSignal} [signal] forwarded to the adoption wait (see
+ *   `createAutomationView`) — provisioning is the one listing path that can
+ *   block for seconds, so a stopped run must not sit it out.
  */
-async function automationTabs(ownerKey = LEGACY_OWNER, createIfEmpty = true) {
+async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
     if (!contents || contents.isDestroyed()) continue;
     if (!automationDocumentAllowed(contents.getURL())) continue;
-    const tabOwner = ownerKeyOf(id);
-    if (tabOwner !== ownerKey && tabOwner !== LEGACY_OWNER) continue;
+    const tabOwner = ownerOf(id);
+    if (tabOwner.key !== owner.key && !isLegacyOwner(tabOwner)) continue;
     tabs.push({
       id,
       view,
       tabId: contents.id,
       url: contents.getURL(),
       title: contents.getTitle(),
+      legacy: isLegacyOwner(tabOwner),
     });
   }
-  if (tabs.length === 0 && createIfEmpty) {
-    const view = await createAutomationView(ownerKey);
+  // The reclaim block lives HERE rather than at the call site so every path
+  // that could mint a view answers to it — including a run whose own window was
+  // never opened, which is exactly how a fresh delegation used to walk around it.
+  if (tabs.length === 0 && createIfEmpty && !conversationIsReclaimed(owner.conversationId)) {
+    const view = await createAutomationView(owner, signal);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
       tabId: view.webContents.id,
       url: view.webContents.getURL(),
       title: view.webContents.getTitle(),
+      legacy: isLegacyOwner(owner),
     });
   }
-  if (tabs.length > 0 && !tabs.some((tab) => tab.tabId === activeTabIdByOwner.get(ownerKey))) {
-    activeTabIdByOwner.set(ownerKey, tabs[0].tabId);
+  if (tabs.length > 0) {
+    const held = tabs.find((tab) => tab.tabId === activeTabIdByOwner.get(owner.key));
+    // Re-point when the record names nothing this owner can see any more — and,
+    // mid-reclaim, when it names a LEGACY tab: the run may have been driving the
+    // user's pane tab perfectly legitimately a moment before the window opened,
+    // so declining to PROMOTE one is not enough on its own. With no eligible
+    // candidate the owner is left with no current tab at all, which is the
+    // honest answer (and what makes a bare `get_html` say "no tab" rather than
+    // reach for the user's page).
+    if (!held || !mayBecomeCurrentTab(owner, held.legacy)) {
+      const candidate = tabs.find((tab) => mayBecomeCurrentTab(owner, tab.legacy));
+      if (candidate) activeTabIdByOwner.set(owner.key, candidate.tabId);
+      else activeTabIdByOwner.delete(owner.key);
+    }
   }
   return tabs;
 }
@@ -883,10 +1361,27 @@ async function runBrowserAutomation(action, payload, signal) {
   // and open a brand-new tab (or leak any other side effect) after Stop.
   assertNotAborted(signal);
 
-  const ownerKey = resolveOwnerKey(payload);
+  const owner = resolveOwnerKey(payload);
+  const ownerKey = owner.key;
+
+  // Per-RUN: gates this caller's actions (see `conversationIsReclaimed` for why
+  // the two halves are keyed differently).
+  const runReclaimed = userReclaimedAt.has(ownerKey);
 
   if (action === 'get_tabs') {
-    const tabs = await automationTabs(ownerKey, payload.createIfEmpty !== false);
+    // Conversation-wide: `automationTabs` refuses to provision, so the listing
+    // is exactly the tabs that still exist — plus the note explaining why there
+    // may now be none, shown to every run of the conversation because none of
+    // them will be getting a new tab.
+    const modelFacing = payload.createIfEmpty !== false;
+    const tabs = await automationTabs(owner, modelFacing, signal);
+    // One `note` slot, two mutually interesting facts. A window that is open
+    // NOW outranks one the user already lifted, and the owed one-shot is only
+    // read (and, for the main loop, spent) on a listing a model will actually
+    // see — see `RECLAIM_LIFTED_NOTICE`.
+    const note = conversationIsReclaimed(owner.conversationId)
+      ? USER_RECLAIMED_MESSAGE
+      : (modelFacing ? takeReclaimLiftedNotice(owner) : null);
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
@@ -899,6 +1394,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
+        ...(note ? { note } : {}),
       },
       windows: [{
         windowId,
@@ -919,8 +1415,40 @@ async function runBrowserAutomation(action, payload, signal) {
   const targetTabId = payload.tabId === undefined && action === 'get_html'
     ? activeTabIdByOwner.get(ownerKey)
     : payload.tabId;
-  const match = findViewByTabId(targetTabId, ownerKey);
-  if (!match) throw new Error(`Browser tab not found: ${String(targetTabId)}`);
+  const match = findViewByTabId(targetTabId, owner);
+  // N7 — a state-changing action is refused in two situations, with the same
+  // sentence: "tab not found" reads as a transient glitch and invites the model
+  // to open another one, the exact thing being refused.
+  //
+  // The two halves are keyed differently (R1):
+  //  - NOTHING LEFT TO ACT ON is per-RUN — it is about this run's own closed
+  //    tab, and a run that still has tabs is not in that situation at all.
+  //  - THE TARGET IS A LEGACY TAB is per-CONVERSATION. The user's pane tabs are
+  //    visible to every run, so while any window in the conversation is open,
+  //    NO run of it may drive them — including one holding no window of its own,
+  //    which the conversation-wide provisioning block leaves seeing the user's
+  //    tab as the only thing it can reach.
+  //
+  // Read-only actions are exempt from both: they cannot make it worse, and the
+  // model may still report what the user is looking at. A run's OWN surviving
+  // tabs are never affected — the user closed one tab, not the task.
+  const targetIsUserTab = Boolean(match)
+    && isLegacyOwner(ownerOf(match.id))
+    && conversationIsReclaimed(owner.conversationId);
+  if (TAKEOVER_GATED_ACTIONS.has(action) && ((runReclaimed && !match) || targetIsUserTab)) {
+    throw new Error(USER_RECLAIMED_MESSAGE);
+  }
+  // The one refusal in this file that carried no reason at all — just an id the
+  // model had nothing to say about, which is how "the tab id changed from 2 to
+  // 3" ended up addressed to a user who never asked about tab ids. The id stays
+  // (it is what makes the log readable); the sentence now also says WHY and what
+  // to do next, so the model has something it can repeat in plain language.
+  if (!match) {
+    throw new Error(
+      `Browser tab not found: ${String(targetTabId)}. That tab is no longer open — it was ` +
+        'closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.'
+    );
+  }
   const { view } = match;
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
@@ -962,7 +1490,12 @@ async function runBrowserAutomation(action, payload, signal) {
     }
   }
 
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  // Same rule as the listing's promotion: a read-only look at the user's pane
+  // tab mid-window must not leave that tab as this owner's current one, or the
+  // next tabId-less action drifts onto the user's page anyway.
+  if (mayBecomeCurrentTab(owner, isLegacyOwner(ownerOf(match.id)))) {
+    activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  }
 
   if (action === 'navigate') return navigateAutomationTab(view, payload);
   assertAutomationDocumentAllowed(view);
@@ -1033,6 +1566,13 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
     throw new Error('main window not found');
   }
 
+  // An adoption cancelled while `browser://automation-open` was already in
+  // flight (see `cancelledAdoptionIds`): the renderer is answering an invitation
+  // main has since withdrawn. Do nothing, quietly — creating the view here is
+  // exactly the LEGACY-ghost bug the tombstone exists to prevent, and throwing
+  // would drive BrowserTab's create-retry loop.
+  if (cancelledAdoptionIds.has(id)) return null;
+
   const existing = views.get(id);
   if (existing) {
     // Already created (e.g. StrictMode double-mount) — reuse it, matching
@@ -1059,9 +1599,9 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   // An id the renderer is adopting on behalf of an automation call carries a
   // pending owner (see createAutomationView); anything else — a tab the user
   // opened in the pane — is legacy and stays visible to every caller.
-  const ownerKey = pendingAutomationOwners.get(id) ?? LEGACY_OWNER;
+  const owner = pendingAutomationOwners.get(id) ?? LEGACY_OWNER;
   pendingAutomationOwners.delete(id);
-  viewMeta.set(id, { ownerKey, createdAt: Date.now() });
+  viewMeta.set(id, { owner, createdAt: Date.now() });
 
   configureBrowserView(id, view);
 
@@ -1074,7 +1614,7 @@ function browserCreate({ id, url, x, y, width, height, visible = true }) {
   view.setBounds(toRect(x, y, width, height));
   if (!shouldShow) view.setVisible(false);
   views.set(id, view);
-  activeTabIdByOwner.set(ownerKey, view.webContents.id);
+  activeTabIdByOwner.set(owner.key, view.webContents.id);
 
   const target = url || 'about:blank';
   void view.webContents.loadURL(parseUrl(target));
@@ -1188,9 +1728,138 @@ function closeView(id, view) {
   forgetOwnerInteractionIfUnused(ownerKey);
 }
 
-function browserClose({ id }) {
+function browserClose({ id, reason }) {
   const view = getView(id);
-  if (view) closeView(id, view);
+  if (!view) return null;
+  // Read the owner BEFORE the teardown — `closeView` drops `viewMeta`, after
+  // which every view looks legacy.
+  const owner = ownerOf(id);
+  if (isUserCloseReason(reason) && !isLegacyOwner(owner)) {
+    userReclaimedAt.set(owner.key, clock.now());
+  }
+  closeView(id, view);
+  return null;
+}
+
+/**
+ * N4 — tear down everything one conversation owns.
+ *
+ * Deleting a conversation used to leave its agent's browser views running for
+ * the rest of the session: no conversation's tab strip listed them, so nothing
+ * could close them, while main kept a live `WebContentsView` (and the renderer
+ * a mounted `BrowserTab` syncing its bounds) per deleted conversation.
+ *
+ * The renderer's delete cascade removes those tab records, which already
+ * destroys the views it knows about; this command is the belt-and-braces half
+ * for main-side state no tab record covers — a headless fallback view (no
+ * renderer ever adopted it), or an adoption still pending when the delete
+ * landed. Every id it reaches is also cancelled (tombstoned + a
+ * `browser://automation-cancel` to the renderer), so an adoption still in
+ * flight cannot come back as a legacy ghost. Scope is exactly one owner: another conversation's views and the
+ * LEGACY pool (the user's own pane tabs, which every conversation may see) are
+ * never touched, so an unknown/blank/legacy owner is a deliberate no-op rather
+ * than an error — like `browser_hide`/`browser_close`, this is a cleanup
+ * command whose failure mode must never be "kill someone else's tab".
+ *
+ * N6 gives it a second, narrower scope. `runKey`:
+ *  - omitted ⇒ EVERY run of that conversation (the delete cascade — unchanged
+ *    from before N6, when a conversation had exactly one owner key);
+ *  - given ⇒ only that run, so a finished subagent releases its own tabs
+ *    without touching a sibling run's or the conversation's own loop (A2).
+ *
+ * @param {string} conversationId
+ * @param {string} [runKey]
+ */
+function disposeOwnerViews(conversationId, runKey) {
+  const cancelledIds = [];
+  // Snapshot: closeView deletes from `views` as we go.
+  for (const [id, view] of Array.from(views)) {
+    if (!ownerInDisposeScope(ownerOf(id), conversationId, runKey)) continue;
+    closeView(id, view);
+    // Tombstone the closed view's id too: BrowserTab may have a create RETRY in
+    // flight for it (its invoke failed once), which would otherwise rebuild the
+    // view as legacy a moment after this teardown.
+    cancelledIds.push(id);
+  }
+  for (const [pendingId, pendingOwner] of Array.from(pendingAutomationOwners)) {
+    if (ownerInDisposeScope(pendingOwner, conversationId, runKey)) cancelledIds.push(pendingId);
+  }
+  // closeView already drops the per-view records (and
+  // `forgetOwnerInteractionIfUnused` clears the interaction record once the
+  // owner's last view is gone), but the owner may also hold records with no live
+  // view behind them — a current-tab id whose view was destroyed by the window
+  // teardown, or a pending adoption. Both maps are keyed on the composite owner
+  // key, so a conversation-wide dispose has to sweep every run's entry.
+  for (const key of Array.from(activeTabIdByOwner.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      activeTabIdByOwner.delete(key);
+    }
+  }
+  for (const key of Array.from(userInteractionAt.keys())) {
+    if (ownerInDisposeScope(parseOwnerKey(key), conversationId, runKey)) {
+      userInteractionAt.delete(key);
+    }
+  }
+  // N7: the reclaim window dies with the owner it gated. A run being reaped can
+  // never ask again, and a deleted conversation's window would otherwise outlive
+  // everything it referred to.
+  clearUserReclaim(conversationId, runKey);
+  // A CONVERSATION-wide dispose is the conversation going away, so a notice it
+  // was still owed dies with it. A run dispose (A2) is a subagent finishing —
+  // the conversation lives on and the news is still owed to whoever is left.
+  if (!runKey) reclaimNoticePending.delete(conversationId);
+  // Emitted last, so the renderer's reaction (dropping the tab record, which
+  // fires `browser_close`) can never race the teardown above.
+  for (const id of cancelledIds) cancelAutomationAdoption(id);
+}
+
+function browserDisposeOwner({ conversationId, runKey }) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return null;
+  // A blank/non-string runKey is "the whole conversation", not "a run literally
+  // named ''": the delete cascade sends no runKey at all, and a malformed one
+  // must not silently narrow a full teardown into a no-op.
+  const run = sanitizeOwnerPart(runKey) || undefined;
+  disposeOwnerViews(conversation, run);
+  return null;
+}
+
+/**
+ * N7 — the user's next message in a conversation lifts its reclaim window.
+ *
+ * Scope is the whole CONVERSATION, every run: the user is addressing the task,
+ * not one of its delegations, and they have no way to tell which subagent run
+ * owned the tab they closed. Refuses the legacy conversation and blank input for
+ * the same reason `browser_dispose_owner` does — those name no owner at all.
+ */
+function browserClearReclaim({ conversationId }) {
+  const conversation = sanitizeOwnerPart(conversationId);
+  if (!conversation || conversation === LEGACY_CONVERSATION) return null;
+  // The one path that arms the one-shot notice: this is the user re-engaging,
+  // so there is somebody to tell (see `RECLAIM_LIFTED_NOTICE`).
+  clearUserReclaim(conversation, undefined, true);
+  return null;
+}
+
+/**
+ * N3 — React-layer takeover signal.
+ *
+ * The takeover backoff (R4, above) only hears the USER on the guest
+ * webContents itself (`before-input-event` / `focus`): typing in the address
+ * bar or clicking back/forward/reload happens in the MAIN window's React
+ * layer (`BrowserTab.tsx`), which never touches the guest webContents, so
+ * none of it produced a signal — automation could act while the user was
+ * mid-navigation. `BrowserTab.tsx` calls this on address-bar focus/input and
+ * nav-button clicks; it records presence exactly like `recordUserInteraction`
+ * does for real input, reusing the same map/clock rather than adding new
+ * state. An unknown id (a tab that already closed under a stale ref) is a
+ * silent no-op — this is a best-effort presence ping, not a validated
+ * command.
+ */
+function browserNoteUserInteraction({ id }) {
+  const view = getView(id);
+  if (!view) return null;
+  userInteractionAt.set(ownerKeyOf(id), clock.now());
   return null;
 }
 
@@ -1229,6 +1898,12 @@ function browserDispatch(app, cmd, args) {
       return browserClose(a);
     case 'browser_inspect_set':
       return browserInspectSet(a);
+    case 'browser_note_user_interaction':
+      return browserNoteUserInteraction(a);
+    case 'browser_dispose_owner':
+      return browserDisposeOwner(a);
+    case 'browser_clear_reclaim':
+      return browserClearReclaim(a);
     default:
       return BROWSER_MISS;
   }

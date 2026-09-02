@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ABU_CONVERSATION_META_KEY,
   ABU_CREATE_IF_EMPTY_META_KEY,
+  ABU_RUN_META_KEY,
   registerTools,
   type BrowserTransport,
 } from './tools.js';
@@ -322,6 +323,61 @@ describe('ownerId forwarding', () => {
     expect(transport.send).toHaveBeenLastCalledWith(
       'get_html',
       { tabId: 9, selector: undefined, ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
+  });
+});
+
+// N6: tab ownership in the Abu host is the pair {conversationId, runKey}, so
+// the run half has to ride the same `_meta` channel as the conversation half.
+// Absence must stay absence — the host's "no run ⇒ main loop" default is what
+// keeps every pre-N6 caller byte-compatible, and a defaulted-here payload would
+// take that decision away from it.
+describe('runId forwarding', () => {
+  const metaWithOwner = { _meta: { [ABU_CONVERSATION_META_KEY]: 'conv-42' } };
+
+  it('adds runId alongside ownerId when the caller is a subagent run', async () => {
+    const { registered, transport } = collectTools();
+    const click = registered.find((t) => t.name === 'click')!;
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, {
+      _meta: {
+        [ABU_CONVERSATION_META_KEY]: 'conv-42',
+        [ABU_RUN_META_KEY]: 'sar-abc',
+      },
+    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' }, ownerId: 'conv-42', runId: 'sar-abc' },
+      undefined,
+      { signal: undefined }
+    );
+  });
+
+  it('omits runId entirely for a main-loop caller', async () => {
+    const { registered, transport } = collectTools();
+    const click = registered.find((t) => t.name === 'click')!;
+
+    await click.handler({ tabId: 1, locator: '{"css":"#a"}' }, metaWithOwner);
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'click',
+      { tabId: 1, locator: { css: '#a' }, ownerId: 'conv-42' },
+      undefined,
+      { signal: undefined }
+    );
+  });
+
+  it('ignores a non-string runId rather than forwarding a malformed owner half', async () => {
+    const { registered, transport } = collectTools();
+    const getTabs = registered.find((t) => t.name === 'get_tabs')!;
+
+    await getTabs.handler({
+      _meta: { [ABU_CONVERSATION_META_KEY]: 'conv-42', [ABU_RUN_META_KEY]: 7 },
+    });
+    expect(transport.send).toHaveBeenLastCalledWith(
+      'get_tabs',
+      { ownerId: 'conv-42' },
       undefined,
       { signal: undefined }
     );

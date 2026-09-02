@@ -172,6 +172,50 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(chatOptions.systemPrompt).not.toContain('/global/workspace');
   });
 
+  /**
+   * C8 — the narration rules reach delegations too.
+   *
+   * `buildSystemPromptSections` (where the main loop gets them) never runs for
+   * a subagent: this loop builds its own prompt. But subagents own browser tabs
+   * per RUN, so they hit the same refusals — and were getting none of the
+   * guidance on how to report them.
+   */
+  it('gives a subagent holding browser tools the narration rules', async () => {
+    mockGetAllTools.mockReturnValue(
+      ['read_file', 'abu-browser__get_tabs'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object', properties: {} },
+        execute: vi.fn(),
+      })),
+    );
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'read the page' });
+
+    const { systemPrompt } = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(systemPrompt).toContain('Never repeat internal identifiers to the user');
+    expect(systemPrompt).toContain('explains why an action was refused or cancelled');
+    expect(systemPrompt).toContain('Do not narrate your troubleshooting');
+  });
+
+  it('omits the browser narration rules from a roster that has no browser tool', async () => {
+    // The default roster (read_file/computer/...) holds no browser tool — a run
+    // that cannot reach a page must not pay tokens for rules about pages.
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'do the thing' });
+
+    const { systemPrompt } = mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string };
+    expect(systemPrompt).not.toContain('Never repeat internal identifiers to the user');
+  });
+
   it('starts a delegated multimodal turn with source blocks in order and task text last', async () => {
     const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]);
     mockReadDelegatedMedia.mockResolvedValue(imageBytes);

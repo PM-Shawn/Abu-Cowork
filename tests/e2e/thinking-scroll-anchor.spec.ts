@@ -24,6 +24,26 @@ const WARMUP_MARKER = 'THINKING_SCROLL_WARMUP_COMPLETE';
 const PROBE_PROMPT = 'THINKING_SCROLL_PROBE_20260829';
 const ANSWER_MARKER = 'THINKING_SCROLL_PROBE_COMPLETE';
 const TRACE_EVENT = 'abu:chat-scroll-trace';
+// Mirrors ANCHOR_TOLERANCE_PX in src/components/chat/turnScrollAnchor.ts: the
+// renderer's writers treat a real bottom gap of up to 2px as settled (both the
+// anchor-correction dead zone and the pinned re-stick threshold use 2).
+const RENDERER_BOTTOM_GAP_TOLERANCE_PX = 2;
+
+/**
+ * Tightest flake-free bound for a measured `scrollHeight - scrollTop -
+ * clientHeight` bottom gap. `scrollHeight`/`clientHeight` are CSSOM-rounded
+ * integers while `scrollTop` rests on the physical-pixel grid (multiples of
+ * 1/devicePixelRatio), so a scroller the renderer legitimately considers
+ * settled (true gap <= RENDERER_BOTTOM_GAP_TOLERANCE_PX) can measure up to
+ * just under one extra CSS pixel, quantized to the 1/dpr grid. Verified on
+ * Electron 43 at dpr 2: a raw `scrollTop = scrollHeight` write at max scroll
+ * still measures {0, 0.5, 1}. The bound is the largest 1/dpr multiple strictly
+ * below (tolerance + 1): 2 at dpr 1, 2.5 at dpr 2. Anything above it implies a
+ * real gap the renderer's own `> 2` re-stick threshold should have corrected.
+ */
+function measuredBottomGapTolerancePx(devicePixelRatio: number): number {
+  return RENDERER_BOTTOM_GAP_TOLERANCE_PX + 1 - 1 / Math.max(1, devicePixelRatio);
+}
 
 interface ProbeMock {
   baseUrl: string;
@@ -204,6 +224,8 @@ test.describe.serial('Thinking scroll anchor — real Electron', () => {
     dataRoot = launched;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await page.waitForLoadState('domcontentloaded');
+    const devicePixelRatio = await page.evaluate(() => window.devicePixelRatio || 1);
+    const bottomGapTolerancePx = measuredBottomGapTolerancePx(devicePixelRatio);
     // Wait for Zustand persistence to finish hydrating before replacing its
     // provider state; configuring immediately after domcontentloaded can race
     // the initial empty-store write and leave the composer with no model.
@@ -382,6 +404,8 @@ test.describe.serial('Thinking scroll anchor — real Electron', () => {
       body: Buffer.from(JSON.stringify({
         anchorDrift,
         anchorHandoff,
+        bottomGapTolerancePx,
+        devicePixelRatio,
         anchoredTraces,
         firstExhaustedIndex,
         finalBottomGap,
@@ -410,7 +434,7 @@ test.describe.serial('Thinking scroll anchor — real Electron', () => {
     expect(
       maxArmedBottomGap,
       `armed frames exposed a physical bottom blind spot: ${JSON.stringify(armedSamples)}`,
-    ).toBeLessThanOrEqual(2);
+    ).toBeLessThanOrEqual(bottomGapTolerancePx);
     expect(
       maxHandoffGap,
       `spacer exhaustion left a delayed handoff gap: ${JSON.stringify(handoffAppliedTraces)}`,
@@ -419,6 +443,6 @@ test.describe.serial('Thinking scroll anchor — real Electron', () => {
     expect(
       finalBottomGap,
       `long reply did not settle at bottom: ${JSON.stringify(postExhaustionSamples.slice(-8))}`,
-    ).toBeLessThanOrEqual(2);
+    ).toBeLessThanOrEqual(bottomGapTolerancePx);
   });
 });

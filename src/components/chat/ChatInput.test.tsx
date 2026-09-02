@@ -196,7 +196,7 @@ describe('ChatInput per-conversation drafts', () => {
       await Promise.resolve();
     });
 
-    expect(onSend).toHaveBeenCalledWith('hello', undefined, null);
+    expect(onSend).toHaveBeenCalledWith('hello', undefined, null, expect.any(Function));
     expect(textarea.value).toBe('');
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
@@ -251,7 +251,7 @@ describe('ChatInput per-conversation drafts', () => {
     ['returns false', (deferredSend: ReturnType<typeof deferred<boolean | void>>) => deferredSend.resolve(false)],
     ['rejects', (deferredSend: ReturnType<typeof deferred<boolean | void>>) => deferredSend.reject(new Error('send failed'))],
   ])('does not clobber new same-conversation typing or dispatch concurrently when a send %s', async (_outcome, settle) => {
-    useChatStore.getState().createConversation();
+    const conversationId = useChatStore.getState().createConversation();
     const send = deferred<boolean | void>();
     const onSend = vi.fn(() => send.promise);
     render(<ChatInput variant="chat" onSend={onSend} />);
@@ -262,9 +262,14 @@ describe('ChatInput per-conversation drafts', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(textarea.value).toBe('');
 
+    // Typed while the initial send is still pending — staged for the queue
+    // rather than dispatched concurrently or dropped.
     fireEvent.change(textarea, { target: { value: 'new draft while pending' } });
     fireEvent.keyDown(textarea, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledTimes(1);
+    expect(getQueuedInputs(conversationId).map((entry) => entry.text))
+      .toEqual(['new draft while pending']);
+    expect(textarea.value).toBe('');
 
     await act(async () => {
       settle(send);
@@ -276,9 +281,14 @@ describe('ChatInput per-conversation drafts', () => {
       await Promise.resolve();
     });
 
-    expect(textarea.value).toBe('new draft while pending\nfirst message');
+    // The failed initial send hands its own draft back; the staged follow-up
+    // stays in the queue untouched.
+    expect(textarea.value).toBe('first message');
     expect(readComposerDraft(getComposerDraftKey(useChatStore.getState().activeConversationId)).text)
-      .toBe('new draft while pending\nfirst message');
+      .toBe('first message');
+    expect(getQueuedInputs(conversationId).map((entry) => entry.text))
+      .toEqual(['new draft while pending']);
+    clearInputQueue(conversationId);
   });
 
   it('queues a pure-text follow-up while a previous initial send promise is still pending and the chat is running', async () => {
@@ -307,8 +317,77 @@ describe('ChatInput per-conversation drafts', () => {
     clearInputQueue(conversationId);
   });
 
-  it('blocks a second non-running initial dispatch with an accurate pending-send warning', () => {
+  it('releases the pending-send lock at acceptance so a new draft can dispatch mid-run', async () => {
+    // Mirrors the welcome composer's shared draft key: task A's run may take
+    // minutes, and the "new task" composer must not silently drop task B for
+    // that whole time. Once A's message is accepted (onAccepted fired), B
+    // dispatches immediately.
     useChatStore.getState().createConversation();
+    const firstRun = deferred<boolean | void>();
+    const onSend = vi.fn((
+      _message: string,
+      _images?: unknown,
+      _workspace?: unknown,
+      onAccepted?: () => void,
+    ) => {
+      onAccepted?.();
+      return firstRun.promise;
+    });
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'task A' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(textarea, { target: { value: 'task B' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(2);
+    expect(onSend.mock.calls[1][0]).toBe('task B');
+    expect(textarea.value).toBe('');
+
+    await act(async () => {
+      firstRun.resolve(true);
+      await firstRun.promise;
+    });
+  });
+
+  it('stages a follow-up typed in the post-run settling window instead of dropping it', async () => {
+    // Reproduces the task-lifecycle e2e race: the run has already published its
+    // terminal (status left 'running'), but the initial dispatch promise has
+    // not resolved yet, so the composer's pending-send guard is still held.
+    // An Enter in that window must stage the message for the live dispatcher's
+    // final queue drain — not vanish behind a toast with the draft left behind.
+    const conversationId = useChatStore.getState().createConversation();
+    const pending = deferred<boolean | void>();
+    const onSend = vi.fn(() => pending.promise);
+    render(<ChatInput variant="chat" onSend={onSend} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+
+    fireEvent.change(textarea, { target: { value: 'start work' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useChatStore.getState().setConversationStatus(conversationId, 'running');
+      useChatStore.getState().setConversationStatus(conversationId, 'completed');
+    });
+    fireEvent.change(textarea, { target: { value: 'follow up in settling window' } });
+    fireEvent.keyDown(textarea, { key: 'Enter' });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(getQueuedInputs(conversationId).map((entry) => entry.text))
+      .toEqual(['follow up in settling window']);
+    expect(textarea.value).toBe('');
+    await act(async () => {
+      pending.resolve(true);
+      await pending.promise;
+    });
+    clearInputQueue(conversationId);
+  });
+
+  it('stages a second non-running dispatch attempt while the first send is still pending', () => {
+    const conversationId = useChatStore.getState().createConversation();
     const pending = deferred<boolean | void>();
     const onSend = vi.fn(() => pending.promise);
     render(<ChatInput variant="chat" onSend={onSend} />);
@@ -320,14 +399,10 @@ describe('ChatInput per-conversation drafts', () => {
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(useToastStore.getState().toasts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'info',
-          title: 'A previous send is still being accepted. Wait a moment, then try again.',
-        }),
-      ]),
-    );
+    expect(getQueuedInputs(conversationId).map((entry) => entry.text)).toEqual(['second']);
+    expect(textarea.value).toBe('');
+    expect(useToastStore.getState().toasts).toEqual([]);
+    clearInputQueue(conversationId);
   });
 
   it('refuses to queue a PDF attachment while the conversation is running and preserves the draft', () => {
@@ -378,6 +453,7 @@ describe('ChatInput per-conversation drafts', () => {
       '[Attachment: `/workspace/notes.txt`]\n\nsummarize this file',
       undefined,
       undefined,
+      expect.any(Function),
     );
   });
 });
@@ -486,7 +562,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
 
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][3]).toBeUndefined();
+    expect(onSend.mock.calls[0][3]).toEqual(expect.any(Function));
     expect(electronHostMocks.authorizeElectronUserAttachment).not.toHaveBeenCalled();
   });
 
@@ -515,7 +591,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     expect(onSend.mock.calls[0][1]).toEqual([
       expect.objectContaining({ mediaType: 'image/png' }),
     ]);
-    expect(onSend.mock.calls[0][3]).toBeUndefined();
+    expect(onSend.mock.calls[0][3]).toEqual(expect.any(Function));
   });
 
   it('releases an Electron image token after the selected image is materialized', async () => {
@@ -558,7 +634,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
 
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend.mock.calls[0][1]).toBeUndefined();
-    expect(onSend.mock.calls[0][3]).toBeUndefined();
+    expect(onSend.mock.calls[0][3]).toEqual(expect.any(Function));
   });
 
 
@@ -750,7 +826,7 @@ describe('ChatInput async attachment admission ownership', () => {
   });
 
   it('keeps the pending-send lock for a draft across unmount and remount', async () => {
-    useChatStore.getState().createConversation();
+    const conversationId = useChatStore.getState().createConversation();
     const send = deferred<boolean | void>();
     const onSend = vi.fn(() => send.promise);
     const rendered = render(<ChatInput variant="chat" onSend={onSend} />);
@@ -764,20 +840,16 @@ describe('ChatInput async attachment admission ownership', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'second' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
 
+    // The lock survives the remount: no concurrent dispatch. The blocked
+    // attempt is staged for the live dispatcher instead of dropped.
     expect(onSend).toHaveBeenCalledTimes(1);
-    expect(useToastStore.getState().toasts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'info',
-          title: 'A previous send is still being accepted. Wait a moment, then try again.',
-        }),
-      ]),
-    );
+    expect(getQueuedInputs(conversationId).map((entry) => entry.text)).toEqual(['second']);
 
     await act(async () => {
       send.resolve(true);
       await send.promise;
     });
+    clearInputQueue(conversationId);
   });
 
 
@@ -837,7 +909,7 @@ describe('ChatInput inline agent selection', () => {
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
 
     fireEvent.keyDown(textarea, { key: 'Enter' });
-    expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null);
+    expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null, expect.any(Function));
   });
 
   it('gives the suggestion listbox a localized accessible name', () => {

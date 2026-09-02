@@ -35,6 +35,35 @@ import { createDomElementReference, type BrowserElementPayload } from '@/types/c
 const browserLogger = createLogger('browser-tab');
 const BROWSER_CREATE_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 
+/**
+ * Size a native view gets when it is created while its placeholder is not laid
+ * out. Matches `browserHost.cjs`'s own headless fallback so an agent-adopted
+ * background tab renders at a realistic viewport instead of 1×1.
+ */
+const HIDDEN_CREATE_FALLBACK_SIZE = { width: 1024, height: 768 } as const;
+
+/**
+ * The width/height to create the native view at.
+ *
+ * A tab created hidden (adopted in the background, or living behind an
+ * inactive keep-alive tab) hangs under a `display:none` ancestor, so its
+ * placeholder rect is all zeros. Clamping that to 1×1 produced a real 1×1
+ * webview: the page laid out at one pixel, and `syncBounds` — which returns
+ * early while invisible — never corrected it until the tab was shown.
+ *
+ * A real, non-collapsed rect always wins; the fallback only fills in for a
+ * collapsed axis, so the visible create path is untouched.
+ */
+function resolveCreateSize(rect: { width: number; height: number }): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: rect.width >= 1 ? rect.width : HIDDEN_CREATE_FALLBACK_SIZE.width,
+    height: rect.height >= 1 ? rect.height : HIDDEN_CREATE_FALLBACK_SIZE.height,
+  };
+}
+
 function resolveInspectTheme() {
   const styles = getComputedStyle(document.documentElement);
   const read = (name: string) => styles.getPropertyValue(name).trim();
@@ -135,6 +164,19 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // Holds the initial URL for the mount effect (read once); never reassigned
   // during render (that would trip react-hooks/refs).
   const committedUrlRef = useRef(committedUrl);
+  // N3: last time this tab told the main process "the user is here" via the
+  // React-layer toolbar (address bar / back / forward / reload). Throttled to
+  // one IPC call per 500ms so a typing storm in the address bar does not spam
+  // `browser_note_user_interaction`.
+  const lastNoteUserInteractionAtRef = useRef(0);
+  // Address-bar draft protection: while the input is focused, or holds an
+  // uncommitted edit, a programmatic navigation (`browser://nav/*`) must not
+  // rewrite the bound value — real-device acceptance (2026-09-01, G6/G7)
+  // showed the agent's resumed navigation silently wiping a half-typed draft.
+  // `committedUrl` still tracks the real page underneath; the input resyncs on
+  // blur once it is clean (untouched, emptied, or reverted).
+  const addressFocusedRef = useRef(false);
+  const addressDirtyRef = useRef(false);
 
   // Freeze-frame shown while the native view is hidden for an overlay. The
   // native view paints above React, so hiding it for a modal/menu would flash
@@ -274,13 +316,14 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           // single frame from painting above a dialog that was already open.
           // Tauri keeps its historical create-then-hide contract.
           shownRef.current = electronHost ? initiallyVisible : true;
+          const createSize = resolveCreateSize(r);
           await invoke('browser_create', {
             id: tabId,
             url: targetUrl,
             x: r.left,
             y: r.top,
-            width: Math.max(r.width, 1),
-            height: Math.max(r.height, 1),
+            width: createSize.width,
+            height: createSize.height,
             ...(electronHost ? { visible: initiallyVisible } : {}),
           });
           lastBoundsRef.current = { x: r.left, y: r.top, w: r.width, h: r.height };
@@ -366,7 +409,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       const unlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
         const u = e.payload;
         if (u && u !== 'about:blank') {
-          setAddressInput(u);
+          if (!addressFocusedRef.current && !addressDirtyRef.current) {
+            setAddressInput(u);
+          }
           setCommittedUrl(u);
           updateBrowserUrl(tabId, u);
         }
@@ -402,7 +447,12 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       disposed = true;
       navUnlisten?.();
       elementUnlisten?.();
-      void invoke('browser_close', { id: tabId }).catch(() => {});
+      // Unmount is NOT a close. The native view's lifetime belongs to the tab
+      // record in previewStore (which destroys it when the tab is really
+      // closed); this component can unmount while the tab stays open, and an
+      // agent's page / login state / half-filled form must survive that.
+      // Hide instead, and let the remount reconcile visibility.
+      void invoke('browser_hide', { id: tabId }).catch(() => {});
       createdRef.current = false;
       shownRef.current = false;
       desiredVisibleRef.current = false;
@@ -467,6 +517,20 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
   }, [blockingApprovalOpen, inspecting, lightboxOpen, menuOpen, systemSettingsOpen, tabId]);
 
+  // N3: the guest webContents only tells the main process the user is here
+  // via `before-input-event`/`focus` — the toolbar's own React controls
+  // (address bar, back/forward/reload) live in the MAIN window and never
+  // touch it, so using them was invisible to the takeover backoff (R4) and
+  // automation could act mid-navigation. Fire-and-forget, catch-swallow: this
+  // is a best-effort presence ping, never something the UI should surface an
+  // error for. Throttled to at most one call per 500ms per tab.
+  const noteUserInteraction = useCallback(() => {
+    const now = Date.now();
+    if (now - lastNoteUserInteractionAtRef.current < 500) return;
+    lastNoteUserInteractionAtRef.current = now;
+    void invoke('browser_note_user_interaction', { id: tabId }).catch(() => {});
+  }, [tabId]);
+
   const toggleInspect = useCallback(async () => {
     const next = !inspecting;
     setInspecting(next);
@@ -483,6 +547,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const commit = (raw: string) => {
     const trimmed = raw.trim();
     if (!trimmed) return;
+    addressDirtyRef.current = false;
     const normalized = normalizeBrowserUrl(trimmed);
     setAddressInput(normalized);
     setCommittedUrl(normalized);
@@ -505,17 +570,17 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)]">
         <ToolbarTooltip content={t.workspace.browser.back}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_back', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_back', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
         <ToolbarTooltip content={t.workspace.browser.forward}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_forward', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_forward', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
         <ToolbarTooltip content={t.workspace.browser.reload}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_reload', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_reload', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
@@ -524,9 +589,33 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           ref={addressInputRef}
           value={addressInput}
           placeholder={t.workspace.browser.addressPlaceholder}
-          onChange={(e) => setAddressInput(e.target.value)}
+          onFocus={() => { addressFocusedRef.current = true; noteUserInteraction(); }}
+          onBlur={() => {
+            addressFocusedRef.current = false;
+            // A clean, emptied, or reverted input resumes following the page;
+            // a real uncommitted draft survives blur (acceptance G6/G7).
+            if (
+              !addressDirtyRef.current
+              || !addressInput.trim()
+              || addressInput === committedUrl
+            ) {
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
+          }}
+          onChange={(e) => {
+            addressDirtyRef.current = true;
+            noteUserInteraction();
+            setAddressInput(e.target.value);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit(addressInput);
+            if (e.key === 'Escape') {
+              // Standard browser behavior — and the only way out of a held
+              // draft without committing it: show the page's real URL again.
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
           }}
           className="flex-1 h-7 text-minor"
         />

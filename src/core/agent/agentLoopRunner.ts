@@ -1214,6 +1214,23 @@ function contextForSession(
     imReplyTarget: session.options.imReplyTarget
       ? { ...session.options.imReplyTarget }
       : undefined,
+    // Security boundary: run identity decides WHOSE browser tabs a call may
+    // list, drive and reclaim (N6 keys tab ownership on
+    // {conversationId, runKey}), so it is shell-owned like everything above.
+    // This session IS the conversation's own loop, so the shell's answer is
+    // "no subagent run" — the host reads that as the `main` pool.
+    //
+    // It also has to be stated rather than left to `...incoming`, because a
+    // subagent nested inside the SIDECAR's loop (the `@agent` direct-delegation
+    // path: agentLoop.ts → shims/subagentRunnerRun.ts → scopeSubagentLoopProgress
+    // stamps its own `sar-*` → subagentLoop's tool context → toWireToolContext,
+    // a denylist that passes it through) reaches the shell on THIS main-loop
+    // runId. Letting that id survive would mint a pool owned by a run the shell
+    // has no session for: `runSubagent`'s per-run release never runs on that
+    // path, so nothing would free those tabs at run end. Folding them into
+    // `main` puts them back where the conversation delete cascade reaps them
+    // and the parent can see them.
+    agentRunId: undefined,
     ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
       ? { workspacePath: session.options.workspacePathSnapshot ?? null }
       : {}),
@@ -2712,6 +2729,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     loopId: runId,
   });
   ownership.messageTaken = true;
+  // The documented onMessageTaken contract ("invoked once the initial user
+  // message is present in the transcript") applies to the sidecar path too —
+  // the shell row was just added above.
+  options?.onMessageTaken?.(clientMessageId);
   shellChatDelta.setConversationStatus(conversationId, 'running');
   try {
     await waitForConversationPersistence(conversationId);

@@ -1444,6 +1444,38 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    // N6: run identity decides WHOSE browser tabs a call may list, drive and
+    // reclaim, so it is authority-bearing exactly like the ceiling, the scope
+    // and the IM target above — and must be answered by the shell, never by the
+    // sidecar's copy of the context.
+    //
+    // The shell's answer for a MAIN-LOOP session is "there is no subagent run
+    // here", i.e. the host's `main` pool. That closes two things at once:
+    // a sidecar cannot pick a sibling run's tabs by naming its id, and a
+    // subagent nested INSIDE the sidecar's own loop (the `@agent`
+    // direct-delegation path, which stamps its own `sar-*` and reaches the
+    // shell on the main loop's runId) folds into the conversation's `main`
+    // pool — reaped by the conversation delete cascade and visible to the
+    // parent, instead of owning a pool that no dispose path ever reaps.
+    it('tool.invoke neutralizes a sidecar-supplied agentRunId — the main loop owns no subagent run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { agentRunId: 'sar-forged' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        conversationId: 'conv-1',
+        agentRunId: undefined,
+      }));
+    });
+
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

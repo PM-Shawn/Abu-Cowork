@@ -20,10 +20,21 @@
  * to handle a "bootstrap hasn't arrived yet" state during the process's
  * early lifetime). Smallest-diff, and structurally race-free by
  * construction — chosen over a `bootstrap`-style notification for this
- * reason. `homeDir()` needs NO bootstrap at all — `node:os.homedir()`
- * resolves it directly, same as `shims/memdirPaths.ts`'s established
- * pattern (copied here for `tauriPathRun.ts`'s `homeDir()`, not
- * reinvented).
+ * reason.
+ *
+ * ── Home (`ABU_HOME_DIR`, resolved by `resolveHomeDir()` below) ──────────
+ * Home IS derivable in plain Node (`node:os.homedir()`), and that used to be
+ * the whole story here. But the SHELL's home can legitimately differ from
+ * the OS home: `electron/main.cjs`'s gated E2E block redirects
+ * `app.getPath('home')` into the launch-scoped data root so isolated E2E
+ * runs never read or write the developer's real `~/.abu` state (memdir
+ * memories leaked into LLM requests otherwise — observed 2026-09-01). The
+ * shell therefore also passes its own resolved `homeDir()` down as
+ * `ABU_HOME_DIR`, so both processes compose identical `~/.abu/...` paths in
+ * every mode. Unlike the two vars above this one is fail-SOFT at read time:
+ * `os.homedir()` is a correct fallback (equal to the shell's value in every
+ * non-redirected run), so a spawn that omitted the var keeps the exact
+ * pre-existing behavior instead of throwing.
  *
  * ── Fail-loud discipline ──────────────────────────────────────────────────
  * If the shell failed to resolve `appDataDir()`/`resourceDir()` before
@@ -55,6 +66,9 @@
  * message-handler registration required.
  */
 
+import { homedir } from 'node:os';
+import { isAbsolute } from 'node:path';
+
 export interface SidecarBootstrap {
   appDataDir: string;
   resourceDir: string;
@@ -81,6 +95,21 @@ export function getBootstrap(): SidecarBootstrap {
     };
   }
   return cached;
+}
+
+/**
+ * The user home directory as the SHELL resolves it — `ABU_HOME_DIR` when the
+ * spawn provided a usable (absolute) value, else `node:os.homedir()`. Every
+ * sidecar-side `~/...` composition (memdir state in `shims/memdirPaths.ts`,
+ * `shims/tauriPathRun.ts`'s `homeDir()`) MUST go through this so renderer and
+ * sidecar resolve identical `~/.abu/...` paths even when the shell's home is
+ * redirected (E2E isolation). A malformed value is ignored, not thrown on:
+ * the fallback is exactly the pre-`ABU_HOME_DIR` behavior.
+ */
+export function resolveHomeDir(): string {
+  const v = process.env.ABU_HOME_DIR;
+  if (v && isAbsolute(v)) return v;
+  return homedir();
 }
 
 /** Test-only reset. */

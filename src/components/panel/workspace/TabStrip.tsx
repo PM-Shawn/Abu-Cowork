@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot } from 'lucide-react';
 import {
   usePreviewStore,
+  useVisibleTabs,
   workspaceTabButtonId,
   workspaceTabPanelId,
   type WorkspaceTab,
@@ -59,7 +60,10 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
 export default function TabStrip() {
   const { t } = useI18n();
   const windowsWorkspaceHeader = isWindows() && hasElectronCommandHost();
-  const tabs = usePreviewStore((s) => s.tabs);
+  // The strip lists only what this conversation owns or shares: a browser tab
+  // adopted for another conversation keeps running (hidden) but is not listed,
+  // not activatable, and not closable from here.
+  const tabs = useVisibleTabs();
   const activeTabId = usePreviewStore((s) => s.activeTabId);
   const activateTab = usePreviewStore((s) => s.activateTab);
   const closeTab = usePreviewStore((s) => s.closeTab);

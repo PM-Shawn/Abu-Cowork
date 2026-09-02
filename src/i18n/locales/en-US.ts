@@ -1221,7 +1221,7 @@ const enUS: TranslationDict = {
     pluginsAddMarketplaceTitle: 'Add a plugin marketplace',
     pluginsMarketplaceDirLabel: 'Marketplace directory',
     pluginsMarketplaceDirPlaceholder: '~/.claude/plugins/marketplaces/claude-plugins-official',
-    pluginsMarketplaceDirHint: 'Pick a marketplace directory you already have locally. It must contain .claude-plugin/marketplace.json or .abu-plugin/marketplace.json.',
+    pluginsMarketplaceDirHint: 'Pick a marketplace directory you already have locally. It must contain .claude-plugin/marketplace.json, .abu-plugin/marketplace.json, or .agents/plugins/marketplace.json.',
     pluginsBrowseDir: 'Choose folder…',
     pluginsMarketplaceReadFailed: 'Could not read that marketplace',
     pluginsNoMarketplaces: 'No marketplaces added yet',

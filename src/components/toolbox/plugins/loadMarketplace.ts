@@ -6,8 +6,9 @@
  * so the "where does the JSON come from" half belongs to whoever is browsing.
  *
  * Candidate order matches the installer's manifest lookup: Abu's own
- * `.abu-plugin` wins over the `.claude-plugin` we stay compatible with, so a
- * marketplace that ships both can express an Abu-specific listing.
+ * `.abu-plugin` wins over the `.claude-plugin` and `.agents/plugins`
+ * (Codex) directories we stay compatible with, so a marketplace that ships
+ * more than one can express an Abu-specific listing.
  */
 
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
@@ -17,6 +18,7 @@ import { parseMarketplace, type Marketplace } from '@/core/plugin/marketplace';
 export const MARKETPLACE_MANIFEST_CANDIDATES = [
   '.abu-plugin/marketplace.json',
   '.claude-plugin/marketplace.json',
+  '.agents/plugins/marketplace.json',
 ] as const;
 
 /** Expand a leading `~` so a hand-typed path resolves like it does in a shell. */

@@ -1223,7 +1223,7 @@ const zhCN: TranslationDict = {
     pluginsAddMarketplaceTitle: '添加插件市场',
     pluginsMarketplaceDirLabel: '市场目录',
     pluginsMarketplaceDirPlaceholder: '~/.claude/plugins/marketplaces/claude-plugins-official',
-    pluginsMarketplaceDirHint: '选择本地已下载的市场目录，里面要有 .claude-plugin/marketplace.json 或 .abu-plugin/marketplace.json。',
+    pluginsMarketplaceDirHint: '选择本地已下载的市场目录，里面要有 .claude-plugin/marketplace.json、.abu-plugin/marketplace.json 或 .agents/plugins/marketplace.json。',
     pluginsBrowseDir: '选择目录…',
     pluginsMarketplaceReadFailed: '读取市场失败',
     pluginsNoMarketplaces: '还没有添加插件市场',

@@ -59,10 +59,14 @@ export class PluginManifestError extends Error {
 }
 
 /**
- * 双候选清单相对路径，按序尝试。
- * Abu 自有目录优先，找不到再回退到 Claude 生态目录（兼容已发布的第三方插件）。
+ * 三候选清单相对路径，按序尝试：Abu 自有目录优先，找不到依次回退到 Claude
+ * 生态目录、再到 Codex 生态目录（`.codex-plugin/`），兼容已发布的第三方插件。
  */
-export const MANIFEST_CANDIDATES = ['.abu-plugin/plugin.json', '.claude-plugin/plugin.json'] as const;
+export const MANIFEST_CANDIDATES = [
+  '.abu-plugin/plugin.json',
+  '.claude-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
+] as const;
 
 const HEX_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const MAX_SCREENSHOTS_DEFAULT_PROMPT = 3;

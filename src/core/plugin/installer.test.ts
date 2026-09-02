@@ -124,6 +124,12 @@ describe('readManifestFrom', () => {
     mountFiles({ '/p/.abu-plugin/plugin.json': '{ not json' });
     await expect(readManifestFrom('/p')).rejects.toThrow();
   });
+
+  it('falls back to .codex-plugin/plugin.json (Codex ecosystem)', async () => {
+    mountFiles({ '/p/.codex-plugin/plugin.json': JSON.stringify({ name: 'x', version: '1.0.0' }) });
+    const m = await readManifestFrom('/p');
+    expect(m.name).toBe('x');
+  });
 });
 
 describe('planInstall', () => {

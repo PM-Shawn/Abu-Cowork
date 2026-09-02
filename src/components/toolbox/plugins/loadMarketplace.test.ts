@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@tauri-apps/plugin-fs', () => ({ readTextFile: vi.fn(), exists: vi.fn() }));
 
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
-import { expandHome, loadMarketplaceFromDir } from './loadMarketplace';
+import { expandHome, loadMarketplaceFromDir, MARKETPLACE_MANIFEST_CANDIDATES } from './loadMarketplace';
 
 const mockRead = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
@@ -64,5 +64,18 @@ describe('loadMarketplaceFromDir', () => {
     await expect(loadMarketplaceFromDir('/m/bad')).rejects.toThrow(
       /not valid JSON: \/m\/bad\/\.abu-plugin\/marketplace\.json/,
     );
+  });
+
+  it('reads the Codex .agents/plugins/marketplace.json as a third candidate', async () => {
+    mountFiles({
+      '/m/.agents/plugins/marketplace.json': JSON.stringify({
+        name: 'codex-m',
+        owner: { name: 'o' },
+        plugins: [],
+      }),
+    });
+    const m = await loadMarketplaceFromDir('/m');
+    expect(m.name).toBe('codex-m');
+    expect(MARKETPLACE_MANIFEST_CANDIDATES[2]).toBe('.agents/plugins/marketplace.json');
   });
 });

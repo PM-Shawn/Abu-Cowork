@@ -30,6 +30,36 @@ vi.mock('@/core/plugin/installedStore', () => ({
 }));
 vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
+// happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
+// fires, so the real component mounts no rows at all. Mock it as a plain list
+// (the same shape ChatView's tests use) so the row markup and the wiring —
+// every entry reaches Virtuoso's `data`, keyed by `computeItemKey` — are what
+// these tests exercise. Virtualization itself is verified in the real shell.
+vi.mock('react-virtuoso', async () => {
+  const { createElement, forwardRef } = await import('react');
+  type MockVirtuosoProps = {
+    data?: unknown[];
+    computeItemKey?: (index: number, item: unknown) => string | number;
+    itemContent?: (index: number, item: unknown) => ReturnType<typeof createElement>;
+    'data-testid'?: string;
+  };
+  return {
+    Virtuoso: forwardRef<unknown, MockVirtuosoProps>(function MockVirtuoso(
+      { data = [], computeItemKey, itemContent, 'data-testid': testId },
+      _ref,
+    ) {
+      return createElement(
+        'div',
+        { 'data-testid': testId ?? 'mock-virtuoso', 'data-item-count': data.length },
+        data.map((item, index) => createElement(
+          'div',
+          { key: computeItemKey?.(index, item) ?? index },
+          itemContent?.(index, item),
+        )),
+      );
+    }),
+  };
+});
 
 import {
   planInstall,
@@ -287,6 +317,30 @@ describe('MarketplaceBrowser', () => {
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
     expect(rows[0].querySelector('button')).toBeDisabled();
     expect(rows[1].querySelector('button')).not.toBeDisabled();
+  });
+
+  it('hands every entry of a large marketplace to the virtualized list', async () => {
+    // The official marketplace has ~291 entries and organization catalogs
+    // grow, so the ready-state list renders through Virtuoso instead of a
+    // plain <ul>. With the mock above the "bounded window" of a real Virtuoso
+    // cannot be observed here (happy-dom measures the viewport at 0); what
+    // this pins is that all 300 entries reach the virtualized list, keyed by
+    // name, with none dropped or duplicated by the extraction of the row.
+    const plugins: MarketplaceEntry[] = Array.from({ length: 300 }, (_, i) => ({
+      name: `plugin-${i}`,
+      description: `Plugin number ${i}`,
+      source: { kind: 'relative', path: `./plugins/plugin-${i}` },
+    }));
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue({ name: 'official', plugins });
+
+    renderBrowser();
+    const list = await screen.findByTestId('plugin-marketplace-list');
+    expect(list).toHaveAttribute('data-item-count', '300');
+    const rows = screen.getAllByTestId('plugin-marketplace-entry');
+    expect(rows).toHaveLength(300);
+    expect(rows[0]).toHaveTextContent('plugin-0');
+    expect(rows[299]).toHaveTextContent('plugin-299');
+    expect(list.querySelector('ul')).toBeNull();
   });
 
   it('surfaces a broken marketplace directory as a readable error', async () => {

@@ -21,6 +21,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso } from 'react-virtuoso';
 import { Loader2, Package, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -323,6 +324,73 @@ export default function MarketplaceBrowser({
           ? { kind: 'error', message: flow.message }
           : { kind: 'loading' };
 
+  const showList = entriesState.kind === 'ready' && visibleEntries.length > 0;
+
+  // One marketplace row. Row spacing is padding on an outer wrapper rather
+  // than a margin on the row: Virtuoso measures each item's box, and a bottom
+  // margin would collapse through the item wrapper and escape that measurement
+  // (same rule ChatView's message rows follow).
+  const renderEntry = (entry: MarketplaceEntry) => {
+    const isInstalled = installedNames.has(entry.name);
+    const updateStatus = entryUpdateStatus(entry, installedByName.get(entry.name));
+    const hasUpdate = updateStatus === 'update-available';
+    return (
+      <div className="pb-1.5">
+        <div
+          data-testid="plugin-marketplace-entry"
+          className="flex items-start gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
+                {entry.name}
+              </span>
+              {entry.version && (
+                <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
+                  v{entry.version}
+                </span>
+              )}
+              {entry.category && (
+                <span className="shrink-0 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
+                  {entry.category}
+                </span>
+              )}
+              {/* Most of a real marketplace (238 of the official 291)
+                  is remote-sourced: installing one fetches it from git
+                  (sha-verified) rather than copying a local folder, so
+                  the row flags it up front. */}
+              {entry.source.kind !== 'relative' && (
+                <span
+                  data-testid="plugin-remote-source-badge"
+                  className="shrink-0 rounded-full bg-[var(--abu-warning-bg)] px-2 py-0.5 text-caption text-[var(--abu-warning)]"
+                >
+                  {tb.pluginsRemoteSourceBadge}
+                </span>
+              )}
+            </div>
+            {entry.description && (
+              <p className="mt-0.5 line-clamp-2 text-minor text-[var(--abu-text-tertiary)]">
+                {entry.description}
+              </p>
+            )}
+          </div>
+          <Button
+            size="sm"
+            variant={hasUpdate ? 'default' : isInstalled ? 'outline' : 'default'}
+            disabled={isInstalled && !hasUpdate}
+            data-testid={hasUpdate ? 'plugin-update-button' : undefined}
+            onClick={() => void handlePlan(entry)}
+            aria-label={`${
+              hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall
+            }: ${entry.name}`}
+          >
+            {hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}
+          </Button>
+        </div>
+      </div>
+    );
+  };
+
   if (marketplaces.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
@@ -394,98 +462,50 @@ export default function MarketplaceBrowser({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
-        {entriesState.kind === 'loading' && (
-          <p className="flex items-center gap-2 py-8 text-body text-[var(--abu-text-tertiary)]">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {t.common.loading}
-          </p>
-        )}
+      {showList ? (
+        // The ready-state list is virtualized: the official marketplace alone
+        // has ~291 entries and organization catalogs grow, so only the rows in
+        // view are mounted. Virtuoso owns scrolling here, which is why this
+        // wrapper has no `overflow-y-auto` of its own.
+        <div className="min-h-0 flex-1 px-8 pb-6">
+          <Virtuoso
+            className="h-full"
+            data-testid="plugin-marketplace-list"
+            data={visibleEntries}
+            computeItemKey={(_, entry) => entry.name}
+            itemContent={(_, entry) => renderEntry(entry)}
+          />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
+          {entriesState.kind === 'loading' && (
+            <p className="flex items-center gap-2 py-8 text-body text-[var(--abu-text-tertiary)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t.common.loading}
+            </p>
+          )}
 
-        {entriesState.kind === 'error' && (
-          <div className="mt-4 flex items-start gap-2.5 rounded-lg bg-[var(--abu-danger-bg)] p-3">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-danger)]" />
-            <div className="min-w-0">
-              <p className="text-h-xs text-[var(--abu-text-primary)]">
-                {tb.pluginsMarketplaceReadFailed}
-              </p>
-              <p className="mt-1 break-words text-minor text-[var(--abu-text-tertiary)]">
-                {entriesState.message}
-              </p>
+          {entriesState.kind === 'error' && (
+            <div className="mt-4 flex items-start gap-2.5 rounded-lg bg-[var(--abu-danger-bg)] p-3">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-danger)]" />
+              <div className="min-w-0">
+                <p className="text-h-xs text-[var(--abu-text-primary)]">
+                  {tb.pluginsMarketplaceReadFailed}
+                </p>
+                <p className="mt-1 break-words text-minor text-[var(--abu-text-tertiary)]">
+                  {entriesState.message}
+                </p>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {entriesState.kind === 'ready' && visibleEntries.length === 0 && (
-          <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
-            {tb.pluginsNoMatches}
-          </p>
-        )}
-
-        {entriesState.kind === 'ready' && visibleEntries.length > 0 && (
-          <ul className="space-y-1.5">
-            {visibleEntries.map((entry) => {
-              const isInstalled = installedNames.has(entry.name);
-              const updateStatus = entryUpdateStatus(entry, installedByName.get(entry.name));
-              const hasUpdate = updateStatus === 'update-available';
-              return (
-                <li
-                  key={entry.name}
-                  data-testid="plugin-marketplace-entry"
-                  className="flex items-start gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
-                        {entry.name}
-                      </span>
-                      {entry.version && (
-                        <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                          v{entry.version}
-                        </span>
-                      )}
-                      {entry.category && (
-                        <span className="shrink-0 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
-                          {entry.category}
-                        </span>
-                      )}
-                      {/* Most of a real marketplace (238 of the official 291)
-                          is remote-sourced: installing one fetches it from git
-                          (sha-verified) rather than copying a local folder, so
-                          the row flags it up front. */}
-                      {entry.source.kind !== 'relative' && (
-                        <span
-                          data-testid="plugin-remote-source-badge"
-                          className="shrink-0 rounded-full bg-[var(--abu-warning-bg)] px-2 py-0.5 text-caption text-[var(--abu-warning)]"
-                        >
-                          {tb.pluginsRemoteSourceBadge}
-                        </span>
-                      )}
-                    </div>
-                    {entry.description && (
-                      <p className="mt-0.5 line-clamp-2 text-minor text-[var(--abu-text-tertiary)]">
-                        {entry.description}
-                      </p>
-                    )}
-                  </div>
-                  <Button
-                    size="sm"
-                    variant={hasUpdate ? 'default' : isInstalled ? 'outline' : 'default'}
-                    disabled={isInstalled && !hasUpdate}
-                    data-testid={hasUpdate ? 'plugin-update-button' : undefined}
-                    onClick={() => void handlePlan(entry)}
-                    aria-label={`${
-                      hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall
-                    }: ${entry.name}`}
-                  >
-                    {hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}
-                  </Button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
+          {entriesState.kind === 'ready' && visibleEntries.length === 0 && (
+            <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
+              {tb.pluginsNoMatches}
+            </p>
+          )}
+        </div>
+      )}
 
       <InstallDisclosureDialog
         open={flow.kind !== 'closed'}

@@ -43,9 +43,9 @@ describe('httpFetchTool pre-flight guards', () => {
     expect(result).toContain('cloud metadata');
   });
 
-  // NOTE: Two "allows non-blocked URL" tests that make real network calls were moved to
-  // src/__tests__/quarantine/webTools-network-calls.test.ts because they depend on network
-  // behavior (localhost:1 ECONNREFUSED timing, 192.168.1.1 route availability) and
-  // consistently time out on CI runners. The guard logic they test (pre-flight accepts
-  // private IPs / localhost) is still validated via the error-message assertions above.
+  // NOTE: Two "allows non-blocked URL" tests that made REAL network calls (localhost:1,
+  // 192.168.1.1) were quarantined in 2026-06 and deleted in 2026-09 when they exceeded the
+  // 4-week SLA: real network is forbidden by TESTING.md §3 and the guard logic they covered
+  // (pre-flight accepts private IPs / localhost) is validated by the error-message
+  // assertions above. Do not reintroduce network-dependent tests here.
 });

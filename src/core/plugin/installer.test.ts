@@ -115,7 +115,7 @@ describe('readManifestFrom', () => {
     expect(m.name).toBe('claude-one');
   });
 
-  it('throws when neither candidate exists', async () => {
+  it('throws when no candidate exists', async () => {
     mountFiles({ '/p/README.md': 'hi' });
     await expect(readManifestFrom('/p')).rejects.toThrow();
   });
@@ -129,6 +129,16 @@ describe('readManifestFrom', () => {
     mountFiles({ '/p/.codex-plugin/plugin.json': JSON.stringify({ name: 'x', version: '1.0.0' }) });
     const m = await readManifestFrom('/p');
     expect(m.name).toBe('x');
+  });
+
+  it('prefers .claude-plugin over .codex-plugin when both are present', async () => {
+    // Candidate order is Abu → Claude → Codex; the first hit wins.
+    mountFiles({
+      '/p/.claude-plugin/plugin.json': JSON.stringify({ name: 'a' }),
+      '/p/.codex-plugin/plugin.json': JSON.stringify({ name: 'b' }),
+    });
+    const m = await readManifestFrom('/p');
+    expect(m.name).toBe('a');
   });
 });
 

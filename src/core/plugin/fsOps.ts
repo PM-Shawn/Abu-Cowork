@@ -8,9 +8,10 @@
  * (`require_literal_leading_dot`), so touching them aborted the install.
  *
  * A plugin package cannot survive that rule: its manifest *is* a dot-dir —
- * `.abu-plugin/plugin.json` or `.claude-plugin/plugin.json`. Copying a plugin
- * with the skill rule would install a package with no manifest, and the
- * failure would only show up at runtime.
+ * `.abu-plugin/plugin.json`, `.claude-plugin/plugin.json` or
+ * `.codex-plugin/plugin.json`. Copying a plugin with the skill rule would
+ * install a package with no manifest, and the failure would only show up at
+ * runtime.
  *
  * The rule no longer applies on the shell we actually ship: Electron's
  * `assertAllowed` (electron/fsHost.cjs) is prefix-containment via
@@ -27,7 +28,8 @@ import { joinPath } from '../../utils/pathUtils';
  *
  * `.git` would drag a whole object store in; `node_modules` is a package
  * manager's business, not ours; `.DS_Store` is noise. Everything else —
- * including `.abu-plugin` / `.claude-plugin` — is part of the package.
+ * including `.abu-plugin` / `.claude-plugin` / `.codex-plugin` — is part of
+ * the package.
  */
 export const PLUGIN_COPY_DENYLIST: ReadonlySet<string> = new Set([
   '.git',

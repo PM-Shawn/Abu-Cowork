@@ -91,7 +91,11 @@ export function resolveSourceDir(source: PluginSource, marketplaceDir: string): 
   return resolved;
 }
 
-/** Read a package's manifest, trying `.abu-plugin` then `.claude-plugin`. */
+/**
+ * Read a package's manifest, trying the {@link MANIFEST_CANDIDATES} in
+ * order: `.abu-plugin`, then `.claude-plugin`, then `.codex-plugin`. The
+ * first one present wins, even if a later one would also parse.
+ */
 export async function readManifestFrom(packageDir: string): Promise<PluginManifest> {
   for (const candidate of MANIFEST_CANDIDATES) {
     const path = joinPath(packageDir, candidate);

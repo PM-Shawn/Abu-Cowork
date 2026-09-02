@@ -1,5 +1,8 @@
 /**
- * Parser for `.claude-plugin/marketplace.json` marketplace manifests.
+ * Parser for `marketplace.json` marketplace manifests. The loader
+ * (`loadMarketplace.ts`, `MARKETPLACE_MANIFEST_CANDIDATES`) finds the file at
+ * `.abu-plugin/`, `.claude-plugin/` or `.agents/plugins/` — the same schema in
+ * every location.
  *
  * `source` is polymorphic in the wild: a bare relative-path string, or an
  * object discriminated by its own `source` field (`"url"` | `"git-subdir"`).

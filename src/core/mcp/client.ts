@@ -2,7 +2,7 @@
 // Stdio transport uses Tauri Rust backend for child process management.
 // HTTP transports (StreamableHTTP, SSE) use the MCP SDK directly.
 
-import type { ToolDefinition, ToolParameter, ToolResult, ToolResultContent } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolParameter, ToolResult, ToolResultContent } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
@@ -13,6 +13,38 @@ import { isEnterpriseModuleActive } from '@/core/enterprise/entitlement';
 
 const mcpLogger = createLogger('mcp');
 const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
+
+/**
+ * MCP request `_meta` key carrying the owning conversation id. Mirrors
+ * `ABU_CONVERSATION_META_KEY` exported from `abu-browser-bridge/src/tools.ts`
+ * (duplicated here rather than imported — abu-browser-bridge is published to
+ * npm separately and isn't a workspace dependency of this app).
+ */
+const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
+
+/**
+ * MCP request `_meta` key that turns off `get_tabs`' "provision a tab when the
+ * caller owns none" behavior. Rides `_meta` rather than the tool's arguments
+ * on purpose: it is a host-side probe concern, and putting it in the schema
+ * would expose it to the model. Mirrors `ABU_CREATE_IF_EMPTY_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
+
+/**
+ * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
+ * of the execute() closure built during tool discovery so the mapping is
+ * directly unit-testable — the discovery flow itself depends on the MCP SDK,
+ * which the test environment stubs out entirely.
+ */
+export function toCallToolOpts(
+  context?: ToolExecutionContext
+): { conversationId?: string; signal?: AbortSignal } {
+  return {
+    conversationId: context?.conversationId,
+    signal: context?.abortSignal,
+  };
+}
 
 function isEnterpriseServerBlocked(name: string): boolean {
   return name.startsWith(ENTERPRISE_SERVER_PREFIX) && !isEnterpriseModuleActive('mcp');
@@ -397,8 +429,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -704,8 +736,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -734,7 +766,18 @@ export class MCPClientManager {
   async callTool(
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    opts?: {
+      conversationId?: string;
+      signal?: AbortSignal;
+      /**
+       * Only meaningful for the browser server's `get_tabs`: pass `false` for a
+       * read-only probe that must not provision an automation view as a side
+       * effect (the permission gate's origin lookup). Omitted ⇒ host default
+       * (create), so every existing caller is unchanged.
+       */
+      createBrowserTabIfEmpty?: boolean;
+    }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
@@ -752,7 +795,15 @@ export class MCPClientManager {
     let timerId: ReturnType<typeof setTimeout>;
     try {
       const client = server.client as {
-        callTool: (params: { name: string; arguments: Record<string, unknown> }) => Promise<{
+        callTool: (
+          params: {
+            name: string;
+            arguments: Record<string, unknown>;
+            _meta?: Record<string, unknown>;
+          },
+          resultSchema?: undefined,
+          options?: { signal?: AbortSignal; timeout?: number }
+        ) => Promise<{
           content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
       };
@@ -764,8 +815,32 @@ export class MCPClientManager {
       const timeout = new Promise<never>((_, reject) => {
         timerId = setTimeout(() => reject(new Error(`MCP tool call timed out after ${serverTimeout / 1000}s: ${toolName}`)), serverTimeout);
       });
+      const params: { name: string; arguments: Record<string, unknown>; _meta?: Record<string, unknown> } = {
+        name: toolName,
+        arguments: coercedArgs,
+      };
+      const meta: Record<string, unknown> = {};
+      if (opts?.conversationId) {
+        meta[ABU_CONVERSATION_META_KEY] = opts.conversationId;
+      }
+      if (opts?.createBrowserTabIfEmpty === false) {
+        meta[ABU_CREATE_IF_EMPTY_META_KEY] = false;
+      }
+      if (Object.keys(meta).length > 0) {
+        params._meta = meta;
+      }
+      // Always pass `timeout` (not only when a signal is given): the SDK's
+      // own request/response cycle has an internal default request timeout
+      // (60s) that fires independently of the manual `Promise.race` above.
+      // For browser servers, serverTimeout is 120s — without this, the SDK's
+      // 60s default would reject `wait_for`-style long calls before our own
+      // race ever gets a chance to.
       const result = await Promise.race([
-        client.callTool({ name: toolName, arguments: coercedArgs }),
+        client.callTool(
+          params,
+          undefined,
+          opts?.signal ? { signal: opts.signal, timeout: serverTimeout } : { timeout: serverTimeout }
+        ),
         timeout,
       ]);
       clearTimeout(timerId!);
@@ -804,6 +879,17 @@ export class MCPClientManager {
       return JSON.stringify(result);
     } catch (err) {
       clearTimeout(timerId!);
+      // The conversation run was stopped: the SDK already cancelled the
+      // in-flight request (see toCallToolOpts/callTool's `signal` param) and
+      // rejected promptly. Only browser automation servers get the friendlier
+      // cancellation message shown to the model/user — other MCP servers keep
+      // whatever error the SDK surfaced for its own abort handling.
+      if (
+        opts?.signal?.aborted &&
+        (serverName === 'abu-browser' || serverName === 'abu-browser-bridge')
+      ) {
+        throw new Error('Browser action cancelled because the run was stopped.', { cause: err });
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });

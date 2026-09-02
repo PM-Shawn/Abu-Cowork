@@ -260,10 +260,13 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   },
 
   openBrowser: (url = '', requestedId) => {
-    const { tabs } = get();
+    const { tabs, activeTabId } = get();
     if (requestedId) {
       const requested = tabs.find((t) => t.id === requestedId);
       if (requested) {
+        // Re-entry for an already-adopted id (main's adoption poll re-finding
+        // the same view) is a deliberate re-open, not a new-tab event — keep
+        // today's re-activate behavior.
         commitTabs(tabs, requested.id);
         return requested.id;
       }
@@ -272,10 +275,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         kind: 'browser',
         url,
       }];
-      commitTabs(nextTabs, requestedId);
+      // Adopting a brand-new agent-created tab must not steal focus from a
+      // user who is actively watching a browser tab — add it in the
+      // background. If the user isn't on a browser tab (or has no tabs at
+      // all), activating it preserves today's single-task first-tab UX.
+      const currentActiveIsBrowser = tabs.find((t) => t.id === activeTabId)?.kind === 'browser';
+      commitTabs(nextTabs, currentActiveIsBrowser ? activeTabId : requestedId);
       // Observability only (batch 1): a genuinely new agent-adopted browser
       // view — never for the reactivation branch above, which is the same
-      // tab still alive, not a new one.
+      // tab still alive, not a new one. Independent of which tab ends up
+      // active, so the focus rule above is untouched.
       noteTabCreated(requestedId);
       safeRecordBrowserSignal(() => buildBrowserSignalRecord(
         { kind: 'tab_lifetime', event: 'created' },

@@ -160,7 +160,7 @@ describe('ChatInput inline @mention boundaries', () => {
 
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
-    expect(onSend).toHaveBeenCalledWith('hello@publisher', undefined, null);
+    expect(onSend).toHaveBeenCalledWith('hello@publisher', undefined, null, expect.any(Function));
     expect(textarea.value).toBe('');
   });
 
@@ -273,7 +273,7 @@ describe('ChatInput inline @mention boundaries', () => {
       await Promise.resolve();
     });
 
-    expect(onSend).toHaveBeenCalledWith('@publisher write this', undefined, null);
+    expect(onSend).toHaveBeenCalledWith('@publisher write this', undefined, null, expect.any(Function));
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
     expect(textarea.value).toBe('write this');
   });
@@ -292,7 +292,7 @@ describe('ChatInput inline @mention boundaries', () => {
       await Promise.resolve();
     });
 
-    expect(onSend).toHaveBeenCalledWith('@publisher write this', undefined, undefined);
+    expect(onSend).toHaveBeenCalledWith('@publisher write this', undefined, undefined, expect.any(Function));
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
     expect(textarea).toHaveValue('');
   });
@@ -432,6 +432,7 @@ describe('ChatInput inline @mention boundaries', () => {
       '@publisher [Attachment: `/private/project/plan.docx`]\n\nreview this',
       undefined,
       null,
+      expect.any(Function),
     );
   });
 

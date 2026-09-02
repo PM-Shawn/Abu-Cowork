@@ -566,4 +566,52 @@ describe('BrowserTab native overlay visibility', () => {
     view.unmount();
     vi.useRealTimers();
   });
+
+  // Regression: an agent-adopted tab is created in the BACKGROUND, so its
+  // placeholder hangs under a `display:none` ancestor and reports an all-zero
+  // rect. Clamping that to 1×1 produced a real 1×1 webview — the page laid out
+  // at one pixel, and `syncBounds` returns early while the tab is invisible, so
+  // nothing corrected it until the user switched to the tab.
+  it('creates a hidden (background-adopted) tab at a usable default size, not 1×1', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      bottom: 0, height: 0, left: 0, right: 0, top: 0, width: 0, x: 0, y: 0,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(HTMLElement.prototype, 'offsetParent', {
+      configurable: true,
+      get: () => null,
+    });
+
+    render(
+      <TooltipProvider>
+        <BrowserTab tabId="browser-adopted-hidden" url="https://example.com" />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-adopted-hidden',
+      }));
+    });
+    const createArgs = invoke.mock.calls.find(([command]) => command === 'browser_create')![1];
+    // Matches browserHost.cjs's own headless fallback size.
+    expect(createArgs).toMatchObject({ width: 1024, height: 768 });
+  });
+
+  it('still creates a visible tab at its real rect (the fallback never overrides a laid-out placeholder)', async () => {
+    render(
+      <TooltipProvider>
+        <BrowserTab tabId="browser-visible-rect" url="https://example.com" />
+      </TooltipProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('browser_create', expect.objectContaining({
+        id: 'browser-visible-rect',
+      }));
+    });
+    const createArgs = invoke.mock.calls.find(([command]) => command === 'browser_create')![1];
+    // The beforeEach rect: 600×400 at (100, 100).
+    expect(createArgs).toMatchObject({ x: 100, y: 100, width: 600, height: 400 });
+  });
 });

@@ -150,6 +150,46 @@ describe('previewStore', () => {
       });
     });
 
+    it('adopting a new agent tab while the user is watching a browser tab adds it without stealing focus', () => {
+      const watchedId = usePreviewStore.getState().openBrowser('https://user-is-watching.example');
+      const agentId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-focus-1');
+
+      expect(agentId).toBe('agent-browser-focus-1');
+      expect(usePreviewStore.getState().tabs).toHaveLength(2);
+      expect(usePreviewStore.getState().tabs[1]).toEqual({
+        id: 'agent-browser-focus-1',
+        kind: 'browser',
+        url: 'about:blank',
+      });
+      // Active tab stays the one the user was watching — not stolen by adoption.
+      expect(usePreviewStore.getState().activeTabId).toBe(watchedId);
+    });
+
+    it('adopting a new agent tab while the active tab is not a browser tab activates it as before', () => {
+      usePreviewStore.getState().openPreview('/a/b.html');
+      expect(usePreviewStore.getState().tabs.find((t) => t.id === usePreviewStore.getState().activeTabId)?.kind).toBe('preview');
+
+      const agentId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-focus-2');
+
+      expect(agentId).toBe('agent-browser-focus-2');
+      expect(usePreviewStore.getState().activeTabId).toBe('agent-browser-focus-2');
+    });
+
+    it('adopting a new agent tab with no existing tabs activates it (single-task first-tab behavior unchanged)', () => {
+      const agentId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-focus-3');
+      expect(usePreviewStore.getState().activeTabId).toBe(agentId);
+    });
+
+    it('re-adopting an already-existing requestedId still re-activates it (adoption-poll re-entry, not a new-tab event)', () => {
+      usePreviewStore.getState().openBrowser('https://user-is-watching.example');
+      const agentId = usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-focus-4');
+      // User looks back at the browser tab they were on.
+      usePreviewStore.getState().activateTab(usePreviewStore.getState().tabs[0].id);
+      // Main re-polls adoption for the same requestedId — should re-activate it.
+      usePreviewStore.getState().openBrowser('about:blank', 'agent-browser-focus-4');
+      expect(usePreviewStore.getState().activeTabId).toBe(agentId);
+    });
+
     it('openTerminal always creates a new tab (never deduped)', () => {
       usePreviewStore.getState().openTerminal();
       usePreviewStore.getState().openTerminal();

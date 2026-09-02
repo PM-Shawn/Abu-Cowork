@@ -106,8 +106,9 @@ Rules:
 
 **Flaky test quarantine:** If a test is found to be flaky (non-deterministic failure), open a
 GitHub issue tagged `flaky-test` and move the test into `src/__tests__/quarantine/` with a
-`// QUARANTINED: <issue-url>` comment. Quarantined tests are excluded from CI gates but included
-in a daily reminder run. SLA to fix or delete: **2 sprints (4 weeks)**.
+`// QUARANTINED: <issue-url>` comment. Quarantined tests are excluded from the default gate and run only via
+`npm run test:quarantine`; the quarantine SLA meta-test in the main gate is what enforces the
+window. SLA to fix or delete: **2 sprints (4 weeks)**.
 
 ---
 
@@ -147,9 +148,11 @@ npm run lint && npm run typecheck && npm run gen:models:check && npm run check:b
 ### verify (= verify:full)
 
 Single canonical entry point for local use and `/goal` completion criteria.
-CI does **not** call `verify:full` directly — it runs the same quality checks as individual steps
-(Lint / Type check / Test with coverage) so each stage reports independently. `verify:full` is the
-local shorthand that sequences those same steps in one command.
+CI does **not** call `verify:full` directly — the `check` job runs the same checks as individual
+steps (Lint → Type check → Test with coverage → Test-infra scripts → TESTING.md inventory check →
+Build frontend → Chrome-extension sync check), each gated on
+`!cancelled() && steps.install.outcome == 'success'` so every stage reports independently (see §7).
+`verify:full` is the local shorthand that sequences those same steps in one command.
 
 ---
 
@@ -245,10 +248,32 @@ describe('module name', () => {
 
 ## 7. CI Integration
 
-The CI workflow (`.github/workflows/ci.yml`) splits the quality gate into **independent steps**
-(Lint / Type check / Test with coverage), each with `if: always()` so a single failure does not
-swallow the others — you see exactly which stages are red in one run. `verify:full` is the local
-equivalent that sequences the same checks; use it before opening a PR.
+The CI workflow (`.github/workflows/ci.yml`) has one blocking job, `check`, plus two advisory jobs.
+
+**`check` job — gate steps.** The quality gate is split into **independent steps**:
+Lint → Type check → Test with coverage (`npm run test:coverage`) → Test-infra scripts
+(`npm run test:infra`) → TESTING.md inventory check (`npm run test:inventory:check`) → Build
+frontend → Chrome-extension sync check. Each is gated on
+`!cancelled() && steps.install.outcome == 'success'` (not `if: always()`): one red stage does not
+mask another — you see exactly which stages are red in one run — but nothing runs against an
+empty `node_modules` when the install step failed or the job was cancelled. `verify:full` is the
+local equivalent that sequences the same checks; use it before opening a PR.
+
+**`check` job — report steps.** These run even when the test step is red:
+- `coverage-report` and `test-results` artifacts (`coverage/`, `test-results/`, 14-day retention).
+- "Vitest results" junit check (`dorny/test-reporter`, `fail-on-error: false`).
+- A coverage table (statements / branches / functions / lines) in the job summary.
+- On same-repo, non-Dependabot pull requests: a coverage comment with changed-files detail
+  (`davelosert/vitest-coverage-report-action`, `file-coverage-mode: changes`). The junit check and
+  the PR comment write through `GITHUB_TOKEN`, which is read-only on Dependabot and fork PRs, so
+  they are skipped there rather than failing the job.
+
+**Advisory jobs** (`continue-on-error: true`, yellow, not blocking):
+- `test-windows` — first Windows run of the unit suite (`npx vitest run`, no coverage); junit
+  uploaded as the `test-results-windows` artifact. Triage path-sensitive failures, then drop
+  `continue-on-error`.
+- `audit` — `npm audit --omit=dev --audit-level=high`; stays yellow until the 2 high baseline
+  findings in transitive production deps are cleaned, then flip to blocking.
 
 Model-data freshness (`gen:models:check`) runs automatically before tests via the `pretest` npm hook
 and again inside `npm run build` — no separate CI step is needed.

@@ -22,6 +22,30 @@ test('vitest emits junit + machine-readable coverage for CI reports', () => {
 test('CI uploads coverage and test-results artifacts even when tests fail', () => {
   assert.match(ci, /name: coverage-report[\s\S]*?path: coverage\//);
   assert.match(ci, /name: test-results[\s\S]*?path: test-results\//);
+  for (const step of ['Upload coverage report', 'Upload test results (junit)']) {
+    const start = ci.indexOf(`- name: ${step}`);
+    assert.ok(start > -1, `${step} step missing`);
+    const next = ci.indexOf('\n      - name:', start + 1);
+    const block = ci.slice(start, next === -1 ? undefined : next);
+    assert.ok(block.includes('!cancelled()'), `${step} must run on !cancelled(), not the default success()`);
+  }
+});
+
+test('only the check job gets pull-requests write; advisory jobs are contents-read only', () => {
+  assert.doesNotMatch(ci, /^permissions:/m, 'permissions must be job-scoped, not workflow-level');
+  const jobBlock = (name) => {
+    const start = ci.indexOf(`\n  ${name}:`);
+    assert.ok(start > -1, `${name} job missing`);
+    const next = ci.slice(start + 1).search(/\n  [a-z][\w-]*:/);
+    return next === -1 ? ci.slice(start) : ci.slice(start, start + 1 + next);
+  };
+  for (const job of ['test-windows', 'audit']) {
+    const block = jobBlock(job);
+    assert.ok(!block.includes('pull-requests: write'), `${job} must not get pull-requests: write`);
+    assert.ok(!block.includes('checks: write'), `${job} must not get checks: write`);
+    assert.match(block, /permissions:\n\s+contents: read/);
+  }
+  assert.match(jobBlock('check'), /permissions:\n\s+contents: read\n\s+pull-requests: write\n\s+checks: write/);
 });
 
 test('CI comments coverage on pull requests and renders the junit report', () => {

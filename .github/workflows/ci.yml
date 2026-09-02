@@ -6,16 +6,15 @@ on:
   pull_request:
     branches: [main, dev]
 
-# Least privilege: the coverage comment and the junit check need write on
-# PRs/checks; nothing here needs contents write.
-permissions:
-  contents: read
-  pull-requests: write
-  checks: write
-
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Least privilege, job-scoped: only this job's coverage comment and junit
+    # check need write on PRs/checks; nothing here needs contents write.
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
 
     steps:
       - uses: actions/checkout@v7
@@ -129,9 +128,11 @@ jobs:
           file-coverage-mode: changes
 
       - name: Build frontend
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
 
       - name: Verify Chrome extension bundle is in sync with source
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: bash
         run: |
           # Rebuild the extension from source in a clean env, then compare the
@@ -166,6 +167,8 @@ jobs:
   test-windows:
     runs-on: windows-latest
     continue-on-error: true
+    permissions:
+      contents: read
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -203,6 +206,8 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     continue-on-error: true
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
       - name: Setup Node.js

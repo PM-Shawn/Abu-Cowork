@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { httpFetchTool } from './webTools';
 import { getTauriFetch } from '../../llm/tauriFetch';
 
-// These tests cover the pre-flight guards in httpFetchTool.execute that run
-// BEFORE any network call. Verifying them doesn't require mocking fetch —
-// the guards short-circuit and return an error string directly.
+// The blocking tests cover the pre-flight guards in httpFetchTool.execute that
+// run BEFORE any network call; they need no mock — the guards short-circuit
+// and return an error string directly. The acceptance tests below mock
+// getTauriFetch so no real network is touched.
 
 // getTauriFetch() itself is mocked (rather than spying on globalThis.fetch)
 // because it memoizes its result in a module-level singleton (_loadPromise in
@@ -68,7 +69,7 @@ describe('httpFetchTool pre-flight guards — acceptance (mocked fetch, no real 
   let fetchStub: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchStub = vi.fn().mockRejectedValue(new Error('E2E_STUB_REACHED'));
+    fetchStub = vi.fn().mockRejectedValue(new Error('FETCH_STUB_REACHED'));
     vi.mocked(getTauriFetch).mockResolvedValue(fetchStub);
   });
 
@@ -80,7 +81,7 @@ describe('httpFetchTool pre-flight guards — acceptance (mocked fetch, no real 
     const result = await httpFetchTool.execute({ url: 'http://localhost:1/nonexistent' });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    expect(result).toContain('E2E_STUB_REACHED');
+    expect(result).toContain('FETCH_STUB_REACHED');
     expect(result).not.toContain('cloud metadata');
     expect(result).not.toContain('blocked');
   });
@@ -89,7 +90,7 @@ describe('httpFetchTool pre-flight guards — acceptance (mocked fetch, no real 
     const result = await httpFetchTool.execute({ url: 'http://192.168.1.1/' });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    expect(result).toContain('E2E_STUB_REACHED');
+    expect(result).toContain('FETCH_STUB_REACHED');
     expect(result).not.toContain('cloud metadata');
     expect(result).not.toContain('blocked');
   });

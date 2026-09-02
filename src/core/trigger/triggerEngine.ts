@@ -332,7 +332,10 @@ class TriggerEngine {
     );
 
     try {
-      const callbacks = resolveTriggerCallbacks(actionWithWorkspace, { authorizationScopeId });
+      const callbacks = resolveTriggerCallbacks(actionWithWorkspace, {
+        authorizationScopeId,
+        conversationId,
+      });
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,
         filePermissionCallback: callbacks.filePermissionCallback,

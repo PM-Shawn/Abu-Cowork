@@ -48,10 +48,28 @@ import { createLogger } from '../logging/logger';
 
 const log = createLogger('im-approval');
 
-/** How long a prompt waits for an answer before failing closed. Ten minutes:
- *  long enough for someone to notice a phone notification, short enough that a
- *  scheduled run does not hold a browser tab hostage all night. */
-export const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * How long a prompt waits for an answer before failing closed.
+ *
+ * FIVE minutes, not ten: `channelRouter.AGENT_TIMEOUT_MS` aborts an
+ * IM-originated run after ten, so a ten-minute approval would routinely expire
+ * at the same moment the run it belongs to was killed — the user's answer
+ * would land on nothing. This has to stay strictly below that bound.
+ */
+export const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+let approvalTimeoutMs: number = APPROVAL_TIMEOUT_MS;
+
+/** The deadline the resolver applies. Configurable (no UI exposes it yet) so
+ *  the bound can be tuned without a settings-store migration; callers of
+ *  `requestImApproval` can also override it per request. */
+export function getImApprovalTimeoutMs(): number {
+  return approvalTimeoutMs;
+}
+
+export function setImApprovalTimeoutMs(ms: number): void {
+  approvalTimeoutMs = ms > 0 ? ms : APPROVAL_TIMEOUT_MS;
+}
 
 /**
  * Most approval prompts one conversation may have outstanding at once.
@@ -80,7 +98,8 @@ export type ImApprovalCause =
   | 'timeout'
   | 'no_binding'
   | 'too_many'
-  | 'undeliverable';
+  | 'undeliverable'
+  | 'aborted';
 
 export interface ImApprovalResult {
   outcome: ImApprovalOutcome;
@@ -92,9 +111,15 @@ export interface ImApprovalResult {
 /**
  * The complete set of messages that mean "yes". Closed on purpose: every
  * addition is a new way for an ordinary sentence to be mistaken for consent.
+ *
+ * `ok` and `y` were removed after review: both are ubiquitous chat filler —
+ * "ok" acknowledges anything, "y" is a typo away from nothing — and the deny
+ * set has no comparable filler, so keeping them made the matcher asymmetric in
+ * the dangerous direction. A user who types `ok` gets an ordinary message and,
+ * at worst, a timeout; that is the side to err on.
  */
 const APPROVE_REPLIES: ReadonlySet<string> = new Set([
-  '同意', '允许', '批准', 'yes', 'y', 'ok',
+  '同意', '允许', '批准', 'yes',
 ]);
 
 /** The complete set that means "no". Checked first, so a value that somehow
@@ -145,12 +170,53 @@ interface PendingApproval {
    *  may answer — a bystander in a group chat must not be able to approve
    *  browser automation running in someone else's logged-in sessions. */
   senderId?: string;
-  timer: ReturnType<typeof setTimeout>;
-  settle: (outcome: ImApprovalOutcome) => void;
+  /**
+   * False while the slot is RESERVED but the prompt has not been delivered
+   * yet. A reservation occupies a cap slot (so parallel asks cannot all read
+   * "0 outstanding" and blow past the cap) but must not be answerable — there
+   * is no message on screen for anyone to be answering.
+   */
+  armed: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  detachAbort?: () => void;
+  settle?: (outcome: ImApprovalOutcome) => void;
 }
 
 /** Insertion-ordered: index 0 is the oldest outstanding prompt. */
 const pending: PendingApproval[] = [];
+
+/**
+ * Platform message ids already consumed as an approval answer, with the time
+ * they were consumed.
+ *
+ * Every IM platform redelivers: a Feishu webhook retries when Abu is slow to
+ * ack, and a reconnect replays up to five minutes of history. Without this, a
+ * replayed `同意` would be a second consumption and would answer the NEXT
+ * pending prompt — a different ask, silently approved by a message the user
+ * sent once. `channelRouter` does the same dedup, but it runs AFTER this hook.
+ */
+const consumedMessageIds = new Map<string, number>();
+const CONSUMED_MESSAGE_TTL_MS = 30 * 60 * 1000;
+const MAX_CONSUMED_MESSAGE_IDS = 500;
+
+function rememberConsumedMessage(key: string, now: number): void {
+  consumedMessageIds.set(key, now);
+  for (const [id, at] of consumedMessageIds) {
+    if (now - at >= CONSUMED_MESSAGE_TTL_MS) consumedMessageIds.delete(id);
+  }
+  while (consumedMessageIds.size > MAX_CONSUMED_MESSAGE_IDS) {
+    const oldest = consumedMessageIds.keys().next();
+    if (oldest.done) break;
+    consumedMessageIds.delete(oldest.value);
+  }
+}
+
+function releasePending(entry: PendingApproval): void {
+  const index = pending.indexOf(entry);
+  if (index !== -1) pending.splice(index, 1);
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.detachAbort?.();
+}
 
 export function pendingApprovalCountForTests(): number {
   return pending.length;
@@ -158,15 +224,18 @@ export function pendingApprovalCountForTests(): number {
 
 /**
  * Drop every outstanding prompt and remembered answer. Test-only: production
- * entries are removed by an answer or by their own timer.
+ * entries are removed by an answer, an abort, or their own timer.
  */
 export function __resetPendingApprovalsForTests(): void {
   for (const entry of pending.splice(0)) {
-    clearTimeout(entry.timer);
-    entry.settle('denied');
+    if (entry.timer !== undefined) clearTimeout(entry.timer);
+    entry.detachAbort?.();
+    entry.settle?.('denied');
   }
   inFlight.clear();
   answered.clear();
+  consumedMessageIds.clear();
+  sentReceipts.clear();
 }
 
 /**
@@ -179,12 +248,31 @@ export function __resetPendingApprovalsForTests(): void {
  * — that is an ordinary message and belongs to the conversation.
  */
 export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
+  const messageId = message.replyContext.messageId;
+  const dedupKey = messageId ? `${message.platform}:${messageId}` : null;
+  const now = Date.now();
+
+  // A redelivery of a message we already consumed. Swallow it rather than
+  // returning false: it is not new user input either, and forwarding it would
+  // hand the model a bare "同意".
+  if (dedupKey) {
+    const consumedAt = consumedMessageIds.get(dedupKey);
+    if (consumedAt !== undefined && now - consumedAt < CONSUMED_MESSAGE_TTL_MS) return true;
+  }
+
   if (pending.length === 0) return false;
   const index = pending.findIndex(
     (entry) =>
+      entry.armed &&
       entry.platform === message.platform &&
       entry.chatId === message.chatId &&
-      (entry.senderId === undefined || entry.senderId === message.senderId),
+      // No bound owner means we do not know whose approval this is. In a 1:1
+      // chat there is only one candidate, so the reply is unambiguous; in a
+      // group it is not, and "anyone in the group may approve" is not a
+      // default anybody chose. Such a prompt simply expires.
+      (entry.senderId !== undefined
+        ? entry.senderId === message.senderId
+        : message.isDirect === true),
   );
   if (index === -1) return false;
 
@@ -192,8 +280,10 @@ export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
   if (verdict === null) return false;
 
   const [entry] = pending.splice(index, 1);
-  clearTimeout(entry.timer);
-  entry.settle(verdict === 'approve' ? 'approved' : 'denied');
+  if (entry.timer !== undefined) clearTimeout(entry.timer);
+  entry.detachAbort?.();
+  if (dedupKey) rememberConsumedMessage(dedupKey, now);
+  entry.settle?.(verdict === 'approve' ? 'approved' : 'denied');
   return true;
 }
 
@@ -241,15 +331,21 @@ export function resolveImTargetForConversation(
  * that something wanted permission, rather than only seeing a run that
  * achieved nothing. Fail-closed either way — this notice is not answerable.
  */
-function publishApprovalNotice(conversationId: string, prompt: string): void {
+function publishApprovalNotice(conversationId: string | null, prompt: string): void {
   try {
     publish({
       type: 'permission_request',
       source: 'agent',
-      payload: { title: prompt, conversationId },
-      // Time-based: the same action asked again an hour later is news again,
-      // but a chatty run must not raise one notice per tool call.
-      dedupKey: `im_approval_unreachable:${conversationId}:${prompt}`,
+      payload: {
+        title: prompt,
+        // Omitted when the run carries no conversation (trigger tiers): the
+        // notification's click handler jumps to a conversation, and a null one
+        // would be a dead click.
+        ...(conversationId !== null ? { conversationId } : {}),
+      },
+      // The same action asked again later is news again, but a chatty run must
+      // not raise one notice per tool call.
+      dedupKey: `im_approval_unreachable:${conversationId ?? 'no-conversation'}:${prompt}`,
     });
   } catch (error) {
     log.warn('failed to publish approval notice', {
@@ -258,38 +354,13 @@ function publishApprovalNotice(conversationId: string, prompt: string): void {
   }
 }
 
-/**
- * Ask a human over IM and wait for a plain-text answer.
- *
- * Sends FIRST and registers the pending entry only once delivery succeeded: a
- * reply cannot arrive before the message does, and registering first would
- * leave a window where an unrelated `同意` resolves a prompt nobody ever saw.
- */
-export interface RequestImApprovalOptions {
-  conversationId: string;
-  imTarget: UnattendedImTarget;
-  prompt: string;
-  /** Only this user's replies count. Defaults to "anyone in that chat". */
-  senderId?: string;
-  timeoutMs?: number;
-}
-
-export async function requestImApprovalDetailed(
-  options: RequestImApprovalOptions,
-): Promise<ImApprovalResult> {
-  const { conversationId, imTarget, prompt } = options;
-  const timeoutMs = options.timeoutMs ?? APPROVAL_TIMEOUT_MS;
-  const senderId = options.senderId ?? imTarget.senderId;
-  const { channelId, chatId } = imTarget;
-  if (!channelId || !chatId) return { outcome: 'denied', cause: 'no_binding' };
-
-  const outstanding = pending.filter((e) => e.conversationId === conversationId).length;
-  if (outstanding >= MAX_PENDING_APPROVALS_PER_CONVERSATION) {
-    publishApprovalNotice(conversationId, prompt);
-    return { outcome: 'denied', cause: 'too_many' };
-  }
-
-  const sent = await outputSender
+/** Push one line into an IM chat. Returns delivery success. */
+async function sendToChat(
+  channelId: string,
+  chatId: string,
+  content: string,
+): Promise<{ success: boolean; error?: string }> {
+  return await outputSender
     .send(
       {
         enabled: true,
@@ -298,32 +369,139 @@ export async function requestImApprovalDetailed(
         outputChatId: chatId,
         extractMode: 'last_message',
       },
-      { content: prompt },
+      { content },
     )
     .catch((error: unknown) => ({
       success: false,
       error: error instanceof Error ? error.message : String(error),
     }));
+}
+
+/** Receipts already sent, keyed by chat + cause, so a run that trips the same
+ *  outcome repeatedly does not narrate every tool call back into the chat. */
+const sentReceipts = new Map<string, number>();
+const RECEIPT_DEDUP_MS = 60 * 1000;
+
+/**
+ * Tell the chat what happened to the prompt it was asked to answer.
+ *
+ * Only for outcomes the user would otherwise never see: a denial they typed
+ * (so they know it landed), a timeout (so the silence is explained), and the
+ * over-cap refusal (so they know to answer the ones already up). An APPROVAL
+ * needs no receipt — the action's own result follows it. An abort needs none
+ * either: the user stopped the run themselves.
+ */
+async function sendOutcomeReceipt(
+  target: DeliverableImTarget,
+  cause: ImApprovalCause,
+  timeoutMs: number,
+): Promise<void> {
+  if (cause !== 'answered' && cause !== 'timeout' && cause !== 'too_many') return;
+  const key = `${target.platform}:${target.chatId}:${cause}`;
+  const now = Date.now();
+  const lastAt = sentReceipts.get(key);
+  if (lastAt !== undefined && now - lastAt < RECEIPT_DEDUP_MS) return;
+  sentReceipts.set(key, now);
+  for (const [k, at] of sentReceipts) {
+    if (now - at >= RECEIPT_DEDUP_MS * 10) sentReceipts.delete(k);
+  }
+
+  const t = getI18n();
+  const text =
+    cause === 'answered'
+      ? t.imChannel.approvalReceiptDenied
+      : cause === 'timeout'
+        ? format(t.imChannel.approvalReceiptTimeout, {
+            minutes: String(Math.round(timeoutMs / 60_000)),
+          })
+        : format(t.imChannel.approvalReceiptTooMany, {
+            max: String(MAX_PENDING_APPROVALS_PER_CONVERSATION),
+          });
+  const sent = await sendToChat(target.channelId, target.chatId, text);
+  if (!sent.success) log.warn(`approval receipt undelivered: ${sent.error ?? 'unknown error'}`);
+}
+
+/**
+ * Ask a human over IM and wait for a plain-text answer.
+ *
+ * Slot handling is two-phase on purpose. The cap slot is RESERVED
+ * synchronously, before the awaited send, because a `Promise.allSettled` of
+ * parallel asks would otherwise all read "0 outstanding" and every one of them
+ * would send. But the reservation is not `armed`, so nothing can answer it
+ * until the message is actually on screen — which preserves the reason the
+ * original code sent first: an unrelated `同意` must never resolve a prompt
+ * nobody ever saw.
+ */
+export interface RequestImApprovalOptions {
+  conversationId: string;
+  imTarget: UnattendedImTarget;
+  prompt: string;
+  /** Only this user's replies count. Defaults to "the 1:1 chat's only user". */
+  senderId?: string;
+  timeoutMs?: number;
+  /** The run's cancellation signal — Stop must not leave a prompt hanging. */
+  abortSignal?: AbortSignal;
+}
+
+export async function requestImApprovalDetailed(
+  options: RequestImApprovalOptions,
+): Promise<ImApprovalResult> {
+  const { conversationId, imTarget, prompt } = options;
+  const timeoutMs = options.timeoutMs ?? getImApprovalTimeoutMs();
+  // A blank owner id is "unknown owner", not "user with an empty id".
+  const senderId = (options.senderId ?? imTarget.senderId) || undefined;
+  const { channelId, chatId } = imTarget;
+  if (!channelId || !chatId) return { outcome: 'denied', cause: 'no_binding' };
+  if (options.abortSignal?.aborted) return { outcome: 'denied', cause: 'aborted' };
+
+  const outstanding = pending.filter((e) => e.conversationId === conversationId).length;
+  if (outstanding >= MAX_PENDING_APPROVALS_PER_CONVERSATION) {
+    publishApprovalNotice(conversationId, prompt);
+    return { outcome: 'denied', cause: 'too_many' };
+  }
+
+  const entry: PendingApproval = {
+    conversationId,
+    platform: imTarget.platform,
+    chatId,
+    ...(senderId !== undefined ? { senderId } : {}),
+    armed: false,
+  };
+  pending.push(entry);
+
+  const sent = await sendToChat(channelId, chatId, prompt);
   if (!sent.success) {
+    releasePending(entry);
     log.warn(`approval prompt undelivered (${chatId}): ${sent.error ?? 'unknown error'}`);
     return { outcome: 'denied', cause: 'undeliverable' };
   }
+  // Aborted while the message was in flight: release the slot rather than arm
+  // a prompt for a run that is already gone.
+  if (options.abortSignal?.aborted) {
+    releasePending(entry);
+    return { outcome: 'denied', cause: 'aborted' };
+  }
 
+  let aborted = false;
   const outcome = await new Promise<ImApprovalOutcome>((resolve) => {
-    const entry: PendingApproval = {
-      conversationId,
-      platform: imTarget.platform,
-      chatId,
-      ...(senderId !== undefined ? { senderId } : {}),
-      timer: setTimeout(() => {
-        const index = pending.indexOf(entry);
-        if (index !== -1) pending.splice(index, 1);
-        resolve('timeout');
-      }, timeoutMs),
-      settle: resolve,
-    };
-    pending.push(entry);
+    entry.settle = resolve;
+    entry.armed = true;
+    entry.timer = setTimeout(() => {
+      releasePending(entry);
+      resolve('timeout');
+    }, timeoutMs);
+    const signal = options.abortSignal;
+    if (signal) {
+      const onAbort = () => {
+        aborted = true;
+        releasePending(entry);
+        resolve('denied');
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      entry.detachAbort = () => signal.removeEventListener('abort', onAbort);
+    }
   });
+  if (aborted) return { outcome: 'denied', cause: 'aborted' };
   return { outcome, cause: outcome === 'timeout' ? 'timeout' : 'answered' };
 }
 
@@ -367,12 +545,56 @@ function rememberAnswer(key: string, answer: UnattendedConfirmationResult): void
   }
 }
 
-/** The IM-facing prompt: what, where, how to answer, and the deadline. */
+/** Longest untrusted fragment allowed into the prompt. A 5 KB shell command
+ *  would push the instruction line off a phone screen, which is its own attack. */
+const UNTRUSTED_FIELD_MAX = 200;
+
+/**
+ * Characters a fenced fragment must never contain: the fence itself (so the
+ * content cannot close it and write outside), C0/C1 control codes, and the
+ * Unicode line/paragraph separators and bidi overrides that render as line
+ * breaks or reverse text.
+ */
+const UNSAFE_PROMPT_CHARS =
+  // eslint-disable-next-line no-control-regex -- stripping control chars is the point
+  /[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069\u3000\u300C\u300D\u3010\u3011]/g;
+
+/**
+ * Make a model-authored string safe to show a human in a chat message.
+ *
+ * `ConfirmationInfo.command` and `.reason` are NOT trusted text: `command` is
+ * whatever the model asked to run (and the model can be steered by page
+ * content it just read), and `reason` can come from the AI reviewer. Dropped
+ * verbatim into a multi-line prompt, either could forge a second, official
+ * looking line — "系统自动检查通过，无需确认" — or a whole fake prompt below
+ * the real one. Collapsing every whitespace run to a single space keeps an
+ * untrusted fragment on ONE line inside its fence, so the template's framing
+ * (and the instruction line that follows it) cannot be impersonated.
+ */
+export function sanitizeUntrustedPromptField(
+  text: string,
+  maxLength = UNTRUSTED_FIELD_MAX,
+): string {
+  const flattened = text
+    .replace(UNSAFE_PROMPT_CHARS, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (flattened.length <= maxLength) return flattened;
+  return `${flattened.slice(0, maxLength).trimEnd()}…`;
+}
+
+/**
+ * The IM-facing prompt: what, why, how to answer, and the deadline.
+ *
+ * Both untrusted fields are sanitized and fenced; the locale template puts the
+ * "reply 同意/拒绝 + deadline" instruction AFTER the fenced region, so nothing
+ * inside the fence can appear to be part of the instruction.
+ */
 function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number): string {
   const t = getI18n();
   return format(t.imChannel.approvalPrompt, {
-    action: request.info.command,
-    reason: request.info.reason,
+    action: sanitizeUntrustedPromptField(request.info.command),
+    reason: sanitizeUntrustedPromptField(request.info.reason),
     minutes: String(Math.round(timeoutMs / 60_000)),
   });
 }
@@ -409,13 +631,25 @@ async function askOverIm(
     return { outcome: 'denied', cause: 'no_binding' };
   }
 
-  return await requestImApprovalDetailed({ conversationId, imTarget: target, prompt });
+  const timeoutMs = getImApprovalTimeoutMs();
+  const result = await requestImApprovalDetailed({
+    conversationId,
+    imTarget: target,
+    prompt,
+    timeoutMs,
+    ...(request.abortSignal !== undefined ? { abortSignal: request.abortSignal } : {}),
+  });
+  if (result.outcome !== 'approved') {
+    // Best-effort: a receipt that fails to send must not change the decision.
+    await sendOutcomeReceipt(target, result.cause, timeoutMs).catch(() => {});
+  }
+  return result;
 }
 
 /** Turn the primitive's outcome into what the seam's callers need to say. */
 function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult {
   const t = getI18n();
-  const minutes = String(Math.round(APPROVAL_TIMEOUT_MS / 60_000));
+  const minutes = String(Math.round(getImApprovalTimeoutMs() / 60_000));
   switch (result.cause) {
     case 'answered':
       return result.outcome === 'approved'
@@ -443,6 +677,11 @@ function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult
         'the IM approval request could not be delivered',
         t.commandConfirm.browserUnattendedImUndeliverable,
       );
+    case 'aborted':
+      return refuse(
+        'the run was stopped while its IM approval was outstanding',
+        t.commandConfirm.browserUnattendedImAborted,
+      );
   }
 }
 
@@ -454,31 +693,40 @@ function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult
  */
 export const imApprovalResolver: UnattendedConfirmationResolver = async (request) => {
   const t = getI18n();
+  const prompt = buildPrompt(request, getImApprovalTimeoutMs());
   const conversationId = request.conversationId;
   if (conversationId === undefined) {
-    // No conversation means no binding to look up and nothing to notify about.
+    // No conversation to look a binding up from — the trigger engine's tiers
+    // build their callbacks without one. Still notify: a refusal the user
+    // never hears about looks exactly like a run that silently did nothing,
+    // which is the failure the notice exit exists to prevent.
+    publishApprovalNotice(null, prompt);
     return refuse(
       'no conversation on the unattended confirmation request, so no IM chat to ask in',
       t.commandConfirm.browserUnattendedImNoBinding,
     );
   }
 
+  // Coalescing and answer caching are BOTH scoped to a run. Without a run key
+  // there is no boundary: two overlapping runs would share one prompt (so one
+  // run's "yes" would authorize the other's action), and a remembered answer
+  // would never expire. Ask separately instead — a duplicate prompt is a
+  // nuisance; a shared one is a security bug.
+  const runScoped = request.runKey !== undefined;
   const key = coalesceKey(request, conversationId);
 
   // An answer already given for this exact ask in this run. A timeout is
-  // remembered as a refusal too: someone who ignored the prompt for ten
-  // minutes must not be prompted again on the next tool call.
-  const cached = request.runKey !== undefined ? answered.get(key) : undefined;
+  // remembered as a refusal too: someone who ignored the prompt for its whole
+  // window must not be prompted again on the next tool call.
+  const cached = runScoped ? answered.get(key) : undefined;
   if (cached !== undefined) return cached;
 
-  const prompt = buildPrompt(request, APPROVAL_TIMEOUT_MS);
-
   // Concurrent asks with the same key wait on the one prompt already out.
-  let outcomePromise = inFlight.get(key);
+  let outcomePromise = runScoped ? inFlight.get(key) : undefined;
   const owned = outcomePromise === undefined;
   if (outcomePromise === undefined) {
     outcomePromise = askOverIm(request, conversationId, prompt);
-    inFlight.set(key, outcomePromise);
+    if (runScoped) inFlight.set(key, outcomePromise);
   }
 
   let outcome: ImApprovalResult;
@@ -486,15 +734,14 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
     outcome = await outcomePromise;
   } finally {
     // Only the owner clears: a follower must not drop a newer entry.
-    if (owned && inFlight.get(key) === outcomePromise) inFlight.delete(key);
+    if (owned && runScoped && inFlight.get(key) === outcomePromise) inFlight.delete(key);
   }
 
   const result = describeOutcome(outcome);
 
-  // Remembering requires a run boundary. Without a run key the answer would
-  // have no scope to expire in, and a stale "yes" is the one failure this
-  // whole layer exists to prevent.
-  if (request.runKey !== undefined) rememberAnswer(key, result);
+  // An abort is not a decision — it is the run ending. Remembering it would
+  // make a resumed/retried ask inherit a "no" nobody gave.
+  if (runScoped && outcome.cause !== 'aborted') rememberAnswer(key, result);
 
   return result;
 };

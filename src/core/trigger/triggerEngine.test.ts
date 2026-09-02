@@ -443,7 +443,13 @@ describe('TriggerEngine', () => {
       expect(createAuthorizationScopeMock).toHaveBeenCalledTimes(1);
       expect(resolveTriggerCallbacks).toHaveBeenCalledWith(
         expect.objectContaining({ workspacePath: '/Users/testuser/Projects/trigger' }),
-        { authorizationScopeId: 'scope-trigger-test' },
+        // The conversation rides along too: an approval channel needs it to
+        // find the chat this run can be asked in (and to name it in the
+        // fallback system notice).
+        expect.objectContaining({
+          authorizationScopeId: 'scope-trigger-test',
+          conversationId: expect.any(String),
+        }),
       );
       expect(runAgentLoopMock).toHaveBeenCalledWith(
         expect.any(String),

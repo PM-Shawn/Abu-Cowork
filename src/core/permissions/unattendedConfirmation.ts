@@ -81,6 +81,15 @@ export interface UnattendedConfirmationRequest {
    */
   runKey?: string;
   imTarget?: UnattendedImTarget;
+  /**
+   * The run's cancellation signal. An approval channel that waits minutes for
+   * a human MUST honor it: without this, pressing Stop leaves a prompt sitting
+   * in a chat, and a `同意` typed afterwards would be swallowed as the answer
+   * to a run that no longer exists instead of reaching the model as an
+   * ordinary message. In-process only — never serialized (see
+   * `ToolExecutionContext.abortSignal`).
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface UnattendedConfirmationResult {

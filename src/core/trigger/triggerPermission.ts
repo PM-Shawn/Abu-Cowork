@@ -42,6 +42,12 @@ export interface TriggerCallbacks {
 
 export interface TriggerCallbackOptions {
   authorizationScopeId: string;
+  /**
+   * The conversation this trigger run writes into. Optional only because older
+   * callers predate it; without it an approval channel has no binding to look
+   * up and every confirmation fails closed with nothing but a log line.
+   */
+  conversationId?: string;
 }
 
 type RuntimeTriggerPermissions = Omit<TriggerPermissions, 'allowedCommands' | 'allowedPaths' | 'allowedTools'> & {
@@ -106,6 +112,9 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
         // the actual ceiling.
         commandConfirmCallback: createUnattendedConfirmation({
           source: 'trigger',
+          ...(options.conversationId !== undefined
+            ? { conversationId: options.conversationId }
+            : {}),
           onDenied: (reason, info) => {
             console.log(`[Trigger] read_tools: denied "${info.command}" (${reason})`);
           },
@@ -125,6 +134,9 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
       return {
         commandConfirmCallback: createUnattendedConfirmation({
           source: 'trigger',
+          ...(options.conversationId !== undefined
+            ? { conversationId: options.conversationId }
+            : {}),
           onDenied: (reason, info) => {
             console.log(`[Trigger] safe_tools: denied "${info.command}" (${reason})`);
           },

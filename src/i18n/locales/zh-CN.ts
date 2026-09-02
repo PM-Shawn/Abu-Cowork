@@ -2187,7 +2187,10 @@ const zhCN: TranslationDict = {
     wechatAccount: '绑定账号',
     wechatSessionExpired: '微信登录已过期，请重新扫码绑定',
     approvalPrompt:
-      '⚠️ Abu 需要你确认一次操作\n{action}\n{reason}\n\n回复「同意」或「拒绝」（只回这两个词，其他内容会被当成普通消息）。{minutes} 分钟内未回复将自动拒绝。',
+      '⚠️ Abu 需要你确认一次操作\n操作：「{action}」\n说明：「{reason}」\n\n回复「同意」或「拒绝」（只回这两个词，其他内容会被当成普通消息）。{minutes} 分钟内未回复将自动拒绝。',
+    approvalReceiptDenied: '已收到「拒绝」，本次操作已取消。',
+    approvalReceiptTimeout: '{minutes} 分钟内没有收到回复，上面的操作已自动拒绝。',
+    approvalReceiptTooMany: '待回复的审批已达上限（{max} 条），新的请求已自动拒绝。请先回复上面的审批。',
   },
 
   windowClose: {
@@ -2312,6 +2315,7 @@ const zhCN: TranslationDict = {
     browserUnattendedImNoBinding: '这次运行需要你确认，但该会话没有绑定可回复的 IM 频道，已改为系统通知并拒绝本次操作',
     browserUnattendedImTooMany: '该会话待你回复的审批已达上限（{max} 条），本次操作直接拒绝，请先回复已有的审批',
     browserUnattendedImUndeliverable: '审批请求没能发送到 IM 频道，本次操作已拒绝',
+    browserUnattendedImAborted: '审批还没回复，任务就被停止了，本次操作已取消',
     browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
     browserBlockSite: '禁止此网站',

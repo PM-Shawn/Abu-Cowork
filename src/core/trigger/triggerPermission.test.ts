@@ -12,7 +12,10 @@ import {
 import { usePermissionStore } from '../../stores/permissionStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
-import { __resetUnattendedConfirmationForTests } from '../permissions/unattendedConfirmation';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+} from '../permissions/unattendedConfirmation';
 
 describe('resolveTriggerCallbacks', () => {
   function resolveForTest(action: Parameters<typeof resolveTriggerCallbacks>[0]) {
@@ -24,6 +27,31 @@ describe('resolveTriggerCallbacks', () => {
       dispose: () => disposeAuthorizationScope(scopeId),
     };
   }
+
+  // A trigger run whose confirmation seam has no conversationId can never be
+  // asked anything: the approval channel has no chat to look up and no id to
+  // put on the fallback notice, so every confirmation dies silently.
+  it('threads the run conversation into the confirmation seam', async () => {
+    const seen: (string | undefined)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.conversationId);
+      return { approved: false, reason: 'no' };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-1' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual(['conv-trigger-1']);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
+  });
 
   it('carries a custom trigger tool whitelist to the agent run', () => {
     const { callbacks, dispose } = resolveForTest({

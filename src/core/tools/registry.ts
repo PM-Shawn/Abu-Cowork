@@ -1035,6 +1035,13 @@ export async function checkToolApproval(
             // message per call, and an answer would have no boundary to
             // expire at.
             ...(toolContext?.loopId !== undefined ? { runKey: toolContext.loopId } : {}),
+            // Stop must reach an approval channel that can wait minutes for a
+            // human. Without it, pressing Stop leaves a prompt live in a chat
+            // and a later "同意" would be swallowed as the answer to a run
+            // that no longer exists.
+            ...(toolContext?.abortSignal !== undefined
+              ? { abortSignal: toolContext.abortSignal }
+              : {}),
           });
           if (!approval.approved) {
             // The channel's own sentence when it has one — "you declined this

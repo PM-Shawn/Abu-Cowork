@@ -46,7 +46,13 @@ const weather: InstalledPlugin = {
 };
 
 function resetStore() {
-  usePluginStore.setState({ marketplaces: [], installed: [], loading: false, error: null });
+  usePluginStore.setState({
+    marketplaces: [],
+    installed: [],
+    updateAvailableKeys: [],
+    loading: false,
+    error: null,
+  });
 }
 
 beforeEach(() => {

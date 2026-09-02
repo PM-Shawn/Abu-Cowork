@@ -30,8 +30,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
-import { entryUpdateStatus } from '@/core/plugin/updateCheck';
-import { pluginKey } from '@/core/plugin/paths';
+import { entryUpdateStatus, updateAvailableKeysFor } from '@/core/plugin/updateCheck';
 import {
   resolveRename,
   type Marketplace,
@@ -210,10 +209,7 @@ export default function MarketplaceBrowser({
     // Keyed by `selected.name` (the marketplace pointer's name), matching how
     // `installer.ts` builds `installed.json` keys — NOT the manifest's own
     // internal `name` field, which need not match the pointer name.
-    const keys = marketplace.plugins
-      .filter((e) => entryUpdateStatus(e, installedByName.get(e.name)) === 'update-available')
-      .map((e) => pluginKey(e.name, selected.name));
-    setUpdateAvailableKeys(keys, 'personal');
+    setUpdateAvailableKeys(updateAvailableKeysFor(marketplace.plugins, installedByName, selected.name), 'personal');
   }, [marketplace, selected, installedByName, setUpdateAvailableKeys]);
 
   const installedNames = useMemo(() => {

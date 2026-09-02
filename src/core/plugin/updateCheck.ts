@@ -15,6 +15,7 @@
 
 import type { InstalledPlugin } from './installedStore';
 import type { MarketplaceEntry } from './marketplace';
+import { pluginKey } from './paths';
 
 export type UpdateStatus = 'not-installed' | 'up-to-date' | 'update-available';
 
@@ -36,4 +37,27 @@ export function entryUpdateStatus(
   const pinned = 'sha' in entry.source ? entry.source.sha : undefined;
   if (!pinned) return 'up-to-date';
   return pinned === installed.sha ? 'up-to-date' : 'update-available';
+}
+
+/**
+ * The `pluginKey`s (keyed by `marketplaceName`, NOT any name the entry or its
+ * manifest declares internally — see `MarketplaceBrowser`'s effect for why
+ * that distinction matters) of every entry in `entries` that has an update
+ * available against `installedByName`. Sorted, so callers get a stable,
+ * order-independent list straight from the pure computation rather than
+ * re-deriving that themselves.
+ *
+ * Pulled out of `MarketplaceBrowser`'s effect so the actual detection logic
+ * — not just `setUpdateAvailableKeys`'s scope bookkeeping — has direct test
+ * coverage.
+ */
+export function updateAvailableKeysFor(
+  entries: MarketplaceEntry[],
+  installedByName: ReadonlyMap<string, InstalledPlugin>,
+  marketplaceName: string,
+): string[] {
+  return entries
+    .filter((entry) => entryUpdateStatus(entry, installedByName.get(entry.name)) === 'update-available')
+    .map((entry) => pluginKey(entry.name, marketplaceName))
+    .sort();
 }

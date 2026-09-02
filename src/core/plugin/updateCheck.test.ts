@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { entryUpdateStatus, type UpdateStatus } from './updateCheck';
+import { entryUpdateStatus, updateAvailableKeysFor, type UpdateStatus } from './updateCheck';
 import type { InstalledPlugin } from './installedStore';
 import type { MarketplaceEntry } from './marketplace';
 
@@ -42,5 +42,44 @@ describe('entryUpdateStatus', () => {
     it('update-available when installed has no recorded sha (legacy install)', () => {
       expect(entryUpdateStatus(remoteEntry('def'), installed({ sha: undefined }))).toBe('update-available');
     });
+  });
+});
+
+describe('updateAvailableKeysFor', () => {
+  it('includes a relative-source entry whose declared version is newer than installed', () => {
+    const byName = new Map([['weather', installed({ name: 'weather', version: '1.0.0' })]]);
+    const keys = updateAvailableKeysFor([relEntry('1.1.0')], byName, 'official');
+    expect(keys).toEqual(['weather@official']);
+  });
+
+  it('excludes an up-to-date entry and a not-installed entry', () => {
+    const byName = new Map([['weather', installed({ name: 'weather', version: '1.0.0' })]]);
+    const keys = updateAvailableKeysFor(
+      [relEntry('1.0.0'), { name: 'not-installed-plugin', version: '1.0.0', source: { kind: 'relative', path: './x' } }],
+      byName,
+      'official',
+    );
+    expect(keys).toEqual([]);
+  });
+
+  it('includes a remote entry whose pinned sha differs from what is installed', () => {
+    const byName = new Map([['weather', installed({ name: 'weather', sha: 'abc' })]]);
+    const keys = updateAvailableKeysFor([remoteEntry('def')], byName, 'official');
+    expect(keys).toEqual(['weather@official']);
+  });
+
+  it('sorts the result and keys by the passed marketplace name, not the entry name', () => {
+    const byName = new Map([
+      ['zeta', installed({ name: 'zeta', version: '1.0.0' })],
+      ['alpha', installed({ name: 'alpha', version: '1.0.0' })],
+    ]);
+    const entries: MarketplaceEntry[] = [
+      { name: 'zeta', version: '2.0.0', source: { kind: 'relative', path: './zeta' } },
+      { name: 'alpha', version: '2.0.0', source: { kind: 'relative', path: './alpha' } },
+    ];
+    // "my-market" is the marketplace *pointer* name, distinct from any name
+    // the entries or their manifest declare internally.
+    const keys = updateAvailableKeysFor(entries, byName, 'my-market');
+    expect(keys).toEqual(['alpha@my-market', 'zeta@my-market']);
   });
 });

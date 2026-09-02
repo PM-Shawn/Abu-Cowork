@@ -444,6 +444,9 @@ export interface TranslationDict {
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
+    suggestionSectionTeams: string;
+    suggestionSectionAgents: string;
+    suggestionSectionSkills: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */

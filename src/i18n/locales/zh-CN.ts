@@ -431,6 +431,9 @@ const zhCN: TranslationDict = {
     sendAlreadyPending: '上一条发送仍在确认中，请稍等片刻再重试。',
     attachmentAdmissionFailed: '无法添加该附件，请重新选择或拖入。',
     composerSuggestions: '代理和技能建议',
+    suggestionSectionTeams: '团队',
+    suggestionSectionAgents: '队员',
+    suggestionSectionSkills: '技能',
     subagent: {
       taskCancelled: 'Error: 任务被取消',
       outputLimitIncomplete: '[子代理输出多次达到 token 上限仍未完成，以下结果可能不完整，建议换用输出预算更大的模型重试。]',

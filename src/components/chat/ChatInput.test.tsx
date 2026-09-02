@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ChatInput, {
   mergeComposerAppend,
   referenceDedupeKey,
@@ -840,7 +840,7 @@ describe('ChatInput inline agent selection', () => {
     expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null);
   });
 
-  it('pins team options above the scrollable agent list so ArrowUp wrap cannot hide them', async () => {
+  it('groups @ suggestions into 团队 / 队员 sections, names only, and ArrowUp does not wrap', async () => {
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
       teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
@@ -852,17 +852,18 @@ describe('ChatInput inline agent selection', () => {
       fireEvent.change(textarea, { target: { value: '@' } });
 
       const listbox = screen.getByRole('listbox');
+      const groups = within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
+      expect(groups).toEqual(['Teams', 'Members']); // test locale is en-US
       const teamOption = screen.getByRole('option', { name: /zz数据小队/ });
-      const agentOption = screen.getByRole('option', { name: /publisher/ });
-      // Team lives in the pinned (first) block, agents in the scrollable one.
-      expect(teamOption.parentElement).toBe(listbox.children[0]);
-      expect(agentOption.parentElement).toBe(listbox.children[1]);
-      expect(teamOption.parentElement).not.toBe(agentOption.parentElement);
+      expect(teamOption.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Teams');
+      expect(screen.getByRole('option', { name: /publisher/ }).closest('[role="group"]')?.getAttribute('aria-label')).toBe('Members');
+      // Names only — the agent description must not be rendered.
+      expect(within(listbox).queryByText(/Publish/)).toBeNull();
 
-      // ArrowUp from the top wraps to the last agent; the team option must
-      // still be in the pinned block (visible regardless of list scroll).
+      // ArrowUp at the top stays at the top (wrapping to the bottom is what hid teams).
+      expect(teamOption.getAttribute('aria-selected')).toBe('true');
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
-      expect(screen.getByRole('option', { name: /zz数据小队/ }).parentElement).toBe(listbox.children[0]);
+      expect(screen.getByRole('option', { name: /zz数据小队/ }).getAttribute('aria-selected')).toBe('true');
     } finally {
       useTeamStore.setState({ teams: [], tasks: [] });
     }

@@ -431,6 +431,9 @@ const enUS: TranslationDict = {
     sendAlreadyPending: 'A previous send is still being accepted. Wait a moment, then try again.',
     attachmentAdmissionFailed: 'Could not add that attachment. Try attaching it again.',
     composerSuggestions: 'Agent and skill suggestions',
+    suggestionSectionTeams: 'Teams',
+    suggestionSectionAgents: 'Members',
+    suggestionSectionSkills: 'Skills',
     subagent: {
       taskCancelled: 'Error: task was cancelled',
       outputLimitIncomplete: '[The subagent repeatedly hit the output token limit without finishing; the result below may be incomplete. Consider retrying with a model that has a larger output budget.]',

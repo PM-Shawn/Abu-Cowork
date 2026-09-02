@@ -350,71 +350,83 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
 }
 
 /**
- * Composer suggestion popup. Teams always occupy the leading indexes of
- * `suggestions`; they render in a pinned block above the scrollable agent
- * list so they stay visible no matter where that list is scrolled
- * (real-machine bug 2026-09-01: ArrowUp wraps to the last row, scrolling
- * teams out of sight — reported twice as "@ 没有团队").
+ * Composer suggestion popup — grouped like Codex's composer (user feedback
+ * 2026-09-01): small section headers (团队 / 队员 / 技能), names only (no
+ * descriptions — too long), one scrollable list whose height is clamped to
+ * the space above the composer so the top can never be clipped by the window.
  */
-function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, teamBadge, optionId, onApply }: {
+const SUGGESTION_MAX_HEIGHT = 320;
+const SUGGESTION_TOP_MARGIN = 16;
+
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, optionId, onApply }: {
   listboxId: string;
   ariaLabel: string;
   suggestions: SuggestionItem[];
   selectedIndex: number;
   suggestionType: 'skill' | 'agent' | null;
-  teamBadge: string;
+  sectionLabels: { teams: string; agents: string; skills: string };
   optionId: (index: number) => string;
   onApply: (item: SuggestionItem) => void;
 }) {
-  const pinnedCount = suggestions.filter((item) => item.team).length;
-  const renderOption = (item: SuggestionItem, idx: number) => (
-    <button
-      key={item.name}
-      id={optionId(idx)}
-      role="option"
-      aria-selected={idx === selectedIndex}
-      onClick={() => onApply(item)}
-      onMouseDown={(event) => event.preventDefault()}
-      className={cn(
-        'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-body text-left',
-        idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
-      )}
-    >
-      <div className="flex items-center gap-3">
-        <span className={cn(
-          'w-5 text-center font-mono text-minor shrink-0',
-          suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
-        )}>
-          {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
-        </span>
-        <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
-        {item.team && (
-          <span className="shrink-0 text-caption px-1.5 py-0.5 rounded bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]">{teamBadge}</span>
-        )}
-        <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
-      </div>
-      {item.trigger && (
-        <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">
-          TRIGGER: {item.trigger}
-        </div>
-      )}
-    </button>
-  );
+  const ref = useRef<HTMLDivElement>(null);
+  const [maxHeight, setMaxHeight] = useState(SUGGESTION_MAX_HEIGHT);
+  useLayoutEffect(() => {
+    const update = () => {
+      // The popup is anchored to its parent's top edge (bottom-full); the
+      // usable height is whatever sits between that edge and the window top.
+      const anchorTop = ref.current?.parentElement?.getBoundingClientRect().top;
+      if (anchorTop === undefined) return;
+      setMaxHeight(Math.max(120, Math.min(SUGGESTION_MAX_HEIGHT, anchorTop - SUGGESTION_TOP_MARGIN)));
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  const teamCount = suggestions.filter((item) => item.team).length;
+  const sections: Array<{ label: string; items: Array<{ item: SuggestionItem; idx: number }> }> = suggestionType === 'agent'
+    ? [
+        { label: sectionLabels.teams, items: suggestions.slice(0, teamCount).map((item, i) => ({ item, idx: i })) },
+        { label: sectionLabels.agents, items: suggestions.slice(teamCount).map((item, i) => ({ item, idx: teamCount + i })) },
+      ]
+    : [{ label: sectionLabels.skills, items: suggestions.map((item, i) => ({ item, idx: i })) }];
+
   return (
     <div
+      ref={ref}
       id={listboxId}
       role="listbox"
       aria-label={ariaLabel}
-      className="absolute bottom-full left-0 right-0 mb-2 flex flex-col bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-hidden max-h-[320px] z-20"
+      style={{ maxHeight }}
+      className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-20"
     >
-      {pinnedCount > 0 && (
-        <div className="shrink-0 max-h-[150px] overflow-y-auto border-b border-[var(--abu-border-subtle)]">
-          {suggestions.slice(0, pinnedCount).map((item, idx) => renderOption(item, idx))}
+      {sections.filter((section) => section.items.length > 0).map((section) => (
+        <div key={section.label} role="group" aria-label={section.label}>
+          <div className="px-4 pt-2 pb-1 text-minor text-[var(--abu-text-tertiary)] select-none">{section.label}</div>
+          {section.items.map(({ item, idx }) => (
+            <button
+              key={item.name}
+              id={optionId(idx)}
+              role="option"
+              aria-selected={idx === selectedIndex}
+              onClick={() => onApply(item)}
+              onMouseDown={(event) => event.preventDefault()}
+              className={cn(
+                'btn-ghost w-full flex items-center gap-3 px-4 py-2 text-body text-left',
+                idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
+              )}
+            >
+              <span className={cn(
+                'w-5 text-center font-mono text-minor shrink-0',
+                suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
+              )}>
+                {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
+              </span>
+              <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
+            </button>
+          ))}
         </div>
-      )}
-      <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto">
-        {suggestions.slice(pinnedCount).map((item, idx) => renderOption(item, pinnedCount + idx))}
-      </div>
+      ))}
     </div>
   );
 }
@@ -1367,12 +1379,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (showSuggestions && suggestions.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+        setSelectedIndex((prev) => Math.max(0, prev - 1));
         return;
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev + 1) % suggestions.length);
+        setSelectedIndex((prev) => Math.min(suggestions.length - 1, prev + 1));
         return;
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
@@ -1505,7 +1517,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             suggestions={suggestions}
             selectedIndex={selectedIndex}
             suggestionType={suggestionType}
-            teamBadge={t.team.kindTeam}
+            sectionLabels={{ teams: t.chat.suggestionSectionTeams, agents: t.chat.suggestionSectionAgents, skills: t.chat.suggestionSectionSkills }}
             optionId={suggestionOptionId}
             onApply={applySuggestion}
           />

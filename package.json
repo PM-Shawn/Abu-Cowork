@@ -28,6 +28,7 @@
     "pretest": "npm run gen:models:check",
     "test": "vitest run",
     "test:website": "node --test scripts/website-download-links.test.mjs scripts/website-docs.test.mjs",
+    "test:infra": "node --test scripts/ci-workflow.test.mjs",
     "test:enterprise": "vitest run --config vitest.enterprise.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

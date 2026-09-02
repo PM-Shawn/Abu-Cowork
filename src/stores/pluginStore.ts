@@ -194,12 +194,25 @@ export const usePluginStore = create<PluginStore>()(
 
       removeMarketplace: (name) => {
         if (name === BUILTIN_MARKET_NAME) return; // the official market stays
-        set((state) => ({ marketplaces: state.marketplaces.filter((m) => m.name !== name) }));
+        set((state) => ({
+          marketplaces: state.marketplaces.filter((m) => m.name !== name),
+          // A removed market can no longer be browsed, so its update flags
+          // would otherwise sit in the badge count forever.
+          updateAvailableKeys: state.updateAvailableKeys.filter(
+            (k) => parsePluginKey(k)?.marketplace !== name,
+          ),
+        }));
       },
 
       refreshInstalled: async (home) => {
         const installed = await readInstalled(home);
-        set({ installed });
+        // Drop update flags whose install is gone (uninstall goes through
+        // here) — the badge must not keep counting a plugin that no longer
+        // exists on disk.
+        set((state) => ({
+          installed,
+          updateAvailableKeys: state.updateAvailableKeys.filter((k) => installed.some((p) => p.key === k)),
+        }));
         // Security-critical, not bookkeeping — see the module doc. Kept here
         // (rather than duplicated in install/uninstall) so every mutation path
         // that ends in a refresh re-arms the approval gate for free.

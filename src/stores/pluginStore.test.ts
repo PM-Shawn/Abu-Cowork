@@ -469,6 +469,23 @@ describe('updateAvailableKeys', () => {
     expect(usePluginStore.getState().updateAvailableKeys).toEqual(['c@enterprise']);
   });
 
+  it('is pruned by refreshInstalled when the flagged install is gone (uninstall)', async () => {
+    usePluginStore.setState({ updateAvailableKeys: ['weather@official', 'b@my-market'] });
+    // Only `weather` survives on disk; `b@my-market` was uninstalled.
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']);
+  });
+
+  it('is pruned by removeMarketplace for that market only', () => {
+    usePluginStore.setState({
+      marketplaces: [{ name: 'official', dir: '/m' }, { name: 'my-market', dir: '/n' }],
+      updateAvailableKeys: ['weather@official', 'b@my-market', 'c@enterprise'],
+    });
+    usePluginStore.getState().removeMarketplace('my-market');
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official', 'c@enterprise']);
+  });
+
   it('is not persisted', () => {
     // partialize whitelist: marketplaces + knownMcpServerNames only.
     const partialize = usePluginStore.persist.getOptions().partialize as

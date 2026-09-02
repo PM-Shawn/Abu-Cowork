@@ -364,6 +364,39 @@ describe('MarketplaceBrowser', () => {
     expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument();
   });
 
+  it('does not score the previous market\'s entries against a newly selected market', async () => {
+    const installedAt = '2026-09-01T00:00:00.000Z';
+    const contributed = { skills: [], mcpServers: [] };
+    usePluginStore.setState({
+      installed: [
+        { key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0', installedAt, contributed },
+        { key: 'weather@other', marketplace: 'other', name: 'weather', version: '0.9.0', installedAt, contributed },
+      ],
+      updateAvailableKeys: [],
+    });
+    renderBrowser();
+    await waitFor(() => expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']));
+
+    // Add a market (auto-selected) whose manifest stays in flight. Without the
+    // guard, official's `weather 1.0.0` entry is scored against the
+    // `weather@other 0.9.0` install and a bogus `weather@other` key lands.
+    const other = makeDeferred<Marketplace>();
+    vi.mocked(loadMarketplaceFromDir).mockImplementation((dir) =>
+      dir === '/m/other' ? other.promise : Promise.resolve(marketplace),
+    );
+    await act(async () => {
+      usePluginStore.setState({
+        marketplaces: [{ name: 'official', dir: '/m/official' }, { name: 'other', dir: '/m/other' }],
+      });
+    });
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']);
+
+    await act(async () => {
+      other.resolve({ name: 'other', plugins: [] });
+    });
+    await waitFor(() => expect(usePluginStore.getState().updateAvailableKeys).toEqual([]));
+  });
+
   it('shows a disabled Already-installed button when versions match', async () => {
     usePluginStore.setState({
       installed: [{

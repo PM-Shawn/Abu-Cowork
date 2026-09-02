@@ -68,7 +68,7 @@ interface MarketplaceBrowserProps {
 type EntriesState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ready'; marketplace: Marketplace }
+  | { kind: 'ready'; marketplace: Marketplace; forName: string }
   | { kind: 'error'; message: string };
 
 function authorName(author: MarketplaceEntry['author']): string | undefined {
@@ -163,7 +163,7 @@ export default function MarketplaceBrowser({
     setCategory(ALL_CATEGORIES);
     loadMarketplaceFromDir(selected.dir)
       .then((marketplace) => {
-        if (!cancelled) setEntriesState({ kind: 'ready', marketplace });
+        if (!cancelled) setEntriesState({ kind: 'ready', marketplace, forName: selected.name });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -178,6 +178,8 @@ export default function MarketplaceBrowser({
   }, [selected]);
 
   const marketplace = entriesState.kind === 'ready' ? entriesState.marketplace : null;
+  /** Which market `marketplace` was loaded for — see the update-keys effect. */
+  const marketplaceForName = entriesState.kind === 'ready' ? entriesState.forName : null;
 
   /**
    * Names already installed *from this marketplace*, resolved through the
@@ -207,11 +209,17 @@ export default function MarketplaceBrowser({
   // marketplace, which is out of scope here.
   useEffect(() => {
     if (!marketplace || !selected) return;
+    // On a market switch this effect runs in the same commit as the load
+    // effect above, i.e. BEFORE its `loading` state lands — so `marketplace`
+    // is still the previous market's while `selected` is already the new one.
+    // Scoring the old entries under the new market's name would flag keys
+    // that do not exist; wait until the entries belong to `selected`.
+    if (marketplaceForName !== selected.name) return;
     // Keyed by `selected.name` (the marketplace pointer's name), matching how
     // `installer.ts` builds `installed.json` keys — NOT the manifest's own
     // internal `name` field, which need not match the pointer name.
     setUpdateAvailableKeys(updateAvailableKeysFor(marketplace.plugins, installedByName, selected.name), 'personal');
-  }, [marketplace, selected, installedByName, setUpdateAvailableKeys]);
+  }, [marketplace, marketplaceForName, selected, installedByName, setUpdateAvailableKeys]);
 
   const installedNames = useMemo(() => {
     if (!marketplace) return new Set<string>();

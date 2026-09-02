@@ -244,6 +244,13 @@ export interface InstallPluginOptions extends PlanInstallOptions {
   copyDir: (from: string, to: string) => Promise<void>;
   /** Injectable for deterministic tests. */
   now?: () => Date;
+  /**
+   * Content hash of the verified artifact (hex sha256), recorded so update
+   * detection has an identity for sources that carry no git sha (enterprise
+   * catalog). The installer does not compute it — whoever verified the bytes
+   * passes it in.
+   */
+  checksum?: string;
 }
 
 /** Version segment used on disk when a manifest omits `version`. */
@@ -276,6 +283,7 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       // Pin the record to the verified sha for remote sources, so "what is
       // installed" is answerable down to the commit.
       sha: 'sha' in opts.entry.source ? opts.entry.source.sha : undefined,
+      checksum: opts.checksum,
       installedAt: (opts.now?.() ?? new Date()).toISOString(),
       contributed: {
         skills: disclosure.skills,

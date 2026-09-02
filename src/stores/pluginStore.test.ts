@@ -80,6 +80,12 @@ describe('marketplaces', () => {
       { name: 'official', dir: '/m/official-v2' },
     ]);
   });
+
+  it('addMarketplace refuses the reserved enterprise name', () => {
+    expect(() => usePluginStore.getState().addMarketplace('enterprise', '/tmp/x'))
+      .toThrow(/reserved marketplace name/);
+    expect(usePluginStore.getState().marketplaces.some(m => m.name === 'enterprise')).toBe(false);
+  });
 });
 
 describe('install', () => {

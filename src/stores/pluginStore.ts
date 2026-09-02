@@ -44,6 +44,7 @@ import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
+import { ENTERPRISE_MARKET_NAME } from '@/core/plugin/enterpriseMarket';
 import type { MarketplaceEntry } from '@/core/plugin/marketplace';
 
 /** A marketplace directory the user added. `dir` is absolute (tilde expanded). */
@@ -62,6 +63,8 @@ export interface InstallRequest {
   marketplaceName: string;
   marketplaceDir: string;
   entry: Pick<MarketplaceEntry, 'name' | 'source'>;
+  /** Content hash of the verified artifact, carried through to the install record. */
+  checksum?: string;
 }
 
 /** Install request plus the installed key to replace. */
@@ -142,6 +145,12 @@ export const usePluginStore = create<PluginStore>()(
       error: null,
 
       addMarketplace: (name, dir) => {
+        // The enterprise market name is reserved for the organization-managed
+        // catalog installed through the private module — a user-added market
+        // must never be able to claim that identity.
+        if (name === ENTERPRISE_MARKET_NAME) {
+          throw new Error(`reserved marketplace name: ${ENTERPRISE_MARKET_NAME}`);
+        }
         // The built-in name is reserved; a user market must not be able to
         // shadow the official one out of the picker.
         if (name === BUILTIN_MARKET_NAME) return;
@@ -192,6 +201,7 @@ export const usePluginStore = create<PluginStore>()(
             marketplaceName: req.marketplaceName,
             marketplaceDir: req.marketplaceDir,
             entry: req.entry,
+            checksum: req.checksum,
             // `copyPluginDir` resolves to a file count; the installer's seam
             // is void, so adapt rather than widen the contract.
             copyDir: async (from, to) => {
@@ -278,6 +288,7 @@ export const usePluginStore = create<PluginStore>()(
           marketplaceName: req.marketplaceName,
           marketplaceDir: req.marketplaceDir,
           entry: req.entry,
+          checksum: req.checksum,
         });
       },
 

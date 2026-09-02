@@ -225,6 +225,19 @@ describe('installPlugin', () => {
       '/home/u/.abu/plugin-packages/official/weather/0.0.0',
     );
   });
+
+  it('records the caller-supplied checksum on the install record', async () => {
+    const copyDir = vi.fn(async () => {});
+    const { record } = await installPlugin({
+      home: '/home/u',
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry,
+      copyDir,
+      checksum: 'a'.repeat(64),
+    });
+    expect(record.checksum).toBe('a'.repeat(64));
+  });
 });
 
 describe('remote sources', () => {

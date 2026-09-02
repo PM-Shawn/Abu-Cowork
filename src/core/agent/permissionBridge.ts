@@ -163,6 +163,20 @@ export function drainConfirmationQueue() {
  *                 Falls back to getCurrentLoopContext() compat shim if omitted.
  */
 export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?: string): Promise<boolean> {
+  // A refusal NOTICE is not a request (see `ConfirmationInfo.deniedNotice`):
+  // the decision is already made and the caller discards the answer. It must
+  // never become a dialog — command approvals queue with no timeout, so the
+  // turn would block on a dialog asking about something already refused, and
+  // navigating away would hang it outright.
+  //
+  // This is reachable even though notices are only sent for UNATTENDED runs:
+  // the run mode is derived from the conversation record, and a conversation
+  // created by a scheduled task or trigger stays unattended-shaped forever —
+  // including after a human opens it from the run history and sends a message,
+  // at which point the chat dispatches with no confirm callback and the loop
+  // falls back to this function. Guarding here closes the whole class in one
+  // place, whatever future caller sends a notice.
+  if (info.deniedNotice !== undefined) return false;
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;

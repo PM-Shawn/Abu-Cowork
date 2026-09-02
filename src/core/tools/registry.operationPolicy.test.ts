@@ -22,6 +22,11 @@ import {
   setUnattendedConfirmationResolver,
 } from '../permissions/unattendedConfirmation';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import {
+  drainConfirmationQueue,
+  getPendingCommandConfirmation,
+  requestCommandConfirmation,
+} from '../agent/permissionBridge';
 
 const policyMocks = vi.hoisted(() => ({
   checkTool: vi.fn(() => ({ decision: 'allow' as const })),
@@ -223,9 +228,11 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.decision).toBe('deny');
     });
 
-    it('lets read-only browser tools run', async () => {
+    it('lets read-only browser tools run on a resolvable page', async () => {
+      withTabOrigin(`${ALLOWED_SITE}/report`);
+
       const decision = await checkToolApproval(
-        'abu-browser__snapshot', { tabId: 1 }, unattended, (async () => true) as never,
+        'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
       );
 
       expect(decision.decision).toBe('allow');
@@ -455,6 +462,66 @@ describe('browser gate — operation-class policy', () => {
     });
   });
 
+  // Completing I3: a probe that fails must not become permission. If the
+  // browser host is wedged, every origin resolves to null and every site
+  // verdict to 'default' — which would silently re-open the blocked-site hole
+  // by breaking the lookup instead of by policy.
+  describe('an unverifiable site is a refusal in unattended runs', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    });
+
+    it.each(['screenshot', 'extract_text', 'snapshot', 'click', 'fill'])(
+      'denies %s when the origin cannot be resolved',
+      async (tool) => {
+        // The host answers, but knows nothing about this tab (wedged host,
+        // closed tab, a tab owned by someone else).
+        const decision = await checkToolApproval(
+          `abu-browser__${tool}`, { tabId: 4242 }, unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      },
+    );
+
+    it('denies a history navigation, whose destination is unknowable', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: OWNED_TAB_ID, action: 'back', url: ALLOWED_URL },
+        unattendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+    });
+
+    it('reports the unverifiable site through the denial accounting', async () => {
+      const confirm = vi.fn(async () => true);
+
+      await checkToolApproval(
+        'abu-browser__screenshot', { tabId: 4242 }, unattendedOwner, confirm as never,
+      );
+
+      expect((confirm.mock.calls[0]?.[0] as unknown as { deniedNotice?: string }).deniedNotice)
+        .toBeDefined();
+    });
+
+    it('exempts tools that act on no page at all', async () => {
+      for (const tool of ['get_tabs', 'connection_status', 'get_downloads']) {
+        const decision = await checkToolApproval(
+          `abu-browser__${tool}`, {}, unattendedOwner, (async () => true) as never,
+        );
+        expect(decision.decision, tool).toBe('allow');
+      }
+    });
+
+    it('leaves ATTENDED reads alone — an unresolvable origin still just runs', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: 4242 }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+    });
+  });
+
   // I2: the unattended scripting cell has no 'allow' — a policy that claims
   // otherwise resolves to 'ask', which fails closed until U3's approval lands.
   describe('unattended scripting can never be silently allowed', () => {
@@ -469,9 +536,10 @@ describe('browser gate — operation-class policy', () => {
         return { approved: false, reason: 'no channel' };
       });
 
+      withTabOrigin(ALLOWED_URL);
       const decision = await checkToolApproval(
-        'abu-browser__execute_js', { tabId: 1, url: ALLOWED_URL, code: '1' },
-        unattended, (async () => true) as never,
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        unattendedOwner, (async () => true) as never,
       );
 
       expect(decision.decision).toBe('deny');
@@ -483,6 +551,58 @@ describe('browser gate — operation-class policy', () => {
       useSettingsStore.getState().setBrowserOperationState('unattended', 'scripting', 'allow');
 
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('ask');
+    });
+  });
+
+  // N1: the run mode is derived from the conversation record, and a
+  // scheduled/trigger conversation stays unattended-shaped forever — including
+  // after a human opens it from the run history and types into it. That chat
+  // dispatches with no confirm callback, so the loop falls back to the desktop
+  // bridge. A refusal notice reaching THAT would queue a dialog with no
+  // timeout, block the turn on a question about an already-refused action, and
+  // discard the click.
+  describe('a refusal notice never becomes a desktop dialog', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({ allowUnattendedBrowser: false });
+      useChatStore.setState({
+        conversations: {
+          'resumed-run': { id: 'resumed-run', scheduledTaskId: 'task-9' },
+        } as never,
+      });
+    });
+
+    afterEach(() => {
+      drainConfirmationQueue();
+    });
+
+    it('enqueues nothing and still denies, with the real permission bridge as the callback', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { conversationId: 'resumed-run' } as never,
+        requestCommandConfirmation,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(getPendingCommandConfirmation()).toBeNull();
+    });
+
+    it('refuses a notice at the bridge itself, whoever sends one', async () => {
+      await expect(requestCommandConfirmation({
+        command: 'anything',
+        level: 'warn',
+        reason: 'already refused',
+        deniedNotice: 'already refused',
+      })).resolves.toBe(false);
+      expect(getPendingCommandConfirmation()).toBeNull();
+    });
+
+    it('still queues a genuine confirmation request', async () => {
+      // The guard must key on the notice, not on "browser" or "unattended" —
+      // an ordinary request from the same bridge still reaches the dialog.
+      void requestCommandConfirmation({ command: 'rm -rf /tmp/x', level: 'danger', reason: '' });
+      await Promise.resolve();
+
+      expect(getPendingCommandConfirmation()).not.toBeNull();
     });
   });
 

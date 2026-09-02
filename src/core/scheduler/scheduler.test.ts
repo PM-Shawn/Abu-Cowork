@@ -345,13 +345,34 @@ describe('SchedulerEngine permission tier', () => {
   // Without it a 3am task would report "failed" and nothing else. These drive
   // the REAL gate so the whole chain is covered, not just the recorder.
   describe('unattended browser refusals still explain themselves in the run result', () => {
+    /**
+     * Production shape on purpose: a real scheduled run carries the
+     * run-permission ceiling the scheduler builds, and the ceiling refuses
+     * browser actions BEFORE the operation-policy branch does. A harness that
+     * passed only `{conversationId}` would never exercise that path — which is
+     * exactly how an untranslated, unactionable ceiling diagnostic reached the
+     * run result unnoticed.
+     */
     function runWithRealGate(toolName: string, input: Record<string, unknown>) {
+      // The scheduled ceiling's roster is a snapshot of the tools that existed
+      // at dispatch, so a browser tool has to be in it or the run is refused
+      // one layer earlier, for an unrelated reason.
+      getSchedulerToolsMock.mockReturnValueOnce([
+        { name: toolName, description: 'browser', inputSchema: { type: 'object', properties: {} } },
+      ] as never);
       vi.mocked(runAgentLoop).mockImplementation(async (conversationId, _msg, options) => {
+        const opts = options as {
+          commandConfirmCallback: never;
+          runPermissionCeiling?: unknown;
+        };
         await checkToolApproval(
           toolName,
           input,
-          { conversationId } as never,
-          (options as { commandConfirmCallback: never }).commandConfirmCallback,
+          {
+            conversationId,
+            runPermissionCeiling: opts.runPermissionCeiling,
+          } as never,
+          opts.commandConfirmCallback,
         );
         return { reason: 'error', error: 'boom' } as never;
       });
@@ -370,6 +391,27 @@ describe('SchedulerEngine permission tier', () => {
 
       expect(latestRunError(task.id)).toContain('https://example.com');
       expect(latestRunError(task.id)).toContain('设置');
+    });
+
+    it('stays localized and actionable even though the ceiling refuses first', async () => {
+      // The scheduled ceiling denies browser before the policy branch runs, so
+      // the notice must not inherit the ceiling's hardcoded English diagnostic
+      // ('browser action is not permitted by the unattended browser policy') —
+      // that names neither the master switch nor where to change it.
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: { 'https://example.com': 'allowed' },
+      });
+      const task = makeTask({ id: 'task-browser-ceiling', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      const error = latestRunError(task.id);
+      expect(error).toContain('https://example.com');
+      expect(error).toContain('设置');
+      expect(error).not.toContain('browser action is not permitted');
     });
 
     it('names the site when the run may use the browser but not on that site', async () => {

@@ -2301,6 +2301,8 @@ const enUS: TranslationDict = {
     browserPolicyDenied: 'You have set this class of browser action to deny (change it in Settings → Capabilities → Browser operation permissions)',
     browserUnattendedSiteNotAllowed: 'An unattended run may only act on sites you explicitly allowed, and this site has no such grant',
     browserUnattendedConfirmUnavailable: 'This action needs confirmation, and an unattended run has no confirmation channel',
+    browserUnattendedCapabilityDenied: 'This unattended run\'s capability tier does not include browser actions (change it in the task / trigger / channel permission settings)',
+    browserUnattendedOriginUnverified: 'The site this action targets could not be determined, and an unattended run must not act on a page it cannot verify',
     browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
     browserBlockSite: 'Block this site',

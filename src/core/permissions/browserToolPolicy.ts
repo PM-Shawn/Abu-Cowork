@@ -157,6 +157,26 @@ export function normalizeBrowserOrigin(url: string | undefined): string | null {
   }
 }
 
+/**
+ * Browser tools that do not act on a page: they report on the runtime itself
+ * (which tabs exist, whether the bridge is connected, what was downloaded).
+ * There is no site behind them, so there is no site verdict to check.
+ *
+ * Everything else — including a read like `screenshot` and an unknown tool
+ * this module has not been taught about — DOES act on a page, which is what
+ * makes "we could not determine the origin" a refusal rather than a shrug in
+ * an unattended run: a probe that times out because the browser host is
+ * wedged must not become permission to read a site the user blocked.
+ */
+const PAGELESS_TOOLS = new Set(['get_tabs', 'connection_status', 'get_downloads']);
+
+export function browserToolTargetsPage(namespacedName: string): boolean {
+  const separator = namespacedName.indexOf('__');
+  if (separator === -1) return false;
+  if (!BROWSER_SERVER_NAMES.has(namespacedName.slice(0, separator))) return false;
+  return !PAGELESS_TOOLS.has(namespacedName.slice(separator + 2));
+}
+
 export type SiteVerdict = 'allowed' | 'denied' | 'default';
 
 /**
@@ -287,7 +307,7 @@ export interface BrowserOperationPolicy {
 
 /**
  * The states one policy cell may hold. Every cell offers all three EXCEPT
- * unattended scripting, which offers `deny | ask` only.
+ * unattended scripting, which offers `ask | deny` only.
  *
  * Why that cell is special: a site grant is minted from a human approving a
  * CLICK ("always allow this site"), and page scripting is a categorically
@@ -422,7 +442,7 @@ export function normalizeBrowserOperationPolicy(input: unknown): BrowserOperatio
     unattended: {
       ...unattended,
       // `unattended.scripting` has no 'allow' value — see
-      // UNATTENDED_SCRIPTING_STATES. A stored/hand-edited 'allow' is clamped
+      // `browserOperationStatesFor`. A stored/hand-edited 'allow' is clamped
       // to 'ask' (the strongest thing the cell may express) rather than to
       // 'deny', so a user who deliberately opted into unattended scripting
       // still gets the approval round-trip instead of a silent hard block.

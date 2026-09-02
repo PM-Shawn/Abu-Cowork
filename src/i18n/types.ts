@@ -2513,6 +2513,12 @@ export interface TranslationDict {
     /** Unattended run whose policy says "ask", with no approval channel able
      *  to answer. */
     browserUnattendedConfirmUnavailable: string;
+    /** Unattended run whose capability tier carries no browser access at all —
+     *  a tier decision, not an operation-policy one. */
+    browserUnattendedCapabilityDenied: string;
+    /** Unattended run whose target site could not be determined (the browser
+     *  host did not answer, or the action names no resolvable page). */
+    browserUnattendedOriginUnverified: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */

@@ -2303,6 +2303,8 @@ const zhCN: TranslationDict = {
     browserPolicyDenied: '该类浏览器操作已被你设为拒绝（可在 设置 → 能力 → 浏览器操作权限 中修改）',
     browserUnattendedSiteNotAllowed: '无人值守运行只能在你已明确允许的网站上操作，当前网站没有这条授权',
     browserUnattendedConfirmUnavailable: '该操作需要确认，但无人值守运行没有可用的确认入口',
+    browserUnattendedCapabilityDenied: '本次无人值守运行的能力档位不包含浏览器操作（可在该任务/触发器/频道的权限设置里调整）',
+    browserUnattendedOriginUnverified: '无法确认这次操作所在的网站，无人值守运行不能在无法核实的页面上动作',
     browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
     browserBlockSite: '禁止此网站',

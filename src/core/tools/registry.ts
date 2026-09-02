@@ -17,6 +17,7 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
+  browserToolTargetsPage,
   classifyBrowserTool,
   decideBrowserOperation,
   grantBrowserAutomation,
@@ -931,6 +932,26 @@ export async function checkToolApproval(
         ...(origin !== null ? { targetOrigin: origin } : {}),
       });
 
+      /**
+       * The localized, actionable sentence for a refusal — the one a user
+       * reads in a scheduled run's result. Deliberately NOT derived from the
+       * technical reason string a ceiling/decision function returns: those are
+       * hardcoded English diagnostics aimed at the model and the tool result,
+       * and a real scheduled run hits the CEILING first (its capability is
+       * 'scheduled'), so using the technical string there is how the run
+       * result ends up in English, naming neither the master switch nor where
+       * to change it. Both surfaces get what they need: the tool result keeps
+       * the technical reason, the run result gets this.
+       */
+      const unattendedDenialReason = (): string => {
+        if (!masterSwitchUnattended) return t.commandConfirm.browserUnattendedDisabled;
+        if (siteVerdict === 'denied') return t.commandConfirm.browserSiteDenied;
+        if (policyVerdict === 'deny') return t.commandConfirm.browserPolicyDenied;
+        // The ceiling refused for a reason the operation policy did not: this
+        // run's capability tier carries no browser access at all.
+        return t.commandConfirm.browserUnattendedCapabilityDenied;
+      };
+
       if (consequence === 'state-changing') {
         const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
           runPermissionCeiling,
@@ -939,15 +960,16 @@ export async function checkToolApproval(
         );
         if (browserCeilingDecision.decision === 'deny') {
           if (runMode === 'unattended') {
+            const noticeReason = unattendedDenialReason();
             await notifyUnattendedDenial(onRequireConfirmation, {
               command: browserActionLabel,
               level: 'warn',
-              reason: browserCeilingDecision.reason ?? '',
+              reason: noticeReason,
               kind: 'browser',
               browserOperationClass: opClass,
               ...(origin !== null ? { browserOrigin: origin } : {}),
               allowPersistentGrant: false,
-              deniedNotice: browserCeilingDecision.reason ?? t.commandConfirm.browserPolicyDenied,
+              deniedNotice: noticeReason,
             }, toolContext?.loopId);
           }
           return browserCeilingDecision;
@@ -957,19 +979,30 @@ export async function checkToolApproval(
         // Now reachable for read-only actions too, in unattended runs: a
         // blocked site is blocked for READING as well when nobody is watching.
         return runMode === 'unattended'
-          ? await denyUnattendedBrowser(t.commandConfirm.browserSiteDenied)
+          ? await denyUnattendedBrowser(unattendedDenialReason())
           : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
       if (policyVerdict === 'deny') {
-        const reason = runMode === 'unattended' && !masterSwitchUnattended
-          ? t.commandConfirm.browserUnattendedDisabled
-          : t.commandConfirm.browserPolicyDenied;
         return runMode === 'unattended'
-          ? await denyUnattendedBrowser(reason)
-          : { decision: 'deny', reason: `Error: ${reason}` };
+          ? await denyUnattendedBrowser(unattendedDenialReason())
+          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
       }
 
       if (runMode === 'unattended') {
+        // An action on a page whose origin could not be determined — the host
+        // probe timed out or errored, or the destination is unknowable (a
+        // history navigation). Without this, a WEDGED browser host would
+        // resolve every origin to null, every site verdict to 'default', and
+        // an unattended run could read a site the user explicitly blocked:
+        // the fail-open that the blocked-site check exists to prevent, reached
+        // by breaking the lookup instead of by policy. State-changing actions
+        // already fail closed further down (they require an 'allowed' site);
+        // this makes reads match. Tools that act on no page at all
+        // (`get_tabs`, `connection_status`, `get_downloads`) are exempt —
+        // there is no site behind them to verify.
+        if (browserToolTargetsPage(name) && origin === null) {
+          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedOriginUnverified);
+        }
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny (or, in a later task, an IM approval
         // round-trip), never a dialog. Route 'ask' through the single seam

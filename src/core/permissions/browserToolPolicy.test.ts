@@ -11,6 +11,7 @@ import {
   isScriptingBrowserTool,
   listAllBrowserToolPatterns,
   browserOperationStatesFor,
+  browserToolTargetsPage,
   normalizeBrowserOperationPolicy,
   normalizeBrowserOrigin,
   revokeBrowserGrant,
@@ -279,6 +280,31 @@ describe('browser tool policy', () => {
       expect(isScriptingBrowserTool('abu-browser__navigate')).toBe(false);
       expect(isScriptingBrowserTool('other-server__execute_js')).toBe(false);
       expect(isScriptingBrowserTool('execute_js')).toBe(false);
+    });
+  });
+
+  describe('browserToolTargetsPage', () => {
+    const PAGELESS = ['get_tabs', 'connection_status', 'get_downloads'];
+
+    it('says no only for the tools that act on no page', () => {
+      for (const tool of BROWSER_TOOL_SUFFIXES) {
+        expect(browserToolTargetsPage(`abu-browser__${tool}`), tool)
+          .toBe(!PAGELESS.includes(tool));
+      }
+    });
+
+    it('treats an unknown browser tool as page-acting — unknown means verify, not skip', () => {
+      expect(browserToolTargetsPage('abu-browser__some_future_tool')).toBe(true);
+    });
+
+    it('is false for anything that is not a browser tool', () => {
+      expect(browserToolTargetsPage('read_file')).toBe(false);
+      expect(browserToolTargetsPage('github__get_tabs')).toBe(false);
+    });
+
+    it('covers the Chrome bridge namespace too', () => {
+      expect(browserToolTargetsPage('abu-browser-bridge__screenshot')).toBe(true);
+      expect(browserToolTargetsPage('abu-browser-bridge__get_tabs')).toBe(false);
     });
   });
 

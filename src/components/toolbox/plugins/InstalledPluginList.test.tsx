@@ -115,4 +115,30 @@ describe('InstalledPluginList', () => {
     expect(rows[0]).toHaveTextContent('weather');
     expect(screen.queryByText('compliance-bot')).toBeNull();
   });
+
+  it('shows the empty state when every install is organization-scoped', () => {
+    // Personal list empty but `installed` non-empty: the gate must key off the
+    // personal partition, otherwise the user is told "no matches" (as if their
+    // search was too narrow) instead of being offered the marketplace.
+    usePluginStore.setState({
+      installed: [
+        {
+          key: 'compliance-bot@enterprise',
+          marketplace: 'enterprise',
+          name: 'compliance-bot',
+          version: '3.0.0',
+          installedAt: '2026-09-01T00:00:00.000Z',
+          contributed: { skills: ['audit'], mcpServers: [] },
+        },
+      ],
+    });
+    renderList();
+
+    expect(screen.queryByTestId('installed-plugin-row')).toBeNull();
+    expect(screen.getByText(/No plugins installed yet|还没有安装任何插件/)).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Browse the marketplace|去插件市场看看/ }),
+    ).toBeTruthy();
+    expect(screen.queryByText(/No plugins match|没有匹配的插件/)).toBeNull();
+  });
 });

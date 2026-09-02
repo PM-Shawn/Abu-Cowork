@@ -41,14 +41,17 @@ export default function InstalledPluginList({
   const [pendingRemoval, setPendingRemoval] = useState<InstalledPlugin | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
+  // The personal view never lists organization-installed plugins — those
+  // are managed (and uninstalled) from the 组织 view only, same as skills.
+  // Both the list and the empty state key off this partition, so a user whose
+  // installs are all organization-scoped sees the empty state, not "no matches".
+  const { personal } = useMemo(() => partitionInstalled(installed), [installed]);
+
   const visible = useMemo(() => {
-    // The personal view never lists organization-installed plugins — those
-    // are managed (and uninstalled) from the 组织 view only, same as skills.
-    const { personal } = partitionInstalled(installed);
     const query = searchQuery.trim().toLowerCase();
     if (!query) return personal;
     return personal.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
-  }, [installed, searchQuery]);
+  }, [personal, searchQuery]);
 
   const handleConfirmUninstall = async () => {
     const target = pendingRemoval;
@@ -68,7 +71,7 @@ export default function InstalledPluginList({
     }
   };
 
-  if (installed.length === 0) {
+  if (personal.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />

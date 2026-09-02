@@ -10,6 +10,7 @@ import {
   hasBrowserGrant,
   isScriptingBrowserTool,
   listAllBrowserToolPatterns,
+  normalizeBrowserOperationPolicy,
   normalizeBrowserOrigin,
   revokeBrowserGrant,
   toLegacyBrowserToolConsequence,
@@ -18,39 +19,66 @@ import {
   type BrowserOperationState,
 } from './browserToolPolicy';
 import { matchesToolName } from '../skill/toolFilter';
+// The REAL tool list, not a hand-copied duplicate — a 20th tool added to
+// BROWSER_TOOL_SUFFIXES without a matching row in READ_ONLY/INTERACTIVE/
+// SCRIPTING below now fails the partition test instead of silently passing.
+import { BROWSER_TOOL_SUFFIXES } from '../tools/toolPrefetch';
 
 /**
- * The 19 tool suffixes the browser-automation MCP servers actually expose
- * (source of truth: `BROWSER_TOOL_SUFFIXES` in `../tools/toolPrefetch.ts`),
- * each paired with the operation class the product spec assigns it
- * (`docs/abu-browser-batch2-brief-2026-09.md` §二). Table-driven so adding a
- * 20th tool without updating this table fails loudly instead of silently
- * defaulting to read-only.
+ * Test-side classification table, matched against the product spec
+ * (`docs/abu-browser-batch2-brief-2026-09.md` §二) — but see the "byte
+ * compatibility" note on the interactive/read-only split below.
+ *
+ * `READ_ONLY`, `INTERACTIVE`, and `SCRIPTING` are asserted (in the
+ * "partitions the real tool list" test) to together equal exactly
+ * `BROWSER_TOOL_SUFFIXES`, with no overlap — so this table cannot silently
+ * drift from the real tool list the way a hand-copied `Array<[string,
+ * class]>` could.
  */
-const ALL_BROWSER_TOOLS: Array<[string, BrowserOperationClass]> = [
-  // read-only (10)
-  ['get_tabs', 'read-only'],
-  ['snapshot', 'read-only'],
-  ['wait_for', 'read-only'],
-  ['extract_text', 'read-only'],
-  ['extract_table', 'read-only'],
-  ['query_js', 'read-only'],
-  ['screenshot', 'read-only'],
-  ['screenshot_full_page', 'read-only'],
-  ['connection_status', 'read-only'],
-  ['get_downloads', 'read-only'],
-  // interactive (8)
-  ['click', 'interactive'],
-  ['fill', 'interactive'],
-  ['select', 'interactive'],
-  ['scroll', 'interactive'],
-  ['keyboard', 'interactive'],
-  ['navigate', 'interactive'],
-  ['start_recording', 'interactive'],
-  ['stop_recording', 'interactive'],
-  // scripting (1)
-  ['execute_js', 'scripting'],
+const SCRIPTING = ['execute_js'];
+
+/**
+ * Byte-compatibility with the pre-three-state gate: the legacy
+ * `STATE_CHANGING_TOOLS` set (registry.ts, before this module existed) was
+ * `{click, fill, select, keyboard, execute_js, navigate}` — everything else,
+ * including `scroll`, `start_recording`, and `stop_recording`, was
+ * `'read-only'` (ungated). `INTERACTIVE` must stay exactly that set minus
+ * `execute_js` (which is `SCRIPTING` above): moving scroll/recording here
+ * would make `toLegacyBrowserToolConsequence` newly gate actions that used
+ * to run free in the attended flow — see `LEGACY_STATE_CHANGING_TOOLS` below
+ * for the pinned regression test.
+ */
+const INTERACTIVE = ['click', 'fill', 'select', 'keyboard', 'navigate'];
+
+const READ_ONLY = [
+  'get_tabs',
+  'snapshot',
+  'wait_for',
+  'extract_text',
+  'extract_table',
+  'query_js',
+  'screenshot',
+  'screenshot_full_page',
+  'connection_status',
+  'get_downloads',
+  'scroll',
+  'start_recording',
+  'stop_recording',
 ];
+
+/** The pre-three-state `STATE_CHANGING_TOOLS` set, pinned for the regression
+ *  test in the `toLegacyBrowserToolConsequence` describe block below. */
+const LEGACY_STATE_CHANGING_TOOLS = ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate'];
+
+const CLASS_OF: Record<string, BrowserOperationClass> = Object.fromEntries([
+  ...READ_ONLY.map((t) => [t, 'read-only'] as const),
+  ...INTERACTIVE.map((t) => [t, 'interactive'] as const),
+  ...SCRIPTING.map((t) => [t, 'scripting'] as const),
+]);
+
+const ALL_BROWSER_TOOLS: Array<[string, BrowserOperationClass]> = BROWSER_TOOL_SUFFIXES.map(
+  (tool) => [tool, CLASS_OF[tool]],
+);
 
 describe('browser tool policy', () => {
   beforeEach(() => {
@@ -59,16 +87,30 @@ describe('browser tool policy', () => {
 
   describe('classifyBrowserTool', () => {
     it.each(ALL_BROWSER_TOOLS)('classifies %s as %s on both browser servers', (tool, expected) => {
+      // If `tool` were a real BROWSER_TOOL_SUFFIXES entry with no row in
+      // READ_ONLY/INTERACTIVE/SCRIPTING above, `expected` is `undefined`
+      // here and this assertion fails loudly (classifyBrowserTool never
+      // returns undefined) instead of silently passing.
       expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe(expected);
       expect(classifyBrowserTool(`abu-browser-bridge__${tool}`)).toBe(expected);
     });
 
-    it('covers every tool the browser-automation servers expose — no gaps, no extras', () => {
-      // Fails loudly if a tool is added to the servers without a row in
-      // ALL_BROWSER_TOOLS (or vice versa), rather than silently classifying
-      // an unlisted tool as read-only.
-      expect(ALL_BROWSER_TOOLS).toHaveLength(19);
-      expect(new Set(ALL_BROWSER_TOOLS.map(([tool]) => tool)).size).toBe(19);
+    it('the three explicit buckets exactly partition the REAL 19-tool list — no gaps, no overlap, no extras', () => {
+      expect(BROWSER_TOOL_SUFFIXES.length).toBe(19);
+      const buckets = [READ_ONLY, INTERACTIVE, SCRIPTING];
+      const union = buckets.flat();
+      // No overlap between buckets.
+      expect(union.length).toBe(new Set(union).size);
+      // Union covers exactly the real list — nothing missing, nothing extra.
+      expect(new Set(union)).toEqual(new Set(BROWSER_TOOL_SUFFIXES));
+    });
+
+    it('falls back to the gated "interactive" bucket for an unrecognized tool under a real browser server — fail-safe, not fail-open', () => {
+      // A tool that ships before this module is updated to classify it must
+      // not silently become ungated: 'read-only' would be fail-open for a
+      // surface that acts inside the user's live, logged-in sessions.
+      expect(classifyBrowserTool('abu-browser__totally-unclassified-tool')).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser-bridge__totally-unclassified-tool')).toBe('interactive');
     });
 
     it('ignores non-browser tools so other MCP servers keep their current behavior', () => {
@@ -91,6 +133,16 @@ describe('browser tool policy', () => {
       expect(toLegacyBrowserToolConsequence('interactive')).toBe('state-changing');
       expect(toLegacyBrowserToolConsequence('scripting')).toBe('state-changing');
     });
+
+    it.each(BROWSER_TOOL_SUFFIXES)(
+      'reproduces the pre-U1 STATE_CHANGING_TOOLS gate exactly for %s (byte-compatibility regression)',
+      (tool) => {
+        const expected = LEGACY_STATE_CHANGING_TOOLS.includes(tool) ? 'state-changing' : 'read-only';
+        const opClass = classifyBrowserTool(`abu-browser__${tool}`);
+        expect(opClass).not.toBeNull();
+        expect(toLegacyBrowserToolConsequence(opClass!)).toBe(expected);
+      },
+    );
   });
 
   describe('listAllBrowserToolPatterns', () => {
@@ -226,6 +278,64 @@ describe('browser tool policy', () => {
       expect(isScriptingBrowserTool('abu-browser__navigate')).toBe(false);
       expect(isScriptingBrowserTool('other-server__execute_js')).toBe(false);
       expect(isScriptingBrowserTool('execute_js')).toBe(false);
+    });
+  });
+
+  describe('normalizeBrowserOperationPolicy', () => {
+    const VALID_POLICY: BrowserOperationPolicy = {
+      attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+      unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+    };
+
+    it('passes a fully well-formed policy through unchanged', () => {
+      expect(normalizeBrowserOperationPolicy(VALID_POLICY)).toEqual(VALID_POLICY);
+    });
+
+    it('clamps a completely missing input to strictest-everywhere (attended=ask, unattended=deny)', () => {
+      expect(normalizeBrowserOperationPolicy(undefined)).toEqual({
+        attended: { readOnly: 'ask', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      });
+    });
+
+    it('clamps non-object input (string/number/null/array) to strictest-everywhere', () => {
+      const strictest = {
+        attended: { readOnly: 'ask', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      };
+      for (const bad of ['nope', 42, null, [1, 2, 3]]) {
+        expect(normalizeBrowserOperationPolicy(bad)).toEqual(strictest);
+      }
+    });
+
+    it('clamps a missing run-mode key to strictest for that entire column, keeping the other column', () => {
+      const attendedOnly = { attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' } };
+      expect(normalizeBrowserOperationPolicy(attendedOnly)).toEqual({
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      });
+    });
+
+    it('clamps one missing leaf to strictest while preserving valid sibling leaves', () => {
+      const partial = {
+        attended: { readOnly: 'allow' /* interactive, scripting missing */ },
+        unattended: { readOnly: 'allow', interactive: 'allow' /* scripting missing */ },
+      };
+      expect(normalizeBrowserOperationPolicy(partial)).toEqual({
+        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+      });
+    });
+
+    it('clamps a leaf holding a value outside allow|deny|ask to strictest', () => {
+      const malformed = {
+        attended: { readOnly: 'maybe', interactive: 'allow', scripting: true },
+        unattended: { readOnly: 'allow', interactive: 42, scripting: 'deny' },
+      };
+      expect(normalizeBrowserOperationPolicy(malformed)).toEqual({
+        attended: { readOnly: 'ask', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+      });
     });
   });
 
@@ -412,6 +522,37 @@ describe('browser tool policy', () => {
           targetOrigin: 'https://evil.example.com',
         });
         expect(withOrigin).toBe(withoutOrigin);
+      });
+    });
+
+    describe('runtime defense against a malformed policy (I3)', () => {
+      it('a policy missing the unattended column still denies unattended scripting (strictest fallback)', () => {
+        const malformed = { attended: DEFAULT_BROWSER_OPERATION_POLICY.attended } as unknown as BrowserOperationPolicy;
+        expect(
+          decideBrowserOperation({
+            opClass: 'scripting',
+            runMode: 'unattended',
+            policy: malformed,
+            masterSwitchUnattended: true,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('deny');
+      });
+
+      it('a policy with an invalid leaf value still returns a valid state (ask), not the garbage value', () => {
+        const malformed = {
+          attended: { readOnly: 'allow', interactive: 'yolo', scripting: 'ask' },
+          unattended: DEFAULT_BROWSER_OPERATION_POLICY.unattended,
+        } as unknown as BrowserOperationPolicy;
+        expect(
+          decideBrowserOperation({
+            opClass: 'interactive',
+            runMode: 'attended',
+            policy: malformed,
+            masterSwitchUnattended: true,
+            siteVerdict: 'allowed',
+          }),
+        ).toBe('ask');
       });
     });
   });

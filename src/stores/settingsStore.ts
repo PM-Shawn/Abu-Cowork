@@ -9,6 +9,7 @@ import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
+  normalizeBrowserOperationPolicy,
   type BrowserOperationPolicy,
 } from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
@@ -1136,12 +1137,18 @@ export const useSettingsStore = create<SettingsStore>()(
         // asks) so a single-session attended user sees zero behavior change.
         // ════════════════════════════════════════════════
         if (version < 46) {
-          if (state.browserOperationPolicy === undefined) {
-            state.browserOperationPolicy = DEFAULT_BROWSER_OPERATION_POLICY;
-          }
-          if (state.allowUnattendedBrowser === undefined) {
-            state.allowUnattendedBrowser = false;
-          }
+          // Entirely-absent (the normal pre-v46 upgrade path) gets the full,
+          // product-reviewed default — NOT run through the strictest-cell
+          // normalizer below, which would incorrectly turn today's "attended
+          // read-only/interactive run free" into "ask", a real behavior
+          // regression for existing single-session users. A PRESENT-but-
+          // malformed value (hand-edited storage, a future bug) is a
+          // different case and does get normalized to the strictest cell —
+          // see `normalizeBrowserOperationPolicy`'s doc comment.
+          state.browserOperationPolicy = state.browserOperationPolicy === undefined
+            ? DEFAULT_BROWSER_OPERATION_POLICY
+            : normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+          state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
         }
 
         if (version < 44) {
@@ -2009,6 +2016,16 @@ export const useSettingsStore = create<SettingsStore>()(
         }
         // Validate active model points to a usable provider
         reconcileActiveProvider(state);
+        // Defense in depth against a malformed browserOperationPolicy that
+        // reached storage without going through `migrate` (hand-edited
+        // localStorage, a future bug writing a partial object, ...) — the
+        // `migrate` branch above only runs when crossing the v46 boundary,
+        // so an already-v46 store with a corrupted policy would otherwise
+        // never get fixed up. Clamps any missing/invalid cell to the
+        // strictest state (see `normalizeBrowserOperationPolicy`'s doc
+        // comment); a well-formed policy passes through unchanged.
+        state.browserOperationPolicy = normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
         // Force reset ephemeral UI state
         state.showSettings = false;
         state.activeSystemTab = 'usage';

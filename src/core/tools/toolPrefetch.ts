@@ -9,7 +9,13 @@
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 
-const BROWSER_TOOL_SUFFIXES = [
+/**
+ * Exported so `browserToolPolicy.test.ts` can classify against the REAL tool
+ * list instead of a hand-copied duplicate that could silently drift (a 20th
+ * tool added here without a matching classification entry there would
+ * otherwise stay green).
+ */
+export const BROWSER_TOOL_SUFFIXES = [
   'get_tabs',
   'snapshot',
   'click',

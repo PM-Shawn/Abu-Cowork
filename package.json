@@ -180,7 +180,7 @@
   "lint-staged": {
     "src/**/*.{ts,tsx}": [
       "eslint --max-warnings 0",
-      "vitest related --run"
+      "vitest related --run --maxWorkers=2"
     ]
   },
   "overrides": {

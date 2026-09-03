@@ -768,8 +768,11 @@ export default function ChatView({
     // `@<team> <goal>` hands work to a team — a local action like /compact,
     // no LLM turn. The receipt is a toast with a jump into the 任务 kanban;
     // execution happens in background conversations owned by the task.
-    if (text.trimStart().startsWith('@')) {
-      const teamHit = tryHandleTeamMention(text);
+    {
+      // No '@'-prefix pre-check here: attachment markers are prepended ahead
+      // of the user's text, so the mention is not always first. The helper
+      // strips them and re-tests the prefix itself.
+      const teamHit = tryHandleTeamMention(text, { hasImages: (images?.length ?? 0) > 0 });
       if (teamHit.handled) {
         useToastStore.getState().addToast({
           type: 'success',
@@ -782,6 +785,10 @@ export default function ChatView({
       if (teamHit.reason === 'empty_goal') {
         useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamHit.teamName ?? '' }) });
         return false; // hand the text back to the composer
+      }
+      if (teamHit.reason === 'unsupported_context') {
+        useToastStore.getState().addToast({ type: 'info', title: t.team.chatReceiptUnsupported });
+        return false; // hand the text back — nothing was created, nothing lost
       }
     }
 

@@ -198,9 +198,34 @@ class SchedulerEngine {
           notifyScheduledTaskError(format(getI18n().schedule.teamAutoPaused, { name: task.name }));
         }
       };
+      // The same unattended envelope an ordinary scheduled run gets. Without
+      // it a member's first escalation falls back to the INTERACTIVE approval
+      // path, which has no timeout and only renders for the active
+      // conversation — every team run lives in a background one, so the task
+      // would hang forever and the 2-strike auto-pause below would never trip.
+      const authorizationScopeId = createAuthorizationScope(
+        resolveEffectivePermissionMode(task) === 'autonomous' ? { shell: 'full' } : undefined,
+      );
       try {
+        const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
+        const runPermissionCeiling = buildScheduledRunPermissionCeiling(
+          getToolInvoker().getAllTools().map((tool) => tool.name),
+        );
         const { runScheduledTeamTask } = await import('@/core/team/orchestrator');
-        const outcome = await runScheduledTeamTask(task.teamId, task.prompt);
+        const outcome = await runScheduledTeamTask(task.teamId, task.prompt, {
+          // The schedule's own autonomy tier must reach every member run.
+          permissionMode: task.permissionMode,
+          dispatch: {
+            commandConfirmCallback: permissions.commandConfirmCallback,
+            filePermissionCallback: permissions.filePermissionCallback,
+            blockedTools: permissions.blockedTools,
+            allowedTools: runPermissionCeiling.allowedTools as string[],
+            authorizationScopeId,
+            runPermissionCeiling,
+          },
+          authorizeFolder: (folder) => scopedAuthorizeWorkspace(authorizationScopeId, folder),
+          getDenials: permissions.getDenials,
+        });
         if (outcome.ok) {
           scheduleStore.completeRun(task.id, runId);
           notifyScheduledTaskCompleted(task.name);
@@ -210,6 +235,7 @@ class SchedulerEngine {
       } catch (err) {
         onFailure(String(err));
       } finally {
+        disposeAuthorizationScope(authorizationScopeId);
         this.runningTasks.delete(task.id);
       }
       return;

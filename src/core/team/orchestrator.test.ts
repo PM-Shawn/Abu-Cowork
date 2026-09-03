@@ -1,19 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
 
-const runCalls: Array<{ conversationId: string; message: string }> = [];
-let runBehavior: (conversationId: string, message: string) => Promise<{ reason: string; error?: string }> =
+const runCalls: Array<{ conversationId: string; message: string; options?: Record<string, unknown> }> = [];
+type RunOptions = { onAbortControllerReady?: (controller: AbortController) => void };
+let runBehavior: (conversationId: string, message: string, options?: RunOptions) => Promise<{ reason: string; error?: string }> =
   async () => ({ reason: 'completed' });
 
 vi.mock('@/core/agent/agentLoopRunner', () => ({
-  runAgentLoopDispatched: vi.fn(async (conversationId: string, message: string) => {
-    runCalls.push({ conversationId, message });
-    return runBehavior(conversationId, message);
+  runAgentLoopDispatched: vi.fn(async (conversationId: string, message: string, options?: RunOptions) => {
+    runCalls.push({ conversationId, message, options: options as Record<string, unknown> | undefined });
+    return runBehavior(conversationId, message, options);
   }),
 }));
 
 let convCounter = 0;
 const createConversationCalls: Array<{ workspacePath: string | null; options?: Record<string, unknown> }> = [];
+const permissionModeCalls: Array<{ conversationId: string; mode: unknown }> = [];
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: {
     getState: () => ({
@@ -22,6 +24,9 @@ vi.mock('@/stores/chatStore', () => ({
         return `conv-${++convCounter}`;
       }),
       renameConversation: vi.fn(),
+      setConversationPermissionMode: vi.fn((conversationId: string, mode: unknown) => {
+        permissionModeCalls.push({ conversationId, mode });
+      }),
     }),
   },
 }));
@@ -41,7 +46,7 @@ vi.mock('@/utils/notifications', () => ({
   notifyTeamTaskBlocked: vi.fn(async () => undefined),
 }));
 
-import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask, runScheduledTeamTask } from './orchestrator';
+import { startPlanning, confirmAndExecute, acceptTask, startMemberTask, stopTask, runScheduledTeamTask, retryItem, rejectTask, dependenciesSatisfied } from './orchestrator';
 
 function seed() {
   registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
@@ -56,6 +61,8 @@ describe('team orchestrator', () => {
     useTeamStore.setState({ teams: [], tasks: [] });
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     runCalls.length = 0;
+    createConversationCalls.length = 0;
+    permissionModeCalls.length = 0;
     convCounter = 0;
     runBehavior = async () => ({ reason: 'completed' });
   });
@@ -211,8 +218,10 @@ describe('team orchestrator', () => {
       expect(after.status).toBe('blocked');
       expect(after.statusNote).toMatch(/stop|停止/i);
       expect(after.plan?.items.find((i) => i.id === '1')?.state).toBe('stopped');
-      // Dependent never started.
-      expect(after.plan?.items.find((i) => i.id === '2')?.state).toBe('pending');
+      // The dependent never started, but a stopped task reads every unfinished
+      // item as 'stopped' so each one keeps its 重试 affordance (the button is
+      // gated on failed|stopped) — 'pending' items had no way back.
+      expect(after.plan?.items.find((i) => i.id === '2')?.state).toBe('stopped');
       // Only the first member run fired.
       expect(runCalls.filter((c) => !c.message.includes('Plan the split'))).toHaveLength(1);
     });
@@ -253,6 +262,241 @@ describe('team orchestrator', () => {
       useTeamStore.getState().archiveTeam(ids.team.id);
       const result = await runScheduledTeamTask(ids.team.id, '出周报');
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe('stop-latch lifecycle (review finding: stale stopRequested)', () => {
+    it('a stop during planning does not sabotage the next 重新拆解', async () => {
+      const ids = seed();
+      // Leader never proposes; the user stops mid-planning. stopTask moves the
+      // task to 'blocked', which used to skip the branch that clears the latch.
+      runBehavior = async () => { stopTask(ids.task.id); return { reason: 'aborted' }; };
+      await startPlanning(ids.task.id);
+      expect(useTeamStore.getState().tasks[0].status).toBe('blocked');
+
+      // 重新拆解 (task detail resets the status, then replans) must actually run.
+      runBehavior = async () => {
+        const current = useTeamStore.getState().tasks[0];
+        if (current.status === 'awaiting_plan' && !current.plan) {
+          useTeamStore.getState().proposePlan(ids.task.id, {
+            items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+            doneWhen: [],
+          });
+        }
+        return { reason: 'completed' };
+      };
+      useTeamStore.getState().updateTaskStatus(ids.task.id, 'awaiting_plan');
+      await startPlanning(ids.task.id);
+
+      const after = useTeamStore.getState().tasks[0];
+      expect(after.plan?.items).toHaveLength(1);
+      expect(after.status).toBe('pending_review');
+      expect(after.plan?.items[0].state).toBe('done');
+    });
+  });
+
+  describe('unattended autonomy tier (review finding: dropped permissionMode)', () => {
+    it('pins the task permission mode on every conversation the task creates', async () => {
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'role-l', memberRoleIds: ['role-w'] });
+      registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
+      registryAgents['writer'] = { name: 'writer', description: 'write', roleId: 'role-w', filePath: '/a/writer/AGENT.md', systemPrompt: '' };
+      runBehavior = async () => {
+        const task = useTeamStore.getState().tasks[0];
+        if (!task.plan) {
+          useTeamStore.getState().proposePlan(task.id, {
+            items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+            doneWhen: [],
+          });
+        }
+        return { reason: 'completed' };
+      };
+      const result = await runScheduledTeamTask(team.id, '每周出周报', {
+        permissionMode: 'autonomous',
+        dispatch: {},
+        authorizeFolder: () => {},
+        getDenials: () => [],
+      });
+      expect(result.ok).toBe(true);
+      // Planning conversation + the member conversation both pinned.
+      expect(permissionModeCalls.length).toBe(createConversationCalls.length);
+      expect(permissionModeCalls.every((call) => call.mode === 'autonomous')).toBe(true);
+    });
+
+    it('leaves the mode untouched for an ordinary interactive task', async () => {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+        doneWhen: [],
+      });
+      await confirmAndExecute(ids.task.id);
+      expect(permissionModeCalls).toHaveLength(0);
+    });
+  });
+
+  describe('partial re-settle (review finding: task stranded in running)', () => {
+    function stoppedPair() {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [
+          { id: '1', memberRoleId: 'role-w', what: 'a', dependsOn: [], state: 'pending' },
+          { id: '2', memberRoleId: 'role-w', what: 'b', dependsOn: [], state: 'pending' },
+        ],
+        doneWhen: [],
+      });
+      return ids;
+    }
+
+    it('a retry that succeeds while a sibling is still stopped returns the task to blocked', async () => {
+      const ids = stoppedPair();
+      runBehavior = async () => ({ reason: 'aborted' });
+      await confirmAndExecute(ids.task.id);
+      useTeamStore.getState().setItemState(ids.task.id, '1', 'stopped');
+      useTeamStore.getState().setItemState(ids.task.id, '2', 'stopped');
+      useTeamStore.getState().updateTaskStatus(ids.task.id, 'blocked');
+
+      runBehavior = async () => ({ reason: 'completed' });
+      await retryItem(ids.task.id, '1');
+
+      const after = useTeamStore.getState().tasks[0];
+      // Nothing is running, so the task must NOT claim to be running — the
+      // per-item 重试 buttons are gated on 'blocked'.
+      expect(after.status).toBe('blocked');
+      expect(after.plan?.items.map((item) => item.state)).toEqual(['done', 'stopped']);
+
+      // ...and the second retry then finishes the task.
+      await retryItem(ids.task.id, '2');
+      expect(useTeamStore.getState().tasks[0].status).toBe('pending_review');
+    });
+
+    it('stopping a running task marks every unfinished item stopped so each keeps a retry', async () => {
+      const ids = stoppedPair();
+      runBehavior = async () => { stopTask(ids.task.id); return { reason: 'aborted' }; };
+      await confirmAndExecute(ids.task.id);
+      const after = useTeamStore.getState().tasks[0];
+      expect(after.status).toBe('blocked');
+      expect(after.plan?.items.every((item) => item.state === 'stopped')).toBe(true);
+    });
+  });
+
+  describe('rework abort (review finding: 停止 did not reach rejectTask)', () => {
+    it('registers an abort controller and does not resurrect a stopped rework', async () => {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+        doneWhen: [],
+      });
+      runBehavior = async () => ({ reason: 'completed' });
+      await confirmAndExecute(ids.task.id);
+      expect(useTeamStore.getState().tasks[0].status).toBe('pending_review');
+
+      let sawController = false;
+      runBehavior = async (_conversationId: string, _message: string, options?: { onAbortControllerReady?: (c: AbortController) => void }) => {
+        sawController = typeof options?.onAbortControllerReady === 'function';
+        stopTask(ids.task.id);
+        return { reason: 'aborted' };
+      };
+      await rejectTask(ids.task.id, '再改改');
+
+      expect(sawController).toBe(true);
+      const after = useTeamStore.getState().tasks[0];
+      expect(after.status).toBe('blocked');
+      expect(after.plan?.items[0].state).toBe('stopped');
+    });
+  });
+
+  describe('unattended envelope (review finding: mode alone still hangs)', () => {
+    it('spreads the auto-deny envelope into every run and authorizes the task folder', async () => {
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'role-l', memberRoleIds: ['role-w'] });
+      registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
+      registryAgents['writer'] = { name: 'writer', description: 'write', roleId: 'role-w', filePath: '/a/writer/AGENT.md', systemPrompt: '' };
+      runBehavior = async () => {
+        const current = useTeamStore.getState().tasks[0];
+        if (!current.plan) {
+          useTeamStore.getState().proposePlan(current.id, {
+            items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+            doneWhen: [],
+          });
+        }
+        return { reason: 'completed' };
+      };
+      const authorized: string[] = [];
+      const commandConfirmCallback = vi.fn(async () => false);
+      const filePermissionCallback = vi.fn(async () => false);
+      const outcome = await runScheduledTeamTask(team.id, '每周出周报', {
+        permissionMode: 'autonomous',
+        dispatch: {
+          commandConfirmCallback,
+          filePermissionCallback,
+          blockedTools: ['request_workspace'],
+          authorizationScopeId: 'scope-1',
+        },
+        authorizeFolder: (folder) => { authorized.push(folder); },
+        getDenials: () => [],
+      });
+
+      expect(outcome.ok).toBe(true);
+      // Planning AND member runs both carry the auto-deny callbacks — an
+      // unattended run must never reach the interactive approval path.
+      expect(runCalls.length).toBeGreaterThanOrEqual(2);
+      for (const call of runCalls) {
+        expect(call.options?.commandConfirmCallback).toBe(commandConfirmCallback);
+        expect(call.options?.filePermissionCallback).toBe(filePermissionCallback);
+        expect(call.options?.authorizationScopeId).toBe('scope-1');
+      }
+      // The folder members write into is authorized once it exists.
+      expect(authorized).toHaveLength(1);
+      expect(authorized[0]).toContain('abu-team');
+    });
+
+    it('names the auto-denied actions in the failure reason', async () => {
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'role-l', memberRoleIds: ['role-w'] });
+      registryAgents['leader'] = { name: 'leader', description: 'lead', roleId: 'role-l', filePath: '/a/leader/AGENT.md', systemPrompt: '' };
+      runBehavior = async () => ({ reason: 'completed' }); // leader never proposes → blocked
+      const outcome = await runScheduledTeamTask(team.id, '出周报', {
+        dispatch: {},
+        authorizeFolder: () => {},
+        getDenials: () => ['blocked: rm -rf /tmp/x'],
+      });
+      expect(outcome.ok).toBe(false);
+      expect(outcome.reason).toContain('rm -rf /tmp/x');
+    });
+
+    it('leaves an ordinary interactive run with no envelope', async () => {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [{ id: '1', memberRoleId: 'role-w', what: '写', dependsOn: [], state: 'pending' }],
+        doneWhen: [],
+      });
+      await confirmAndExecute(ids.task.id);
+      expect(runCalls.every((call) => call.options?.commandConfirmCallback === undefined)).toBe(true);
+    });
+  });
+
+  describe('retry ordering (review finding: stopped items broke the wave invariant)', () => {
+    it('refuses to retry an item whose upstream never finished', async () => {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [
+          { id: '1', memberRoleId: 'role-w', what: '取数', dependsOn: [], state: 'pending' },
+          { id: '2', memberRoleId: 'role-w', what: '写稿', dependsOn: ['1'], state: 'pending' },
+        ],
+        doneWhen: [],
+      });
+      runBehavior = async () => { stopTask(ids.task.id); return { reason: 'aborted' }; };
+      await confirmAndExecute(ids.task.id);
+      const items = useTeamStore.getState().tasks[0].plan?.items ?? [];
+      expect(items.every((item) => item.state === 'stopped')).toBe(true);
+      expect(dependenciesSatisfied(items[1], items)).toBe(false);
+
+      runCalls.length = 0;
+      runBehavior = async () => ({ reason: 'completed' });
+      await retryItem(ids.task.id, '2'); // downstream first — must be refused
+      expect(runCalls).toHaveLength(0);
+
+      await retryItem(ids.task.id, '1'); // upstream is retryable
+      expect(runCalls).toHaveLength(1);
+      const after = useTeamStore.getState().tasks[0].plan?.items ?? [];
+      expect(dependenciesSatisfied(after[1], after)).toBe(true);
     });
   });
 

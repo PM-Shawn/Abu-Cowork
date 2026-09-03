@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { PermissionMode } from '@/core/permissions/permissionMode';
 
 /**
  * Team domain store (R1: management surface only — PRD docs/abu-team-prd-v2.md).
@@ -87,6 +88,11 @@ export interface TeamTask {
   folder?: string;
   /** One-line blocked/failure reason surfaced in lists (plain language). */
   statusNote?: string;
+  /** Autonomy tier every run this task owns is pinned to. Set for unattended
+   *  dispatch (自动化) so members inherit the SCHEDULE's mode instead of the
+   *  global one — an unattended run must not stall on an approval dialog that
+   *  only renders for the active conversation. undefined = follow settings. */
+  permissionMode?: PermissionMode;
   createdAt: number;
   updatedAt: number;
 }
@@ -104,7 +110,7 @@ interface TeamState {
   archiveTeam: (id: string) => void;
   restoreTeam: (id: string) => void;
 
-  createTask: (input: { teamId?: string; memberRoleId?: string; goal: string; attachments?: string[] }) => TeamTask;
+  createTask: (input: { teamId?: string; memberRoleId?: string; goal: string; attachments?: string[]; permissionMode?: PermissionMode }) => TeamTask;
   updateTaskStatus: (id: string, status: TeamTaskStatus, statusNote?: string) => void;
 
   // --- planning / execution (R2) — called by the team orchestrator only ---
@@ -187,6 +193,7 @@ export const useTeamStore = create<TeamState>()(
           memberRoleId: input.memberRoleId,
           goal,
           attachments: input.attachments ?? [],
+          permissionMode: input.permissionMode,
           status: 'awaiting_plan',
           createdAt: now,
           updatedAt: now,
@@ -259,8 +266,9 @@ export const useTeamStore = create<TeamState>()(
     }),
     {
       name: 'abu-team',
-      version: 4,
+      version: 5,
       // v1 → v2: additive optional fields (memberRoleId, requirePlanApproval).
+      // v4 → v5: TeamTask.permissionMode added (optional, no-op migration).
       // v2 → v3: pipelines array added; v3 → v4: pipelines removed again —
       // the concept folded into 自动化 (scheduled tasks pick a team executor;
       // plan reuse is an internal optimization, user decision 2026-09-01).

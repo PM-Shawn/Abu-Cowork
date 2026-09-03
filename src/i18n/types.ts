@@ -1461,6 +1461,7 @@ export interface TranslationDict {
     blockedNoPlan: string;
     blockedPlanFailed: string;
     blockedItemsFailed: string;
+    blockedItemsRemaining: string;
     noticePendingReview: string;
     noticeBlocked: string;
     statusPreparing: string;
@@ -1473,6 +1474,7 @@ export interface TranslationDict {
     chatReceiptBody: string;
     chatReceiptOpen: string;
     chatReceiptEmptyGoal: string;
+    chatReceiptUnsupported: string;
     fieldLeader: string;
     fieldLeaderHint: string;
     leaderPlaceholder: string;

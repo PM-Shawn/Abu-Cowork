@@ -5,7 +5,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
-import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retryItem, startPlanning, stopTask } from '@/core/team/orchestrator';
+import { confirmAndExecute, requestPlanAdjustment, acceptTask, rejectTask, retryItem, startPlanning, stopTask, dependenciesSatisfied } from '@/core/team/orchestrator';
 import { useI18n, format } from '@/i18n';
 import { Loader2, CheckCircle2, XCircle, Circle, ArrowRight, RotateCcw, Square } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
@@ -96,7 +96,11 @@ export default function TaskDetailDialog({ taskId, onClose }: { taskId: string |
             {item.conversationId && (
               <Button variant="ghost" size="xs" onClick={() => openRun(item.conversationId)}>{t.team.viewRun}</Button>
             )}
-            {task.status === 'blocked' && (item.state === 'failed' || item.state === 'stopped') && (
+            {/* Retry only what can actually run — an item whose upstream never
+                finished must wait for that one, exactly as the wave scheduler
+                would have ordered it. */}
+            {task.status === 'blocked' && (item.state === 'failed' || item.state === 'stopped')
+              && dependenciesSatisfied(item, task.plan?.items ?? []) && (
               <Button variant="outline" size="xs" onClick={() => { void retryItem(task.id, item.id); }}>
                 <RotateCcw className="h-3 w-3" />{t.team.retryItemAction}
               </Button>

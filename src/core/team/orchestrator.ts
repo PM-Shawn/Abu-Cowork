@@ -2,7 +2,9 @@ import { useTeamStore, type Team, type TeamTask, type TeamPlanItem } from '@/sto
 import { useChatStore } from '@/stores/chatStore';
 import { resolveRoleId } from '@/core/team/roleIdentity';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import type { AgentLoopOptions } from '@/core/agent/agentLoop';
 import type { SubagentDefinition } from '@/types';
+import type { PermissionMode } from '@/core/permissions/permissionMode';
 import { mkdir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
@@ -22,6 +24,37 @@ import { notifyTeamTaskPendingReview, notifyTeamTaskBlocked } from '@/utils/noti
  * - Only user confirmation starts execution; only the user reaches 完成.
  * - Item completion is silent; the task surfaces once as pending_review.
  */
+
+/**
+ * Everything an UNATTENDED run (自动化 dispatch) needs so it can never stall on
+ * an approval dialog nobody is there to see. The interactive fallbacks used by
+ * a normal chat — requestCommandConfirmation / requestFilePermission — have no
+ * timeout and only render for the ACTIVE conversation, while every team run
+ * lives in a background conversation; without this envelope an unattended team
+ * task hangs forever and the schedule's fail-loud auto-pause never trips.
+ * Mirrors what the scheduler already installs for an ordinary scheduled run.
+ *
+ * Ephemeral and keyed by team task id — it carries live callbacks and an
+ * authorization scope, so it must never be persisted.
+ */
+export interface UnattendedRun {
+  permissionMode?: PermissionMode;
+  /** Spread into every runAgentLoopDispatched this task performs. */
+  dispatch: AgentLoopOptions;
+  /** Grant the task folder write rights once it exists (members write there). */
+  authorizeFolder: (folder: string) => void;
+  /** Actions the envelope auto-denied, for an honest failure reason. */
+  getDenials: () => string[];
+}
+
+const unattendedRuns = new Map<string, UnattendedRun>();
+
+/** Every team run goes through here so the unattended envelope, when present,
+ *  is applied uniformly — planning, member, adjustment and rework alike. */
+function dispatchRun(taskId: string, conversationId: string, prompt: string, extra?: AgentLoopOptions) {
+  const envelope = unattendedRuns.get(taskId);
+  return runAgentLoopDispatched(conversationId, prompt, { ...(envelope?.dispatch ?? {}), ...extra });
+}
 
 /** In-flight guard so double-clicks can't double-run a task. */
 const inFlight = new Set<string>();
@@ -63,12 +96,28 @@ export function stopTask(taskId: string): void {
     useTeamStore.getState().updateTaskStatus(taskId, 'blocked', t.team.stoppedByUser);
     if (task.plan) {
       for (const item of task.plan.items) {
-        if (item.state === 'running' || item.state === 'pending') {
-          useTeamStore.getState().setItemState(taskId, item.id, item.state === 'running' ? 'stopped' : 'pending');
+        // Everything unfinished in a task that had actually started counts as
+        // stopped, so each one keeps a 重试 affordance. Items of a plan still
+        // waiting on the confirm screen never ran — they stay pending.
+        const unstartedButLive = task.status === 'running' && item.state === 'pending';
+        if (item.state === 'running' || unstartedButLive) {
+          useTeamStore.getState().setItemState(taskId, item.id, 'stopped');
         }
       }
     }
   }
+}
+
+/**
+ * A fresh, user-initiated run cycle. The stop latch is per-cycle: without this
+ * a stop whose settle path never ran (e.g. 停止 during planning, where
+ * stopTask already moved the task to 'blocked' so the consume branch is
+ * skipped) would survive and make `trackRun` abort the NEXT cycle's runs on
+ * sight — 重新拆解 would fail without ever running anything. Every entry point
+ * clears it after its own status guards have passed.
+ */
+function clearStop(taskId: string): void {
+  stopRequested.delete(taskId);
 }
 
 function consumeStop(taskId: string): boolean {
@@ -151,17 +200,20 @@ export async function startPlanning(taskId: string): Promise<void> {
     .map((roleId) => resolveMember(roleId))
     .filter((agent): agent is SubagentDefinition => agent !== null);
 
+  clearStop(taskId);
   inFlight.add(taskId);
   try {
     const chatStore = useChatStore.getState();
     const conversationId = chatStore.createConversation(null, { skipActivate: true, teamTaskId: taskId });
+    // Unattended dispatch pins its own autonomy tier — see TeamTask.permissionMode.
+    if (task.permissionMode) chatStore.setConversationPermissionMode(conversationId, task.permissionMode);
     chatStore.renameConversation(conversationId, format(getI18n().team.planningConversationTitle, { goal: task.goal.split('\n')[0].slice(0, 24) }));
     useTeamStore.getState().setPlanningConversation(taskId, conversationId);
 
     const tracker = trackRun(taskId);
     let result;
     try {
-      result = await runAgentLoopDispatched(conversationId, buildPlanningPrompt(team, task, leader, members), {
+      result = await dispatchRun(taskId, conversationId, buildPlanningPrompt(team, task, leader, members), {
         onAbortControllerReady: tracker.register,
       });
     } finally {
@@ -206,6 +258,7 @@ export async function startMemberTask(taskId: string): Promise<void> {
     useTeamStore.getState().updateTaskStatus(taskId, 'blocked', getI18n().team.itemMemberMissing);
     return;
   }
+  clearStop(taskId);
   useTeamStore.getState().proposePlan(taskId, {
     items: [{ id: '1', memberRoleId: task.memberRoleId, what: task.goal, dependsOn: [], state: 'pending' }],
     doneWhen: [],
@@ -222,7 +275,7 @@ export async function startMemberTask(taskId: string): Promise<void> {
  * no drift). Any other goal goes through normal leader planning; non-strict
  * teams then execute immediately, strict teams wait on the confirm screen.
  */
-export async function runScheduledTeamTask(teamId: string, goal: string): Promise<{ ok: boolean; taskId?: string; reason?: string }> {
+export async function runScheduledTeamTask(teamId: string, goal: string, unattended?: UnattendedRun): Promise<{ ok: boolean; taskId?: string; reason?: string }> {
   const store = useTeamStore.getState();
   const t = getI18n();
   const team = store.teams.find((item) => item.id === teamId && !item.archivedAt);
@@ -234,7 +287,8 @@ export async function runScheduledTeamTask(teamId: string, goal: string): Promis
   const donePrior = store.tasks.find((item) =>
     item.teamId === teamId && item.status === 'done' && item.plan && item.goal.trim() === cleanGoal);
 
-  const task = useTeamStore.getState().createTask({ teamId, goal: cleanGoal });
+  const task = useTeamStore.getState().createTask({ teamId, goal: cleanGoal, permissionMode: unattended?.permissionMode });
+  if (unattended) unattendedRuns.set(task.id, unattended);
   if (donePrior?.plan) {
     useTeamStore.getState().proposePlan(task.id, {
       items: donePrior.plan.items.map((item) => ({
@@ -248,12 +302,17 @@ export async function runScheduledTeamTask(teamId: string, goal: string): Promis
     await startPlanning(task.id);
   }
 
+  unattendedRuns.delete(task.id);
   const after = useTeamStore.getState().tasks.find((item) => item.id === task.id);
   // Blocked (or planning that produced nothing) is the failure shape; a
   // strict team parked on its confirm screen still counts as a successful
   // dispatch — the task is waiting on the user, not broken.
   const ok = after !== undefined && after.status !== 'blocked';
-  return { ok, taskId: task.id, reason: ok ? undefined : after?.statusNote };
+  // Auto-denied escalations are the usual reason an unattended run fails —
+  // name them so the schedule's 2-strike pause carries a real explanation.
+  const denials = unattended?.getDenials() ?? [];
+  const reason = ok ? undefined : [after?.statusNote, ...denials].filter(Boolean).join(' · ');
+  return { ok, taskId: task.id, reason };
 }
 
 /** Route a freshly created task to its execution path. */
@@ -274,17 +333,27 @@ export async function requestPlanAdjustment(taskId: string, feedback: string): P
   useTeamStore.setState((s) => ({
     tasks: s.tasks.map((item) => (item.id === taskId ? { ...item, plan: undefined } : item)),
   }));
+  clearStop(taskId);
   inFlight.add(taskId);
+  const tracker = trackRun(taskId);
   try {
-    await runAgentLoopDispatched(
+    const result = await dispatchRun(
+      taskId,
       task.planningConversationId,
       `The user wants the split adjusted. Their feedback (verbatim):\n"""\n${feedback}\n"""\nRevise the plan accordingly and call team_propose_plan again, then stop.`,
+      { onAbortControllerReady: tracker.register },
     );
+    const stopHit = consumeStop(taskId);
     const after = useTeamStore.getState().tasks.find((item) => item.id === taskId);
     if (after?.status === 'awaiting_plan' && !after.plan) {
-      useTeamStore.getState().updateTaskStatus(taskId, 'blocked', getI18n().team.blockedNoPlan);
+      useTeamStore.getState().updateTaskStatus(
+        taskId,
+        'blocked',
+        stopHit || result.reason === 'aborted' ? getI18n().team.stoppedByUser : getI18n().team.blockedNoPlan,
+      );
     }
   } finally {
+    tracker.done();
     inFlight.delete(taskId);
   }
 }
@@ -305,11 +374,15 @@ export async function confirmAndExecute(taskId: string): Promise<void> {
   if (inFlight.has(taskId)) return;
   if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
 
+  clearStop(taskId);
   inFlight.add(taskId);
   try {
     const home = await homeDir();
     const folder = joinPath(home, 'Documents', 'abu-team', `${slugify(task.goal)}-${task.id.slice(-6)}`);
     await mkdir(folder, { recursive: true });
+    // Unattended runs auto-deny file escalations, so the task folder members
+    // write into has to be authorized explicitly or every output is refused.
+    unattendedRuns.get(taskId)?.authorizeFolder(folder);
     useTeamStore.getState().confirmPlan(taskId, folder);
 
     const readItems = () => useTeamStore.getState().tasks.find((item) => item.id === taskId)?.plan?.items ?? [];
@@ -362,11 +435,13 @@ async function runItem(taskId: string, item: TeamPlanItem, folder: string): Prom
 
   const task = useTeamStore.getState().tasks.find((x) => x.id === taskId);
   if (!task) return;
+  // Unattended dispatch pins its own autonomy tier — see TeamTask.permissionMode.
+  if (task.permissionMode) chatStore.setConversationPermissionMode(conversationId, task.permissionMode);
   const upstream = (task.plan?.items ?? []).filter((candidate) => item.dependsOn.includes(candidate.id));
 
   const tracker = trackRun(taskId);
   try {
-    const result = await runAgentLoopDispatched(conversationId, buildItemPrompt(task, item, member, folder, upstream), {
+    const result = await dispatchRun(taskId, conversationId, buildItemPrompt(task, item, member, folder, upstream), {
       onAbortControllerReady: tracker.register,
     });
     if (result.reason === 'completed' || result.reason === 'max_turns') {
@@ -383,6 +458,36 @@ async function runItem(taskId: string, item: TeamPlanItem, folder: string): Prom
   }
 }
 
+/** An item may only run once every item it depends on has finished. */
+export function dependenciesSatisfied(item: TeamPlanItem, items: TeamPlanItem[]): boolean {
+  return item.dependsOn.every((dep) => items.find((candidate) => candidate.id === dep)?.state === 'done');
+}
+
+/**
+ * Re-settle a task from its items after a PARTIAL run (retry / rework).
+ *
+ * A task with nothing running must never keep the 'running' status: the detail
+ * view would spin forever, and — worse — the per-item 重试 buttons are gated on
+ * 'blocked', so the remaining items would lose their only affordance and the
+ * user would have to press 停止 on an idle task to get them back.
+ */
+function settleFromItems(taskId: string): void {
+  const t = getI18n();
+  const stopHit = consumeStop(taskId);
+  const items = useTeamStore.getState().tasks.find((x) => x.id === taskId)?.plan?.items ?? [];
+  const failed = items.filter((item) => item.state === 'failed');
+  const unfinished = items.filter((item) => item.state === 'pending' || item.state === 'stopped');
+  if (stopHit) {
+    useTeamStore.getState().updateTaskStatus(taskId, 'blocked', t.team.stoppedByUser);
+  } else if (failed.length > 0) {
+    useTeamStore.getState().updateTaskStatus(taskId, 'blocked', format(t.team.blockedItemsFailed, { count: String(failed.length) }));
+  } else if (unfinished.length > 0) {
+    useTeamStore.getState().updateTaskStatus(taskId, 'blocked', format(t.team.blockedItemsRemaining, { count: String(unfinished.length) }));
+  } else {
+    useTeamStore.getState().updateTaskStatus(taskId, 'pending_review');
+  }
+}
+
 /** Retry one failed item, then re-settle the whole task. */
 export async function retryItem(taskId: string, itemId: string): Promise<void> {
   const store = useTeamStore.getState();
@@ -391,20 +496,20 @@ export async function retryItem(taskId: string, itemId: string): Promise<void> {
   if (task.teamId && !store.teams.some((item) => item.id === task.teamId)) return;
   const target = task.plan.items.find((item) => item.id === itemId);
   if (!target || (target.state !== 'failed' && target.state !== 'stopped')) return;
+  // The wave scheduler only ever starts an item whose dependencies are done,
+  // and a manual retry must honour the same invariant: since a stopped task
+  // now marks never-started items 'stopped' too, a downstream item can be
+  // retryable while its upstream produced nothing — running it would hand the
+  // member an "already completed by teammates" note for work that never ran.
+  if (!dependenciesSatisfied(target, task.plan.items)) return;
   if (inFlight.has(taskId)) return;
+  clearStop(taskId);
   inFlight.add(taskId);
   try {
     useTeamStore.getState().updateTaskStatus(taskId, 'running');
     useTeamStore.getState().setItemState(taskId, itemId, 'pending', { error: undefined });
     await runItem(taskId, { ...target, state: 'pending' }, task.folder);
-    const after = useTeamStore.getState().tasks.find((item) => item.id === taskId);
-    const anyFailed = after?.plan?.items.some((item) => item.state === 'failed');
-    const allDone = after?.plan?.items.every((item) => item.state === 'done');
-    if (anyFailed) {
-      useTeamStore.getState().updateTaskStatus(taskId, 'blocked', format(getI18n().team.blockedItemsFailed, { count: '1' }));
-    } else if (allDone) {
-      useTeamStore.getState().updateTaskStatus(taskId, 'pending_review');
-    }
+    settleFromItems(taskId);
     notifyTaskSettled(taskId);
   } finally {
     inFlight.delete(taskId);
@@ -428,6 +533,12 @@ export async function rejectTask(taskId: string, feedback: string, targetItemId?
     ? task.plan.items.find((item) => item.id === targetItemId)
     : task.plan.items[task.plan.items.length - 1];
   if (!target) return;
+  // rejectTask used to be the one run entry point without this latch, so a
+  // 重试 clicked during a rework's unwind could run concurrently and clear the
+  // stop flag out from under the rework's own settle path.
+  if (inFlight.has(taskId)) return;
+  clearStop(taskId);
+  inFlight.add(taskId);
   useTeamStore.getState().updateTaskStatus(taskId, 'running');
   useTeamStore.getState().setItemState(taskId, target.id, 'running');
   const member = resolveMember(target.memberRoleId);
@@ -435,26 +546,37 @@ export async function rejectTask(taskId: string, feedback: string, targetItemId?
   if (!member || !target.conversationId) {
     useTeamStore.getState().setItemState(taskId, target.id, 'failed', { error: t.team.itemMemberMissing });
     useTeamStore.getState().updateTaskStatus(taskId, 'blocked', t.team.itemMemberMissing);
+    inFlight.delete(taskId);
     return;
   }
+  const tracker = trackRun(taskId);
   try {
-    const result = await runAgentLoopDispatched(
+    const result = await dispatchRun(
+      taskId,
       target.conversationId,
       `The user reviewed the team task and sent this back for rework. Their feedback (verbatim):\n"""\n${feedback}\n"""\nRevise your output in the task folder accordingly.`,
+      { onAbortControllerReady: tracker.register },
     );
-    useTeamStore.getState().setItemState(
-      taskId, target.id,
-      result.reason === 'completed' || result.reason === 'max_turns' ? 'done' : 'failed',
-      result.reason === 'completed' || result.reason === 'max_turns' ? undefined : { error: result.error ?? result.reason },
-    );
-    const after = useTeamStore.getState().tasks.find((item) => item.id === taskId);
-    const anyFailed = after?.plan?.items.some((item) => item.state === 'failed');
-    useTeamStore.getState().updateTaskStatus(taskId, anyFailed ? 'blocked' : 'pending_review',
-      anyFailed ? format(t.team.blockedItemsFailed, { count: '1' }) : undefined);
+    // 停止 must reach a rework run too, and a stopped rework must not settle
+    // the task back into 待你确认 as if it had finished.
+    if (result.reason === 'aborted' || stopRequested.has(taskId)) {
+      useTeamStore.getState().setItemState(taskId, target.id, 'stopped');
+    } else {
+      const ok = result.reason === 'completed' || result.reason === 'max_turns';
+      useTeamStore.getState().setItemState(
+        taskId, target.id,
+        ok ? 'done' : 'failed',
+        ok ? undefined : { error: result.error ?? result.reason },
+      );
+    }
+    settleFromItems(taskId);
     notifyTaskSettled(taskId);
   } catch (err) {
     useTeamStore.getState().setItemState(taskId, target.id, 'failed', { error: String(err) });
     useTeamStore.getState().updateTaskStatus(taskId, 'blocked', String(err));
+  } finally {
+    tracker.done();
+    inFlight.delete(taskId);
   }
 }
 

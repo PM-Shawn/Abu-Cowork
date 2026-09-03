@@ -27,6 +27,9 @@ import {
   copyPluginDir,
   collectPluginSymlinks,
   removePluginDir,
+  scanPluginPackage,
+  PluginPackageNotFoundError,
+  PluginPackageUnreadableError,
   PluginSymlinkRootError,
   PLUGIN_COPY_DENYLIST,
 } from './fsOps';
@@ -132,6 +135,115 @@ describe('copyPluginDir', () => {
       files: 3,
       skippedSymlinks: [],
     });
+  });
+});
+
+/**
+ * The scan, the copy and the collect are ONE rule, not three that happen to
+ * agree.
+ *
+ * They used to be three independent walks each re-implementing
+ * "denylisted-or-symlink ⇒ absent". A fourth rule added to only two of them
+ * silently re-opens the disagreement this whole area exists to close: the
+ * disclosure would describe a tree the copy does not produce. These cases
+ * drive all three off the same fixture, and they enumerate the exported
+ * denylist rather than a second copy of it, so adding an entry to
+ * `PLUGIN_COPY_DENYLIST` extends the pin for free.
+ */
+describe('one ownership rule behind the scan, the copy and the collect', () => {
+  it.each([...PLUGIN_COPY_DENYLIST])('all three treat %s as absent', async (denied) => {
+    tree({
+      '/src': [
+        { name: denied, isDirectory: true },
+        { name: 'README.md', isDirectory: false },
+      ],
+      [`/src/${denied}`]: [{ name: 'junk', isDirectory: false }],
+    });
+
+    const scan = scanPluginPackage('/src');
+    await expect(scan.find(denied)).resolves.toBeUndefined();
+    expect((await scan.children('')).map((e) => e.name)).toEqual(['README.md']);
+    await expect(copyPluginDir('/src', '/dst')).resolves.toEqual({ files: 1, skippedSymlinks: [] });
+    await expect(collectPluginSymlinks('/src')).resolves.toEqual([]);
+  });
+});
+
+describe('scanPluginPackage', () => {
+  it('normalizes the listing key so a trailing slash is not a second cache entry', async () => {
+    // `find` filters empty segments but `listOwned` keyed on the raw string,
+    // so `children('skills/')` both missed the cache and asked the host for
+    // `/src/skills/`. Latent only because every caller passes a clean literal.
+    tree({
+      '/src': [{ name: 'skills', isDirectory: true }],
+      '/src/skills': [{ name: 'today', isDirectory: true }],
+    });
+
+    const scan = scanPluginPackage('/src');
+    expect((await scan.children('skills')).map((e) => e.name)).toEqual(['today']);
+    expect((await scan.children('skills/')).map((e) => e.name)).toEqual(['today']);
+
+    const listed = mockReadDir.mock.calls.map((c) => String(c[0]));
+    expect(listed).not.toContain('/src/skills/');
+    expect(listed.filter((p) => p === '/src/skills')).toHaveLength(1);
+  });
+
+  it('refuses a package root that is a link, for every caller and not by call order', async () => {
+    // The refusal used to live only in `copyPluginDir` / `collectPluginSymlinks`,
+    // so a scan-only caller (`readManifestFrom`) read a linked root's target.
+    mockLstat.mockResolvedValue({ isSymlink: true } as never);
+    tree({ '/src': [{ name: '.abu-plugin', isDirectory: true }] });
+
+    await expect(scanPluginPackage('/src').find('.abu-plugin')).rejects.toThrow(
+      PluginSymlinkRootError,
+    );
+  });
+});
+
+/**
+ * A failure to list a package directory is a domain outcome, not a syscall.
+ *
+ * The privileged host re-throws as a plain `new Error(err.message)`
+ * (`electron/tauriHost.cjs`), so the `code` property never survives the IPC
+ * hop — only node's message, which leads with the code. These cases use that
+ * message-only shape deliberately: it is the one that actually ships.
+ */
+describe('unreadable package directories', () => {
+  it('reports a missing package directory as a plugin error, not ENOENT', async () => {
+    mockLstat.mockRejectedValue(new Error("ENOENT: no such file or directory, lstat '/src'"));
+
+    await expect(collectPluginSymlinks('/src')).rejects.toThrow(PluginPackageNotFoundError);
+    const message = await collectPluginSymlinks('/src').then(
+      () => '',
+      (e: unknown) => (e as Error).message,
+    );
+    expect(message).toContain('/src');
+    // The point of the item: a marketplace catalog pointing at a deleted
+    // folder must not put a syscall in front of the user.
+    expect(message).not.toContain('ENOENT');
+    expect(message).not.toContain('lstat');
+  });
+
+  it('fails loud, and says "permission", when a directory cannot be read', async () => {
+    // Deliberate: `exists` used to swallow EACCES to `false`, which let an
+    // unreadable `.abu-plugin/` fall through to the next manifest candidate —
+    // i.e. install a package under a manifest it did not nominate.
+    mockReadDir.mockImplementation(async (p) => {
+      if (String(p) === '/src') {
+        return [{ name: '.abu-plugin', isDirectory: true, isFile: false, isSymlink: false }] as never;
+      }
+      throw new Error("EACCES: permission denied, scandir '/src/.abu-plugin'");
+    });
+
+    const scan = scanPluginPackage('/src');
+    await expect(scan.find('.abu-plugin/plugin.json')).rejects.toThrow(PluginPackageUnreadableError);
+    await expect(scan.find('.abu-plugin/plugin.json')).rejects.toThrow(/permission/i);
+  });
+
+  it('leaves an error it does not recognise exactly as it found it', async () => {
+    const weird = new Error('the disk fell off');
+    mockLstat.mockRejectedValue(weird);
+
+    await expect(collectPluginSymlinks('/src')).rejects.toBe(weird);
   });
 });
 
@@ -253,6 +365,17 @@ describe('copyPluginDir over a real tree with real symlinks', () => {
     await expect(collectPluginSymlinks(src)).resolves.toEqual(['.cursor/skills', 'data/x']);
     expect(mockWriteFile).not.toHaveBeenCalled();
     expect(mockMkdir).not.toHaveBeenCalled();
+  });
+
+  it('the scan hides exactly the links the copy skips and the collect reports', async () => {
+    // One rule, three consumers: what the disclosure can see, what the copy
+    // leaves behind and what the pre-consent walk reports are the same set.
+    const scan = scanPluginPackage(src);
+    await expect(scan.find('.cursor/skills')).resolves.toBeUndefined();
+    await expect(scan.find('data/x')).resolves.toBeUndefined();
+
+    const copied = await copyPluginDir(src, dst);
+    await expect(collectPluginSymlinks(src)).resolves.toEqual(copied.skippedSymlinks);
   });
 
   it('refuses a package whose own root directory is a symlink', async () => {

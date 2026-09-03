@@ -44,9 +44,82 @@ export const PLUGIN_COPY_DENYLIST: ReadonlySet<string> = new Set([
  * `installer` imports this module; the dependency only goes one way.
  */
 export class PluginSymlinkRootError extends Error {
+  /** The offending directory, so a UI can say so in the user's language. */
+  readonly dir: string;
+
   constructor(dir: string) {
     super(`Refusing a plugin package whose own directory is a symlink: ${dir}`);
     this.name = 'PluginSymlinkRootError';
+    this.dir = dir;
+  }
+}
+
+/** The package directory does not exist. */
+export class PluginPackageNotFoundError extends Error {
+  readonly dir: string;
+
+  constructor(dir: string) {
+    super(`Plugin package directory not found: ${dir}`);
+    this.name = 'PluginPackageNotFoundError';
+    this.dir = dir;
+  }
+}
+
+/**
+ * The package directory exists but this process may not read it.
+ *
+ * Deliberately loud. The `exists`-based scan this replaced swallowed EACCES to
+ * `false`, so an unreadable `.abu-plugin/` silently fell through to the next
+ * manifest candidate — which is how a package gets installed under a manifest
+ * it never nominated, with a disclosure describing the wrong identity. A
+ * directory we cannot read is unknown, not absent, and the copy would fail on
+ * it moments later anyway.
+ */
+export class PluginPackageUnreadableError extends Error {
+  readonly dir: string;
+
+  constructor(dir: string) {
+    super(`Cannot read the plugin package directory — permission denied: ${dir}`);
+    this.name = 'PluginPackageUnreadableError';
+    this.dir = dir;
+  }
+}
+
+/**
+ * The errno of a failed fs call, if it can still be told.
+ *
+ * The privileged host re-throws as a plain `new Error(err.message)`
+ * (`electron/tauriHost.cjs`), so `code` does not survive the IPC hop — node
+ * leads the message with the errno (`ENOENT: no such file or directory,
+ * lstat '<path>'`) and that is the only thing left to read on the shell we
+ * ship. `code` is still checked first for the callers that keep it.
+ */
+function fsErrorCode(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && 'code' in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
+  }
+  return /^([A-Z]+):/.exec(error instanceof Error ? error.message : '')?.[1];
+}
+
+/**
+ * Turn a failed listing of `dir` into a domain error the install flow can
+ * render, or hand the original back untouched.
+ *
+ * A syscall string in the install disclosure is a bug in its own right: the
+ * user whose marketplace catalog points at a deleted folder is being asked to
+ * debug `lstat`. Anything we cannot classify is rethrown as-is rather than
+ * flattened into a wrong-but-friendly message.
+ */
+function packageDirError(dir: string, error: unknown): unknown {
+  switch (fsErrorCode(error)) {
+    case 'ENOENT':
+      return new PluginPackageNotFoundError(dir);
+    case 'EACCES':
+    case 'EPERM':
+      return new PluginPackageUnreadableError(dir);
+    default:
+      return error;
   }
 }
 
@@ -63,7 +136,107 @@ export class PluginSymlinkRootError extends Error {
  * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what this needs.
  */
 async function assertRealPackageRoot(dir: string): Promise<void> {
-  if ((await lstat(dir)).isSymlink) throw new PluginSymlinkRootError(dir);
+  const info = await lstat(dir).catch((error: unknown) => {
+    throw packageDirError(dir, error);
+  });
+  if (info.isSymlink) throw new PluginSymlinkRootError(dir);
+}
+
+/** One directory read under the single ownership rule. */
+interface OwnedListing {
+  /** Entries the copy brings in. */
+  owned: PackageEntry[];
+  /**
+   * Names of entries skipped for being links. Denylisted names are absent from
+   * both lists: they are not part of the package at all, so there is nothing to
+   * disclose about them.
+   */
+  links: string[];
+}
+
+/**
+ * THE rule: what a plugin package owns in one directory.
+ *
+ * Every walk in this module — the pre-consent scan, the copy, and the
+ * read-only symlink collection — goes through here, so "denylisted or a link
+ * ⇒ absent" is defined once. Three hand-kept copies of it is exactly how the
+ * disclosure and the install drift apart: a fourth rule (a size cap, another
+ * skipped name) added to two of three re-opens the disagreement silently.
+ */
+async function listPackageDir(absoluteDir: string): Promise<OwnedListing> {
+  const entries = await readDir(absoluteDir).catch((error: unknown) => {
+    throw packageDirError(absoluteDir, error);
+  });
+
+  const owned: PackageEntry[] = [];
+  const links: string[] = [];
+  for (const entry of entries) {
+    if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
+    // BEFORE the isDirectory branch: a link to a directory reports
+    // `isDirectory: false`, so testing it later would be testing nothing.
+    if (entry.isSymlink) {
+      links.push(entry.name);
+      continue;
+    }
+    owned.push({ name: entry.name, isDirectory: entry.isDirectory });
+  }
+  return { owned, links };
+}
+
+/** One owned entry, as the traversal hands it to a visitor. */
+interface WalkedEntry {
+  name: string;
+  srcPath: string;
+  /** Package-relative path, `/`-separated. */
+  relative: string;
+}
+
+/**
+ * What a caller does with the owned entries {@link walkOwnedTree} finds.
+ *
+ * `C` is whatever the caller has to thread down the tree — the copy carries
+ * the matching destination directory, the collect carries nothing.
+ */
+interface OwnedTreeVisitor<C> {
+  /** Called on entering an owned directory; returns the context for its children. */
+  directory(entry: WalkedEntry, context: C): Promise<C>;
+  file(entry: WalkedEntry, context: C): Promise<void>;
+}
+
+/**
+ * The single recursive walk of a package tree, returning the package-relative
+ * paths of every link it refused to descend into or copy.
+ *
+ * It never follows a link: a link's target is not this package. The copy and
+ * the pre-consent collection are this walk with different visitors, which is
+ * what makes "the disclosure and the install agree" structural rather than a
+ * property of two functions being edited together.
+ */
+async function walkOwnedTree<C>(
+  srcDir: string,
+  relativePrefix: string,
+  context: C,
+  visit: OwnedTreeVisitor<C>,
+): Promise<string[]> {
+  const prefixed = (name: string) => (relativePrefix ? `${relativePrefix}/${name}` : name);
+  const listing = await listPackageDir(srcDir);
+  const skipped: string[] = listing.links.map(prefixed);
+
+  for (const entry of listing.owned) {
+    const walked: WalkedEntry = {
+      name: entry.name,
+      srcPath: joinPath(srcDir, entry.name),
+      relative: prefixed(entry.name),
+    };
+    if (entry.isDirectory) {
+      const childContext = await visit.directory(walked, context);
+      skipped.push(...(await walkOwnedTree(walked.srcPath, walked.relative, childContext, visit)));
+    } else {
+      await visit.file(walked, context);
+    }
+  }
+
+  return skipped;
 }
 
 /** One owned entry directly under a package directory. */
@@ -104,19 +277,26 @@ export function scanPluginPackage(rootDir: string): PackageScan {
   const listings = new Map<string, Promise<Map<string, PackageEntry>>>();
 
   function listOwned(relativeDir: string): Promise<Map<string, PackageEntry>> {
-    const cached = listings.get(relativeDir);
+    // Normalised once, here: `find` drops empty segments while this used to
+    // key on the raw string, so `children('skills/')` both missed the cache
+    // and asked the host to list `<root>/skills/`.
+    const key = relativeDir.split('/').filter((s) => s !== '').join('/');
+    const cached = listings.get(key);
     if (cached) return cached;
     const pending = (async () => {
-      const absolute = relativeDir ? joinPath(rootDir, relativeDir) : rootDir;
+      // The root listing is the only place this can live: `readDir` resolves
+      // the final component in the privileged host, so a linked root
+      // enumerates the target and every entry looks perfectly ordinary. Doing
+      // it here rather than in the callers makes it hold for EVERY consumer of
+      // a scan — `readManifestFrom` is a public export — instead of holding
+      // because `planInstall` happens to call `collectPluginSymlinks` first.
+      if (key === '') await assertRealPackageRoot(rootDir);
+      const absolute = key ? joinPath(rootDir, key) : rootDir;
       const owned = new Map<string, PackageEntry>();
-      for (const entry of await readDir(absolute)) {
-        if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
-        if (entry.isSymlink) continue;
-        owned.set(entry.name, { name: entry.name, isDirectory: entry.isDirectory });
-      }
+      for (const entry of (await listPackageDir(absolute)).owned) owned.set(entry.name, entry);
       return owned;
     })();
-    listings.set(relativeDir, pending);
+    listings.set(key, pending);
     return pending;
   }
 
@@ -191,42 +371,23 @@ export async function copyPluginDir(
   destDir: string,
 ): Promise<CopyPluginDirResult> {
   await assertRealPackageRoot(srcDir);
-  return copyOwnedTree(srcDir, destDir, '');
-}
-
-async function copyOwnedTree(
-  srcDir: string,
-  destDir: string,
-  relativePrefix: string,
-): Promise<CopyPluginDirResult> {
   await mkdir(destDir, { recursive: true });
+
   let files = 0;
-  const skippedSymlinks: string[] = [];
-
-  for (const entry of await readDir(srcDir)) {
-    if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
-
-    const srcPath = joinPath(srcDir, entry.name);
-    const destPath = joinPath(destDir, entry.name);
-    const relative = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
-
-    // BEFORE the isDirectory branch: a link to a directory reports
-    // `isDirectory: false`, so testing it later would be testing nothing.
-    if (entry.isSymlink) {
-      skippedSymlinks.push(relative);
-      continue;
-    }
-
-    if (entry.isDirectory) {
-      const nested = await copyOwnedTree(srcPath, destPath, relative);
-      files += nested.files;
-      skippedSymlinks.push(...nested.skippedSymlinks);
-    } else {
+  // The context threaded down the walk is the destination directory that
+  // mirrors the source directory currently being listed.
+  const skippedSymlinks = await walkOwnedTree<string>(srcDir, '', destDir, {
+    directory: async ({ name }, parentDest) => {
+      const dest = joinPath(parentDest, name);
+      await mkdir(dest, { recursive: true });
+      return dest;
+    },
+    file: async ({ name, srcPath }, dest) => {
       const bytes = await readFile(srcPath);
-      await writeFile(destPath, new Uint8Array(bytes));
+      await writeFile(joinPath(dest, name), new Uint8Array(bytes));
       files++;
-    }
-  }
+    },
+  });
 
   return { files, skippedSymlinks: skippedSymlinks.sort() };
 }
@@ -240,29 +401,15 @@ async function copyOwnedTree(
  */
 export async function collectPluginSymlinks(srcDir: string): Promise<string[]> {
   await assertRealPackageRoot(srcDir);
-  return (await collectOwnedTreeSymlinks(srcDir, '')).sort();
-}
-
-async function collectOwnedTreeSymlinks(
-  srcDir: string,
-  relativePrefix: string,
-): Promise<string[]> {
-  const found: string[] = [];
-
-  for (const entry of await readDir(srcDir)) {
-    if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
-    const relative = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
-
-    if (entry.isSymlink) {
-      found.push(relative);
-      continue;
-    }
-    if (entry.isDirectory) {
-      found.push(...(await collectOwnedTreeSymlinks(joinPath(srcDir, entry.name), relative)));
-    }
-  }
-
-  return found;
+  // The same walk the copy does, with a visitor that writes nothing: the skip
+  // list is the walk's own return value, so it cannot drift from the copy's.
+  const skipped = await walkOwnedTree<undefined>(srcDir, '', undefined, {
+    directory: async () => undefined,
+    file: async () => {
+      /* nothing to read: enumerating the tree is the whole job */
+    },
+  });
+  return skipped.sort();
 }
 
 /** Remove an installed plugin's directory. */

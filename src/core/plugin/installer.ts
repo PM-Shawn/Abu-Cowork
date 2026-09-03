@@ -25,9 +25,9 @@
  *   - link refusal — a link in a third-party package is an instruction to read
  *     something the package does not own, so `copyPluginDir` never follows one.
  *     Every scan here goes through `scanPluginPackage`, which hides exactly
- *     what the copy refuses, and `collectPluginSymlinks` runs first so a
- *     package root that is itself a link is rejected before anything is read.
- *     Without that the disclosure would describe a tree that never lands.
+ *     what the copy refuses and which refuses a package root that is itself a
+ *     link before it lists anything. Without that the disclosure would
+ *     describe a tree that never lands.
  */
 
 import { readTextFile } from '@tauri-apps/plugin-fs';
@@ -235,15 +235,15 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   } else {
     throw new UnsupportedSourceError(source.kind);
   }
-  // First, because it is the call that refuses a package root which is itself
-  // a symlink — every scan below would otherwise be reading someone else's
-  // tree. It also produces the skip list from the same walk the copy does, so
-  // what the user approves is what the copy will actually leave out.
-  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
-  // One view of the package, shared by all three scans below. It hides exactly
-  // what the copy refuses, so the disclosure and the installed tree agree by
-  // construction rather than by two lists being kept in step by hand.
+  // One view of the package, shared by every scan below. It hides exactly what
+  // the copy refuses — same traversal, same rule — so the disclosure and the
+  // installed tree agree by construction rather than by lists kept in step by
+  // hand. Both this and `collectPluginSymlinks` refuse a package root that is
+  // itself a link, so their order here is presentation, not a guard.
   const scan = scanPluginPackage(sourceDir);
+  // The skip list comes off the walk the copy performs, so what the user
+  // approves is what the copy will actually leave out.
+  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
   const manifest = await readManifestWith(sourceDir, scan);
 
   if (manifest.name !== opts.entry.name) {

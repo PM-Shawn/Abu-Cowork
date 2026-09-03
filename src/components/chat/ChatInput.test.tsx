@@ -875,6 +875,29 @@ describe('ChatInput inline agent selection', () => {
     }
   });
 
+  it('typing @ with an agent chip set reopens the picker and picking switches the chip', () => {
+    useDiscoveryStore.setState({
+      skills: [],
+      agents: [
+        { name: 'publisher', description: 'Draft and edit public posts' },
+        { name: 'reviewer', description: 'Review drafts' },
+      ],
+      isLoading: false,
+    });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: '@pub' } });
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+
+    fireEvent.change(textarea, { target: { value: '@rev' } });
+    expect(screen.getByRole('listbox')).toBeTruthy();
+    fireEvent.click(screen.getByRole('option', { name: /reviewer/ }));
+    expect(screen.getByRole('button', { name: '@reviewer' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+    expect(textarea.value).toBe('');
+  });
+
   describe('team chip + composer `+` menu (in-conversation team)', () => {
     async function seedTeam() {
       const { useTeamStore } = await import('@/stores/teamStore');

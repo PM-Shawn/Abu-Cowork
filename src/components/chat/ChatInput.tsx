@@ -1033,7 +1033,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const disabledAgentSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
   const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
-    if (selectedSkill || selectedAgent || isComposing) return null;
+    // An agent chip does not block a fresh `@` — picking again switches the chip.
+    if (selectedSkill || isComposing) return null;
     // A leading slash command owns the composer suggestion surface even if
     // the command body happens to contain an inline @ token.
     if (/^\s*\/\S*/.test(text)) return null;
@@ -1047,15 +1048,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const inlineTarget = findAgentMentionTarget(text, selection.start, selection.end);
     if (inlineTarget) return inlineTarget;
     return null;
-  }, [isComposing, selectedAgent, selectedSkill, selection.end, selection.start, text]);
+  }, [isComposing, selectedSkill, selection.end, selection.start, text]);
 
   // Suggestion type tracking: 'skill' for / prefix, 'agent' for @ prefix
   const suggestionType = useMemo((): 'skill' | 'agent' | null => {
     const trimmed = text.trim();
-    if (!selectedSkill && !selectedAgent) {
-      if (agentMentionTarget) return 'agent';
-      if (trimmed.startsWith('/')) return 'skill';
-    }
+    // `@` keeps working with an agent chip set — picking again switches the
+    // chip (user report 2026-09-04: "已选择 Agent 后再输入 @ 没反应").
+    if (agentMentionTarget) return 'agent';
+    if (!selectedSkill && !selectedAgent && trimmed.startsWith('/')) return 'skill';
     return null;
   }, [agentMentionTarget, text, selectedSkill, selectedAgent]);
 
@@ -1630,39 +1631,29 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   );
 
   // Who takes the next message: the team pin, an @agent, or a /skill. Lives in
-  // the bottom row next to `+` (WorkBuddy chip bar); click = clear.
+  // the bottom row next to `+` (WorkBuddy chip bar): neutral pill with an ✕,
+  // click = clear.
+  const chipClass = 'inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
+  const chipIconClass = 'h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)]';
   const composerChips = (
     <>
       {pinnedTeam && (
-        <button
-          type="button"
-          onClick={clearTeamPin}
-          data-testid="composer-team-chip"
-          className="flex min-w-0 shrink items-center gap-1 rounded-md px-1.5 py-0.5 text-minor font-medium text-[var(--abu-link)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
-          title={t.common.close}
-        >
+        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close}>
+          <X aria-hidden="true" className={chipIconClass} />
           <span aria-hidden="true">👥</span>
           <span className="truncate">{pinnedTeam.name}</span>
         </button>
       )}
       {selectedAgent && !pinnedTeam && (
-        <button
-          type="button"
-          onClick={removeAgent}
-          className="min-w-0 shrink truncate rounded-md px-1.5 py-0.5 text-minor font-medium text-[var(--abu-link)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
-          title={t.common.close}
-        >
-          {selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}
+        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close}>
+          <X aria-hidden="true" className={chipIconClass} />
+          <span className="truncate">{selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}</span>
         </button>
       )}
       {selectedSkill && (
-        <button
-          type="button"
-          onClick={removeSkill}
-          className="min-w-0 shrink truncate rounded-md px-1.5 py-0.5 text-minor font-medium text-purple-600 hover:bg-[var(--abu-bg-hover)] hover:text-purple-800 hover:line-through transition-colors cursor-pointer"
-          title={t.common.close}
-        >
-          /{selectedSkill.name}
+        <button type="button" onClick={removeSkill} className={chipClass} title={t.common.close}>
+          <X aria-hidden="true" className={chipIconClass} />
+          <span className="truncate">/{selectedSkill.name}</span>
         </button>
       )}
     </>

@@ -161,6 +161,12 @@ const SKILL_TAG = 'preloaded-skill';
  * the prompt-injection list of the safety block that ends the prompt, so the
  * model can tell where our framing stops and the borrowed text starts.
  *
+ * BOTH consumers have to carry that enumeration, and each keeps its own copy:
+ * the main loop's `safety-anchor` section in `orchestrator.ts` and the
+ * subagent loop's `## Safety Rules` in `subagentLoop.ts`. The subagent path is
+ * the primary consumer of `skills:`, so an anchor-only enumeration left the
+ * busiest path with a delimiter and no rule behind it.
+ *
  * NOTHING author-controlled is rendered OUTSIDE the tag. The name goes into
  * attribute position, where it is escaped — a raw `">` in it would otherwise
  * mint a second boundary — and the description goes INSIDE the tag along with

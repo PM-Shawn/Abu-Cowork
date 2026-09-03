@@ -62,10 +62,35 @@ export async function installSkillFromFolder(
     return { ok: false, code: 'SYMLINK_ROOT', message: `Refusing a skill folder that is itself a symlink: ${folderPath}` };
   }
 
-  // 1. Check SKILL.md exists
+  // 1. Check the folder has a SKILL.md — one it OWNS.
+  //
+  //    Every segment has to be owned, not just the root. `exists` and
+  //    `readTextFile` both resolve the final component in the privileged host,
+  //    so a LINKED SKILL.md is read straight through and the skill's identity
+  //    — its name, and therefore the directory it installs over — comes from a
+  //    file the folder does not own. `copyDirectory` then (rightly) refuses to
+  //    copy that same link, so gate and copy would be running two different
+  //    rules: the install reported `ok: true` for a directory with no SKILL.md
+  //    in it, which `loader.ts` never loads. On the overwrite paths — the
+  //    confirm dialog in SkillUploadModal, and `skill_manage` with
+  //    `overwrite: true` — that unloadable directory replaced a working skill,
+  //    named by a manifest the folder does not own, and the toast said the
+  //    upload succeeded.
+  //
+  //    A link is therefore ABSENT here, exactly as a linked `plugin.json` is
+  //    absent to `scanPluginPackage` (src/core/plugin/fsOps.ts). The folder is
+  //    already proven real above, so lstat on this basename asks precisely the
+  //    right question.
   const skillMdPath = joinPath(folderPath, 'SKILL.md');
-  if (!(await exists(skillMdPath))) {
-    return { ok: false, code: 'NO_SKILL_MD', message: 'Folder does not contain SKILL.md' };
+  const skillMdIsLink = await isSymlinkPath(skillMdPath);
+  if (skillMdIsLink || !(await exists(skillMdPath))) {
+    return {
+      ok: false,
+      code: 'NO_SKILL_MD',
+      message: skillMdIsLink
+        ? 'Folder does not contain a SKILL.md of its own: SKILL.md is a symlink. Copy the file into the folder instead of linking it.'
+        : 'Folder does not contain SKILL.md',
+    };
   }
 
   // 2. Parse name from frontmatter
@@ -125,9 +150,13 @@ export async function installSkillFromFolder(
  * root check needs — every other call would resolve the very thing being
  * asked about.
  *
+ * Both the source folder and its SKILL.md are asked this: neither may be a
+ * link, because every other fs call resolves the final component and would
+ * read straight through one.
+ *
  * A path that cannot be lstat'd is not a link we can prove, and answering
- * `false` here does not let one through: a missing folder falls to the
- * NO_SKILL_MD check moments later, and an unreadable one fails the copy.
+ * `false` here does not let one through: a missing folder or manifest falls to
+ * the NO_SKILL_MD check moments later, and an unreadable one fails the read.
  */
 async function isSymlinkPath(p: string): Promise<boolean> {
   try {

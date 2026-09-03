@@ -455,3 +455,67 @@ describe('installSkillFromFolder over a folder whose only link points at a file'
     }
   });
 });
+
+/**
+ * The one segment that decides the skill's identity: `SKILL.md` itself.
+ *
+ * `exists` and `readTextFile` resolve the final path component in the
+ * privileged host, so a LINKED `SKILL.md` is read straight through while
+ * `copyDirectory` (correctly) refuses to copy that same link. Gate and copy
+ * must run one rule, or the install "succeeds" into a directory with no
+ * manifest — which `loader.ts` never loads, and which the overwrite paths
+ * (SkillUploadModal's confirm dialog, `skill_manage` with `overwrite: true`)
+ * put where a working skill used to be.
+ */
+describe('installSkillFromFolder when SKILL.md is itself a symlink', () => {
+  let root: string;
+  let src: string;
+  let installed: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-linked-md-'));
+    src = join(root, 'linky-skill');
+    installed = join(root, '.abu', 'skills', 'linky-skill');
+
+    // A manifest that lives OUTSIDE the folder being installed.
+    mkdirSync(join(root, 'elsewhere'), { recursive: true });
+    writeFileSync(join(root, 'elsewhere', 'SKILL.md'), LINKY_SKILL_MD);
+
+    mkdirSync(src, { recursive: true });
+    symlinkSync(join(root, 'elsewhere', 'SKILL.md'), join(src, 'SKILL.md'));
+    writeFileSync(join(src, 'body.md'), '# body');
+
+    mockHomeDir.mockResolvedValue(root);
+    useRealFs();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses the install instead of reporting success without a manifest', async () => {
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('NO_SKILL_MD');
+    expect(existsSync(installed)).toBe(false);
+  });
+
+  it('leaves an existing same-named skill untouched on overwrite', async () => {
+    // Pre-guard this swapped a working skill out for a directory holding only
+    // `body.md`, and reported ok:true — the caller then says "upload
+    // succeeded" and the loader silently has one skill fewer.
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(join(installed, 'SKILL.md'), LINKY_SKILL_MD);
+    writeFileSync(join(installed, 'important.md'), 'ORIGINAL CONTENT');
+
+    const result = await installSkillFromFolder(src, { overwrite: true });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('NO_SKILL_MD');
+    expect(readFileSync(join(installed, 'important.md'), 'utf8')).toBe('ORIGINAL CONTENT');
+    expect(existsSync(join(installed, 'SKILL.md'))).toBe(true);
+  });
+});

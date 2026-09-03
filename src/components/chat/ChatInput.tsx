@@ -1103,6 +1103,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (suggestionType !== null && suggestions.length > 0) setSelectedIndex(0);
   }, [suggestionKey, suggestionType, suggestions.length]);
 
+  // Escape (and picking an item) suppress the popup for the token that was
+  // showing, so it does not spring back while the user keeps typing that same
+  // token. That suppression must end with the token: once the `@`/`/` is
+  // deleted there is nothing being suppressed any more, and typing it again is
+  // a fresh open (real-machine bug 2026-09-03: "删掉再打 @ 没有面板了").
+  useEffect(() => {
+    if (suggestionKey === null) setDismissedSuggestionKey(null);
+  }, [suggestionKey]);
+
   // Derived: show suggestions when there are matches and not dismissed
   const showSuggestions = suggestionKey !== null &&
     dismissedSuggestionKey !== suggestionKey &&

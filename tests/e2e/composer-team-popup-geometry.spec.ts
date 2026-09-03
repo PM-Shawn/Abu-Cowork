@@ -141,6 +141,16 @@ test.describe('composer @ popup geometry', () => {
       console.log('[popup-geometry:reopened]', JSON.stringify(reopened));
       assertHeaderVisible(reopened);
 
+      // Regression (2026-09-03, second bundle): dismiss with Escape, delete the
+      // `@`, type it again — the popup must come back. Escape only suppresses
+      // the token that was showing; deleting the token ends the suppression.
+      await textbox.press('Escape');
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await textbox.press('Backspace');
+      await textbox.type('@');
+      await expect(page.getByRole('listbox')).toBeVisible({ timeout: 5_000 });
+      assertHeaderVisible(await readGeometry());
+
       await closeAbuElectron(launched.app);
     } finally {
       removeElectronDataRoot(dataRoot);

@@ -57,24 +57,13 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { persistedStoreVersion } from './storeVersions';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEST_API_KEY = 'abu-e2e-browser-unattended-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-browser-unattended-model';
 const PROVIDER_ID = 'abu-e2e-browser-unattended-provider';
-
-/**
- * MUST equal the settingsStore's current persisted `version`
- * (`src/stores/settingsStore.ts`, registered in
- * `src/stores/storeVersions.test.ts` as `abu-settings` minVersion). Writing a
- * lower number makes zustand run the migration chain over our injected state
- * on the next reload — and v46's own branch rewrites exactly the three fields
- * these specs inject (`allowUnattendedBrowser`, `browserOperationPolicy`).
- */
-const SETTINGS_STORE_VERSION = 46;
-/** Same rule for `abu-schedule` (storeVersions.test.ts minVersion 5). */
-const SCHEDULE_STORE_VERSION = 5;
 
 const LOCAL_MOCK_PROVIDER_OPTIONS = {
   apiKey: TEST_API_KEY,
@@ -561,11 +550,12 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
       activeAutomationTab: 'schedule',
       viewMode: 'automation',
     });
-    window.localStorage.setItem('abu-settings', JSON.stringify({
-      ...persisted,
-      state: persisted.state,
-      version: payload.settingsVersion,
-    }));
+    // Version untouched: the app wrote this entry at the store's current
+    // version, so carrying it through is both correct and drift-proof. A
+    // literal here would make zustand replay the migration chain over the
+    // fields we just injected — and v46's own branch rewrites exactly
+    // `allowUnattendedBrowser` / `browserOperationPolicy`.
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
 
     window.localStorage.setItem('abu-schedule', JSON.stringify({
       state: {
@@ -590,8 +580,7 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
     prompt: seed.prompt,
     scheduleId: seed.scheduleId,
     scheduleName: seed.scheduleName,
-    scheduleVersion: SCHEDULE_STORE_VERSION,
-    settingsVersion: SETTINGS_STORE_VERSION,
+    scheduleVersion: persistedStoreVersion('abu-schedule'),
     sitePermissions: seed.sitePermissions,
     unattendedPolicy: seed.unattendedPolicy ?? {},
   });

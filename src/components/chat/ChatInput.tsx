@@ -1083,7 +1083,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   useLayoutEffect(() => {
     if (!showSuggestions) return;
-    document.getElementById(suggestionOptionId(selectedIndex))?.scrollIntoView({ block: 'nearest' });
+    const option = document.getElementById(suggestionOptionId(selectedIndex));
+    if (!option) return;
+    if (selectedIndex === 0) {
+      // The first option sits under its group header. scrollIntoView(nearest)
+      // would pin the option's own top edge to the container and leave the
+      // header scrolled out — which is exactly what happened when a stale
+      // non-zero index from a previous open scrolled the list first (real-
+      // machine report 2026-09-03: "卡片上面被截断"). Show the list top instead.
+      const listbox = option.closest<HTMLElement>('[role="listbox"]');
+      if (listbox) listbox.scrollTop = 0;
+      return;
+    }
+    option.scrollIntoView({ block: 'nearest' });
     // suggestionKey: when the query changes the LIST changes while selectedIndex
     // often stays 0 — without this dep the popup keeps its old scrollTop and the
     // top rows (teams) sit out of view (real-machine bug 2026-08-31).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSubagentToolNames } from './subagentToolRoster';
+import { checkDispatchToolBoundary, resolveSubagentToolNames } from './subagentToolRoster';
 
 const KNOWN_TOOLS = [
   'read_file',
@@ -55,5 +55,22 @@ describe('protocol tools', () => {
       { disallowedTools: ['team_propose_plan'] },
     ).toolNames;
     expect(names).not.toContain('team_propose_plan');
+  });
+
+  describe('checkDispatchToolBoundary (dispatch-time re-check)', () => {
+    it('lets a frozen-tools agent call the protocol tool it was offered', () => {
+      // Builtin 数据分析师 shape: a fixed list that predates team_propose_plan.
+      const frozen = ['read_file', 'write_file', 'run_command', 'web_search'];
+      expect(checkDispatchToolBoundary(frozen, undefined, 'team_propose_plan', { items: [] })).toBeNull();
+      // …and the run-level allowlist must not veto it either.
+      expect(checkDispatchToolBoundary(frozen, ['read_file'], 'team_propose_plan', { items: [] })).toBeNull();
+    });
+
+    it('still refuses ordinary tools outside the declared list or the run allowlist', () => {
+      const frozen = ['read_file'];
+      expect(checkDispatchToolBoundary(frozen, undefined, 'write_file', { path: '/x' })).toMatch(/fixed tool boundary/);
+      expect(checkDispatchToolBoundary(undefined, ['read_file'], 'write_file', { path: '/x' })).toMatch(/not allowed for this agent run/);
+      expect(checkDispatchToolBoundary(frozen, undefined, 'read_file', { path: '/x' })).toBeNull();
+    });
   });
 });

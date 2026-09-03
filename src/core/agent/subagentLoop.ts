@@ -48,10 +48,10 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
-import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
-import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
 import {
   ActiveToolResultAdmission,
   type ActiveToolResultToken,
@@ -1054,16 +1054,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             return { id: tc.id, result: `Error: tool "${tc.name}" is outside this agent's fixed tool boundary` };
           }
           // Name-level roster filtering cannot express input constraints such
-          // as run_command(npm run *); enforce those at dispatch time.
-          if (
-            agent.tools?.length
-            && !agent.tools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" input is outside this agent's fixed tool boundary` };
-          }
-          if (options.allowedTools?.length && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
-          }
+          // as run_command(npm run *); enforce those at dispatch time. Shared
+          // with the post-hook re-check so both apply the same rules.
+          const boundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, tc.input);
+          if (boundaryError) return { id: tc.id, result: boundaryError };
           // Denylist checked at execution too, not just when the tool list
           // was assembled: the model can name a tool that was never offered.
           if (options.blockedTools?.some((pattern) => matchesToolName(tc.name, pattern))) {
@@ -1109,18 +1103,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // input-sensitive allowlist to the value that will actually be
           // executed, otherwise a hook could turn an allowed command into an
           // out-of-bound one after the first check above.
-          if (
-            agent.tools?.length
-            && !agent.tools.some((pattern) => matchesToolPattern(tc.name, pattern, effectiveInput))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" input is outside this agent's fixed tool boundary` };
-          }
-          if (
-            options.allowedTools?.length
-            && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, effectiveInput))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
-          }
+          const postHookBoundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, effectiveInput);
+          if (postHookBoundaryError) return { id: tc.id, result: postHookBoundaryError };
 
           const toolStart = Date.now();
           try {

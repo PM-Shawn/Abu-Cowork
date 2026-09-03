@@ -65,7 +65,8 @@
  */
 import type { ToolExecutionContext } from '../../types';
 import { getConversationReader } from './ports/conversationReader';
-import { applyTeamLeaderRoute, resolveTeamRouteContext } from '../team/leaderRoute';
+import { applyTeamLeaderRoute } from '../team/leaderRoute';
+import { resolveTeamRouteContext } from '../team/teamRouteResolver';
 import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';

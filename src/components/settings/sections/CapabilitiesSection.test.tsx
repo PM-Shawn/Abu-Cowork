@@ -656,7 +656,7 @@ describe('CapabilitiesSection', () => {
     render(<CapabilitiesSection />);
 
     expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Check connection' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Check connection')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Done' })).not.toBeInTheDocument();
     // The way forward is the explicit opt-in, which is present.
     expect(screen.getByRole('button', { name: 'Connect Chrome' })).toBeInTheDocument();

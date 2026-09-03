@@ -149,6 +149,21 @@ export default function InstallDisclosureDialog({
               {format(tb.pluginsDisclosureSubtitle, { name: d.name })}
             </p>
 
+            {/* Above every payload section on purpose: the dialog scrolls, and
+                "we cannot confirm who built this" is what decides whether to
+                read the rest at all. */}
+            {state.unsigned && (
+              <div
+                data-testid="plugin-disclosure-unsigned"
+                className="flex items-start gap-2.5 rounded-lg bg-[var(--abu-warning-bg)] p-3"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-warning)]" />
+                <p className="text-body leading-relaxed text-[var(--abu-text-primary)]">
+                  {tb.pluginsDisclosureUnsigned}
+                </p>
+              </div>
+            )}
+
             <Section icon={ShieldCheck} title={tb.pluginsDisclosureSource}>
               <p className="text-body text-[var(--abu-text-secondary)]">
                 {d.marketplace}
@@ -220,18 +235,6 @@ export default function InstallDisclosureDialog({
                   ))}
                 </div>
               </Section>
-            )}
-
-            {state.unsigned && (
-              <div
-                data-testid="plugin-disclosure-unsigned"
-                className="flex items-start gap-2.5 rounded-lg bg-[var(--abu-warning-bg)] p-3"
-              >
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-warning)]" />
-                <p className="text-body leading-relaxed text-[var(--abu-text-primary)]">
-                  {tb.pluginsDisclosureUnsigned}
-                </p>
-              </div>
             )}
 
             {(d.skippedSymlinks?.length ?? 0) > 0 && (

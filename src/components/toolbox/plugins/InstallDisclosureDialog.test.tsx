@@ -111,6 +111,19 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.getByTestId('plugin-disclosure-unsigned')).toBeInTheDocument();
   });
 
+  it('puts the signing warning above the payload sections', () => {
+    // The dialog scrolls. "We cannot confirm who built this" decides whether
+    // to read the rest at all, so it must not sit below the fold under the
+    // source / skills / servers / capabilities list.
+    renderDialog({ state: { kind: 'ready', disclosure, unsigned: true } as const });
+
+    const warning = screen.getByTestId('plugin-disclosure-unsigned');
+    const firstPayloadSection = screen.getByText('/m/official/plugins/weather');
+    expect(warning.compareDocumentPosition(firstPayloadSection)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it('stays silent about signing on a path that has no signing concept', () => {
     // Personal / marketplace installs are never signed; a warning there would
     // be noise, so the flag is optional and off by default.

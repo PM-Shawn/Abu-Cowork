@@ -1256,7 +1256,7 @@ const enUS: TranslationDict = {
     pluginsDisclosureIgnoredTitle: "Not used by Abu",
     pluginsDisclosureIgnoredHint: 'This plugin also ships {payloads}, which Abu does not use (skills and connectors still install).',
     pluginsDisclosureSymlinkTitle: 'Links that will not be installed',
-    pluginsDisclosureSymlinkHint: 'This package contains shortcuts to files outside itself ({paths}). Abu will not copy them, because following one could pull in a file the plugin does not own. Everything else installs normally.',
+    pluginsDisclosureSymlinkHint: 'This package contains links Abu will not copy ({paths}). A link can point outside the package, and following one could pull in a file the plugin does not own. Everything else installs normally.',
     pluginsDisclosureUnsigned: 'This package carries no signature, so Abu cannot confirm who built it — only that the bytes match what the catalog listed.',
     pluginsDisclosureNone: 'None',
     pluginsDisclosureLoading: 'Reading the plugin package…',

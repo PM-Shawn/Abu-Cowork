@@ -818,6 +818,13 @@ export interface SubagentMetadata {
   maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 200 for safety.
   tools?: string[];
   disallowedTools?: string[];
+  /**
+   * Skill names preloaded into the agent's context at start — NOT a
+   * restriction. Each listed skill's full SKILL.md body is injected into the
+   * prompt that starts this agent's loop (see
+   * `core/agent/prompts/preloadedSkills.ts`); every other discovered skill
+   * stays available on demand exactly as it is for an agent that lists none.
+   */
   skills?: string[];
   memory?: 'session' | 'project' | 'user';
   background?: boolean;

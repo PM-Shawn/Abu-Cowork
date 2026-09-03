@@ -139,6 +139,48 @@ describe('runAgentBatchTool progress wiring', () => {
     });
   });
 
+  it('records each member tool call as a batchTask-tagged child of the batch step (persisted process)', async () => {
+    const addChildStepToDelegate = vi.fn(() => 'child-1');
+    const completeChildStep = vi.fn();
+    const signal = new AbortController().signal;
+    setLoopContext('loop-children', {
+      loopId: 'loop-children',
+      conversationId: 'conv-children',
+      signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: {
+        route: vi.fn(),
+        getCurrentStepId: () => 'batch-step',
+        addChildStepToDelegate,
+        completeChildStep,
+      } as never,
+      toolCallToStepId: new Map(),
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'read_file', toolInput: { path: 'a.md' } });
+      options.onProgress?.({ type: 'tool-end', id: 'sub-tool-1', toolName: 'read_file', result: 'ok', error: false });
+      return new SubagentResult({
+        text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
+      });
+    });
+    try {
+      await runAgentBatchTool.execute(
+        { tasks: [{ type: 'executor', task: 'read the doc' }] },
+        { conversationId: 'conv-children', loopId: 'loop-children', toolCallId: 'batch-children' },
+      );
+      expect(addChildStepToDelegate).toHaveBeenCalledWith('loop-children', 'batch-step', {
+        toolName: 'read_file',
+        toolInput: { path: 'a.md' },
+        toolCallId: 'sub-tool-1',
+        batchTask: { index: 0, label: 'read the doc' },
+      });
+      expect(completeChildStep).toHaveBeenCalledWith('loop-children', 'batch-step', 'child-1', 'ok', false, undefined);
+    } finally {
+      clearLoopContext('loop-children');
+    }
+  });
+
   it('hands the triggering multimodal user turn to every run_agent_batch child', async () => {
     const conversationId = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(conversationId, {

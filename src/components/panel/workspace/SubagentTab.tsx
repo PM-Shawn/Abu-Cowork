@@ -3,9 +3,12 @@ import { Bot, Check, CircleStop, Clock, Loader2, XCircle, AlertTriangle } from '
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { useBatchProgress, type BatchTaskProgress } from '@/stores/batchProgressStore';
-import { TaskStepItem } from '@/components/chat/TaskBlock';
+import { TaskStepItem, convertExecutionStep, type UnifiedStep } from '@/components/chat/TaskBlock';
 import { toUnifiedBatchStep } from '@/components/chat/batchTaskStepAdapter';
-import type { BatchIdentity } from '@/types';
+import { batchRowStatusLabel, rowsFromPersistedSummary, type BatchTaskRow } from '@/components/chat/batchProgressViewModel';
+import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
+import { useChatStore } from '@/stores/chatStore';
+import type { BatchIdentity, Message } from '@/types';
 
 interface SubagentTabProps {
   identity: BatchIdentity;
@@ -67,6 +70,90 @@ function totalTokens(task: BatchTaskProgress): number | null {
   return usage.inputTokens + usage.outputTokens + (usage.cacheCreationInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
 }
 
+interface PersistedBatchTask {
+  steps: UnifiedStep[];
+  row: BatchTaskRow | undefined;
+}
+
+/**
+ * After the live batch store is gone (app restart, conversation reopened, TTL
+ * eviction) the member's process is read back from the owning assistant
+ * message: the run_agent_batch step's children tagged with this task index.
+ */
+function findPersistedBatchTask(
+  messages: readonly Message[] | undefined,
+  identity: BatchIdentity,
+  taskIndex: number,
+  locale: string,
+  t: TranslationDict,
+): PersistedBatchTask | null {
+  if (!messages) return null;
+  const candidates = identity.assistantMessageId
+    ? messages.filter((m) => m.id === identity.assistantMessageId)
+    : messages.filter((m) => m.role === 'assistant');
+  for (const message of candidates) {
+    const batchStep = message.executionSteps?.find((step) => step.toolCallId === identity.batchToolCallId);
+    if (!batchStep) continue;
+    const children = snapshotToExecutionSteps(batchStep.childSteps ?? [])
+      .filter((child) => child.batchTask?.index === taskIndex);
+    const toolCall = message.toolCalls?.find((call) => call.id === identity.batchToolCallId);
+    const row = toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
+    return { steps: children.map((child) => convertExecutionStep(child, locale)), row };
+  }
+  return null;
+}
+
+function PersistedTaskView({ title, persisted, locale, t }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict }) {
+  const { steps, row } = persisted;
+  const rowStatus = row?.status;
+  const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
+  // Persisted rows are terminal; a stale live status maps to the warning icon.
+  const iconStatus: BatchTaskProgress['status'] | null = !rowStatus || rowStatus === 'unknown'
+    ? null
+    : rowStatus === 'running' || rowStatus === 'queued' ? 'incomplete' : rowStatus;
+  return (
+    <div className="h-full overflow-auto p-5">
+      <div className="mx-auto max-w-4xl">
+        <header className="mb-4 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
+          <div className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
+            <Bot aria-hidden="true" className="w-4 h-4 shrink-0" strokeWidth={1.5} />
+            <span className="truncate">{title || row?.label || t.workspace.agentTitle}</span>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-caption text-[var(--abu-text-muted)]">
+            {statusText && iconStatus && (
+              <span className={cn(
+                'inline-flex items-center gap-1 rounded-full px-2 py-0.5 bg-[var(--abu-bg-base)]',
+                iconStatus === 'failed' && 'text-[var(--abu-danger)]',
+              )}>
+                <StatusIcon status={iconStatus} />
+                {statusText}
+              </span>
+            )}
+            <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
+            <span>{t.workspace.agentPersistedProcess}</span>
+          </div>
+        </header>
+        {steps.length === 0 ? (
+          <p className="text-minor text-[var(--abu-text-muted)]">{t.workspace.agentNoSteps}</p>
+        ) : (
+          <div data-testid="subagent-persisted-steps">
+            {steps.map((step, index) => (
+              <TaskStepItem
+                key={step.id}
+                step={step}
+                showConnector={index < steps.length - 1}
+                hasLaterToolStep={steps.slice(index + 1).some((s) => s.type !== 'thinking')}
+                locale={locale}
+                t={t}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function SubagentTab({ identity, taskIndex, title }: SubagentTabProps) {
   const { t, locale } = useI18n();
   const batch = useBatchProgress(identity);
@@ -84,6 +171,15 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
     () => task?.steps.map((step) => ({ raw: step, unified: toUnifiedBatchStep(step, locale) })) ?? [],
     [task?.steps, locale],
   );
+  const persistedMessages = useChatStore((s) => s.conversations[identity.conversationId]?.messages);
+  const persisted = useMemo(
+    () => (batch && task ? null : findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t)),
+    [batch, task, persistedMessages, identity, taskIndex, locale, t],
+  );
+
+  if (persisted) {
+    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} />;
+  }
 
   if (!batch || !task) {
     return (

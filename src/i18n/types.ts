@@ -2119,6 +2119,8 @@ export interface TranslationDict {
     agentTokens: string;
     agentNoSteps: string;
     agentFullProcessUnavailable: string;
+    /** Member tab header note when the process is replayed from the message snapshot. */
+    agentPersistedProcess: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;

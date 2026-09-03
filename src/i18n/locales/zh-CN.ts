@@ -1941,6 +1941,7 @@ const zhCN: TranslationDict = {
     agentTokens: '{count} tokens',
     agentNoSteps: '还没有保留工具调用过程。',
     agentFullProcessUnavailable: '完整子 Agent 过程只在本次应用运行中保留。',
+    agentPersistedProcess: '已结束 · 过程记录',
     agentRichContentReleased: '此步骤的富内容已释放，以控制内存占用。',
     agentRichContentPartiallyRetained: '此步骤的部分富内容已省略，以控制内存占用。',
     startHere: '从这里开始',

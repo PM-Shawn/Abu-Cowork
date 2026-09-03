@@ -26,7 +26,7 @@ import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
-import type { ExecutionStep, DetailBlock, StepType as ExecStepType } from '@/types/execution';
+import type { ExecutionStep, DetailBlock, StepType as ExecStepType, BatchTaskRef } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
 import { getToolLabel } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
@@ -54,6 +54,8 @@ export type UnifiedStep = {
   // Delegate (subagent) support
   agentName?: string;
   childSteps?: UnifiedStep[];
+  /** Child of a run_agent_batch step: which batch task (member) produced it. */
+  batchTask?: BatchTaskRef;
 };
 
 // Icon mapping for step types
@@ -218,7 +220,8 @@ function convertWorkflowStep(step: WorkflowStep, locale: string): UnifiedStep {
 }
 
 // Convert ExecutionStep to UnifiedStep (recursive for childSteps)
-function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep {
+// eslint-disable-next-line react-refresh/only-export-components
+export function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep {
   return {
     id: step.id,
     type: step.type,
@@ -233,7 +236,15 @@ function convertExecutionStep(step: ExecutionStep, locale: string): UnifiedStep 
     executionId: step.executionId,
     agentName: step.agentName,
     childSteps: step.childSteps?.map((child) => convertExecutionStep(child, locale)),
+    batchTask: step.batchTask,
   };
+}
+
+/** run_agent_batch children are per-member records for the member tab; the
+ *  batch card (BatchProgress) is their in-chat view, so they are not nested inline. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function hasBatchTaggedChildren(step: UnifiedStep): boolean {
+  return !!step.childSteps?.some((child) => child.batchTask !== undefined);
 }
 
 interface TaskBlockProps {
@@ -789,7 +800,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t 
         )}
 
         {/* Nested child steps for delegate (subagent) */}
-        {step.type === 'delegate' && step.childSteps && step.childSteps.length > 0 && (
+        {step.type === 'delegate' && step.childSteps && step.childSteps.length > 0 && !hasBatchTaggedChildren(step) && (
           <div className="mt-2 pl-1 border-l-2 border-[var(--abu-bg-hover)] ml-0.5">
             {step.childSteps.map((childStep, childIndex) => {
               const isLastChild = childIndex === step.childSteps!.length - 1;

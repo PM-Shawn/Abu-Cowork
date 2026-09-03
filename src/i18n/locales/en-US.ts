@@ -1939,6 +1939,7 @@ const enUS: TranslationDict = {
     agentTokens: '{count} tokens',
     agentNoSteps: 'No tool calls have been retained yet.',
     agentFullProcessUnavailable: 'The full subagent process is only retained during this app run.',
+    agentPersistedProcess: 'Finished · recorded process',
     agentRichContentReleased: 'Rich content for this step was released to keep memory bounded.',
     agentRichContentPartiallyRetained: 'Some rich content for this step was omitted to keep memory bounded.',
     startHere: 'Start from here',

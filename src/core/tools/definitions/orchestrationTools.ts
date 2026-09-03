@@ -425,6 +425,17 @@ export const runAgentBatchTool: ToolDefinition = {
       signal: loopCtx?.signal,
     });
 
+    // Persisted per-member process: mirror delegate_to_agent's child-step
+    // recording under the (running) run_agent_batch step. The live batch
+    // store stays the in-run view; these children are what survives on the
+    // message snapshot so a member tab can replay after restart / reopen.
+    const batchParentStepId = loopCtx?.eventRouter && typeof loopCtx.eventRouter.getCurrentStepId === 'function'
+      ? loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId)
+      : null;
+    const canRecordChildSteps = !!batchParentStepId
+      && typeof loopCtx?.eventRouter?.addChildStepToDelegate === 'function'
+      && typeof loopCtx?.eventRouter?.completeChildStep === 'function';
+
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };
 
@@ -538,6 +549,7 @@ export const runAgentBatchTool: ToolDefinition = {
             ? resolved.task + buildSchemaInstruction(schema)
             : resolved.task;
         let currentTurn = 0;
+        const childStepIds = new Map<string, string>(); // member tool_use id -> child step id
         try {
           const result = await runWithTimeout(
             (sig) => runSubagent({
@@ -560,9 +572,25 @@ export const runAgentBatchTool: ToolDefinition = {
                 try {
                   const store = useBatchProgressStore.getState();
                   if (event.type === 'tool-start') {
+                    if (canRecordChildSteps && loopCtx && batchParentStepId) {
+                      const childStepId = loopCtx.eventRouter.addChildStepToDelegate(loopCtx.loopId, batchParentStepId, {
+                        toolName: event.toolName,
+                        toolInput: event.toolInput,
+                        toolCallId: event.id,
+                        batchTask: { index: idx, label: resolved.label },
+                      });
+                      if (childStepId) childStepIds.set(event.id, childStepId);
+                    }
                     store.startTaskStep(batchIdentity, idx, event);
                     store.setTaskActivity(batchIdentity, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
                   } else if (event.type === 'tool-end') {
+                    const childStepId = childStepIds.get(event.id);
+                    childStepIds.delete(event.id);
+                    if (childStepId && loopCtx && batchParentStepId) {
+                      loopCtx.eventRouter.completeChildStep(
+                        loopCtx.loopId, batchParentStepId, childStepId, event.result, event.error, event.resultContent,
+                      );
+                    }
                     // Preserve rich blocks verbatim: BatchProgress turns image
                     // blocks into DetailBlockView input while this in-memory
                     // batch card remains open.

@@ -179,9 +179,12 @@ describe('BrowserRunReportCard', () => {
 
     render(<BrowserRunReportCard message={message} />);
 
-    // The turn cap AND a refused `execute_js`: the refusal wins the badge,
-    // because "it did not do the thing" is the more actionable of the two.
-    expect(screen.getByText('Completed with blocked actions')).toBeInTheDocument();
+    // The turn cap AND a refused `execute_js`. The badge keeps the turn cap:
+    // it is the only place on the card that fact appears, whereas the refusal
+    // is spelled out below in its own section and next step. Overriding it
+    // would swap a true "possibly incomplete" for a false "completed".
+    expect(screen.getByText('Possibly incomplete (hit the turn limit)')).toBeInTheDocument();
+    expect(screen.queryByText('Completed with blocked actions')).toBeNull();
     expect(screen.getByText('2 browser actions, 1 of them failed')).toBeInTheDocument();
     // Once as a visited site, once as the origin the refusal happened on.
     expect(screen.getAllByText('https://intranet.example').length).toBeGreaterThan(0);

@@ -330,16 +330,33 @@ describe('browserRunReport', () => {
       };
     }
 
-    it.each(['completed', 'incomplete'] as const)(
-      'downgrades the %s terminal when a state-changing action was refused',
-      (terminal) => {
-        const cursor = getBrowserSignalCursor();
-        record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
-        record(denial({ origin: 'https://blocked.example' }), { conversationId: 'conv-1' });
+    it('downgrades the completed terminal when a state-changing action was refused', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+      record(denial({ origin: 'https://blocked.example' }), { conversationId: 'conv-1' });
 
-        expect(report('conv-1', cursor, terminal)!.outcome).toBe('completed-with-refusals');
-      },
-    );
+      expect(report('conv-1', cursor, 'completed')!.outcome).toBe('completed-with-refusals');
+    });
+
+    /**
+     * The second load-bearing negative, and the reason `incomplete` is not a
+     * delivering terminal. The badge is the card's only carrier of the
+     * turn-cap fact, so overriding it would delete "it ran out of turns" and
+     * replace it with a claim that the run completed — which it did not. The
+     * refusal is still not lost: it stays in the blocked-actions section and
+     * still produces its next step, so the capped run shows BOTH facts.
+     */
+    it('keeps the incomplete terminal when a state-changing action was refused', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+      record(denial({ origin: 'https://blocked.example' }), { conversationId: 'conv-1' });
+
+      const vm = report('conv-1', cursor, 'incomplete')!;
+      expect(vm.outcome).toBe('incomplete');
+      // The refusal is reported, just not by the badge.
+      expect(vm.denials).toHaveLength(1);
+      expect(vm.nextSteps).toContain('allow-site');
+    });
 
     it.each(['completed', 'incomplete'] as const)(
       'leaves the %s terminal alone when nothing was refused',

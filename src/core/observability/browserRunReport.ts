@@ -208,14 +208,22 @@ function byCountThenKey<T extends { count: number }>(
 }
 
 /**
- * The delivering terminals — the two a person reads as "it finished". They are
- * the only ones `completed-with-refusals` can override: `aborted`, `error` and
- * `no-progress` already say the run did not deliver, and `aborted-denials`
+ * The one terminal `completed-with-refusals` may override. `aborted`, `error`
+ * and `no-progress` already say the run did not deliver, and `aborted-denials`
  * already says refusals were the reason.
+ *
+ * `incomplete` is deliberately NOT in here, even though it also delivered
+ * output. The badge is the card's ONLY carrier of the turn-cap fact — nothing
+ * else on the card says "it ran out of turns" — so replacing it with
+ * `completed-with-refusals` would trade a true statement for one that asserts
+ * a run completed when it did not. `incomplete` keeps its own amber "possibly
+ * incomplete (hit the turn limit)" badge, which is never read as a success,
+ * and the refusals stay listed in the blocked-actions section below it. A
+ * capped run with refusals therefore shows both facts; a `completed` run with
+ * refusals has no other flag, which is why it needs the override.
  */
 const DELIVERING_OUTCOMES: ReadonlySet<BrowserRunReportOutcome> = new Set([
   'completed',
-  'incomplete',
 ]);
 
 /**

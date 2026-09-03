@@ -118,16 +118,6 @@ export interface PageHandoff {
   hint: string;
 }
 
-/**
- * Advisory fields any action result may carry. Both keys are OMITTED when
- * nothing was detected, so a healthy page's result keeps the exact shape it
- * had before this existed.
- */
-export interface PageAdvisory {
-  authState?: 'login_required';
-  handoff?: PageHandoff;
-}
-
 // --- Action Results ---
 
 /** What an action actually acted on — lets a caller spot a wrong target. */

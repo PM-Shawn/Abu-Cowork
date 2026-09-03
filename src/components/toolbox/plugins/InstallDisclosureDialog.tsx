@@ -244,7 +244,7 @@ export default function InstallDisclosureDialog({
                   className="text-minor text-[var(--abu-text-muted)]"
                 >
                   {format(tb.pluginsDisclosureSymlinkHint, {
-                    paths: (d.skippedSymlinks ?? []).join('、'),
+                    paths: (d.skippedSymlinks ?? []).join(tb.pluginsDisclosureSymlinkSeparator),
                   })}
                 </p>
               </Section>

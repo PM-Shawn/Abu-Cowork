@@ -1441,6 +1441,8 @@ export interface TranslationDict {
     pluginsDisclosureIgnoredHint: string;
     pluginsDisclosureSymlinkTitle: string;
     pluginsDisclosureSymlinkHint: string;
+    /** List punctuation for the refused-link paths — `, ` reads wrong in zh. */
+    pluginsDisclosureSymlinkSeparator: string;
     /** Shown when the artifact carried no verifiable signature. */
     pluginsDisclosureUnsigned: string;
     pluginsDisclosureNone: string;
@@ -1452,6 +1454,8 @@ export interface TranslationDict {
     pluginsUnsupportedTitle: string;
     pluginsUnsupportedRemote: string;
     pluginsPlanFailed: string;
+    /** The package's own directory is a symlink, so nothing about it is trustworthy. */
+    pluginsSymlinkRootRefused: string;
     pluginsPlanDenied: string;
     // Skills Section
     installedSkills: string;

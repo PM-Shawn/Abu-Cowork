@@ -1259,6 +1259,7 @@ const zhCN: TranslationDict = {
     pluginsDisclosureIgnoredHint: '这个插件还带了 {payloads}，阿布暂不使用这些（技能和连接器会正常装）。',
     pluginsDisclosureSymlinkTitle: '不会安装的链接',
     pluginsDisclosureSymlinkHint: '这个插件包里有阿布不会复制的链接（{paths}）。链接可能指向插件包之外，顺着它读下去会把插件本不该拥有的文件也一起装进来。其余内容会正常安装。',
+    pluginsDisclosureSymlinkSeparator: '、',
     pluginsDisclosureUnsigned: '这个插件包没有签名，阿布只能确认文件内容和目录里登记的一致，无法确认它是谁打包的。',
     pluginsDisclosureNone: '无',
     pluginsDisclosureLoading: '正在读取插件包…',
@@ -1269,6 +1270,7 @@ const zhCN: TranslationDict = {
     pluginsUnsupportedTitle: '暂时装不了这个插件',
     pluginsUnsupportedRemote: '「{name}」的代码放在远程 Git 仓库里，需要联网拉取并校验版本，当前版本还做不到。现在只能安装市场目录里自带的插件包——在列表里挑一个没有这个提示的试试。',
     pluginsPlanFailed: '读取插件包失败',
+    pluginsSymlinkRootRefused: '这个插件包自己的目录是一个指向别处的链接（{path}），阿布不会安装它——它看上去装着的东西其实都在插件包之外。',
     pluginsPlanDenied: '管理员策略禁止安装',
     // Skills Section
     installedSkills: '已安装技能',

@@ -1257,6 +1257,7 @@ const enUS: TranslationDict = {
     pluginsDisclosureIgnoredHint: 'This plugin also ships {payloads}, which Abu does not use (skills and connectors still install).',
     pluginsDisclosureSymlinkTitle: 'Links that will not be installed',
     pluginsDisclosureSymlinkHint: 'This package contains links Abu will not copy ({paths}). A link can point outside the package, and following one could pull in a file the plugin does not own. Everything else installs normally.',
+    pluginsDisclosureSymlinkSeparator: ', ',
     pluginsDisclosureUnsigned: 'This package carries no signature, so Abu cannot confirm who built it — only that the bytes match what the catalog listed.',
     pluginsDisclosureNone: 'None',
     pluginsDisclosureLoading: 'Reading the plugin package…',
@@ -1267,6 +1268,7 @@ const enUS: TranslationDict = {
     pluginsUnsupportedTitle: 'This one cannot be installed yet',
     pluginsUnsupportedRemote: '"{name}" lives in a remote git repository, which needs a network fetch with version pinning that this build cannot do yet. For now only packages bundled inside the marketplace directory install — pick one from the list without this notice.',
     pluginsPlanFailed: 'Could not read the plugin package',
+    pluginsSymlinkRootRefused: "This package's own folder is a link to somewhere else ({path}), so Abu will not install it — everything it looks like it contains actually lives outside the package.",
     pluginsPlanDenied: "Blocked by your organization's policy",
     footerDescription: 'Manage Skills, Agents, and MCP',
     // Skills Section

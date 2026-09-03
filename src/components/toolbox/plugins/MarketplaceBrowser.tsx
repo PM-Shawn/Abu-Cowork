@@ -30,6 +30,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
+import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { entryUpdateStatus, updateAvailableKeysFor } from '@/core/plugin/updateCheck';
 import {
@@ -274,6 +275,17 @@ export default function MarketplaceBrowser({
           setFlow({ kind: 'unsupported', entry, sourceKind: err.kind });
           return;
         }
+        // A package whose own directory is a link is a refusal we can explain,
+        // not a read failure. Mapped from the error TYPE here — the dialog is
+        // purely presentational and only ever receives a finished string.
+        if (err instanceof PluginSymlinkRootError) {
+          setFlow({
+            kind: 'error',
+            entry,
+            message: format(tb.pluginsSymlinkRootRefused, { path: err.dir }),
+          });
+          return;
+        }
         setFlow({
           kind: 'error',
           entry,
@@ -281,7 +293,7 @@ export default function MarketplaceBrowser({
         });
       }
     },
-    [selected, home],
+    [selected, home, tb],
   );
 
   const handleConfirmInstall = useCallback(async () => {

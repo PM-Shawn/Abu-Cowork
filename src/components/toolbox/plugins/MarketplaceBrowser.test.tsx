@@ -67,6 +67,8 @@ import {
   UnsupportedSourceError,
   type InstallDisclosure,
 } from '@/core/plugin/installer';
+import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
+import { format, getI18n } from '@/i18n';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { usePluginStore } from '@/stores/pluginStore';
 import { loadMarketplaceFromDir } from './loadMarketplace';
@@ -295,6 +297,26 @@ describe('MarketplaceBrowser', () => {
     const notice = await screen.findByTestId('plugin-unsupported-notice');
     expect(notice.textContent).toContain('cloud-thing');
     expect(screen.queryByTestId('plugin-install-confirm')).toBeNull();
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it('explains a package whose own folder is a link, in the user\'s language', async () => {
+    // The refusal is a first-class outcome of a package we will not install,
+    // not a crash — so it gets the same typed-error-to-locale-key treatment as
+    // an unsupported source rather than leaking raw English from the core.
+    vi.mocked(planInstall).mockRejectedValue(
+      new PluginSymlinkRootError('/m/official/plugins/weather'),
+    );
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
+
+    const expected = format(getI18n().toolbox.pluginsSymlinkRootRefused, {
+      path: '/m/official/plugins/weather',
+    });
+    expect(await screen.findByText(expected)).toBeInTheDocument();
+    expect(screen.queryByText(/Refusing a plugin package/)).toBeNull();
     expect(installPlugin).not.toHaveBeenCalled();
   });
 

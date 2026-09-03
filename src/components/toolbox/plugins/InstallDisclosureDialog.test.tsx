@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import InstallDisclosureDialog from './InstallDisclosureDialog';
 import { formatServerCommand } from './serverCommand';
 import type { InstallDisclosure } from '@/core/plugin/installer';
+import { getI18n } from '@/i18n';
 
 const disclosure: InstallDisclosure = {
   key: 'weather@official',
@@ -97,6 +98,23 @@ describe('InstallDisclosureDialog', () => {
     const notice = screen.getByTestId('plugin-disclosure-symlinks');
     expect(notice.textContent).toContain('.cursor/skills');
     expect(notice.textContent).toContain('data/x');
+  });
+
+  it('joins the refused link paths with the separator the locale owns', () => {
+    // `、` is right in Chinese and wrong in English; the list punctuation
+    // belongs to the locale, not to this component.
+    const tb = getI18n().toolbox;
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: { ...disclosure, skippedSymlinks: ['.cursor/skills', 'data/x'] },
+      } as const,
+    });
+
+    const notice = screen.getByTestId('plugin-disclosure-symlinks');
+    expect(notice.textContent).toContain(
+      `.cursor/skills${tb.pluginsDisclosureSymlinkSeparator}data/x`,
+    );
   });
 
   it('says nothing about links when the package ships none', () => {

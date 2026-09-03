@@ -1592,6 +1592,12 @@ export interface TranslationDict {
     pickFolder: string;              // "选择文件夹"
     pickFile: string;                // "选择文件 (.askill/.zip)"
     importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
+    /** {n}, {names} — symlinks the copy refused, NOT hidden files. */
+    importSkippedLinks: string;
+    /** Joins the link paths in {@link importSkippedLinks}. */
+    importSkippedLinksSeparator: string;
+    /** {path} — the chosen folder is itself a symlink. */
+    importSymlinkRootRefused: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -3189,7 +3195,11 @@ export interface TranslationDict {
       installFailed: string;
       /** {count}, {files} */
       skippedNote: string;
-      /** {name}, {count}, {skippedNote} */
+      /** {count}, {files} — symlinks the copy refused, NOT hidden files. */
+      skippedLinksNote: string;
+      /** {path} — the folder at `source` is itself a symlink. */
+      symlinkRootRefused: string;
+      /** {name}, {count}, {skippedNote}, {linksNote} */
       installed: string;
       /** {name}, {path} */
       draftProposed: string;

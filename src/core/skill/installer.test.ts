@@ -1,10 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   readTextFile,
   readDir,
   readFile,
   writeFile,
+  mkdir,
   exists,
+  lstat,
   remove,
   rename,
 } from '@tauri-apps/plugin-fs';
@@ -19,6 +35,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
   mkdir: vi.fn().mockResolvedValue(undefined),
   exists: vi.fn().mockResolvedValue(false),
+  lstat: vi.fn(),
   remove: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined),
 }));
@@ -37,7 +54,9 @@ const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
+const mockMkdir = vi.mocked(mkdir);
 const mockExists = vi.mocked(exists);
+const mockLstat = vi.mocked(lstat);
 const mockRemove = vi.mocked(remove);
 const mockRename = vi.mocked(rename);
 const mockHomeDir = vi.mocked(homeDir);
@@ -89,6 +108,8 @@ beforeEach(() => {
   mockRename.mockResolvedValue(undefined as never);
   // Default: nothing exists except SKILL.md (validated first)
   mockExists.mockImplementation(async (p: string | URL) => String(p).endsWith('/SKILL.md'));
+  // Every virtual-tree case installs from a real directory, not a link to one.
+  mockLstat.mockResolvedValue({ isSymlink: false } as never);
 });
 
 describe('installSkillFromFolder', () => {
@@ -235,5 +256,202 @@ describe('installSkillFromFolder', () => {
       if (result.ok) return;
       expect(result.code).toBe('NO_NAME');
     });
+  });
+});
+
+/**
+ * These run against a REAL temporary directory with REAL symlinks, driving the
+ * mocked `@tauri-apps/plugin-fs` surface through node's fs exactly the way
+ * `electron/fsHost.cjs` does.
+ *
+ * Deliberately not the virtual tree above. Every hand-written entry in it says
+ * `isSymlink: false`, which is precisely the blind spot that let this ship: a
+ * dirent for a link reports `isDirectory: false` / `isFile: false` /
+ * `isSymlink: true` whether it points at a file or at a directory, and only a
+ * real dirent produces that combination by itself.
+ */
+
+/** Point the mocked plugin-fs surface at the real filesystem. */
+function useRealFs() {
+  mockReadDir.mockImplementation(async (p: string | URL) =>
+    readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+      name: d.name,
+      isDirectory: d.isDirectory(),
+      isFile: d.isFile(),
+      isSymlink: d.isSymbolicLink(),
+    })) as never,
+  );
+  mockReadTextFile.mockImplementation(async (p: string | URL) => readFileSync(String(p), 'utf8'));
+  // `readFileSync` FOLLOWS a symlink — what the privileged host does, and why a
+  // link to a directory used to throw EISDIR right here.
+  mockReadFile.mockImplementation(async (p: string | URL) => new Uint8Array(readFileSync(String(p))) as never);
+  mockWriteFile.mockImplementation(async (p: string | URL, data) => {
+    writeFileSync(String(p), data as Uint8Array);
+    return undefined as never;
+  });
+  mockMkdir.mockImplementation(async (p: string | URL) => {
+    mkdirSync(String(p), { recursive: true });
+    return undefined as never;
+  });
+  mockExists.mockImplementation(async (p: string | URL) => existsSync(String(p)));
+  mockRemove.mockImplementation(async (p: string | URL) => {
+    rmSync(String(p), { recursive: true, force: true });
+    return undefined as never;
+  });
+  mockRename.mockImplementation(async (from: string | URL, to: string | URL) => {
+    renameSync(String(from), String(to));
+    return undefined as never;
+  });
+  // `lstat` is the one call that must NOT resolve the final component — it is
+  // how the installer decides whether the folder it was handed is itself a link.
+  mockLstat.mockImplementation(
+    async (p: string | URL) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+  );
+}
+
+/** Absolute paths of every real file under `dir`, recursively. */
+function filesUnder(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...filesUnder(full));
+    else out.push(full);
+  }
+  return out;
+}
+
+const LINKY_SKILL_MD = '---\nname: linky-skill\ndescription: a skill\n---\n# body';
+
+describe('installSkillFromFolder over a real tree with real symlinks', () => {
+  let root: string;
+  let src: string;
+  let installed: string;
+  let secret: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-install-'));
+    src = join(root, 'linky-skill');
+    installed = join(root, '.abu', 'skills', 'linky-skill');
+    secret = join(root, 'secret.txt');
+
+    // A skill folder shaped like the package that broke the plugin installer:
+    // a real file, a real subdirectory, a link to a sibling DIRECTORY, and a
+    // link to a FILE outside the folder entirely.
+    mkdirSync(join(src, 'references'), { recursive: true });
+    writeFileSync(join(src, 'SKILL.md'), LINKY_SKILL_MD);
+    writeFileSync(join(src, 'references', 'guide.md'), '# guide');
+    symlinkSync('references', join(src, 'linkdir'), 'dir');
+    writeFileSync(secret, 'PRIVATE KEY');
+    mkdirSync(join(src, 'data'), { recursive: true });
+    symlinkSync(secret, join(src, 'data', 'x'));
+
+    mockHomeDir.mockResolvedValue(root);
+    useRealFs();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('installs a folder containing a link to a directory instead of crashing', async () => {
+    // Pre-fix this failed with COPY_FAILED wrapping
+    // "EISDIR: illegal operation on a directory, read" the moment the walk
+    // reached `linkdir`: its dirent says isDirectory:false, so it fell into the
+    // file branch and readFile followed it onto a directory.
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(existsSync(join(installed, 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(installed, 'references', 'guide.md'))).toBe(true);
+    expect(result.fileCount).toBe(2);
+  });
+
+  it('copies neither kind of link, and reports both', async () => {
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // Not followed, and not recreated either: recreating the link would still
+    // point whoever reads the installed skill back out of it.
+    expect(existsSync(join(installed, 'linkdir'))).toBe(false);
+    expect(existsSync(join(installed, 'data', 'x'))).toBe(false);
+    expect(result.skippedSymlinks).toEqual(['data/x', 'linkdir']);
+  });
+
+  it('never reads a symlink at all', async () => {
+    await installSkillFromFolder(src);
+
+    const read = mockReadFile.mock.calls.map((c) => String(c[0]));
+    expect(read).not.toContain(join(src, 'linkdir'));
+    expect(read).not.toContain(join(src, 'data', 'x'));
+  });
+
+  it('refuses a source folder that is itself a symlink', async () => {
+    // `exists` and `readDir` both resolve the final component in the privileged
+    // host, so a linked root enumerates the TARGET: a tree from somewhere else
+    // installs under a name read from somewhere else, and the skipped-links
+    // report describes a folder the caller never named. Only the root itself
+    // can see that, because from the entries' side it is invisible.
+    const linkedRoot = join(root, 'linked-skill');
+    symlinkSync(src, linkedRoot, 'dir');
+
+    const result = await installSkillFromFolder(linkedRoot);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('SYMLINK_ROOT');
+    expect(existsSync(installed)).toBe(false);
+  });
+});
+
+/**
+ * A second fixture carrying ONLY the link to a file.
+ *
+ * The combined fixture above cannot pin the exfiltration guard on its own:
+ * pre-fix, `linkdir` threw EISDIR and aborted the install before the walk ever
+ * reached `data/x`, so an assertion about the file link would pass for the
+ * wrong reason. Here the file link is the only link there is, nothing crashes
+ * before it, and the assertion is on CONTENT — proving the target's material
+ * was copied, not merely that a path exists.
+ */
+describe('installSkillFromFolder over a folder whose only link points at a file', () => {
+  let root: string;
+  let src: string;
+  let installed: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-exfil-'));
+    src = join(root, 'linky-skill');
+    installed = join(root, '.abu', 'skills', 'linky-skill');
+
+    const secret = join(root, 'secret.txt');
+    writeFileSync(secret, 'PRIVATE KEY');
+    mkdirSync(join(src, 'data'), { recursive: true });
+    writeFileSync(join(src, 'SKILL.md'), LINKY_SKILL_MD);
+    symlinkSync(secret, join(src, 'data', 'x'));
+
+    mockHomeDir.mockResolvedValue(root);
+    useRealFs();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('installs without materialising the target of the file link', async () => {
+    // The quiet half: a link to a FILE did not crash. readFile followed it and
+    // the TARGET's bytes were written as a real file inside the installed
+    // skill, so `data/x -> ~/.ssh/id_rsa` handed the key to a directory the
+    // model is allowed to read back.
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.skippedSymlinks).toEqual(['data/x']);
+    for (const p of filesUnder(installed)) {
+      expect(readFileSync(p, 'utf8')).not.toContain('PRIVATE KEY');
+    }
   });
 });

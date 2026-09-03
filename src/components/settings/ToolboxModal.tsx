@@ -7,8 +7,8 @@ import { useI18n, format } from '@/i18n';
 import { Sparkles, Bot, Server, Search, Puzzle } from 'lucide-react';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useToastStore } from '@/stores/toastStore';
-import { installSkillFromFolder } from '@/core/skill/installer';
-import { installAgentFromFolder } from '@/core/agent/installer';
+import { installSkillFromFolder, type InstallResult as SkillInstallResult } from '@/core/skill/installer';
+import { installAgentFromFolder, type InstallResult as AgentInstallResult } from '@/core/agent/installer';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import { useLabsFlag } from '@/core/labs/resolve';
@@ -21,6 +21,17 @@ import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
 import { Input } from '@/components/ui/input';
+
+/**
+ * The symlinks an installer refused to copy, or [] when it reports none.
+ *
+ * Only the skill installer has such a list; the agent one — whose copy walk
+ * still follows links — is a separate site with its own fix. Narrowing the
+ * shared success value here keeps the one success toast cast-free.
+ */
+function refusedLinks(result: Extract<SkillInstallResult | AgentInstallResult, { ok: true }>): string[] {
+  return 'skippedSymlinks' in result ? result.skippedSymlinks : [];
+}
 
 // Tab ids surfaced by the Plugin System IA (labs flag LABS_PLUGIN_SYSTEM).
 // 'plugins' has no counterpart in the persisted `ToolboxTab` union — the
@@ -134,15 +145,35 @@ export default function ToolboxView() {
         : await installSkillFromFolder(folderPath as string, { overwrite: true });
 
       if (!result.ok) {
-        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: result.message });
+        addToast({
+          type: 'error',
+          title: t.toolbox.uploadFailed,
+          // A folder that is itself a link is a refusal we can explain, and the
+          // remedy (pick the folder it points at) only fits in the locale.
+          message: result.code === 'SYMLINK_ROOT'
+            ? format(t.toolbox.importSymlinkRootRefused, { path: folderPath as string })
+            : result.message,
+        });
         return;
       }
+
+      // The skill installer refuses to follow symlinks; say so, or this picker
+      // is the one install path where the user cannot tell the skill that
+      // landed is missing entries the folder appeared to contain.
+      const links = refusedLinks(result);
 
       await refresh();
       addToast({
         type: 'success',
         title: t.toolbox.uploadSuccess,
-        message: format(t.toolbox.uploadSuccessDetail, { name: result.name, count: String(result.fileCount) }),
+        message:
+          format(t.toolbox.uploadSuccessDetail, { name: result.name, count: String(result.fileCount) }) +
+          (links.length > 0
+            ? ` · ${format(t.toolbox.importSkippedLinks, {
+                n: String(links.length),
+                names: links.join(t.toolbox.importSkippedLinksSeparator),
+              })}`
+            : ''),
       });
     } catch (err) {
       console.error('Upload folder failed:', err);

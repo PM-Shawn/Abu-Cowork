@@ -49,15 +49,6 @@ export const LABS_TODOS_INBOX = 'todos-inbox';
  */
 export const LABS_PET = 'pet';
 
-/**
- * Stable id for the Plugin System IA experiment. Toggling it swaps the
- * Toolbox's tab set from 技能/代理/MCP to 插件/技能/连接器 (see ToolboxModal).
- * When off, the Toolbox is pixel-identical to pre-experiment behavior — the
- * Agents tab (and its future home in the sidebar's Team view, still on
- * another unmerged branch) stays put until that migration lands.
- */
-export const LABS_PLUGIN_SYSTEM = 'plugin-system';
-
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     id: LABS_PET,
@@ -66,14 +57,6 @@ export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
     locationHint: () => getI18n().settings.labsExpPetWhere,
     defaultEnabled: false,
     expiresAfter: '2026-10-01',
-  },
-  {
-    id: LABS_PLUGIN_SYSTEM,
-    title: () => getI18n().settings.labsExpPluginSystemTitle,
-    description: () => getI18n().settings.labsExpPluginSystemDesc,
-    locationHint: () => getI18n().settings.labsExpPluginSystemWhere,
-    defaultEnabled: false,
-    expiresAfter: '2026-12-01',
   },
   // Todos + Inbox are a linked cluster, surfaced as one experiment. Held back
   // from the v0.25.0 release — not exposed in Labs yet. The LABS_TODOS_INBOX

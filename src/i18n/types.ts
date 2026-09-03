@@ -859,9 +859,6 @@ export interface TranslationDict {
     labsExpTodosInboxWhere: string;
     labsExpPetWhere: string;
     labsExpPetDesc: string;
-    labsExpPluginSystemTitle: string;
-    labsExpPluginSystemDesc: string;
-    labsExpPluginSystemWhere: string;
     // General section
     general: string;
     generalDescription: string;

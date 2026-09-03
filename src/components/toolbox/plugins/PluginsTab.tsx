@@ -1,5 +1,5 @@
 /**
- * Plugins tab (Toolbox → Plugins, behind LABS_PLUGIN_SYSTEM).
+ * Plugins tab (Extensions → 插件).
  *
  * Owns the two things the sub-views should not each own: the resolved home
  * directory, and the mount-time hydration of the installed set.

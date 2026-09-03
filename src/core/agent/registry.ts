@@ -7,6 +7,37 @@ import { joinPath } from '../../utils/pathUtils';
 const BROWSER_AGENT_TOOL_PATTERNS = ['abu-browser__*', 'abu-browser-bridge__*'];
 
 /**
+ * Normalise the `skills:` frontmatter field into the `string[] | undefined`
+ * the rest of the codebase is typed for.
+ *
+ * YAML cannot warn an author that a bare scalar is not a list, so
+ * `skills: weekly-report` is a shape this field WILL receive. Cast straight to
+ * `string[]` it became an entirely silent no-op: `resolvePreloadedSkills` bails
+ * on its `Array.isArray` check and the subagent loop's fail-loud
+ * "declared but nothing preloaded" warning is behind the same check, so
+ * neither the user nor the log ever learned the field did nothing.
+ *
+ * Accepting the whitespace-delimited string form matches the sibling
+ * skill-format field `tools:` (`skill/loader.ts`'s `normalizeToolList`), which
+ * has taken both shapes since it shipped. Non-string entries and blanks are
+ * dropped rather than handed to the loader, which would look them up as
+ * `[object Object]`; an empty result becomes `undefined` so an agent with a
+ * useless `skills:` field is byte-identical to one without it.
+ */
+function normalizeDeclaredSkills(raw: unknown): string[] | undefined {
+  const parts = Array.isArray(raw)
+    ? raw
+    : typeof raw === 'string'
+      ? raw.split(/\s+/)
+      : [];
+  const names = parts
+    .filter((part): part is string => typeof part === 'string')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  return names.length > 0 ? names : undefined;
+}
+
+/**
  * Parse an AGENT.md file: YAML frontmatter + system prompt body
  */
 export function parseAgentFile(raw: string, filePath: string): SubagentDefinition | null {
@@ -27,7 +58,7 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
       maxTurns: meta['max-turns'] as number | undefined,
       tools: meta.tools as string[] | undefined,
       disallowedTools: meta['disallowed-tools'] as string[] | undefined,
-      skills: meta.skills as string[] | undefined,
+      skills: normalizeDeclaredSkills(meta.skills),
       memory: (meta.memory as 'session' | 'project' | 'user') ?? 'session',
       background: meta.background === true,
       // Display-only fields (optional, only filled for agents that opted in via

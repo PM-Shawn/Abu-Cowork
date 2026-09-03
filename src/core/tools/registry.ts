@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
+import { parseNamespacedToolName } from '../mcp/toolName';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import {
   checkReadPath,
@@ -445,9 +446,14 @@ async function resolveBrowserActionTarget(
   conversationId?: string,
   agentRunId?: string,
 ): Promise<BrowserActionTarget> {
-  const separator = namespacedName.indexOf('__');
-  const serverName = namespacedName.slice(0, separator);
-  const toolName = namespacedName.slice(separator + 2);
+  // Same shared parse as the gate that called us and the dispatcher that will
+  // run this (U9 / C1) — never a second, local split. Callers only reach here
+  // for a name `classifyBrowserTool` already accepted, so the null branch is
+  // unreachable defense: an unresolvable target is "unknown origin", which
+  // asks (attended) or refuses (unattended).
+  const parsed = parseNamespacedToolName(namespacedName);
+  if (parsed === null) return { origin: null, url: null, authState: null };
+  const { serverName, toolName } = parsed;
 
   if (toolName === 'navigate') {
     // Only `goto` actually navigates to `input.url`. For back/forward/reload
@@ -549,8 +555,9 @@ function recordBrowserToolCallSignal(
   startedAt: number,
   resultText: string,
 ): void {
-  const separator = namespacedName.indexOf('__');
-  const bareToolName = separator === -1 ? namespacedName : namespacedName.slice(separator + 2);
+  // Shared parse (U9 / C1). A name that does not round-trip never reaches
+  // execution, so the fallback here is only for a bare builtin-shaped name.
+  const bareToolName = parseNamespacedToolName(namespacedName)?.toolName ?? namespacedName;
   const durationMs = Date.now() - startedAt;
   const ok = !isBrowserToolResultError(resultText);
   const conversationId = toolContext?.conversationId;
@@ -1637,6 +1644,116 @@ export function filterDownloadsByOrigin(
 }
 
 /**
+ * What replaces a blocked tab's `url`/`title`. English, like every other
+ * LLM-facing string the model reads out of a tool result, and deliberately a
+ * SENTENCE rather than an empty string: `''` is what the host itself writes
+ * when Chrome supplies no url, so a silent blank would read as "this tab has
+ * no address" instead of "you are not allowed to see this one".
+ */
+const REDACTED_TAB_FIELD = '[hidden: you blocked this site, and nobody is watching this run]';
+
+/**
+ * `get_tabs` is classified pageless + read-only, so — exactly like its sibling
+ * `get_downloads` — it is exempt from every site verdict: no origin is
+ * resolved for it, and the handler answers from `chrome.tabs.query({})` (the
+ * extension channel) or the conversation's automation views (the built-in
+ * one). The extension channel is the one driving the user's REAL, logged-in
+ * Chrome, and it reports every normal-window tab's `url` and `title` plus
+ * `summary.currentTabUrl` — with no site permission check anywhere.
+ *
+ * That contradicts the rule the gate writes down for itself a few hundred
+ * lines up: when nobody is watching, a site the user BLOCKED may not even be
+ * read. A denied site could still put its addresses and page titles into an
+ * unattended model's context through this one tool.
+ *
+ * Two deliberate differences from `filterDownloadsByOrigin`:
+ *
+ * 1. UNATTENDED ONLY. Attended output is byte-identical to what it has always
+ *    been — a human looking at their own browser is not the threat here.
+ * 2. REDACT, don't drop. A download entry IS its url, so removing the url
+ *    leaves an empty husk and dropping the row is the only sensible move. A
+ *    tab is an addressable object: `tabId` is the handle every other browser
+ *    tool takes, and the row also carries `active`/`isCurrentTab`. Dropping
+ *    rows would (a) contradict `summary.totalTabs`/`totalWindows`, which are
+ *    computed host-side and would still count the hidden tabs, leaving the
+ *    model with a self-contradictory listing it may well retry, and (b) teach
+ *    it a false world model ("the user has 3 tabs open"), which invites it to
+ *    navigate to that very site itself. Keeping the row with the address
+ *    hidden says the true thing: there is a tab here you may not look at.
+ *
+ * Redaction grants nothing: the `tabId` that survives is not a capability.
+ * Every action against it re-resolves the tab's REAL origin through the gate's
+ * own `get_tabs` probe, which calls `mcpManager.callTool` directly and never
+ * passes through this filter — so the gate still sees `blocked.com` and still
+ * refuses, for the right reason.
+ *
+ * Scope: only a `'denied'` verdict is hidden. This mirrors the gate's own
+ * unattended READ policy (read-only is `'allow'` by default and refused only
+ * on a blocked site) rather than `filterDownloadsByOrigin`'s stricter
+ * allowed-only narrowing — an unattended run may legitimately read a
+ * default-verdict page it navigated to (`snapshot` on that tab is allowed
+ * today), so hiding that same page's title here would be the two halves of
+ * one gate disagreeing again.
+ */
+export function filterTabsBySitePermissions(
+  result: ToolResult,
+  runMode: 'attended' | 'unattended',
+  sitePermissions: Record<string, 'allowed' | 'denied'>,
+): ToolResult {
+  // Attended keeps its exact shipped behavior.
+  if (runMode !== 'unattended') return result;
+  if (typeof result !== 'string') return result;
+  // An error string is not a listing; leave it alone.
+  if (result.startsWith('Error:')) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    // Same fail-closed reading as an unverifiable download listing: an
+    // unattended run does not get output that could not be checked.
+    return 'Error: the tab list could not be verified against your site permissions, so it was withheld from this unattended run';
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return result;
+  const doc = parsed as { summary?: unknown; windows?: unknown };
+  if (!Array.isArray(doc.windows)) return result;
+
+  let redacted = false;
+  const isDenied = (url: unknown): boolean =>
+    typeof url === 'string'
+    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions) === 'denied';
+
+  const windows = doc.windows.map((win) => {
+    if (!win || typeof win !== 'object') return win;
+    const window = win as { tabs?: unknown };
+    if (!Array.isArray(window.tabs)) return win;
+    return {
+      ...window,
+      tabs: window.tabs.map((tab) => {
+        if (!tab || typeof tab !== 'object') return tab;
+        const entry = tab as { url?: unknown };
+        if (!isDenied(entry.url)) return tab;
+        redacted = true;
+        return { ...entry, url: REDACTED_TAB_FIELD, title: REDACTED_TAB_FIELD };
+      }),
+    };
+  });
+
+  // The summary repeats the current tab's address, so filtering only the rows
+  // would leave the leak in place for the one tab most likely to be blocked.
+  let summary = doc.summary;
+  if (summary && typeof summary === 'object' && !Array.isArray(summary)) {
+    const current = summary as { currentTabUrl?: unknown };
+    if (isDenied(current.currentTabUrl)) {
+      redacted = true;
+      summary = { ...current, currentTabUrl: REDACTED_TAB_FIELD, currentTabTitle: REDACTED_TAB_FIELD };
+    }
+  }
+
+  if (!redacted) return result;
+  return JSON.stringify({ ...doc, summary, windows }, null, 2);
+}
+
+/**
  * Execute a tool by name, checking both builtin and MCP tools
  * With optional dangerous command confirmation and file permission callbacks.
  * Respects the current permission mode (default/auto/strict).
@@ -1689,9 +1806,21 @@ export async function executeAnyTool(
     return result;
   }
 
-  // Check MCP tools (format: serverName__toolName)
-  if (name.includes('__')) {
-    const [serverName, toolName] = name.split('__', 2);
+  // Check MCP tools (format: serverName__toolName).
+  //
+  // The parse is the SHARED one (U9 / C1) — the same function the browser
+  // authorization layer classifies with. It used to be `split('__', 2)` here,
+  // whose limit-2 TRUNCATION silently discarded everything after the second
+  // separator: `abu-browser__execute_js__x` was gated as the unknown tool
+  // `execute_js__x` (→ the weaker 'interactive' bucket) and then dispatched as
+  // `execute_js`, so the door and the room disagreed about which tool this
+  // was. A name that does not round-trip now falls through to the "Unknown
+  // tool" fail-safe below — the same thing the builtin branch above already
+  // does with a name it does not recognize, instead of the MCP branch's old
+  // "any suffix is fine as long as the server is connected".
+  const parsedName = parseNamespacedToolName(name);
+  if (parsedName !== null) {
+    const { serverName, toolName } = parsedName;
     if (mcpManager.isConnected(serverName)) {
       const isBrowserTool = classifyBrowserTool(name) !== null;
       const startedAt = Date.now();
@@ -1730,6 +1859,18 @@ export async function executeAnyTool(
       }
       if (toolName === 'get_downloads' && isBrowserTool) {
         result = filterDownloadsByOrigin(
+          result,
+          approval.browserExecution?.runMode ?? 'unattended',
+          getSettingsReader().getSnapshot().browserSitePermissions ?? {},
+        );
+      }
+      // The sibling leak (U9 / I1): `get_tabs` reports every tab's url and
+      // title, including sites the user blocked. Same shell-side placement and
+      // same fail-safe runMode default as the downloads filter above — and
+      // deliberately AFTER the call, so the gate's own origin probe (which
+      // calls mcpManager directly) still sees the unredacted truth.
+      if (toolName === 'get_tabs' && isBrowserTool) {
+        result = filterTabsBySitePermissions(
           result,
           approval.browserExecution?.runMode ?? 'unattended',
           getSettingsReader().getSnapshot().browserSitePermissions ?? {},

@@ -308,6 +308,69 @@ describe('browser tool policy', () => {
     });
   });
 
+  /**
+   * U9 / C1 — the gate and the dispatcher must agree about WHICH tool a name
+   * names.
+   *
+   * These three predicates used to slice from the first `__` and keep
+   * everything after it as the tool name, so `abu-browser__execute_js__x`
+   * classified as the *unknown* tool `execute_js__x` and took the
+   * `'interactive'` fallback — while `registry.ts`'s dispatcher parsed the
+   * same string with `split('__', 2)`, whose limit-2 truncation DISCARDS the
+   * suffix and dispatches `execute_js` for real. One string, "a click" at the
+   * door and script injection inside it.
+   *
+   * The fix is a shared parse that refuses any name which does not round-trip
+   * (`serverName + '__' + toolName !== name`). A refused name is not a browser
+   * tool at all here, and `executeAnyTool` fail-closes it on the "Unknown
+   * tool" path — the same thing the builtin branch already does with a name it
+   * does not recognize. The `'interactive'` fallback (U1 Ruling C1) is
+   * untouched and still applies to names that ARE well-formed and merely
+   * unknown — see the `totally-unclassified-tool` case above.
+   */
+  describe('namespaced-name round-trip (U9 C1)', () => {
+    /** Every shape that carries a second separator, plus the empty suffix. */
+    const MALFORMED_SUFFIXES = ['__x', '__', '__a__b', '__execute_js'];
+    const SERVERS = ['abu-browser', 'abu-browser-bridge'];
+
+    // The WHOLE class, not just execute_js: every browser tool, both server
+    // namespaces, every malformed suffix shape.
+    const CASES: Array<[string, string, string]> = SERVERS.flatMap((server) =>
+      BROWSER_TOOL_SUFFIXES.flatMap((tool) =>
+        MALFORMED_SUFFIXES.map((suffix) => [server, tool, suffix] as [string, string, string]),
+      ),
+    );
+
+    it.each(CASES)(
+      '%s__%s%s is refused by all three predicates — never silently reclassified',
+      (server, tool, suffix) => {
+        const name = `${server}__${tool}${suffix}`;
+        expect(classifyBrowserTool(name), name).toBeNull();
+        expect(isScriptingBrowserTool(name), name).toBe(false);
+        expect(browserToolTargetsPage(name), name).toBe(false);
+      },
+    );
+
+    it('the scripting tool specifically never degrades to the weaker interactive bucket', () => {
+      // The Critical, stated as its own case: before the fix this returned
+      // 'interactive', which `decideBrowserOperation` reads out of the
+      // `unattended.interactive` cell (default 'allow') — the exact cell the
+      // policy says scripting may never occupy.
+      expect(classifyBrowserTool('abu-browser__execute_js__x')).not.toBe('interactive');
+      expect(classifyBrowserTool('abu-browser-bridge__execute_js__x')).not.toBe('interactive');
+    });
+
+    it('leaves the well-formed names exactly as they were', () => {
+      expect(classifyBrowserTool('abu-browser__execute_js')).toBe('scripting');
+      expect(isScriptingBrowserTool('abu-browser__execute_js')).toBe(true);
+      expect(classifyBrowserTool('abu-browser__click')).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser__snapshot')).toBe('read-only');
+      expect(browserToolTargetsPage('abu-browser__snapshot')).toBe(true);
+      // A well-formed but unknown tool still takes U1's gated fallback.
+      expect(classifyBrowserTool('abu-browser__totally-unclassified-tool')).toBe('interactive');
+    });
+  });
+
   describe('normalizeBrowserOperationPolicy', () => {
     const VALID_POLICY: BrowserOperationPolicy = {
       attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },

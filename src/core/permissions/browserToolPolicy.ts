@@ -14,6 +14,8 @@
  * browsing, and gating it would train users to click through prompts.
  */
 
+import { parseNamespacedToolName } from '../mcp/toolName';
+
 /** Built-in browser runtime + Chrome extension bridge — both expose the same tool set. */
 const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
 
@@ -123,11 +125,30 @@ export function toLegacyBrowserToolConsequence(
  */
 const SCRIPTING_TOOLS = new Set(['execute_js']);
 
+/**
+ * Split a namespaced name and keep it only if it names a browser tool.
+ *
+ * The parse is `parseNamespacedToolName` — the SAME one `executeAnyTool`'s
+ * dispatcher uses — because a gate that disagrees with the executor about
+ * which tool a name names is not a gate (U9 / C1: this module used to slice
+ * from the first `__` and keep `execute_js__x` as the tool name, while the
+ * dispatcher's `split('__', 2)` truncated it back to `execute_js` and ran it).
+ *
+ * A name that does not round-trip is not a browser tool here, and the
+ * dispatcher fail-closes it on the "Unknown tool" path — so it can never
+ * reach a server. This is NOT the `'interactive'` fallback (U1 Ruling C1),
+ * which still applies to names that are well-formed and merely unknown.
+ */
+function browserToolNameOf(namespacedName: string): string | null {
+  const parsed = parseNamespacedToolName(namespacedName);
+  if (parsed === null) return null;
+  return BROWSER_SERVER_NAMES.has(parsed.serverName) ? parsed.toolName : null;
+}
+
 export function isScriptingBrowserTool(namespacedName: string): boolean {
-  const separator = namespacedName.indexOf('__');
-  if (separator === -1) return false;
-  if (!BROWSER_SERVER_NAMES.has(namespacedName.slice(0, separator))) return false;
-  return SCRIPTING_TOOLS.has(namespacedName.slice(separator + 2));
+  const toolName = browserToolNameOf(namespacedName);
+  if (toolName === null) return false;
+  return SCRIPTING_TOOLS.has(toolName);
 }
 
 /**
@@ -171,10 +192,9 @@ export function normalizeBrowserOrigin(url: string | undefined): string | null {
 const PAGELESS_TOOLS = new Set(['get_tabs', 'connection_status', 'get_downloads']);
 
 export function browserToolTargetsPage(namespacedName: string): boolean {
-  const separator = namespacedName.indexOf('__');
-  if (separator === -1) return false;
-  if (!BROWSER_SERVER_NAMES.has(namespacedName.slice(0, separator))) return false;
-  return !PAGELESS_TOOLS.has(namespacedName.slice(separator + 2));
+  const toolName = browserToolNameOf(namespacedName);
+  if (toolName === null) return false;
+  return !PAGELESS_TOOLS.has(toolName);
 }
 
 export type SiteVerdict = 'allowed' | 'denied' | 'default';
@@ -202,7 +222,11 @@ export function getSiteVerdict(
 
 /**
  * Classify a namespaced MCP tool name (`server__tool`) into the three-class
- * model. Returns null when the tool is not a browser-automation tool.
+ * model. Returns null when the tool is not a browser-automation tool — which
+ * includes a name that does not round-trip through `parseNamespacedToolName`
+ * (`abu-browser__execute_js__x`): that is a malformed name, not an unknown
+ * tool, and the dispatcher refuses it outright rather than gating it. See
+ * `browserToolNameOf`.
  *
  * All three buckets are explicit sets — there is deliberately no "else ⇒
  * read-only" implicit fallback. A tool under a recognized browser server
@@ -216,11 +240,8 @@ export function getSiteVerdict(
  * acts inside the user's live, logged-in sessions.
  */
 export function classifyBrowserTool(namespacedName: string): BrowserOperationClass | null {
-  const separator = namespacedName.indexOf('__');
-  if (separator === -1) return null;
-  const serverName = namespacedName.slice(0, separator);
-  if (!BROWSER_SERVER_NAMES.has(serverName)) return null;
-  const toolName = namespacedName.slice(separator + 2);
+  const toolName = browserToolNameOf(namespacedName);
+  if (toolName === null) return null;
   if (SCRIPTING_TOOLS.has(toolName)) return 'scripting';
   if (INTERACTIVE_TOOLS.has(toolName)) return 'interactive';
   if (READ_ONLY_TOOLS.has(toolName)) return 'read-only';

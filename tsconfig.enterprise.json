@@ -1,0 +1,55 @@
+{
+  /*
+   * Type-checks the renderer WITH the real private enterprise sources.
+   *
+   * `tsconfig.app.json` and `tsconfig.sidecar.json` hard-map
+   * `@enterprise-modules` to `src/enterprise-modules-stub` in every target, so
+   * even `ABU_BUILD_TARGET=enterprise npm run typecheck` only ever compiles the
+   * OSS stub. Nothing gated the code an enterprise build actually ships — which
+   * is how a live error (a type imported from a public module that no longer
+   * exported it) survived review. This config points the alias at the sibling
+   * private repo the way `vite.config.ts` does for an enterprise build.
+   *
+   * WHAT IT COVERS: every private file reachable from `src` through the alias.
+   * WHAT IT DOES NOT: the private repo's own tests and any file nothing
+   * imports — those are that repo's gate, not this one's.
+   *
+   * NOT wired into `npm run verify`, for two reasons: it needs
+   * `Abu-enterprise-modules` checked out as a sibling directory, which an OSS
+   * clone does not have, and it is not green yet. As of 2026-09-03 it reports
+   * exactly ONE diagnostic, and that one is a genuine finding of the kind this
+   * config exists to catch:
+   *
+   *   src/core/enterprise/llm-resolver.ts(8,15): error TS2724:
+   *   '"@enterprise-modules"' has no exported member named
+   *   'ResolvedEnterpriseLlm'.
+   *
+   * The public forwarding file re-exports a type the private barrel
+   * (`Abu-enterprise-modules/src/index.ts`) does not re-export, even though
+   * its own `core/enterprise/llm-resolver.ts` declares it. Closing it means
+   * adding one `export type` on the private side; wire this into `verify` once
+   * that lands.
+   * Run it before touching anything the enterprise build consumes:
+   *   npm run typecheck:enterprise
+   */
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.enterprise.tsbuildinfo",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@enterprise-modules": ["../Abu-enterprise-modules/src"],
+      "@enterprise-modules/*": ["../Abu-enterprise-modules/src/*"],
+      /*
+       * The private repo has no `node_modules` of its own — every dependency
+       * it uses is the host app's. Node resolution from a file under
+       * `../Abu-enterprise-modules/` walks up past this repo and finds none, so
+       * `react`, `zustand`, `@tauri-apps/*` … all come back unresolved and
+       * cascade into ~100 implicit-`any` errors. This maps every bare
+       * specifier back to this repo's `node_modules`, which is exactly where
+       * `vite.config.ts` and `scripts/build-sidecar.mjs` resolve them for a
+       * real enterprise build.
+       */
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  }
+}

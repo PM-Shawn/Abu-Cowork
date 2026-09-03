@@ -23,6 +23,7 @@
     "gen:models:check": "tsx scripts/gen-model-data.ts --check",
     "typecheck": "tsc -b --noEmit && npm run typecheck:sidecar",
     "typecheck:sidecar": "tsc -p tsconfig.sidecar.json --noEmit",
+    "typecheck:enterprise": "tsc -p tsconfig.enterprise.json --noEmit",
     "release:check": "node scripts/release-preflight.mjs",
     "parity:check": "node scripts/parity-check.mjs",
     "pretest": "npm run gen:models:check",

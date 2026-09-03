@@ -748,22 +748,31 @@ function normalizedOriginOf(urlString) {
  * into a tool error the model reads) when the tab is no longer on the page the
  * approval was given for.
  *
- * Scoped to UNATTENDED runs. Attended keeps its exact shipped behavior: a human
- * is looking at the browser, the confirmation dialog they answered named the
- * origin, and adding a new refusal class there would change attended behavior
- * for a case the human can see. (`payload.unattended` is stamped by Abu's own
- * approval gate over `_meta`; a payload without it is read as attended.)
+ * ## Both run modes COMPARE (review ruling I3)
  *
- * Fail-closed: an unattended pinned action with NO `expectedOrigin` is refused.
- * The gate never approves one — an unattended state-changing call requires a
- * resolved, explicitly-allowed origin — so a missing pin means the chain broke,
- * and "the pin is absent" must never be the permissive branch.
+ * The first round scoped the comparison to unattended runs, on the theory that
+ * a watching human is their own control. They are not: the refusal only ever
+ * fires when the page genuinely drifted CROSS-ORIGIN between approval and
+ * execution, which is a bug in every run mode, and nobody perceives a
+ * sub-second redirect landing before their approved click. So a carried pin is
+ * checked whatever the mode.
+ *
+ * Only the MISSING-value rule stays unattended-only. An unattended pinned
+ * action with no `expectedOrigin` is refused — the gate never approves one (an
+ * unattended state-changing call requires a resolved, explicitly-allowed
+ * origin), so a missing pin means the chain broke, and absence must never be
+ * the permissive branch. An ATTENDED call that carried no pin keeps its exact
+ * pre-U5 path instead, which is what preserves attended byte-compat for every
+ * call shape that existed before this field.
+ *
+ * `payload.unattended` / `payload.expectedOrigin` are stamped by Abu's own
+ * approval gate over `_meta`, never the model-visible tool schema.
  */
 function assertOriginPin(action, payload, view) {
-  if (payload.unattended !== true) return;
   if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
+    if (payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
         'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'

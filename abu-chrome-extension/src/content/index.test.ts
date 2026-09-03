@@ -372,6 +372,253 @@ describe('sensitive values are redacted, but the fields stay fillable (U5)', () 
     document.body.innerHTML = '<textarea id="ta" autocomplete="one-time-code">483920</textarea>';
     expect(valueOf(await snapshot(), 'ta')).toBe(REDACTED);
   });
+
+  /**
+   * C1 (review round 1). `info.value` was redacted while `info.text` — set from
+   * `getVisibleText`, which returns `input.value` for an INPUT — carried the
+   * same secret verbatim on the SAME object. Four model-facing paths all route
+   * through that one function, so each is asserted here rather than trusting
+   * the shared helper: a future caller that reaches for the raw value again
+   * has to break one of these.
+   */
+  describe('every reporting path, not just .value (C1)', () => {
+    const textOf = (snap: PageSnapshot, id: string) =>
+      snap.elements.find((e) => e.id === id)?.text;
+
+    it('snapshot .text does not carry what .value redacted', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+      const snap = await snapshot();
+      expect(valueOf(snap, 'pw')).toBe(REDACTED);
+      expect(textOf(snap, 'pw')).not.toBe('hunter2');
+      expect(JSON.stringify(snap)).not.toContain('hunter2');
+    });
+
+    it('snapshot .text falls back to the placeholder, so the field stays identifiable', async () => {
+      document.body.innerHTML =
+        '<input id="pw" type="password" placeholder="请输入密码" value="hunter2" />';
+      expect(textOf(await snapshot(), 'pw')).toBe('请输入密码');
+    });
+
+    it('snapshot .text falls back to aria-label when there is no placeholder', async () => {
+      document.body.innerHTML =
+        '<input id="pw" type="password" aria-label="Password" value="hunter2" />';
+      expect(textOf(await snapshot(), 'pw')).toBe('Password');
+    });
+
+    it('click does not echo the secret in elementText, target.text or the message', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+      const result = await click({ css: '#pw' });
+      expect(result.elementText).not.toContain('hunter2');
+      expect(result.target?.text).not.toContain('hunter2');
+      // `message` is built from describeElement — the string that gets quoted
+      // into an IM approval prompt.
+      expect(result.message).not.toContain('hunter2');
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    });
+
+    it('wait_for does not quote the secret when it explains what it saw', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+      const result = await waitFor(
+        { type: 'textContains', locator: { css: '#pw' }, text: 'nope' },
+        20,
+      );
+      expect(result.timedOut).toBe(true);
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    });
+
+    it('a not-found error message does not carry a sibling field\'s secret', async () => {
+      // describeElement is also used in "did you mean" style diagnostics; the
+      // click above covers its main caller, this covers the shape of the text.
+      document.body.innerHTML = '<input id="cc" autocomplete="cc-number" value="4111111111111111" />';
+      const result = await click({ css: '#cc' });
+      expect(result.message).not.toContain('4111111111111111');
+    });
+  });
+
+  /**
+   * M5 — a `<select autocomplete="cc-exp-month">` is the common real case; its
+   * `value` is the user's actual expiry, and it bypassed `reportableValue`
+   * entirely.
+   */
+  describe('sensitive <select> (M5)', () => {
+    it('redacts the selected value of a sensitive select', async () => {
+      document.body.innerHTML =
+        '<select id="exp" autocomplete="cc-exp-month">' +
+        '<option value="01">01</option><option value="07" selected>07</option></select>';
+      const el = (await snapshot()).elements.find((e) => e.id === 'exp')!;
+      expect(el.value).toBe(REDACTED);
+    });
+
+    it('keeps the option list, so the agent can still pick a value', async () => {
+      document.body.innerHTML =
+        '<select id="exp" autocomplete="cc-exp-month">' +
+        '<option value="01">01</option><option value="07" selected>07</option></select>';
+      const el = (await snapshot()).elements.find((e) => e.id === 'exp')!;
+      expect(el.options).toEqual([
+        { value: '01', text: '01' },
+        { value: '07', text: '07' },
+      ]);
+    });
+
+    it('leaves an ordinary select alone', async () => {
+      document.body.innerHTML =
+        '<select id="kind"><option value="a" selected>动设备</option></select>';
+      const el = (await snapshot()).elements.find((e) => e.id === 'kind')!;
+      expect(el.value).toBe('a');
+    });
+  });
+
+  /**
+   * M6 — get_html feeds query_js, and a server-rendered
+   * `<input type="password" value="...">` carries the secret in the ATTRIBUTE,
+   * which the detached clone copied verbatim.
+   */
+  describe('get_html / query_js source (M6)', () => {
+    it('does not serialize a password input\'s value attribute', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+      const html = await getHtml();
+      expect(html).not.toContain('hunter2');
+      expect(html).toContain(REDACTED);
+    });
+
+    it('does not serialize a cc-* input\'s value attribute', async () => {
+      document.body.innerHTML =
+        '<form><input id="cc" autocomplete="cc-number" value="4111111111111111" /></form>';
+      expect(await getHtml({ selector: 'form' })).not.toContain('4111111111111111');
+    });
+
+    it('redacts a sensitive input that IS the serialization root', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+      expect(await getHtml({ selector: '#pw' })).not.toContain('hunter2');
+    });
+
+    it('leaves an ordinary input\'s value attribute alone', async () => {
+      document.body.innerHTML = '<input id="code" type="text" value="EQ-001" />';
+      expect(await getHtml()).toContain('EQ-001');
+    });
+  });
+});
+
+/**
+ * ── I2: the origin pin on the EXTENSION channel ───────────────────────────
+ *
+ * Round 1 pinned only the built-in Electron browser. This channel drives the
+ * user's real logged-in Chrome — the more dangerous of the two — and dropped
+ * `expectedOrigin` on the floor. `location.origin` inside the content script
+ * is the true execution point here: whatever the background worker believed
+ * about the tab, this is the document the click is about to land in.
+ *
+ * happy-dom's location is settable, which is what lets these drive a "the page
+ * moved between approval and execution" state directly.
+ */
+describe('execution-time origin pin, content-script half (I2)', () => {
+  const APPROVED = 'https://shop.example.com';
+
+  function pageAt(href: string): void {
+    // happy-dom allows assigning href without a navigation.
+    (globalThis as unknown as { location: { href: string } }).location.href = href;
+  }
+
+  beforeEach(() => {
+    pageAt(`${APPROVED}/cart`);
+    document.body.innerHTML = '<button id="buy">Buy</button><input id="f" />';
+  });
+
+  it('runs a pinned action that is still on the approved origin', async () => {
+    const result = await handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    }) as ActionResult;
+    expect(result.success).toBe(true);
+  });
+
+  it('refuses after the page drifted cross-origin, naming both ends and a next step', async () => {
+    pageAt('https://evil.example.com/cart');
+    await expect(handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    })).rejects.toThrow(/no longer on the page this action was approved for/);
+    await expect(handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    })).rejects.toThrow(/https:\/\/evil\.example\.com/);
+  });
+
+  it('a same-origin path change is not a drift', async () => {
+    pageAt(`${APPROVED}/cart/step-2?x=1`);
+    const result = await handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    }) as ActionResult;
+    expect(result.success).toBe(true);
+  });
+
+  it('covers every state-changing action the content script owns', async () => {
+    pageAt('https://evil.example.com/');
+    for (const [action, payload] of [
+      ['click', { locator: { css: '#buy' } }],
+      ['fill', { locator: { css: '#f' }, value: 'x' }],
+      ['select', { locator: { css: '#f' }, value: 'x' }],
+      ['keyboard', { key: 'Enter' }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      await expect(
+        handleAction(action, { ...payload, unattended: true, expectedOrigin: APPROVED }),
+      ).rejects.toThrow(/no longer on the page/);
+    }
+  });
+
+  it('leaves read-only actions alone — they change nothing', async () => {
+    pageAt('https://evil.example.com/');
+    const snap = await handleAction('snapshot', {
+      unattended: true,
+      expectedOrigin: APPROVED,
+    }) as PageSnapshot;
+    expect(snap.elements.length).toBeGreaterThan(0);
+  });
+
+  it('fail-closed: an unattended pinned action with no approved origin is refused', async () => {
+    await expect(handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+    })).rejects.toThrow(/sent no approved origin/);
+  });
+
+  it('an ATTENDED call is compared too (I3)', async () => {
+    pageAt('https://evil.example.com/');
+    await expect(handleAction('click', {
+      locator: { css: '#buy' },
+      expectedOrigin: APPROVED,
+    })).rejects.toThrow(/no longer on the page/);
+  });
+
+  it('an attended call carrying NO pin keeps its exact pre-U5 path', async () => {
+    pageAt('https://evil.example.com/');
+    const result = await handleAction('click', { locator: { css: '#buy' } }) as ActionResult;
+    expect(result.success).toBe(true);
+  });
+
+  it('a non-http document is a mismatch, not a pass', async () => {
+    pageAt('about:blank');
+    await expect(handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    })).rejects.toThrow(/an unknown page/);
+  });
+
+  it('a trailing-dot FQDN is the same origin, not a way past the pin', async () => {
+    pageAt('https://shop.example.com./cart');
+    const result = await handleAction('click', {
+      locator: { css: '#buy' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    }) as ActionResult;
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('get_html contract for query_js', () => {

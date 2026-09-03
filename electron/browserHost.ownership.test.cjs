@@ -2928,15 +2928,61 @@ test('U5 pin: read-only actions are exempt — they change nothing', async () =>
   }
 });
 
-test('U5 pin: an ATTENDED call is untouched, drifted or not (byte-compat)', async () => {
+/**
+ * Review ruling I3 inverted the assertion that used to stand here ("an
+ * ATTENDED call is untouched, drifted or not"). A cross-origin drift between
+ * approval and execution is a bug in EVERY run mode, and a human cannot
+ * perceive a sub-second redirect landing before the click they just approved.
+ * What stays attended-only is the MISSING-value refusal, covered by the second
+ * test below — which is what keeps every pre-U5 attended call shape working.
+ */
+test('U5 pin: an ATTENDED call is refused on a cross-origin drift too (I3)', async () => {
   const { host, restore } = loadHost();
   try {
     host.__testing.setClock(fakeClock().clock);
     const tab = await tabOn(host, 'https://shop.example.com/cart');
     contentsFor(tab).url = 'https://evil.example.com/';
 
-    // No `unattended` marker ⇒ the host reads "a human is watching", and the
-    // pin does not fire. Same call shape every pre-U5 attended run sends.
+    // No `unattended` marker — a human is watching, and it is refused anyway.
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      /no longer on the page this action was approved for/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an attended call carrying NO pin keeps its exact pre-U5 path', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    // Every call shape that predates `expectedOrigin` still runs. The
+    // missing-value refusal is unattended-only precisely so this holds.
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an attended call on the approved origin still runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
     await host.performBrowserAutomation('click', {
       ownerId: OWNER_A,
       tabId: tab,

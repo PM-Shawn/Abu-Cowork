@@ -47,7 +47,35 @@
       if (!el || !el.isConnected) elementByRef.delete(ref);
     }
   }
+  var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard"]);
+  function assertOriginPin(action, payload) {
+    if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+    const expected = typeof payload.expectedOrigin === "string" ? payload.expectedOrigin : "";
+    if (!expected) {
+      if (payload.unattended !== true) return;
+      throw new Error(
+        "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
+      );
+    }
+    const current = normalizedOrigin(location.href);
+    if (current === expected) return;
+    throw new Error(
+      `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
+    );
+  }
+  function normalizedOrigin(href) {
+    try {
+      const parsed = new URL(href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
+      if (!hostname) return null;
+      return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+    } catch {
+      return null;
+    }
+  }
   async function handleAction(action, payload) {
+    assertOriginPin(action, payload);
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -184,7 +212,8 @@
           if (tag === "select") {
             const select = el;
             info.options = [...select.options].map((o) => ({ value: o.value, text: o.text }));
-            info.value = select.value;
+            const value = reportableValue(select, select.value, 100);
+            if (value !== void 0) info.value = value;
           }
           if (tag === "a") {
             info.href = el.href;
@@ -701,11 +730,21 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     inline.innerHTML = sameOriginFrameHtml(frame);
     return inline;
   }
+  function redactSensitiveValueAttributes(root) {
+    const candidates = root.tagName === "INPUT" || root.tagName === "TEXTAREA" || root.tagName === "SELECT" ? [root, ...root.querySelectorAll("input, textarea, select")] : [...root.querySelectorAll("input, textarea, select")];
+    for (const el of candidates) {
+      if (!el.hasAttribute("value")) continue;
+      if (!el.getAttribute("value")) continue;
+      if (!hasSensitiveValue(el)) continue;
+      el.setAttribute("value", REDACTED_VALUE);
+    }
+  }
   function serializeElementWithFrames(element) {
     if (element.tagName === "IFRAME") {
       return inlineFrameElement(element, element.ownerDocument).outerHTML;
     }
     const clone = element.cloneNode(true);
+    redactSensitiveValueAttributes(clone);
     const liveFrames = [...element.querySelectorAll("iframe")];
     const clonedFrames = [...clone.querySelectorAll("iframe")];
     for (let i = 0; i < liveFrames.length; i += 1) {
@@ -1039,10 +1078,16 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   function getVisibleText(el) {
     if (el.tagName === "INPUT") {
       const input = el;
+      if (hasSensitiveValue(input)) {
+        return input.placeholder || input.getAttribute("aria-label") || (input.value ? REDACTED_VALUE : null);
+      }
       return input.value || input.placeholder || input.getAttribute("aria-label") || null;
     }
     if (el.tagName === "TEXTAREA") {
       const ta = el;
+      if (hasSensitiveValue(ta)) {
+        return ta.placeholder || ta.getAttribute("aria-label") || (ta.value ? REDACTED_VALUE : null);
+      }
       return ta.value || ta.placeholder || null;
     }
     const text = el.innerText?.trim();

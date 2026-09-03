@@ -102,7 +102,85 @@ function sweepRefs(): void {
   }
 }
 
+/**
+ * Actions that change page state and must land on the page the approval gate
+ * decided on. Mirrors `ORIGIN_PINNED_ACTIONS` in `electron/browserHost.cjs`;
+ * `execute_js` is absent here only because the extension channel runs it in
+ * the background worker (`chrome.scripting.executeScript`), which pins it
+ * itself — the Electron channel's `execute_js` never reaches this file either.
+ * `navigate` is exempt in both places: its target IS what was approved.
+ */
+const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
+
+/**
+ * ## Execution-time origin pin, content-script half (U5, review round 1)
+ *
+ * The first round pinned only the built-in Electron browser. The extension
+ * channel drives the user's REAL logged-in Chrome — the more dangerous of the
+ * two — and dropped `expectedOrigin` on the floor, leaving the TOCTOU window
+ * wide open exactly where it matters most.
+ *
+ * `location.origin` here is the TRUE execution point on this channel: whatever
+ * the background worker believed about the tab, this is the document the click
+ * is about to land in. `payload.expectedOrigin` / `payload.unattended` are
+ * stamped by Abu's approval gate into MCP `_meta` and are unreachable from the
+ * tool's input schema, so a page cannot forge either.
+ *
+ * The message is deliberately WORD-FOR-WORD the host's (`assertOriginPin` in
+ * `electron/browserHost.cjs`) — the model must not have to learn two dialects
+ * of the same refusal. `contentOriginPinMessage.test` pins that they match.
+ *
+ * Both run modes compare (review ruling I3): a sub-second redirect landing
+ * between approval and execution is invisible to a watching human too. Only
+ * the MISSING-value rule is unattended-only, so an attended call that carried
+ * no pin keeps its exact pre-U5 path.
+ */
+function assertOriginPin(action: string, payload: Record<string, unknown>): void {
+  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    if (payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be '
+      + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
+    );
+  }
+  const current = normalizedOrigin(location.href);
+  if (current === expected) return;
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, `
+    + `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a `
+    + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
+    + 'approval does not carry over to a different site.',
+  );
+}
+
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * and `normalizedOriginOf` (browserHost.cjs) produce, so all three ends of the
+ * pin compare like with like: http(s) only, default ports dropped by URL, and
+ * a trailing FQDN dot stripped (`evil.com.` and `evil.com` are one host over
+ * DNS and must not be two origins here). Null for anything else, which the pin
+ * treats as a mismatch — a document that is not an ordinary web page is not
+ * the page the user approved.
+ */
+function normalizedOrigin(href: string): string | null {
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  } catch {
+    return null;
+  }
+}
+
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+  // Before the switch, so no action can be added that forgets it.
+  assertOriginPin(action, payload);
   switch (action) {
     case 'snapshot': return takeSnapshot(
       payload.selector as string | undefined,
@@ -307,8 +385,14 @@ function takeSnapshot(
 
       if (tag === 'select') {
         const select = el as HTMLSelectElement;
+        // The OPTION LIST stays: it is the page's own static set of choices
+        // (`01`…`12` on a card-expiry select), it is identical for every
+        // visitor, and without it the agent cannot pick a value at all — the
+        // same "must not break filling" rule the input branch follows.
+        // What is redacted is the SELECTION, which is the user's own datum.
         info.options = [...select.options].map(o => ({ value: o.value, text: o.text }));
-        info.value = select.value;
+        const value = reportableValue(select, select.value, 100);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'a') {
@@ -1188,12 +1272,43 @@ function inlineFrameElement(frame: HTMLIFrameElement, ownerDocument: Document): 
   return inline;
 }
 
+/**
+ * Redact sensitive `value` ATTRIBUTES in a detached clone before it is
+ * serialized for `get_html` / `query_js` (M6).
+ *
+ * The attribute and the property are different things: typing into a field
+ * does not touch the attribute, so most live secrets never appear here. A
+ * SERVER-RENDERED `<input type="password" value="…">` does carry one, though,
+ * and `cloneNode(true)` copies attributes verbatim — so the one path that
+ * hands the model raw page source was still emitting it after the snapshot
+ * stopped.
+ *
+ * The attribute is replaced rather than removed: `value=""` would read as "the
+ * field is empty", and a query_js reading `.value` should see the same marker
+ * every other surface shows.
+ */
+function redactSensitiveValueAttributes(root: Element): void {
+  const candidates = root.tagName === 'INPUT' || root.tagName === 'TEXTAREA' || root.tagName === 'SELECT'
+    ? [root, ...root.querySelectorAll('input, textarea, select')]
+    : [...root.querySelectorAll('input, textarea, select')];
+  for (const el of candidates) {
+    if (!el.hasAttribute('value')) continue;
+    if (!el.getAttribute('value')) continue;
+    if (!hasSensitiveValue(el)) continue;
+    el.setAttribute('value', REDACTED_VALUE);
+  }
+}
+
 function serializeElementWithFrames(element: Element): string {
   if (element.tagName === 'IFRAME') {
     return inlineFrameElement(element as HTMLIFrameElement, element.ownerDocument).outerHTML;
   }
 
   const clone = element.cloneNode(true) as Element;
+  // On the CLONE, never the live DOM: this must not edit the page the user is
+  // looking at. Runs before the frame inlining below so an inlined frame's own
+  // html — which came back through this same function — is already clean.
+  redactSensitiveValueAttributes(clone);
   const liveFrames = [...element.querySelectorAll('iframe')];
   const clonedFrames = [...clone.querySelectorAll('iframe')];
 
@@ -1651,13 +1766,39 @@ function isVisible(el: Element): boolean {
   return rect.width > 0 && rect.height > 0;
 }
 
+/**
+ * The element's text as a caller should see it.
+ *
+ * ⚠️ For INPUT/TEXTAREA this returns the field's VALUE, which makes it a
+ * redaction path — and the one that was missed in the first U5 round. It feeds
+ * `info.text` in the snapshot (on the very object whose `.value` is redacted),
+ * `targetInfo` (→ click's `elementText`, `target.text`, the on-page status
+ * toast), `describeElement` (→ click's `message`, error text, and whatever an
+ * IM approval prompt quotes), and `wait_for`'s "whose text is …" explanation.
+ * Redacting here covers all of them at once; anything that reaches for
+ * `el.value` directly instead has to re-do this.
+ *
+ * A sensitive field falls through to placeholder / aria-label first, so the
+ * caller can still tell WHICH field it is, and only shows the marker when the
+ * page gave it nothing else to be called.
+ */
 function getVisibleText(el: Element): string | null {
   if (el.tagName === 'INPUT') {
     const input = el as HTMLInputElement;
+    if (hasSensitiveValue(input)) {
+      return input.placeholder
+        || input.getAttribute('aria-label')
+        || (input.value ? REDACTED_VALUE : null);
+    }
     return input.value || input.placeholder || input.getAttribute('aria-label') || null;
   }
   if (el.tagName === 'TEXTAREA') {
     const ta = el as HTMLTextAreaElement;
+    if (hasSensitiveValue(ta)) {
+      return ta.placeholder
+        || ta.getAttribute('aria-label')
+        || (ta.value ? REDACTED_VALUE : null);
+    }
     return ta.value || ta.placeholder || null;
   }
 

@@ -309,6 +309,70 @@ function isAllowedUrl(url: string): boolean {
   }
 }
 
+// --- Execution-time origin pin (U5) ---
+
+/**
+ * Origin in the exact spelling the other two ends of the pin produce
+ * (`normalizeBrowserOrigin` in browserToolPolicy.ts, `normalizedOriginOf` in
+ * browserHost.cjs, `normalizedOrigin` in the content script): http(s) only,
+ * default ports dropped by URL, trailing FQDN dot stripped. Null for anything
+ * else, which the pin treats as a mismatch.
+ */
+export function normalizedOrigin(href: string | undefined): string | null {
+  try {
+    const parsed = new URL(String(href ?? ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pin for actions that never reach the content script — `execute_js`,
+ * which this worker runs through `chrome.scripting.executeScript`.
+ *
+ * Compares the tab's LIVE url (read here, not whatever the gate saw) against
+ * the origin the approval was given for. Same rules and the same message as
+ * the content script's `assertOriginPin` and the Electron host's: both run
+ * modes compare, only the missing-value refusal is unattended-only.
+ *
+ * A tab whose url cannot be read at all is a mismatch, not a pass.
+ */
+export async function assertTabOriginPin(
+  tabId: number,
+  payload: Record<string, unknown>,
+  getTab: (id: number) => Promise<{ url?: string }> = (id) => chrome.tabs.get(id),
+): Promise<void> {
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    if (payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be '
+      + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
+    );
+  }
+  // A tab whose url cannot be read at all falls through as null, which the
+  // comparison below treats as a mismatch — never as a pass.
+  let current: string | null;
+  try {
+    current = normalizedOrigin((await getTab(tabId))?.url);
+  } catch {
+    current = null;
+  }
+  if (current === expected) return;
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, `
+    + `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a `
+    + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
+    + 'approval does not carry over to a different site.',
+  );
+}
+
 // --- Request Handler ---
 
 async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
@@ -483,6 +547,11 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         // Execute JS via chrome.scripting.executeScript to bypass CSP restrictions
         const execTabId = payload.tabId as number;
         const code = payload.code as string;
+        // The one state-changing action on this channel that never reaches the
+        // content script, so the content script's own pin cannot cover it —
+        // and the strongest capability of the set (arbitrary code with the
+        // page's full authority). Pinned here against the tab's live URL.
+        await assertTabOriginPin(execTabId, payload);
         const results = await chrome.scripting.executeScript({
           target: { tabId: execTabId },
           func: (jsCode: string) => {

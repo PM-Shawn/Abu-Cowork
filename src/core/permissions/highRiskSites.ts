@@ -26,6 +26,17 @@
  * If a page-derived signal is ever wanted, it may only TIGHTEN (turn a
  * not-high-risk URL into high-risk); it may never relax a URL-based verdict.
  *
+ * ## Known evasion, and why it is acceptable
+ *
+ * A page can shed the PATH classifier at will — `history.replaceState({}, '',
+ * '/x')` rewrites the address bar without a navigation, and the next call
+ * resolves a URL with no money-movement keyword in it. That is fail-safe, not
+ * a hole: evasion only returns the call to the ORDINARY gate, which for an
+ * unattended run still requires a standing `'allowed'` site grant, still pins
+ * the origin at execution time, and still refuses scripting. The escape route
+ * leads back to the fence, not past it. The domain table is unaffected by this
+ * (a host cannot be rewritten without actually navigating).
+ *
  * ## Deliberately minimal, deliberately incomplete
  *
  * The domain table below is a short list of unambiguous money-movement and

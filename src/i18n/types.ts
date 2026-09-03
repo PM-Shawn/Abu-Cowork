@@ -879,7 +879,9 @@ export interface TranslationDict {
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
     browserSitePermsRevoke: string;
-    /** U5 authorization visibility — which sites an unattended run reaches. */
+    /** U5 authorization visibility — which sites an unattended run reaches.
+     *  ORIGIN-level: a site being listed does not mean every page on it is
+     *  reachable, since the high-risk classifier still refuses per call. */
     browserUnattendedReachTag: string;
     browserAttendedOnlyTag: string;
     browserHighRiskTag: string;

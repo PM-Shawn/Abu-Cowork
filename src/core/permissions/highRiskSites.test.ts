@@ -111,13 +111,26 @@ describe('the classifier reads the URL and nothing else (anti-injection)', () =>
     'utf8',
   );
 
-  it('takes exactly one argument, so there is nowhere to pass page content', () => {
-    expect(classifyHighRiskUrl.length).toBe(1);
-    expect(isHighRiskUrl.length).toBe(1);
+  // `.length` alone is not the shape check it looks like: it stops counting at
+  // the first default or rest parameter, so `(url, pageText = '')` would also
+  // report 1 and sail past. The parameter LIST is what has to be asserted.
+  it.each([
+    ['classifyHighRiskUrl', classifyHighRiskUrl],
+    ['isHighRiskUrl', isHighRiskUrl],
+  ])('%s declares exactly one parameter, with no default/rest smuggling a second', (_name, fn) => {
+    const params = /^[^(]*\(([^)]*)\)/.exec(fn.toString())?.[1] ?? '';
+    const declared = params.split(',').map((p) => p.trim()).filter(Boolean);
+    expect(declared).toHaveLength(1);
+    expect(declared[0]).not.toContain('=');
+    expect(declared[0]).not.toContain('...');
   });
 
-  it('imports nothing — no store, no tool result, no snapshot, no DOM', () => {
+  it('pulls in nothing — no static import, no dynamic import, no require', () => {
     expect(source).not.toMatch(/^\s*import\s/m);
+    // A module with zero imports is the property being pinned; `import(` and
+    // `require(` are the two ways to acquire a dependency without one.
+    expect(source).not.toMatch(/\bimport\s*\(/);
+    expect(source).not.toMatch(/\brequire\s*\(/);
   });
 
   it('never references a page-derived source in its CODE (comments stripped)', () => {

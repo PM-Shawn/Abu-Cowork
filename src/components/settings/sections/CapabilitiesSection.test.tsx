@@ -800,8 +800,11 @@ describe('CapabilitiesSection', () => {
       render(<CapabilitiesSection />);
 
       const list = siteList();
-      expect(within(list).getByText('Reachable unattended')).toBeInTheDocument();
-      expect(within(list).getByText(/can currently act on 1 site/)).toBeInTheDocument();
+      expect(within(list).getByText('Unattended: site allowed')).toBeInTheDocument();
+      // Origin-level, and the copy says so: entering the site is not the
+      // same as every page on it being reachable (M8).
+      expect(within(list).getByText(/may enter 1 site/)).toBeInTheDocument();
+      expect(within(list).getByText(/each page is still judged on its own/)).toBeInTheDocument();
     });
 
     it('says the same site is attended-only while the master switch is off', () => {
@@ -827,7 +830,7 @@ describe('CapabilitiesSection', () => {
       render(<CapabilitiesSection />);
 
       const list = siteList();
-      expect(within(list).queryByText('Reachable unattended')).not.toBeInTheDocument();
+      expect(within(list).queryByText('Unattended: site allowed')).not.toBeInTheDocument();
       expect(within(list).queryByText('Only while you are here')).not.toBeInTheDocument();
     });
   });

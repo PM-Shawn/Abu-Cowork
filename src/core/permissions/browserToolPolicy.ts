@@ -370,6 +370,46 @@ const OPERATION_CLASS_TO_POLICY_KEY: Record<
  */
 export type DecideBrowserOperationSiteVerdict = SiteVerdict | 'high-risk';
 
+/**
+ * Why the browser authorization gate refused — ONE closed vocabulary, used by
+ * every consumer that has to explain a refusal.
+ *
+ * There are three such consumers and they must never disagree: the sentence
+ * the run result shows the user (`registry.ts`'s `browserDenialReasonText`),
+ * the observability signal (`browserSignals.ts`'s `gate_denied`), and the
+ * unattended task report card. Before this union each of those either had its
+ * own wording or, in the signal's case, nothing at all — so "how many actions
+ * were blocked and why" had no single answer.
+ *
+ * These are codes, not copy: they are locale-independent, so a report card
+ * snapshotted while the app was in Chinese still renders in English after the
+ * user switches, and two runs blocked for the same cause aggregate together
+ * regardless of the wording in force when each was recorded.
+ *
+ * The order below is the gate's own precedence order, most-specific first.
+ */
+export type BrowserDenialReasonCode =
+  /** The unattended master switch is off — the whole capability is unavailable. */
+  | 'master-switch-off'
+  /** The user blocked this site (persistent 'denied' verdict). */
+  | 'site-denied'
+  /** URL looks like money movement / a government service (`highRiskSites.ts`). */
+  | 'high-risk-site'
+  /** The user's operation-class policy says deny for this class. */
+  | 'policy-denied'
+  /** This run's capability tier carries no browser access at all. */
+  | 'capability-denied'
+  /** The page's origin could not be determined, so it could not be checked. */
+  | 'origin-unverified'
+  /** The site is asking for a sign-in and nobody is here to do it (U6). */
+  | 'login-required'
+  /** An unattended state-changing action on a site with no standing grant. */
+  | 'site-not-allowed'
+  /** A human was asked and said no, or could not be reached in time (U3). */
+  | 'approval-refused'
+  /** An attended dialog the user dismissed. */
+  | 'user-cancelled';
+
 export interface DecideBrowserOperationInput {
   opClass: BrowserOperationClass;
   runMode: 'attended' | 'unattended';

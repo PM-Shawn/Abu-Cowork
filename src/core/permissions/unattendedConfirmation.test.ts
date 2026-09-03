@@ -50,6 +50,56 @@ describe('resolveUnattendedConfirmation', () => {
       .resolves.toMatchObject({ approved: false });
   });
 
+  // U7 / G2 — the boundary is a whitelist, so the audit fields have to be
+  // copied deliberately. These pin BOTH halves: that they survive at all (the
+  // silent-drop failure that made the feature a no-op the first time), and
+  // that they cannot contradict the decision.
+  describe('audit fields at the boundary', () => {
+    it('carries a valid outcome through to the caller', async () => {
+      setUnattendedConfirmationResolver(async () => ({
+        approved: true, reason: 'ok', outcome: 'approved', fresh: true,
+      }));
+      await expect(resolveUnattendedConfirmation({ info: command, source: 'im' }))
+        .resolves.toMatchObject({ outcome: 'approved', fresh: true });
+    });
+
+    it('drops an outcome that contradicts the decision', async () => {
+      // A resolver that refuses while claiming a human approved must not be
+      // able to write "you approved this" into the audit trail.
+      setUnattendedConfirmationResolver(async () => ({
+        approved: false, reason: 'no', outcome: 'approved', fresh: true,
+      }));
+      const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
+      expect(result.approved).toBe(false);
+      expect(result.outcome).toBeUndefined();
+    });
+
+    it('drops an approval whose outcome says it was refused', async () => {
+      setUnattendedConfirmationResolver(async () => ({
+        approved: true, reason: 'ok', outcome: 'declined', fresh: true,
+      }));
+      const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
+      expect(result.approved).toBe(true);
+      expect(result.outcome).toBeUndefined();
+    });
+
+    it('drops an unrecognised outcome string', async () => {
+      setUnattendedConfirmationResolver((async () => ({
+        approved: true, reason: 'ok', outcome: 'rubber-stamped', fresh: true,
+      })) as never);
+      const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
+      expect(result.outcome).toBeUndefined();
+    });
+
+    it('treats a non-boolean freshness claim as not fresh', async () => {
+      setUnattendedConfirmationResolver((async () => ({
+        approved: true, reason: 'ok', outcome: 'approved', fresh: 'yes',
+      })) as never);
+      const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
+      expect(result.fresh).toBeUndefined();
+    });
+  });
+
   it('restores the fail-closed default when the resolver is cleared', async () => {
     setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'ok' }));
     setUnattendedConfirmationResolver(null);

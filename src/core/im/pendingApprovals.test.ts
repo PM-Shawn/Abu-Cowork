@@ -511,6 +511,69 @@ describe('imApprovalResolver', () => {
     await Promise.all([a, b]);
   });
 
+  // U7 / G2 — the audit fields. Until these existed, the one human decision in
+  // the whole unattended path (a person typing 同意 into a chat) landed
+  // without a trace, so the morning report could not say a human was involved.
+  describe('audit fields (U7 / G2)', () => {
+    it('stamps a fresh approval with the approved outcome', async () => {
+      const promise = imApprovalResolver(seamRequest());
+      await settle();
+      tryConsumeApprovalReply(inbound('同意'));
+      await expect(promise).resolves.toMatchObject({ outcome: 'approved', fresh: true });
+    });
+
+    it('stamps a fresh refusal with the declined outcome', async () => {
+      const promise = imApprovalResolver(seamRequest());
+      await settle();
+      tryConsumeApprovalReply(inbound('拒绝'));
+      await expect(promise).resolves.toMatchObject({ outcome: 'declined', fresh: true });
+    });
+
+    it('reports a replayed answer as NOT fresh — one 同意 is one decision', async () => {
+      const first = imApprovalResolver(seamRequest());
+      await settle();
+      tryConsumeApprovalReply(inbound('同意'));
+      await expect(first).resolves.toMatchObject({ fresh: true });
+
+      // A chatty tool calling again in the same run reuses the cached answer.
+      // Counting this as a second human decision is how "you approved once"
+      // becomes "you approved 14 times" in the report.
+      await expect(imApprovalResolver(seamRequest())).resolves.toMatchObject({
+        approved: true,
+        outcome: 'approved',
+        fresh: false,
+      });
+      expect(promptSends()).toHaveLength(1);
+    });
+
+    it('reports a coalesced follower as NOT fresh', async () => {
+      const a = imApprovalResolver(seamRequest());
+      await settle();
+      const b = imApprovalResolver(seamRequest());
+      await settle();
+      tryConsumeApprovalReply(inbound('同意'));
+
+      const [first, second] = await Promise.all([a, b]);
+      expect(promptSends()).toHaveLength(1);
+      // Exactly one of the two owned the round-trip.
+      expect([first.fresh, second.fresh].filter(Boolean)).toHaveLength(1);
+    });
+
+    it('distinguishes "nobody could be asked" from "nobody answered"', async () => {
+      useIMChannelStore.setState({ sessions: {}, archivedSessions: {} });
+      await expect(imApprovalResolver(seamRequest())).resolves.toMatchObject({
+        outcome: 'no-channel',
+        fresh: true,
+      });
+    });
+
+    it('stamps the no-conversation exit too', async () => {
+      await expect(
+        imApprovalResolver(seamRequest({ conversationId: undefined })),
+      ).resolves.toMatchObject({ outcome: 'no-channel', fresh: true });
+    });
+  });
+
   it('caches the answer for the rest of the run — no second prompt', async () => {
     const first = imApprovalResolver(seamRequest());
     await settle();

@@ -27,6 +27,7 @@ import {
   normalizeBrowserOrigin,
   toLegacyBrowserToolConsequence,
   DEFAULT_BROWSER_OPERATION_POLICY,
+  type BrowserDenialReasonCode,
   type DecideBrowserOperationSiteVerdict,
 } from '../permissions/browserToolPolicy';
 import { isHighRiskUrl } from '../permissions/highRiskSites';
@@ -571,7 +572,12 @@ function recordBrowserToolCallSignal(
     origin = getCachedTabOrigin(conversationId, tabId);
   }
 
-  const context = buildBrowserSignalContext(browserChannelForTool(namespacedName) ?? 'builtin', conversationId);
+  const context = buildBrowserSignalContext(
+    browserChannelForTool(namespacedName) ?? 'builtin',
+    conversationId,
+    Date.now(),
+    toolContext?.loopId,
+  );
   safeRecordBrowserSignal(() => buildBrowserSignalRecord(
     {
       kind: 'tool_call',
@@ -1048,6 +1054,39 @@ export async function checkToolApproval(
         ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
         : `${t.commandConfirm.browserAction}: ${name}`;
       /**
+       * U7 / G1 — leave a trace of the refusal.
+       *
+       * Every `return { decision: 'deny' }` in this block goes through here
+       * first. Before U7 a refusal produced NO browser signal at all: the run
+       * result got a sentence and the model got a diagnostic, but the
+       * observability buffer — and therefore the unattended task report —
+       * recorded an action that simply never happened. A morning report whose
+       * "blocked" section is structurally always empty is worse than none.
+       *
+       * Recorded for attended runs too. It changes no behavior (the buffer is
+       * write-only observability), and a gate that only records half its
+       * decisions is a gate whose silence means nothing.
+       */
+      const recordGateDenial = (reason: BrowserDenialReasonCode): void => {
+        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: name,
+            opClass,
+            ...(origin !== null ? { origin } : {}),
+            reason,
+            runMode,
+          },
+          buildBrowserSignalContext(
+            browserChannelForTool(name) ?? 'builtin',
+            toolContext?.conversationId,
+            Date.now(),
+            toolContext?.loopId,
+          ),
+        ));
+      };
+
+      /**
        * Refuse, and tell the run's own callback why so it can account for it.
        * The gate decides; the callback only records (see
        * `ConfirmationInfo.deniedNotice`). Without this, every unattended
@@ -1056,8 +1095,15 @@ export async function checkToolApproval(
        * exact failure the scheduler's denial accounting exists to prevent.
        */
       const denyUnattendedBrowser = async (
-        userFacingReason: string,
+        reason: BrowserDenialReasonCode,
+        /** The approval channel's own sentence, when it knows something this
+         *  gate's generic copy cannot say ("you declined this in chat" vs
+         *  "nobody answered in five minutes"). The CODE stays the same either
+         *  way — the taxonomy is what aggregates, the sentence is what reads. */
+        userFacingOverride?: string,
       ): Promise<ToolApprovalDecision> => {
+        const userFacingReason = userFacingOverride ?? browserDenialReasonText(reason);
+        recordGateDenial(reason);
         await notifyUnattendedDenial(onRequireConfirmation, {
           command: browserActionLabel,
           level: 'warn',
@@ -1094,17 +1140,34 @@ export async function checkToolApproval(
        * to change it. Both surfaces get what they need: the tool result keeps
        * the technical reason, the run result gets this.
        */
-      const unattendedDenialReason = (): string => {
-        if (!masterSwitchUnattended) return t.commandConfirm.browserUnattendedDisabled;
-        if (siteVerdict === 'denied') return t.commandConfirm.browserSiteDenied;
+      const unattendedDenialCode = (): BrowserDenialReasonCode => {
+        if (!masterSwitchUnattended) return 'master-switch-off';
+        if (siteVerdict === 'denied') return 'site-denied';
         // Named before the generic policy sentence: "this looks like a payment
         // page" is actionable, "your policy says deny" points at a setting the
         // user never changed.
-        if (highRisk) return t.commandConfirm.browserUnattendedHighRiskSite;
-        if (policyVerdict === 'deny') return t.commandConfirm.browserPolicyDenied;
+        if (highRisk) return 'high-risk-site';
+        if (policyVerdict === 'deny') return 'policy-denied';
         // The ceiling refused for a reason the operation policy did not: this
         // run's capability tier carries no browser access at all.
-        return t.commandConfirm.browserUnattendedCapabilityDenied;
+        return 'capability-denied';
+      };
+      /** The one place a denial code becomes words. The report card localizes
+       *  the SAME codes through its own namespace, so the run result and the
+       *  morning card can never disagree about why something was blocked. */
+      const browserDenialReasonText = (reason: BrowserDenialReasonCode): string => {
+        switch (reason) {
+          case 'master-switch-off': return t.commandConfirm.browserUnattendedDisabled;
+          case 'site-denied': return t.commandConfirm.browserSiteDenied;
+          case 'high-risk-site': return t.commandConfirm.browserUnattendedHighRiskSite;
+          case 'policy-denied': return t.commandConfirm.browserPolicyDenied;
+          case 'capability-denied': return t.commandConfirm.browserUnattendedCapabilityDenied;
+          case 'origin-unverified': return t.commandConfirm.browserUnattendedOriginUnverified;
+          case 'login-required': return t.commandConfirm.browserUnattendedLoginRequired;
+          case 'site-not-allowed': return t.commandConfirm.browserUnattendedSiteNotAllowed;
+          case 'approval-refused': return t.commandConfirm.browserUnattendedConfirmUnavailable;
+          case 'user-cancelled': return t.commandConfirm.userCancelled;
+        }
       };
 
       if (consequence === 'state-changing') {
@@ -1114,8 +1177,15 @@ export async function checkToolApproval(
           policyVerdict,
         );
         if (browserCeilingDecision.decision === 'deny') {
+          // Attended runs reach the ceiling too (a capability-scoped IM
+          // session with a person watching). The ceiling is the reason in that
+          // column — the unattended master switch is not in play.
+          const ceilingCode: BrowserDenialReasonCode = runMode === 'unattended'
+            ? unattendedDenialCode()
+            : 'capability-denied';
+          recordGateDenial(ceilingCode);
           if (runMode === 'unattended') {
-            const noticeReason = unattendedDenialReason();
+            const noticeReason = browserDenialReasonText(ceilingCode);
             await notifyUnattendedDenial(onRequireConfirmation, {
               command: browserActionLabel,
               level: 'warn',
@@ -1133,14 +1203,14 @@ export async function checkToolApproval(
       if (siteVerdict === 'denied') {
         // Now reachable for read-only actions too, in unattended runs: a
         // blocked site is blocked for READING as well when nobody is watching.
-        return runMode === 'unattended'
-          ? await denyUnattendedBrowser(unattendedDenialReason())
-          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
+        if (runMode === 'unattended') return await denyUnattendedBrowser(unattendedDenialCode());
+        recordGateDenial('site-denied');
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
       if (policyVerdict === 'deny') {
-        return runMode === 'unattended'
-          ? await denyUnattendedBrowser(unattendedDenialReason())
-          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
+        if (runMode === 'unattended') return await denyUnattendedBrowser(unattendedDenialCode());
+        recordGateDenial('policy-denied');
+        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
       }
 
       if (runMode === 'unattended') {
@@ -1156,7 +1226,7 @@ export async function checkToolApproval(
         // (`get_tabs`, `connection_status`, `get_downloads`) are exempt —
         // there is no site behind them to verify.
         if (browserToolTargetsPage(name) && origin === null) {
-          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedOriginUnverified);
+          return await denyUnattendedBrowser('origin-unverified');
         }
         /**
          * U6 / F2.4 — an expired session, with nobody here to sign in.
@@ -1178,7 +1248,7 @@ export async function checkToolApproval(
          * path every other unattended refusal uses.
          */
         if (loginRequired && consequence === 'state-changing') {
-          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedLoginRequired);
+          return await denyUnattendedBrowser('login-required');
         }
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny (or, in a later task, an IM approval
@@ -1220,6 +1290,37 @@ export async function checkToolApproval(
               ? { abortSignal: toolContext.abortSignal }
               : {}),
           });
+          /**
+           * U7 / G2 — record the human decision.
+           *
+           * Gated on `fresh`: the approval channel coalesces a chatty tool's
+           * many calls onto ONE prompt and replays the answer, so counting
+           * resolver returns would report "you approved 14 times" for a single
+           * "同意". Only the call that owned the round-trip reports one.
+           *
+           * `outcome` absent means no approval channel was involved at all
+           * (the fail-closed default resolver never asked anyone) — the gate's
+           * own `gate_denied` signal already covers that refusal, and claiming
+           * an IM decision happened would be a lie.
+           */
+          if (approval.fresh && approval.outcome) {
+            const approvalOutcome = approval.outcome;
+            safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+              {
+                kind: 'approval',
+                via: 'im',
+                outcome: approvalOutcome,
+                opClass,
+                ...(origin !== null ? { origin } : {}),
+              },
+              buildBrowserSignalContext(
+                browserChannelForTool(name) ?? 'builtin',
+                toolContext?.conversationId,
+                Date.now(),
+                toolContext?.loopId,
+              ),
+            ));
+          }
           if (!approval.approved) {
             // The channel's own sentence when it has one — "you declined this
             // in chat" and "nobody answered in 10 minutes" are different
@@ -1231,7 +1332,8 @@ export async function checkToolApproval(
             // human said no in chat, nobody answered in time, or there was no
             // channel to ask through at all.
             return refusedByHuman(await denyUnattendedBrowser(
-              approval.userFacingReason ?? t.commandConfirm.browserUnattendedConfirmUnavailable,
+              'approval-refused',
+              approval.userFacingReason,
             ));
           }
           // A human (or the channel standing in for one) said yes — an
@@ -1246,7 +1348,7 @@ export async function checkToolApproval(
           // Not counted: "this origin has no standing grant" is configuration,
           // not a refusal anyone issued.
           if (siteVerdict !== 'allowed') {
-            return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedSiteNotAllowed);
+            return await denyUnattendedBrowser('site-not-allowed');
           }
           // The user's own standing "allow this site" grant is what let this
           // act — a consented allow, but a GRANT-grade one (R1): it can never
@@ -1291,11 +1393,17 @@ export async function checkToolApproval(
             // unattended no-channel case is: the gate needed an answer from a
             // human and could not get one, so an insistent model must not be
             // able to keep re-asking forever.
+            recordGateDenial('approval-refused');
             return refusedByHuman({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
           }
           safeRecordBrowserSignal(() => buildBrowserSignalRecord(
             { kind: 'confirm_prompt', origin: origin ?? undefined },
-            buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
+            buildBrowserSignalContext(
+              browserChannelForTool(name) ?? 'builtin',
+              toolContext?.conversationId,
+              Date.now(),
+              toolContext?.loopId,
+            ),
           ));
           const confirmed = await onRequireConfirmation({
             command: browserActionLabel,
@@ -1313,6 +1421,7 @@ export async function checkToolApproval(
             allowPersistentGrant: !scripting && !highRisk && origin !== null,
           }, toolContext?.loopId);
           if (!confirmed) {
+            recordGateDenial('user-cancelled');
             return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
           }
           consented = 'dialog';
@@ -1335,6 +1444,7 @@ export async function checkToolApproval(
         // the default policy (attended read-only is 'allow'), but the setting
         // must do something when a user picks it.
         if (!onRequireConfirmation) {
+          recordGateDenial('approval-refused');
           return refusedByHuman({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
         }
         const confirmed = await onRequireConfirmation({
@@ -1346,6 +1456,7 @@ export async function checkToolApproval(
           allowPersistentGrant: false,
         }, toolContext?.loopId);
         if (!confirmed) {
+          recordGateDenial('user-cancelled');
           return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
         }
         consented = 'dialog';

@@ -709,6 +709,101 @@ export interface TranslationDict {
     tokenCount: string;
   };
 
+  /**
+   * The unattended browser run report card (U7).
+   *
+   * Rendered from a FROZEN snapshot stored on the message, but localized at
+   * render time from the machine codes in it — so a report written while the
+   * app was in Chinese reads correctly after the user switches to English.
+   *
+   * `reason.*` and `step.*` are two renderings of ONE taxonomy
+   * (`BrowserDenialReasonCode`): a short label for the blocked-actions list,
+   * and the actionable instruction for the "what to do now" list. They are not
+   * a second vocabulary — a code with no entry in both is a compile error.
+   */
+  browserRunReport: {
+    /** Card title. */
+    title: string;
+    /** Outcome badge. */
+    outcome: {
+      completed: string;
+      /** Hit the turn cap — possibly incomplete. */
+      incomplete: string;
+      /** Stopped itself after repeated refusals (U4). */
+      abortedDenials: string;
+      aborted: string;
+      error: string;
+      noProgress: string;
+    };
+    /** Prominent line when the master switch blocked everything. */
+    masterSwitchOff: string;
+    /** "完成 {total} 个浏览器动作，{failed} 个失败" */
+    actionsSummary: string;
+    /** "完成 {total} 个浏览器动作" */
+    actionsSummaryClean: string;
+    /** No action got through at all. */
+    noActions: string;
+    sitesTitle: string;
+    /** "{actions} 次动作 · {failures} 次失败" */
+    siteCounts: string;
+    /** "{actions} 次动作" */
+    siteCountsClean: string;
+    /** "另有 {count} 个站点" */
+    moreSites: string;
+    deniedTitle: string;
+    /** "{count} 次" */
+    occurrenceCount: string;
+    problemsTitle: string;
+    /** "另有 {count} 类问题" */
+    moreProblems: string;
+    approvalsTitle: string;
+    /** "批准 {approved} 次 · 拒绝 {declined} 次" */
+    approvalsSummary: string;
+    /** "{count} 次没人回复" */
+    approvalsTimeout: string;
+    /** "{count} 次没能送达" */
+    approvalsUnreachable: string;
+    /** "最后一次决定 {time}" */
+    approvalsLastDecision: string;
+    /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
+    blockedPages: string;
+    nextStepsTitle: string;
+    /** Short label per denial reason code. */
+    reason: {
+      masterSwitchOff: string;
+      siteDenied: string;
+      highRiskSite: string;
+      policyDenied: string;
+      capabilityDenied: string;
+      originUnverified: string;
+      loginRequired: string;
+      siteNotAllowed: string;
+      approvalRefused: string;
+      userCancelled: string;
+    };
+    /** The actionable instruction per next-step code. */
+    step: {
+      enableMasterSwitch: string;
+      allowSite: string;
+      unblockSite: string;
+      doHighRiskYourself: string;
+      signInThenRerun: string;
+      relaxPolicy: string;
+      raiseCapability: string;
+      answerApproval: string;
+      runWhileWatching: string;
+    };
+    /** Human wording for `classifyBrowserToolError`'s closed class set. */
+    errorClass: {
+      timeout: string;
+      notConnected: string;
+      notFound: string;
+      locatorAmbiguous: string;
+      aborted: string;
+      unknownError: string;
+    };
+  };
+
   // Settings Modal
   settings: {
     title: string;

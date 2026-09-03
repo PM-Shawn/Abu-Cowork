@@ -40,6 +40,7 @@ import {
   setUnattendedConfirmationResolver,
   type UnattendedConfirmationRequest,
   type UnattendedConfirmationResolver,
+  type UnattendedApprovalOutcome,
   type UnattendedConfirmationResult,
   type UnattendedImTarget,
 } from '../permissions/unattendedConfirmation';
@@ -658,12 +659,33 @@ function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number):
   });
 }
 
-function refuse(reason: string, userFacingReason?: string): UnattendedConfirmationResult {
+function refuse(
+  reason: string,
+  userFacingReason?: string,
+  outcome?: UnattendedApprovalOutcome,
+): UnattendedConfirmationResult {
   return {
     approved: false,
     reason,
     ...(userFacingReason !== undefined ? { userFacingReason } : {}),
+    ...(outcome !== undefined ? { outcome } : {}),
   };
+}
+
+/**
+ * U7 / G2 — the channel's own cause vocabulary, mapped onto the seam's audit
+ * code. A straight renaming, kept exhaustive so a new cause cannot be added
+ * without deciding what the report should say about it.
+ */
+function auditOutcomeFor(result: ImApprovalResult): UnattendedApprovalOutcome {
+  switch (result.cause) {
+    case 'answered': return result.outcome === 'approved' ? 'approved' : 'declined';
+    case 'timeout': return 'timeout';
+    case 'no_binding': return 'no-channel';
+    case 'too_many': return 'too-many';
+    case 'undeliverable': return 'undeliverable';
+    case 'aborted': return 'aborted';
+  }
 }
 
 async function askOverIm(
@@ -709,20 +731,23 @@ async function askOverIm(
 function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult {
   const t = getI18n();
   const minutes = String(Math.round(getImApprovalTimeoutMs() / 60_000));
+  const audit = auditOutcomeFor(result);
   switch (result.cause) {
     case 'answered':
       return result.outcome === 'approved'
-        ? { approved: true, reason: 'approved over IM' }
-        : refuse('denied over IM by the user', t.commandConfirm.browserUnattendedImDenied);
+        ? { approved: true, reason: 'approved over IM', outcome: audit }
+        : refuse('denied over IM by the user', t.commandConfirm.browserUnattendedImDenied, audit);
     case 'timeout':
       return refuse(
         'the IM approval request expired with no answer',
         format(t.commandConfirm.browserUnattendedImTimeout, { minutes }),
+        audit,
       );
     case 'no_binding':
       return refuse(
         'the conversation is bound to no IM chat, so nobody could be asked',
         t.commandConfirm.browserUnattendedImNoBinding,
+        audit,
       );
     case 'too_many':
       return refuse(
@@ -730,16 +755,19 @@ function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult
         format(t.commandConfirm.browserUnattendedImTooMany, {
           max: String(MAX_PENDING_APPROVALS_PER_CONVERSATION),
         }),
+        audit,
       );
     case 'undeliverable':
       return refuse(
         'the IM approval request could not be delivered',
         t.commandConfirm.browserUnattendedImUndeliverable,
+        audit,
       );
     case 'aborted':
       return refuse(
         'the run was stopped while its IM approval was outstanding',
         t.commandConfirm.browserUnattendedImAborted,
+        audit,
       );
   }
 }
@@ -760,10 +788,14 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
     // never hears about looks exactly like a run that silently did nothing,
     // which is the failure the notice exit exists to prevent.
     publishApprovalNotice(null, prompt);
-    return refuse(
-      'no conversation on the unattended confirmation request, so no IM chat to ask in',
-      t.commandConfirm.browserUnattendedImNoBinding,
-    );
+    return {
+      ...refuse(
+        'no conversation on the unattended confirmation request, so no IM chat to ask in',
+        t.commandConfirm.browserUnattendedImNoBinding,
+        'no-channel',
+      ),
+      fresh: true,
+    };
   }
 
   // Coalescing and answer caching are BOTH scoped to a run. Without a run key
@@ -778,7 +810,9 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
   // remembered as a refusal too: someone who ignored the prompt for its whole
   // window must not be prompted again on the next tool call.
   const cached = runScoped ? answered.get(key) : undefined;
-  if (cached !== undefined) return cached;
+  // A replay of an answer already given. `fresh: false` so an audit counting
+  // human decisions counts ONE "同意", not one per tool call that reused it.
+  if (cached !== undefined) return { ...cached, fresh: false };
 
   // Concurrent asks with the same key wait on the one prompt already out.
   let outcomePromise = runScoped ? inFlight.get(key) : undefined;
@@ -800,9 +834,14 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
 
   // An abort is not a decision — it is the run ending. Remembering it would
   // make a resumed/retried ask inherit a "no" nobody gave.
+  //
+  // Cached WITHOUT the freshness flag: `fresh` describes this particular call,
+  // not the answer, and a replay must never be able to inherit a `true`.
   if (runScoped && outcome.cause !== 'aborted') rememberAnswer(key, result);
 
-  return result;
+  // Only the call that owned the round-trip reports it. A follower that waited
+  // on someone else's prompt did not produce a human decision of its own.
+  return { ...result, fresh: owned };
 };
 
 /**

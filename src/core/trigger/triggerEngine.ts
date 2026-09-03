@@ -2,7 +2,11 @@ import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
+import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { getBrowserSignalCursor } from '../observability/browserSignals';
+import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
+import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
 import {
   notifyTriggerCompleted,
   notifyTriggerError,
@@ -331,6 +335,11 @@ class TriggerEngine {
         : undefined,
     );
 
+    // U7 — same run-report window the scheduler captures, for the same reason
+    // (Ruling 2): a monotonic cursor, taken before any tool can fire.
+    const browserSignalCursor = getBrowserSignalCursor();
+    let reportOutcome = browserRunReportOutcomeFor('error', false);
+
     try {
       const callbacks = resolveTriggerCallbacks(actionWithWorkspace, {
         authorizationScopeId,
@@ -345,6 +354,11 @@ class TriggerEngine {
         runPermissionCeiling: buildTriggerRunPermissionCeiling(actionWithWorkspace),
         initiatedBy: 'automation',
       });
+
+      reportOutcome = browserRunReportOutcomeFor(
+        result.reason,
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
+      );
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall
       // through and deliver it (just flagged below), rather than dropping the
@@ -404,6 +418,13 @@ class TriggerEngine {
       });
       console.error(`[Trigger] Error: ${trigger.name}`, err);
     } finally {
+      // U7 — after the output push, for every terminal. See the scheduler's
+      // copy for why both of those matter.
+      emitBrowserRunReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
       disposeAuthorizationScope(authorizationScopeId);
     }
   }

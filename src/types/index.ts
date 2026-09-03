@@ -405,6 +405,18 @@ export interface Message {
   // to the log and never rewrites earlier entries; the send-side rebuilds a
   // compact context from the LAST marker.
   compactBoundary?: CompactBoundary;
+  /**
+   * Unattended browser run report (U7). Present only on report marker messages
+   * (id prefix `browser-run-report-`).
+   *
+   * This is a FROZEN SNAPSHOT, deliberately: the signals it was aggregated
+   * from live in an in-memory ring buffer that holds 5000 entries and is empty
+   * after a restart. A card that re-derived itself at render time would
+   * therefore be blank exactly when it matters — the morning after an
+   * overnight run — so the whole aggregation is computed once and stored here.
+   * Nothing in the render path may go back to the buffer.
+   */
+  browserRunReport?: import('../core/observability/browserRunReport').BrowserRunReportSnapshot;
 }
 
 /**

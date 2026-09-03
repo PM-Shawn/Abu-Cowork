@@ -60,9 +60,15 @@ import { schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { outputSender } from '../im/outputSender';
 import {
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  clearBrowserSignals,
   clearSchedulerDriftSignals,
   getRecentSchedulerDriftSignals,
+  recordBrowserSignal,
 } from '../observability/browserSignals';
+import { isBrowserRunReportMessage } from '../observability/browserRunReport';
+import type { Message } from '../../types';
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -151,6 +157,224 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     // The suite runs under en-US; the zh-CN string names 浏览器操作 the same way.
     expect(runs[runs.length - 1]?.error).toContain('browser actions were refused');
     expect(runs[runs.length - 1]?.error).not.toContain('Task was cancelled');
+  });
+});
+
+// ── U7: the unattended task report card ───────────────────────────────────
+//
+// The one part of the unattended feature a person actually reads. Everything
+// else works or refuses silently; if the card is missing, empty, or about the
+// wrong run, the user's verdict on the whole night is "it did nothing".
+describe('SchedulerEngine run report card', () => {
+  /** Every terminal path leads here, so the card is emitted from `finally`. */
+  function cardsIn(conversationId: string): Message[] {
+    const conv = useChatStore.getState().conversations[conversationId];
+    return (conv?.messages ?? []).filter(isBrowserRunReportMessage);
+  }
+
+  function conversationsForTask(taskId: string): string[] {
+    return (useScheduleStore.getState().tasks[taskId]?.runs ?? [])
+      .map((run) => run.conversationId)
+      .filter((id): id is string => typeof id === 'string');
+  }
+
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useChatStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      currentUsage: null,
+      pendingInput: null,
+      agentStates: new Map(),
+    });
+    clearBrowserSignals();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    clearBrowserSignals();
+  });
+
+  it('appends a card describing the run that just touched the browser', async () => {
+    const task = makeTask({ id: 'task-report' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    // The conversation is created inside executeTask, so resolve its id lazily.
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'tool_call',
+            tool: 'abu-browser__navigate',
+            ok: true,
+            durationMs: 5,
+            origin: 'https://intranet.example',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const [conversationId] = conversationsForTask(task.id);
+    const cards = cardsIn(conversationId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].browserRunReport).toMatchObject({
+      outcome: 'completed',
+      actions: { total: 1, failed: 0 },
+      sites: [{ origin: 'https://intranet.example', actions: 1, failures: 0 }],
+    });
+  });
+
+  it('does NOT append a card to a run that never touched the browser', async () => {
+    const task = makeTask({ id: 'task-no-browser' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+    await schedulerEngine.runNow(task.id);
+
+    const [conversationId] = conversationsForTask(task.id);
+    expect(cardsIn(conversationId)).toHaveLength(0);
+  });
+
+  it('reports a run that was refused everything — the master switch case', async () => {
+    // R1 §1.2: "the report records that it was skipped because the master
+    // switch is off, never silently". The run looks successful and did nothing.
+    const task = makeTask({ id: 'task-master-off' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: 'abu-browser__navigate',
+            opClass: 'interactive',
+            reason: 'master-switch-off',
+            runMode: 'unattended',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    expect(card.browserRunReport?.skippedByMasterSwitch).toBe(true);
+    expect(card.browserRunReport?.nextSteps).toContain('enable-master-switch');
+  });
+
+  it('still reports a run that FAILED — the terminal most worth explaining', async () => {
+    const task = makeTask({ id: 'task-failed' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'tool_call',
+            tool: 'abu-browser__click',
+            ok: false,
+            durationMs: 5,
+            errorClass: 'timeout',
+            origin: 'https://intranet.example',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'error', error: 'boom', messageTaken: true } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    expect(card.browserRunReport?.outcome).toBe('error');
+    expect(card.browserRunReport?.actions).toEqual({ total: 1, failed: 1 });
+  });
+
+  it('names the consecutive-denial abort in the card, not just in the run history', async () => {
+    const task = makeTask({ id: 'task-denial-abort' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: 'abu-browser__execute_js',
+            opClass: 'scripting',
+            reason: 'approval-refused',
+            runMode: 'unattended',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'aborted', abortCause: 'consecutive_browser_denials' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(cardsIn(conversationsForTask(task.id)[0])[0].browserRunReport?.outcome)
+      .toBe('aborted-denials');
+  });
+
+  // Ruling 2, at the real integration point.
+  it('does not put the previous run\'s actions in the next run\'s card', async () => {
+    const task = makeTask({ id: 'task-two-runs' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+
+    let origin = 'https://first.example';
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+    origin = 'https://second.example';
+    await schedulerEngine.runNow(task.id);
+
+    // `startRun` unshifts, so the run list is newest-first.
+    const [secondConv, firstConv] = conversationsForTask(task.id);
+    const first = cardsIn(firstConv)[0].browserRunReport;
+    const second = cardsIn(secondConv)[0].browserRunReport;
+
+    expect(first?.sites.map((s) => s.origin)).toEqual(['https://first.example']);
+    expect(second?.sites.map((s) => s.origin)).toEqual(['https://second.example']);
+    // The failure this pins: yesterday's actions showing up in today's report.
+    expect(JSON.stringify(second)).not.toContain('first.example');
+    expect(JSON.stringify(first)).not.toContain('second.example');
+  });
+
+  // The card carries no text on purpose, and `pushToIMChannel` extracts the
+  // LAST message. Appending before the push would send an empty IM message
+  // instead of the answer the task produced.
+  it('appends the card after the IM push has read the last message', async () => {
+    const task = makeTask({ id: 'task-push-order' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin: 'https://a.example' },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+    let cardsAtPushTime = -1;
+    vi.mocked(outputSender.buildMessage).mockImplementation(((convId: string) => {
+      cardsAtPushTime = cardsIn(convId).length;
+      return 'test message';
+    }) as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(cardsAtPushTime).toBe(0);
+    expect(cardsIn(conversationsForTask(task.id)[0])).toHaveLength(1);
   });
 });
 

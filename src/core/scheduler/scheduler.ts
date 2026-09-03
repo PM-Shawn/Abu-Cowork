@@ -26,8 +26,11 @@ import { buildScheduledRunPermissionCeiling } from '../permissions/runPermission
 import { createUnattendedConfirmation } from '../permissions/unattendedConfirmation';
 import {
   buildSchedulerDriftSignal,
+  getBrowserSignalCursor,
   safeRecordSchedulerDriftSignal,
 } from '../observability/browserSignals';
+import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
+import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
@@ -245,6 +248,23 @@ class SchedulerEngine {
         ? { shell: 'full' }
         : undefined,
     );
+
+    /**
+     * U7 — the run report's window boundary (Ruling 2).
+     *
+     * Captured HERE, before a single tool can fire, and never from a clock:
+     * `getBrowserSignalCursor()` is a process-monotonic counter, so the
+     * boundary holds across an NTP step, a DST change, and a second run of the
+     * same task landing in the same conversation. Slicing by conversation
+     * alone would let last night's actions into tonight's report.
+     */
+    const browserSignalCursor = getBrowserSignalCursor();
+    /**
+     * What the card will say the run's ending was. Starts at 'error' so an
+     * exception thrown anywhere below still produces an honest card rather
+     * than none — a run that blew up is exactly the one worth reporting.
+     */
+    let reportOutcome = browserRunReportOutcomeFor('error', false);
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
@@ -269,6 +289,11 @@ class SchedulerEngine {
         // user later types into the same conversation (that send is theirs).
         initiatedBy: 'automation',
       });
+
+      reportOutcome = browserRunReportOutcomeFor(
+        result.reason,
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
+      );
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
       // it like a completion, just flagged as possibly incomplete, rather than
@@ -347,6 +372,24 @@ class SchedulerEngine {
       });
       console.error(`[Scheduler] Task error: ${task.name}`, err);
     } finally {
+      /**
+       * U7 — the morning report.
+       *
+       * In `finally` on purpose, for two reasons. It runs for EVERY terminal:
+       * a run that failed, was stopped, or aborted itself after repeated
+       * refusals is precisely the run the user needs an explanation for, and
+       * only the success branch used to write anything into the conversation
+       * at all. And it runs AFTER `pushToIMChannel`, whose `last_message`
+       * extraction would otherwise pick up this (deliberately text-less) card
+       * instead of the answer the task produced.
+       *
+       * Emits nothing when the run never touched the browser.
+       */
+      emitBrowserRunReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
       disposeAuthorizationScope(authorizationScopeId);
       this.runningTasks.delete(task.id);
     }

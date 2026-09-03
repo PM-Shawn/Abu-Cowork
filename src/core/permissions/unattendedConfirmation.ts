@@ -107,7 +107,51 @@ export interface UnattendedConfirmationResult {
    * has nothing better to say omits it and the caller keeps its own wording.
    */
   userFacingReason?: string;
+  /**
+   * U7 / G2 — the machine-readable audit fields.
+   *
+   * The "同意" a person types into a chat at 09:14 is the ONLY human decision
+   * in the entire unattended path, and until U7 it landed without a trace:
+   * the run acted on it and nothing anywhere recorded that a human had said
+   * yes. These two fields are what lets the morning report say "you approved
+   * 2 and declined 1" instead of staying silent about the one moment a person
+   * was actually involved.
+   *
+   * `outcome` is a code, never a parsed sentence — `reason` is diagnostic
+   * English and `userFacingReason` is localized, and neither is safe to
+   * aggregate on.
+   *
+   * `fresh` distinguishes a real round-trip from a replayed answer. A tool
+   * like `execute_js` is called dozens of times per turn, and the channel
+   * coalesces those onto ONE prompt: without this flag an audit that counted
+   * resolver returns would report "you approved 14 times" for a single "同意".
+   * Only the call that actually owned the round-trip is `fresh`.
+   *
+   * Both are optional because the fail-closed default resolver is not an
+   * approval channel at all — it never asked anyone, so it has no human
+   * decision to report, and the gate's own denial signal already records that
+   * refusal.
+   */
+  outcome?: UnattendedApprovalOutcome;
+  fresh?: boolean;
 }
+
+/**
+ * What became of one approval round-trip.
+ *
+ * Deliberately preserves the distinctions `pendingApprovals.ts` already makes
+ * rather than collapsing them: at 8am, "you declined it", "nobody answered in
+ * five minutes" and "there was nobody to ask" call for three different
+ * actions from the user.
+ */
+export type UnattendedApprovalOutcome =
+  | 'approved'
+  | 'declined'
+  | 'timeout'
+  | 'no-channel'
+  | 'too-many'
+  | 'undeliverable'
+  | 'aborted';
 
 export type UnattendedConfirmationResolver = (
   request: UnattendedConfirmationRequest,
@@ -143,6 +187,47 @@ export function __resetUnattendedConfirmationForTests(): void {
  * Never throws: a resolver that rejects is treated as a refusal, because a
  * broken approval channel must not become an open one.
  */
+const APPROVAL_OUTCOMES: ReadonlySet<string> = new Set<UnattendedApprovalOutcome>([
+  'approved', 'declined', 'timeout', 'no-channel', 'too-many', 'undeliverable', 'aborted',
+]);
+
+/**
+ * Re-validate the audit fields at the boundary, exactly as the decision itself
+ * is re-validated above.
+ *
+ * This function has to exist because the boundary is a WHITELIST: it rebuilds
+ * the result rather than spreading it, so a field the resolver sets and this
+ * function does not copy is silently gone by the time the gate reads it. That
+ * is the correct design (a malformed resolver must not be able to smuggle
+ * anything through) — but it means every new field is opt-in, and forgetting
+ * one produces a feature that works in the unit test of the producer and does
+ * nothing in production.
+ *
+ * Two rules beyond shape checking:
+ * - An unknown `outcome` string is dropped, not passed on. The report
+ *   aggregates on these codes; an unrecognised one would land in a bucket
+ *   nobody renders.
+ * - An `outcome` that CONTRADICTS the decision is dropped. A resolver that
+ *   refuses while reporting 'approved' must not be able to write "a human
+ *   approved this" into the user's audit trail — the decision is authoritative
+ *   and the audit must agree with it or stay silent.
+ */
+function auditFieldsOf(
+  result: UnattendedConfirmationResult | undefined,
+  approved: boolean,
+): Pick<UnattendedConfirmationResult, 'outcome' | 'fresh'> {
+  const outcome = typeof result?.outcome === 'string' && APPROVAL_OUTCOMES.has(result.outcome)
+    ? result.outcome
+    : undefined;
+  const consistent = outcome === undefined
+    ? undefined
+    : approved === (outcome === 'approved') ? outcome : undefined;
+  return {
+    ...(consistent !== undefined ? { outcome: consistent } : {}),
+    ...(result?.fresh === true ? { fresh: true } : {}),
+  };
+}
+
 export async function resolveUnattendedConfirmation(
   request: UnattendedConfirmationRequest,
 ): Promise<UnattendedConfirmationResult> {
@@ -157,6 +242,7 @@ export async function resolveUnattendedConfirmation(
         ...(typeof result?.userFacingReason === 'string' && result.userFacingReason !== ''
           ? { userFacingReason: result.userFacingReason }
           : {}),
+        ...auditFieldsOf(result, false),
       };
     }
     return {
@@ -165,6 +251,7 @@ export async function resolveUnattendedConfirmation(
       ...(typeof result.userFacingReason === 'string' && result.userFacingReason !== ''
         ? { userFacingReason: result.userFacingReason }
         : {}),
+      ...auditFieldsOf(result, true),
     };
   } catch (error) {
     return {

@@ -583,7 +583,7 @@ const enUS: TranslationDict = {
 
   settings: {
     labsExpTeamTitle: 'Agent Teams',
-    labsExpTeamDesc: 'Build a leader-led team of agents: hand over tasks, confirm the plan, run in parallel, review results. Management preview for now.',
+    labsExpTeamDesc: 'Build a leader-led team of agents: @ the team in a conversation, the leader splits the work, runs members in parallel, reviews and reports back.',
     labsExpTeamWhere: 'Shows above Plugins in the left navigation when enabled.',
     title: 'Settings',
     labs: 'Labs',

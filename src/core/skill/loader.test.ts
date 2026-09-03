@@ -128,6 +128,30 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
     expect(loader.findMatchingSkills('org-skill')).toEqual([]);
   });
 
+  // `description:` is third-party YAML with no schema behind it, so
+  // `description: 42` and `description:\n  - a` are shapes this parser WILL
+  // receive. Typed straight through as `(meta.description as string) ?? ''`
+  // they reached the prompt renderer as a number/array, whose `.replace` does
+  // not exist — one malformed installed SKILL.md then threw out of system
+  // prompt assembly for the whole run.
+  it('drops a non-string description instead of typing it as a string', async () => {
+    stubFs(
+      { '/Users/testuser/.abu/skills': ['numeric-desc', 'list-desc'] },
+      {
+        '/Users/testuser/.abu/skills/numeric-desc/SKILL.md':
+          '---\nname: numeric-desc\ndescription: 42\n---\n\nBody.\n',
+        '/Users/testuser/.abu/skills/list-desc/SKILL.md':
+          '---\nname: list-desc\ndescription:\n  - one\n  - two\n---\n\nBody.\n',
+      },
+    );
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(null);
+
+    expect(loader.getSkill('numeric-desc')?.description).toBe('');
+    expect(loader.getSkill('list-desc')?.description).toBe('');
+  });
+
   it('scans global dirs only when workspacePath is null', async () => {
     stubFs(
       {

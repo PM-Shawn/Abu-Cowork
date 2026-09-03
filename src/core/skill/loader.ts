@@ -58,7 +58,10 @@ function parseSkillFile(raw: string, filePath: string): Skill | null {
 
     return {
       name: meta.name as string,
-      description: (meta.description as string) ?? '',
+      // Guarded like `name` above: `description:` is unchecked third-party
+      // YAML, so `description: 42` or a list survives `?? ''` and reaches
+      // consumers typed as a string it is not.
+      description: typeof meta.description === 'string' ? meta.description : '',
       trigger: meta.trigger as string | undefined,
       doNotTrigger: (meta['do-not-trigger'] ?? meta.doNotTrigger) as string | undefined,
       userInvocable: meta['user-invocable'] !== false,

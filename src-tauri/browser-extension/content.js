@@ -226,11 +226,32 @@
   var MFA_PUSH_PATTERN = /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
   var PENDING_WIDGET_SELECTOR = '[role="progressbar"],[aria-busy="true"],[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
   var TERSE_AUTH_SURFACE_CHARS = 400;
-  var AUTH_SURFACE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|login|sso|auth|oauth2?|mfa|2fa|duo|verify|challenge)(?:[/_.-]|$)/i;
+  var AUTH_SURFACE_SEGMENTS = /* @__PURE__ */ new Set([
+    "sign-in",
+    "signin",
+    "login",
+    "sso",
+    "auth",
+    "oauth",
+    "oauth2",
+    "mfa",
+    "2fa",
+    "duo",
+    "verify",
+    "challenge"
+  ]);
+  function isAuthSurfacePath(pathname) {
+    let decoded = pathname;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+    }
+    return decoded.split("/").some((segment) => AUTH_SURFACE_SEGMENTS.has(segment.toLowerCase()));
+  }
   function hasMfaPush(text) {
     if (!MFA_PUSH_PATTERN.test(text)) return false;
     if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
-    return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && AUTH_SURFACE_PATH_PATTERN.test(location.pathname);
+    return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && isAuthSurfacePath(location.pathname);
   }
   var WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
   function isWeChatInterstitial(text) {
@@ -263,18 +284,23 @@
     return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
   }
   var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
-  var NOT_A_SIGN_IN_PATTERN = /(create (an? )?account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+  var NOT_A_SIGN_IN_PATTERN = /(create[ \t]+(?:[a-z]+[ \t]+){0,2}account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
   var IDENTIFIER_INPUT_SELECTOR = 'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],[id*="user" i],[id*="email" i]';
+  var NAVIGATION_LABEL_SELECTOR = 'a,[role="link"],button,[role="button"],input[type="button"],input[type="submit"]';
   function signInScopeText(passwordBox) {
     const scope = passwordBox.closest('form,[role="form"]') ?? passwordBox.closest("section,article,main") ?? passwordBox.parentElement ?? passwordBox;
     const clone = scope.cloneNode(true);
-    for (const link of clone.querySelectorAll('a,[role="link"]')) link.remove();
+    for (const label of clone.querySelectorAll(NAVIGATION_LABEL_SELECTOR)) label.remove();
     return `${nearestHeadingText(scope)} ${clone.textContent ?? ""}`;
   }
   function nearestHeadingText(scope) {
-    for (let node = scope; node; node = node.parentElement) {
-      const heading = node.querySelector('h1,h2,h3,legend,[role="heading"]');
-      if (heading && hasBox(heading)) return heading.textContent ?? "";
+    const own = scope.querySelector('h1,h2,h3,legend,[role="heading"]');
+    if (own && hasBox(own)) return own.textContent ?? "";
+    for (let node = scope.parentElement; node; node = node.parentElement) {
+      for (const child of node.children) {
+        if (!child.matches('h1,h2,h3,legend,[role="heading"]')) continue;
+        if (hasBox(child)) return child.textContent ?? "";
+      }
       if (node.tagName === "BODY") break;
     }
     return "";

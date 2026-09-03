@@ -581,14 +581,32 @@ const PENDING_WIDGET_SELECTOR =
  * URL and says one thing and stops is a prompt, not documentation.
  */
 const TERSE_AUTH_SURFACE_CHARS = 400;
-const AUTH_SURFACE_PATH_PATTERN =
-  /(?:^|[/_.-])(sign-in|signin|login|sso|auth|oauth2?|mfa|2fa|duo|verify|challenge)(?:[/_.-]|$)/i;
+
+/**
+ * WHOLE path segments, not a `[/_.-]` boundary. The boundary form made every
+ * hyphenated doc slug qualify — `/blog/2fa-explained`, `/help/verify-email`,
+ * `/docs/auth-tokens` — which handed a short help page the same standing as
+ * `/auth/duo`, the one thing this gate exists to distinguish.
+ */
+const AUTH_SURFACE_SEGMENTS: ReadonlySet<string> = new Set([
+  'sign-in', 'signin', 'login', 'sso', 'auth', 'oauth', 'oauth2',
+  'mfa', '2fa', 'duo', 'verify', 'challenge',
+]);
+
+function isAuthSurfacePath(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return decoded.split('/').some((segment) => AUTH_SURFACE_SEGMENTS.has(segment.toLowerCase()));
+}
 
 function hasMfaPush(text: string): boolean {
   if (!MFA_PUSH_PATTERN.test(text)) return false;
   if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
-  return text.trim().length <= TERSE_AUTH_SURFACE_CHARS
-    && AUTH_SURFACE_PATH_PATTERN.test(location.pathname);
+  return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && isAuthSurfacePath(location.pathname);
 }
 
 const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
@@ -695,8 +713,12 @@ const AUTH_WALL_TEXT_PATTERN =
  * authenticated; reporting "your session expired" there stops a working run and
  * tells the user something false.
  */
+// `create[ ]<up to two words>[ ]account` rather than a fixed article list: the
+// governing-heading test caught `create (an? )?account` missing "Create YOUR
+// account" and "Create your free account", which is how most signup panels
+// actually word it.
 const NOT_A_SIGN_IN_PATTERN =
-  /(create (an? )?account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+  /(create[ \t]+(?:[a-z]+[ \t]+){0,2}account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
 
 /** A field that names WHO is signing in — a login form has one, a password-change form does not. */
 const IDENTIFIER_INPUT_SELECTOR =
@@ -715,30 +737,53 @@ const IDENTIFIER_INPUT_SELECTOR =
  * structurally LOCAL to the thing being detected; a page-wide text veto is an
  * off switch any page can trip.
  *
- * LINKS are stripped before matching, and that is the crux: "Create an account"
- * as a LINK is a way OFF this page, while the same words as a heading are the
- * page describing ITSELF. That one distinction separates a login page from a
- * signup page more reliably than any wording list.
+ * NAVIGATION LABELS are stripped before matching, and that is the crux:
+ * "Create an account" as a link or a secondary button is a way OFF this page,
+ * while the same words as a heading are the page describing ITSELF. That one
+ * distinction separates a login page from a signup page more reliably than any
+ * wording list. Buttons count as navigation too — the second round stripped
+ * only links, and a login form with a "Create an account" button silently
+ * stopped being detected.
  */
+const NAVIGATION_LABEL_SELECTOR =
+  'a,[role="link"],button,[role="button"],input[type="button"],input[type="submit"]';
+
 function signInScopeText(passwordBox: Element): string {
   const scope = passwordBox.closest('form,[role="form"]')
     ?? passwordBox.closest('section,article,main')
     ?? passwordBox.parentElement
     ?? passwordBox;
   const clone = scope.cloneNode(true) as Element;
-  for (const link of clone.querySelectorAll('a,[role="link"]')) link.remove();
+  for (const label of clone.querySelectorAll(NAVIGATION_LABEL_SELECTOR)) label.remove();
   return `${nearestHeadingText(scope)} ${clone.textContent ?? ''}`;
 }
 
 /**
- * The closest heading that governs `scope`: its own first, then widening one
- * ancestor at a time. A page states what it is in its heading, so a signup form
- * with the heading OUTSIDE its `<form>` is still caught.
+ * The closest heading that GOVERNS `scope` — and never one that merely shares
+ * an ancestor with it.
+ *
+ * The ancestor walk is the last place the "structurally local" rule was not
+ * applied, and it failed in the single commonest SaaS login layout: a promo
+ * `<aside>` beside the sign-in `<form>` inside one wrapper. A `querySelector`
+ * on that wrapper returns the FIRST heading in document order, which is the
+ * marketing one — and marketing copy on a login page is exactly where signup
+ * wording lives. So the widened lookup did not pick an arbitrary heading, it
+ * reliably picked the worst possible one, and the miss was silent: no
+ * annotation, no refusal, nothing a gate could see.
+ *
+ * The bound: inside `scope` any descendant heading counts (scope contains the
+ * password box). Above it, only a heading that is a DIRECT CHILD of an ancestor
+ * on the box's own path — which is what "governs" means structurally. A heading
+ * nested inside a SIBLING subtree describes that sibling, not us.
  */
 function nearestHeadingText(scope: Element): string {
-  for (let node: Element | null = scope; node; node = node.parentElement) {
-    const heading = node.querySelector('h1,h2,h3,legend,[role="heading"]');
-    if (heading && hasBox(heading)) return heading.textContent ?? '';
+  const own = scope.querySelector('h1,h2,h3,legend,[role="heading"]');
+  if (own && hasBox(own)) return own.textContent ?? '';
+  for (let node = scope.parentElement; node; node = node.parentElement) {
+    for (const child of node.children) {
+      if (!child.matches('h1,h2,h3,legend,[role="heading"]')) continue;
+      if (hasBox(child)) return child.textContent ?? '';
+    }
     if (node.tagName === 'BODY') break;
   }
   return '';

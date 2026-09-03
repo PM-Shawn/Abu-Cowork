@@ -1129,6 +1129,21 @@ describe('login walls and dead ends (U6)', () => {
       expect((await advise()).handoff?.kind).toBe('mfa_push');
     });
 
+    it.each([
+      'https://example.com/blog/2fa-explained',
+      'https://example.com/help/verify-email',
+      'https://example.com/docs/auth-tokens',
+    ])('does not treat the hyphenated doc slug %s as an auth surface', async (url) => {
+      // The terse fallback is gated on the page being an auth surface BY
+      // ADDRESS. A `[/_.-]` boundary made every hyphenated doc slug qualify,
+      // which handed a short help page the same standing as `/auth/duo`.
+      pageAt(url);
+      document.body.innerHTML =
+        '<div><h1>Guide</h1><p>Approve this sign-in when the prompt arrives.</p></div>';
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+
     it('an in-flight OAuth callback is not a stranded popup on its first look', async () => {
       // The page is legitimately blank while its JS exchanges the code. Calling
       // this a dead end mid-flow tells the model to abandon a working sign-in.
@@ -1216,6 +1231,58 @@ describe('login walls and dead ends (U6)', () => {
       document.body.innerHTML = `${SIGN_IN_FORM}${link}</form>`;
 
       expect((await advise()).authState).toBe('login_required');
+    });
+
+    /**
+     * The two layouts that got past three rounds of review. Both are silent
+     * misses — no annotation, no denial, nothing for a gate to notice — which
+     * is exactly why a green suite never saw them.
+     */
+    it('still reports a split-panel login whose promo aside advertises signup', async () => {
+      // The commonest SaaS login layout. The marketing heading is a SIBLING of
+      // the form, so a heading lookup that widens to a common wrapper picks up
+      // promo copy — and promo copy on a login page is precisely where signup
+      // wording lives, so the widening lands where it does the most damage.
+      document.body.innerHTML = `
+        <div class="wrap">
+          <aside class="promo"><h2>Create an account in 30 seconds</h2></aside>
+          <form>
+            <input name="username" />
+            <input type="password" autocomplete="current-password" />
+            <button>Sign in</button>
+          </form>
+        </div>`;
+
+      expect((await advise()).authState).toBe('login_required');
+    });
+
+    it('still reports a login form carrying a secondary signup BUTTON', async () => {
+      document.body.innerHTML = `
+        <form>
+          <input name="username" />
+          <input type="password" autocomplete="current-password" />
+          <button type="submit">Sign in</button>
+          <button type="button">Create an account</button>
+        </form>`;
+
+      expect((await advise()).authState).toBe('login_required');
+    });
+
+    it('a heading that really does govern the form still vetoes it', async () => {
+      // The bound must not become "ignore all headings": a signup panel whose
+      // heading sits outside the <form> but on the password box's own ancestor
+      // path is still a signup page.
+      document.body.innerHTML = `
+        <div class="panel">
+          <h1>Create your account</h1>
+          <form>
+            <input name="email" />
+            <input type="password" />
+            <button>Continue</button>
+          </form>
+        </div>`;
+
+      expect((await advise()).authState).toBeUndefined();
     });
 
     it('still reports a session-expired interstitial that carries a signup link', async () => {

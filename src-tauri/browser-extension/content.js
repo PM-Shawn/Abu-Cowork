@@ -103,6 +103,9 @@
       if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
       else assertFrameAbstains(payload);
     }
+    return annotateAdvisory(action, await dispatchAction(action, payload));
+  }
+  async function dispatchAction(action, payload) {
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -159,6 +162,101 @@
   function reportableValue(el, value, maxChars) {
     if (!value) return void 0;
     return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+  }
+  var MAX_DETECTION_TEXT = 2e4;
+  function detectionText() {
+    const body = document.body;
+    if (!body) return "";
+    let text = (body.innerText ?? body.textContent ?? "").slice(0, MAX_DETECTION_TEXT);
+    for (const secret of sensitiveValuesIn(body)) {
+      text = text.split(secret).join(REDACTED_VALUE);
+    }
+    return text;
+  }
+  function visibleMatch(selector) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (hasBox(el)) return el;
+    }
+    return null;
+  }
+  var CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
+  var CAPTCHA_SELECTOR = '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+  function hasCaptcha() {
+    for (const frame of document.querySelectorAll("iframe")) {
+      const surface = `${frame.getAttribute("src") ?? ""} ${frame.getAttribute("title") ?? ""}`;
+      if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
+    }
+    return visibleMatch(CAPTCHA_SELECTOR) !== null;
+  }
+  var QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
+  var QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
+  function hasQrLogin(text) {
+    if (visibleMatch(QR_SELECTOR) !== null) return true;
+    return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
+  }
+  var OTP_TEXT_PATTERN = /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+  function hasOneTimeCodeEntry(text) {
+    if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
+    return OTP_TEXT_PATTERN.test(text) && visibleMatch("input") !== null;
+  }
+  var MFA_PUSH_PATTERN = /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+  var WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
+  function isWeChatInterstitial(text) {
+    const host = location.hostname.toLowerCase();
+    const wechatHost = host === "weixin.qq.com" || host.endsWith(".weixin.qq.com");
+    return wechatHost || WECHAT_PATTERN.test(text);
+  }
+  var OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+  function isStrandedOauthPage(text) {
+    if (document.readyState === "loading") return false;
+    if (!OAUTH_URL_PATTERN.test(location.pathname)) return false;
+    if (text.trim().length > 40) return false;
+    return visibleMatch("input,button,a[href],form") === null;
+  }
+  var HANDOFF_HINTS = {
+    captcha: "This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the action and do not try to solve it. Stop, tell the user which page is asking, and ask them to complete the challenge themselves before you continue.",
+    qr_login: "This page signs in by QR code, which only a person holding the phone can scan. Do not retry. Stop and ask the user to scan the code shown on this page, then continue once they say they are signed in.",
+    sms_code: "This page is asking for a one-time code sent to the user by SMS, email, or an authenticator. You cannot read it. Do not retry or guess. Stop and ask the user for the code, or ask them to enter it themselves.",
+    mfa_push: "This page is waiting for the user to approve a push prompt in their authenticator app. NEVER retry or re-trigger it: repeated push prompts are how push-bombing attacks work, and the provider may lock or flag the account. Stop and ask the user to approve the prompt once on their device.",
+    wechat_external_link: "WeChat has intercepted this link and is asking for it to be opened in a browser. Retrying inside WeChat will keep landing here. Stop and ask the user to open the link in a browser.",
+    oauth_popup: "The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do not retry the popup. Ask for the provider's redirect flow instead (navigate to the authorization URL in this tab), or ask the user to complete the sign-in themselves."
+  };
+  function detectHandoff(text) {
+    const kind = isWeChatInterstitial(text) ? "wechat_external_link" : hasCaptcha() ? "captcha" : hasQrLogin(text) ? "qr_login" : MFA_PUSH_PATTERN.test(text) ? "mfa_push" : hasOneTimeCodeEntry(text) ? "sms_code" : isStrandedOauthPage(text) ? "oauth_popup" : null;
+    return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
+  }
+  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|401 unauthorized|请先登录|登录已过期|请重新登录)/i;
+  function detectAuthWall(text) {
+    if (visibleMatch('input[type="password"]') !== null) return true;
+    return AUTH_WALL_TEXT_PATTERN.test(text);
+  }
+  var ADVISORY_ANNOTATED_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_table"
+  ]);
+  function annotateAdvisory(action, result) {
+    if (!ADVISORY_ANNOTATED_ACTIONS.has(action)) return result;
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return result;
+    const existing = result;
+    if ("authState" in existing || "handoff" in existing) return result;
+    let text;
+    try {
+      text = detectionText();
+    } catch {
+      return result;
+    }
+    const handoff = detectHandoff(text);
+    const loginRequired = detectAuthWall(text);
+    if (!handoff && !loginRequired) return result;
+    return {
+      ...existing,
+      ...loginRequired ? { authState: "login_required" } : {},
+      ...handoff ? { handoff } : {}
+    };
   }
   function takeSnapshot(scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
     const roots = scopeSelector ? [...document.querySelectorAll(scopeSelector)] : document.body ? [document.body] : [];

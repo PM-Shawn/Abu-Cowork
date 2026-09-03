@@ -19,10 +19,21 @@
  * window, takeover backoff, HTTP 429, run stopped, blocked site, cross-
  * conversation tab), and an enumeration silently excuses the model from the
  * ones it forgot to mention.
+ *
+ * Rules ④–⑥ (U6 / PRD F2.4 + F2.5) answer the opposite failure: a result that
+ * is not a refusal at all, just a page the run cannot get past — an expired
+ * session, a CAPTCHA, a QR sign-in, a one-time code, an MFA push. The default
+ * instinct on those is to retry, which burns the run and, for a push approval,
+ * looks to the provider exactly like a push-bombing attack on the user's
+ * account. Hence ⑥ names that one case explicitly instead of trusting the
+ * general "do not retry" to cover it.
  */
 export const BROWSER_NARRATION_RULES = `- Never repeat internal identifiers to the user — tab or view ids, tool and runtime names, raw error text. Refer to a page by its visible title or site
 - When a browser tool result explains why an action was refused or cancelled, relay that reason plainly and do not retry without the user's go-ahead
-- Do not narrate your troubleshooting; report what happened and the one question or next step that follows from it`;
+- Do not narrate your troubleshooting; report what happened and the one question or next step that follows from it
+- When a result carries \`authState: "login_required"\`, the site's session has expired. Stop acting on that site, tell the user which site needs a fresh sign-in, and continue only after they say they have signed in — never retry the action hoping it goes through
+- When a result carries \`handoff\`, the page needs a step only a person can do (a CAPTCHA or slider, a QR sign-in, a one-time code, an approval push, an intercepted link). Stop, say the \`hint\` in your own words with the site named, and hand the step back. Do not retry it, work around it, or try to solve it yourself
+- For \`handoff.kind: "mfa_push"\` specifically, never re-trigger the prompt: repeated approval pushes are treated as an attack on the user's account and can get it locked. Ask once, then wait for the user`;
 
 /** Both browser runtimes, by tool-name prefix (see `toolPrefetch.ts`). */
 const BROWSER_TOOL_PREFIXES = ['abu-browser__', 'abu-browser-bridge__'];

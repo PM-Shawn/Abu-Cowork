@@ -2326,6 +2326,8 @@ const zhCN: TranslationDict = {
     browserUnattendedOriginUnverified: '无法确认这次操作所在的网站，无人值守运行不能在无法核实的页面上动作',
     browserUnattendedHighRiskSite: '这个页面看起来涉及资金操作（支付/转账/结算）或政务办理，无人值守运行一律不允许在这类页面上动作——请你自己完成这一步，或在你在场时再跑这个任务',
     browserHighRiskReason: '这个页面看起来涉及资金操作（支付/转账/结算）或政务办理。在这里的操作可能真的转出钱、或以你的名义提交材料，因此每次都会单独询问，不提供「以后都允许该网站」。确认前请先看一眼页面。',
+    browserUnattendedLoginRequired: '该网站的登录已失效，需要你重新登录后才能继续；无人值守运行没法替你登录，本次操作已停下',
+    browserLoginRequiredHint: '提示：该网站看起来需要重新登录（会话已失效）。请先登录，再继续这一步——重复重试不会成功。',
     browserUnattendedImDenied: '你在 IM 里回复了「拒绝」，本次操作已取消',
     browserUnattendedImTimeout: '已在 IM 里请你确认，但 {minutes} 分钟内没有收到回复，已自动拒绝',
     browserUnattendedImNoBinding: '这次运行需要你确认，但该会话没有绑定可回复的 IM 频道，已改为系统通知并拒绝本次操作',

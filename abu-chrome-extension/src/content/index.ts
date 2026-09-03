@@ -5,7 +5,13 @@
  * Communicates with Background script via chrome.runtime.onMessage.
  */
 
-import type { ElementInfo, ElementLocator, PageSnapshot } from '../shared/types.js';
+import type {
+  ElementInfo,
+  ElementLocator,
+  PageHandoff,
+  PageHandoffKind,
+  PageSnapshot,
+} from '../shared/types.js';
 
 // Max text size returned by extractText (50KB)
 const MAX_EXTRACT_TEXT_SIZE = 50_000;
@@ -266,6 +272,13 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
     if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
     else assertFrameAbstains(payload);
   }
+  // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
+  // page-derived detection can never reorder, skip, or excuse the pin. See
+  // `annotateAdvisory`'s "advisory only" note.
+  return annotateAdvisory(action, await dispatchAction(action, payload));
+}
+
+async function dispatchAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
   switch (action) {
     case 'snapshot': return takeSnapshot(
       payload.selector as string | undefined,
@@ -366,6 +379,249 @@ function fieldLabel(el: Element): string {
 function reportableValue(el: Element, value: string, maxChars: number): string | undefined {
   if (!value) return undefined;
   return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+}
+
+// =============================================================================
+// 0.5 LOGIN WALLS AND DEAD ENDS (U6 / PRD F2.4 + F2.5)
+// =============================================================================
+
+/**
+ * ## What this is
+ *
+ * Two page-feature detectors that give the agent something to say instead of
+ * something to retry:
+ *
+ * - **`authState: 'login_required'`** — the page is a login wall. On the
+ *   built-in Electron browser the main process detects this at the HTTP layer
+ *   too (`browserHost.cjs`, 401/403-challenge + login-shaped navigation); the
+ *   extension channel has no `webRequest`, so this is the ONLY detector there,
+ *   and it reports under the same key so both channels read alike. Known
+ *   asymmetry: the shell gate learns `authState` from the HOST's `get_tabs`,
+ *   which the extension channel does not carry, so there an unattended run is
+ *   not pre-refused — it acts, reads this annotation, and hands back per the
+ *   narration rules. Reporting rather than refusing is deliberate for a
+ *   page-feature signal: a false positive would otherwise silently break a
+ *   working unattended run, with nobody watching to notice.
+ * - **`handoff: { kind, hint }`** — a step no automation can finish: a CAPTCHA,
+ *   a QR sign-in, a one-time code, an MFA push, WeChat's external-link
+ *   interstitial, a blanked OAuth popup. The hint tells the model to stop and
+ *   name the manual step.
+ *
+ * ## 🔴 Advisory only — never an authorization input
+ *
+ * These read PAGE CONTENT, which is attacker-controlled. They therefore feed
+ * only hints and REFUSALS: a page claiming "login required" or showing a fake
+ * CAPTCHA can make the agent stop, and can never make anything be allowed.
+ * Structurally: the values travel in the tool RESULT (which no gate reads
+ * back), the origin pin runs BEFORE any of this (see `handleAction`), and the
+ * shell gate reads `authState` only on its deny side
+ * (`registry.ts`). `contentDeadEnd.test.ts` pins that a page asserting
+ * authorization changes nothing.
+ *
+ * ## 🔴 Never retry an MFA push
+ *
+ * Re-triggering a push approval is how push-bombing works, and providers treat
+ * a burst of prompts as an attack: the user's account gets rate-limited,
+ * locked, or flagged for compromise. The `mfa_push` hint says so in as many
+ * words because the model's default instinct on a pending state is to retry.
+ *
+ * ## Deliberately incomplete
+ *
+ * Like `highRiskSites.ts`'s domain table, the patterns below are a short list
+ * of unambiguous cases, not a classifier. Everything they miss simply behaves
+ * as it did before this existed — the agent gets no hint, which is today's
+ * status quo, not a new hole. Misses are preferred to false positives: a
+ * wrongly-announced CAPTCHA sends the user to a page that does not need them.
+ */
+
+/** Cap on the page text scanned per detection pass. */
+const MAX_DETECTION_TEXT = 20_000;
+
+/**
+ * Page text for MATCHING only — never echoed into a result. Scrubbed with the
+ * same `sensitiveValuesIn` net `extract_text` uses, so a detector can never
+ * become a side channel for a value every other surface redacts.
+ */
+function detectionText(): string {
+  const body = document.body;
+  if (!body) return '';
+  let text = ((body as HTMLElement).innerText ?? body.textContent ?? '').slice(0, MAX_DETECTION_TEXT);
+  for (const secret of sensitiveValuesIn(body)) {
+    text = text.split(secret).join(REDACTED_VALUE);
+  }
+  return text;
+}
+
+/** First laid-out match, or null. Off-screen scaffolding must not count. */
+function visibleMatch(selector: string): Element | null {
+  for (const el of document.querySelectorAll(selector)) {
+    if (hasBox(el)) return el;
+  }
+  return null;
+}
+
+const CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
+const CAPTCHA_SELECTOR =
+  '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],'
+  + '[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+
+/** Slider puzzles included: they are a CAPTCHA wearing a different coat. */
+function hasCaptcha(): boolean {
+  for (const frame of document.querySelectorAll('iframe')) {
+    const surface = `${frame.getAttribute('src') ?? ''} ${frame.getAttribute('title') ?? ''}`;
+    if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
+  }
+  return visibleMatch(CAPTCHA_SELECTOR) !== null;
+}
+
+const QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
+const QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
+
+function hasQrLogin(text: string): boolean {
+  if (visibleMatch(QR_SELECTOR) !== null) return true;
+  // Text alone is not enough — an article ABOUT QR codes is not a QR login —
+  // so it must sit next to something that could actually render one.
+  return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
+}
+
+const OTP_TEXT_PATTERN =
+  /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+
+function hasOneTimeCodeEntry(text: string): boolean {
+  if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
+  return OTP_TEXT_PATTERN.test(text) && visibleMatch('input') !== null;
+}
+
+const MFA_PUSH_PATTERN =
+  /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+
+const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
+
+function isWeChatInterstitial(text: string): boolean {
+  const host = location.hostname.toLowerCase();
+  const wechatHost = host === 'weixin.qq.com' || host.endsWith('.weixin.qq.com');
+  return wechatHost || WECHAT_PATTERN.test(text);
+}
+
+const OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+
+/**
+ * The OAuth popup that never came back. Abu's built-in browser DENIES
+ * `window.open` and loads the target in the SAME tab, and a real Chrome popup
+ * can be closed by the user or severed from its opener by COOP — either way
+ * the flow strands on a blank provider page that no click can advance.
+ *
+ * Both halves are required (a blank page on an ordinary URL is just a page
+ * still loading), and `document.readyState` must be past loading so a slow
+ * first paint is not mistaken for a dead end.
+ */
+function isStrandedOauthPage(text: string): boolean {
+  if (document.readyState === 'loading') return false;
+  if (!OAUTH_URL_PATTERN.test(location.pathname)) return false;
+  if (text.trim().length > 40) return false;
+  return visibleMatch('input,button,a[href],form') === null;
+}
+
+const HANDOFF_HINTS: Record<PageHandoffKind, string> = {
+  captcha:
+    'This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the '
+    + 'action and do not try to solve it. Stop, tell the user which page is asking, and ask them to '
+    + 'complete the challenge themselves before you continue.',
+  qr_login:
+    'This page signs in by QR code, which only a person holding the phone can scan. Do not retry. '
+    + 'Stop and ask the user to scan the code shown on this page, then continue once they say they '
+    + 'are signed in.',
+  sms_code:
+    'This page is asking for a one-time code sent to the user by SMS, email, or an authenticator. '
+    + 'You cannot read it. Do not retry or guess. Stop and ask the user for the code, or ask them to '
+    + 'enter it themselves.',
+  mfa_push:
+    'This page is waiting for the user to approve a push prompt in their authenticator app. NEVER '
+    + 'retry or re-trigger it: repeated push prompts are how push-bombing attacks work, and the '
+    + 'provider may lock or flag the account. Stop and ask the user to approve the prompt once on '
+    + 'their device.',
+  wechat_external_link:
+    'WeChat has intercepted this link and is asking for it to be opened in a browser. Retrying '
+    + 'inside WeChat will keep landing here. Stop and ask the user to open the link in a browser.',
+  oauth_popup:
+    'The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do '
+    + 'not retry the popup. Ask for the provider\'s redirect flow instead (navigate to the '
+    + 'authorization URL in this tab), or ask the user to complete the sign-in themselves.',
+};
+
+/**
+ * First match wins, most specific first. Order matters only for which hint the
+ * model reads: every kind says the same thing about retrying.
+ */
+function detectHandoff(text: string): PageHandoff | null {
+  const kind: PageHandoffKind | null =
+    isWeChatInterstitial(text) ? 'wechat_external_link'
+      : hasCaptcha() ? 'captcha'
+        : hasQrLogin(text) ? 'qr_login'
+          : MFA_PUSH_PATTERN.test(text) ? 'mfa_push'
+            : hasOneTimeCodeEntry(text) ? 'sms_code'
+              : isStrandedOauthPage(text) ? 'oauth_popup'
+                : null;
+  return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
+}
+
+const AUTH_WALL_TEXT_PATTERN =
+  /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|401 unauthorized|请先登录|登录已过期|请重新登录)/i;
+
+/**
+ * A login wall, from page features. Either an actual password box that is on
+ * screen, or one of a short list of auth-wall sentences.
+ */
+function detectAuthWall(text: string): boolean {
+  if (visibleMatch('input[type="password"]') !== null) return true;
+  return AUTH_WALL_TEXT_PATTERN.test(text);
+}
+
+/**
+ * Actions whose result the model reads to decide what to do next. Deliberately
+ * NOT every action:
+ *
+ *  - detection reads `body.innerText`, which forces a layout flush, so the
+ *    mechanical actions (`scroll`, the `fullpage_*` screenshot steps, the
+ *    recorder) must not pay for it on every call;
+ *  - a `fullpage_*` result is screenshot plumbing, and a stray advisory key on
+ *    one is noise in a place nothing reads prose.
+ *
+ * String-returning actions (`get_html`, `extract_text`) are absent for a
+ * different reason — see `annotateAdvisory`.
+ */
+const ADVISORY_ANNOTATED_ACTIONS = new Set([
+  'snapshot', 'click', 'fill', 'select', 'wait_for', 'extract_table',
+]);
+
+/**
+ * The one place a result grows advisory fields. Only plain objects are
+ * annotated: string results (`get_html`, `extract_text`) are page content the
+ * caller slices and searches, and splicing a sentence into one would corrupt
+ * exactly the thing it was asked for.
+ */
+function annotateAdvisory(action: string, result: unknown): unknown {
+  if (!ADVISORY_ANNOTATED_ACTIONS.has(action)) return result;
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const existing = result as Record<string, unknown>;
+  if ('authState' in existing || 'handoff' in existing) return result;
+
+  let text: string;
+  try {
+    text = detectionText();
+  } catch {
+    // Detection is advisory: a page that breaks it must not break the action
+    // whose result this is.
+    return result;
+  }
+  const handoff = detectHandoff(text);
+  const loginRequired = detectAuthWall(text);
+  if (!handoff && !loginRequired) return result;
+  return {
+    ...existing,
+    ...(loginRequired ? { authState: 'login_required' as const } : {}),
+    ...(handoff ? { handoff } : {}),
+  };
 }
 
 // =============================================================================

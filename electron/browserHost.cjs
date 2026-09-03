@@ -788,6 +788,97 @@ function assertOriginPin(action, payload, view) {
   );
 }
 
+/**
+ * ## Login-expiry detection (U6 / PRD F2.4)
+ *
+ * An unattended run that walks into an expired session does the worst possible
+ * thing today: it keeps clicking. Every click lands on a login wall, the run
+ * burns its turns, and nobody is told the one thing that would fix it — "log
+ * in again". So the main process records, per ORIGIN, that the site is asking
+ * for a login, and `get_tabs` reports it as `authState: 'login_required'`.
+ *
+ * ## Two signals, both main-process-derived
+ *
+ * 1. **An HTTP auth challenge on a MAIN-FRAME response.** A 401 always; a 403
+ *    only when it carries `WWW-Authenticate`. A bare 403 is "you may not have
+ *    this", which logging in again does not fix, and flagging it would send
+ *    the model to ask the user for a login they already have. Sub-resources are
+ *    excluded (the filter already narrows to `mainFrame`): an XHR 401 from a
+ *    background poller says nothing about whether the PAGE is usable.
+ * 2. **A navigation committing on a login-shaped URL** (`did-navigate`). This
+ *    is the redirect-to-login case, which returns 200 and therefore has no
+ *    HTTP signal at all.
+ *
+ * Both are ADVISORY inputs — they can make the gate refuse or make the model
+ * hand back, and they can never widen authorization (see the shell gate in
+ * `registry.ts`, where the flag is only ever read on the deny side).
+ *
+ * ## Cleared by success
+ *
+ * A 2xx main-frame response on the same origin clears the flag: that is what
+ * "the user logged in and the page came back" looks like from here. Ordering
+ * works out because Chromium delivers headers BEFORE `did-navigate`, so a 200
+ * on `/login` clears and is then immediately re-flagged by the URL shape,
+ * while a 200 on `/dashboard` clears and stays clear.
+ */
+const LOGIN_PAGE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|oauth2|oauth|login|sso|auth)(?:[/_.-]|$)/i;
+
+/** origin -> { at: ts, source: 'auth-challenge' | 'login-page' }. */
+const loginRequiredOrigins = new Map();
+
+/**
+ * A deliberately small, segment-anchored list (`/authors`, `/authentic-brands`
+ * and `/ssometimes` must not match). Misses are preferred to false positives:
+ * a miss leaves today's behavior, a false positive tells the user their
+ * session expired when it did not.
+ */
+function isLoginPageUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(String(urlString || ''));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  let pathname = parsed.pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return LOGIN_PAGE_PATH_PATTERN.test(pathname);
+}
+
+/** 401 always; 403 only with an auth challenge header (see the module note). */
+function isAuthChallengeResponse(details) {
+  if (details.statusCode === 401) return true;
+  if (details.statusCode !== 403) return false;
+  const headers = details.responseHeaders;
+  if (!headers || typeof headers !== 'object') return false;
+  return Object.keys(headers).some((name) => name.toLowerCase() === 'www-authenticate');
+}
+
+function noteLoginRequired(urlString, source) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  loginRequiredOrigins.set(origin, { at: clock.now(), source });
+}
+
+function clearLoginRequired(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (origin) loginRequiredOrigins.delete(origin);
+}
+
+/**
+ * `'login_required'` or null. Null (rather than a `'ok'` sentinel) so callers
+ * can spread the key in only when there is something to say — a listing for a
+ * healthy tab keeps byte-for-byte the shape it had before this existed.
+ */
+function authStateForUrl(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  return origin && loginRequiredOrigins.has(origin) ? 'login_required' : null;
+}
+
 function registerRateLimitHit(origin) {
   if (!origin) return;
   const existing = originBackoff.get(origin);
@@ -959,6 +1050,15 @@ function browserSessionForViews() {
       } else if (details.statusCode >= 200 && details.statusCode < 300) {
         clearRateLimit(origin);
       }
+      // U6 / F2.4 — the login-expiry half of the same listener. It must live in
+      // THIS callback body, not a second registration: Electron keeps only the
+      // last `onHeadersReceived` listener per session, so registering another
+      // one would silently delete the backoff above.
+      if (isAuthChallengeResponse(details)) {
+        noteLoginRequired(details.url, 'auth-challenge');
+      } else if (details.statusCode >= 200 && details.statusCode < 300) {
+        clearLoginRequired(details.url);
+      }
     }
     callback({ cancel: false });
   });
@@ -1082,6 +1182,13 @@ function configureBrowserView(id, view) {
   });
   contents.on('did-navigate', onNav);
   contents.on('did-navigate-in-page', onNav);
+  // U6 / F2.4 — the redirect-to-login case, which answers 200 and so leaves no
+  // HTTP signal. Only real navigations count: `did-navigate-in-page` is a
+  // `pushState`, i.e. something a page can fire at will, and a page must not be
+  // able to author this flag for itself.
+  contents.on('did-navigate', (_event, navUrl) => {
+    if (isLoginPageUrl(navUrl)) noteLoginRequired(navUrl, 'login-page');
+  });
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
     for (const [ownerKey, tabId] of activeTabIdByOwner) {
@@ -1267,6 +1374,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: contents.getURL(),
       title: contents.getTitle(),
       legacy: isLegacyOwner(tabOwner),
+      authState: authStateForUrl(contents.getURL()),
     });
   }
   // The reclaim block lives HERE rather than at the call site so every path
@@ -1281,6 +1389,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: view.webContents.getURL(),
       title: view.webContents.getTitle(),
       legacy: isLegacyOwner(owner),
+      authState: authStateForUrl(view.webContents.getURL()),
     });
   }
   if (tabs.length > 0) {
@@ -1485,6 +1594,9 @@ async function runBrowserAutomation(action, payload, signal) {
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
+    // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
+    // for healthy tabs is byte-for-byte what it was before this existed.
+    const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
     return {
       summary: {
         totalWindows: 1,
@@ -1494,6 +1606,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
+        ...(currentAuthState ? { authState: currentAuthState } : {}),
         ...(note ? { note } : {}),
       },
       windows: [{
@@ -1505,6 +1618,7 @@ async function runBrowserAutomation(action, payload, signal) {
           title: tab.title,
           active: tab.tabId === currentTabId,
           isCurrentTab: tab.tabId === currentTabId,
+          ...(tab.authState ? { authState: tab.authState } : {}),
         })),
       }],
     };

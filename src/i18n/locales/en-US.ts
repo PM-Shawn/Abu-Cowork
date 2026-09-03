@@ -2324,6 +2324,8 @@ const enUS: TranslationDict = {
     browserUnattendedOriginUnverified: 'The site this action targets could not be determined, and an unattended run must not act on a page it cannot verify',
     browserUnattendedHighRiskSite: 'This page looks like money movement or a government service, and an unattended run is never allowed to act there — do this step yourself, or run the task while you are watching',
     browserHighRiskReason: 'This page looks like money movement (payment, transfer, checkout) or a government service. Actions here can move money or file something in your name, so each one asks separately — there is no "always allow this site". Check the page before you confirm.',
+    browserUnattendedLoginRequired: 'This site is asking for a sign-in and the session has expired. An unattended run cannot sign in for you, so this action was stopped — sign in, then run it again.',
+    browserLoginRequiredHint: 'Note: this site looks like it needs a fresh sign-in (the session has expired). Sign in first, then continue this step — retrying will not get past it.',
     browserUnattendedImDenied: 'You declined this action in chat, so it was cancelled',
     browserUnattendedImTimeout: 'You were asked to approve this in chat, and no answer arrived within {minutes} minutes, so it was denied',
     browserUnattendedImNoBinding: 'This run needed your approval, but its conversation is bound to no IM chat to ask in — a system notification was raised and the action denied',

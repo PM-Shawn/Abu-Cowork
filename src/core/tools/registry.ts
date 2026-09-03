@@ -355,6 +355,15 @@ export interface BrowserExecutionPin {
    * refusal at the host, since the gate never lets one of those through.
    */
   expectedOrigin?: string;
+  /**
+   * U6 / F2.4 — the gate saw `authState: 'login_required'` for this action's
+   * tab. Set only when true, and consumed SHELL-SIDE (an unattended run never
+   * gets here — it was already refused), so an attended result can carry the
+   * "sign in first" note the model needs. It is deliberately NOT forwarded to
+   * the host: the host is where the fact came from, and re-sending it would
+   * make a page-observable field look like an instruction to the host.
+   */
+  loginRequired?: true;
 }
 
 export interface ToolApprovalDecision {
@@ -404,13 +413,37 @@ export interface ToolApprovalDecision {
  * failure resolves to nulls, which the gate treats as "unknown site" — the
  * action can still be approved, but only one conversation at a time, never
  * persistently.
+ *
+ * The same listing also carries `authState` (U6 / F2.4) when the browser host
+ * has seen that origin ask for a login, so the login-expiry check costs no
+ * extra round trip. A `navigate` resolves no `authState`: its destination has
+ * not been visited yet, and the flag is about where a tab IS.
  */
+interface BrowserActionTarget {
+  origin: string | null;
+  url: string | null;
+  /**
+   * `'login_required'` when the host flagged this tab's origin. ADVISORY: read
+   * only on the deny side of the gate (see the U6 block below). A page cannot
+   * author it — the built-in host derives it from HTTP status and navigation
+   * URL, and the extension channel reports no `authState` at all — but even if
+   * one could, widening is structurally impossible: nothing downstream turns
+   * this value into an allow.
+   */
+  authState: 'login_required' | null;
+}
+
+/** Only the one value the gate acts on; anything else is treated as absent. */
+function parseTabAuthState(value: unknown): 'login_required' | null {
+  return value === 'login_required' ? 'login_required' : null;
+}
+
 async function resolveBrowserActionTarget(
   namespacedName: string,
   input: Record<string, unknown>,
   conversationId?: string,
   agentRunId?: string,
-): Promise<{ origin: string | null; url: string | null }> {
+): Promise<BrowserActionTarget> {
   const separator = namespacedName.indexOf('__');
   const serverName = namespacedName.slice(0, separator);
   const toolName = namespacedName.slice(separator + 2);
@@ -421,17 +454,17 @@ async function resolveBrowserActionTarget(
     // decoy url ride an allowed-site verdict while the browser goes somewhere
     // else (history/reload). Destination is unknowable → null → ask.
     const action = typeof input.action === 'string' ? input.action : 'goto';
-    if (action !== 'goto') return { origin: null, url: null };
+    if (action !== 'goto') return { origin: null, url: null, authState: null };
     const url = typeof input.url === 'string' ? input.url : undefined;
     const origin = url ? normalizeBrowserOrigin(url) : null;
     // The url is reported only when it resolved to a real http(s) origin, so a
     // `javascript:`/`about:` string never reaches the high-risk classifier as
     // if it were a page address.
-    return { origin, url: origin !== null ? (url ?? null) : null };
+    return { origin, url: origin !== null ? (url ?? null) : null, authState: null };
   }
 
   const tabId = Number(input.tabId);
-  if (!Number.isFinite(tabId)) return { origin: null, url: null };
+  if (!Number.isFinite(tabId)) return { origin: null, url: null, authState: null };
   try {
     // Approval must never hang on a wedged browser server: the MCP browser
     // timeout is 120s, so race a short deadline and fall back to "unknown
@@ -462,20 +495,24 @@ async function resolveBrowserActionTarget(
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    if (result === null || typeof result !== 'string') return { origin: null, url: null };
+    if (result === null || typeof result !== 'string') return { origin: null, url: null, authState: null };
     const parsed = JSON.parse(result) as {
-      windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }>;
+      windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string; authState?: unknown }> }>;
     };
     for (const win of parsed.windows ?? []) {
       for (const tab of win.tabs ?? []) {
         if (tab.tabId !== tabId) continue;
         const origin = normalizeBrowserOrigin(tab.url);
-        return { origin, url: origin !== null ? (tab.url ?? null) : null };
+        return {
+          origin,
+          url: origin !== null ? (tab.url ?? null) : null,
+          authState: parseTabAuthState(tab.authState),
+        };
       }
     }
-    return { origin: null, url: null };
+    return { origin: null, url: null, authState: null };
   } catch {
-    return { origin: null, url: null };
+    return { origin: null, url: null, authState: null };
   }
 }
 
@@ -980,8 +1017,15 @@ export async function checkToolApproval(
           toolContext?.conversationId,
           toolContext?.agentRunId,
         )
-        : { origin: null, url: null };
+        : { origin: null, url: null, authState: null };
       const origin = target.origin;
+      /**
+       * U6 / F2.4 — the site is asking for a login (an HTTP auth challenge or
+       * a redirect onto a login page, both observed by the browser host, never
+       * claimed by the page). ADVISORY: read below only to REFUSE or to append
+       * a note; there is no branch anywhere that turns it into an allow.
+       */
+      const loginRequired = target.authState === 'login_required';
       const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
         ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
         : 'default';
@@ -1113,6 +1157,28 @@ export async function checkToolApproval(
         // there is no site behind them to verify.
         if (browserToolTargetsPage(name) && origin === null) {
           return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedOriginUnverified);
+        }
+        /**
+         * U6 / F2.4 — an expired session, with nobody here to sign in.
+         *
+         * Scoped to STATE-CHANGING actions on purpose. Reading a login wall is
+         * how the run learns to hand back at all: refusing the read too would
+         * leave the model blind, with only "denied" to report, and it is the
+         * snapshot of the login page that lets it say WHICH site. Clicking and
+         * scripting are refused, because every one of those would land on the
+         * wall and the model's instinct is to try again.
+         *
+         * NOT counted as a human refusal (`refusedByHuman`): nobody refused
+         * anything — the site did. Counting it would let two expired-session
+         * actions abort the whole run under U4's consecutive-denial guard,
+         * which measures a model arguing with a person.
+         *
+         * The user still hears about it: `denyUnattendedBrowser` goes through
+         * U3's `notifyUnattendedDenial` → `deniedNotice` accounting, the same
+         * path every other unattended refusal uses.
+         */
+        if (loginRequired && consequence === 'state-changing') {
+          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedLoginRequired);
         }
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny (or, in a later task, an IM approval
@@ -1298,6 +1364,7 @@ export async function checkToolApproval(
       browserExecutionPin = {
         runMode,
         ...(origin !== null ? { expectedOrigin: origin } : {}),
+        ...(loginRequired ? { loginRequired: true as const } : {}),
       };
     }
   }
@@ -1556,6 +1623,14 @@ export async function executeAnyTool(
           approval.browserExecution?.runMode ?? 'unattended',
           getSettingsReader().getSnapshot().browserSitePermissions ?? {},
         );
+      }
+      // U6 / F2.4, the ATTENDED half of the login-expiry split. The action was
+      // allowed and ran (a human is here, and they may well be signing in);
+      // what changes is that the result now SAYS the session expired, so the
+      // model asks the user to sign in instead of retrying into the wall.
+      // Unattended never reaches this line — the gate refused above.
+      if (isBrowserTool && approval.browserExecution?.loginRequired && typeof result === 'string') {
+        result = `${result}\n\n${getI18n().commandConfirm.browserLoginRequiredHint}`;
       }
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {

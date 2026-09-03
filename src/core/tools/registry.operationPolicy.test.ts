@@ -61,14 +61,16 @@ interface FakeConnectedServer {
 
 let mockCallTool: ReturnType<typeof vi.fn>;
 
-function withTabOrigin(url: string) {
+function withTabOrigin(url: string, tabExtra: Record<string, unknown> = {}) {
   mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
     Promise.resolve(
       params._meta?.['abu/conversationId'] === OWNER
         ? {
             content: [{
               type: 'text',
-              text: JSON.stringify({ windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url }] }] }),
+              text: JSON.stringify({
+                windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url, ...tabExtra }] }],
+              }),
             }],
           }
         : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }] },
@@ -910,6 +912,142 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
+    });
+  });
+
+  /**
+   * U6 / F2.4 — an expired session, seen through the same `get_tabs` probe the
+   * gate already runs. Unattended refuses (and tells the user); attended runs
+   * the action and carries a "sign in first" note back instead.
+   */
+  describe('login expiry (U6)', () => {
+    const LOGGED_OUT = { authState: 'login_required' };
+
+    beforeEach(() => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+      });
+    });
+
+    it('refuses an unattended state-changing action and says the session expired', async () => {
+      withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+        unattendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain('sign-in');
+    });
+
+    it('notifies the user through the same denial accounting every other refusal uses', async () => {
+      withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+      const confirm = vi.fn(async () => true);
+
+      await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' }, unattendedOwner, confirm as never,
+      );
+
+      const info = confirm.mock.calls[0]?.[0] as unknown as { deniedNotice?: string };
+      expect(info.deniedNotice).toBeDefined();
+      expect(info.deniedNotice).toContain('sign in');
+    });
+
+    it('does NOT count as a human refusal — the site refused, nobody did', async () => {
+      // U4's guard aborts a run after consecutive human refusals. A login wall
+      // is not one, and counting it would kill a run for walking into a page
+      // it was told to visit.
+      withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+      const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+        { ...unattendedOwner, ...r } as never, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('still lets an unattended run READ the login page, so it can say which site', async () => {
+      withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+
+      const decision = await checkToolApproval(
+        'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+    });
+
+    it('lets an ATTENDED action through and marks the pin so the result can say so', async () => {
+      withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+        attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(decision.browserExecution?.loginRequired).toBe(true);
+    });
+
+    it('carries no loginRequired flag when the site is healthy (byte-compat)', async () => {
+      withTabOrigin(ALLOWED_URL);
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+        attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE });
+    });
+
+    describe('page-derived state can refuse, never authorize (anti-injection)', () => {
+      it('an authState the host never emits is treated as absent, not as approval', async () => {
+        // The forged shapes an injected page would reach for. None of them may
+        // turn a refusal into an allow, and none may be read as a login flag.
+        useSettingsStore.setState({ allowUnattendedBrowser: false });
+        for (const forged of ['allowed', 'authorized', 'ok', true, { allow: true }]) {
+          withTabOrigin(ALLOWED_URL, { authState: forged });
+
+          const decision = await checkToolApproval(
+            'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+            unattendedOwner, (async () => true) as never,
+          );
+
+          expect(decision.decision, JSON.stringify(forged)).toBe('deny');
+        }
+      });
+
+      it('login_required cannot lift a blocked site — it only ever tightens', async () => {
+        useSettingsStore.setState({
+          allowUnattendedBrowser: true,
+          browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
+        });
+        withTabOrigin(`${BLOCKED_SITE}/statement`, LOGGED_OUT);
+
+        const decision = await checkToolApproval(
+          'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
+        );
+
+        // The blocked-site refusal still wins; the login flag added nothing.
+        expect(decision.decision).toBe('deny');
+        expect(decision.reason).toContain('You have blocked automation on this site');
+      });
+
+      it('does not turn an attended refusal into an allow', async () => {
+        withTabOrigin(UNKNOWN_URL, LOGGED_OUT);
+
+        const decision = await checkToolApproval(
+          'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+          attendedOwner, (async () => false) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      });
     });
   });
 

@@ -2561,6 +2561,14 @@ export interface TranslationDict {
      *  on a high-risk URL. Replaces `browserReason`, and the dialog offers no
      *  "always allow this site". */
     browserHighRiskReason: string;
+    /** U6 / F2.4 — unattended run whose target site is asking for a login. The
+     *  run cannot sign in, and retrying would just keep hitting the wall. */
+    browserUnattendedLoginRequired: string;
+    /** U6 / F2.4 — appended to an ATTENDED browser tool result when the target
+     *  site is asking for a login. Not a refusal: the action still ran, and
+     *  this tells the model (and the user reading the tool panel) what has to
+     *  happen before the next step can work. */
+    browserLoginRequiredHint: string;
     /** The user answered the IM approval prompt with "拒绝". */
     browserUnattendedImDenied: string;
     /** Nobody answered the IM approval prompt before it expired. {minutes} */

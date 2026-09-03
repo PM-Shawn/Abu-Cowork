@@ -148,6 +148,70 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     });
   });
 
+  /**
+   * U6 / F2.4, attended half. The action is NOT refused — a human is here, and
+   * they may well be the one signing in — but the result now says the session
+   * expired, so the model asks instead of retrying into the wall.
+   */
+  describe('login-expiry note on an attended result', () => {
+    function serveLoggedOut(text = 'clicked') {
+      mockCallTool.mockImplementation((params: { name: string; _meta?: Record<string, unknown> }) => {
+        if (params.name === 'get_tabs') {
+          return Promise.resolve({
+            content: [{
+              type: 'text',
+              text: JSON.stringify(
+                params._meta?.['abu/conversationId'] === OWNER
+                  ? {
+                    windows: [{
+                      windowId: 1,
+                      tabs: [{ tabId: OWNED_TAB_ID, url: ALLOWED_URL, authState: 'login_required' }],
+                    }],
+                  }
+                  : { windows: [] },
+              ),
+            }],
+          });
+        }
+        return Promise.resolve({ content: [{ type: 'text', text }] });
+      });
+    }
+
+    it('appends the sign-in note to the result the model reads', async () => {
+      serveLoggedOut();
+
+      const result = await executeAnyTool(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, (async () => true) as never,
+        undefined, attendedOwner,
+      ) as string;
+
+      expect(result).toContain('clicked');
+      expect(result).toContain('needs a fresh sign-in');
+    });
+
+    it('does not send the flag on to the host — it came from there', async () => {
+      serveLoggedOut();
+
+      await executeAnyTool(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, (async () => true) as never,
+        undefined, attendedOwner,
+      );
+
+      expect(metaOf('click')?.['abu/loginRequired']).toBeUndefined();
+    });
+
+    it('adds nothing when the site is healthy (attended byte-compat)', async () => {
+      serveTabs(ALLOWED_URL, 'clicked');
+
+      const result = await executeAnyTool(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, (async () => true) as never,
+        undefined, attendedOwner,
+      ) as string;
+
+      expect(result).toBe('clicked');
+    });
+  });
+
   describe('get_downloads origin filtering', () => {
     function serveDownloads(entries: Array<{ url: string; filename: string }>) {
       mockCallTool.mockImplementation((params: { name: string }) =>

@@ -156,6 +156,44 @@ test('records renderer resource cleanup without navigation URLs', () => {
   });
 });
 
+test('records a finished command with redacted summary, exit code, duration, and sandbox flag', () => {
+  const h = makeHarness();
+  h.state.noteCommandFinished({
+    command: `curl -H 'authorization: Bearer abcdefghijklmnop' https://example.com ${'x'.repeat(300)}`,
+    exitCode: -1073741502,
+    durationMs: 42,
+    sandboxEnabled: true,
+    executionPath: 'foreground',
+  });
+  const entry = h.events.at(-1);
+  assert.equal(entry.processName, 'main');
+  assert.equal(entry.event, 'main.command_finished');
+  assert.match(entry.attributes.command, /\[REDACTED\]/);
+  assert.ok(entry.attributes.command.length <= 160);
+  assert.equal(entry.attributes.exitCode, -1073741502);
+  assert.equal(entry.attributes.durationMs, 42);
+  assert.equal(entry.attributes.sandboxEnabled, true);
+  assert.equal(entry.attributes.executionPath, 'foreground');
+  assert.equal(entry.attributes.outcome, 'error');
+});
+
+test('a zero exit code records a successful command outcome', () => {
+  const h = makeHarness();
+  h.state.noteCommandFinished({
+    command: 'printf ok',
+    exitCode: 0,
+    durationMs: 7,
+    sandboxEnabled: false,
+    executionPath: 'background',
+  });
+  const entry = h.events.at(-1);
+  assert.equal(entry.event, 'main.command_finished');
+  assert.equal(entry.attributes.exitCode, 0);
+  assert.equal(entry.attributes.sandboxEnabled, false);
+  assert.equal(entry.attributes.executionPath, 'background');
+  assert.equal(entry.attributes.outcome, 'success');
+});
+
 test('records a sidecar bridge miss without payload content', () => {
   const h = makeHarness();
   const generation = h.state.noteSpawnStarted('abu-sidecar', true);

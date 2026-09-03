@@ -181,7 +181,7 @@
   }
   var CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
   var CAPTCHA_SELECTOR = '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
-  var CAPTCHA_INTERACTIVE_SELECTOR = 'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex],img[src^="data:"]';
+  var CAPTCHA_INTERACTIVE_SELECTOR = 'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex]:not([tabindex^="-"]),img[src^="data:"]';
   function containerIsOperable(el) {
     if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
     for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
@@ -206,12 +206,16 @@
     return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
   }
   var OTP_TEXT_PATTERN = /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
-  var NUMERIC_CODE_INPUT_SELECTOR = 'input[inputmode="numeric"],input[type="tel"],input[pattern*="0-9"],input[pattern*="d"]';
+  var NUMERIC_CODE_INPUT_SELECTOR = 'input[inputmode="numeric"],input[pattern*="0-9"],input[pattern*="d"]';
+  var OTP_GRID_MIN_BOXES = 4;
   function hasShortCodeInput() {
     if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+    let singleCharBoxes = 0;
     for (const el of document.querySelectorAll("input[maxlength]")) {
       const max = Number(el.getAttribute("maxlength"));
-      if (Number.isFinite(max) && max >= 4 && max <= 8 && hasBox(el)) return true;
+      if (!Number.isFinite(max) || !hasBox(el)) continue;
+      if (max >= 4 && max <= 8) return true;
+      if (max === 1 && ++singleCharBoxes >= OTP_GRID_MIN_BOXES) return true;
     }
     return false;
   }
@@ -220,9 +224,13 @@
     return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
   }
   var MFA_PUSH_PATTERN = /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
-  var PENDING_WIDGET_SELECTOR = '[role="progressbar"],[role="status"],[aria-busy="true"],[aria-live="polite"],[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+  var PENDING_WIDGET_SELECTOR = '[role="progressbar"],[aria-busy="true"],[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+  var TERSE_AUTH_SURFACE_CHARS = 400;
+  var AUTH_SURFACE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|login|sso|auth|oauth2?|mfa|2fa|duo|verify|challenge)(?:[/_.-]|$)/i;
   function hasMfaPush(text) {
-    return MFA_PUSH_PATTERN.test(text) && visibleMatch(PENDING_WIDGET_SELECTOR) !== null;
+    if (!MFA_PUSH_PATTERN.test(text)) return false;
+    if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
+    return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && AUTH_SURFACE_PATH_PATTERN.test(location.pathname);
   }
   var WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
   function isWeChatInterstitial(text) {
@@ -254,18 +262,32 @@
     const kind = isWeChatInterstitial(text) ? "wechat_external_link" : hasCaptcha() ? "captcha" : hasQrLogin(text) ? "qr_login" : hasMfaPush(text) ? "mfa_push" : hasOneTimeCodeEntry(text) ? "sms_code" : isStrandedOauthPage(text) ? "oauth_popup" : null;
     return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
   }
-  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
   var NOT_A_SIGN_IN_PATTERN = /(create (an? )?account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
   var IDENTIFIER_INPUT_SELECTOR = 'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],[id*="user" i],[id*="email" i]';
+  function signInScopeText(passwordBox) {
+    const scope = passwordBox.closest('form,[role="form"]') ?? passwordBox.closest("section,article,main") ?? passwordBox.parentElement ?? passwordBox;
+    const clone = scope.cloneNode(true);
+    for (const link of clone.querySelectorAll('a,[role="link"]')) link.remove();
+    return `${nearestHeadingText(scope)} ${clone.textContent ?? ""}`;
+  }
+  function nearestHeadingText(scope) {
+    for (let node = scope; node; node = node.parentElement) {
+      const heading = node.querySelector('h1,h2,h3,legend,[role="heading"]');
+      if (heading && hasBox(heading)) return heading.textContent ?? "";
+      if (node.tagName === "BODY") break;
+    }
+    return "";
+  }
   function looksLikeSignInForm() {
     const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
     if (passwords.length !== 1) return false;
     const autocomplete = (passwords[0].getAttribute("autocomplete") ?? "").toLowerCase();
     if (autocomplete.includes("new-password")) return false;
-    return visibleMatch(IDENTIFIER_INPUT_SELECTOR) !== null;
+    if (visibleMatch(IDENTIFIER_INPUT_SELECTOR) === null) return false;
+    return !NOT_A_SIGN_IN_PATTERN.test(signInScopeText(passwords[0]));
   }
   function detectAuthWall(text) {
-    if (NOT_A_SIGN_IN_PATTERN.test(text)) return false;
     if (looksLikeSignInForm()) return true;
     return AUTH_WALL_TEXT_PATTERN.test(text);
   }

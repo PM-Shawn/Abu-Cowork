@@ -480,8 +480,13 @@ const CAPTCHA_SELECTOR =
  * `<div class="post-captcha-explainer">` is an article about CAPTCHAs, and
  * announcing one there stops a working run on a page that has no challenge.
  */
+// `[tabindex]:not([tabindex^="-"])` — NOT bare `[tabindex]` (N2). `tabindex="-1"`
+// means "focusable by script, not reachable by the user", and it is the standard
+// docs anchor-heading attribute, so accepting it let a text-only explainer
+// satisfy the very co-signal added to reject text-only explainers.
 const CAPTCHA_INTERACTIVE_SELECTOR =
-  'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex],img[src^="data:"]';
+  'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],'
+  + '[tabindex]:not([tabindex^="-"]),img[src^="data:"]';
 
 function containerIsOperable(el: Element): boolean {
   if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
@@ -522,14 +527,26 @@ const OTP_TEXT_PATTERN =
  * search box and the phrase "verification code flow" was classified as a code
  * prompt.
  */
+// `input[type="tel"]` is deliberately ABSENT: a support form's phone field is a
+// `tel` input, and pairing it with prose about codes was enough to report a
+// dead end on a contact page. A numeric INPUTMODE or an explicit digit pattern
+// is authored for a code; a phone number is not a code.
 const NUMERIC_CODE_INPUT_SELECTOR =
-  'input[inputmode="numeric"],input[type="tel"],input[pattern*="0-9"],input[pattern*="d"]';
+  'input[inputmode="numeric"],input[pattern*="0-9"],input[pattern*="d"]';
+
+/** The six-box OTP grid: several single-character boxes side by side. */
+const OTP_GRID_MIN_BOXES = 4;
 
 function hasShortCodeInput(): boolean {
   if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+  let singleCharBoxes = 0;
   for (const el of document.querySelectorAll('input[maxlength]')) {
     const max = Number(el.getAttribute('maxlength'));
-    if (Number.isFinite(max) && max >= 4 && max <= 8 && hasBox(el)) return true;
+    if (!Number.isFinite(max) || !hasBox(el)) continue;
+    // One box holding the whole code...
+    if (max >= 4 && max <= 8) return true;
+    // ...or the split grid, which is a code only in the plural.
+    if (max === 1 && ++singleCharBoxes >= OTP_GRID_MIN_BOXES) return true;
   }
   return false;
 }
@@ -548,13 +565,30 @@ const MFA_PUSH_PATTERN =
  * help article that describes the flow — and rule ④ then tells the model to
  * stop working on a documentation site.
  */
+// `role="status"` and `aria-live="polite"` are deliberately ABSENT: every docs
+// site puts a "Was this page helpful?" live region on the page, which made any
+// help article describing push approval look like one.
 const PENDING_WIDGET_SELECTOR =
-  '[role="progressbar"],[role="status"],[aria-busy="true"],[aria-live="polite"],'
+  '[role="progressbar"],[aria-busy="true"],'
   + '[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],'
   + '[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
 
+/**
+ * The fallback for a push screen that carries no widget class at all (Duo is
+ * the common one). Length ALONE cannot carry this — a short help-doc paragraph
+ * describing push approval is just as terse — so it is paired with the page
+ * being an auth surface by address. Both together: a page that is at an auth
+ * URL and says one thing and stops is a prompt, not documentation.
+ */
+const TERSE_AUTH_SURFACE_CHARS = 400;
+const AUTH_SURFACE_PATH_PATTERN =
+  /(?:^|[/_.-])(sign-in|signin|login|sso|auth|oauth2?|mfa|2fa|duo|verify|challenge)(?:[/_.-]|$)/i;
+
 function hasMfaPush(text: string): boolean {
-  return MFA_PUSH_PATTERN.test(text) && visibleMatch(PENDING_WIDGET_SELECTOR) !== null;
+  if (!MFA_PUSH_PATTERN.test(text)) return false;
+  if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
+  return text.trim().length <= TERSE_AUTH_SURFACE_CHARS
+    && AUTH_SURFACE_PATH_PATTERN.test(location.pathname);
 }
 
 const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
@@ -646,12 +680,14 @@ function detectHandoff(text: string): PageHandoff | null {
   return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
 }
 
-// `401 Unauthorized` is deliberately ABSENT: an article about HTTP status codes
-// contains it, and the built-in browser already detects a REAL 401 at the HTTP
-// layer (`browserHost.cjs`), which is both earlier and unforgeable. Keeping the
-// weakest string here bought nothing and cost a false positive.
+// `401 Unauthorized`, `login required` and `authentication required` are all
+// deliberately ABSENT, for one reason: they are what DOCUMENTATION about
+// authentication says, not what an auth wall says to a person. The built-in
+// browser already detects the real condition at the HTTP layer
+// (`browserHost.cjs`), earlier and unforgeably. What is left are sentences
+// addressed to a reader, which prose about auth does not contain.
 const AUTH_WALL_TEXT_PATTERN =
-  /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+  /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
 
 /**
  * Pages that HAVE a password box and are NOT asking you to sign in. Signing up
@@ -669,26 +705,71 @@ const IDENTIFIER_INPUT_SELECTOR =
   + '[id*="user" i],[id*="email" i]';
 
 /**
+ * The form the password box lives in, plus the nearest heading that describes
+ * it — and NOTHING else on the page (N1).
+ *
+ * The first attempt tested `NOT_A_SIGN_IN_PATTERN` against the whole
+ * `body.innerText`, which is not a co-signal at all: nearly every real login
+ * page links to "Create an account" or "Reset your password", so the veto fired
+ * on precisely the pages this feature exists for. A co-signal has to be
+ * structurally LOCAL to the thing being detected; a page-wide text veto is an
+ * off switch any page can trip.
+ *
+ * LINKS are stripped before matching, and that is the crux: "Create an account"
+ * as a LINK is a way OFF this page, while the same words as a heading are the
+ * page describing ITSELF. That one distinction separates a login page from a
+ * signup page more reliably than any wording list.
+ */
+function signInScopeText(passwordBox: Element): string {
+  const scope = passwordBox.closest('form,[role="form"]')
+    ?? passwordBox.closest('section,article,main')
+    ?? passwordBox.parentElement
+    ?? passwordBox;
+  const clone = scope.cloneNode(true) as Element;
+  for (const link of clone.querySelectorAll('a,[role="link"]')) link.remove();
+  return `${nearestHeadingText(scope)} ${clone.textContent ?? ''}`;
+}
+
+/**
+ * The closest heading that governs `scope`: its own first, then widening one
+ * ancestor at a time. A page states what it is in its heading, so a signup form
+ * with the heading OUTSIDE its `<form>` is still caught.
+ */
+function nearestHeadingText(scope: Element): string {
+  for (let node: Element | null = scope; node; node = node.parentElement) {
+    const heading = node.querySelector('h1,h2,h3,legend,[role="heading"]');
+    if (heading && hasBox(heading)) return heading.textContent ?? '';
+    if (node.tagName === 'BODY') break;
+  }
+  return '';
+}
+
+/**
  * Exactly ONE on-screen password box, not a new-password one, next to a field
- * naming the account. Signup and password-change forms fail on the count or on
- * `new-password`; a re-auth prompt with no identifier field is a deliberate
- * miss (misses are preferred — see the module note).
+ * naming the account, on a form that does not describe itself as signup or
+ * password-change. Signup and password-change forms fail on the count, on
+ * `new-password`, or on their own heading; a re-auth prompt with no identifier
+ * field is a deliberate miss (misses are preferred — see the module note).
  */
 function looksLikeSignInForm(): boolean {
   const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
   if (passwords.length !== 1) return false;
   const autocomplete = (passwords[0].getAttribute('autocomplete') ?? '').toLowerCase();
   if (autocomplete.includes('new-password')) return false;
-  return visibleMatch(IDENTIFIER_INPUT_SELECTOR) !== null;
+  if (visibleMatch(IDENTIFIER_INPUT_SELECTOR) === null) return false;
+  return !NOT_A_SIGN_IN_PATTERN.test(signInScopeText(passwords[0]));
 }
 
 /**
  * A login wall, from page features: a sign-in-shaped form, or one of a short
- * list of auth-wall sentences — and neither counts on a page that is plainly
- * about creating or changing a password instead.
+ * list of auth-wall sentences.
+ *
+ * The sentence path carries NO veto (N1). "Your session has expired" is the
+ * page telling us the answer directly; a signup link somewhere else on it
+ * cannot make that untrue, and letting one do so silenced the single clearest
+ * signal this detector has.
  */
 function detectAuthWall(text: string): boolean {
-  if (NOT_A_SIGN_IN_PATTERN.test(text)) return false;
   if (looksLikeSignInForm()) return true;
   return AUTH_WALL_TEXT_PATTERN.test(text);
 }

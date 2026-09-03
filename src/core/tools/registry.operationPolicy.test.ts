@@ -1081,6 +1081,43 @@ describe('browser gate — operation-class policy', () => {
         expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
       });
 
+      /**
+       * N3 — the streak is the one piece of state a page could clear WITHOUT
+       * an allow being widened: reset it and an unattended run that a human
+       * keeps refusing survives past the abort meant to stop it. A login-wall
+       * detection is not consent (U4 Ruling I1: only a dialog, an IM approval
+       * or a standing grant may reset), and a page can trigger one at will by
+       * redirecting to a login-shaped URL or answering 401.
+       */
+      it('a login-required detection is not consent and must not reset the streak', async () => {
+        withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+        const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
+
+        const decision = await checkToolApproval(
+          'abu-browser__snapshot', { tabId: OWNED_TAB_ID },
+          { ...unattendedOwner, ...r } as never, (async () => true) as never,
+        );
+
+        // The read is allowed (so the model can say WHICH site) — but on
+        // policy, not on anyone's consent.
+        expect(decision.decision).toBe('allow');
+        expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+      });
+
+      it('does not reset the streak on the attended path either', async () => {
+        // Attended read-only passes on the shipped default with no dialog, so
+        // there is no consent here either — the login flag must not invent one.
+        withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+        const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
+
+        await checkToolApproval(
+          'abu-browser__snapshot', { tabId: OWNED_TAB_ID },
+          { ...attendedOwner, ...r } as never, undefined,
+        );
+
+        expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+      });
+
       it('does not turn an attended refusal into an allow', async () => {
         withTabOrigin(UNKNOWN_URL, LOGGED_OUT);
 

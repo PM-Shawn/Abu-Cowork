@@ -641,6 +641,9 @@ const NEXT_STEPS_TITLE = /^(接下来可以做什么|What you can do next)$/;
 const DENIED_TITLE = /^(被拦下的动作|Blocked actions)$/;
 const REASON_SITE_NOT_ALLOWED = /^(该站点没有你的常驻授权|No standing grant for this site)$/;
 const REASON_POLICY_DENIED = /^(这类操作被你设为拒绝|You set this class of action to deny)$/;
+/** The script-run line (2026-09-04 opt-in). Anchored and count-specific, so a
+ *  card reporting a DIFFERENT number of scripts fails instead of matching. */
+const SCRIPT_RUNS_ONE = /^(在页面里运行了 1 次脚本|Page scripts run: 1)$/;
 const REASON_APPROVAL_REFUSED = /^(审批被拒绝或没等到回复|The approval was declined or never answered)$/;
 const STEP_ALLOW_SITE = /始终允许此站点|always allow this site/;
 const STEP_RELAX_POLICY = /操作权限 把对应档位改掉|change its setting in Settings/;
@@ -855,7 +858,9 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     await expect(card.getByText(OUTCOME_COMPLETED)).toHaveCount(0);
   });
 
-  // ③ unattended execute_js ⇒ refused, with provably zero JS executed
+  // ③a policy default (scripting deny) ⇒ execute_js refused, provably zero JS
+  //    executed. The 2026-09-04 opt-in did NOT change this column's default —
+  //    ③b below is the same journey with the user having turned it on.
   test('refuses unattended execute_js and runs no page script at all', async () => {
     const marker = `abu-e2e-unattended-script-${randomUUID().slice(0, 8)}`;
     const fixture = await startFormFixture(marker);
@@ -925,6 +930,92 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     // Same as ②: the run finished, the scripting it was asked for did not.
     await expect(card.getByText(OUTCOME_COMPLETED_WITH_REFUSALS)).toBeVisible();
     await expect(card.getByText(OUTCOME_COMPLETED)).toHaveCount(0);
+  });
+
+  /**
+   * ③b the SAME journey with the 2026-09-04 opt-in turned on: automatic-task
+   * scripting set to `allow`, on a site the user set to 始终允许.
+   *
+   * This is the pair ③a needs to be worth anything. ③a alone proves "the
+   * default refuses"; only running the identical script under the opt-in
+   * proves the refusal came from the POLICY and not from something structural
+   * that would keep refusing after the user said yes — the failure mode where
+   * a setting exists, reads as enabled, and changes nothing.
+   *
+   * The witnesses are inverted, read out of the same live document: the page's
+   * own `__abuE2eScriptSentinel` and `document.title` must now BOTH have been
+   * rewritten by the model's code, and the card must report the script rather
+   * than a refusal.
+   */
+  test('runs unattended execute_js once the user opts in on an always-allowed site', async () => {
+    const marker = `abu-e2e-unattended-script-allow-${randomUUID().slice(0, 8)}`;
+    const fixture = await startFormFixture(marker);
+    fixtures.push(fixture);
+    const finalAnswer = `abu-e2e-script-ran-${randomUUID()}`;
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture.url },
+        toolCallId: `call-nav-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          // Byte-identical to ③a's payload on purpose: the ONLY difference
+          // between the two journeys is the policy cell.
+          code: 'window.__abuE2eScriptSentinel = "EXECUTED"; document.title = "EXECUTED"; "ok"',
+        },
+        toolCallId: `call-js-${randomUUID()}`,
+        toolName: 'abu-browser__execute_js',
+      }),
+      { kind: 'complete', responseText: finalAnswer },
+    ]);
+
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `U8 script allow ${randomUUID().slice(0, 8)}`;
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true,
+      sitePermissions: { [fixture.origin]: 'allowed' },
+      // The opt-in. Without BOTH this and the standing grant above, the gate
+      // refuses — that conjunction is pinned in the unit suite.
+      unattendedPolicy: { scripting: 'allow' },
+      scheduleId: `schedule-u8-script-allow-${randomUUID()}`,
+      scheduleName: taskName,
+      prompt: `read ${fixture.url}`,
+    });
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+
+    const scriptResult = toolResultFor(taskRequests(mock!)[3]!.body, 'abu-browser__execute_js');
+    expect(scriptResult).not.toMatch(/^Error:/);
+    expect(scriptResult).not.toMatch(/not permitted by the unattended browser policy/);
+
+    // GROUND TRUTH, read out of the live native view: the code really ran.
+    await expect.poll(
+      () => evaluateInNativeView(app!, fixture.url, 'window.__abuE2eScriptSentinel'),
+      { timeout: READY_TIMEOUT },
+    ).toBe('EXECUTED');
+    expect(await evaluateInNativeView(app!, fixture.url, 'document.title')).toBe('EXECUTED');
+
+    // An opt-in is a decision made in Settings, NOT an approval round-trip —
+    // no dialog may appear here either.
+    await expectNoConfirmationDialogEverAppeared(page);
+
+    await openScheduledRunConversation(page, taskName);
+    const card = await waitForReportCard(page);
+    // The card says out loud that code ran inside the session.
+    await expect(card.getByText(SCRIPT_RUNS_ONE)).toBeVisible();
+    // ...and there is nothing to report as blocked.
+    await expect(card.getByText(DENIED_TITLE)).toHaveCount(0);
+    await expect(card.getByText(REASON_POLICY_DENIED)).toHaveCount(0);
+    await expect(card.getByText(OUTCOME_COMPLETED_WITH_REFUSALS)).toHaveCount(0);
+    await expect(card.getByText(OUTCOME_COMPLETED)).toBeVisible();
   });
 
   /**

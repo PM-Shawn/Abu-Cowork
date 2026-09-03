@@ -176,37 +176,28 @@ export function BrowserPermissionCards({
     deny: t.settings.browserOpStateDenyDesc,
   };
   /*
-    The option list is asked for per cell, not shared: unattended scripting
-    offers no "allow" (see `browserOperationStatesFor`) — a site grant is
-    consent the user gave to a CLICK, and it never buys the right to run code
-    in that page unwatched.
+    The option list is asked for per cell, not shared — `browserOperationStatesFor`
+    is the single seam that says which tiers a cell may hold.
 
-    That tier is still LISTED, disabled, with the reason attached. Silently
-    dropping it left one cell in a grid of identical dropdowns quietly missing
-    its top option, which reads as a bug; offering it live would promise
-    something the gate refuses to honor. The withheld tier is derived from
-    `browserOperationStatesFor` rather than hardcoded, so if the policy ever
-    offers it the explanation disappears by itself.
+    Automatic-task scripting used to be the one cell without an "allow": a site
+    grant is consent the user gave to a CLICK, and it did not buy the right to
+    run code in that page unwatched. The 2026-09-04 ruling reopened that tier
+    as an OPT-IN — still off by default, still refused everywhere except sites
+    the user set to 始终允许 — so the option is now live, and it says that
+    scope in its own description instead of in a paragraph above the control.
   */
   const optionsFor = (
     runMode: 'attended' | 'unattended',
     opClass: BrowserOperationClass,
   ): SelectOption[] => {
-    const offered = browserOperationStatesFor(runMode, opClass);
-    const options: SelectOption[] = offered.map((state) => ({
+    const unattendedScript = runMode === 'unattended' && opClass === 'scripting';
+    return browserOperationStatesFor(runMode, opClass).map((state) => ({
       value: state,
       label: stateLabels[state],
-      description: stateDescriptions[state],
+      description: state === 'allow' && unattendedScript
+        ? t.settings.browserOpStateAllowUnattendedScriptDesc
+        : stateDescriptions[state],
     }));
-    if (!offered.includes('allow')) {
-      options.unshift({
-        value: 'allow',
-        label: stateLabels.allow,
-        description: t.settings.browserOpStateAllowUnavailableDesc,
-        disabled: true,
-      });
-    }
-    return options;
   };
 
   const attendedColumn = t.settings.browserOpPolicyColumnAttended;
@@ -333,6 +324,19 @@ export function BrowserPermissionCards({
             {policyCell('attended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
             {policyCell('unattended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
           </div>
+          {/*
+            The warning that comes WITH the choice, not before it: one line,
+            directly under the select that produced it, visible only while the
+            opt-in is the selected value. This is the shape Codex gives its own
+            high-risk switch — the risk is stated where the decision is made,
+            not hidden behind an ⓘ or a dialog.
+          */}
+          {policy.unattended.scripting === 'allow' && (
+            <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
+              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {t.settings.browserUnattendedScriptRiskWarning}
+            </p>
+          )}
         </div>
       </div>
 

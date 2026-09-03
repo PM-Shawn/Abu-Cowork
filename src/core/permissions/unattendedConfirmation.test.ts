@@ -287,12 +287,50 @@ describe('mayUnattendedTierApproveBrowser', () => {
     ...overrides,
   });
 
-  it('refuses scripting — the strongest class is denied in the unattended column', () => {
+  it('refuses scripting under the default policy — that cell ships as deny', () => {
     expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' }))).toBe(false);
   });
 
-  it('refuses an unclassified browser confirmation (treated as scripting)', () => {
+  /**
+   * RETARGETED (2026-09-04 ruling). This used to read "refuses an
+   * unclassified browser confirmation (treated as scripting)": defaulting the
+   * missing class to `'scripting'` was itself the refusal, because that cell
+   * had no allow tier. It has one now, so the fallback must refuse on its own
+   * — otherwise a call nobody classified would inherit the opt-in.
+   */
+  it('refuses an unclassified browser confirmation even when scripting is opted in', () => {
     expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
+
+    useSettingsStore.setState({
+      browserOperationPolicy: {
+        attended: DEFAULT_BROWSER_OPERATION_POLICY.attended,
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+      },
+    });
+    expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
+    // ...while the class the user actually opted in IS approved by the tier.
+    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' })))
+      .toBe(true);
+  });
+
+  // The tier reports what the policy says; the opt-in's site scoping lives in
+  // `decideBrowserOperation` and must show through here unchanged.
+  it('refuses an opted-in script on a site with no standing grant', () => {
+    useSettingsStore.setState({
+      browserOperationPolicy: {
+        attended: DEFAULT_BROWSER_OPERATION_POLICY.attended,
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+      },
+    });
+
+    expect(mayUnattendedTierApproveBrowser(browserInfo({
+      browserOperationClass: 'scripting',
+      browserOrigin: 'https://never-granted.example',
+    }))).toBe(false);
+    expect(mayUnattendedTierApproveBrowser(browserInfo({
+      browserOperationClass: 'scripting',
+      browserOrigin: 'https://evil.com',
+    }))).toBe(false);
   });
 
   it('allows an interactive action the unattended column allows', () => {

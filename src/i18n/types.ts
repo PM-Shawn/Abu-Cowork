@@ -745,6 +745,13 @@ export interface TranslationDict {
     actionsSummaryClean: string;
     /** No action got through at all. */
     noActions: string;
+    /**
+     * "运行了 {count} 次脚本" — how many of the actions were page SCRIPTS.
+     * Shown only when > 0; automatic-task scripting is off unless the user
+     * opted in (2026-09-04 ruling), so this line is the run saying out loud
+     * that code executed inside a logged-in session.
+     */
+    scriptRuns: string;
     sitesTitle: string;
     /** "{actions} 次动作 · {failures} 次失败" */
     siteCounts: string;
@@ -1036,7 +1043,13 @@ export interface TranslationDict {
      *  "click" semantics and never buys silent code execution). Dropping the
      *  option silently would leave the column looking broken next to the other
      *  rows; offering it live would promise what the gate refuses to honor. */
-    browserOpStateAllowUnavailableDesc: string;
+    /**
+     * The `allow` option's description in the automatic-tasks × scripting
+     * cell specifically: the tier is real but site-scoped (2026-09-04 ruling).
+     */
+    browserOpStateAllowUnattendedScriptDesc: string;
+    /** ⚠ line under that select while `allow` is the selected value. */
+    browserUnattendedScriptRiskWarning: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;

@@ -1391,15 +1391,16 @@ describe('CapabilitiesSection', () => {
     });
 
     /*
-      The automatic-tasks scripting cell has no "allow": a site grant minted
-      from a human approving a CLICK must never buy silent page scripting.
+      RETARGETED (2026-09-04 ruling). This pair used to be
+      "explains the missing allow tier for automatic scripting instead of
+      hiding it" and "never lets the explained allow tier be chosen, by mouse
+      or by keyboard" — the tier was listed but disabled.
 
-      The tier is still listed, disabled, carrying the reason — a cell quietly
-      missing the option every neighbouring cell has reads as a bug, and the
-      user asked for the absence to be explained inside the control rather
-      than argued for in a paragraph above it.
+      It is now a real, choosable option, off by default, whose description
+      carries its scope ("only on sites set to Always allow"). What the tier
+      is NOT is silent: picking it puts a single ⚠ line under the select.
     */
-    it('explains the missing allow tier for automatic scripting instead of hiding it', async () => {
+    it('offers the automatic-scripting allow tier as a real option, scoped in its own description', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1411,13 +1412,15 @@ describe('CapabilitiesSection', () => {
 
       await user.click(scriptUnattended);
       expect(openedOptionLabels(scriptUnattended)).toEqual(['Allow', 'Ask every time', 'Deny']);
+      expect(openedOption(scriptUnattended, /^Allow/)).not.toBeDisabled();
       expect(openedOptionDescriptions(scriptUnattended)).toEqual([
-        'Scripts in automatic tasks must be approved one at a time',
+        'Only on sites set to Always allow',
         'Confirms with a dialog before each action',
         'Abu will not do this kind of thing',
       ]);
 
-      // The attended half of the same class still offers all three for real.
+      // The attended half of the same class keeps the generic descriptions —
+      // the site scoping is an automatic-tasks rule, not a scripting rule.
       await user.click(scriptAttended);
       expect(openedOptionLabels(scriptAttended)).toEqual(['Allow', 'Ask every time', 'Deny']);
       expect(openedOptionDescriptions(scriptAttended)).toEqual([
@@ -1427,39 +1430,33 @@ describe('CapabilitiesSection', () => {
       ]);
     });
 
-    /*
-      Listed is not the same as offered. The withheld tier must be inert to
-      every input path a user has — pointer and keyboard — and must never
-      reach the store, because the gate that would refuse it lives elsewhere
-      and a stored 'allow' here would be a setting that silently does nothing.
-    */
-    it('never lets the explained allow tier be chosen, by mouse or by keyboard', async () => {
+    it('writes the opt-in to the store and warns, once, directly under that select', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
-      const [, scriptUnattended] = policyCells(permissionCard('Run scripts (advanced)'));
+      const scriptCard = permissionCard('Run scripts (advanced)');
+      const [, scriptUnattended] = policyCells(scriptCard);
+      // Nothing to warn about until the user chooses it.
+      expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
+
       await user.click(scriptUnattended);
-      const withheld = openedOption(scriptUnattended, /^Allow/);
-      expect(withheld).toBeDisabled();
+      await user.click(openedOption(scriptUnattended, /^Allow/));
 
-      // Pointer: the click lands on it and nothing happens.
-      await user.click(withheld);
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting)
-        .toBe('deny');
-      expect(openedMenu(scriptUnattended)).toBeInTheDocument();
+        .toBe('allow');
+      const warning = within(scriptCard).getByText(/Elevated risk/);
+      expect(warning.textContent).toMatch(/signed-in state/);
+      // ONE line — not a banner plus an ⓘ plus a dialog.
+      expect(within(scriptCard).getAllByText(/Elevated risk/)).toHaveLength(1);
+      // ...and it belongs to the scripting card, not to the matrix above it.
+      expect(within(permissionCard('Action permissions')).queryByText(/Elevated risk/)).toBeNull();
 
-      // Keyboard: it cannot hold focus, so neither Tab nor the menu's own
-      // arrow ring (which walks `button:not([disabled])`) can ever make it the
-      // option that Enter would pick.
-      withheld.focus();
-      expect(withheld).not.toHaveFocus();
-      const reachable = Array.from(
-        openedMenu(scriptUnattended).querySelectorAll('button:not([disabled])'),
-      );
-      expect(reachable).not.toContain(withheld);
-      expect(reachable).toHaveLength(2);
+      // Choosing something else takes the warning away with it.
+      await user.click(scriptUnattended);
+      await user.click(openedOption(scriptUnattended, /^Deny/));
+      expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
     });
 
     it('toggles the automatic-tasks master switch', async () => {

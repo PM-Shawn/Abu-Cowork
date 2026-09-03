@@ -381,22 +381,38 @@ describe('browser tool policy', () => {
       expect(normalizeBrowserOperationPolicy(VALID_POLICY)).toEqual(VALID_POLICY);
     });
 
-    // A site grant is minted from a human approving a CLICK. Letting
-    // unattended scripting be 'allow' would turn that consent into standing
-    // permission to run arbitrary code in the logged-in session.
-    it('clamps unattended scripting "allow" to "ask" — that cell has no allow', () => {
+    /**
+     * RETARGETED (2026-09-04 product ruling). This test used to pin
+     * "clamps unattended scripting 'allow' to 'ask' — that cell has no allow".
+     * The constraint is now "no allow BY DEFAULT; an explicit opt-in is
+     * storable", so a well-formed 'allow' must survive normalization — the
+     * gate, not the normalizer, is what scopes it to granted sites.
+     * Clamping it here would make the setting silently un-saveable.
+     */
+    it('preserves an explicit unattended scripting "allow" — the opt-in tier is storable', () => {
       const withAllow: BrowserOperationPolicy = {
         attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
         unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
       };
       const normalized = normalizeBrowserOperationPolicy(withAllow);
 
-      expect(normalized.unattended.scripting).toBe('ask');
-      // Only that one cell — attended scripting and the unattended siblings
-      // keep what they were given.
+      expect(normalized.unattended.scripting).toBe('allow');
+      // ...and the siblings still pass through untouched.
       expect(normalized.attended.scripting).toBe('allow');
       expect(normalized.unattended.interactive).toBe('allow');
       expect(normalized.unattended.readOnly).toBe('allow');
+    });
+
+    // The opt-in loosened WELL-FORMED values only. A present-but-broken cell
+    // is still a signal that something went wrong, and still clamps to the
+    // strictest state for its column — the fail-safe posture is unchanged.
+    it('still clamps a MALFORMED unattended scripting value to deny, opt-in or not', () => {
+      for (const bad of ['allowed', 'ALLOW', 1, true, null, {}]) {
+        expect(normalizeBrowserOperationPolicy({
+          attended: VALID_POLICY.attended,
+          unattended: { ...VALID_POLICY.unattended, scripting: bad },
+        }).unattended.scripting, JSON.stringify(bad)).toBe('deny');
+      }
     });
 
     it('leaves an explicit unattended scripting deny/ask alone', () => {
@@ -486,14 +502,13 @@ describe('browser tool policy', () => {
       for (const runMode of ['attended', 'unattended'] as const) {
         for (const opClass of OP_CLASSES) {
           for (const state of STATES) {
-            // The one cell that cannot say what it was configured to say:
-            // unattended scripting has no 'allow' (see
-            // `browserOperationStatesFor`), so a configured 'allow' resolves
-            // to 'ask' — a site grant minted from a click must never buy
-            // silent page scripting in a run nobody is watching.
-            const expected = runMode === 'unattended' && opClass === 'scripting' && state === 'allow'
-              ? 'ask'
-              : state;
+            // Every cell now resolves to exactly what it was configured to
+            // say on a site the user granted — including automatic-task
+            // scripting, whose 'allow' is the 2026-09-04 opt-in. That opt-in
+            // is scoped to a STANDING GRANT, which is the site verdict this
+            // matrix already runs under ('allowed'); the site-scoping itself
+            // is pinned in "opt-in allow" below.
+            const expected = state;
             it(`${runMode}/${opClass} configured '${state}' → '${expected}'`, () => {
               expect(
                 decideBrowserOperation({
@@ -510,20 +525,85 @@ describe('browser tool policy', () => {
       }
     });
 
-    describe('unattended scripting has no allow', () => {
-      it('never returns allow, even for a policy object that says allow', () => {
-        expect(
-          decideBrowserOperation({
-            opClass: 'scripting',
-            runMode: 'unattended',
-            policy: {
-              attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-              unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-            },
-            masterSwitchUnattended: true,
-            siteVerdict: 'allowed',
-          }),
-        ).toBe('ask');
+    /**
+     * RETARGETED (2026-09-04 product ruling). This block used to be
+     * `unattended scripting has no allow`. The amended constraint is
+     * "no allow BY DEFAULT; explicit opt-in, effective only on sites the user
+     * set to 始终允许" — modelled on Codex exposing CDP as its own high-risk
+     * switch (off by default, labelled 风险升高, per-site) rather than
+     * forbidding it.
+     *
+     * The opt-in is a conjunction of THREE conditions, each pinned below:
+     *   1. the unattended master switch is on,
+     *   2. the site carries a standing 'allowed' verdict,
+     *   3. the site is not high-risk.
+     * Anything else is `deny`, never `ask`: an unattended script on a site
+     * with no standing grant is exactly what the ruling excludes, so routing
+     * it to an approval round-trip would offer a tier the ruling withheld.
+     */
+    describe('unattended scripting: opt-in allow, site-scoped', () => {
+      const OPTED_IN: BrowserOperationPolicy = {
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+      };
+      const scripted = (
+        overrides: Partial<Parameters<typeof decideBrowserOperation>[0]>,
+      ) => decideBrowserOperation({
+        opClass: 'scripting',
+        runMode: 'unattended',
+        policy: OPTED_IN,
+        masterSwitchUnattended: true,
+        siteVerdict: 'allowed',
+        ...overrides,
+      });
+
+      it('condition 1+2+3 all hold → allow (the user opted in, on a granted site)', () => {
+        expect(scripted({})).toBe('allow');
+      });
+
+      it('condition 1 fails (master switch off) → deny', () => {
+        expect(scripted({ masterSwitchUnattended: false })).toBe('deny');
+      });
+
+      it('condition 2 fails (no standing grant) → deny, not ask', () => {
+        expect(scripted({ siteVerdict: 'default' })).toBe('deny');
+        expect(scripted({ siteVerdict: 'denied' })).toBe('deny');
+      });
+
+      it('condition 3 fails (money movement / government URL) → deny', () => {
+        expect(scripted({ siteVerdict: 'high-risk' })).toBe('deny');
+      });
+
+      it('an unknown site is a default-verdict site — deny, never a shrug', () => {
+        // `getSiteVerdict` collapses "no entry" and "origin could not be
+        // determined" into 'default'; both must land on the same refusal.
+        expect(scripted({ siteVerdict: getSiteVerdict(null, {}) })).toBe('deny');
+        expect(scripted({ siteVerdict: getSiteVerdict('https://never-granted.example', {}) }))
+          .toBe('deny');
+      });
+
+      it('the opt-in does not leak into the neighbouring cells or the default policy', () => {
+        // Same granted site, DEFAULT policy: scripting is still denied. The
+        // tier exists but nobody gets it without turning it on.
+        expect(decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'unattended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed',
+        })).toBe('deny');
+        // And an unattended scripting 'ask' still routes to the approval
+        // round-trip on a site with no grant — the IM path is untouched.
+        expect(decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'unattended',
+          policy: {
+            attended: OPTED_IN.attended,
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+          },
+          masterSwitchUnattended: true,
+          siteVerdict: 'default',
+        })).toBe('ask');
       });
 
       it('still lets ATTENDED scripting be allowed — the restriction is unattended-only', () => {
@@ -541,8 +621,12 @@ describe('browser tool policy', () => {
         ).toBe('allow');
       });
 
-      it('offers only ask/deny for that cell, all three everywhere else', () => {
-        expect(browserOperationStatesFor('unattended', 'scripting')).toEqual(['ask', 'deny']);
+      // RETARGETED: was "offers only ask/deny for that cell, all three
+      // everywhere else". The withheld tier is now offered, so the UI's
+      // disabled-option branch has no cell left to fire on.
+      it('offers all three states for every cell, automatic-task scripting included', () => {
+        expect(browserOperationStatesFor('unattended', 'scripting'))
+          .toEqual(['allow', 'ask', 'deny']);
         for (const [runMode, opClass] of [
           ['attended', 'scripting'],
           ['attended', 'interactive'],
@@ -668,7 +752,10 @@ describe('browser tool policy', () => {
           runMode: 'unattended' as const,
           policy: {
             attended: DEFAULT_BROWSER_OPERATION_POLICY.attended,
-            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+            // scripting: 'allow' is the 2026-09-04 opt-in. High-risk outranks
+            // it — "always allow this bank" plus "let scripts run" is exactly
+            // the combination this control exists to prevent.
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
           } as BrowserOperationPolicy,
           masterSwitchUnattended: true,
           siteVerdict: 'high-risk' as const,

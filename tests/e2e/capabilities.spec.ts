@@ -280,10 +280,12 @@ test.describe.serial('Electron capability overview', () => {
       What each option MEANS lives inside the option — the reason there is no
       ⓘ anywhere on this page — and that is only visible with a menu open.
 
-      The scripting card's automatic column is the one worth photographing: it
-      is the cell with no "allow" to give, so it carries the WITHHELD tier
-      listed and disabled with its reason attached. It is also the menu that
-      used to be painted over by the site-permissions card directly below it.
+      The scripting card's automatic column is the one worth photographing.
+      Until 2026-09-04 it was the cell with no "allow" to give and carried the
+      WITHHELD tier listed and disabled; the ruling turned that into a real
+      OPT-IN whose description carries its scope ("只在始终允许的网站上生效").
+      Either way it is the menu that used to be painted over by the
+      site-permissions card directly below it.
     */
     const scriptCard = page
       .locator('div.rounded-lg.border')
@@ -293,26 +295,48 @@ test.describe.serial('Electron capability overview', () => {
     await scriptUnattendedCell.scrollIntoViewIfNeeded();
     await scriptUnattendedCell.click();
 
-    const withheldTier = page.getByText(/自动任务里的脚本必须逐次确认|approved one at a time/);
-    await expect(withheldTier).toBeVisible();
+    const optInTier = page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/);
+    await expect(optInTier).toBeVisible();
     await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toBeVisible();
 
     /*
       Unclipped is the whole point of the fix, and "visible" does not prove it
       — the card below used to paint straight over this menu while every
       element in it stayed "visible" to the DOM. So ask the document what is
-      actually on top at the withheld option's own centre.
+      actually on top at the opt-in option's own centre.
     */
-    const withheldBox = await withheldTier.boundingBox();
-    expect(withheldBox).not.toBeNull();
+    const optInBox = await optInTier.boundingBox();
+    expect(optInBox).not.toBeNull();
     const topmostText = await page.evaluate(({ x, y }) => {
       const el = document.elementFromPoint(x, y);
       return el?.closest('button')?.textContent?.trim() ?? el?.textContent?.trim() ?? '';
     }, {
-      x: withheldBox!.x + withheldBox!.width / 2,
-      y: withheldBox!.y + withheldBox!.height / 2,
+      x: optInBox!.x + optInBox!.width / 2,
+      y: optInBox!.y + optInBox!.height / 2,
     });
     expect(topmostText).toMatch(/允许|Allow/);
+
+    /*
+      The ⚠ line the ruling requires: it must NOT be sitting there by default
+      (the tier ships off), and it must appear directly under this select the
+      moment the opt-in is the selected value. Photographed for the IA record.
+    */
+    const riskWarning = page.getByText(
+      /风险升高：自动任务里的脚本能读取该网站的登录态|Elevated risk: scripts in automatic tasks/,
+    );
+    await expect(riskWarning).toHaveCount(0);
+    await optInTier.click();
+    await expect(riskWarning).toBeVisible();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });
+
+    // Put the cell back to the shipped default so the rest of this journey
+    // photographs the default surface, then reopen the menu for the shot below.
+    await scriptUnattendedCell.click();
+    await page.getByText(/阿布不会做这类操作|Abu will not do this kind of thing/).click();
+    await expect(riskWarning).toHaveCount(0);
+    await scriptUnattendedCell.click();
+    await expect(optInTier).toBeVisible();
 
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
@@ -321,7 +345,7 @@ test.describe.serial('Electron capability overview', () => {
     // itself on Escape regardless of what is open inside it, so Escape here
     // would take the whole page down rather than just this menu.
     await page.getByText(ACTION_PERMISSIONS).first().click();
-    await expect(withheldTier).toHaveCount(0);
+    await expect(optInTier).toHaveCount(0);
 
     // ---- Site list, two levels down -------------------------------------
     // Same rule as the overview: the row drills in, no text button.

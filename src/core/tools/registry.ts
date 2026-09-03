@@ -1181,6 +1181,33 @@ export async function checkToolApproval(
         // page" is actionable, "your policy says deny" points at a setting the
         // user never changed.
         if (highRisk) return 'high-risk-site';
+        /**
+         * The refusal came from the MISSING STANDING GRANT, not from the
+         * policy cell — the same question re-asked with an allowed site comes
+         * back 'allow'. Today the only cell that can be in this state is the
+         * automatic-task scripting opt-in (2026-09-04 ruling), which is
+         * honoured only on sites the user set to 始终允许.
+         *
+         * Written as "would it have passed on a granted site?" rather than as
+         * a second copy of that conjunction, so the gate cannot drift from
+         * `decideBrowserOperation`'s own rule. Reporting `policy-denied` here
+         * would tell the user to go change a setting they had ALREADY set to
+         * allow; `site-not-allowed` sends them where the fix is.
+         */
+        if (
+          policyVerdict === 'deny'
+          && siteVerdict !== 'allowed'
+          && decideBrowserOperation({
+            opClass,
+            runMode,
+            policy: settingsSnapshot.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended,
+            siteVerdict: 'allowed',
+            ...(origin !== null ? { targetOrigin: origin } : {}),
+          }) === 'allow'
+        ) {
+          return 'site-not-allowed';
+        }
         if (policyVerdict === 'deny') return 'policy-denied';
         // The ceiling refused for a reason the operation policy did not: this
         // run's capability tier carries no browser access at all.
@@ -1390,7 +1417,15 @@ export async function checkToolApproval(
           // answer for execute_js, so it must not clear a scripting refusal.
           // An unattended 'ask' that a human just approved above already set
           // 'dialog'; do not weaken it back down to 'grant'.
-          consented = consented ?? 'grant';
+          //
+          // EXCEPT for a script the policy auto-allowed (the 2026-09-04 opt-in
+          // tier): nobody answered anything for THIS call, so it is not
+          // consent of any grade and must not touch U4's denial streak. If it
+          // did, the guard would be dodged by alternating a refused action
+          // with an opt-in script that sails through. The scripting 'ask'
+          // path is unaffected — a human really did answer there, and
+          // `consented` is already 'dialog' by the time we get here.
+          if (opClass !== 'scripting') consented = consented ?? 'grant';
         }
         // Approved by policy (+ site grant) — an unattended run has no
         // conversation-grant/dialog concept, so nothing further to do.

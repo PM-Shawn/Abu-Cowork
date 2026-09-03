@@ -396,14 +396,27 @@ export async function notifyUnattendedDenial(
  * Returns true only when the unattended column of the operation policy says
  * `allow` for this operation class on this site. `ask` is NOT approval — the
  * tier is not an approval channel, `resolveUnattendedConfirmation` is.
- * A browser confirmation that arrives without an operation class is treated as
- * `scripting`, the strictest class.
+ *
+ * Scripting is NOT hard-coded here, and deliberately so: since the 2026-09-04
+ * ruling the user may opt automatic-task scripting into `allow`, and this
+ * function's whole job is to report what the policy says, not to re-litigate
+ * it. The opt-in's own scoping (master switch + standing site grant + not
+ * high-risk) is inside `decideBrowserOperation`, which is the single place
+ * that rule lives.
+ *
+ * A browser confirmation that arrives with NO operation class is refused
+ * outright. Until the ruling, defaulting it to `'scripting'` WAS that
+ * refusal, because that cell had no allow tier; it no longer is, so the
+ * fallback has to refuse on its own or an unclassified call would quietly
+ * inherit the opt-in.
  */
 export function mayUnattendedTierApproveBrowser(info: ConfirmationInfo): boolean {
+  const opClass = info.browserOperationClass;
+  if (opClass === undefined) return false;
   const settings = getSettingsReader().getSnapshot();
   return (
     decideBrowserOperation({
-      opClass: info.browserOperationClass ?? 'scripting',
+      opClass,
       runMode: 'unattended',
       policy: settings.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
       masterSwitchUnattended: settings.allowUnattendedBrowser === true,

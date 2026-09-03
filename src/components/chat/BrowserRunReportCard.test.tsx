@@ -86,6 +86,46 @@ describe('BrowserRunReportCard', () => {
     expect(screen.queryByText('What you can do next')).not.toBeInTheDocument();
   });
 
+  /**
+   * 2026-09-04 opt-in. A script that ran unattended is the one SUCCESS on this
+   * card worth calling out by name — every other line is about a refusal or a
+   * failure, and without this the execution would sit anonymously inside
+   * "3 browser actions" next to two clicks.
+   */
+  it('says out loud how many page scripts ran, and stays silent when none did', () => {
+    const withScripts = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__execute_js', ok: true, durationMs: 4, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__execute_js', ok: true, durationMs: 4, origin: 'https://intranet.example' });
+    });
+
+    render(<BrowserRunReportCard message={messageFor(withScripts)} />);
+    expect(screen.getByText('Page scripts run: 2')).toBeInTheDocument();
+
+    cleanup();
+    const withoutScripts = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 8, origin: 'https://intranet.example' });
+    });
+    render(<BrowserRunReportCard message={messageFor(withoutScripts)} />);
+    expect(screen.queryByText(/Page scripts run/)).not.toBeInTheDocument();
+  });
+
+  // A snapshot written before the field existed must render as "no scripts",
+  // not as `NaN` — the persisted-DTO lesson this file's header is about.
+  it('renders an older snapshot that predates the script count', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 8, origin: 'https://intranet.example' });
+    });
+    const legacy = { ...report } as Partial<BrowserRunReportSnapshot>;
+    delete legacy.scriptRuns;
+
+    render(<BrowserRunReportCard message={messageFor(legacy as BrowserRunReportSnapshot)} />);
+
+    expect(screen.getByText('1 browser actions')).toBeInTheDocument();
+    expect(screen.queryByText(/Page scripts run/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
   it('shows a failed run WITH an actionable next step, not just "an error"', () => {
     const report = snapshotOf(() => {
       record({ kind: 'tool_call', tool: 'abu-browser__click', ok: false, durationMs: 5, errorClass: 'timeout', origin: 'https://intranet.example' });

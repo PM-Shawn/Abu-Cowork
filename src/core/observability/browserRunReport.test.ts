@@ -235,6 +235,45 @@ describe('browserRunReport', () => {
       ]);
     });
 
+    /**
+     * The 2026-09-04 opt-in made "a script ran unattended" a thing that can
+     * actually happen, so the card has to be able to say it. Derived from the
+     * same `tool_call` signals as `actions.total` — no new signal type.
+     */
+    it('counts page scripts separately from the other actions', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ tool: 'abu-browser__click' }), { conversationId: 'conv-1' });
+      record(toolCall({ tool: 'abu-browser__execute_js' }), { conversationId: 'conv-1' });
+      record(toolCall({ tool: 'abu-browser-bridge__execute_js' }), { conversationId: 'conv-1' });
+      // A script that threw still RAN in the page — the card's claim is
+      // "code executed here", not "code succeeded here".
+      record(toolCall({ tool: 'abu-browser__execute_js', ok: false, errorClass: 'timeout' }), {
+        conversationId: 'conv-1',
+      });
+
+      const vm = report('conv-1', cursor);
+      expect(vm!.actions).toEqual({ total: 4, failed: 1 });
+      expect(vm!.scriptRuns).toBe(3);
+    });
+
+    it('reports zero scripts for a run that only clicked and navigated', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ tool: 'abu-browser__click' }), { conversationId: 'conv-1' });
+      record(toolCall({ tool: 'abu-browser__navigate' }), { conversationId: 'conv-1' });
+
+      expect(report('conv-1', cursor)!.scriptRuns).toBe(0);
+    });
+
+    // A name that does not round-trip is not `execute_js` — the U9/C1 rule
+    // that the authorization layer and the executor must agree on what a name
+    // names applies to the count that reports it, too.
+    it('does not count a suffixed execute_js name as a script run', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ tool: 'abu-browser__execute_js__x' }), { conversationId: 'conv-1' });
+
+      expect(report('conv-1', cursor)!.scriptRuns).toBe(0);
+    });
+
     it('groups denials by the shared reason code and lists their origins', () => {
       const cursor = getBrowserSignalCursor();
       for (const origin of ['https://b.example', 'https://a.example', 'https://b.example']) {

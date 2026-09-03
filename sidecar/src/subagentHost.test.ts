@@ -137,6 +137,7 @@ describe('subagentHost', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'initiatedBy',
         'locale',
         'uiStrings',
         'settingsSnapshot',

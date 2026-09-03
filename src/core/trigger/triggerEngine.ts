@@ -343,6 +343,7 @@ class TriggerEngine {
         allowedTools: callbacks.allowedTools,
         authorizationScopeId,
         runPermissionCeiling: buildTriggerRunPermissionCeiling(actionWithWorkspace),
+        initiatedBy: 'automation',
       });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall

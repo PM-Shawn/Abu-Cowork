@@ -406,6 +406,7 @@ const enUS: TranslationDict = {
     sidecarInterrupted: 'The background service was interrupted and is recovering automatically. Please resend your request in a moment.',
     sidecarUnavailable: 'The background service could not confirm this task\'s state during recovery. Abu stopped waiting and will not replay it automatically, but cannot confirm whether the original task is still running. Check the existing result before deciding to retry.',
     messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',
+    browserDeniedAbort: 'You declined my browser actions several times in a row, so I stopped — I may have misread what you want. Tell me how you\'d like me to proceed?',
     attachmentDuringRun: 'Wait for the current task to finish before sending attachments. Your draft is still here.',
     conversationBusy: 'This conversation already has a running task. Wait for it to finish before starting another.',
     visionUnsupported: 'The current model may not support image/vision input. Try removing the image or switching to a vision-capable model (e.g. Claude, GPT-4o).',

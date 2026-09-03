@@ -406,6 +406,7 @@ const zhCN: TranslationDict = {
     sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
     sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
     messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
+    browserDeniedAbort: '你连续拒绝了我的操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
     attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
     conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
     visionUnsupported: '当前模型可能不支持图片/视觉输入，请尝试移除图片或切换到支持视觉的模型（如 Claude、GPT-4o）。',

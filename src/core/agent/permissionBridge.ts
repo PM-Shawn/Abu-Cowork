@@ -57,6 +57,9 @@ export interface LoopContext {
   /** Unattended provenance inherited by delegated work. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Who started the parent run — inherited by delegated work, so a subagent
+   * spawned from a human-typed turn keeps the human's dialogs. */
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
   /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
   imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */

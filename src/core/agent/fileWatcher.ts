@@ -108,6 +108,7 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
       filePermissionCallback: async () => false,
       blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
       authorizationScopeId,
+      initiatedBy: 'automation',
     });
     console.log(`[FileWatcher] Task completed for rule ${rule.id}: ${fileName}`);
   } catch (err) {

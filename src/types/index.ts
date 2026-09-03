@@ -592,6 +592,14 @@ export interface ToolExecutionContext {
    * scheduled, trigger and IM runs must never open local setup/approval UI.
    */
   interactionMode?: 'foreground' | 'background';
+  /**
+   * Who started this run (`'user'` = a human sent a message; `'automation'` =
+   * scheduler / trigger / IM inbound / file watcher). Shell-owned like
+   * `interactionMode`: stamped by the trusted runtime from the dispatch entry
+   * point, never taken from model input or a sidecar's copy of the context.
+   * The browser gate reads it to decide whether a dialog can be offered.
+   */
+  initiatedBy?: import('../core/agent/runInteractionMode').RunInitiator;
   /** Effective three-tier permission mode for this conversation. */
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
   /**
@@ -636,6 +644,17 @@ export interface ToolExecutionContext {
    * the in-process fallback both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
+  /**
+   * Local execution-only seam for the browser authorization gate to report a
+   * refusal / an allow to the run that owns this tool call. The run counts
+   * consecutive refusals and stops itself after a threshold (see
+   * `browserDenialTracker.ts`). Deliberately a pair of narrow callbacks, NOT
+   * the run's AbortController: a tool must be able to say "the user said no"
+   * without being handed the power to cancel the run for any other reason.
+   * Functions, so they never cross the sidecar wire.
+   */
+  reportBrowserDenial?: () => void;
+  reportBrowserAllow?: () => void;
   /**
    * IM reply target for the current run, set only when the loop was dispatched
    * from an IM channel (channelRouter → agentLoop). Lets outbound tools like

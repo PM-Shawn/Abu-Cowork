@@ -93,7 +93,7 @@ const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 export function resolveSubagentInteractionMode(
   options: Pick<
     SubagentLoopOptions,
-    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId'
+    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy'
   >,
 ): NonNullable<ToolExecutionContext['interactionMode']> {
   return deriveRunInteractionMode(options);
@@ -474,6 +474,8 @@ export interface SubagentLoopOptions {
   /** Parent unattended provenance, retained across delegation boundaries. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Who started the PARENT run — a subagent inherits it, never decides it. */
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */

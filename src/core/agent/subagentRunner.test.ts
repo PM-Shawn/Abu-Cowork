@@ -324,7 +324,8 @@ describe('subagentRunner', () => {
         | 'authorizationScopeId'
         | 'runPermissionCeiling'
         | 'triggerId'
-        | 'scheduledTaskId';
+        | 'scheduledTaskId'
+        | 'initiatedBy';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -348,6 +349,7 @@ describe('subagentRunner', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'initiatedBy',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -941,6 +943,28 @@ describe('subagentRunner', () => {
         triggerId: 'trigger-1',
         scheduledTaskId: 'task-1',
       }));
+
+      // A subagent inherits WHO started the parent run: a human-typed turn in
+      // a scheduled conversation keeps its dialogs across delegation, and an
+      // automation-started one stays unattended.
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-user-parent',
+        conversationId: 'conv-user-parent',
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      } as never)).toEqual(expect.objectContaining({
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-auto-parent',
+        conversationId: 'conv-auto-parent',
+        initiatedBy: 'automation',
+      } as never)).toEqual(expect.objectContaining({ initiatedBy: 'automation' }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-plain-parent',
+        conversationId: 'conv-plain-parent',
+      } as never)).not.toHaveProperty('initiatedBy');
 
       expect(getSubagentRunInheritance({
         loopId: 'loop-im-parent',

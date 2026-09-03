@@ -46,6 +46,7 @@ const loggerWarnMock = vi.fn();
 vi.mock('../logging/logger', () => ({
   createLogger: () => ({
     debug: vi.fn(),
+    info: vi.fn(),
     warn: (...args: unknown[]) => loggerWarnMock(...args),
   }),
 }));
@@ -443,6 +444,7 @@ vi.mock('../../i18n', () => ({
       sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
       sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
+      browserDeniedAbort: '你连续拒绝了我的操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
       attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
       errorEmptyBody: '请求失败但无详情',
@@ -483,6 +485,7 @@ function makeSession(
     interactionMode: 'foreground' | 'background';
     triggerId: string;
     scheduledTaskId: string;
+    initiatedBy: 'user' | 'automation';
   }> = {},
 ) {
   return {
@@ -509,6 +512,9 @@ function makeSession(
         : {}),
       ...(Object.prototype.hasOwnProperty.call(overrides, 'scheduledTaskId')
         ? { scheduledTaskId: overrides.scheduledTaskId }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(overrides, 'initiatedBy')
+        ? { initiatedBy: overrides.initiatedBy }
         : {}),
       ...(Object.prototype.hasOwnProperty.call(overrides, 'workspacePathSnapshot')
         ? { workspacePathSnapshot: overrides.workspacePathSnapshot }
@@ -1297,6 +1303,135 @@ describe('agentLoopRunner', () => {
       const result = await handler({ runId: 'run-1' });
       expect(result).toEqual(['/tmp/global']);
       expect(getAuthorizedWritablePathsMock).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  // U4 — consecutive browser-authorization denials stop the run, and the run
+  // initiator is shell-owned. The tool context only ever sees two narrow
+  // report functions; the AbortController stays on the session.
+  describe('consecutive browser denials (U4)', () => {
+    type InvokeContext = {
+      initiatedBy?: string;
+      reportBrowserDenial?: () => void;
+      reportBrowserAllow?: () => void;
+      shellAbortController?: unknown;
+    };
+
+    async function invokeOnce(runId = 'run-1'): Promise<InvokeContext> {
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({
+        runId,
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: {},
+      });
+      return executeAnyToolMock.mock.calls.at(-1)?.[4] as InvokeContext;
+    }
+
+    it('stamps the session-owned initiator onto the tool context, ignoring a forged wire value', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ initiatedBy: 'automation', scheduledTaskId: 'task-1' }));
+
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({
+        runId: 'run-1',
+        toolName: 'read_file',
+        input: { path: '/tmp/x' },
+        context: { initiatedBy: 'user', interactionMode: 'foreground' },
+      });
+
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
+        initiatedBy: 'automation',
+        interactionMode: 'background',
+      }));
+    });
+
+    it('exposes only the two report functions — never the abort controller', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession());
+
+      const context = await invokeOnce();
+
+      expect(typeof context.reportBrowserDenial).toBe('function');
+      expect(typeof context.reportBrowserAllow).toBe('function');
+      expect(context).not.toHaveProperty('shellAbortController');
+      expect(context).not.toHaveProperty('browserDenials');
+    });
+
+    it('two denials in a row abort the run, append the closing message and record the cause', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-1', session);
+
+      const context = await invokeOnce();
+      context.reportBrowserDenial!();
+      expect(session.shellAbortController.signal.aborted).toBe(false);
+      expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
+
+      context.reportBrowserDenial!();
+
+      expect(session.shellAbortController.signal.aborted).toBe(true);
+      expect(getRunSession('run-1')?.abortCause).toBe('consecutive_browser_denials');
+      expect(chatDeltaAddMessageMock).toHaveBeenCalledTimes(1);
+      expect(chatDeltaAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
+        role: 'assistant',
+        content: '你连续拒绝了我的操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
+        loopId: 'loop-1',
+      }));
+
+      // The abort actually stops the loop: the next tool call is refused at
+      // the shell boundary, so no further tool executes.
+      const callsBefore = executeAnyToolMock.mock.calls.length;
+      await expect(invokeOnce()).rejects.toMatchObject({ message: expect.stringContaining('stopping') });
+      expect(executeAnyToolMock.mock.calls.length).toBe(callsBefore);
+    });
+
+    it('an allow between two denials resets the streak (deny, allow, deny → no abort)', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-1', session);
+
+      const context = await invokeOnce();
+      context.reportBrowserDenial!();
+      context.reportBrowserAllow!();
+      context.reportBrowserDenial!();
+
+      expect(session.shellAbortController.signal.aborted).toBe(false);
+      expect(getRunSession('run-1')?.abortCause).toBeUndefined();
+      expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
+    });
+
+    it('counts across tool calls of the same run — the tracker lives on the session, not the call', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      registerRunSession('run-1', session);
+
+      const first = await invokeOnce();
+      first.reportBrowserDenial!();
+      const second = await invokeOnce();
+      second.reportBrowserDenial!();
+
+      expect(session.shellAbortController.signal.aborted).toBe(true);
+    });
+
+    it('does not count for a different run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const a = makeSession({ conversationId: 'conv-1', loopId: 'loop-a' });
+      const b = makeSession({ conversationId: 'conv-1', loopId: 'loop-b' });
+      registerRunSession('run-a', a);
+      registerRunSession('run-b', b);
+
+      (await invokeOnce('run-a')).reportBrowserDenial!();
+      (await invokeOnce('run-b')).reportBrowserDenial!();
+
+      expect(a.shellAbortController.signal.aborted).toBe(false);
+      expect(b.shellAbortController.signal.aborted).toBe(false);
     });
   });
 

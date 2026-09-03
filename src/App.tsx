@@ -392,7 +392,7 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoopDispatched(convId, text).catch((err) => {
+      runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {

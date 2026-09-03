@@ -577,6 +577,9 @@ class IMChannelRouter {
             ownedAbortController = controller;
           },
           runPermissionCeiling: buildIMRunPermissionCeiling(capability),
+          // An inbound chat message is automation from the desktop's point of
+          // view: nobody is at the screen to answer a dialog.
+          initiatedBy: 'automation',
           imContext: {
             platform: message.platform,
             workspacePath,

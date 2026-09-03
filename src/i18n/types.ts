@@ -407,6 +407,8 @@ export interface TranslationDict {
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
     messageSaveFailed: string;
+    /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
+    browserDeniedAbort: string;
     attachmentDuringRun: string;
     conversationBusy: string;
     /** Model likely doesn't support image/vision input. */

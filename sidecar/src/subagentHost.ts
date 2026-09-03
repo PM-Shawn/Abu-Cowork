@@ -81,6 +81,7 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -237,6 +238,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
     throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
+  }
+  if (params.initiatedBy !== undefined && params.initiatedBy !== 'user' && params.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: initiatedBy must be 'user' or 'automation'");
   }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
@@ -451,6 +455,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    initiatedBy: params.initiatedBy,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 

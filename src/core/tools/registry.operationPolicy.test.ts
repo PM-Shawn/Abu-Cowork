@@ -449,6 +449,218 @@ describe('browser gate — operation-class policy', () => {
 
       expect(sources).toEqual(['scheduler']);
     });
+
+    // U4 (controller ruling): the run MODE follows who started THIS run, not
+    // where the conversation came from. Same scheduled conversation, two
+    // runs: the scheduler's tick is unattended; the human's typed message is
+    // attended and gets the dialog.
+    describe('run initiator', () => {
+      const SCHEDULED_CONV = 'run-5';
+
+      beforeEach(() => {
+        useChatStore.setState({
+          conversations: {
+            [SCHEDULED_CONV]: { id: SCHEDULED_CONV, scheduledTaskId: 'task-9' },
+          } as never,
+        });
+      });
+
+      it('the scheduler tick in a scheduled conversation is unattended — denied by policy, no dialog', async () => {
+        const confirm = vi.fn(async () => true);
+
+        const decision = await checkToolApproval(
+          'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+          {
+            conversationId: SCHEDULED_CONV,
+            interactionMode: 'background',
+            initiatedBy: 'automation',
+            runPermissionCeiling: buildScheduledRunPermissionCeiling(['abu-browser__navigate']),
+          } as never,
+          confirm as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+        // The callback may be NOTIFIED of the refusal (deniedNotice) but is
+        // never ASKED — a genuine confirmation request carries no notice.
+        for (const [info] of confirm.mock.calls as unknown as Array<[{ deniedNotice?: string }]>) {
+          expect(info.deniedNotice).toBeDefined();
+        }
+      });
+
+      it('a human-typed message in the SAME scheduled conversation is attended — the dialog is offered', async () => {
+        const confirm = vi.fn(async () => true);
+
+        const decision = await checkToolApproval(
+          'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+          { conversationId: SCHEDULED_CONV, initiatedBy: 'user' } as never,
+          confirm as never,
+        );
+
+        expect(decision.decision).toBe('allow');
+        expect(confirm).toHaveBeenCalledTimes(1);
+        const [info] = confirm.mock.calls[0] as unknown as [{ kind?: string; deniedNotice?: string }];
+        expect(info.kind).toBe('browser');
+        expect(info.deniedNotice).toBeUndefined();
+      });
+
+      it('a human-typed message still respects the dialog\'s answer', async () => {
+        const decision = await checkToolApproval(
+          'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+          { conversationId: SCHEDULED_CONV, initiatedBy: 'user' } as never,
+          (async () => false) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      });
+
+      it('a "user" initiator cannot strip a run of its ceiling — still unattended', async () => {
+        const confirm = vi.fn(async () => true);
+
+        const decision = await checkToolApproval(
+          'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+          {
+            conversationId: SCHEDULED_CONV,
+            initiatedBy: 'user',
+            runPermissionCeiling: buildScheduledRunPermissionCeiling(['abu-browser__navigate']),
+          } as never,
+          confirm as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+        for (const [info] of confirm.mock.calls as unknown as Array<[{ deniedNotice?: string }]>) {
+          expect(info.deniedNotice).toBeDefined();
+        }
+      });
+    });
+  });
+
+  // U4: every refusal the browser gate issues is reported to the run through
+  // the narrow `reportBrowserDenial` seam (and an allow through
+  // `reportBrowserAllow`), so consecutive ones can stop the loop. Refusals
+  // from OTHER gates (commands, files) must not touch it.
+  describe('consecutive-denial reporting', () => {
+    function reporters() {
+      return {
+        reportBrowserDenial: vi.fn(),
+        reportBrowserAllow: vi.fn(),
+      };
+    }
+
+    it('an attended dialog "deny" is reported as a browser denial', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+        { conversationId: 'conv-1', ...r } as never,
+        (async () => false) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
+
+    it('an attended dialog "allow" resets the streak', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+        { conversationId: 'conv-1', ...r } as never,
+        (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a read-only action that passes without a dialog also resets the streak', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', {},
+        { conversationId: 'conv-1', ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('an unattended policy refusal (master switch off) counts as a denial', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { ...unattended, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
+
+    it('an unattended "ask" refused (or timed out) at the approval seam counts as a denial', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserOperationPolicy: policyWith('unattended', 'interactive', 'ask'),
+      });
+      setUnattendedConfirmationResolver(async () => ({ approved: false, reason: 'timeout' }));
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { ...unattended, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
+    });
+
+    it('an unattended action approved by policy and site grant resets the streak', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { ...unattended, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a blocked COMMAND is not a browser denial', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'run_command', { command: 'rm -rf /' },
+        { conversationId: 'conv-1', ...r } as never,
+        (async () => false) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
+
+    it('a non-browser tool that passes does not touch the streak either', async () => {
+      const r = reporters();
+
+      await checkToolApproval(
+        'run_command', { command: 'ls' },
+        { conversationId: 'conv-1', ...r } as never,
+        (async () => true) as never,
+      );
+
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
   });
 
   // I3: an unattended run must not be able to read a site the user blocked.

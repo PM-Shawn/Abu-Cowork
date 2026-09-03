@@ -103,6 +103,8 @@ export interface AgentRunParams {
     runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
     workspacePathSnapshot?: string | null;
     imContext?: IMContext;
+    /** Who started the run (`'user'` | `'automation'`); see RunInitiator. */
+    initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
     prePersistedUserMessageId?: string;
   };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
@@ -167,6 +169,9 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   }
   if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
+  }
+  if (options.initiatedBy !== undefined && options.initiatedBy !== 'user' && options.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: options.initiatedBy must be 'user' or 'automation'");
   }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
@@ -965,6 +970,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       authorizationScopeId: params.options.authorizationScopeId,
       runPermissionCeiling: params.options.runPermissionCeiling,
       imContext: params.options.imContext,
+      initiatedBy: params.options.initiatedBy,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,

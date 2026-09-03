@@ -264,6 +264,9 @@ class SchedulerEngine {
         allowedTools,
         authorizationScopeId,
         runPermissionCeiling,
+        // The tick started this run, not a person — unattended even if the
+        // user later types into the same conversation (that send is theirs).
+        initiatedBy: 'automation',
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver

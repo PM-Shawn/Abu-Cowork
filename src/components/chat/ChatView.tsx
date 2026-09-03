@@ -787,6 +787,9 @@ export default function ChatView({
       dispatch = await runAgentLoopDispatched(convId, text, {
         images,
         onMessageTaken: () => onAccepted?.(),
+        // A human typed this — attended, even inside a scheduled/trigger
+        // conversation (the browser gate offers dialogs on that basis).
+        initiatedBy: 'user',
       });
     } catch (error) {
       // The runner deliberately keeps persistence/transport failures as

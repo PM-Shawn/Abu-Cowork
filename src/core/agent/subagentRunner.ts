@@ -103,10 +103,10 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy'> {
   const imReplyTarget = loopContext?.imReplyTarget;
   const runPermissionCeiling = loopContext?.runPermissionCeiling;
   const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
@@ -127,6 +127,7 @@ export function getSubagentRunInheritance(
     ...(loopContext?.scheduledTaskId !== undefined
       ? { scheduledTaskId: loopContext.scheduledTaskId }
       : {}),
+    ...(loopContext?.initiatedBy !== undefined ? { initiatedBy: loopContext.initiatedBy } : {}),
     ...(imContext ? { imContext } : {}),
     ...(workspacePath !== undefined
       ? { workspaceReader: { getCurrentPath: () => workspacePath } }
@@ -197,6 +198,7 @@ export interface SubagentRunParams {
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -360,6 +362,9 @@ function buildTrustedSubagentToolContext(
     agentRunId: session.runId,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
+    // Inherited from the parent run at delegation time — the sidecar's copy
+    // is not consulted, same as `interactionMode` above.
+    initiatedBy: session.options.initiatedBy,
     abortSignal: session.options.signal,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
@@ -687,6 +692,7 @@ function buildSubagentRunParams(
     runPermissionCeiling: options.runPermissionCeiling,
     triggerId: options.triggerId,
     scheduledTaskId: options.scheduledTaskId,
+    initiatedBy: options.initiatedBy,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,

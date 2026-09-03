@@ -81,6 +81,20 @@ function readJsonBody(req) {
   });
 }
 
+/**
+ * Abort-to-main: cancel the in-flight browser action when the client
+ * connection closes before a response was ever sent (the run was stopped).
+ *
+ * This listens on the RESPONSE's `close`, not the request's. Verified with a
+ * raw TCP client: `req`'s `close` event fires immediately once the request
+ * body has been fully read — while the socket is still open and long before
+ * the response is written — so it fires on every ordinary request and cannot
+ * distinguish "client vanished" from "client is just waiting for the reply."
+ * `res`'s `close` only fires early (`res.writableEnded === false`) on a
+ * genuine premature disconnect; on a normal round trip it fires once, after
+ * `res.end()`, with `writableEnded === true`. That flag is therefore both
+ * necessary and sufficient — no extra local "did we finish" flag needed.
+ */
 async function handleRequest(req, res) {
   if (req.method !== 'POST' || req.url !== '/action') {
     sendJson(res, 404, { success: false, error: 'Not found' });
@@ -91,16 +105,35 @@ async function handleRequest(req, res) {
     return;
   }
 
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) controller.abort();
+  };
+  res.on('close', onClose);
+
   try {
     const { action, payload } = await readJsonBody(req);
     const { performBrowserAutomation } = require('./browserHost.cjs');
-    const data = await performBrowserAutomation(action, payload);
-    sendJson(res, 200, { success: true, data });
+    const data = await performBrowserAutomation(action, payload, { signal: controller.signal });
+    res.off('close', onClose);
+    // On a premature disconnect `res.writableEnded` is actually still FALSE
+    // here (the response body was never written), so this guard does not
+    // block that case — it passes, and `sendJson()` runs. That write is a
+    // harmless no-op: Node's `http.ServerResponse` routes a write on an
+    // already-destroyed socket to an internal no-op callback rather than
+    // throwing, so nothing inside this handler can be surprised by it. The
+    // guard is kept for the normal-path case — symmetry with the catch
+    // branch below, and skipping a JSON.stringify + header build whose result
+    // would just be discarded.
+    if (!res.writableEnded) sendJson(res, 200, { success: true, data });
   } catch (error) {
-    sendJson(res, 200, {
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    res.off('close', onClose);
+    if (!res.writableEnded) {
+      sendJson(res, 200, {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

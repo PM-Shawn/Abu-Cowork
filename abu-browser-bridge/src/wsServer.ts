@@ -13,8 +13,9 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type Server as HTTPServer } from 'http';
 import { randomBytes } from 'crypto';
-import type { BridgeRequest, BridgeResponse } from './types.js';
+import type { BridgeCancelMessage, BridgeRequest, BridgeResponse } from './types.js';
 import { PKG_VERSION } from './version.js';
+import { linkAbortSignal } from './abortSignal.js';
 
 const DEFAULT_WS_PORT = 9876;
 const DISCOVERY_PORT = 9875;
@@ -236,11 +237,19 @@ function handleResponse(msg: BridgeResponse): void {
 
 /**
  * Send a request to the Chrome Extension and wait for response.
+ *
+ * `signal`, when given, lets the caller stop waiting before the extension
+ * responds (e.g. the conversation run was stopped): the pending request is
+ * dropped immediately, a best-effort `{type:'cancel', requestId}` message is
+ * sent so the extension can stop working on it, and the promise rejects with
+ * an `AbortError` instead of hanging until `timeoutMs`. If `signal` is
+ * already aborted, the request is never sent at all.
  */
 export function sendToExtension(
   action: string,
   payload: Record<string, unknown> = {},
-  timeoutMs: number = 30_000
+  timeoutMs: number = 30_000,
+  signal?: AbortSignal
 ): Promise<BridgeResponse> {
   return new Promise((resolve, reject) => {
     if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
@@ -250,15 +259,48 @@ export function sendToExtension(
       return;
     }
 
+    if (signal?.aborted) {
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+      return;
+    }
+
     const id = generateId();
     const request: BridgeRequest = { id, action, payload };
 
+    const unlink = linkAbortSignal(signal, () => {
+      const pending = pendingRequests.get(id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        pendingRequests.delete(id);
+      }
+      if (extensionSocket && extensionSocket.readyState === WebSocket.OPEN) {
+        const cancel: BridgeCancelMessage = { type: 'cancel', requestId: id };
+        try {
+          extensionSocket.send(JSON.stringify(cancel));
+        } catch (err) {
+          console.error('[abu-bridge] Failed to send cancel to extension:', err);
+        }
+      }
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    });
+
     const timer = setTimeout(() => {
       pendingRequests.delete(id);
+      unlink();
       reject(new Error(`Request timed out after ${timeoutMs}ms (action: ${action})`));
     }, timeoutMs);
 
-    pendingRequests.set(id, { resolve, reject, timer });
+    pendingRequests.set(id, {
+      resolve: (response) => {
+        unlink();
+        resolve(response);
+      },
+      reject: (error) => {
+        unlink();
+        reject(error);
+      },
+      timer,
+    });
 
     extensionSocket.send(JSON.stringify(request));
   });

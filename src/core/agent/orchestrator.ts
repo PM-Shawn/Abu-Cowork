@@ -15,6 +15,7 @@ import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
+import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
 import type { PromptSection } from '../llm/promptSections';
 import { sectionsToString, orderSectionsForCaching } from '../llm/promptSections';
 
@@ -687,6 +688,13 @@ ${isWindows()
     browserNote += `
 - Only when the user explicitly asks to use their existing Chrome tabs, cookies, extensions, or signed-in state, call use_skill("Abu-Chrome-Bridge") and use the \`abu-browser-bridge__\` tools${chromeBridgeConnected ? ' (the Chrome bridge is connected)' : ''}
 - Do not substitute the \`computer\` tool or launch a system browser for web-page screenshots and interaction unless the user explicitly asks for whole-desktop Computer Use or an external browser`;
+
+    // How to TALK about browser work, as opposed to which tool to reach for.
+    // Unconditional: these hold for every browser path above, because what may
+    // be said about a result is not a property of the runtime that produced it.
+    // Shared with `subagentLoop.ts`'s prompt build — delegations own browser
+    // tabs per run, and the two copies must not drift.
+    browserNote += `\n${BROWSER_NARRATION_RULES}`;
 
     if (playwrightConnected) {
       browserNote += `

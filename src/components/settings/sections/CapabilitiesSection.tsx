@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CheckCircle2,
   ChevronRight,
   Chrome,
-  Circle,
-  CircleAlert,
   Eye,
   Globe2,
   LoaderCircle,
@@ -12,18 +9,10 @@ import {
   MousePointer2,
   RefreshCw,
 } from 'lucide-react';
-import { format, useI18n } from '@/i18n';
-import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
+import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Select } from '@/components/ui/select';
-import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
-import {
-  browserOperationStatesFor,
-  type BrowserOperationClass,
-  type BrowserOperationState,
-} from '@/core/permissions/browserToolPolicy';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useToastStore } from '@/stores/toastStore';
 import {
@@ -62,9 +51,24 @@ import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import {
   ChromeSetupView,
   ComputerUseSetupView,
+  SetupHeader,
+  settingsCardClass,
 } from './CapabilitySetupView';
+import {
+  BrowserPermissionCards,
+  BrowserSitePermissionsPage,
+  type BrowserBackend,
+} from './BrowserPermissionCards';
 
-type CapabilitySetupView = CapabilitySetupTarget | null;
+/**
+ * Where the section is currently pointed. `CapabilitySetupTarget` is only what
+ * a RUNNING TASK can ask for ('chrome' | 'computer') and is a persisted store
+ * field — it is deliberately NOT widened here. The two extra destinations are
+ * user-driven drill-ins with no task counterpart, so they live in local view
+ * state only and the store keeps the exact shape it had.
+ */
+type CapabilityDetailView = CapabilitySetupTarget | 'builtin' | 'sites' | null;
+
 
 interface CapabilitiesSectionProps {
   setupTarget?: CapabilitySetupTarget;
@@ -76,43 +80,85 @@ interface CapabilitiesSectionProps {
   onSetupRelaunch?: () => void;
 }
 
-type CapabilityCardProps = {
-  icon: typeof Globe2;
-  title: string;
-  description: string;
-  status: CapabilityStatus;
-  statusLabel: string;
-  statusNote: string;
-  checking?: boolean;
-  action?: React.ReactNode;
-  children?: React.ReactNode;
-};
+/**
+ * The only three outcomes a capability card reports. The five runtime status
+ * codes collapse onto them because a badge answers "can I use this right now",
+ * not "which subsystem failed" — the card's one-line subtitle carries the
+ * specific reason, so nothing is lost by not spelling it out twice.
+ *
+ * `checking` is not a fourth outcome: it is the transient look of a probe in
+ * flight, and the badge returns to one of the three as soon as it lands.
+ */
+type StatusBadgeTone = 'ready' | 'neutral' | 'attention';
 
-function statusTone(code: CapabilityStatusCode): string {
+function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
   switch (code) {
     case 'ready':
-      return 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]';
+      return 'ready';
+    // Nothing to set up — the shell does not offer this capability at all.
+    case 'unavailable':
+      return 'neutral';
     case 'setup-required':
-      return 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]';
     case 'permission-required':
     case 'connection-lost':
-      return 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]';
-    case 'unavailable':
-      return 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]';
+      return 'attention';
   }
 }
 
-function CapabilityCard({
+function StatusBadge({
+  label,
+  tone,
+  checking = false,
+}: {
+  label: string;
+  tone: StatusBadgeTone;
+  checking?: boolean;
+}) {
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
+      checking
+        ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
+        : tone === 'ready'
+          ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
+          : tone === 'attention'
+            ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
+            : 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)]',
+    )}>
+      {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
+      {label}
+    </span>
+  );
+}
+
+/**
+ * A channel on the overview: name, one state, one line, one named button.
+ *
+ * The ROW IS NOT CLICKABLE and carries no chevron of its own — a chevron on a
+ * whole row reads as "expands in place", which is not what happens. The only
+ * way onward is the button, and the button says where it goes.
+ */
+function ChannelCard({
   icon: Icon,
   title,
-  description,
-  status,
+  subtitle,
   statusLabel,
-  statusNote,
+  statusTone,
   checking = false,
-  action,
-  children,
-}: CapabilityCardProps) {
+  actionLabel,
+  onAction,
+  actionDisabled = false,
+}: {
+  icon: typeof Globe2;
+  title: string;
+  subtitle: string;
+  statusLabel: string;
+  statusTone: StatusBadgeTone;
+  checking?: boolean;
+  actionLabel: string;
+  onAction: () => void;
+  actionDisabled?: boolean;
+}) {
   return (
     <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
       <div className="flex items-start gap-3">
@@ -122,244 +168,19 @@ function CapabilityCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">{title}</h4>
-            <span className={cn(
-              'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
-              checking
-                ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
-                : statusTone(status.code),
-            )}>
-              {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
-              {statusLabel}
-            </span>
+            <StatusBadge label={statusLabel} tone={statusTone} checking={checking} />
           </div>
-          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">{description}</p>
+          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">{subtitle}</p>
         </div>
-        {action && <div className="shrink-0">{action}</div>}
-      </div>
-
-      {children}
-
-      <div className="mt-3 flex items-start gap-2 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
-        {status.code === 'ready'
-          ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-success)]" />
-          : status.code === 'setup-required'
-            ? <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-            : <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />}
-        <span>{statusNote}</span>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Persistent per-site browser-automation verdicts, written from the
- * confirmation dialog ("always allow this site" / "block this site"). Listed
- * here so every standing verdict is visible, switchable between allow and
- * block, and removable — removing restores ask-every-time for that site.
- */
-function BrowserSitePermissionsList() {
-  const { t } = useI18n();
-  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
-  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
-  const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
-  const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
-  const origins = Object.keys(sitePermissions).sort();
-  const verdictOptions = [
-    { value: 'allowed', label: t.settings.browserSitePermsAllowed },
-    { value: 'denied', label: t.settings.browserSitePermsDenied },
-  ];
-  // U5 authorization visibility: "allowed" is also what a run with nobody
-  // watching acts on, and this list never said so. The per-row tag answers
-  // "would a scheduled task use this?" without making the user reconstruct it
-  // from the master switch plus the high-risk rule.
-  const authorization = summarizeBrowserAuthorization(sitePermissions, allowUnattended);
-  const reachable = new Set(authorization.reachableUnattended);
-  const highRisk = new Set(authorization.highRiskAllowed);
-  const reachSummary = !authorization.masterSwitchOn
-    ? t.settings.browserUnattendedReachOff
-    : authorization.reachableUnattended.length === 0
-      ? t.settings.browserUnattendedReachNone
-      : format(t.settings.browserUnattendedReachSummary, {
-        count: authorization.reachableUnattended.length,
-      });
-
-  return (
-    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
-        {t.settings.browserSitePermsTitle}
-      </h4>
-      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-        {t.settings.browserSitePermsDesc}
-      </p>
-      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-        {reachSummary}
-      </p>
-      {origins.length === 0 ? (
-        <p className="mt-3 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
-          {t.settings.browserSitePermsEmpty}
-        </p>
-      ) : (
-        <ul className="mt-3 divide-y divide-[var(--abu-border)] border-t border-[var(--abu-border)]">
-          {origins.map((origin) => (
-            <li key={origin} className="flex items-center gap-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
-                {origin}
-              </span>
-              {sitePermissions[origin] === 'allowed' && (
-                <span
-                  className={cn(
-                    'shrink-0 rounded-md px-1.5 py-0.5 text-caption',
-                    highRisk.has(origin)
-                      ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
-                      : reachable.has(origin)
-                        ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
-                        : 'bg-[var(--abu-bg-base)] text-[var(--abu-text-tertiary)]',
-                  )}
-                >
-                  {highRisk.has(origin)
-                    ? t.settings.browserHighRiskTag
-                    : reachable.has(origin)
-                      ? t.settings.browserUnattendedReachTag
-                      : t.settings.browserAttendedOnlyTag}
-                </span>
-              )}
-              <Select
-                variant="inline"
-                value={sitePermissions[origin]}
-                options={verdictOptions}
-                onChange={(v) => setBrowserSitePermission(origin, v as 'allowed' | 'denied')}
-                className={cn(
-                  'shrink-0',
-                  sitePermissions[origin] === 'allowed'
-                    ? 'text-[var(--abu-success)]'
-                    : 'text-[var(--abu-danger)]',
-                )}
-              />
-              <button
-                type="button"
-                onClick={() => removeBrowserSitePermission(origin)}
-                className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                {t.settings.browserSitePermsRevoke}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/**
- * The operation-class policy: three rows (read-only / interaction &
- * navigation / scripting) × two columns (attended / unattended), plus the
- * master switch that turns the whole unattended browser surface off.
- *
- * The master switch is above the grid because it OVERRIDES it — with the
- * switch off, no unattended cell can allow anything, and the grid's unattended
- * column is disabled to say so rather than showing settings that do nothing.
- */
-function BrowserOperationPolicySection() {
-  const { t } = useI18n();
-  const policy = useSettingsStore((s) => s.browserOperationPolicy);
-  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
-  const setBrowserOperationState = useSettingsStore((s) => s.setBrowserOperationState);
-  const setAllowUnattendedBrowser = useSettingsStore((s) => s.setAllowUnattendedBrowser);
-
-  const stateLabels: Record<BrowserOperationState, string> = {
-    allow: t.settings.browserOpStateAllow,
-    ask: t.settings.browserOpStateAsk,
-    deny: t.settings.browserOpStateDeny,
-  };
-  // The option list is asked for per cell, not shared: unattended scripting
-  // offers no "allow" (see `browserOperationStatesFor`), and offering one the
-  // gate would refuse to honor is worse than offering fewer.
-  const optionsFor = (runMode: 'attended' | 'unattended', opClass: BrowserOperationClass) =>
-    browserOperationStatesFor(runMode, opClass).map((state) => ({
-      value: state,
-      label: stateLabels[state],
-    }));
-  const rows: Array<{
-    key: 'readOnly' | 'interactive' | 'scripting';
-    opClass: BrowserOperationClass;
-    label: string;
-  }> = [
-    { key: 'readOnly', opClass: 'read-only', label: t.settings.browserOpClassReadOnly },
-    { key: 'interactive', opClass: 'interactive', label: t.settings.browserOpClassInteractive },
-    { key: 'scripting', opClass: 'scripting', label: t.settings.browserOpClassScripting },
-  ];
-
-  return (
-    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
-        {t.settings.browserOpPolicyTitle}
-      </h4>
-      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-        {t.settings.browserOpPolicyDesc}
-      </p>
-
-      <div className="mt-3 flex items-start gap-3 border-t border-[var(--abu-border)] pt-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-body text-[var(--abu-text-secondary)]">
-            {t.settings.browserUnattendedMasterSwitchLabel}
-          </p>
-          <p className="mt-0.5 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-            {t.settings.browserUnattendedMasterSwitchDesc}
-          </p>
-          {/*
-            U6 — the two browser channels do not protect an unattended run
-            equally, and only the built-in one can refuse BEFORE acting on an
-            expired session. Shown only while the switch is on: it is advice
-            about a risk the user has actually taken on.
-          */}
-          {allowUnattended && (
-            <p className="mt-1.5 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-              {t.settings.browserUnattendedChannelCaveat}
-            </p>
-          )}
-        </div>
-        <Toggle
-          checked={allowUnattended}
-          onChange={() => setAllowUnattendedBrowser(!allowUnattended)}
-          size="lg"
-          className="mt-0.5 shrink-0"
-        />
-      </div>
-
-      <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
-        <div className="flex items-center gap-3 pb-1">
-          <span className="min-w-0 flex-1" />
-          <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-            {t.settings.browserOpPolicyColumnAttended}
-          </span>
-          <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-            {t.settings.browserOpPolicyColumnUnattended}
-          </span>
-        </div>
-        <ul className="divide-y divide-[var(--abu-border)]">
-          {rows.map((row) => (
-            <li key={row.key} className="flex items-center gap-3 py-2">
-              <span className="min-w-0 flex-1 text-body text-[var(--abu-text-secondary)]">
-                {row.label}
-              </span>
-              <Select
-                variant="inline"
-                value={policy.attended[row.key]}
-                options={optionsFor('attended', row.opClass)}
-                onChange={(v) => setBrowserOperationState('attended', row.key, v as 'allow' | 'deny' | 'ask')}
-                className="w-28 shrink-0 justify-center"
-              />
-              <Select
-                variant="inline"
-                value={policy.unattended[row.key]}
-                options={optionsFor('unattended', row.opClass)}
-                onChange={(v) => setBrowserOperationState('unattended', row.key, v as 'allow' | 'deny' | 'ask')}
-                disabled={!allowUnattended}
-                className={cn('w-28 shrink-0 justify-center', !allowUnattended && 'opacity-50')}
-              />
-            </li>
-          ))}
-        </ul>
+        <button
+          type="button"
+          onClick={onAction}
+          disabled={actionDisabled}
+          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {actionLabel}
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
       </div>
     </div>
   );
@@ -400,9 +221,12 @@ export default function CapabilitiesSection({
   const [chromeChecking, setChromeChecking] = useState(false);
   const [chromeExtensionConnected, setChromeExtensionConnected] = useState<boolean>();
   const [computerChecking, setComputerChecking] = useState(false);
-  const [setupView, setSetupView] = useState<CapabilitySetupView>(
+  const [setupView, setSetupView] = useState<CapabilityDetailView>(
     setupTarget ?? null,
   );
+  // Which channel's detail page the site list was opened from, so "back" lands
+  // where the user actually was rather than always on the built-in browser.
+  const [sitesOrigin, setSitesOrigin] = useState<BrowserBackend>('builtin');
   const [setupRequestedByTask, setSetupRequestedByTask] =
     useState(requestedByTask);
   const [chromeSetupWorking, setChromeSetupWorking] = useState(false);
@@ -465,12 +289,15 @@ export default function CapabilitiesSection({
     }),
   );
 
+  // Three outcomes, and only three. `unavailable` reads as "not connected"
+  // rather than "needs setup" because there is nothing the user could set up;
+  // the subtitle underneath says which shell limitation caused it.
   const statusLabels: Record<CapabilityStatusCode, string> = {
     ready: t.settings.capabilityStatusReady,
     'setup-required': t.settings.capabilityStatusSetupRequired,
-    'permission-required': t.settings.capabilityStatusPermissionRequired,
-    'connection-lost': t.settings.capabilityStatusConnectionLost,
-    unavailable: t.settings.capabilityStatusUnavailable,
+    'permission-required': t.settings.capabilityStatusSetupRequired,
+    'connection-lost': t.settings.capabilityStatusSetupRequired,
+    unavailable: t.settings.capabilityStatusNotConnected,
   };
 
   const handleBrowserRetry = async () => {
@@ -591,6 +418,16 @@ export default function CapabilitiesSection({
     setSetupRequestedByTask(false);
     setSetupView('computer');
     void syncComputerPermissions();
+  };
+
+  const openBuiltinBrowser = () => {
+    setSetupRequestedByTask(false);
+    setSetupView('builtin');
+  };
+
+  const openSitePermissions = (origin: BrowserBackend) => {
+    setSitesOrigin(origin);
+    setSetupView('sites');
   };
 
   useEffect(() => {
@@ -833,6 +670,127 @@ export default function CapabilitiesSection({
           ? t.settings.capabilityComputerPermissionMissing
           : t.settings.capabilityComputerDesc;
 
+  const browserStatusNote = browserStatus.code === 'unavailable'
+    ? t.settings.capabilityBuiltinBrowserUnavailable
+    : browserStatus.code === 'connection-lost'
+      ? t.settings.capabilityBuiltinBrowserDisconnected
+      : t.settings.capabilityBuiltinBrowserScope;
+
+  const chromeChecking_ = chromeChecking || chromeRuntimeChecking;
+  // The Chrome bridge is optional and has a "never set up" state that is not a
+  // problem, so it reads as not-connected rather than needs-setup.
+  const chromeNeverConnected = !chromeBridge
+    || !chromeBridgeEnabled
+    || chromeStatus.code === 'setup-required';
+  const chromeStatusLabel = chromeChecking_
+    ? t.settings.capabilityStatusChecking
+    : chromeNeverConnected
+      ? t.settings.capabilityStatusNotConnected
+      : statusLabels[chromeStatus.code];
+  const chromeStatusTone: StatusBadgeTone = chromeNeverConnected
+    ? 'neutral'
+    : badgeToneFor(chromeStatus.code);
+  /*
+    Never having connected Chrome is not a fault — the badge already says
+    "not connected" and the button already says "Connect Chrome", so restating
+    it in the subtitle would spend the card's one line on nothing. That line
+    goes to what connecting would BUY. A channel that was connected and then
+    broke is a different matter, and keeps its diagnosis.
+  */
+  const chromeSubtitle = chromeChecking_
+    ? t.settings.capabilityStatusChecking
+    : chromeStatus.code === 'connection-lost'
+      ? t.settings.capabilityChromeDisconnected
+      : chromeStatus.code === 'unavailable'
+        ? t.settings.capabilityChromeProbeUnavailable
+        : chromeNeverConnected
+          ? t.settings.capabilityMyChromeSubtitle
+          : t.settings.capabilityMyChromeScope;
+
+  // Computer Use being switched off is not a fault and not a missing
+  // connection; it renders in the neutral tone with its own word for it.
+  const computerStatusLabel = computerChecking
+    ? t.settings.capabilityStatusChecking
+    : !computerUseEnabled
+      ? t.settings.capabilityStatusOff
+      : statusLabels[computerDisplayStatus.code];
+  const computerStatusTone: StatusBadgeTone = !computerUseEnabled
+    ? 'neutral'
+    : badgeToneFor(computerDisplayStatus.code);
+
+  const overviewLabel = t.settings.capabilityOverview;
+  const builtinTrail = [overviewLabel, t.settings.capabilityBuiltinBrowser];
+  const chromeTrail = [overviewLabel, t.settings.capabilityMyChrome];
+  const computerTrail = [overviewLabel, t.settings.computerUse];
+  const sitesTrail = [
+    ...(sitesOrigin === 'chrome' ? chromeTrail : builtinTrail),
+    t.settings.browserSitePermsTitle,
+  ];
+
+  /** Breadcrumb navigation: index 0 is the overview, anything deeper is the
+   *  detail page the current page hangs off. */
+  const navigateTrail = (origin: BrowserBackend) => (index: number) => {
+    if (index === 0) {
+      cancelSetup();
+      return;
+    }
+    setSetupView(origin);
+  };
+
+  if (setupView === 'sites') {
+    return (
+      <BrowserSitePermissionsPage
+        trail={sitesTrail}
+        onNavigate={navigateTrail(sitesOrigin)}
+      />
+    );
+  }
+
+  if (setupView === 'builtin') {
+    return (
+      <div className="space-y-7">
+        <SetupHeader
+          icon={Globe2}
+          title={t.settings.capabilityBuiltinBrowser}
+          description={t.settings.capabilityBuiltinBrowserDesc}
+          onBack={cancelSetup}
+          breadcrumb={builtinTrail}
+        />
+
+        <div className="flex flex-wrap items-center gap-3 border-y border-[var(--abu-border)] py-4">
+          <StatusBadge
+            label={browserChecking
+              ? t.settings.capabilityStatusChecking
+              : statusLabels[browserStatus.code]}
+            tone={badgeToneFor(browserStatus.code)}
+            checking={browserChecking}
+          />
+          <span className="min-w-0 flex-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+            {browserStatusNote}
+          </span>
+          {browserStatus.code !== 'ready' && (
+            <button
+              type="button"
+              onClick={handleBrowserRetry}
+              disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
+              {browserStatus.code === 'connection-lost'
+                ? t.settings.capabilityRetry
+                : t.settings.capabilityCheckStatus}
+            </button>
+          )}
+        </div>
+
+        <BrowserPermissionCards
+          backend="builtin"
+          onManageSites={() => openSitePermissions('builtin')}
+        />
+      </div>
+    );
+  }
+
   if (setupView === 'chrome') {
     return (
       <ChromeSetupView
@@ -844,13 +802,19 @@ export default function CapabilitiesSection({
         working={chromeSetupWorking || chromeChecking || chromeRuntimeChecking}
         openingInstaller={chromeInstallerOpening}
         error={chromeSetupError}
+        breadcrumb={chromeTrail}
         onBack={cancelSetup}
         onPrepare={prepareChromeBridge}
         onOpenInstaller={openChromeInstaller}
         onCheck={refreshChromeConnection}
         onDone={completeSetup}
         onDisconnect={disconnectChromeBridge}
-      />
+      >
+        <BrowserPermissionCards
+          backend="chrome"
+          onManageSites={() => openSitePermissions('chrome')}
+        />
+      </ChromeSetupView>
     );
   }
 
@@ -865,6 +829,7 @@ export default function CapabilitiesSection({
         requesting={requestingComputerPermission}
         revealingApp={revealingComputerUseApp}
         canOpenSystemSettings={isMacOS()}
+        breadcrumb={computerTrail}
         onBack={cancelSetup}
         onEnable={() => {
           setComputerUseEnabled(true);
@@ -879,7 +844,65 @@ export default function CapabilitiesSection({
         }}
         onDone={completeSetup}
         onRelaunch={onSetupRelaunch}
-      />
+      >
+        {/*
+          The active model decides whether Computer Use can see the screen at
+          all, so it belongs beside the permissions it gates rather than on the
+          overview, where it was a second status the card had to explain.
+        */}
+        <div className={settingsCardClass}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-minor text-[var(--abu-text-secondary)]">
+              {t.settings.capabilityComputerModel}
+            </span>
+            <span className={cn(
+              'text-caption font-medium',
+              computerModelCapabilities.computerUseTier === 'full' && 'text-[var(--abu-success)]',
+              computerModelCapabilities.computerUseTier === 'structured' && 'text-[var(--abu-warning)]',
+              computerModelCapabilities.computerUseTier === 'unsupported' && 'text-[var(--abu-danger)]',
+              computerModelCapabilities.computerUseTier === 'unknown' && 'text-[var(--abu-text-muted)]',
+            )}>
+              {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
+              {' · '}
+              {computerModelTierLabels[computerModelCapabilities.computerUseTier]}
+            </span>
+          </div>
+          <p className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+            {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--abu-border)] pt-3 sm:grid-cols-2">
+            {([
+              {
+                icon: Eye,
+                label: t.settings.capabilityScreenRead,
+                granted: screenPermission,
+              },
+              {
+                icon: MousePointer2,
+                label: t.settings.capabilityUIControl,
+                granted: controlPermission,
+              },
+            ] as const).map(({ icon: PermissionIcon, label, granted }) => (
+              <div key={label} className="flex items-center gap-2">
+                <PermissionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
+                <span className="text-minor text-[var(--abu-text-secondary)]">{label}</span>
+                <span className={cn(
+                  'ml-auto text-caption font-medium',
+                  granted === true && 'text-[var(--abu-success)]',
+                  granted === false && 'text-[var(--abu-warning)]',
+                  granted === undefined && 'text-[var(--abu-text-muted)]',
+                )}>
+                  {granted === true
+                    ? t.settings.capabilityPermissionGranted
+                    : granted === false
+                      ? t.settings.capabilityPermissionMissing
+                      : t.settings.capabilityPermissionUnknown}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </ComputerUseSetupView>
     );
   }
 
@@ -895,180 +918,64 @@ export default function CapabilitiesSection({
           {t.settings.capabilityWebTitle}
         </h4>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <CapabilityCard
+          {/*
+            A card shows its standing description while everything is fine, and
+            switches to the live note the moment it is not — one line either
+            way, and a problem is never hidden behind a marketing sentence.
+          */}
+          <ChannelCard
             icon={Globe2}
             title={t.settings.capabilityBuiltinBrowser}
-            description={t.settings.capabilityBuiltinBrowserDesc}
-            status={browserStatus}
+            subtitle={browserStatus.code === 'ready'
+              ? t.settings.capabilityBuiltinBrowserSubtitle
+              : browserStatusNote}
             statusLabel={browserChecking
               ? t.settings.capabilityStatusChecking
               : statusLabels[browserStatus.code]}
-            statusNote={browserStatus.code === 'unavailable'
-              ? t.settings.capabilityBuiltinBrowserUnavailable
-              : browserStatus.code === 'connection-lost'
-                ? t.settings.capabilityBuiltinBrowserDisconnected
-                : t.settings.capabilityBuiltinBrowserScope}
+            statusTone={badgeToneFor(browserStatus.code)}
             checking={browserChecking}
-            action={browserStatus.code !== 'ready' ? (
-              <button
-                type="button"
-                onClick={handleBrowserRetry}
-                disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
-                {browserStatus.code === 'connection-lost'
-                  ? t.settings.capabilityRetry
-                  : t.settings.capabilityCheckStatus}
-              </button>
-            ) : undefined}
+            actionLabel={t.settings.capabilityManage}
+            onAction={openBuiltinBrowser}
           />
 
-          <CapabilityCard
+          <ChannelCard
             icon={Chrome}
             title={t.settings.capabilityMyChrome}
-            description={t.settings.capabilityMyChromeDesc}
-            status={chromeStatus}
-            statusLabel={chromeChecking || chromeRuntimeChecking
-              ? t.settings.capabilityStatusChecking
-              : !chromeBridge
-                || !chromeBridgeEnabled
-                || chromeStatus.code === 'setup-required'
-                ? t.settings.capabilityStatusNotConnected
-                : statusLabels[chromeStatus.code]}
-            statusNote={chromeChecking || chromeRuntimeChecking
-              ? t.settings.capabilityStatusChecking
-              : !chromeBridge || !chromeBridgeEnabled
-                ? t.settings.capabilityChromeOptional
-                : chromeStatus.code === 'setup-required'
-                  ? t.settings.capabilityChromeSetupRequired
-              : chromeStatus.code === 'connection-lost'
-                ? t.settings.capabilityChromeDisconnected
-                : chromeStatus.code === 'unavailable'
-                  ? t.settings.capabilityChromeProbeUnavailable
-                : t.settings.capabilityMyChromeScope}
-            checking={chromeChecking || chromeRuntimeChecking}
-            action={(
-              <button
-                type="button"
-                onClick={openChromeSetup}
-                className="inline-flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                {chromeStatus.code === 'ready'
-                  ? t.settings.capabilityChromeManage
-                  : t.settings.capabilityChromeConnect}
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            )}
-          >
-            {chromeBridgeStatus === 'connected' && (
-              <button
-                type="button"
-                onClick={refreshChromeConnection}
-                disabled={chromeChecking || chromeRuntimeChecking}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg text-minor font-medium text-[var(--abu-info)] transition-colors hover:text-[var(--abu-info)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', chromeChecking && 'animate-spin')} />
-                {t.settings.capabilityCheckStatus}
-              </button>
-            )}
-          </CapabilityCard>
+            subtitle={chromeStatus.code === 'ready' && !chromeChecking_
+              ? t.settings.capabilityMyChromeSubtitle
+              : chromeSubtitle}
+            statusLabel={chromeStatusLabel}
+            statusTone={chromeStatusTone}
+            checking={chromeChecking_}
+            actionLabel={chromeStatus.code === 'ready'
+              ? t.settings.capabilityChromeManage
+              : t.settings.capabilityChromeConnect}
+            onAction={openChromeSetup}
+          />
         </div>
-
-        <BrowserOperationPolicySection />
-        <BrowserSitePermissionsList />
       </section>
 
       <section className="space-y-3">
         <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
           {t.settings.capabilityComputerTitle}
         </h4>
-        <CapabilityCard
+        <ChannelCard
           icon={MonitorCog}
           title={t.settings.computerUse}
-          description={t.settings.capabilityComputerDesc}
-          status={computerDisplayStatus}
-          statusLabel={computerChecking
-            ? t.settings.capabilityStatusChecking
-            : !computerUseEnabled
-              ? t.settings.capabilityStatusOff
-              : statusLabels[computerDisplayStatus.code]}
-          statusNote={computerStatusNote}
+          subtitle={computerUseEnabled && computerDisplayStatus.code === 'ready'
+            ? t.settings.capabilityComputerSubtitle
+            : computerStatusNote}
+          statusLabel={computerStatusLabel}
+          statusTone={computerStatusTone}
           checking={computerChecking}
-          action={(
-            <button
-              type="button"
-              onClick={openComputerSetup}
-              disabled={computerChecking}
-              className="inline-flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:opacity-50"
-            >
-              {!computerUseEnabled
-                ? t.settings.capabilityComputerStartSetup
-                : computerDisplayStatus.code === 'ready'
-                  ? t.settings.capabilityComputerManage
-                  : t.settings.capabilityComputerContinue}
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-          )}
-        >
-          <div className="mt-4 border-t border-[var(--abu-border)] pt-3">
-            <div className="flex items-start gap-2">
-              <MonitorCog className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-minor text-[var(--abu-text-secondary)]">
-                    {t.settings.capabilityComputerModel}
-                  </span>
-                  <span className={cn(
-                    'text-caption font-medium',
-                    computerModelCapabilities.computerUseTier === 'full' && 'text-[var(--abu-success)]',
-                    computerModelCapabilities.computerUseTier === 'structured' && 'text-[var(--abu-warning)]',
-                    computerModelCapabilities.computerUseTier === 'unsupported' && 'text-[var(--abu-danger)]',
-                    computerModelCapabilities.computerUseTier === 'unknown' && 'text-[var(--abu-text-muted)]',
-                  )}>
-                    {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
-                    {' · '}
-                    {computerModelTierLabels[computerModelCapabilities.computerUseTier]}
-                  </span>
-                </div>
-                <p className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
-                  {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--abu-border)] pt-3 sm:grid-cols-2">
-              {([
-              {
-                icon: Eye,
-                label: t.settings.capabilityScreenRead,
-                granted: screenPermission,
-              },
-              {
-                icon: MousePointer2,
-                label: t.settings.capabilityUIControl,
-                granted: controlPermission,
-              },
-              ] as const).map(({ icon: PermissionIcon, label, granted }) => (
-                <div key={label} className="flex items-center gap-2">
-                  <PermissionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-                  <span className="text-minor text-[var(--abu-text-secondary)]">{label}</span>
-                  <span className={cn(
-                    'ml-auto text-caption font-medium',
-                    granted === true && 'text-[var(--abu-success)]',
-                    granted === false && 'text-[var(--abu-warning)]',
-                    granted === undefined && 'text-[var(--abu-text-muted)]',
-                  )}>
-                    {granted === true
-                      ? t.settings.capabilityPermissionGranted
-                      : granted === false
-                        ? t.settings.capabilityPermissionMissing
-                        : t.settings.capabilityPermissionUnknown}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </CapabilityCard>
+          actionLabel={!computerUseEnabled
+            ? t.settings.capabilityComputerStartSetup
+            : computerDisplayStatus.code === 'ready'
+              ? t.settings.capabilityComputerManage
+              : t.settings.capabilityComputerContinue}
+          onAction={openComputerSetup}
+          actionDisabled={computerChecking}
+        />
       </section>
 
     </div>

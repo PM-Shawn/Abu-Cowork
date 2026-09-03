@@ -979,17 +979,32 @@ export interface TranslationDict {
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
     capabilityMyChromeScope: string;
+    /** Level-1 channel cards: ONE line under the name. Anything longer than
+     *  this belongs on the capability's own detail page. */
+    capabilityBuiltinBrowserSubtitle: string;
+    capabilityMyChromeSubtitle: string;
+    capabilityComputerSubtitle: string;
+    capabilityManage: string;
     browserSitePermsTitle: string;
     browserSitePermsDesc: string;
     browserSitePermsEmpty: string;
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
+    /** Option descriptions: the explanation lives where the choice is made,
+     *  not behind a hover affordance. */
+    browserSitePermsAllowedDesc: string;
+    browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** Card summary on a capability detail page: counts + the fact that the
+     *  verdicts are one shared list across both browser channels. */
+    browserSitePermsSummary: string;
     /** U5 authorization visibility — which sites an unattended run reaches.
      *  ORIGIN-level: a site being listed does not mean every page on it is
-     *  reachable, since the high-risk classifier still refuses per call. */
-    browserUnattendedReachTag: string;
-    browserAttendedOnlyTag: string;
+     *  reachable, since the high-risk classifier still refuses per call.
+     *  The per-row "reachable / attended-only" pair was dropped: allowed means
+     *  allowed, and the per-page refusal now lives in the option description.
+     *  The high-risk tag stays — it reports the one thing the row cannot
+     *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1003,15 +1018,26 @@ export interface TranslationDict {
     browserOpPolicyColumnUnattended: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
+    /** Scripting is split out of the 2x2 matrix into its own card: under
+     *  "automatic tasks" it is a degenerate cell (no allow), and it is the one
+     *  row an ordinary user should not skim past. The class name is that
+     *  card's title, so it carries a description of its own. */
     browserOpClassScripting: string;
+    browserOpClassScriptingDesc: string;
     browserOpStateAllow: string;
     browserOpStateDeny: string;
     browserOpStateAsk: string;
+    browserOpStateAllowDesc: string;
+    browserOpStateDenyDesc: string;
+    browserOpStateAskDesc: string;
+    browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;
-    /** U6 — the built-in browser can refuse an unattended action on an expired
+    /** U6 — the built-in browser can refuse an automatic action on an expired
      *  session before it happens; the Chrome-extension channel can only report
-     *  it after the fact. Shown under the master switch while it is ON. */
+     *  it after the fact. One sentence, shown at the top of the permission card
+     *  on the My Chrome page ONLY — it is advice about that channel, and the
+     *  people it cannot apply to should not have to read past it. */
     browserUnattendedChannelCaveat: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
@@ -1028,8 +1054,6 @@ export interface TranslationDict {
     capabilityStatusSetupRequired: string;
     capabilityStatusNotConnected: string;
     capabilityStatusOff: string;
-    capabilityStatusPermissionRequired: string;
-    capabilityStatusConnectionLost: string;
     capabilityStatusUnavailable: string;
     capabilityStatusChecking: string;
     capabilityStatusNextStep: string;
@@ -1040,7 +1064,6 @@ export interface TranslationDict {
     capabilityPermissionUnknown: string;
     capabilityBuiltinBrowserDisconnected: string;
     capabilityBuiltinBrowserUnavailable: string;
-    capabilityChromeSetupRequired: string;
     capabilityChromeOptional: string;
     capabilityChromeDisconnected: string;
     capabilityChromeProbeUnavailable: string;

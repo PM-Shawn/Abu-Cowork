@@ -56,6 +56,65 @@ function findCapabilityCard(title: string): HTMLElement {
   return card as HTMLElement;
 }
 
+type User = ReturnType<typeof userEvent.setup>;
+
+/** Overview → a capability's own page, the way a user gets there: the named
+ *  button on its card. The row itself is deliberately not clickable. */
+async function openDetail(user: User, cardTitle: string, action: string) {
+  const card = findCapabilityCard(cardTitle);
+  await user.click(within(card).getByRole('button', { name: action }));
+}
+
+const openBuiltinBrowser = (user: User) =>
+  openDetail(user, 'Abu built-in browser', 'Manage');
+
+/** Built-in browser page → the site verdict list (one more drill-in). */
+async function openSitePermissions(user: User) {
+  await openBuiltinBrowser(user);
+  const card = screen.getByText('Site permissions').closest('div.rounded-lg.border');
+  await user.click(within(card as HTMLElement).getByRole('button', { name: 'Manage' }));
+}
+
+/** A settings card by its heading. Matched on the heading element so a card
+ *  title that also appears as a column header stays unambiguous. */
+function permissionCard(title: string): HTMLElement {
+  const heading = screen.getAllByText(title).find((el) => el.tagName === 'H4');
+  if (!heading) throw new Error(`Card not found: ${title}`);
+  return heading.closest('div.rounded-lg.border') as HTMLElement;
+}
+
+/** The two policy cells of one row, in column order (you are here, automatic). */
+function policyCells(row: HTMLElement): HTMLElement[] {
+  return within(row).getAllByRole('button').filter(
+    (b) => b.getAttribute('aria-expanded') !== null,
+  );
+}
+
+/** Read the OPEN dropdown, not the row: a closed trigger also renders its
+ *  current value as button text and would match by name. Only the option
+ *  LABEL is returned — the description is a child element, the label is the
+ *  option button's own text. */
+function openedOptionLabels(trigger: HTMLElement): string[] {
+  const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+  if (!dropdown) throw new Error('dropdown not open');
+  return within(dropdown).getAllByRole('button').map((b) =>
+    Array.from(b.childNodes)
+      .filter((node) => node.nodeType === Node.TEXT_NODE)
+      .map((node) => node.textContent ?? '')
+      .join('')
+      .trim(),
+  );
+}
+
+/** Every description the OPEN dropdown offers, in option order. */
+function openedOptionDescriptions(trigger: HTMLElement): string[] {
+  const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+  if (!dropdown) throw new Error('dropdown not open');
+  return within(dropdown)
+    .getAllByRole('button')
+    .map((b) => b.querySelector('span.block')?.textContent ?? '');
+}
+
 function makeModelProvider(overrides: Partial<ProviderInstance>): ProviderInstance {
   return {
     id: 'computer-model-test',
@@ -157,6 +216,8 @@ describe('CapabilitiesSection', () => {
     setElectronHost(false);
   });
 
+  // The overview is three channel cards and nothing else: one badge, one line,
+  // one named button each. Every rule lives on the capability's own page.
   it('keeps the built-in browser, My Chrome, and Computer Use states distinct', async () => {
     render(<CapabilitiesSection />);
 
@@ -164,15 +225,70 @@ describe('CapabilitiesSection', () => {
     const chromeCard = findCapabilityCard('My Chrome');
     const computerCard = findCapabilityCard('Computer Use');
 
-    expect(within(builtinCard).getByText('Connection lost')).toBeInTheDocument();
+    // A lost built-in runtime is something the user has to act on, so it takes
+    // the same badge as any other unfinished capability; the line underneath
+    // is what says WHAT went wrong.
+    expect(within(builtinCard).getByText('Setup required')).toBeInTheDocument();
+    expect(builtinCard).toHaveTextContent('built-in browser runtime is disconnected');
     await waitFor(() => {
       expect(within(chromeCard).getByText('Ready')).toBeInTheDocument();
-      expect(within(computerCard).getByText('Permission required')).toBeInTheDocument();
+      expect(within(computerCard).getByText('Setup required')).toBeInTheDocument();
     });
-    expect(within(computerCard).getByText('View screen')).toBeInTheDocument();
-    expect(within(computerCard).getByText('Allowed')).toBeInTheDocument();
-    expect(within(computerCard).getByText('Control interface')).toBeInTheDocument();
-    expect(within(computerCard).getByText('Not allowed')).toBeInTheDocument();
+    // Ready channels show their standing one-liner, not a status sentence.
+    expect(chromeCard).toHaveTextContent('Reuses the Chrome tabs you are already signed in to');
+
+    // Permission detail belongs to the detail page, not the overview.
+    expect(screen.queryByText('View screen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Action permissions')).not.toBeInTheDocument();
+    expect(screen.queryByText('Site permissions')).not.toBeInTheDocument();
+  });
+
+  // The three badge tones, on the same page, at the same time.
+  it('reports exactly three outcome badges across the three cards', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+    render(<CapabilitiesSection />);
+
+    await waitFor(() => {
+      expect(within(findCapabilityCard('My Chrome')).getByText('Ready')).toBeInTheDocument();
+    });
+    expect(within(findCapabilityCard('Abu built-in browser')).getByText('Setup required'))
+      .toBeInTheDocument();
+    expect(within(findCapabilityCard('Computer Use')).getByText('Off')).toBeInTheDocument();
+  });
+
+  // The card is a signpost, not a control: nothing but the button navigates,
+  // and the button says where it goes.
+  it('puts the only way into a capability behind a named button', async () => {
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+
+    const builtinCard = findCapabilityCard('Abu built-in browser');
+    expect(builtinCard.closest('button')).toBeNull();
+    expect(within(builtinCard).getAllByRole('button')).toHaveLength(1);
+
+    await user.click(within(builtinCard).getByRole('button', { name: 'Manage' }));
+    expect(screen.getByText('Action permissions')).toBeInTheDocument();
+  });
+
+  it('walks into the site list and back out through the breadcrumb', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://example.com': 'allowed' },
+    });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+
+    await openSitePermissions(user);
+    expect(screen.getByTitle('https://example.com')).toBeInTheDocument();
+
+    // One step up: back to the built-in browser page, not all the way out.
+    await user.click(screen.getByRole('button', { name: 'Abu built-in browser' }));
+    expect(screen.getByText('Action permissions')).toBeInTheDocument();
+    expect(screen.queryByTitle('https://example.com')).not.toBeInTheDocument();
+
+    // Root segment: back to the overview.
+    await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
+    expect(findCapabilityCard('My Chrome')).toBeInTheDocument();
+    expect(screen.queryByText('Action permissions')).not.toBeInTheDocument();
   });
 
   it('shows DeepSeek without vision as structured mode instead of unavailable', async () => {
@@ -182,14 +298,17 @@ describe('CapabilitiesSection', () => {
       activeModel: { providerId: provider.id, modelId: 'deepseek-chat' },
     });
 
+    const user = userEvent.setup();
     render(<CapabilitiesSection />);
-    const computerCard = findCapabilityCard('Computer Use');
-
-    expect(within(computerCard).getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
-    expect(within(computerCard).getByText(/No image input/)).toBeInTheDocument();
     await waitFor(() => {
-      expect(within(computerCard).getByText('Permission required')).toBeInTheDocument();
+      expect(within(findCapabilityCard('Computer Use')).getByText('Setup required'))
+        .toBeInTheDocument();
     });
+
+    // The model tier gates the permissions, so it moved in with them.
+    await openDetail(user, 'Computer Use', 'Continue setup');
+    expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
+    expect(screen.getByText(/No image input/)).toBeInTheDocument();
   });
 
   it('marks an undeclared custom endpoint as not verified and not ready', async () => {
@@ -202,14 +321,17 @@ describe('CapabilitiesSection', () => {
       activeModel: { providerId: provider.id, modelId: 'private-proxy-model' },
     });
 
+    const user = userEvent.setup();
     render(<CapabilitiesSection />);
     const computerCard = findCapabilityCard('Computer Use');
 
-    expect(within(computerCard).getByText(/private-proxy-model · Not verified/)).toBeInTheDocument();
     await waitFor(() => {
       expect(within(computerCard).getByText('Setup required')).toBeInTheDocument();
     });
     expect(computerCard).toHaveTextContent('Confirm its model capabilities');
+
+    await openDetail(user, 'Computer Use', 'Continue setup');
+    expect(screen.getByText(/private-proxy-model · Not verified/)).toBeInTheDocument();
   });
 
   it('guides the local Chrome extension setup without exposing MCP configuration', async () => {
@@ -247,11 +369,13 @@ describe('CapabilitiesSection', () => {
 
     const chromeCard = findCapabilityCard('My Chrome');
     await waitFor(() => {
-      expect(within(chromeCard).getByText('Not connected · Optional')).toBeInTheDocument();
+      expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
     });
-    expect(chromeCard).toHaveTextContent(
-      'The Chrome extension is not connected. Select Connect Chrome to continue setup.',
-    );
+    // Never connected is not a fault: the badge and the button already say so,
+    // and the card's one line is spent on what connecting would buy instead.
+    expect(chromeCard).toHaveTextContent('Reuses the Chrome tabs you are already signed in to');
+    expect(within(chromeCard).getByRole('button', { name: 'Connect Chrome' }))
+      .toBeInTheDocument();
   });
 
   it('lets the user disconnect My Chrome without entering MCP settings', async () => {
@@ -299,7 +423,7 @@ describe('CapabilitiesSection', () => {
     render(<CapabilitiesSection />);
 
     const builtinCard = findCapabilityCard('Abu built-in browser');
-    expect(within(builtinCard).getByText('Connection lost')).toBeInTheDocument();
+    expect(within(builtinCard).getByText('Setup required')).toBeInTheDocument();
 
     mcpManagerMock.connectedServers.add('abu-browser');
     mcpManagerMock.listeners.forEach((listener) => listener());
@@ -324,7 +448,7 @@ describe('CapabilitiesSection', () => {
 
     const chromeCard = findCapabilityCard('My Chrome');
     expect(within(chromeCard).getAllByText('Checking').length).toBeGreaterThan(0);
-    expect(within(chromeCard).queryByText('Connection lost')).not.toBeInTheDocument();
+    expect(within(chromeCard).queryByText('Setup required')).not.toBeInTheDocument();
   });
 
   it('enables Computer Use through guided setup while keeping partial permission visible', async () => {
@@ -342,12 +466,14 @@ describe('CapabilitiesSection', () => {
     await waitFor(() => {
       expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
     });
-    expect(screen.getByText('View screen')).toBeInTheDocument();
-    expect(screen.getAllByText('Control interface')).toHaveLength(2);
+    // The setup rows, the guided step, and the model card each name the two
+    // permissions, so count is not the assertion — presence is.
+    expect(screen.getAllByText('View screen').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Control interface').length).toBeGreaterThan(0);
     expect(screen.getByText('Step 2 of 2')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
-    expect(findCapabilityCard('Computer Use')).toHaveTextContent('Permission required');
+    expect(findCapabilityCard('Computer Use')).toHaveTextContent('Setup required');
     expect(findCapabilityCard('Computer Use')).toHaveTextContent(
       'Abu can view the screen but cannot control the interface yet.',
     );
@@ -515,7 +641,9 @@ describe('CapabilitiesSection', () => {
     />);
 
     expect((await screen.findAllByText('Control interface')).length).toBeGreaterThan(0);
-    expect(screen.queryByText('View screen')).not.toBeInTheDocument();
+    // The setup ROWS drop the permission this task does not need; the model
+    // card still reports both, because both describe the model's own tier.
+    expect(screen.queryAllByText('View screen')).toHaveLength(1);
     expect(screen.getByText('Required permission')).toBeInTheDocument();
   });
 
@@ -621,7 +749,10 @@ describe('CapabilitiesSection', () => {
     render(<CapabilitiesSection />);
 
     const builtinCard = findCapabilityCard('Abu built-in browser');
-    expect(within(builtinCard).getByText('Unavailable')).toBeInTheDocument();
+    // Nothing to set up in this shell, so it reads as not connected, and the
+    // line underneath says the client does not offer it.
+    expect(within(builtinCard).getByText('Not connected')).toBeInTheDocument();
+    expect(builtinCard).toHaveTextContent('not available in this client');
 
     await user.click(await screen.findByRole('button', { name: 'Start setup' }));
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
@@ -646,6 +777,7 @@ describe('CapabilitiesSection', () => {
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openSitePermissions(user);
 
       const row = screen.getByTitle('https://allowed.example.com').closest('li');
       expect(row).not.toBeNull();
@@ -654,7 +786,7 @@ describe('CapabilitiesSection', () => {
       expect(screen.getByTitle('https://blocked.example.com')).toBeInTheDocument();
 
       await user.click(within(row as HTMLElement).getByRole('button', { name: 'Always allow' }));
-      await user.click(within(row as HTMLElement).getByRole('button', { name: 'Blocked' }));
+      await user.click(within(row as HTMLElement).getByRole('button', { name: /^Blocked/ }));
 
       expect(useSettingsStore.getState().browserSitePermissions).toEqual({
         'https://allowed.example.com': 'denied',
@@ -668,17 +800,56 @@ describe('CapabilitiesSection', () => {
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openSitePermissions(user);
 
       const row = screen.getByTitle('https://example.com').closest('li');
       await user.click(within(row as HTMLElement).getByRole('button', { name: 'Remove' }));
 
       expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
     });
+
+    // The explanation is where the choice is, not behind a hover target.
+    it('explains each verdict inside the dropdown that sets it', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { 'https://example.com': 'allowed' },
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openSitePermissions(user);
+
+      const row = screen.getByTitle('https://example.com').closest('li') as HTMLElement;
+      const trigger = within(row).getByRole('button', { name: 'Always allow' });
+      await user.click(trigger);
+
+      expect(openedOptionDescriptions(trigger)).toEqual([
+        'This site stops asking each time; payment / transfer pages are still stopped',
+        'Abu never acts on this site, automatic tasks included',
+      ]);
+    });
+
+    // The card the user drills in FROM has to say how many verdicts are
+    // waiting behind it, and that both channels answer to the same list.
+    it('summarizes the list on the card that leads to it', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: {
+          'https://a.example.com': 'allowed',
+          'https://b.example.com': 'allowed',
+          'https://c.example.com': 'denied',
+        },
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(permissionCard('Site permissions')).toHaveTextContent(
+        '2 allowed · 1 blocked · shared by the built-in browser and Chrome',
+      );
+    });
   });
 
   // The operation-class policy grid + its master switch. The switch overrides
-  // the unattended column entirely, so the column must not offer live controls
-  // while it is off.
+  // the automatic-tasks column entirely, so the column must not offer live
+  // controls while it is off.
   describe('browser operation policy', () => {
     beforeEach(() => {
       useSettingsStore.setState({
@@ -687,110 +858,154 @@ describe('CapabilitiesSection', () => {
       });
     });
 
-    it('renders three operation classes for both run modes, with the shipped defaults', () => {
+    // Two ordinary classes in the grid; scripting is its own card. The split
+    // must not change which setter a cell writes through — that is the whole
+    // point of the refactor being cosmetic.
+    it('renders a 2x2 matrix plus a separate scripting card, with the shipped defaults', async () => {
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
 
-      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
-      expect(within(grid).getByText('Attended')).toBeInTheDocument();
-      expect(within(grid).getByText('Unattended')).toBeInTheDocument();
-      for (const label of [
-        'Read-only (viewing page content)',
-        'Interaction & navigation (click/fill/navigate)',
-        'Scripting (running code on the page)',
-      ]) {
-        expect(within(grid).getByText(label)).toBeInTheDocument();
-      }
-      const scriptingRow = within(grid).getByText('Scripting (running code on the page)').closest('li') as HTMLElement;
+      const grid = permissionCard('Action permissions');
+      expect(within(grid).getByText('While you are here')).toBeInTheDocument();
+      expect(within(grid).getByText('Automatic tasks')).toBeInTheDocument();
+      expect(within(grid).getByText('View pages')).toBeInTheDocument();
+      expect(within(grid).getByText('Click and fill in')).toBeInTheDocument();
+      expect(within(grid).queryByText('Run scripts (advanced)')).not.toBeInTheDocument();
+
+      const scriptCard = permissionCard('Run scripts (advanced)');
+      expect(scriptCard).not.toBe(grid);
+      expect(scriptCard).toHaveTextContent('Lets Abu run code inside the page.');
       // attended = ask, unattended = deny (the product default table)
-      expect(within(scriptingRow).getByText('Ask every time')).toBeInTheDocument();
-      expect(within(scriptingRow).getByText('Deny')).toBeInTheDocument();
+      const [scriptAttended, scriptUnattended] = policyCells(scriptCard);
+      expect(scriptAttended).toHaveTextContent('Ask every time');
+      expect(scriptUnattended).toHaveTextContent('Deny');
     });
 
-    it('disables the unattended column while the master switch is off', () => {
+    it('disables the automatic-tasks column while the master switch is off', async () => {
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
 
-      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
-      const readOnlyRow = within(grid).getByText('Read-only (viewing page content)').closest('li') as HTMLElement;
-      const [attendedCell, unattendedCell] = within(readOnlyRow).getAllByRole('button');
+      const readOnlyRow = within(permissionCard('Action permissions'))
+        .getByText('View pages').closest('li') as HTMLElement;
+      const [attendedCell, unattendedCell] = policyCells(readOnlyRow);
 
       expect(attendedCell).not.toBeDisabled();
       expect(unattendedCell).toBeDisabled();
+
+      // Same rule in the split-out card — it is the same column.
+      const [, scriptUnattended] = policyCells(permissionCard('Run scripts (advanced)'));
+      expect(scriptUnattended).toBeDisabled();
     });
 
-    it('writes a changed cell to the store', async () => {
+    it('writes a changed matrix cell to the store', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
 
-      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
-      const interactiveRow = within(grid).getByText('Interaction & navigation (click/fill/navigate)').closest('li') as HTMLElement;
-      const [, unattendedCell] = within(interactiveRow).getAllByRole('button');
+      const interactiveRow = within(permissionCard('Action permissions'))
+        .getByText('Click and fill in').closest('li') as HTMLElement;
+      const [, unattendedCell] = policyCells(interactiveRow);
 
       await user.click(unattendedCell);
-      await user.click(within(interactiveRow).getByRole('button', { name: 'Deny' }));
+      await user.click(within(interactiveRow).getByRole('button', { name: /^Deny/ }));
 
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.interactive).toBe('deny');
       // The other column is untouched — the two run modes are independent.
       expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
     });
 
-    // The unattended scripting cell has no "allow": a site grant minted from a
-    // human approving a click must never buy silent page scripting.
-    it('offers only ask/deny for unattended scripting, all three elsewhere', async () => {
+    /**
+     * The zero-semantic-change pin. Pulling scripting out of the grid moved
+     * the control to another card; it must still write `scripting` on the same
+     * run mode, with the same three-state vocabulary, through the same store
+     * action it did while it was a grid row.
+     */
+    it('keeps the split-out scripting card wired to the same store setter', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
 
-      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
-      const scriptingRow = within(grid).getByText('Scripting (running code on the page)').closest('li') as HTMLElement;
-      const [attendedCell, unattendedCell] = within(scriptingRow).getAllByRole('button');
+      const scriptCard = permissionCard('Run scripts (advanced)');
+      const [attendedCell, unattendedCell] = policyCells(scriptCard);
 
-      // Read the OPEN dropdown, not the row: a closed trigger also renders its
-      // current value as button text and would match by name.
-      const openedOptions = (trigger: HTMLElement) => {
-        const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
-        if (!dropdown) throw new Error('dropdown not open');
-        return within(dropdown).getAllByRole('button').map((b) => b.textContent);
-      };
+      await user.click(attendedCell);
+      await user.click(within(scriptCard).getByRole('button', { name: /^Allow/ }));
+      expect(useSettingsStore.getState().browserOperationPolicy.attended.scripting).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('deny');
 
       await user.click(unattendedCell);
-      expect(openedOptions(unattendedCell)).toEqual(['Ask every time', 'Deny']);
-
-      // The attended half of the same row still offers all three.
-      await user.keyboard('{Escape}');
-      await user.click(attendedCell);
-      expect(openedOptions(attendedCell)).toEqual(['Allow', 'Ask every time', 'Deny']);
+      await user.click(within(scriptCard).getByRole('button', { name: /^Ask every time/ }));
+      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('ask');
+      // And the grid rows it used to share a table with are untouched.
+      expect(useSettingsStore.getState().browserOperationPolicy.attended.readOnly).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
     });
 
-    it('toggles the unattended master switch', async () => {
+    // The automatic-tasks scripting cell has no "allow": a site grant minted
+    // from a human approving a click must never buy silent page scripting.
+    it('offers only ask/deny for automatic scripting, all three elsewhere', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
 
-      const grid = screen.getByText('Browser operation permissions').closest('div.rounded-lg.border') as HTMLElement;
-      await user.click(within(grid).getByRole('switch'));
+      const [scriptAttended, scriptUnattended] = policyCells(
+        permissionCard('Run scripts (advanced)'),
+      );
+
+      await user.click(scriptUnattended);
+      expect(openedOptionLabels(scriptUnattended)).toEqual(['Ask every time', 'Deny']);
+
+      // The attended half of the same class still offers all three.
+      await user.keyboard('{Escape}');
+      await user.click(scriptAttended);
+      expect(openedOptionLabels(scriptAttended)).toEqual(['Allow', 'Ask every time', 'Deny']);
+      expect(openedOptionDescriptions(scriptAttended)).toEqual([
+        'Never asks again',
+        'Confirms with a dialog before each action',
+        'Abu will not do this kind of thing',
+      ]);
+    });
+
+    it('toggles the automatic-tasks master switch', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const card = permissionCard('Automatic tasks');
+      await user.click(within(card).getByRole('switch'));
 
       expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
     });
 
     /**
-     * U6 — the two browser channels do not protect an unattended run equally:
+     * U6 — the two browser channels do not protect an automatic run equally:
      * only the built-in one can refuse BEFORE acting on an expired session,
      * because the extension channel has no `webRequest` to see the 401 with.
-     * That was documented in a code comment, where the person taking the risk
-     * cannot read it.
+     * It is now one sentence, and it is attached to the channel it is about
+     * instead of being read by everyone including the people it cannot apply
+     * to.
      */
-    it('warns that the extension channel has a weaker safety net, once the switch is on', () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: false });
-      const { rerender } = render(<CapabilitiesSection />);
+    it('warns about the Chrome channel only on the Chrome page', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
 
-      expect(screen.queryByText(/weaker safety net/)).toBeNull();
+      await openBuiltinBrowser(user);
+      expect(screen.queryByText(/expired sign-in/)).toBeNull();
 
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
-      rerender(<CapabilitiesSection />);
+      await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
+      await openDetail(user, 'My Chrome', 'Manage');
 
-      const caveat = screen.getByText(/weaker safety net/);
-      expect(caveat.textContent).toMatch(/built-in browser/);
-      expect(caveat.textContent).toMatch(/Chrome extension channel/);
+      const caveat = await screen.findByText(/expired sign-in/);
+      expect(caveat.textContent).toMatch(/Chrome channel/);
+      expect(caveat.textContent).toMatch(/sites you trust/);
+      // Same shared cards on both pages otherwise.
+      expect(screen.getByText('Action permissions')).toBeInTheDocument();
+      expect(screen.getByText('Site permissions')).toBeInTheDocument();
     });
   });
 
@@ -798,9 +1013,11 @@ describe('CapabilitiesSection', () => {
    * U5 authorization visibility. "Allowed" is also what a run with nobody
    * watching acts on, and this list never said so — the user had to hold the
    * master switch, the site verdicts and the high-risk rule in their head to
-   * answer "which sites would my nightly task touch?".
+   * answer "which sites would my nightly task touch?". The per-row
+   * reachable/attended-only pair was dropped as restatement; the summary and
+   * the high-risk flag, which say something a row cannot, stayed.
    */
-  describe('unattended reach of the site list', () => {
+  describe('automatic-task reach of the site list', () => {
     function withSites(
       sitePermissions: Record<string, 'allowed' | 'denied'>,
       allowUnattendedBrowser: boolean,
@@ -812,50 +1029,82 @@ describe('CapabilitiesSection', () => {
       });
     }
 
-    function siteList(): HTMLElement {
-      return screen.getByText('Authorized sites').closest('div.rounded-lg.border') as HTMLElement;
-    }
-
-    it('marks an allowed ordinary site as reachable unattended, and says how many', () => {
+    it('says how many sites an automatic task may enter', async () => {
       withSites({ 'https://reports.example.com': 'allowed' }, true);
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openSitePermissions(user);
 
-      const list = siteList();
-      expect(within(list).getByText('Unattended: site allowed')).toBeInTheDocument();
       // Origin-level, and the copy says so: entering the site is not the
       // same as every page on it being reachable (M8).
-      expect(within(list).getByText(/may enter 1 site/)).toBeInTheDocument();
+      expect(screen.getByText(/may enter 1 site/)).toBeInTheDocument();
       // Not an absolute promise: the classifier is deliberately incomplete
       // (its own module doc says so), so the copy says "recognizes" (M8).
-      expect(within(list).getByText(/each page is still judged on its own/)).toBeInTheDocument();
-      expect(within(list).getByText(/recognizes as payment/)).toBeInTheDocument();
+      expect(screen.getByText(/each page is still judged on its own/)).toBeInTheDocument();
+      expect(screen.getByText(/recognizes as payment/)).toBeInTheDocument();
+      // The row itself no longer restates "an allowed site is allowed".
+      const row = screen.getByTitle('https://reports.example.com').closest('li') as HTMLElement;
+      expect(row).not.toHaveTextContent('Unattended');
+      expect(row).not.toHaveTextContent('Only while you are here');
     });
 
-    it('says the same site is attended-only while the master switch is off', () => {
+    it('says the same site is out of reach while the master switch is off', async () => {
       withSites({ 'https://reports.example.com': 'allowed' }, false);
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openSitePermissions(user);
 
-      const list = siteList();
-      expect(within(list).getByText('Only while you are here')).toBeInTheDocument();
-      expect(within(list).getByText(/master switch is off/)).toBeInTheDocument();
+      expect(screen.getByText(/master switch is off/)).toBeInTheDocument();
     });
 
-    it('flags an allowed site that is high-risk anyway, and leaves it out of the count', () => {
+    // The one per-row fact the row cannot imply on its own.
+    it('flags an allowed site that is high-risk anyway, and leaves it out of the count', async () => {
       withSites({ 'https://www.paypal.com': 'allowed' }, true);
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
+      await openSitePermissions(user);
 
-      const list = siteList();
-      expect(within(list).getByText('High-risk · asks every time')).toBeInTheDocument();
-      expect(within(list).getByText(/cannot act on any site right now/)).toBeInTheDocument();
+      expect(screen.getByText('High-risk · asks every time')).toBeInTheDocument();
+      expect(screen.getByText(/cannot act on any site right now/)).toBeInTheDocument();
     });
 
-    it('puts no reach tag on a blocked site', () => {
+    it('puts no high-risk tag on a blocked site', async () => {
       withSites({ 'https://blocked.example.com': 'denied' }, true);
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openSitePermissions(user);
+
+      expect(screen.queryByText('High-risk · asks every time')).not.toBeInTheDocument();
+    });
+  });
+
+  // Structural parity of the two locales is a typecheck property
+  // (`TranslationDict`); what a render test can add is that the Chinese page
+  // actually reaches the same screens with the same shape.
+  describe('zh-CN', () => {
+    it('renders the overview and both browser detail pages in Chinese', async () => {
+      initLanguage('zh-CN');
+      const user = userEvent.setup();
       render(<CapabilitiesSection />);
 
-      const list = siteList();
-      expect(within(list).queryByText('Unattended: site allowed')).not.toBeInTheDocument();
-      expect(within(list).queryByText('Only while you are here')).not.toBeInTheDocument();
+      expect(findCapabilityCard('阿布内置浏览器')).toHaveTextContent('需要设置');
+      await waitFor(() => {
+        expect(within(findCapabilityCard('我的 Chrome')).getByText('已就绪')).toBeInTheDocument();
+      });
+
+      await openDetail(user, '阿布内置浏览器', '管理');
+      expect(screen.getByText('操作权限')).toBeInTheDocument();
+      expect(screen.getByText('只看页面')).toBeInTheDocument();
+      expect(screen.getByText('点击和填写')).toBeInTheDocument();
+      // Card title + two column headers (matrix and scripting card).
+      expect(screen.getAllByText('自动任务').length).toBe(3);
+      expect(screen.getAllByText('你在场时').length).toBe(2);
+      expect(permissionCard('运行脚本（高级）')).toHaveTextContent('让阿布在页面里执行代码');
+      expect(screen.queryByText(/登录失效/)).toBeNull();
+
+      await user.click(screen.getByRole('button', { name: '返回能力' }));
+      await openDetail(user, '我的 Chrome', '管理');
+      expect(await screen.findByText(/登录失效/)).toBeInTheDocument();
     });
   });
 });

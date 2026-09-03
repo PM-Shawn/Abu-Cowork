@@ -17,6 +17,13 @@ const COMPUTER_SETUP_SCREENSHOT_PATH = path.join(
   'test-results',
   'e2e-computer-use-setup.png',
 );
+/** Visual record of every screen in the capability IA, for design review. */
+const IA_SCREENSHOT_DIR = path.join(REPO_ROOT, 'test-results', 'capabilities-redesign');
+
+function iaScreenshot(name: string): string {
+  fs.mkdirSync(IA_SCREENSHOT_DIR, { recursive: true });
+  return path.join(IA_SCREENSHOT_DIR, `${name}.png`);
+}
 
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
@@ -27,7 +34,8 @@ const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;
 const MY_CHROME = /^(我的 Chrome|My Chrome)$/;
 const COMPUTER_USE = /^(电脑操控|Computer Use)$/;
 const READY = /^(已就绪|Ready)$/;
-const NOT_CONNECTED = /^(未连接 · 可选|Not connected · Optional)$/;
+const NOT_CONNECTED = /^(未连接|Not connected)$/;
+const SETUP_REQUIRED = /^(需要设置|Setup required)$/;
 const OFF = /^(已关闭|Off)$/;
 const START_SETUP = /^(开始设置|Start setup)$/;
 const ENABLE = /^(开启|Enable)$/;
@@ -36,6 +44,21 @@ const CHROME_SETUP = /^(连接我的 Chrome|Connect My Chrome)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
 const COMPUTER_SETUP = /^(开启电脑操控|Enable Computer Use)$/;
 const QUICK_START = /^(快速入门|Quick Start)$/;
+const MANAGE = /^(管理|Manage)$/;
+const ACTION_PERMISSIONS = /^(操作权限|Action permissions)$/;
+const AUTOMATIC_TASKS = /^(自动任务|Automatic tasks)$/;
+const RUN_SCRIPTS = /^(运行脚本（高级）|Run scripts \(advanced\))$/;
+const SITE_PERMISSIONS = /^(网站授权|Site permissions)$/;
+const VIEW_PAGES = /^(只看页面|View pages)$/;
+const CLICK_AND_FILL = /^(点击和填写|Click and fill in)$/;
+const CHROME_CAVEAT = /(登录失效|expired sign-in)/;
+
+/** Seeded site verdicts, so the list page has something to show. */
+const SEEDED_SITES = {
+  'https://example.com': 'denied',
+  'https://reports.example.com': 'allowed',
+  'https://www.baidu.com': 'allowed',
+} as const;
 
 async function waitForWelcomeScreen(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
@@ -55,6 +78,30 @@ function capabilityCard(page: Page, title: RegExp) {
   return page.locator('div.rounded-lg.border').filter({
     has: page.getByText(title, { exact: true }),
   }).first();
+}
+
+/**
+ * Write persisted settings straight into the real store and reload, so the
+ * page under test renders the state a returning user would actually see.
+ */
+async function seedSettings(
+  page: Page,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await page.evaluate((state) => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    Object.assign(persisted.state, state);
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  }, patch);
+  await page.reload();
+}
+
+async function openCapabilities(page: Page): Promise<void> {
+  await page.getByRole('button', { name: ACCOUNT }).click();
+  await page.getByRole('menuitem', { name: SETTINGS }).click();
+  await page.getByRole('button', { name: CAPABILITIES }).click();
 }
 
 let app: ElectronApplication | undefined;
@@ -80,20 +127,44 @@ test.describe.serial('Electron capability overview', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForWelcomeScreen(page);
 
-    await page.getByRole('button', { name: ACCOUNT }).click();
-    await page.getByRole('menuitem', { name: SETTINGS }).click();
-    await page.getByRole('button', { name: CAPABILITIES }).click();
+    await openCapabilities(page);
 
     const builtinBrowser = capabilityCard(page, BUILTIN_BROWSER);
     const myChrome = capabilityCard(page, MY_CHROME);
     const computerUse = capabilityCard(page, COMPUTER_USE);
 
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(myChrome.getByText(NOT_CONNECTED)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    await expect(myChrome).toContainText(/existing tabs|现有标签页|已有标签页/);
+    // My Chrome on a machine with no extension installed settles on one of two
+    // runtime statuses depending on whether the local bridge finishes
+    // connecting before the extension probe answers ('setup-required' →
+    // "not connected", 'connection-lost' → "setup required"). Which one is a
+    // race, so this asserts the property that actually matters and is not
+    // racy: an optional capability never silently reads as ready, and the way
+    // to turn it on is on the card.
+    await expect(myChrome.getByText(READY)).toHaveCount(0);
+    await expect(
+      myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(SETUP_REQUIRED)),
+    ).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(myChrome.getByRole('button', { name: CONNECT_CHROME })).toBeVisible();
+
+    // Not connected is not a fault, so the card spends its one line on what
+    // connecting would buy rather than restating the badge next to it. Once
+    // the bridge is up but the extension is missing, that IS a fault and the
+    // line switches to the diagnosis — both are one line, neither is silent.
+    await expect(myChrome).toContainText(
+      /Chrome tabs|Chrome 标签页|extension .*disconnected|扩展连接已中断/,
+    );
     await expect(computerUse.getByRole('button', { name: START_SETUP })).toBeVisible();
+
+    // The overview carries decisions ABOUT capabilities, never the rules
+    // inside them — those all live one level down now.
+    await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
+    await expect(page.getByText(SITE_PERMISSIONS)).toHaveCount(0);
+    // A channel card is a signpost: exactly one control, and it is named.
+    await expect(builtinBrowser.getByRole('button')).toHaveCount(1);
+    await expect(builtinBrowser.getByRole('button', { name: MANAGE })).toBeVisible();
 
     // Let the previous navigation item's color transition finish so the visual
     // artifact reflects the stable selected state.
@@ -135,6 +206,115 @@ test.describe.serial('Electron capability overview', () => {
       await expect(computerCheckButton.locator('.animate-spin')).toHaveCount(0);
     }
     await page.screenshot({ path: COMPUTER_SETUP_SCREENSHOT_PATH });
+  });
+
+  /**
+   * The capability information architecture, walked end to end in the real
+   * shell: overview → each channel's own page → the site list two levels down,
+   * and back out through the breadcrumb every time.
+   *
+   * It also captures one screenshot per screen. Layout of a settings page is
+   * not something an assertion can review, and these are the artifacts a human
+   * looks at before the redesign ships.
+   */
+  test('drills into every capability page and back out through the breadcrumb', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForWelcomeScreen(page);
+    await seedSettings(page, { browserSitePermissions: SEEDED_SITES });
+    await waitForWelcomeScreen(page);
+    await openCapabilities(page);
+
+    // ---- Level 1 --------------------------------------------------------
+    await expect(capabilityCard(page, BUILTIN_BROWSER).getByText(READY))
+      .toBeVisible({ timeout: READY_TIMEOUT });
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: iaScreenshot('01-capabilities-overview-zh') });
+
+    // ---- Built-in browser detail ----------------------------------------
+    await capabilityCard(page, BUILTIN_BROWSER)
+      .getByRole('button', { name: MANAGE }).click();
+
+    await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
+    await expect(page.getByText(VIEW_PAGES)).toBeVisible();
+    await expect(page.getByText(CLICK_AND_FILL)).toBeVisible();
+    // Scripting is its own card, not a third row of the matrix.
+    const matrix = page.locator('div.rounded-lg.border').filter({
+      has: page.getByText(ACTION_PERMISSIONS, { exact: true }),
+    }).first();
+    await expect(matrix.getByText(RUN_SCRIPTS)).toHaveCount(0);
+    await expect(page.getByText(RUN_SCRIPTS).first()).toBeVisible();
+    await expect(page.getByText(AUTOMATIC_TASKS).first()).toBeVisible();
+    // The Chrome-channel caveat belongs to the Chrome page only.
+    await expect(page.getByText(CHROME_CAVEAT)).toHaveCount(0);
+    await page.screenshot({ path: iaScreenshot('02-builtin-browser-detail-zh') });
+
+    // The page is taller than the settings pane, and the scripting card plus
+    // the site-authorization card are the half a reviewer most needs to see.
+    const siteCardHeading = page.getByText(SITE_PERMISSIONS, { exact: true }).first();
+    await siteCardHeading.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('02b-builtin-browser-detail-scrolled-zh') });
+
+    // ---- Site list, two levels down -------------------------------------
+    const siteCard = page.locator('div.rounded-lg.border').filter({
+      has: page.getByText(SITE_PERMISSIONS, { exact: true }),
+    }).first();
+    await siteCard.getByRole('button', { name: MANAGE }).click();
+
+    await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
+    await expect(page.getByTitle('https://example.com')).toBeVisible();
+    await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
+
+    // One step up lands on the page we came from, not the overview.
+    await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
+    await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
+    await expect(page.getByTitle('https://example.com')).toHaveCount(0);
+
+    await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
+    await expect(capabilityCard(page, MY_CHROME)).toBeVisible();
+
+    // ---- My Chrome detail: same cards, one extra warning ----------------
+    await capabilityCard(page, MY_CHROME)
+      .getByRole('button', { name: CONNECT_CHROME }).click();
+    await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
+    await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
+    await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
+    await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });
+
+    // The one warning this page exists to carry sits below the fold, so the
+    // visual record scrolls to it rather than proving only that it rendered.
+    const caveat = page.getByText(CHROME_CAVEAT).first();
+    await expect(caveat).toBeVisible();
+    await caveat.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('04b-my-chrome-caveat-zh') });
+
+    await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
+
+    // ---- Computer Use detail: now owns the active-model block -----------
+    await capabilityCard(page, COMPUTER_USE)
+      .getByRole('button', { name: START_SETUP }).click();
+    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
+    await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
+    await page.screenshot({ path: iaScreenshot('05-computer-use-detail-zh') });
+
+    await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
+    await expect(capabilityCard(page, BUILTIN_BROWSER)).toBeVisible();
+
+    // ---- The same overview in en-US -------------------------------------
+    await seedSettings(page, { language: 'en-US' });
+    await waitForWelcomeScreen(page);
+    await openCapabilities(page);
+    await expect(page.getByText(/^Abu built-in browser$/)).toBeVisible();
+    await expect(
+      capabilityCard(page, /^Abu built-in browser$/).getByText(/^Ready$/),
+    ).toBeVisible({ timeout: READY_TIMEOUT });
+    await page.waitForTimeout(250);
+    await page.screenshot({ path: iaScreenshot('06-capabilities-overview-en') });
   });
 
   test('rejects a direct privileged Computer Use IPC call without a task token', async () => {

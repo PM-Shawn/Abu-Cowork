@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  ChevronRight,
   CheckCircle2,
   Chrome,
   CircleAlert,
@@ -46,12 +47,58 @@ function SetupStateLabel({ state }: { state: SetupState }) {
   );
 }
 
-function SetupHeader({
+/**
+ * Trail back to the capability overview. Replaces the plain back arrow on any
+ * detail page reached by the user's own drill-in, so the page says WHERE it
+ * sits, not just that there is a way out. A detail page opened BY A TASK keeps
+ * the arrow instead — that exit means "cancel and return to the task", which a
+ * location trail cannot express.
+ *
+ * The root segment keeps the old back button's accessible name so anything
+ * that targeted "back to capabilities" still finds it.
+ */
+export function CapabilityBreadcrumb({
+  trail,
+  onNavigate,
+}: {
+  /** Leaf-last. Every segment but the last is a link back up the trail. */
+  trail: string[];
+  onNavigate: (index: number) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <nav className="mb-5 flex flex-wrap items-center gap-1 text-minor font-medium text-[var(--abu-text-muted)]">
+      {trail.map((segment, index) => {
+        const isLeaf = index === trail.length - 1;
+        return (
+          <span key={`${segment}-${index}`} className="inline-flex items-center gap-1">
+            {index > 0 && <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+            {isLeaf ? (
+              <span className="text-[var(--abu-text-secondary)]">{segment}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onNavigate(index)}
+                aria-label={index === 0 ? t.settings.capabilityBackToOverview : segment}
+                className="transition-colors hover:text-[var(--abu-text-primary)]"
+              >
+                {segment}
+              </button>
+            )}
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function SetupHeader({
   icon: Icon,
   title,
   description,
   onBack,
   backLabel,
+  breadcrumb,
   action,
 }: {
   icon: typeof Chrome;
@@ -59,19 +106,25 @@ function SetupHeader({
   description: string;
   onBack: () => void;
   backLabel?: string;
+  /** Leaf-last location trail. When given, it replaces the back arrow. */
+  breadcrumb?: string[];
   action?: React.ReactNode;
 }) {
   const { t } = useI18n();
   return (
     <div>
-      <button
-        type="button"
-        onClick={onBack}
-        className="mb-5 inline-flex items-center gap-1.5 text-minor font-medium text-[var(--abu-text-muted)] transition-colors hover:text-[var(--abu-text-primary)]"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {backLabel ?? t.settings.capabilityBackToOverview}
-      </button>
+      {breadcrumb ? (
+        <CapabilityBreadcrumb trail={breadcrumb} onNavigate={onBack} />
+      ) : (
+        <button
+          type="button"
+          onClick={onBack}
+          className="mb-5 inline-flex items-center gap-1.5 text-minor font-medium text-[var(--abu-text-muted)] transition-colors hover:text-[var(--abu-text-primary)]"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {backLabel ?? t.settings.capabilityBackToOverview}
+        </button>
+      )}
       <div className="flex items-start gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]">
           <Icon className="h-5 w-5" />
@@ -116,6 +169,10 @@ function SetupRow({
   );
 }
 
+/** The neutral settings card every capability detail page is built out of. */
+export const settingsCardClass =
+  'rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4';
+
 const secondaryButtonClass =
   'inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
 
@@ -134,6 +191,8 @@ export function ChromeSetupView({
   onCheck,
   onDone,
   onDisconnect,
+  breadcrumb,
+  children,
 }: {
   capabilityEnabled: boolean;
   requestedByTask: boolean;
@@ -149,6 +208,9 @@ export function ChromeSetupView({
   onCheck: () => void;
   onDone: () => void;
   onDisconnect: () => void;
+  breadcrumb?: string[];
+  /** The shared browser permission cards, mounted for this channel. */
+  children?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const extensionState: SetupState = extensionConnected
@@ -165,6 +227,7 @@ export function ChromeSetupView({
         description={t.settings.capabilityChromeSetupDesc}
         onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}
+        breadcrumb={requestedByTask ? undefined : breadcrumb}
         action={capabilityEnabled ? (
           <button
             type="button"
@@ -294,6 +357,8 @@ export function ChromeSetupView({
         </button>
       </div>
 
+      {children}
+
       <div className="flex items-start gap-2 border-t border-[var(--abu-border)] pt-4 text-minor leading-relaxed text-[var(--abu-text-muted)]">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-success)]" />
         {t.settings.capabilityChromePrivacy}
@@ -319,6 +384,8 @@ export function ComputerUseSetupView({
   onDisable,
   onDone,
   onRelaunch,
+  breadcrumb,
+  children,
 }: {
   enabled: boolean;
   requestedByTask: boolean;
@@ -336,6 +403,10 @@ export function ComputerUseSetupView({
   onDisable: () => void;
   onDone: () => void;
   onRelaunch?: () => void;
+  breadcrumb?: string[];
+  /** The active-model capability summary, which belongs with the permissions
+   *  it gates rather than on the overview. */
+  children?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const required = requirements ?? { screenRead: true, uiControl: true };
@@ -372,6 +443,7 @@ export function ComputerUseSetupView({
         description={t.settings.capabilityComputerSetupDesc}
         onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}
+        breadcrumb={requestedByTask ? undefined : breadcrumb}
         action={enabled ? (
           <button
             type="button"
@@ -404,6 +476,8 @@ export function ComputerUseSetupView({
           </button>
         </div>
       )}
+
+      {children}
 
       {enabled && (
         <>

@@ -643,7 +643,7 @@ const REASON_SITE_NOT_ALLOWED = /^(该站点没有你的常驻授权|No standing
 const REASON_POLICY_DENIED = /^(这类操作被你设为拒绝|You set this class of action to deny)$/;
 const REASON_APPROVAL_REFUSED = /^(审批被拒绝或没等到回复|The approval was declined or never answered)$/;
 const STEP_ALLOW_SITE = /始终允许此站点|always allow this site/;
-const STEP_RELAX_POLICY = /浏览器操作权限 把对应档位改掉|change its setting in Settings/;
+const STEP_RELAX_POLICY = /操作权限 把对应档位改掉|change its setting in Settings/;
 const STEP_ANSWER_APPROVAL = /审批请求发到了你的 IM|An approval was sent to your IM/;
 const DENIED_ABORT_MESSAGE = /你连续拒绝了我的浏览器操作|You declined my browser actions several times in a row/;
 

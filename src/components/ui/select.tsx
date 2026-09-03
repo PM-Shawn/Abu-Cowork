@@ -5,6 +5,11 @@ import { cn } from '@/lib/utils';
 export interface SelectOption {
   value: string;
   label: string;
+  /** One-line explanation of what picking this option means, rendered under
+   *  the label INSIDE the menu. Chosen over a trigger-side ⓘ/tooltip because a
+   *  hover affordance is undiscoverable on desktop — the explanation has to be
+   *  where the choice is made. The trigger keeps showing the bare label. */
+  description?: string;
 }
 
 export interface SelectOptionGroup {
@@ -50,6 +55,7 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
 
   const allOptions = flattenOptions(options);
   const selectedOption = allOptions.find((opt) => opt.value === value);
+  const hasDescriptions = allOptions.some((opt) => opt.description);
   const isInline = variant === 'inline';
   const isGhost = variant === 'ghost';
 
@@ -105,6 +111,19 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
           {opt.label}
         </span>
       )}
+      {opt.description && (
+        <span
+          className={cn(
+            'mt-0.5 block text-minor leading-relaxed',
+            !isInline && 'pl-6',
+            opt.value === value
+              ? 'text-[var(--abu-clay)]'
+              : 'text-[var(--abu-text-muted)]',
+          )}
+        >
+          {opt.description}
+        </span>
+      )}
     </button>
   );
 
@@ -129,7 +148,12 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
                 'hover:border-[var(--abu-border-hover)]',
                 open && 'ring-2 ring-[var(--abu-clay-ring)] border-[var(--abu-clay)]',
                 isInline
-                  ? 'px-3 py-1.5 bg-[var(--abu-bg-base)]'
+                  // `w-full` so a width class on the wrapper (settings groups
+                  // set one so every control in the group matches) actually
+                  // reaches the box the user sees; without it the trigger is
+                  // content-sized and two options of different lengths render
+                  // two different widths inside identically-sized wrappers.
+                  ? 'w-full justify-between px-3 py-1.5 bg-[var(--abu-bg-base)]'
                   : 'w-full h-9 px-3 justify-between bg-[var(--abu-bg-muted)]',
               ),
         )}
@@ -149,11 +173,17 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
         />
       </button>
 
-      {/* Dropdown */}
+      {/* Dropdown.
+          Width: an inline/ghost menu is shrink-to-fit inside the trigger's own
+          positioning box, so its min-width is what actually decides how wide it
+          lands. Options that carry a description need more room than any
+          settings-row trigger is ever going to be, so they raise that floor. */}
       {open && (
         <div id={dropdownId} className={cn(
           'absolute z-50 top-full mt-1 py-1 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-xl shadow-lg max-h-60 overflow-auto',
-          (isInline || isGhost) ? 'right-0 min-w-[140px]' : 'left-0 right-0',
+          (isInline || isGhost)
+            ? cn('right-0', hasDescriptions ? 'min-w-[240px]' : 'min-w-[140px]')
+            : 'left-0 right-0',
         )}>
           {isGrouped(options) ? (
             options.map((group, gi) => (

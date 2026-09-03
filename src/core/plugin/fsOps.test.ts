@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   existsSync,
   mkdirSync,
+  lstatSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -18,12 +19,20 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   remove: vi.fn(),
+  lstat: vi.fn(),
 }));
 
-import { readDir, readFile, writeFile, mkdir, remove } from '@tauri-apps/plugin-fs';
-import { copyPluginDir, collectPluginSymlinks, removePluginDir, PLUGIN_COPY_DENYLIST } from './fsOps';
+import { readDir, readFile, writeFile, mkdir, remove, lstat } from '@tauri-apps/plugin-fs';
+import {
+  copyPluginDir,
+  collectPluginSymlinks,
+  removePluginDir,
+  PluginSymlinkRootError,
+  PLUGIN_COPY_DENYLIST,
+} from './fsOps';
 
 const mockReadDir = vi.mocked(readDir);
+const mockLstat = vi.mocked(lstat);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
 const mockMkdir = vi.mocked(mkdir);
@@ -44,6 +53,8 @@ function writtenPaths(): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The default for every virtual-tree case: a root that is a real directory.
+  mockLstat.mockResolvedValue({ isSymlink: false } as never);
 });
 
 describe('copyPluginDir', () => {
@@ -185,6 +196,11 @@ describe('copyPluginDir over a real tree with real symlinks', () => {
     mockMkdir.mockImplementation(async (p) => {
       mkdirSync(String(p), { recursive: true });
     });
+    // `lstat` is the one call that must NOT resolve the final component — it
+    // is how both walks decide whether their own root is a link.
+    mockLstat.mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
   });
 
   afterEach(() => {
@@ -237,5 +253,85 @@ describe('copyPluginDir over a real tree with real symlinks', () => {
     await expect(collectPluginSymlinks(src)).resolves.toEqual(['.cursor/skills', 'data/x']);
     expect(mockWriteFile).not.toHaveBeenCalled();
     expect(mockMkdir).not.toHaveBeenCalled();
+  });
+
+  it('refuses a package whose own root directory is a symlink', async () => {
+    // `resolveSourceDir` only checks the path lexically, so a marketplace that
+    // ships `plugins/<name>` as a link passes it and `readDir` then enumerates
+    // the TARGET — files from outside the marketplace copied in, with an empty
+    // skipped-links list. Only the root itself can hide that, so only the root
+    // itself can refuse it.
+    const linkedRoot = join(root, 'linked-pkg');
+    symlinkSync(src, linkedRoot, 'dir');
+
+    await expect(copyPluginDir(linkedRoot, dst)).rejects.toThrow(PluginSymlinkRootError);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses to describe a package whose own root directory is a symlink', async () => {
+    const linkedRoot = join(root, 'linked-pkg');
+    symlinkSync(src, linkedRoot, 'dir');
+
+    await expect(collectPluginSymlinks(linkedRoot)).rejects.toThrow(PluginSymlinkRootError);
+  });
+});
+
+/**
+ * A second fixture carrying ONLY the link to a file.
+ *
+ * The combined fixture above cannot pin the exfiltration guard on its own:
+ * pre-fix, `.cursor/skills` threw `EISDIR` before the walk ever reached
+ * `data/x`, so the assertion about the file link passed for the wrong reason.
+ * Here the file link is the only link there is, and nothing crashes before it.
+ */
+describe('copyPluginDir over a package whose only link points at a file', () => {
+  let root: string;
+  let src: string;
+  let dst: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-exfil-'));
+    src = join(root, 'pkg');
+    dst = join(root, 'installed');
+
+    const secret = join(root, 'secret.txt');
+    writeFileSync(secret, 'PRIVATE KEY');
+    mkdirSync(join(src, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(src, '.claude-plugin', 'plugin.json'), '{"name":"leaky"}');
+    mkdirSync(join(src, 'data'), { recursive: true });
+    symlinkSync(secret, join(src, 'data', 'x'));
+
+    mockReadDir.mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    mockReadFile.mockImplementation(async (p) => new Uint8Array(readFileSync(String(p))));
+    mockWriteFile.mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    mockMkdir.mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+    mockLstat.mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('installs without materialising the target of the file link', async () => {
+    const result = await copyPluginDir(src, dst);
+
+    expect(result.skippedSymlinks).toEqual(['data/x']);
+    expect(existsSync(join(dst, 'data', 'x'))).toBe(false);
+    for (const p of writtenPaths()) {
+      expect(readFileSync(p, 'utf8')).not.toContain('PRIVATE KEY');
+    }
   });
 });

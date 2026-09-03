@@ -22,14 +22,20 @@
  *   - name agreement — the manifest's `name` must match what the marketplace
  *     advertised, otherwise the disclosure the user approved would describe a
  *     different package than the one installed.
+ *   - link refusal — a link in a third-party package is an instruction to read
+ *     something the package does not own, so `copyPluginDir` never follows one.
+ *     Every scan here goes through `scanPluginPackage`, which hides exactly
+ *     what the copy refuses, and `collectPluginSymlinks` runs first so a
+ *     package root that is itself a link is rejected before anything is read.
+ *     Without that the disclosure would describe a tree that never lands.
  */
 
-import { readTextFile, exists, readDir } from '@tauri-apps/plugin-fs';
+import { readTextFile } from '@tauri-apps/plugin-fs';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from './manifest';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
-import { collectPluginSymlinks } from './fsOps';
+import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fsOps';
 import type { InstalledPlugin } from './installedStore';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
@@ -98,9 +104,20 @@ export function resolveSourceDir(source: PluginSource, marketplaceDir: string): 
  * first one present wins, even if a later one would also parse.
  */
 export async function readManifestFrom(packageDir: string): Promise<PluginManifest> {
+  return readManifestWith(packageDir, scanPluginPackage(packageDir));
+}
+
+/**
+ * The scanning half of {@link readManifestFrom}, so `planInstall` can share one
+ * {@link PackageScan} across every scan it does.
+ */
+async function readManifestWith(packageDir: string, scan: PackageScan): Promise<PluginManifest> {
   for (const candidate of MANIFEST_CANDIDATES) {
+    // A candidate reached through a link is not the package's own file: the
+    // copy will skip it, so approving name / version / `mcpServers` read from
+    // it would approve a package that installs with no manifest at all.
+    if (!(await scan.find(candidate))) continue;
     const path = joinPath(packageDir, candidate);
-    if (!(await exists(path))) continue;
     const raw = await readTextFile(path);
     let parsed: unknown;
     try {
@@ -116,10 +133,8 @@ export async function readManifestFrom(packageDir: string): Promise<PluginManife
 }
 
 /** Skill directory names the package ships under `skills/`. */
-async function discoverSkills(packageDir: string): Promise<string[]> {
-  const skillsDir = joinPath(packageDir, 'skills');
-  if (!(await exists(skillsDir))) return [];
-  const entries = await readDir(skillsDir);
+async function discoverSkills(scan: PackageScan): Promise<string[]> {
+  const entries = await scan.children('skills');
   return entries
     .filter((e) => e.isDirectory)
     .map((e) => e.name)
@@ -163,10 +178,10 @@ export interface InstallDisclosure {
 const IGNORED_PAYLOAD_DIRS = ['commands', 'agents', 'hooks'] as const;
 
 /** Which of the ignored payload dirs this package actually ships. */
-async function discoverIgnoredPayloads(packageDir: string): Promise<string[]> {
+async function discoverIgnoredPayloads(scan: PackageScan): Promise<string[]> {
   const present: string[] = [];
   for (const dir of IGNORED_PAYLOAD_DIRS) {
-    if (await exists(joinPath(packageDir, dir))) present.push(dir);
+    if (await scan.find(dir)) present.push(dir);
   }
   return present;
 }
@@ -220,7 +235,16 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   } else {
     throw new UnsupportedSourceError(source.kind);
   }
-  const manifest = await readManifestFrom(sourceDir);
+  // First, because it is the call that refuses a package root which is itself
+  // a symlink — every scan below would otherwise be reading someone else's
+  // tree. It also produces the skip list from the same walk the copy does, so
+  // what the user approves is what the copy will actually leave out.
+  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
+  // One view of the package, shared by all three scans below. It hides exactly
+  // what the copy refuses, so the disclosure and the installed tree agree by
+  // construction rather than by two lists being kept in step by hand.
+  const scan = scanPluginPackage(sourceDir);
+  const manifest = await readManifestWith(sourceDir, scan);
 
   if (manifest.name !== opts.entry.name) {
     throw new PluginSecurityError(
@@ -228,11 +252,8 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
     );
   }
 
-  const skills = await discoverSkills(sourceDir);
-  const ignoredPayloads = await discoverIgnoredPayloads(sourceDir);
-  // Scanned from the same tree the copy will walk, so what the user approves
-  // is what the copy will actually leave out.
-  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
+  const skills = await discoverSkills(scan);
+  const ignoredPayloads = await discoverIgnoredPayloads(scan);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
     command: spec.command,

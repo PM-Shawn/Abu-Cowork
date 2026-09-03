@@ -20,7 +20,7 @@
  * what is genuinely unwanted.
  */
 
-import { readDir, readFile, writeFile, mkdir, remove } from '@tauri-apps/plugin-fs';
+import { readDir, readFile, writeFile, mkdir, remove, lstat } from '@tauri-apps/plugin-fs';
 import { joinPath } from '../../utils/pathUtils';
 
 /**
@@ -36,6 +36,117 @@ export const PLUGIN_COPY_DENYLIST: ReadonlySet<string> = new Set([
   '.DS_Store',
   'node_modules',
 ]);
+
+/**
+ * A package whose own root directory is a symlink.
+ *
+ * Kept here rather than reusing `installer.ts`'s `PluginSecurityError` because
+ * `installer` imports this module; the dependency only goes one way.
+ */
+export class PluginSymlinkRootError extends Error {
+  constructor(dir: string) {
+    super(`Refusing a plugin package whose own directory is a symlink: ${dir}`);
+    this.name = 'PluginSymlinkRootError';
+  }
+}
+
+/**
+ * Throw unless `dir` is a real directory rather than a link to one.
+ *
+ * Every walk below starts with `readDir(dir)`, which resolves the final
+ * component in the privileged host (`readdirSync`), so a linked root
+ * enumerates the TARGET: files from outside the package get copied in and
+ * `skippedSymlinks` comes back empty — no disclosure at all. Only the root
+ * itself can catch that, because from the entries' side it is invisible.
+ *
+ * `lstat` is the one fs call routed with `followFinalSymlink: false`
+ * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what this needs.
+ */
+async function assertRealPackageRoot(dir: string): Promise<void> {
+  if ((await lstat(dir)).isSymlink) throw new PluginSymlinkRootError(dir);
+}
+
+/** One owned entry directly under a package directory. */
+export interface PackageEntry {
+  name: string;
+  isDirectory: boolean;
+}
+
+/**
+ * A read-only view of a package tree that sees exactly what the copy will
+ * bring in: a denylisted name or a symlink does not exist.
+ *
+ * Every pre-consent scan goes through this. `exists`, `readDir` and
+ * `readTextFile` all resolve symlinks in the privileged host, so a scan built
+ * on them describes a link's TARGET while {@link copyPluginDir} skips the
+ * link — the disclosure the user approves would then not match what lands.
+ */
+export interface PackageScan {
+  /** The owned entry at `relativePath`, or undefined if the copy would skip it. */
+  find(relativePath: string): Promise<PackageEntry | undefined>;
+  /** Owned entries directly under `relativePath` (`''` = the package root). */
+  children(relativePath: string): Promise<PackageEntry[]>;
+}
+
+/**
+ * Open a {@link PackageScan} over `rootDir`.
+ *
+ * Listings are read once and memoised, so a whole disclosure — the three
+ * manifest candidates, `skills`, and `commands`/`agents`/`hooks` — costs a
+ * single `readDir` of the package root plus one per dot-dir actually visited.
+ * That is fewer round-trips than the `exists` chain it replaces.
+ *
+ * A directory is only listed after the parent listing proved it is an owned
+ * directory, so the only call that can fail on a missing path is the root's —
+ * which is the one that should fail.
+ */
+export function scanPluginPackage(rootDir: string): PackageScan {
+  const listings = new Map<string, Promise<Map<string, PackageEntry>>>();
+
+  function listOwned(relativeDir: string): Promise<Map<string, PackageEntry>> {
+    const cached = listings.get(relativeDir);
+    if (cached) return cached;
+    const pending = (async () => {
+      const absolute = relativeDir ? joinPath(rootDir, relativeDir) : rootDir;
+      const owned = new Map<string, PackageEntry>();
+      for (const entry of await readDir(absolute)) {
+        if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
+        if (entry.isSymlink) continue;
+        owned.set(entry.name, { name: entry.name, isDirectory: entry.isDirectory });
+      }
+      return owned;
+    })();
+    listings.set(relativeDir, pending);
+    return pending;
+  }
+
+  async function find(relativePath: string): Promise<PackageEntry | undefined> {
+    const segments = relativePath.split('/').filter((s) => s !== '');
+    if (segments.length === 0) return undefined;
+    let parent = '';
+    for (const [index, segment] of segments.entries()) {
+      const entry = (await listOwned(parent)).get(segment);
+      // Every segment has to be owned, not just the last one: a real
+      // `.claude-plugin/` holding a linked `plugin.json` is still reading a
+      // file the package does not own, and so is a linked `.claude-plugin/`.
+      if (!entry) return undefined;
+      if (index === segments.length - 1) return entry;
+      if (!entry.isDirectory) return undefined;
+      parent = parent ? `${parent}/${segment}` : segment;
+    }
+    return undefined;
+  }
+
+  async function children(relativePath: string): Promise<PackageEntry[]> {
+    if (relativePath !== '') {
+      const entry = await find(relativePath);
+      if (!entry?.isDirectory) return [];
+    }
+    return [...(await listOwned(relativePath)).values()];
+  }
+
+  return { find, children };
+}
 
 /**
  * What a copy brought in, and what it deliberately left behind.
@@ -78,7 +189,15 @@ export interface CopyPluginDirResult {
 export async function copyPluginDir(
   srcDir: string,
   destDir: string,
-  relativePrefix = '',
+): Promise<CopyPluginDirResult> {
+  await assertRealPackageRoot(srcDir);
+  return copyOwnedTree(srcDir, destDir, '');
+}
+
+async function copyOwnedTree(
+  srcDir: string,
+  destDir: string,
+  relativePrefix: string,
 ): Promise<CopyPluginDirResult> {
   await mkdir(destDir, { recursive: true });
   let files = 0;
@@ -99,7 +218,7 @@ export async function copyPluginDir(
     }
 
     if (entry.isDirectory) {
-      const nested = await copyPluginDir(srcPath, destPath, relative);
+      const nested = await copyOwnedTree(srcPath, destPath, relative);
       files += nested.files;
       skippedSymlinks.push(...nested.skippedSymlinks);
     } else {
@@ -119,9 +238,14 @@ export async function copyPluginDir(
  * user reads *before* anything is written. It applies the same denylist, and
  * it does not descend through a link — a link's target is not this package.
  */
-export async function collectPluginSymlinks(
+export async function collectPluginSymlinks(srcDir: string): Promise<string[]> {
+  await assertRealPackageRoot(srcDir);
+  return (await collectOwnedTreeSymlinks(srcDir, '')).sort();
+}
+
+async function collectOwnedTreeSymlinks(
   srcDir: string,
-  relativePrefix = '',
+  relativePrefix: string,
 ): Promise<string[]> {
   const found: string[] = [];
 
@@ -134,11 +258,11 @@ export async function collectPluginSymlinks(
       continue;
     }
     if (entry.isDirectory) {
-      found.push(...(await collectPluginSymlinks(joinPath(srcDir, entry.name), relative)));
+      found.push(...(await collectOwnedTreeSymlinks(joinPath(srcDir, entry.name), relative)));
     }
   }
 
-  return found.sort();
+  return found;
 }
 
 /** Remove an installed plugin's directory. */

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -14,7 +15,6 @@ import { join } from 'node:path';
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn(),
-  exists: vi.fn(),
   readDir: vi.fn(),
   // `planInstall` scans for symlinks through `fsOps`, which imports the write
   // half of this module too. Mocked here so the binding exists; only the
@@ -23,15 +23,16 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   writeFile: vi.fn(),
   mkdir: vi.fn(),
   remove: vi.fn(),
+  lstat: vi.fn(),
 }));
 
 import {
   readTextFile,
-  exists,
   readDir,
   readFile,
   writeFile,
   mkdir,
+  lstat,
 } from '@tauri-apps/plugin-fs';
 import {
   readManifestFrom,
@@ -43,18 +44,18 @@ import {
   PluginSecurityError,
 } from './installer';
 import type { PluginSource } from './marketplace';
-import { copyPluginDir } from './fsOps';
+import { copyPluginDir, PluginSymlinkRootError } from './fsOps';
 
 const mockRead = vi.mocked(readTextFile);
-const mockExists = vi.mocked(exists);
 const mockReadDir = vi.mocked(readDir);
 
-/** Register a virtual filesystem: path → file contents. Dirs are inferred. */
+/**
+ * Register a virtual filesystem: path → file contents. Dirs are inferred.
+ *
+ * No `exists` here on purpose — every scan now walks `readDir` listings, which
+ * is the only call that reports whether an entry is a link.
+ */
 function mountFiles(files: Record<string, string>) {
-  mockExists.mockImplementation(async (p) => {
-    const path = String(p);
-    return path in files || Object.keys(files).some((f) => f.startsWith(`${path}/`));
-  });
   mockRead.mockImplementation(async (p) => {
     const path = String(p);
     if (!(path in files)) throw new Error(`ENOENT: ${path}`);
@@ -78,6 +79,8 @@ function mountFiles(files: Record<string, string>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Virtual trees have no links; the real-tree suites below override this.
+  vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as never);
 });
 
 describe('assertInsideDir', () => {
@@ -424,7 +427,6 @@ describe('a package that ships symlinks', () => {
     mkdirSync(join(pkg, 'data'), { recursive: true });
     symlinkSync(secret, join(pkg, 'data', 'x'));
 
-    vi.mocked(exists).mockImplementation(async (p) => existsSync(String(p)));
     vi.mocked(readTextFile).mockImplementation(async (p) => readFileSync(String(p), 'utf8'));
     vi.mocked(readDir).mockImplementation(async (p) =>
       readdirSync(String(p), { withFileTypes: true }).map((d) => ({
@@ -441,6 +443,9 @@ describe('a package that ships symlinks', () => {
     vi.mocked(mkdir).mockImplementation(async (p) => {
       mkdirSync(String(p), { recursive: true });
     });
+    vi.mocked(lstat).mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
   });
 
   afterEach(() => {
@@ -470,5 +475,140 @@ describe('a package that ships symlinks', () => {
     expect(existsSync(join(installed, '.cursor', 'skills'))).toBe(false);
     // The security half: the link's TARGET must not exist as a real file here.
     expect(existsSync(join(installed, 'data', 'x'))).toBe(false);
+  });
+});
+
+/**
+ * The disclosure and the copy must agree BY CONSTRUCTION.
+ *
+ * `copyPluginDir` refuses every symlink, but `exists` / `readDir` /
+ * `readTextFile` all resolve them in the privileged host
+ * (`electron/fsHost.cjs` → `existsSync` / `readdirSync` / `readFileSync`). A
+ * scan built on those describes the link's TARGET, so the screen the user
+ * approves can promise a payload the install then drops on the floor — or read
+ * the approval itself out of a file the package does not own.
+ */
+describe('a package that ships a symlink where Abu looks for its own payload', () => {
+  let root: string;
+  let mkt: string;
+  let pkg: string;
+
+  const entry = { name: 'canva', source: { kind: 'relative', path: './plugins/canva' } as PluginSource };
+
+  /** Wire the mocked fs surface onto the real temp tree, host-faithfully. */
+  function useRealTree() {
+    vi.mocked(readTextFile).mockImplementation(async (p) => readFileSync(String(p), 'utf8'));
+    vi.mocked(readDir).mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    vi.mocked(readFile).mockImplementation(async (p) => new Uint8Array(readFileSync(String(p))));
+    vi.mocked(writeFile).mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    vi.mocked(mkdir).mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+    vi.mocked(lstat).mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-scan-'));
+    mkt = join(root, 'mkt');
+    pkg = join(mkt, 'plugins', 'canva');
+    mkdirSync(pkg, { recursive: true });
+    useRealTree();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  describe('`skills` is a link to a directory the package does not own', () => {
+    beforeEach(() => {
+      mkdirSync(join(pkg, '.claude-plugin'), { recursive: true });
+      writeFileSync(
+        join(pkg, '.claude-plugin', 'plugin.json'),
+        JSON.stringify({ name: 'canva', version: '1.0.0' }),
+      );
+      mkdirSync(join(mkt, 'shared-skills', 'design'), { recursive: true });
+      writeFileSync(join(mkt, 'shared-skills', 'design', 'SKILL.md'), '---\nname: design\n---\n');
+      symlinkSync('../../shared-skills', join(pkg, 'skills'), 'dir');
+    });
+
+    it('does not promise a skill the copy will drop', async () => {
+      // Otherwise the same screen says "will register: design" AND "skipped
+      // link: skills", which contradict each other.
+      const d = await planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry });
+
+      expect(d.skills).toEqual([]);
+      expect(d.skippedSymlinks).toContain('skills');
+    });
+
+    it('does not record a contribution that is not on disk', async () => {
+      // `installed.json` is what the uninstaller and the skill roots trust.
+      const { record } = await installPlugin({
+        home: root,
+        marketplaceName: 'official',
+        marketplaceDir: mkt,
+        entry,
+        copyDir: async (from, to) => {
+          await copyPluginDir(from, to);
+        },
+      });
+
+      const installed = join(root, '.abu', 'plugin-packages', 'official', 'canva', '1.0.0');
+      expect(existsSync(join(installed, 'skills'))).toBe(false);
+      expect(record.contributed.skills).toEqual([]);
+    });
+  });
+
+  it('refuses a package whose only manifest candidate is a link', async () => {
+    // Approving a name / version / mcpServers block read from OUTSIDE the
+    // package, and then installing a package with no manifest at all, is the
+    // worst version of the disagreement. It has to fail the ordinary way.
+    mkdirSync(join(mkt, 'elsewhere'), { recursive: true });
+    writeFileSync(
+      join(mkt, 'elsewhere', 'plugin.json'),
+      JSON.stringify({ name: 'canva', version: '9.9.9' }),
+    );
+    symlinkSync('../../elsewhere', join(pkg, '.claude-plugin'), 'dir');
+
+    await expect(
+      planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry }),
+    ).rejects.toThrow(/No plugin manifest found/);
+  });
+
+  it('refuses a package whose manifest FILE is a link inside a real dot-dir', async () => {
+    mkdirSync(join(pkg, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(mkt, 'plugin.json'), JSON.stringify({ name: 'canva', version: '9.9.9' }));
+    symlinkSync('../../../plugin.json', join(pkg, '.claude-plugin', 'plugin.json'));
+
+    await expect(
+      planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry }),
+    ).rejects.toThrow(/No plugin manifest found/);
+  });
+
+  it('refuses a marketplace that ships the package directory itself as a link', async () => {
+    // `resolveSourceDir` only validates `marketplaceDir + source.path`
+    // lexically, so this passes it and `readDir` then enumerates the target.
+    const real = join(root, 'outside', 'canva');
+    mkdirSync(join(real, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(real, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'canva', version: '1.0.0' }),
+    );
+    rmSync(pkg, { recursive: true, force: true });
+    symlinkSync(real, pkg, 'dir');
+
+    await expect(
+      planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry }),
+    ).rejects.toThrow(PluginSymlinkRootError);
   });
 });

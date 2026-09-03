@@ -37,27 +37,108 @@ export const PLUGIN_COPY_DENYLIST: ReadonlySet<string> = new Set([
   'node_modules',
 ]);
 
-/** Recursively copy a plugin package. Returns the number of files written. */
-export async function copyPluginDir(srcDir: string, destDir: string): Promise<number> {
+/**
+ * What a copy brought in, and what it deliberately left behind.
+ *
+ * The skipped links are part of the contract, not a debug aid: the user
+ * approved a disclosure that lists them, so the caller has to be able to tell
+ * that the package on disk is missing exactly those entries.
+ */
+export interface CopyPluginDirResult {
+  /** Number of real files written. */
+  files: number;
+  /** Package-relative paths of the symlinks that were skipped, sorted. */
+  skippedSymlinks: string[];
+}
+
+/**
+ * Recursively copy a plugin package, **never following and never recreating a
+ * symlink**.
+ *
+ * A third party writes this tree, so a link in it is an instruction to read
+ * something the package does not own. Two things went wrong when we followed
+ * them:
+ *
+ *   - a link to a DIRECTORY crashed the install with
+ *     `EISDIR: illegal operation on a directory, read` — a dirent for such a
+ *     link reports `isDirectory: false` / `isSymlink: true`, so it fell into
+ *     the file branch and `readFile` followed it onto a directory. That is a
+ *     real, shipped package: `canva` in Anthropic's official marketplace
+ *     carries `.cursor/skills -> ../skills`.
+ *   - worse, a link to a FILE did not crash. `readFile` followed it and the
+ *     TARGET's bytes were written as a real file inside the installed
+ *     package, so `data/x -> ~/.ssh/id_rsa` would materialise the key
+ *     somewhere the package's own skills are allowed to read.
+ *
+ * Skipping fixes both, and re-creating the link would reintroduce the second:
+ * whoever reads the installed tree later would still be pointed out of it.
+ * Skips are reported rather than swallowed so the install disclosure can say
+ * what will be missing before the user confirms.
+ */
+export async function copyPluginDir(
+  srcDir: string,
+  destDir: string,
+  relativePrefix = '',
+): Promise<CopyPluginDirResult> {
   await mkdir(destDir, { recursive: true });
-  let count = 0;
+  let files = 0;
+  const skippedSymlinks: string[] = [];
 
   for (const entry of await readDir(srcDir)) {
     if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
 
     const srcPath = joinPath(srcDir, entry.name);
     const destPath = joinPath(destDir, entry.name);
+    const relative = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+
+    // BEFORE the isDirectory branch: a link to a directory reports
+    // `isDirectory: false`, so testing it later would be testing nothing.
+    if (entry.isSymlink) {
+      skippedSymlinks.push(relative);
+      continue;
+    }
 
     if (entry.isDirectory) {
-      count += await copyPluginDir(srcPath, destPath);
+      const nested = await copyPluginDir(srcPath, destPath, relative);
+      files += nested.files;
+      skippedSymlinks.push(...nested.skippedSymlinks);
     } else {
       const bytes = await readFile(srcPath);
       await writeFile(destPath, new Uint8Array(bytes));
-      count++;
+      files++;
     }
   }
 
-  return count;
+  return { files, skippedSymlinks: skippedSymlinks.sort() };
+}
+
+/**
+ * Package-relative paths of every symlink in a source package, sorted.
+ *
+ * Read-only twin of {@link copyPluginDir}'s skip list, for the disclosure the
+ * user reads *before* anything is written. It applies the same denylist, and
+ * it does not descend through a link — a link's target is not this package.
+ */
+export async function collectPluginSymlinks(
+  srcDir: string,
+  relativePrefix = '',
+): Promise<string[]> {
+  const found: string[] = [];
+
+  for (const entry of await readDir(srcDir)) {
+    if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
+    const relative = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+
+    if (entry.isSymlink) {
+      found.push(relative);
+      continue;
+    }
+    if (entry.isDirectory) {
+      found.push(...(await collectPluginSymlinks(joinPath(srcDir, entry.name), relative)));
+    }
+  }
+
+  return found.sort();
 }
 
 /** Remove an installed plugin's directory. */

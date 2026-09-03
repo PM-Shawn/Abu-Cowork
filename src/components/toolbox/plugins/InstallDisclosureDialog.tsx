@@ -208,6 +208,19 @@ export default function InstallDisclosureDialog({
               </Section>
             )}
 
+            {(d.skippedSymlinks?.length ?? 0) > 0 && (
+              <Section icon={AlertTriangle} title={tb.pluginsDisclosureSymlinkTitle}>
+                <p
+                  data-testid="plugin-disclosure-symlinks"
+                  className="text-minor text-[var(--abu-text-muted)]"
+                >
+                  {format(tb.pluginsDisclosureSymlinkHint, {
+                    paths: (d.skippedSymlinks ?? []).join('、'),
+                  })}
+                </p>
+              </Section>
+            )}
+
             {d.ignoredPayloads.length > 0 && (
               <Section icon={AlertTriangle} title={tb.pluginsDisclosureIgnoredTitle}>
                 <p

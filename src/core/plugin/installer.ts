@@ -29,6 +29,7 @@ import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from './manifest';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
+import { collectPluginSymlinks } from './fsOps';
 import type { InstalledPlugin } from './installedStore';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
@@ -144,6 +145,18 @@ export interface InstallDisclosure {
    * part of a plugin silently does nothing here.
    */
   ignoredPayloads: string[];
+  /**
+   * Package-relative paths of symlinks the copy will REFUSE to bring in
+   * (`copyPluginDir` neither follows nor recreates a link — see its doc).
+   * Disclosed so a package that ships one does not install silently
+   * incomplete.
+   *
+   * Optional because a disclosure can legitimately be produced by a surface
+   * whose artifact format cannot express a symlink at all (the organization
+   * installer inflates a zip with fflate, which only ever yields real files),
+   * and such a surface has nothing to report. `planInstall` always sets it.
+   */
+  skippedSymlinks?: string[];
 }
 
 /** Payload dirs the ecosystem uses that Abu deliberately does not consume. */
@@ -217,6 +230,9 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
 
   const skills = await discoverSkills(sourceDir);
   const ignoredPayloads = await discoverIgnoredPayloads(sourceDir);
+  // Scanned from the same tree the copy will walk, so what the user approves
+  // is what the copy will actually leave out.
+  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
     command: spec.command,
@@ -235,6 +251,7 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
     mcpServers,
     capabilities: manifest.interface?.capabilities,
     ignoredPayloads,
+    skippedSymlinks,
   };
 }
 

@@ -1,12 +1,38 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn(),
   exists: vi.fn(),
   readDir: vi.fn(),
+  // `planInstall` scans for symlinks through `fsOps`, which imports the write
+  // half of this module too. Mocked here so the binding exists; only the
+  // real-tree suite at the bottom gives them an implementation.
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  mkdir: vi.fn(),
+  remove: vi.fn(),
 }));
 
-import { readTextFile, exists, readDir } from '@tauri-apps/plugin-fs';
+import {
+  readTextFile,
+  exists,
+  readDir,
+  readFile,
+  writeFile,
+  mkdir,
+} from '@tauri-apps/plugin-fs';
 import {
   readManifestFrom,
   resolveSourceDir,
@@ -17,6 +43,7 @@ import {
   PluginSecurityError,
 } from './installer';
 import type { PluginSource } from './marketplace';
+import { copyPluginDir } from './fsOps';
 
 const mockRead = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
@@ -362,3 +389,86 @@ describe('ignored payloads', () => {
     expect(d.ignoredPayloads).toEqual([]);
   });
 })
+
+/**
+ * The install path end-to-end over a REAL temp tree with REAL symlinks —
+ * the shape that broke for a user installing `canva` from Anthropic's official
+ * marketplace (`EISDIR: illegal operation on a directory, read`).
+ *
+ * Real, not mocked, on purpose: every mocked entry in this file says
+ * `isSymlink: false`, which is exactly the blind spot that let the bug ship.
+ */
+describe('a package that ships symlinks', () => {
+  let root: string;
+  let mkt: string;
+  let pkg: string;
+  let secret: string;
+
+  const entry = { name: 'canva', source: { kind: 'relative', path: './plugins/canva' } as PluginSource };
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-install-'));
+    mkt = join(root, 'mkt');
+    pkg = join(mkt, 'plugins', 'canva');
+    secret = join(root, 'id_rsa');
+
+    mkdirSync(join(pkg, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(pkg, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'canva', version: '1.0.0' }));
+    mkdirSync(join(pkg, 'skills', 'design'), { recursive: true });
+    writeFileSync(join(pkg, 'skills', 'design', 'SKILL.md'), '---\nname: design\n---\n');
+    // The link that crashed the install…
+    mkdirSync(join(pkg, '.cursor'), { recursive: true });
+    symlinkSync('../skills', join(pkg, '.cursor', 'skills'), 'dir');
+    // …and the one that quietly copied someone else's bytes into the package.
+    writeFileSync(secret, 'PRIVATE KEY');
+    mkdirSync(join(pkg, 'data'), { recursive: true });
+    symlinkSync(secret, join(pkg, 'data', 'x'));
+
+    vi.mocked(exists).mockImplementation(async (p) => existsSync(String(p)));
+    vi.mocked(readTextFile).mockImplementation(async (p) => readFileSync(String(p), 'utf8'));
+    vi.mocked(readDir).mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    vi.mocked(readFile).mockImplementation(async (p) => new Uint8Array(readFileSync(String(p))));
+    vi.mocked(writeFile).mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    vi.mocked(mkdir).mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('discloses both links before anything is written', async () => {
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry });
+    expect(d.skippedSymlinks).toEqual(['.cursor/skills', 'data/x']);
+  });
+
+  it('installs successfully and copies neither link', async () => {
+    const { record } = await installPlugin({
+      home: root,
+      marketplaceName: 'official',
+      marketplaceDir: mkt,
+      entry,
+      copyDir: async (from, to) => {
+        await copyPluginDir(from, to);
+      },
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const installed = join(root, '.abu', 'plugin-packages', 'official', 'canva', '1.0.0');
+    expect(record.version).toBe('1.0.0');
+    expect(existsSync(join(installed, 'skills', 'design', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(installed, '.cursor', 'skills'))).toBe(false);
+    // The security half: the link's TARGET must not exist as a real file here.
+    expect(existsSync(join(installed, 'data', 'x'))).toBe(false);
+  });
+});

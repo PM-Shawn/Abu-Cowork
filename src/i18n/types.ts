@@ -1439,6 +1439,8 @@ export interface TranslationDict {
     pluginsDisclosureCapabilities: string;
     pluginsDisclosureIgnoredTitle: string;
     pluginsDisclosureIgnoredHint: string;
+    pluginsDisclosureSymlinkTitle: string;
+    pluginsDisclosureSymlinkHint: string;
     pluginsDisclosureNone: string;
     pluginsDisclosureLoading: string;
     pluginsInstalling: string;

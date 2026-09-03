@@ -1,4 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readDir: vi.fn(),
@@ -9,11 +21,12 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 import { readDir, readFile, writeFile, mkdir, remove } from '@tauri-apps/plugin-fs';
-import { copyPluginDir, removePluginDir, PLUGIN_COPY_DENYLIST } from './fsOps';
+import { copyPluginDir, collectPluginSymlinks, removePluginDir, PLUGIN_COPY_DENYLIST } from './fsOps';
 
 const mockReadDir = vi.mocked(readDir);
 const mockReadFile = vi.mocked(readFile);
 const mockWriteFile = vi.mocked(writeFile);
+const mockMkdir = vi.mocked(mkdir);
 const mockRemove = vi.mocked(remove);
 
 /** Register a virtual tree: dir path → entries. */
@@ -66,10 +79,10 @@ describe('copyPluginDir', () => {
       '/src/skills/today': [{ name: 'SKILL.md', isDirectory: false }],
     });
 
-    const count = await copyPluginDir('/src', '/dst');
+    const result = await copyPluginDir('/src', '/dst');
 
     expect(writtenPaths()).toEqual(['/dst/skills/today/SKILL.md']);
-    expect(count).toBe(1);
+    expect(result.files).toBe(1);
   });
 
   it.each([...PLUGIN_COPY_DENYLIST])('skips %s', async (denied) => {
@@ -104,7 +117,10 @@ describe('copyPluginDir', () => {
       ],
     });
 
-    await expect(copyPluginDir('/src', '/dst')).resolves.toBe(3);
+    await expect(copyPluginDir('/src', '/dst')).resolves.toEqual({
+      files: 3,
+      skippedSymlinks: [],
+    });
   });
 });
 
@@ -112,5 +128,114 @@ describe('removePluginDir', () => {
   it('removes recursively', async () => {
     await removePluginDir('/dst/pkg');
     expect(mockRemove).toHaveBeenCalledWith('/dst/pkg', { recursive: true });
+  });
+});
+
+/**
+ * These run against a REAL temporary directory with REAL symlinks, driving the
+ * mocked `@tauri-apps/plugin-fs` surface through node's fs the same way
+ * `electron/fsHost.cjs` does.
+ *
+ * That is deliberate. The bug this pins — installing `canva` from the official
+ * marketplace died with `EISDIR: illegal operation on a directory, read` —
+ * survived a fully mocked suite precisely because every hand-written entry in
+ * it said `isSymlink: false`. A link to a directory reports
+ * `isDirectory: false` / `isSymlink: true`, and only a real dirent produces
+ * that combination by itself.
+ */
+describe('copyPluginDir over a real tree with real symlinks', () => {
+  let root: string;
+  let src: string;
+  let dst: string;
+  let secret: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-fsops-'));
+    src = join(root, 'pkg');
+    dst = join(root, 'installed');
+    secret = join(root, 'secret.txt');
+
+    // A package shaped like the one that broke: a manifest, a real skill, a
+    // link to a sibling DIRECTORY (canva ships `.cursor/skills -> ../skills`)
+    // and a link to a FILE outside the package entirely.
+    mkdirSync(join(src, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(src, '.claude-plugin', 'plugin.json'), '{"name":"canva"}');
+    mkdirSync(join(src, 'skills', 'design'), { recursive: true });
+    writeFileSync(join(src, 'skills', 'design', 'SKILL.md'), '# design');
+    mkdirSync(join(src, '.cursor'), { recursive: true });
+    symlinkSync('../skills', join(src, '.cursor', 'skills'), 'dir');
+    writeFileSync(secret, 'PRIVATE KEY');
+    mkdirSync(join(src, 'data'), { recursive: true });
+    symlinkSync(secret, join(src, 'data', 'x'));
+
+    mockReadDir.mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    // `readFileSync` FOLLOWS a symlink — exactly what the privileged host does,
+    // and exactly why a link to a directory used to throw EISDIR here.
+    mockReadFile.mockImplementation(async (p) => new Uint8Array(readFileSync(String(p))));
+    mockWriteFile.mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    mockMkdir.mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('installs a package containing a symlink to a directory instead of crashing', async () => {
+    // Pre-fix this rejected with "EISDIR: illegal operation on a directory,
+    // read" the moment it reached `.cursor/skills`.
+    const result = await copyPluginDir(src, dst);
+
+    expect(existsSync(join(dst, '.claude-plugin', 'plugin.json'))).toBe(true);
+    expect(existsSync(join(dst, 'skills', 'design', 'SKILL.md'))).toBe(true);
+    expect(result.files).toBe(2);
+  });
+
+  it('copies neither kind of link, and reports both', async () => {
+    const result = await copyPluginDir(src, dst);
+
+    // Not followed, and not recreated either: recreating it would still point
+    // whoever reads the installed tree back out of the package.
+    expect(existsSync(join(dst, '.cursor', 'skills'))).toBe(false);
+    expect(existsSync(join(dst, 'data', 'x'))).toBe(false);
+    expect(result.skippedSymlinks).toEqual(['.cursor/skills', 'data/x']);
+  });
+
+  it('never materialises the target of a link to a file inside the install', async () => {
+    // The quiet half of the bug: a link to a FILE did not crash — `readFile`
+    // followed it and wrote the TARGET's bytes as a real file in the package,
+    // so `data/x -> ~/.ssh/id_rsa` handed the key to the plugin's own skills.
+    await copyPluginDir(src, dst);
+
+    const written = writtenPaths();
+    expect(written).not.toContain(join(dst, 'data', 'x'));
+    for (const p of written) {
+      expect(readFileSync(p, 'utf8')).not.toContain('PRIVATE KEY');
+    }
+  });
+
+  it('never reads a symlink at all', async () => {
+    await copyPluginDir(src, dst);
+
+    const read = mockReadFile.mock.calls.map((c) => String(c[0]));
+    expect(read).not.toContain(join(src, '.cursor', 'skills'));
+    expect(read).not.toContain(join(src, 'data', 'x'));
+  });
+
+  it('collectPluginSymlinks reports the same links without writing anything', async () => {
+    // What `planInstall` puts on the disclosure the user confirms.
+    await expect(collectPluginSymlinks(src)).resolves.toEqual(['.cursor/skills', 'data/x']);
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(mockMkdir).not.toHaveBeenCalled();
   });
 });

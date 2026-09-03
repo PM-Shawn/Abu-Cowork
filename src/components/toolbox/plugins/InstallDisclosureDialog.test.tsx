@@ -85,6 +85,25 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.queryByTestId('plugin-disclosure-ignored')).toBeNull();
   });
 
+  it('names the symlinks the install will refuse, so nothing goes missing silently', () => {
+    // The user is approving a package that will land incomplete on purpose —
+    // `copyPluginDir` neither follows nor recreates a link.
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: { ...disclosure, skippedSymlinks: ['.cursor/skills', 'data/x'] },
+      } as const,
+    });
+    const notice = screen.getByTestId('plugin-disclosure-symlinks');
+    expect(notice.textContent).toContain('.cursor/skills');
+    expect(notice.textContent).toContain('data/x');
+  });
+
+  it('says nothing about links when the package ships none', () => {
+    renderDialog();
+    expect(screen.queryByTestId('plugin-disclosure-symlinks')).toBeNull();
+  });
+
   it('only reports a decision when the user acts on it', () => {
     const props = renderDialog();
     expect(props.onConfirm).not.toHaveBeenCalled();

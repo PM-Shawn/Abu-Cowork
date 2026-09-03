@@ -107,6 +107,44 @@ export function reconcileTurnScrollAnchor(
   };
 }
 
+/**
+ * Return surplus bottom scroll range to the spacer ledger.
+ *
+ * The arm computes its ledger (initialScrollDelta / initialSpacerHeight) in a
+ * single layout pass, but the spacer's scroll range materializes
+ * asynchronously: react-virtuoso applies its list height on its own
+ * measurement cycle, so the arm's scroll clamps and settlement spreads across
+ * frames. While that settlement races streamed content, the browser's native
+ * scroll anchoring can land the viewport pinned at targetTop with scroll
+ * range left over below. Every surplus pixel is a spacer pixel that no longer
+ * corresponds to missing range — the same physical-blind-spot defect as the
+ * former +96px measurement reserve — so reconciliation shrinks the spacer by
+ * the measured surplus. Bottom-only geometry: the anchored viewport does not
+ * move. The reduction is written to initialSpacerHeight so later reconciles
+ * do not reinstate the reclaimed pixels.
+ */
+export function reclaimTurnSpacerSurplus(
+  anchor: TurnScrollAnchor,
+  distanceToBottom: number,
+): { anchor: TurnScrollAnchor; spacerHeight: number; reclaimed: number } {
+  if (anchor.phase !== 'armed' || distanceToBottom <= ANCHOR_TOLERANCE_PX) {
+    return { anchor, spacerHeight: anchor.spacerHeight, reclaimed: 0 };
+  }
+  const reclaimed = Math.min(anchor.spacerHeight, distanceToBottom);
+  if (reclaimed <= 0) return { anchor, spacerHeight: anchor.spacerHeight, reclaimed: 0 };
+  const spacerHeight = anchor.spacerHeight - reclaimed;
+  return {
+    anchor: {
+      ...anchor,
+      phase: spacerHeight > 0 ? 'armed' : 'exhausted',
+      initialSpacerHeight: anchor.initialSpacerHeight - reclaimed,
+      spacerHeight,
+    },
+    spacerHeight,
+    reclaimed,
+  };
+}
+
 export function canArmTurnScrollAnchor(input: {
   anchorHeight: number;
   viewportHeight: number;

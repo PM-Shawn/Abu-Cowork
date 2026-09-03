@@ -941,9 +941,17 @@ export interface TranslationDict {
     sandboxProtectedPaths: string;
     sandboxWritablePaths: string;
     sandboxDisableWarning: string;
+    // Sandbox — Windows-specific copy (restricted token + PowerShell CLM,
+    // no file-path isolation; see electron/commandHost.cjs + sandbox-launcher)
+    sandboxDescriptionWindows: string;
+    sandboxProtectionDescriptionWindows: string;
+    sandboxWindowsMechanism: string;
+    sandboxWindowsScope: string;
+    sandboxDisableWarningWindows: string;
     // Network isolation
     networkIsolation: string;
     networkIsolationDescription: string;
+    networkIsolationDescriptionWindows: string;
     allowPrivateNetworks: string;
     networkWhitelist: string;
     networkPreset: string;

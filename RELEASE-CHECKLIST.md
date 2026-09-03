@@ -16,8 +16,10 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 
 ## 1. Prepare (on `dev`)
 
-- [ ] Bump the version in **all four** files to `X.Y.Z`:
+- [ ] Bump the version in **all five** files to `X.Y.Z`:
   - `package.json`
+  - `package-lock.json` (both version fields — run `npm install --package-lock-only`
+    after bumping `package.json`; expect a 2-line diff and no dependency changes)
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
   - `src-tauri/Cargo.lock` (the `name = "abu"` entry)
@@ -29,7 +31,7 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 ## 2. Verify — fail here, not after tagging
 
 ```bash
-npm run release:check      # version match across 4 files + both changelog sections in the right language
+npm run release:check      # version match across 5 files + both changelog sections in the right language
 npm run build              # gen:models:check + tsc + vite build
 npm run lint
 npm test

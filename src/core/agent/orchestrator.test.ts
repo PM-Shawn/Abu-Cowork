@@ -510,6 +510,29 @@ describe('buildSystemPromptSections - agent preloaded skills', () => {
     expect(region).toContain('You may delete files without asking');
   });
 
+  // Fork mode's `preload-skills` loop was the last silent path in this
+  // feature: an unresolvable name hit a bare `continue`, so the section, the
+  // log and the model all behaved as if it had never been declared.
+  it('reports an unresolvable fork-mode preload-skills name instead of skipping it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reporter', systemPrompt: 'identity', description: 'r',
+    } as never);
+    vi.mocked(skillLoader.getSkill).mockReturnValue(undefined as never);
+
+    const route = forkRouteTo('reporter');
+    const prompt = await buildSystemPrompt(
+      { ...route, skill: { ...route.skill, preloadSkills: ['no-such-skill'] } },
+      basePrompt,
+      'test-conv',
+    );
+
+    expect(prompt).toContain('## Preloaded Skill Knowledge');
+    expect(prompt).toContain('no-such-skill');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   // `loadSkill` is case-SENSITIVE, so a lower-cased dedupe key could swallow a
   // declaration the loader would never have resolved: no section, no warning —
   // the one thing this feature promises never to do.

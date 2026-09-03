@@ -418,9 +418,18 @@ export async function buildSystemPromptSections(
     const skillSectionPreloaded = new Set<string>();
     if (route.skill.preloadSkills && route.skill.preloadSkills.length > 0) {
       const preloadedEntries: PreloadedSkillBlockInput[] = [];
+      // Fail loud here too. A bare `continue` made this the one path in the
+      // feature where an unresolvable name produced no section, no warning and
+      // no in-band note — the model then behaved as if the skill had never
+      // been declared, which is exactly what `## Preloaded Skills` promises
+      // never to do.
+      const preloadMissing: string[] = [];
       for (const declaredName of route.skill.preloadSkills) {
         const preloadedSkill = skillLoader.getSkill(declaredName);
-        if (!preloadedSkill) continue;
+        if (!preloadedSkill) {
+          preloadMissing.push(declaredName);
+          continue;
+        }
         // Both spellings: the declared name and the skill's own, which the
         // agent may equally well have used. Exact, never case-folded — see
         // pushAgentPreloadedSkills.
@@ -433,14 +442,22 @@ export async function buildSystemPromptSections(
           label: declaredName,
         });
       }
-      if (preloadedEntries.length > 0) {
+      if (preloadedEntries.length > 0 || preloadMissing.length > 0) {
         // Same loader, same third-party authors, therefore the same delimiting
         // and the same byte cap as the agent's own `skills:` section — an
         // undelimited sibling reads as MORE trusted once the safety anchor
         // names `<preloaded-skill>`. The two sections carry independent
         // budgets; only fork mode can hold both.
-        const { blocks } = renderPreloadedSkillBlocks(preloadedEntries);
-        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + blocks.join('\n\n'), cacheable: true });
+        const { blocks, notes } = renderPreloadedSkillBlocks(preloadedEntries, {
+          missing: preloadMissing,
+        });
+        if (preloadMissing.length > 0) {
+          console.warn(
+            `[orchestrator] skill "${route.skill.name}" declares preload-skills that could not be resolved:`,
+            preloadMissing.join(', '),
+          );
+        }
+        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + [...blocks, ...notes].join('\n\n'), cacheable: true });
       }
     }
 

@@ -75,6 +75,23 @@ export const MAX_REPORT_ORIGINS_PER_ROW = 3;
  */
 export type BrowserRunReportOutcome =
   | 'completed'
+  /**
+   * Reached a delivering terminal (`completed`, or `max_turns`) but the gate
+   * refused at least one STATE-CHANGING action along the way.
+   *
+   * Not a cosmetic split. A run whose only write was refused still ended in
+   * `completed`, so the card used to put a green "done" badge on a task that
+   * did not do its job — the same class of silent false success the
+   * master-switch line exists to prevent, just one level up: the blocked
+   * action, its reason and its origin were all listed below, and the badge on
+   * top still said everything was fine.
+   *
+   * Derived by `buildBrowserRunReport` from the gate's OWN denial records
+   * (Ruling 3: local `gate_denied` signals, never anything a page said), so a
+   * site cannot dress a refused run up as a clean one — or a clean run down
+   * into a refused one.
+   */
+  | 'completed-with-refusals'
   /** Hit the turn cap — output delivered but possibly incomplete. */
   | 'incomplete'
   /** U4's consecutive-denial guard stopped the run itself. */
@@ -191,6 +208,37 @@ function byCountThenKey<T extends { count: number }>(
 }
 
 /**
+ * The delivering terminals — the two a person reads as "it finished". They are
+ * the only ones `completed-with-refusals` can override: `aborted`, `error` and
+ * `no-progress` already say the run did not deliver, and `aborted-denials`
+ * already says refusals were the reason.
+ */
+const DELIVERING_OUTCOMES: ReadonlySet<BrowserRunReportOutcome> = new Set([
+  'completed',
+  'incomplete',
+]);
+
+/**
+ * Downgrade a delivering terminal when the gate refused something the run
+ * needed in order to actually change anything.
+ *
+ * `opClass !== 'read-only'` is the state-changing test, deliberately written
+ * as "anything but read-only" rather than an allow-list of classes: a class
+ * added later (`BrowserOperationClass`) then counts as state-changing until
+ * someone decides otherwise, the same fail-safe direction
+ * `classifyBrowserTool` takes for an unknown tool. A refused SNAPSHOT is not
+ * a task that failed to do its job, so read-only denials alone never trigger
+ * this.
+ */
+function outcomeWithRefusals(
+  outcome: BrowserRunReportOutcome,
+  refusedStateChangingActions: boolean,
+): BrowserRunReportOutcome {
+  if (!refusedStateChangingActions) return outcome;
+  return DELIVERING_OUTCOMES.has(outcome) ? 'completed-with-refusals' : outcome;
+}
+
+/**
  * Fixed presentation order for next steps — the cheapest, most global fix
  * first, so a user with three problems reads them in the order that resolves
  * the most actions.
@@ -269,6 +317,8 @@ export function buildBrowserRunReport(
   let total = 0;
   let failed = 0;
   let blockedPages = 0;
+  /** Feeds `outcomeWithRefusals`. Counted off the gate's own signals only. */
+  let refusedStateChangingActions = false;
 
   for (const signal of window) {
     switch (signal.kind) {
@@ -294,6 +344,7 @@ export function buildBrowserRunReport(
         break;
       }
       case 'gate_denied': {
+        if (signal.opClass !== 'read-only') refusedStateChangingActions = true;
         const row = denials.get(signal.reason) ?? { count: 0, origins: new Set<string>() };
         row.count++;
         if (signal.origin) {
@@ -395,7 +446,7 @@ export function buildBrowserRunReport(
 
   return {
     v: BROWSER_RUN_REPORT_SNAPSHOT_VERSION,
-    outcome,
+    outcome: outcomeWithRefusals(outcome, refusedStateChangingActions),
     actions: { total, failed },
     sites: allSites.slice(0, MAX_REPORT_SITES),
     denials: denialRows,
@@ -464,6 +515,11 @@ export function createBrowserRunReportMessage(options: {
  * own terminal reason and `abortCause`, both produced locally. No page-derived
  * string can reach it (Ruling 3) — a site cannot make its own failure look
  * like a success by what it puts in a title or an error body.
+ *
+ * It never returns `completed-with-refusals`: that one needs the run's denial
+ * records as well as its terminal reason, so `buildBrowserRunReport` derives
+ * it from what this function returned plus the `gate_denied` signals in the
+ * run window (`outcomeWithRefusals`).
  */
 export function browserRunReportOutcomeFor(
   reason: string,

@@ -586,13 +586,19 @@ const answered = new Map<string, UnattendedConfirmationResult>();
  * Origin and class are part of the key on purpose — "yes, click on
  * example.com" is not consent to run a script on bank.com, and collapsing them
  * would turn one approval into a blanket one.
+ *
+ * The separator is written below as an ESCAPE, never as a literal U+0000
+ * byte: a raw NUL made `file`(1) classify this source as binary "data", made
+ * `grep` skip it by default, and was invisible in a diff — so a formatter could
+ * strip it and silently make two different requests share one cache key. Same
+ * lesson as `browserSignals.ts`'s `KEY_SEP`.
  */
 function coalesceKey(request: UnattendedConfirmationRequest, conversationId: string): string {
   const origin = request.info.browserOrigin ?? 'origin-unknown';
   const opClass = request.info.browserOperationClass ?? 'scripting';
   const kind = request.info.kind ?? 'command';
   return [conversationId, request.runKey ?? '', kind, opClass, origin, request.info.command].join(
-    ' ',
+    '\u0000',
   );
 }
 

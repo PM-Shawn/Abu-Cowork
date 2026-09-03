@@ -582,6 +582,7 @@ const zhCN: TranslationDict = {
     title: '浏览器任务报告',
     outcome: {
       completed: '已完成',
+      completedWithRefusals: '已完成，但有操作被拒',
       incomplete: '可能不完整（达到轮次上限）',
       abortedDenials: '连续被拒后已终止',
       aborted: '已中止',

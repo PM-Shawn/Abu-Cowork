@@ -727,6 +727,8 @@ export interface TranslationDict {
     /** Outcome badge. */
     outcome: {
       completed: string;
+      /** Delivered, but the gate refused at least one state-changing action. */
+      completedWithRefusals: string;
       /** Hit the turn cap — possibly incomplete. */
       incomplete: string;
       /** Stopped itself after repeated refusals (U4). */

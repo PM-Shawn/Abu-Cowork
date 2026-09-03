@@ -581,6 +581,7 @@ const enUS: TranslationDict = {
     title: 'Browser task report',
     outcome: {
       completed: 'Completed',
+      completedWithRefusals: 'Completed with blocked actions',
       incomplete: 'Possibly incomplete (hit the turn limit)',
       abortedDenials: 'Stopped after repeated refusals',
       aborted: 'Stopped',

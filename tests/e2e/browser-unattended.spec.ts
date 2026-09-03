@@ -13,8 +13,10 @@
  *   1. master switch on + site allowed  → a scheduled run really fills a form,
  *      with NO confirmation dialog anywhere.
  *   2. an allowed origin 302s to an unauthorized one → the next action is
- *      refused as "outside the allowed sites", not as "origin unverified".
- *   3. unattended `execute_js` → refused, with provably zero JS executed.
+ *      refused as "outside the allowed sites", not as "origin unverified",
+ *      and the card is badged "completed with blocked actions", not "done".
+ *   3. unattended `execute_js` → refused, with provably zero JS executed, and
+ *      the same refusal badge on the card.
  *   4. two refusals in a row → the run stops itself and the third browser tool
  *      call never reaches the model endpoint.
  *
@@ -632,7 +634,19 @@ async function openScheduledRunConversation(page: Page, taskName: string): Promi
 // ─────────────────────────────────────────────────────────────────────────
 
 const REPORT_CARD_TITLE = /^(浏览器任务报告|Browser task report)$/;
+/**
+ * The outcome badge. Every pattern is ANCHORED, which is what lets a spec
+ * assert that a run did NOT get the plain success badge: without `^…$`,
+ * `已完成` also matches `已完成，但有操作被拒` and the negative assertion would
+ * be vacuous.
+ *
+ * `OUTCOME_COMPLETED_WITH_REFUSALS` is the badge a run gets when it reached a
+ * delivering terminal but the gate refused a state-changing action — journeys
+ * ② and ③ both end that way, and both used to show the green "completed"
+ * badge over their own blocked-actions section.
+ */
 const OUTCOME_COMPLETED = /^(已完成|Completed)$/;
+const OUTCOME_COMPLETED_WITH_REFUSALS = /^(已完成，但有操作被拒|Completed with blocked actions)$/;
 const OUTCOME_ABORTED_DENIALS = /^(连续被拒后已终止|Stopped after repeated refusals)$/;
 const NEXT_STEPS_TITLE = /^(接下来可以做什么|What you can do next)$/;
 const DENIED_TITLE = /^(被拦下的动作|Blocked actions)$/;
@@ -844,6 +858,12 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     // ...and the card tells the user what to do about it.
     await expect(card.getByText(NEXT_STEPS_TITLE)).toBeVisible();
     await expect(card.getByText(STEP_ALLOW_SITE)).toBeVisible();
+    // The BADGE, not only the section under it. The run reached `completed`
+    // (the model produced a final answer), but the only thing it was asked to
+    // change was refused — a green "done" stamp on that is the silent false
+    // success this card exists to prevent.
+    await expect(card.getByText(OUTCOME_COMPLETED_WITH_REFUSALS)).toBeVisible();
+    await expect(card.getByText(OUTCOME_COMPLETED)).toHaveCount(0);
   });
 
   // ③ unattended execute_js ⇒ refused, with provably zero JS executed
@@ -913,6 +933,9 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     await expect(card.getByText(/^(1 次|1×)$/)).toHaveCount(1);
     await expect(card.getByText(NEXT_STEPS_TITLE)).toBeVisible();
     await expect(card.getByText(STEP_RELAX_POLICY)).toBeVisible();
+    // Same as ②: the run finished, the scripting it was asked for did not.
+    await expect(card.getByText(OUTCOME_COMPLETED_WITH_REFUSALS)).toBeVisible();
+    await expect(card.getByText(OUTCOME_COMPLETED)).toHaveCount(0);
   });
 
   /**

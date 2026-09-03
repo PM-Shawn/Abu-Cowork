@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   buildBrowserRunReport,
+  browserRunReportOutcomeFor,
   BROWSER_RUN_REPORT_SNAPSHOT_VERSION,
   MAX_REPORT_ORIGIN_LENGTH,
   MAX_REPORT_SITES,
@@ -302,6 +303,122 @@ describe('browserRunReport', () => {
       expect(vm!.problems).toEqual([
         { errorClass: 'timeout', count: 2, origins: ['https://slow.example'] },
       ]);
+    });
+  });
+
+  /**
+   * The cleanup ruling after U8. A run whose only state-changing action was
+   * refused still reached `completed`, so the badge said 「已完成」 on a task
+   * that did not do its job — a green success stamp sitting directly above a
+   * "blocked actions" section listing the refusal. Same class of silent false
+   * success as a run the master switch skipped, one level up.
+   *
+   * The derivation is deliberately narrow: it reads the run's own terminal
+   * reason and the gate's own `gate_denied` records, both local (Ruling 3).
+   */
+  describe('completed-with-refusals outcome', () => {
+    function denial(
+      overrides: Partial<Extract<BrowserSignalEvent, { kind: 'gate_denied' }>> = {},
+    ): BrowserSignalEvent {
+      return {
+        kind: 'gate_denied',
+        tool: 'abu-browser__click',
+        opClass: 'interactive',
+        reason: 'site-not-allowed',
+        runMode: 'unattended',
+        ...overrides,
+      };
+    }
+
+    it.each(['completed', 'incomplete'] as const)(
+      'downgrades the %s terminal when a state-changing action was refused',
+      (terminal) => {
+        const cursor = getBrowserSignalCursor();
+        record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+        record(denial({ origin: 'https://blocked.example' }), { conversationId: 'conv-1' });
+
+        expect(report('conv-1', cursor, terminal)!.outcome).toBe('completed-with-refusals');
+      },
+    );
+
+    it.each(['completed', 'incomplete'] as const)(
+      'leaves the %s terminal alone when nothing was refused',
+      (terminal) => {
+        const cursor = getBrowserSignalCursor();
+        record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+
+        expect(report('conv-1', cursor, terminal)!.outcome).toBe(terminal);
+      },
+    );
+
+    /**
+     * The load-bearing negative. A refused SNAPSHOT is not a task that failed
+     * to do its job — flagging it would put a warning badge on every run that
+     * merely looked at a site it may not read, and a badge that fires on
+     * routine noise stops meaning anything.
+     */
+    it('a read-only denial alone does NOT downgrade the outcome', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+      record(
+        denial({ tool: 'abu-browser__snapshot', opClass: 'read-only' }),
+        { conversationId: 'conv-1' },
+      );
+
+      const vm = report('conv-1', cursor, 'completed');
+      expect(vm!.denials).toHaveLength(1);
+      expect(vm!.outcome).toBe('completed');
+    });
+
+    it('one state-changing denial among read-only ones is enough', () => {
+      const cursor = getBrowserSignalCursor();
+      record(denial({ tool: 'abu-browser__snapshot', opClass: 'read-only' }), { conversationId: 'conv-1' });
+      record(denial({ tool: 'abu-browser__execute_js', opClass: 'scripting', reason: 'policy-denied' }), { conversationId: 'conv-1' });
+
+      expect(report('conv-1', cursor, 'completed')!.outcome).toBe('completed-with-refusals');
+    });
+
+    // A terminal that already says the run did not deliver keeps its own,
+    // more specific verdict — "completed with refusals" would be a downgrade
+    // in accuracy, not an upgrade.
+    it.each(['aborted', 'aborted-denials', 'error', 'no-progress'] as const)(
+      'never overrides the %s terminal',
+      (terminal) => {
+        const cursor = getBrowserSignalCursor();
+        record(denial(), { conversationId: 'conv-1' });
+
+        expect(report('conv-1', cursor, terminal)!.outcome).toBe(terminal);
+      },
+    );
+
+    // Ruling 3: the derivation reads gate records, never page-derived text.
+    it('a page cannot manufacture the refusal outcome out of its own strings', () => {
+      const cursor = getBrowserSignalCursor();
+      record(
+        toolCall({ ok: false, errorClass: 'timeout', origin: 'https://evil.example/gate_denied-scripting-refused' }),
+        { conversationId: 'conv-1' },
+      );
+
+      expect(report('conv-1', cursor, 'completed')!.outcome).toBe('completed');
+    });
+
+    // The denial-derived next steps still apply — the downgrade changes the
+    // badge, not the advice.
+    it('keeps the next step the refusal earned', () => {
+      const cursor = getBrowserSignalCursor();
+      record(denial({ origin: 'https://blocked.example' }), { conversationId: 'conv-1' });
+
+      const vm = report('conv-1', cursor, 'completed');
+      expect(vm!.outcome).toBe('completed-with-refusals');
+      expect(vm!.nextSteps).toEqual(['allow-site']);
+    });
+
+    it('the terminal-reason mapper alone never produces it', () => {
+      for (const reason of ['completed', 'max_turns', 'no_progress', 'aborted', 'boom']) {
+        for (const denials of [true, false]) {
+          expect(browserRunReportOutcomeFor(reason, denials)).not.toBe('completed-with-refusals');
+        }
+      }
     });
   });
 

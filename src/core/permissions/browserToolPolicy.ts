@@ -204,10 +204,13 @@ export type SiteVerdict = 'allowed' | 'denied' | 'default';
  * denied > allowed > default — a site the user blocked stays blocked no
  * matter what else would have allowed it.
  *
- * NOTE: no production UI writes 'denied' yet — the dialog only writes
- * 'allowed' and Settings only revokes. The denied branch is forward schema
- * for the planned block-site control; it is pinned by tests so wiring the
- * UI later cannot regress the precedence.
+ * Both verdicts are live in production UI: the confirmation dialog's "block
+ * this site" writes 'denied' (`CommandConfirmDialog.tsx`'s `handleBlockSite`,
+ * offered wherever an origin is known — even where a permanent grant may not
+ * be), and Settings' per-site list switches an existing entry between the two
+ * (`CapabilitiesSection.tsx`'s `BrowserSitePermissionsList`; removing the row
+ * is what restores ask-every-time). So the precedence above is what makes a
+ * block actually stick, and it is pinned by tests.
  */
 export function getSiteVerdict(
   origin: string | null,

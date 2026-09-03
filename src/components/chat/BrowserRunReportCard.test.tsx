@@ -179,7 +179,9 @@ describe('BrowserRunReportCard', () => {
 
     render(<BrowserRunReportCard message={message} />);
 
-    expect(screen.getByText('Possibly incomplete (hit the turn limit)')).toBeInTheDocument();
+    // The turn cap AND a refused `execute_js`: the refusal wins the badge,
+    // because "it did not do the thing" is the more actionable of the two.
+    expect(screen.getByText('Completed with blocked actions')).toBeInTheDocument();
     expect(screen.getByText('2 browser actions, 1 of them failed')).toBeInTheDocument();
     // Once as a visited site, once as the origin the refusal happened on.
     expect(screen.getAllByText('https://intranet.example').length).toBeGreaterThan(0);
@@ -230,6 +232,38 @@ describe('BrowserRunReportCard', () => {
       <BrowserRunReportCard message={{ id: 'browser-run-report-x', role: 'system', content: '', timestamp: T0 }} />,
     );
     expect(container.firstChild).toBeNull();
+  });
+
+  /**
+   * A delivering run that had a state-changing action refused must not wear
+   * the plain success badge — the whole point of the outcome the aggregator
+   * derives for it. Asserted in both locales because the badge is the one
+   * line of this card a person reads before deciding whether to look further.
+   */
+  it.each([
+    ['en-US', 'Completed with blocked actions', 'Completed'],
+    ['zh-CN', '已完成，但有操作被拒', '已完成'],
+  ] as const)('flags a completed run whose action was blocked (%s)', (locale, badge, plain) => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 9, origin: 'https://intranet.example' });
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__click',
+        opClass: 'interactive',
+        origin: 'https://intranet.example',
+        reason: 'site-not-allowed',
+        runMode: 'unattended',
+      });
+    });
+    expect(report.outcome).toBe('completed-with-refusals');
+    initLanguage(locale);
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText(badge)).toBeInTheDocument();
+    // Not the success badge — an exact-text query, so the longer refusal
+    // label above cannot satisfy it.
+    expect(screen.queryByText(plain)).toBeNull();
   });
 
   /**

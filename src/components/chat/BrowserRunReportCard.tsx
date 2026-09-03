@@ -50,6 +50,7 @@ function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): str
   const o = t.browserRunReport.outcome;
   switch (outcome) {
     case 'completed': return o.completed;
+    case 'completed-with-refusals': return o.completedWithRefusals;
     case 'incomplete': return o.incomplete;
     case 'aborted-denials': return o.abortedDenials;
     case 'aborted': return o.aborted;
@@ -64,6 +65,12 @@ function OutcomeIcon({ outcome }: { outcome: BrowserRunReportOutcome }) {
   switch (outcome) {
     case 'completed':
       return <Check aria-hidden="true" className={`${cls} text-[var(--abu-success)]`} />;
+    // Warning tone, not success green and not failure red: the run delivered,
+    // but something it tried to change was refused. Same visual weight as
+    // `incomplete`'s "possibly incomplete" flag; `Ban` because it is the icon
+    // the blocked-actions section below already uses for the same fact.
+    case 'completed-with-refusals':
+      return <Ban aria-hidden="true" className={`${cls} text-[var(--abu-warning)]`} />;
     case 'incomplete':
       return <AlertTriangle aria-hidden="true" className={`${cls} text-[var(--abu-warning)]`} />;
     case 'aborted-denials':

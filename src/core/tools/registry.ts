@@ -344,9 +344,17 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
  * the model-visible tool schema) so the host can compare it against the view's
  * actual URL immediately before acting.
  *
- * `runMode` rides along because the host's enforcement is scoped to unattended
- * runs (attended keeps its exact shipped behavior — a human is watching the
- * page move), and because `get_downloads` filtering needs it shell-side.
+ * `runMode` rides along because ONE of the host's two rules is scoped by run
+ * mode, not both. The COMPARISON runs in both modes (review ruling I3): the
+ * refusal only ever fires when the page genuinely drifted cross-origin between
+ * approval and execution, which is a bug whoever is watching, and nobody
+ * perceives a sub-second redirect landing before their approved click. What
+ * stays unattended-only is the MISSING-value rule — a pinned action that
+ * carried no `expectedOrigin` is refused when unattended (the gate never
+ * approves one, so absence means the chain broke) while an attended call with
+ * no pin keeps its exact pre-U5 path. See `assertOriginPin` in
+ * `electron/browserHost.cjs`. `runMode` is also what `get_downloads` filtering
+ * needs shell-side.
  */
 export interface BrowserExecutionPin {
   runMode: 'attended' | 'unattended';

@@ -318,10 +318,31 @@ describe('SchedulerEngine run report card', () => {
       .toBe('aborted-denials');
   });
 
-  // Ruling 2, at the real integration point.
+  /**
+   * Ruling 2, at the real integration point — and the invariant it pins is
+   * the SEQ CURSOR, not the conversation id.
+   *
+   * This test used to let the scheduler mint a conversation per run, so the
+   * conversation predicate alone separated them and a mutant that deleted
+   * `seq > sinceSeq` still passed here (verified: only the aggregation-layer
+   * case went red). Both runs now share ONE conversation — the case Ruling 2
+   * actually exists for — so the cursor is the only thing keeping yesterday's
+   * actions out of today's card.
+   */
   it('does not put the previous run\'s actions in the next run\'s card', async () => {
     const task = makeTask({ id: 'task-two-runs' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
+
+    // Pin both runs to one conversation. A conversation CAN host more than one
+    // run (a person types a follow-up into a scheduled task's conversation; an
+    // IM session is long-lived); the scheduler simply does not reuse one
+    // today, which is why this had to be forced to test the real invariant.
+    const shared = useChatStore.getState().createConversation(null, {
+      scheduledTaskId: task.id,
+      skipActivate: true,
+    });
+    const realCreateConversation = useChatStore.getState().createConversation;
+    useChatStore.setState({ createConversation: (() => shared) as never });
 
     let origin = 'https://first.example';
     vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
@@ -334,18 +355,21 @@ describe('SchedulerEngine run report card', () => {
       return { reason: 'completed' } as never;
     });
 
-    await schedulerEngine.runNow(task.id);
-    origin = 'https://second.example';
-    await schedulerEngine.runNow(task.id);
+    try {
+      await schedulerEngine.runNow(task.id);
+      origin = 'https://second.example';
+      await schedulerEngine.runNow(task.id);
+    } finally {
+      useChatStore.setState({ createConversation: realCreateConversation });
+    }
 
-    // `startRun` unshifts, so the run list is newest-first.
-    const [secondConv, firstConv] = conversationsForTask(task.id);
-    const first = cardsIn(firstConv)[0].browserRunReport;
-    const second = cardsIn(secondConv)[0].browserRunReport;
-
+    // Both runs used the same conversation, and both cards landed in it.
+    expect(conversationsForTask(task.id)).toEqual([shared, shared]);
+    const [first, second] = cardsIn(shared).map((m) => m.browserRunReport);
     expect(first?.sites.map((s) => s.origin)).toEqual(['https://first.example']);
     expect(second?.sites.map((s) => s.origin)).toEqual(['https://second.example']);
     // The failure this pins: yesterday's actions showing up in today's report.
+    expect(second?.actions.total).toBe(1);
     expect(JSON.stringify(second)).not.toContain('first.example');
     expect(JSON.stringify(first)).not.toContain('second.example');
   });

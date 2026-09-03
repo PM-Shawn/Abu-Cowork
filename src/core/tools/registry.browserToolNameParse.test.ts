@@ -249,8 +249,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
       setUnattendedConfirmationResolver(async () => ({
         approved: false,
         reason: 'declined in chat',
-        outcome: 'declined',
-        fresh: true,
+        audit: { outcome: 'declined', fresh: true },
       }));
       const reportBrowserDenial = vi.fn();
 
@@ -272,8 +271,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
       setUnattendedConfirmationResolver(async () => ({
         approved: false,
         reason: 'declined in chat',
-        outcome: 'declined',
-        fresh: true,
+        audit: { outcome: 'declined', fresh: true },
       }));
       const reportBrowserDenial = vi.fn();
 

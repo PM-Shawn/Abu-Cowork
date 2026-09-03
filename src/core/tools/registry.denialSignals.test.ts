@@ -28,11 +28,19 @@ import {
   type StoredBrowserSignalRecord,
 } from '../observability/browserSignals';
 
+// Mutable so one describe below can make the enterprise policy REFUSE. The
+// OSS stub always allows, so that exit is only reachable in an enterprise
+// build — but the deny itself lives in this (public) registry, which is where
+// it has to be recorded.
+const policyMocks = vi.hoisted(() => ({
+  checkTool: vi.fn(() => ({ decision: 'allow' as const, reason: undefined as string | undefined })),
+}));
+
 vi.mock('@/core/enterprise/policy/enforcer', () => ({
   getCurrentPolicy: () => ({ mode: 'test-policy' }),
 }));
 vi.mock('@/core/enterprise/policy/matcher', () => ({
-  checkTool: () => ({ decision: 'allow' as const }),
+  checkTool: (...args: unknown[]) => policyMocks.checkTool(...(args as [])),
 }));
 
 const ALLOWED_SITE = 'https://allowed.com';
@@ -77,6 +85,7 @@ describe('browser gate — denial and approval signals', () => {
     });
     __resetBrowserGrantsForTests();
     __resetUnattendedConfirmationForTests();
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow', reason: undefined });
   });
 
   afterEach(() => {
@@ -176,7 +185,7 @@ describe('browser gate — denial and approval signals', () => {
 
     it('records an approval a person actually gave', async () => {
       setUnattendedConfirmationResolver(async () => ({
-        approved: true, reason: 'approved over IM', outcome: 'approved', fresh: true,
+        approved: true, reason: 'approved over IM', audit: { outcome: 'approved', fresh: true },
       }));
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
@@ -196,7 +205,7 @@ describe('browser gate — denial and approval signals', () => {
 
     it('records a refusal a person gave, and the gate still refuses', async () => {
       setUnattendedConfirmationResolver(async () => ({
-        approved: false, reason: 'denied over IM by the user', outcome: 'declined', fresh: true,
+        approved: false, reason: 'denied over IM by the user', audit: { outcome: 'declined', fresh: true },
       }));
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
@@ -215,10 +224,12 @@ describe('browser gate — denial and approval signals', () => {
         return {
           approved: true,
           reason: 'approved over IM',
-          outcome: 'approved' as const,
-          // The channel coalesces a chatty tool's calls onto one prompt and
-          // replays the answer for the rest of the run.
-          fresh: calls === 1,
+          audit: {
+            outcome: 'approved' as const,
+            // The channel coalesces a chatty tool's calls onto one prompt and
+            // replays the answer for the rest of the run.
+            fresh: calls === 1,
+          },
         };
       });
 
@@ -241,6 +252,74 @@ describe('browser gate — denial and approval signals', () => {
       expect(decision.decision).toBe('deny');
       expect(approvals()).toHaveLength(0);
       expect(denials().map((d) => d.reason)).toEqual(['approval-refused']);
+    });
+  });
+  /**
+   * U7 review / B3 — the one browser deny exit that left no trace.
+   *
+   * The enterprise policy pre-check runs AFTER the browser block, so a browser
+   * action it refuses never reaches `recordGateDenial`: the run result said
+   * "[policy] ...", the card said nothing, and the "blocked actions" section
+   * under-reported by exactly those calls. A deny taxonomy with a hole is a
+   * card that quietly claims less was blocked than really was.
+   *
+   * The OSS stub always allows, so this exit is enterprise-only — but the exit
+   * itself lives in this public registry, and so does the fix.
+   */
+  describe('B3: an enterprise policy refusal is recorded too', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    });
+
+    it('records a hard policy deny under its own reason', async () => {
+      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked by org policy' });
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain('[policy]');
+      expect(denials()).toHaveLength(1);
+      expect(denials()[0]).toMatchObject({
+        reason: 'enterprise-policy-denied',
+        tool: 'abu-browser__navigate',
+        opClass: 'interactive',
+        runMode: 'unattended',
+      });
+    });
+
+    it('records the confirmation an unattended run cannot answer', async () => {
+      policyMocks.checkTool.mockReturnValue({ decision: 'confirm', reason: 'needs a second pair of eyes' });
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(denials()[0]).toMatchObject({ reason: 'enterprise-policy-denied' });
+    });
+
+    it('stays out of the browser buffer for a NON-browser tool', async () => {
+      policyMocks.checkTool.mockReturnValue({ decision: 'deny', reason: 'blocked by org policy' });
+
+      const decision = await checkToolApproval(
+        'read_file', { path: '/tmp/x' }, unattended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      // browserSignals is the BROWSER observability domain; a file-tool policy
+      // refusal in it would pollute the diagnostic bundle and the card.
+      expect(denials()).toHaveLength(0);
+    });
+
+    it('records nothing when the policy allows', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, attended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(denials()).toHaveLength(0);
     });
   });
 });

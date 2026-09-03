@@ -519,29 +519,28 @@ describe('imApprovalResolver', () => {
       const promise = imApprovalResolver(seamRequest());
       await settle();
       tryConsumeApprovalReply(inbound('同意'));
-      await expect(promise).resolves.toMatchObject({ outcome: 'approved', fresh: true });
+      await expect(promise).resolves.toMatchObject({ audit: { outcome: 'approved', fresh: true } });
     });
 
     it('stamps a fresh refusal with the declined outcome', async () => {
       const promise = imApprovalResolver(seamRequest());
       await settle();
       tryConsumeApprovalReply(inbound('拒绝'));
-      await expect(promise).resolves.toMatchObject({ outcome: 'declined', fresh: true });
+      await expect(promise).resolves.toMatchObject({ audit: { outcome: 'declined', fresh: true } });
     });
 
     it('reports a replayed answer as NOT fresh — one 同意 is one decision', async () => {
       const first = imApprovalResolver(seamRequest());
       await settle();
       tryConsumeApprovalReply(inbound('同意'));
-      await expect(first).resolves.toMatchObject({ fresh: true });
+      await expect(first).resolves.toMatchObject({ audit: { fresh: true } });
 
       // A chatty tool calling again in the same run reuses the cached answer.
       // Counting this as a second human decision is how "you approved once"
       // becomes "you approved 14 times" in the report.
       await expect(imApprovalResolver(seamRequest())).resolves.toMatchObject({
         approved: true,
-        outcome: 'approved',
-        fresh: false,
+        audit: { outcome: 'approved', fresh: false },
       });
       expect(promptSends()).toHaveLength(1);
     });
@@ -556,21 +555,20 @@ describe('imApprovalResolver', () => {
       const [first, second] = await Promise.all([a, b]);
       expect(promptSends()).toHaveLength(1);
       // Exactly one of the two owned the round-trip.
-      expect([first.fresh, second.fresh].filter(Boolean)).toHaveLength(1);
+      expect([first.audit.fresh, second.audit.fresh].filter(Boolean)).toHaveLength(1);
     });
 
     it('distinguishes "nobody could be asked" from "nobody answered"', async () => {
       useIMChannelStore.setState({ sessions: {}, archivedSessions: {} });
       await expect(imApprovalResolver(seamRequest())).resolves.toMatchObject({
-        outcome: 'no-channel',
-        fresh: true,
+        audit: { outcome: 'no-channel', fresh: true },
       });
     });
 
     it('stamps the no-conversation exit too', async () => {
       await expect(
         imApprovalResolver(seamRequest({ conversationId: undefined })),
-      ).resolves.toMatchObject({ outcome: 'no-channel', fresh: true });
+      ).resolves.toMatchObject({ audit: { outcome: 'no-channel', fresh: true } });
     });
   });
 

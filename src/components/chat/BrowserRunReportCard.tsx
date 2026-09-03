@@ -26,6 +26,26 @@ import type { BrowserDenialReasonCode } from '@/core/permissions/browserToolPoli
  * different verdict.
  */
 
+/**
+ * What a label falls back to when the snapshot carries a code this build does
+ * not know — a card written by a newer version and read back after a
+ * downgrade, or a code that has since been renamed.
+ *
+ * The switches below stay EXHAUSTIVE over their unions: the `never` parameter
+ * makes adding a union member without a case a compile error, so a new denial
+ * reason still cannot ship without its translation. This only handles the
+ * runtime case the type system cannot see — a value that came off disk.
+ *
+ * It returns the raw code rather than nothing. A blank reason row, an empty
+ * next-step bullet or an unlabelled badge is the "it did nothing" failure this
+ * card exists to prevent; an ugly `site-throttled` is still an answer.
+ * `errorClassLabel` below has had this shape from the start — these three
+ * were the ones missing it.
+ */
+function rawCode(value: never): string {
+  return String(value);
+}
+
 function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): string {
   const o = t.browserRunReport.outcome;
   switch (outcome) {
@@ -36,6 +56,7 @@ function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): str
     case 'error': return o.error;
     case 'no-progress': return o.noProgress;
   }
+  return rawCode(outcome);
 }
 
 function OutcomeIcon({ outcome }: { outcome: BrowserRunReportOutcome }) {
@@ -61,6 +82,7 @@ function reasonLabel(reason: BrowserDenialReasonCode, t: TranslationDict): strin
     case 'site-denied': return r.siteDenied;
     case 'high-risk-site': return r.highRiskSite;
     case 'policy-denied': return r.policyDenied;
+    case 'enterprise-policy-denied': return r.enterprisePolicyDenied;
     case 'capability-denied': return r.capabilityDenied;
     case 'origin-unverified': return r.originUnverified;
     case 'login-required': return r.loginRequired;
@@ -68,6 +90,7 @@ function reasonLabel(reason: BrowserDenialReasonCode, t: TranslationDict): strin
     case 'approval-refused': return r.approvalRefused;
     case 'user-cancelled': return r.userCancelled;
   }
+  return rawCode(reason);
 }
 
 function stepLabel(step: BrowserRunReportNextStep, t: TranslationDict): string {
@@ -83,6 +106,7 @@ function stepLabel(step: BrowserRunReportNextStep, t: TranslationDict): string {
     case 'answer-approval': return s.answerApproval;
     case 'run-while-watching': return s.runWhileWatching;
   }
+  return rawCode(step);
 }
 
 /**

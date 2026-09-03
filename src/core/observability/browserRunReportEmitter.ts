@@ -10,6 +10,7 @@
  * needs a report for.
  */
 import { generateId } from '../../lib/utils';
+import { createLogger } from '../logging/logger';
 import { useChatStore } from '../../stores/chatStore';
 import {
   buildBrowserRunReport,
@@ -18,6 +19,8 @@ import {
   type BrowserRunReportSnapshot,
 } from './browserRunReport';
 import { getRecentBrowserSignals } from './browserSignals';
+
+const logger = createLogger('browserRunReport');
 
 export interface EmitBrowserRunReportOptions {
   conversationId: string;
@@ -60,7 +63,22 @@ export function emitBrowserRunReport(
       }),
     );
     return report;
-  } catch {
+  } catch (error) {
+    /**
+     * Still never throws — a report is an explanation of what happened, and it
+     * must not become a new way for the run that just finished to fail.
+     *
+     * But it no longer fails INVISIBLY (U7 review / B5). A swallowed exception
+     * here means the user's morning card silently does not exist, which looks
+     * exactly like "the task did nothing all night" — the very thing this card
+     * was built to rule out. Same blindness class as an audit trail that can
+     * quietly become empty.
+     */
+    logger.warn('failed to emit the browser run report', {
+      conversationId: options.conversationId,
+      outcome: options.outcome,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }

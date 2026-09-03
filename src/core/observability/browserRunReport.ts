@@ -109,9 +109,18 @@ export interface BrowserRunReportApprovals {
   /** Nobody could be asked: no IM binding, too many outstanding, undelivered,
    *  or the run was stopped while a prompt was live. */
   unreachable: number;
-  /** When the first/last actual human decision landed (approve or decline).
-   *  Absent when no human decided anything. */
-  firstDecisionAt?: number;
+  /**
+   * When the last actual human decision landed (approve or decline). Absent
+   * when no human decided anything.
+   *
+   * There was a `firstDecisionAt` beside this until the U7 review: it was
+   * computed and persisted and never rendered anywhere. A field nobody reads
+   * in a PERSISTED snapshot is schema debt that looks like a feature, so it
+   * was dropped rather than given a UI it had not earned — the card's job is
+   * "when did I last have to deal with this", and the counts above already
+   * say how many times. Reinstating it is two lines here plus a real design
+   * decision about showing a span.
+   */
   lastDecisionAt?: number;
 }
 
@@ -212,6 +221,11 @@ function nextStepForDenial(
     case 'site-denied': return 'unblock-site';
     case 'high-risk-site': return 'do-high-risk-yourself';
     case 'policy-denied': return 'relax-policy';
+    // An administered policy is not the user's to loosen — pointing them at
+    // their own Settings would be advice that cannot work. Nothing to advise
+    // here, the same shape as `user-cancelled`; the failing-terminal fallback
+    // below still gives the card something to say.
+    case 'enterprise-policy-denied': return undefined;
     case 'capability-denied': return 'raise-capability';
     case 'origin-unverified': return 'run-while-watching';
     case 'login-required': return 'sign-in-then-rerun';
@@ -299,9 +313,6 @@ export function buildBrowserRunReport(
         // undeliverable prompt is precisely the absence of one, and stamping
         // it with a time would tell the user a human acted when none did.
         if (signal.outcome === 'approved' || signal.outcome === 'declined') {
-          approvals.firstDecisionAt = approvals.firstDecisionAt === undefined
-            ? signal.ts
-            : Math.min(approvals.firstDecisionAt, signal.ts);
           approvals.lastDecisionAt = approvals.lastDecisionAt === undefined
             ? signal.ts
             : Math.max(approvals.lastDecisionAt, signal.ts);
@@ -357,6 +368,30 @@ export function buildBrowserRunReport(
   // A run the denial guard stopped must always tell the user how to unblock
   // it, even if the denial signals themselves were evicted or never recorded.
   if (outcome === 'aborted-denials' && steps.size === 0) steps.add('answer-approval');
+  /**
+   * The same guarantee for the OTHER failing terminals, and for the same
+   * reason (U7 review / B1).
+   *
+   * R1 §1.7 makes "where it got stuck + what to do next" a hard requirement
+   * for `error` and `no-progress` specifically. Every step above is derived
+   * from a DENIAL, so a run that failed because its actions failed — a
+   * timeout, an element that was not there — reached the card with an empty
+   * next-step list: the one card a person actually needs help from was the
+   * one that offered none.
+   *
+   * `run-while-watching` is the honest generic answer when nothing was
+   * refused: we cannot name the blocker, so the advice is to run it once with
+   * a human present and see where it stops — which is exactly what that
+   * step's copy says.
+   *
+   * Deliberately NOT extended to the other three terminals: `completed` and
+   * `incomplete` delivered output, and `aborted` is the user's own Stop —
+   * advising someone about a decision they just made is the noise
+   * `user-cancelled` is already kept out of the list for.
+   */
+  if ((outcome === 'error' || outcome === 'no-progress') && steps.size === 0) {
+    steps.add('run-while-watching');
+  }
 
   return {
     v: BROWSER_RUN_REPORT_SNAPSHOT_VERSION,

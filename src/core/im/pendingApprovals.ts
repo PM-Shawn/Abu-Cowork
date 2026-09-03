@@ -668,7 +668,9 @@ function refuse(
     approved: false,
     reason,
     ...(userFacingReason !== undefined ? { userFacingReason } : {}),
-    ...(outcome !== undefined ? { outcome } : {}),
+    // `audit` is required (B5): a refusal with no outcome code still has to
+    // say so explicitly rather than by omission.
+    audit: outcome !== undefined ? { outcome } : {},
   };
 }
 
@@ -731,23 +733,23 @@ async function askOverIm(
 function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult {
   const t = getI18n();
   const minutes = String(Math.round(getImApprovalTimeoutMs() / 60_000));
-  const audit = auditOutcomeFor(result);
+  const auditOutcome = auditOutcomeFor(result);
   switch (result.cause) {
     case 'answered':
       return result.outcome === 'approved'
-        ? { approved: true, reason: 'approved over IM', outcome: audit }
-        : refuse('denied over IM by the user', t.commandConfirm.browserUnattendedImDenied, audit);
+        ? { approved: true, reason: 'approved over IM', audit: { outcome: auditOutcome } }
+        : refuse('denied over IM by the user', t.commandConfirm.browserUnattendedImDenied, auditOutcome);
     case 'timeout':
       return refuse(
         'the IM approval request expired with no answer',
         format(t.commandConfirm.browserUnattendedImTimeout, { minutes }),
-        audit,
+        auditOutcome,
       );
     case 'no_binding':
       return refuse(
         'the conversation is bound to no IM chat, so nobody could be asked',
         t.commandConfirm.browserUnattendedImNoBinding,
-        audit,
+        auditOutcome,
       );
     case 'too_many':
       return refuse(
@@ -755,19 +757,19 @@ function describeOutcome(result: ImApprovalResult): UnattendedConfirmationResult
         format(t.commandConfirm.browserUnattendedImTooMany, {
           max: String(MAX_PENDING_APPROVALS_PER_CONVERSATION),
         }),
-        audit,
+        auditOutcome,
       );
     case 'undeliverable':
       return refuse(
         'the IM approval request could not be delivered',
         t.commandConfirm.browserUnattendedImUndeliverable,
-        audit,
+        auditOutcome,
       );
     case 'aborted':
       return refuse(
         'the run was stopped while its IM approval was outstanding',
         t.commandConfirm.browserUnattendedImAborted,
-        audit,
+        auditOutcome,
       );
   }
 }
@@ -788,14 +790,12 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
     // never hears about looks exactly like a run that silently did nothing,
     // which is the failure the notice exit exists to prevent.
     publishApprovalNotice(null, prompt);
-    return {
-      ...refuse(
-        'no conversation on the unattended confirmation request, so no IM chat to ask in',
-        t.commandConfirm.browserUnattendedImNoBinding,
-        'no-channel',
-      ),
-      fresh: true,
-    };
+    const refusal = refuse(
+      'no conversation on the unattended confirmation request, so no IM chat to ask in',
+      t.commandConfirm.browserUnattendedImNoBinding,
+      'no-channel',
+    );
+    return { ...refusal, audit: { ...refusal.audit, fresh: true } };
   }
 
   // Coalescing and answer caching are BOTH scoped to a run. Without a run key
@@ -812,7 +812,7 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
   const cached = runScoped ? answered.get(key) : undefined;
   // A replay of an answer already given. `fresh: false` so an audit counting
   // human decisions counts ONE "同意", not one per tool call that reused it.
-  if (cached !== undefined) return { ...cached, fresh: false };
+  if (cached !== undefined) return { ...cached, audit: { ...cached.audit, fresh: false } };
 
   // Concurrent asks with the same key wait on the one prompt already out.
   let outcomePromise = runScoped ? inFlight.get(key) : undefined;
@@ -841,7 +841,7 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
 
   // Only the call that owned the round-trip reports it. A follower that waited
   // on someone else's prompt did not produce a human decision of its own.
-  return { ...result, fresh: owned };
+  return { ...result, audit: { ...result.audit, fresh: owned } };
 };
 
 /**

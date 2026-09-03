@@ -280,7 +280,9 @@ describe('browserRunReport', () => {
         declined: 1,
         timedOut: 1,
         unreachable: 1,
-        firstDecisionAt: T0 + 1000,
+        // `firstDecisionAt` was dropped in the U7 review: computed,
+        // persisted, never rendered. `toEqual` is what pins that — an
+        // extra field here fails.
         lastDecisionAt: T0 + 5000,
       });
     });
@@ -360,6 +362,69 @@ describe('browserRunReport', () => {
       const vm = report('conv-1', cursor, 'completed');
       expect(vm!.nextSteps).toEqual([]);
     });
+
+    /**
+     * U7 review / B1. R1 §1.7 makes an actionable next step a HARD
+     * requirement for exactly these two terminals ("卡在哪一步 + 建议下一步"),
+     * and the only sources of steps were denial rows and the
+     * `aborted-denials` fallback. A run that failed because its ACTIONS
+     * failed — a timeout, a missing element — produced `nextSteps: []`, so
+     * the card that a person actually needs help from was the one with no
+     * "what now" section at all.
+     */
+    it('a failed run whose only trouble was failed actions still says what to do', () => {
+      const cursor = getBrowserSignalCursor();
+      record(
+        toolCall({ ok: false, origin: 'https://intranet.example', tool: 'abu-browser__click' }),
+        { conversationId: 'conv-1' },
+      );
+      const vm = report('conv-1', cursor, 'error');
+
+      expect(vm!.actions).toEqual({ total: 1, failed: 1 });
+      expect(vm!.denials).toEqual([]);
+      expect(vm!.nextSteps).toEqual(['run-while-watching']);
+    });
+
+    it('says the same for a run that simply stopped making progress', () => {
+      const cursor = getBrowserSignalCursor();
+      record(toolCall({ ok: false, origin: 'https://intranet.example' }), { conversationId: 'conv-1' });
+      const vm = report('conv-1', cursor, 'no-progress');
+
+      expect(vm!.nextSteps).toEqual(['run-while-watching']);
+    });
+
+    it('does not add the fallback when a denial already explained what to do', () => {
+      const cursor = getBrowserSignalCursor();
+      record(
+        {
+          kind: 'gate_denied',
+          tool: 'abu-browser__click',
+          opClass: 'interactive',
+          origin: 'https://intranet.example',
+          reason: 'login-required',
+          runMode: 'unattended',
+        },
+        { conversationId: 'conv-1' },
+      );
+      record(toolCall({ ok: false, origin: 'https://intranet.example' }), { conversationId: 'conv-1' });
+      const vm = report('conv-1', cursor, 'error');
+
+      // "Sign in and re-run" is the specific advice; "run it while you watch"
+      // would be noise next to it.
+      expect(vm!.nextSteps).toEqual(['sign-in-then-rerun']);
+    });
+
+    // Scoped to the two terminals R1 names. A user who pressed Stop does not
+    // need advice about their own decision (the same reasoning that leaves
+    // `user-cancelled` without a step), and a turn-cap run delivered output.
+    it.each(['completed', 'incomplete', 'aborted'] as const)(
+      'adds no fallback for the %s terminal',
+      (outcome) => {
+        const cursor = getBrowserSignalCursor();
+        record(toolCall({ ok: false, origin: 'https://ok.example' }), { conversationId: 'conv-1' });
+        expect(report('conv-1', cursor, outcome)!.nextSteps).toEqual([]);
+      },
+    );
 
     it('emits each next step at most once and in a stable order', () => {
       const cursor = getBrowserSignalCursor();

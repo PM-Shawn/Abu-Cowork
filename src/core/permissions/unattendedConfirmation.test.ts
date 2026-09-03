@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearLogs, getRecentLogs } from '../logging/logger';
 import {
   __resetUnattendedConfirmationForTests,
   createUnattendedConfirmation,
@@ -26,10 +27,10 @@ describe('resolveUnattendedConfirmation', () => {
   });
 
   it('uses an installed resolver', async () => {
-    setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'ok' }));
+    setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'ok', audit: {} }));
 
     await expect(resolveUnattendedConfirmation({ info: command, source: 'im' }))
-      .resolves.toEqual({ approved: true, reason: 'ok' });
+      .resolves.toEqual({ approved: true, reason: 'ok', audit: {} });
   });
 
   it('treats a rejected resolver as a refusal — a broken channel is not an open one', async () => {
@@ -57,51 +58,79 @@ describe('resolveUnattendedConfirmation', () => {
   describe('audit fields at the boundary', () => {
     it('carries a valid outcome through to the caller', async () => {
       setUnattendedConfirmationResolver(async () => ({
-        approved: true, reason: 'ok', outcome: 'approved', fresh: true,
+        approved: true, reason: 'ok', audit: { outcome: 'approved', fresh: true },
       }));
       await expect(resolveUnattendedConfirmation({ info: command, source: 'im' }))
-        .resolves.toMatchObject({ outcome: 'approved', fresh: true });
+        .resolves.toMatchObject({ audit: { outcome: 'approved', fresh: true } });
     });
 
     it('drops an outcome that contradicts the decision', async () => {
       // A resolver that refuses while claiming a human approved must not be
       // able to write "you approved this" into the audit trail.
       setUnattendedConfirmationResolver(async () => ({
-        approved: false, reason: 'no', outcome: 'approved', fresh: true,
+        approved: false, reason: 'no', audit: { outcome: 'approved', fresh: true },
       }));
       const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
       expect(result.approved).toBe(false);
-      expect(result.outcome).toBeUndefined();
+      expect(result.audit.outcome).toBeUndefined();
+    });
+
+    it('says so out loud when it discards a contradictory outcome', async () => {
+      // Dropping it silently is the same blindness class as dropping the
+      // field: a resolver that disagrees with itself is a bug in the approval
+      // channel, and the audit trail is where nobody would ever notice.
+      clearLogs();
+      setUnattendedConfirmationResolver(async () => ({
+        approved: false, reason: 'no', audit: { outcome: 'approved', fresh: true },
+      }));
+
+      await resolveUnattendedConfirmation({ info: command, source: 'im' });
+
+      const warned = getRecentLogs({ module: 'unattendedConfirmation', level: 'warn' });
+      expect(warned).toHaveLength(1);
+      expect(warned[0].message).toContain('contradicts');
+      expect(warned[0].data).toMatchObject({ outcome: 'approved', approved: false });
+    });
+
+    it('stays quiet when the outcome agrees with the decision', async () => {
+      clearLogs();
+      setUnattendedConfirmationResolver(async () => ({
+        approved: true, reason: 'ok', audit: { outcome: 'approved', fresh: true },
+      }));
+
+      await resolveUnattendedConfirmation({ info: command, source: 'im' });
+
+      expect(getRecentLogs({ module: 'unattendedConfirmation', level: 'warn' })).toHaveLength(0);
     });
 
     it('drops an approval whose outcome says it was refused', async () => {
       setUnattendedConfirmationResolver(async () => ({
-        approved: true, reason: 'ok', outcome: 'declined', fresh: true,
+        approved: true, reason: 'ok', audit: { outcome: 'declined', fresh: true },
       }));
       const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
       expect(result.approved).toBe(true);
-      expect(result.outcome).toBeUndefined();
+      expect(result.audit.outcome).toBeUndefined();
     });
 
     it('drops an unrecognised outcome string', async () => {
       setUnattendedConfirmationResolver((async () => ({
-        approved: true, reason: 'ok', outcome: 'rubber-stamped', fresh: true,
+        approved: true, reason: 'ok', audit: { outcome: 'rubber-stamped', fresh: true },
       })) as never);
       const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
-      expect(result.outcome).toBeUndefined();
+      expect(result.audit.outcome).toBeUndefined();
     });
 
     it('treats a non-boolean freshness claim as not fresh', async () => {
       setUnattendedConfirmationResolver((async () => ({
-        approved: true, reason: 'ok', outcome: 'approved', fresh: 'yes',
+        approved: true, reason: 'ok', audit: { outcome: 'approved', fresh: 'yes' },
       })) as never);
       const result = await resolveUnattendedConfirmation({ info: command, source: 'im' });
-      expect(result.fresh).toBeUndefined();
+      expect(result.audit.fresh).toBeUndefined();
     });
   });
 
   it('restores the fail-closed default when the resolver is cleared', async () => {
-    setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'ok' }));
+    setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'ok', audit: {} }));
     setUnattendedConfirmationResolver(null);
 
     await expect(resolveUnattendedConfirmation({ info: command, source: 'im' }))

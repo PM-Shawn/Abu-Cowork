@@ -418,6 +418,17 @@ export type BrowserDenialReasonCode =
   | 'high-risk-site'
   /** The user's operation-class policy says deny for this class. */
   | 'policy-denied'
+  /**
+   * An ENTERPRISE policy refused this tool — a different thing from
+   * `policy-denied`, which is the user's own three-state setting.
+   *
+   * It gets its own code precisely because the advice differs: "loosen the
+   * setting in Settings → Capabilities" is the right next step for the
+   * user's policy and actively wrong for an administered one (the user did
+   * not set it and cannot change it there). Filing this under `policy-denied`
+   * would make the card confidently give advice that cannot work.
+   */
+  | 'enterprise-policy-denied'
   /** This run's capability tier carries no browser access at all. */
   | 'capability-denied'
   /** The page's origin could not be determined, so it could not be checked. */

@@ -25,6 +25,7 @@
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { getLoopContext } from '../agent/permissionBridge';
+import { createLogger } from '../logging/logger';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   decideBrowserOperation,
@@ -36,6 +37,8 @@ import {
  * out here rather than imported so this module has no edge — not even a
  * type-only one — back into the registry it is consumed by.
  */
+const logger = createLogger('unattendedConfirmation');
+
 type UnattendedConfirmCallback = (
   info: ConfirmationInfo,
   loopId?: string,
@@ -108,8 +111,31 @@ export interface UnattendedConfirmationResult {
    */
   userFacingReason?: string;
   /**
-   * U7 / G2 — the machine-readable audit fields.
+   * U7 / G2 — the machine-readable audit trail. REQUIRED (U7 review / B5).
    *
+   * Required as an OBJECT, with every code inside it optional. That split is
+   * the whole point:
+   *
+   * - Required on the outside makes the trail fail-loud. The boundary below is
+   *   a WHITELIST — it rebuilds the result rather than spreading it — and G2's
+   *   first version was silently dropped there: the producer's unit tests were
+   *   green and the feature was a no-op in production. With one required
+   *   object, the boundary cannot compile without carrying it, and a future
+   *   resolver author cannot forget it by omission.
+   * - Optional inside lets a caller that asked NOBODY say so honestly. The
+   *   fail-closed default resolver is not an approval channel at all, so it
+   *   returns `audit: {}` — "there was no human decision", which is a
+   *   different statement from "a decision happened and we lost it".
+   *
+   * Why this is worth the churn: an audit trail that can silently become
+   * empty is worse than one that is absent, and this trail records the ONLY
+   * human decision in the entire unattended pipeline.
+   */
+  audit: UnattendedConfirmationAudit;
+}
+
+export interface UnattendedConfirmationAudit {
+  /**
    * The "同意" a person types into a chat at 09:14 is the ONLY human decision
    * in the entire unattended path, and until U7 it landed without a trace:
    * the run acted on it and nothing anywhere recorded that a human had said
@@ -166,6 +192,9 @@ export type UnattendedConfirmationResolver = (
 const failClosedResolver: UnattendedConfirmationResolver = async (request) => ({
   approved: false,
   reason: `confirmation is unavailable in this unattended run (${request.source})`,
+  // Nobody was asked, so there is no human decision to report. An empty audit
+  // says exactly that — which is why the codes inside it are optional.
+  audit: {},
 });
 
 let resolver: UnattendedConfirmationResolver = failClosedResolver;
@@ -215,16 +244,26 @@ const APPROVAL_OUTCOMES: ReadonlySet<string> = new Set<UnattendedApprovalOutcome
 function auditFieldsOf(
   result: UnattendedConfirmationResult | undefined,
   approved: boolean,
-): Pick<UnattendedConfirmationResult, 'outcome' | 'fresh'> {
-  const outcome = typeof result?.outcome === 'string' && APPROVAL_OUTCOMES.has(result.outcome)
-    ? result.outcome
+): UnattendedConfirmationAudit {
+  const raw = result?.audit;
+  const outcome = typeof raw?.outcome === 'string' && APPROVAL_OUTCOMES.has(raw.outcome)
+    ? raw.outcome
     : undefined;
   const consistent = outcome === undefined
     ? undefined
     : approved === (outcome === 'approved') ? outcome : undefined;
+  if (outcome !== undefined && consistent === undefined) {
+    // Discarding this silently is the same blindness class as dropping the
+    // field: a resolver that disagrees with itself is a bug in the approval
+    // channel, and the audit trail is exactly where nobody would notice.
+    logger.warn('discarded an approval outcome that contradicts the decision', {
+      outcome,
+      approved,
+    });
+  }
   return {
     ...(consistent !== undefined ? { outcome: consistent } : {}),
-    ...(result?.fresh === true ? { fresh: true } : {}),
+    ...(raw?.fresh === true ? { fresh: true } : {}),
   };
 }
 
@@ -242,7 +281,7 @@ export async function resolveUnattendedConfirmation(
         ...(typeof result?.userFacingReason === 'string' && result.userFacingReason !== ''
           ? { userFacingReason: result.userFacingReason }
           : {}),
-        ...auditFieldsOf(result, false),
+        audit: auditFieldsOf(result, false),
       };
     }
     return {
@@ -251,12 +290,14 @@ export async function resolveUnattendedConfirmation(
       ...(typeof result.userFacingReason === 'string' && result.userFacingReason !== ''
         ? { userFacingReason: result.userFacingReason }
         : {}),
-      ...auditFieldsOf(result, true),
+      audit: auditFieldsOf(result, true),
     };
   } catch (error) {
     return {
       approved: false,
       reason: `unattended confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
+      // A resolver that threw told us nothing about a human decision.
+      audit: {},
     };
   }
 }

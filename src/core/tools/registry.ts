@@ -709,6 +709,22 @@ export async function checkToolApproval(
   let approvedExecutionPath: string | undefined;
   /** Carried out of the browser block to the executor — see `BrowserExecutionPin`. */
   let browserExecutionPin: BrowserExecutionPin | undefined;
+  /**
+   * The browser block's own `recordGateDenial`, carried out so the LATER
+   * enterprise-policy check can use it (U7 review / B3).
+   *
+   * That check runs after this block and refuses browser actions of its own,
+   * but it sat outside the closure and so recorded nothing: the run result
+   * said "[policy] ...", the report card said nothing, and the "blocked
+   * actions" section under-reported by exactly those calls.
+   *
+   * Reusing the closure rather than rebuilding one keeps the record honest —
+   * same `opClass`, same `runMode` derivation, same resolved origin — and it
+   * scopes the recording for free: it stays `null` for a non-browser tool, so
+   * a file or command refusal can never leak into the browser-domain buffer
+   * the diagnostic bundle and the card read.
+   */
+  let recordBrowserGateDenial: ((reason: BrowserDenialReasonCode) => void) | null = null;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -1092,6 +1108,9 @@ export async function checkToolApproval(
           ),
         ));
       };
+      // Hand it to the enterprise-policy check further down (B3) — see the
+      // declaration for why that check cannot build its own.
+      recordBrowserGateDenial = recordGateDenial;
 
       /**
        * Refuse, and tell the run's own callback why so it can account for it.
@@ -1168,6 +1187,7 @@ export async function checkToolApproval(
           case 'site-denied': return t.commandConfirm.browserSiteDenied;
           case 'high-risk-site': return t.commandConfirm.browserUnattendedHighRiskSite;
           case 'policy-denied': return t.commandConfirm.browserPolicyDenied;
+          case 'enterprise-policy-denied': return t.commandConfirm.browserEnterprisePolicyDenied;
           case 'capability-denied': return t.commandConfirm.browserUnattendedCapabilityDenied;
           case 'origin-unverified': return t.commandConfirm.browserUnattendedOriginUnverified;
           case 'login-required': return t.commandConfirm.browserUnattendedLoginRequired;
@@ -1310,8 +1330,8 @@ export async function checkToolApproval(
            * own `gate_denied` signal already covers that refusal, and claiming
            * an IM decision happened would be a lie.
            */
-          if (approval.fresh && approval.outcome) {
-            const approvalOutcome = approval.outcome;
+          if (approval.audit.fresh && approval.audit.outcome) {
+            const approvalOutcome = approval.audit.outcome;
             safeRecordBrowserSignal(() => buildBrowserSignalRecord(
               {
                 kind: 'approval',
@@ -1527,14 +1547,24 @@ export async function checkToolApproval(
       : String(input).slice(0, 200)
     const policyCheck = checkTool(policy, name, summary)
     if (policyCheck.decision === 'deny') {
+      // A browser action refused here is refused as surely as one the gate
+      // above refused, so it belongs in the same taxonomy (B3). No-op for
+      // every non-browser tool.
+      recordBrowserGateDenial?.('enterprise-policy-denied')
       return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
     }
     if (policyCheck.decision === 'confirm') {
       if (toolContext?.interactionMode === 'background') {
+        // The policy demanded a confirmation an unattended run cannot give —
+        // the policy is still what stopped it.
+        recordBrowserGateDenial?.('enterprise-policy-denied')
         return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason ?? 'confirmation unavailable in background run'}` }
       }
       const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
       if (!allowed) {
+        // Here the human is the one who said no, which is a different fact
+        // from the policy blocking it — same code the attended dialog uses.
+        recordBrowserGateDenial?.('user-cancelled')
         return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
       }
     }

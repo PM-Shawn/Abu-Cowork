@@ -232,6 +232,57 @@ describe('BrowserRunReportCard', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  /**
+   * U7 review / B2. The snapshot is PERSISTED, so a card written by a newer
+   * build (or by a code this build has since renamed) is read back by a
+   * renderer whose switches do not know it. `reasonLabel`/`stepLabel`/
+   * `outcomeLabel` were exhaustive switches with no default, which return
+   * `undefined` for a value outside the union — an empty reason row, an empty
+   * next-step bullet, an empty outcome badge. A blank row in the one artifact
+   * a person reads after an overnight run is the exact "it did nothing"
+   * failure this card exists to prevent, so an unknown code must degrade to
+   * something readable — the shape `errorClassLabel` already had.
+   */
+  describe('a code this build does not know (a snapshot from a newer version)', () => {
+    function withUnknownCodes(): BrowserRunReportSnapshot {
+      const report = snapshotOf(() => {
+        record({
+          kind: 'gate_denied',
+          tool: 'abu-browser__click',
+          opClass: 'interactive',
+          reason: 'login-required',
+          runMode: 'unattended',
+        });
+      }, 'error');
+      // Exactly what a persisted snapshot from a future build looks like on
+      // the way back in: codes outside this build's unions.
+      return {
+        ...report,
+        outcome: 'quota-exhausted' as BrowserRunReportOutcome,
+        denials: [{ ...report.denials[0], reason: 'site-throttled' as typeof report.denials[0]['reason'] }],
+        nextSteps: ['wait-and-retry' as typeof report.nextSteps[0]],
+      };
+    }
+
+    it('shows the raw code rather than an empty row', () => {
+      render(<BrowserRunReportCard message={messageFor(withUnknownCodes())} />);
+
+      expect(screen.getByText('quota-exhausted')).toBeInTheDocument();
+      expect(screen.getByText('site-throttled')).toBeInTheDocument();
+      expect(screen.getByText('wait-and-retry')).toBeInTheDocument();
+    });
+
+    it('leaves no blank row behind in the sections that render those codes', () => {
+      const { container } = render(<BrowserRunReportCard message={messageFor(withUnknownCodes())} />);
+
+      // Every list item the card rendered has text. An exhaustive switch with
+      // no default produced empty <li>s here.
+      const items = [...container.querySelectorAll('li')];
+      expect(items.length).toBeGreaterThan(0);
+      for (const li of items) expect(li.textContent?.trim()).not.toBe('');
+    });
+  });
+
   it('renders the same snapshot in the other locale', () => {
     const report = snapshotOf(() => {
       record({

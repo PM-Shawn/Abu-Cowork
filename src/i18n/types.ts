@@ -774,6 +774,7 @@ export interface TranslationDict {
       siteDenied: string;
       highRiskSite: string;
       policyDenied: string;
+      enterprisePolicyDenied: string;
       capabilityDenied: string;
       originUnverified: string;
       loginRequired: string;
@@ -2640,6 +2641,7 @@ export interface TranslationDict {
     /** Unattended or attended run whose operation-class policy is set to
      *  'deny' for this kind of browser action. */
     browserPolicyDenied: string;
+    browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */
     browserUnattendedSiteNotAllowed: string;

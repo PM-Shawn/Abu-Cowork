@@ -49,30 +49,27 @@ function setElectronHost(enabled: boolean) {
     : undefined;
 }
 
+/** The overview card for a capability. It is a button, and its accessible
+ *  name is the capability name. */
 function findCapabilityCard(title: string): HTMLElement {
-  const heading = screen.getByText(title);
-  const card = heading.closest('div.rounded-lg.border');
-  if (!card) throw new Error(`Capability card not found: ${title}`);
-  return card as HTMLElement;
+  return screen.getByRole('button', { name: title });
 }
 
 type User = ReturnType<typeof userEvent.setup>;
 
-/** Overview → a capability's own page, the way a user gets there: the named
- *  button on its card. The row itself is deliberately not clickable. */
-async function openDetail(user: User, cardTitle: string, action: string) {
-  const card = findCapabilityCard(cardTitle);
-  await user.click(within(card).getByRole('button', { name: action }));
+/** Overview → a capability's own page, the way a user gets there: the card
+ *  row IS the control (user ruling 2026-09-04 — no named buttons). */
+async function openDetail(user: User, cardTitle: string) {
+  await user.click(screen.getByRole('button', { name: cardTitle }));
 }
 
-const openBuiltinBrowser = (user: User) =>
-  openDetail(user, 'Abu built-in browser', 'Manage');
+const openBuiltinBrowser = (user: User) => openDetail(user, 'Abu built-in browser');
 
 /** Built-in browser page → the site verdict list (one more drill-in). */
 async function openSitePermissions(user: User) {
   await openBuiltinBrowser(user);
-  const card = screen.getByText('Site permissions').closest('div.rounded-lg.border');
-  await user.click(within(card as HTMLElement).getByRole('button', { name: 'Manage' }));
+  const card = permissionCard('Site permissions');
+  await user.click(within(card).getByRole('button', { name: 'Manage' }));
 }
 
 /** A settings card by its heading. Matched on the heading element so a card
@@ -256,17 +253,27 @@ describe('CapabilitiesSection', () => {
     expect(within(findCapabilityCard('Computer Use')).getByText('Off')).toBeInTheDocument();
   });
 
-  // The card is a signpost, not a control: nothing but the button navigates,
-  // and the button says where it goes.
-  it('puts the only way into a capability behind a named button', async () => {
+  /*
+    User ruling 2026-09-04: the card row IS the control. One target, one
+    affordance, no per-card button wording to compare — so the card must be a
+    real button (focusable, named, keyboard-operable), not a div with onClick,
+    and it must carry no nested control that could swallow the click.
+  */
+  it('makes the whole card row the single control that drills in', async () => {
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
     const builtinCard = findCapabilityCard('Abu built-in browser');
-    expect(builtinCard.closest('button')).toBeNull();
-    expect(within(builtinCard).getAllByRole('button')).toHaveLength(1);
+    expect(builtinCard.tagName).toBe('BUTTON');
+    expect(within(builtinCard).queryAllByRole('button')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Manage' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Chrome' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start setup' })).not.toBeInTheDocument();
 
-    await user.click(within(builtinCard).getByRole('button', { name: 'Manage' }));
+    // Reachable by keyboard, since it is the only way in.
+    builtinCard.focus();
+    expect(builtinCard).toHaveFocus();
+    await user.keyboard('{Enter}');
     expect(screen.getByText('Action permissions')).toBeInTheDocument();
   });
 
@@ -306,7 +313,7 @@ describe('CapabilitiesSection', () => {
     });
 
     // The model tier gates the permissions, so it moved in with them.
-    await openDetail(user, 'Computer Use', 'Continue setup');
+    await openDetail(user, 'Computer Use');
     expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
     expect(screen.getByText(/No image input/)).toBeInTheDocument();
   });
@@ -330,7 +337,7 @@ describe('CapabilitiesSection', () => {
     });
     expect(computerCard).toHaveTextContent('Confirm its model capabilities');
 
-    await openDetail(user, 'Computer Use', 'Continue setup');
+    await openDetail(user, 'Computer Use');
     expect(screen.getByText(/private-proxy-model · Not verified/)).toBeInTheDocument();
   });
 
@@ -341,8 +348,7 @@ describe('CapabilitiesSection', () => {
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
-    const chromeCard = findCapabilityCard('My Chrome');
-    await user.click(within(chromeCard).getByRole('button', { name: /Connect Chrome|Manage/ }));
+    await openDetail(user, 'My Chrome');
 
     expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
     await waitFor(() => {
@@ -371,22 +377,93 @@ describe('CapabilitiesSection', () => {
     await waitFor(() => {
       expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
     });
-    // Never connected is not a fault: the badge and the button already say so,
-    // and the card's one line is spent on what connecting would buy instead.
+    // Never connected is not a fault, so the card's one line is spent on what
+    // connecting would buy rather than on restating the badge beside it.
     expect(chromeCard).toHaveTextContent('Reuses the Chrome tabs you are already signed in to');
-    expect(within(chromeCard).getByRole('button', { name: 'Connect Chrome' }))
-      .toBeInTheDocument();
+  });
+
+  /*
+    The card that was promoted to the first screen has to describe a
+    never-installed extension the same way at every moment of startup. Before
+    the fix, the local bridge coming up read as an amber "setup required ·
+    connection lost" and then settled to a grey "not connected" once the probe
+    answered — which of the two a user saw was a race between the bridge and
+    the probe.
+  */
+  it.each(['disconnected', 'error'] as const)(
+    'shows a never-installed extension as not connected while the bridge is %s',
+    async (bridgeStatus) => {
+      mcpManagerMock.callTool.mockResolvedValue(
+        'Browser extension is not connected. Please install and enable the Abu Browser Extension.',
+      );
+      useMCPStore.setState((state) => ({
+        servers: {
+          ...state.servers,
+          'abu-browser-bridge': {
+            ...state.servers['abu-browser-bridge'],
+            status: bridgeStatus,
+          },
+        },
+      }));
+      render(<CapabilitiesSection />);
+
+      const chromeCard = findCapabilityCard('My Chrome');
+      await waitFor(() => {
+        expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
+      });
+      // Never "connection lost": nothing has ever connected to lose.
+      expect(chromeCard).not.toHaveTextContent('disconnected');
+      expect(chromeCard).toHaveTextContent('Reuses the Chrome tabs you are already signed in to');
+    },
+  );
+
+  // While the bridge is actively coming up the badge is the transient
+  // "checking" — a loading state, not a fourth outcome, and specifically not
+  // the amber fault the old derivation showed here.
+  it('shows a connecting bridge as checking, never as a fault', () => {
+    useMCPStore.setState((state) => ({
+      servers: {
+        ...state.servers,
+        'abu-browser-bridge': {
+          ...state.servers['abu-browser-bridge'],
+          status: 'connecting',
+        },
+      },
+    }));
+    render(<CapabilitiesSection />);
+
+    const chromeCard = findCapabilityCard('My Chrome');
+    expect(within(chromeCard).getAllByText('Checking').length).toBeGreaterThan(0);
+    expect(within(chromeCard).queryByText('Setup required')).not.toBeInTheDocument();
+  });
+
+  // ...and it stays that way once the bridge finishes coming up and the probe
+  // answers, which is the same state described the same way.
+  it('keeps a never-installed extension as not connected once the probe answers', async () => {
+    mcpManagerMock.callTool.mockResolvedValue(
+      'Browser extension is not connected. Please install and enable the Abu Browser Extension.',
+    );
+    render(<CapabilitiesSection />);
+
+    const chromeCard = findCapabilityCard('My Chrome');
+    await waitFor(() => {
+      expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
+    });
+    // Give every pending probe a chance to land and contradict it.
+    await waitFor(() => {
+      expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
+    });
+    expect(within(chromeCard).queryByText('Setup required')).not.toBeInTheDocument();
   });
 
   it('lets the user disconnect My Chrome without entering MCP settings', async () => {
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
-    const chromeCard = findCapabilityCard('My Chrome');
     await waitFor(() => {
-      expect(within(chromeCard).getByText('Ready')).toBeInTheDocument();
+      expect(within(findCapabilityCard('My Chrome')).getByText('Ready')).toBeInTheDocument();
     });
-    await user.click(within(chromeCard).getByRole('button', { name: 'Manage' }));
+    await openDetail(user, 'My Chrome');
     await user.click(screen.getByRole('button', { name: 'Disconnect My Chrome' }));
 
     await waitFor(() => {
@@ -412,8 +489,7 @@ describe('CapabilitiesSection', () => {
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
-    const chromeCard = findCapabilityCard('My Chrome');
-    await user.click(within(chromeCard).getByRole('button', { name: 'Connect Chrome' }));
+    await openDetail(user, 'My Chrome');
 
     expect(await screen.findByRole('button', { name: 'Disconnect My Chrome' }))
       .toBeInTheDocument();
@@ -456,7 +532,7 @@ describe('CapabilitiesSection', () => {
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
-    await user.click(await screen.findByRole('button', { name: 'Start setup' }));
+    await openDetail(user, 'Computer Use');
 
     expect(screen.getByText('Enable Computer Use')).toBeInTheDocument();
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
@@ -505,8 +581,7 @@ describe('CapabilitiesSection', () => {
     });
 
     render(<CapabilitiesSection />);
-    const computerCard = findCapabilityCard('Computer Use');
-    await user.click(await within(computerCard).findByRole('button', { name: 'Manage' }));
+    await openDetail(user, 'Computer Use');
     await user.click(screen.getByRole('button', { name: 'Turn off Computer Use' }));
 
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
@@ -754,7 +829,7 @@ describe('CapabilitiesSection', () => {
     expect(within(builtinCard).getByText('Not connected')).toBeInTheDocument();
     expect(builtinCard).toHaveTextContent('not available in this client');
 
-    await user.click(await screen.findByRole('button', { name: 'Start setup' }));
+    await openDetail(user, 'Computer Use');
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Enable' }));
     await waitFor(() => {
@@ -998,7 +1073,7 @@ describe('CapabilitiesSection', () => {
       expect(screen.queryByText(/expired sign-in/)).toBeNull();
 
       await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
-      await openDetail(user, 'My Chrome', 'Manage');
+      await openDetail(user, 'My Chrome');
 
       const caveat = await screen.findByText(/expired sign-in/);
       expect(caveat.textContent).toMatch(/Chrome channel/);
@@ -1092,7 +1167,7 @@ describe('CapabilitiesSection', () => {
         expect(within(findCapabilityCard('我的 Chrome')).getByText('已就绪')).toBeInTheDocument();
       });
 
-      await openDetail(user, '阿布内置浏览器', '管理');
+      await openDetail(user, '阿布内置浏览器');
       expect(screen.getByText('操作权限')).toBeInTheDocument();
       expect(screen.getByText('只看页面')).toBeInTheDocument();
       expect(screen.getByText('点击和填写')).toBeInTheDocument();
@@ -1103,7 +1178,7 @@ describe('CapabilitiesSection', () => {
       expect(screen.queryByText(/登录失效/)).toBeNull();
 
       await user.click(screen.getByRole('button', { name: '返回能力' }));
-      await openDetail(user, '我的 Chrome', '管理');
+      await openDetail(user, '我的 Chrome');
       expect(await screen.findByText(/登录失效/)).toBeInTheDocument();
     });
   });

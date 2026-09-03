@@ -74,10 +74,9 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
   }
 }
 
+/** The overview card for a capability: a single button named after it. */
 function capabilityCard(page: Page, title: RegExp) {
-  return page.locator('div.rounded-lg.border').filter({
-    has: page.getByText(title, { exact: true }),
-  }).first();
+  return page.getByRole('button', { name: title });
 }
 
 /**
@@ -136,35 +135,32 @@ test.describe.serial('Electron capability overview', () => {
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // My Chrome on a machine with no extension installed settles on one of two
-    // runtime statuses depending on whether the local bridge finishes
-    // connecting before the extension probe answers ('setup-required' →
-    // "not connected", 'connection-lost' → "setup required"). Which one is a
-    // race, so this asserts the property that actually matters and is not
-    // racy: an optional capability never silently reads as ready, and the way
-    // to turn it on is on the card.
+    // This machine has no extension installed, and that is ONE state with one
+    // description. It used to depend on whether the local bridge finished
+    // connecting before the probe answered — amber "setup required" if the
+    // probe won, grey "not connected" if it lost. The badge is now decided by
+    // whether the extension has ever handshaked, which never un-happens, so
+    // the amber fault must not appear at any point.
+    await expect(myChrome.getByText(NOT_CONNECTED))
+      .toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(myChrome.getByText(SETUP_REQUIRED)).toHaveCount(0);
     await expect(myChrome.getByText(READY)).toHaveCount(0);
-    await expect(
-      myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(SETUP_REQUIRED)),
-    ).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(myChrome.getByRole('button', { name: CONNECT_CHROME })).toBeVisible();
 
     // Not connected is not a fault, so the card spends its one line on what
-    // connecting would buy rather than restating the badge next to it. Once
-    // the bridge is up but the extension is missing, that IS a fault and the
-    // line switches to the diagnosis — both are one line, neither is silent.
-    await expect(myChrome).toContainText(
-      /Chrome tabs|Chrome 标签页|extension .*disconnected|扩展连接已中断/,
-    );
-    await expect(computerUse.getByRole('button', { name: START_SETUP })).toBeVisible();
+    // connecting would buy rather than restating the badge next to it.
+    await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
+    await expect(computerUse.getByText(OFF)).toBeVisible();
 
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
     await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
     await expect(page.getByText(SITE_PERMISSIONS)).toHaveCount(0);
-    // A channel card is a signpost: exactly one control, and it is named.
-    await expect(builtinBrowser.getByRole('button')).toHaveCount(1);
-    await expect(builtinBrowser.getByRole('button', { name: MANAGE })).toBeVisible();
+    // User ruling 2026-09-04: the card row IS the control. No per-card text
+    // buttons anywhere on the overview.
+    await expect(page.getByRole('button', { name: MANAGE })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: CONNECT_CHROME })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: START_SETUP })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: BUILTIN_BROWSER })).toBeVisible();
 
     // Let the previous navigation item's color transition finish so the visual
     // artifact reflects the stable selected state.
@@ -175,7 +171,7 @@ test.describe.serial('Electron capability overview', () => {
     // Entering setup is side-effect free: installation and OS permission
     // prompts only start from explicit buttons inside each guide. Abu's
     // first-party local bridge is already prepared in the background.
-    await myChrome.getByRole('button', { name: CONNECT_CHROME }).click();
+    await myChrome.click();
     await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
     await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
@@ -188,7 +184,7 @@ test.describe.serial('Electron capability overview', () => {
     await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
-    await computerUse.getByRole('button', { name: START_SETUP }).click();
+    await computerUse.click();
     await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: ENABLE })).toBeVisible();
     await expect(page.getByText(/current task needs|当前任务需要/)).toHaveCount(0);
@@ -235,8 +231,7 @@ test.describe.serial('Electron capability overview', () => {
     await page.screenshot({ path: iaScreenshot('01-capabilities-overview-zh') });
 
     // ---- Built-in browser detail ----------------------------------------
-    await capabilityCard(page, BUILTIN_BROWSER)
-      .getByRole('button', { name: MANAGE }).click();
+    await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
 
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(VIEW_PAGES)).toBeVisible();
@@ -259,11 +254,32 @@ test.describe.serial('Electron capability overview', () => {
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('02b-builtin-browser-detail-scrolled-zh') });
 
+    // What each option MEANS lives inside the option — the reason there is no
+    // ⓘ anywhere on this page. That is only visible with a menu open.
+    const optionDescription = page.getByText(/每次操作前弹窗确认|Confirms with a dialog/);
+    const clickAndFillCell = page
+      .getByText(CLICK_AND_FILL, { exact: true })
+      .locator('..')
+      .getByRole('button')
+      .first();
+    await clickAndFillCell.scrollIntoViewIfNeeded();
+    await clickAndFillCell.click();
+    await expect(optionDescription).toBeVisible();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
+
+    // Dismiss by clicking outside, NOT with Escape: the settings dialog closes
+    // itself on Escape regardless of what is open inside it, so Escape here
+    // would take the whole page down rather than just this menu.
+    await page.getByText(ACTION_PERMISSIONS).first().click();
+    await expect(optionDescription).toHaveCount(0);
+
     // ---- Site list, two levels down -------------------------------------
     const siteCard = page.locator('div.rounded-lg.border').filter({
       has: page.getByText(SITE_PERMISSIONS, { exact: true }),
     }).first();
     await siteCard.getByRole('button', { name: MANAGE }).click();
+
 
     await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
     await expect(page.getByTitle('https://example.com')).toBeVisible();
@@ -278,8 +294,7 @@ test.describe.serial('Electron capability overview', () => {
     await expect(capabilityCard(page, MY_CHROME)).toBeVisible();
 
     // ---- My Chrome detail: same cards, one extra warning ----------------
-    await capabilityCard(page, MY_CHROME)
-      .getByRole('button', { name: CONNECT_CHROME }).click();
+    await page.getByRole('button', { name: MY_CHROME }).click();
     await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
@@ -296,8 +311,7 @@ test.describe.serial('Electron capability overview', () => {
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     // ---- Computer Use detail: now owns the active-model block -----------
-    await capabilityCard(page, COMPUTER_USE)
-      .getByRole('button', { name: START_SETUP }).click();
+    await page.getByRole('button', { name: COMPUTER_USE }).click();
     await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
     await page.screenshot({ path: iaScreenshot('05-computer-use-detail-zh') });

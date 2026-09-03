@@ -974,8 +974,8 @@ export interface TranslationDict {
     capabilitiesDescription: string;
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
-    capabilityBuiltinBrowserDesc: string;
-    capabilityBuiltinBrowserScope: string;
+    /** Detail-page status row, beside the badge: `Ready · its own session`. */
+    capabilityBuiltinBrowserSessionNote: string;
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
     capabilityMyChromeScope: string;
@@ -1067,7 +1067,6 @@ export interface TranslationDict {
     capabilityChromeOptional: string;
     capabilityChromeDisconnected: string;
     capabilityChromeProbeUnavailable: string;
-    capabilityComputerDisabled: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
     capabilityComputerModel: string;
@@ -1083,7 +1082,6 @@ export interface TranslationDict {
     capabilityDone: string;
     capabilityCheckConnection: string;
     capabilityChromeConnect: string;
-    capabilityChromeManage: string;
     capabilityChromeDisconnect: string;
     capabilityChromeSetupTitle: string;
     capabilityChromeSetupDesc: string;
@@ -1105,9 +1103,6 @@ export interface TranslationDict {
     capabilityChromeOpenFailed: string;
     capabilityChromePrivacy: string;
     capabilityComputerEnable: string;
-    capabilityComputerStartSetup: string;
-    capabilityComputerContinue: string;
-    capabilityComputerManage: string;
     capabilityComputerSetupTitle: string;
     capabilityComputerSetupDesc: string;
     capabilityComputerTaskNeedsSetup: string;

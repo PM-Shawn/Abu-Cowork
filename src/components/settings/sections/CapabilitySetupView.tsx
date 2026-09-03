@@ -340,22 +340,30 @@ export function ChromeSetupView({
         </p>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={extensionConnected ? onDone : onCheck}
-          disabled={working}
-          hidden={!capabilityEnabled}
-          className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:opacity-50"
-        >
-          {extensionConnected
-            ? <CheckCircle2 className="h-4 w-4" />
-            : <RefreshCw className={cn('h-4 w-4', working && 'animate-spin')} />}
-          {extensionConnected
-            ? t.settings.capabilityDone
-            : t.settings.capabilityCheckConnection}
-        </button>
-      </div>
+      {/*
+        Conditionally rendered, NOT `hidden={!capabilityEnabled}`: Tailwind v4
+        puts utilities in a later cascade layer than preflight, so
+        `.inline-flex` outranks preflight's `[hidden] { display: none }` and
+        the attribute does nothing. This button offered to check a connection
+        for a bridge that is not even enabled.
+      */}
+      {capabilityEnabled && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={extensionConnected ? onDone : onCheck}
+            disabled={working}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:opacity-50"
+          >
+            {extensionConnected
+              ? <CheckCircle2 className="h-4 w-4" />
+              : <RefreshCw className={cn('h-4 w-4', working && 'animate-spin')} />}
+            {extensionConnected
+              ? t.settings.capabilityDone
+              : t.settings.capabilityCheckConnection}
+          </button>
+        </div>
+      )}
 
       {children}
 

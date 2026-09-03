@@ -12,6 +12,7 @@ import { joinPath } from '@/utils/pathUtils';
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';
 import { checkSkill } from '@/core/enterprise/policy/matcher';
 import { atomicInstallDir } from '@/core/fsAtomic';
+import { isSafeSkillDirName } from './skillDirName';
 
 export type InstallResult =
   | {
@@ -98,6 +99,9 @@ export async function installSkillFromFolder(
   const name = extractName(raw);
   if (!name) {
     return { ok: false, code: 'NO_NAME', message: 'SKILL.md is missing a valid "name" field in frontmatter' };
+  }
+  if (!isSafeSkillDirName(name)) {
+    return { ok: false, code: 'NO_NAME', message: `SKILL.md declares a name that is not a single directory segment: "${name}"` };
   }
 
   // 3a. Policy check: deny if skill name is blacklisted

@@ -10,6 +10,7 @@ import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
+import { isSafeSkillDirName } from './skillDirName';
 import {
   downloadTarball,
   extractTarball,
@@ -95,6 +96,12 @@ export async function installSkillFromUrl(
   const skillName = extractNameFromSkillMd(strFromU8(skillMdEntry.data));
   if (!skillName) {
     throw new NpmInstallError('NO_NAME', 'SKILL.md is missing a valid "name" field in frontmatter');
+  }
+  // The name becomes a directory under ~/.abu/skills. The entry-path check
+  // below refuses `..` inside a file path; this refuses it in the segment
+  // those paths are written UNDER — see isSafeSkillDirName.
+  if (!isSafeSkillDirName(skillName)) {
+    throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
   }
 
   // Write to ~/.abu/skills/<name>/

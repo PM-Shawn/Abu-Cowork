@@ -185,6 +185,21 @@ describe('installSkillFromUrl', () => {
       });
     });
 
+    it('rejects a frontmatter name that escapes the skills directory', async () => {
+      // `~/.abu/skills/../../.ssh` resolves to `~/.ssh`, which the host's scope
+      // guard allows: it only asks whether the resolved path is under an
+      // allowed root. The entry-path check below does not see this — the name
+      // is the segment those paths are written UNDER.
+      mockStrFromU8.mockReturnValue('---\nname: ../../.ssh\n---\n# body');
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES });
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'PATH_TRAVERSAL',
+      });
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
     it('rejects path traversal in zip entries', async () => {
       // findSkillEntries returns valid location, but one entry has .. in path
       mockUnzipSync.mockReturnValue({

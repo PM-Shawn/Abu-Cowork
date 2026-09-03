@@ -519,3 +519,45 @@ describe('installSkillFromFolder when SKILL.md is itself a symlink', () => {
     expect(existsSync(join(installed, 'SKILL.md'))).toBe(true);
   });
 });
+
+/**
+ * The installed directory is `~/.abu/skills/<frontmatter name>`, and the name
+ * comes out of a file someone else wrote. `joinPath` does not collapse `..`
+ * and the host's scope guard only asks whether the RESOLVED path is under
+ * $HOME, so an unvalidated name escapes the skills directory entirely.
+ */
+describe('installSkillFromFolder with a traversing frontmatter name', () => {
+  let root: string;
+  let src: string;
+  let victim: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-name-'));
+    src = join(root, 'evil-pkg');
+    victim = join(root, 'victim');
+
+    mkdirSync(src, { recursive: true });
+    // `~/.abu/skills/../../victim` resolves to `~/victim`.
+    writeFileSync(join(src, 'SKILL.md'), '---\nname: ../../victim\n---\n# body');
+
+    mkdirSync(victim, { recursive: true });
+    writeFileSync(join(victim, 'keep.txt'), 'ORIGINAL CONTENT');
+
+    mockHomeDir.mockResolvedValue(root);
+    useRealFs();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('refuses a name that is not a single directory segment', async () => {
+    const result = await installSkillFromFolder(src, { overwrite: true });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('NO_NAME');
+    // The directory the name pointed at is still exactly as it was.
+    expect(readFileSync(join(victim, 'keep.txt'), 'utf8')).toBe('ORIGINAL CONTENT');
+  });
+});

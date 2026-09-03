@@ -25,7 +25,21 @@ import { formatServerCommand } from './serverCommand';
 
 export type InstallPlanState =
   | { kind: 'loading' }
-  | { kind: 'ready'; disclosure: InstallDisclosure }
+  | {
+      kind: 'ready';
+      disclosure: InstallDisclosure;
+      /**
+       * The artifact's authorship could not be verified — it carried no
+       * signature Abu could check. Optional and defaulting to "not shown": the
+       * personal / marketplace path has no signing concept at all, and a
+       * screen that warned about it there would be noise.
+       *
+       * Set it on the organization path whenever verification was skipped
+       * (e.g. the bound console advertises no signing key), so the user reads
+       * that BEFORE confirming rather than after the code is on disk.
+       */
+      unsigned?: boolean;
+    }
   /** `planInstall` threw `UnsupportedSourceError` — a real, expected outcome
    *  for ~82% of the official marketplace, not a crash. */
   | { kind: 'unsupported'; sourceKind: PluginSource['kind'] }
@@ -206,6 +220,18 @@ export default function InstallDisclosureDialog({
                   ))}
                 </div>
               </Section>
+            )}
+
+            {state.unsigned && (
+              <div
+                data-testid="plugin-disclosure-unsigned"
+                className="flex items-start gap-2.5 rounded-lg bg-[var(--abu-warning-bg)] p-3"
+              >
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-warning)]" />
+                <p className="text-body leading-relaxed text-[var(--abu-text-primary)]">
+                  {tb.pluginsDisclosureUnsigned}
+                </p>
+              </div>
             )}
 
             {(d.skippedSymlinks?.length ?? 0) > 0 && (

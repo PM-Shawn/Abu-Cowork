@@ -1441,6 +1441,8 @@ export interface TranslationDict {
     pluginsDisclosureIgnoredHint: string;
     pluginsDisclosureSymlinkTitle: string;
     pluginsDisclosureSymlinkHint: string;
+    /** Shown when the artifact carried no verifiable signature. */
+    pluginsDisclosureUnsigned: string;
     pluginsDisclosureNone: string;
     pluginsDisclosureLoading: string;
     pluginsInstalling: string;

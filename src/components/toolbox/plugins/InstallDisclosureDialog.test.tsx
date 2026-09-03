@@ -104,6 +104,20 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.queryByTestId('plugin-disclosure-symlinks')).toBeNull();
   });
 
+  it('warns that an unverified artifact carries no signature', () => {
+    // The organization path skips verification entirely when the bound console
+    // advertises no signing key. The consent screen has to say so.
+    renderDialog({ state: { kind: 'ready', disclosure, unsigned: true } as const });
+    expect(screen.getByTestId('plugin-disclosure-unsigned')).toBeInTheDocument();
+  });
+
+  it('stays silent about signing on a path that has no signing concept', () => {
+    // Personal / marketplace installs are never signed; a warning there would
+    // be noise, so the flag is optional and off by default.
+    renderDialog();
+    expect(screen.queryByTestId('plugin-disclosure-unsigned')).toBeNull();
+  });
+
   it('only reports a decision when the user acts on it', () => {
     const props = renderDialog();
     expect(props.onConfirm).not.toHaveBeenCalled();

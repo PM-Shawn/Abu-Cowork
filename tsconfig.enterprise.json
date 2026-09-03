@@ -48,6 +48,14 @@
        * specifier back to this repo's `node_modules`, which is exactly where
        * `vite.config.ts` and `scripts/build-sidecar.mjs` resolve them for a
        * real enterprise build.
+       *
+       * Caveat: a bare `"*"` mapping resolves by DIRECTORY, so it bypasses a
+       * package's `exports` map. A subpath like `zustand/middleware` therefore
+       * picks whatever `.d.ts` sits at that path rather than the one the
+       * `import`/`types` conditions vite and esbuild apply — in principle a
+       * different file than the shipped build type-checks against. It has not
+       * bitten us; if a diagnostic here ever disagrees with the real enterprise
+       * build, suspect this first.
        */
       "*": ["./node_modules/@types/*", "./node_modules/*"]
     }

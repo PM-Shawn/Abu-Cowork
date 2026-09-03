@@ -13,10 +13,14 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
 }));
 
 let convCounter = 0;
+const createConversationCalls: Array<{ workspacePath: string | null; options?: Record<string, unknown> }> = [];
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: {
     getState: () => ({
-      createConversation: vi.fn(() => `conv-${++convCounter}`),
+      createConversation: vi.fn((workspacePath: string | null, options?: Record<string, unknown>) => {
+        createConversationCalls.push({ workspacePath, options });
+        return `conv-${++convCounter}`;
+      }),
       renameConversation: vi.fn(),
     }),
   },
@@ -249,6 +253,34 @@ describe('team orchestrator', () => {
       useTeamStore.getState().archiveTeam(ids.team.id);
       const result = await runScheduledTeamTask(ids.team.id, '出周报');
       expect(result.ok).toBe(false);
+    });
+  });
+
+  describe('conversation tagging', () => {
+    it('tags the planning conversation with teamTaskId', async () => {
+      const ids = seed();
+      createConversationCalls.length = 0;
+      await startPlanning(ids.task.id);
+      expect(createConversationCalls).toHaveLength(1);
+      expect(createConversationCalls[0].options?.teamTaskId).toBe(ids.task.id);
+      expect(createConversationCalls[0].options?.skipActivate).toBe(true);
+    });
+
+    it('tags every member run conversation with teamTaskId', async () => {
+      const ids = seed();
+      useTeamStore.getState().proposePlan(ids.task.id, {
+        items: [
+          { id: '1', memberRoleId: 'role-w', what: '取数', dependsOn: [], state: 'pending' },
+          { id: '2', memberRoleId: 'role-l', what: '写稿', dependsOn: ['1'], state: 'pending' },
+        ],
+        doneWhen: [],
+      });
+      createConversationCalls.length = 0;
+      await confirmAndExecute(ids.task.id);
+      expect(createConversationCalls).toHaveLength(2);
+      for (const call of createConversationCalls) {
+        expect(call.options?.teamTaskId).toBe(ids.task.id);
+      }
     });
   });
 

@@ -154,7 +154,7 @@ export async function startPlanning(taskId: string): Promise<void> {
   inFlight.add(taskId);
   try {
     const chatStore = useChatStore.getState();
-    const conversationId = chatStore.createConversation(null, { skipActivate: true });
+    const conversationId = chatStore.createConversation(null, { skipActivate: true, teamTaskId: taskId });
     chatStore.renameConversation(conversationId, format(getI18n().team.planningConversationTitle, { goal: task.goal.split('\n')[0].slice(0, 24) }));
     useTeamStore.getState().setPlanningConversation(taskId, conversationId);
 
@@ -356,7 +356,7 @@ async function runItem(taskId: string, item: TeamPlanItem, folder: string): Prom
     return;
   }
   const chatStore = useChatStore.getState();
-  const conversationId = chatStore.createConversation(folder, { skipActivate: true });
+  const conversationId = chatStore.createConversation(folder, { skipActivate: true, teamTaskId: taskId });
   chatStore.renameConversation(conversationId, format(t.team.itemConversationTitle, { member: member.name, what: item.what.slice(0, 20) }));
   useTeamStore.getState().setItemState(taskId, item.id, 'running', { conversationId });
 

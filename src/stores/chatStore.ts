@@ -607,7 +607,7 @@ interface ChatState {
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamTaskId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
@@ -820,6 +820,7 @@ export const useChatStore = create<ChatStore>()(
           workspacePath: workspacePath ?? null,
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
           ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
+          ...(options?.teamTaskId ? { teamTaskId: options.teamTaskId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
         };
@@ -2445,7 +2446,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 7,
+      version: 8,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2462,6 +2463,10 @@ export const useChatStore = create<ChatStore>()(
         // payload — persisted state (conversationIndex) is unchanged, so this is a
         // no-op bump that just guards against older builds mis-reading the schema.
         if (version < 7) { /* no transform needed */ }
+        // v7 → v8: added teamTaskId on Conversation/ConversationMeta (optional
+        // field; absent = an ordinary chat that stays in 最近, which is exactly
+        // right for every conversation that predates the team feature).
+        if (version < 8) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

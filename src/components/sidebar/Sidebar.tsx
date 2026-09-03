@@ -196,10 +196,12 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   }, [showMoveSubmenu]);
 
   // Sort by createdAt to keep positions stable during status updates
-  // Filter out conversations belonging to projects, scheduled tasks, or triggers — they appear in their own sections
+  // Filter out conversations belonging to projects, scheduled tasks, triggers, or
+  // team tasks — they appear in their own sections (team runs are reached from
+  // the task detail's 查看运行, so they must not litter 最近)
   // Use conversationIndex (lightweight metadata) instead of full conversations for listing
   const sortedConvs = Object.values(conversationIndex)
-    .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId)
+    .filter((c) => !c.scheduledTaskId && !c.triggerId && !c.projectId && !c.teamTaskId)
     // Hide empty (0-message) conversations from 最近. A first send eagerly
     // persists the index entry (createConversation) BEFORE its message lands,
     // so an interrupted/abandoned send leaves a blank "新任务" row littering the

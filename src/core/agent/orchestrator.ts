@@ -1,7 +1,13 @@
 import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
-import { resolvePreloadedSkills, type PreloadedSkillsInjection } from './prompts/preloadedSkills';
+import {
+  normalizeDeclaredSkills,
+  renderPreloadedSkillBlocks,
+  resolvePreloadedSkills,
+  type PreloadedSkillBlockInput,
+  type PreloadedSkillsInjection,
+} from './prompts/preloadedSkills';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
 import { getDefaultSoul } from './prompts/defaultSoul';
@@ -339,8 +345,13 @@ async function pushAgentPreloadedSkills(
   alreadyInjected?: ReadonlySet<string>,
 ): Promise<void> {
   if (!agentDef) return;
+  // Compared EXACTLY, the way `skillLoader.loadSkill` looks a name up. A
+  // lower-cased key made the dedupe wider than the lookup it stands in for, so
+  // `skills: ['WEEKLY-REPORT']` against a `preload-skills: ['weekly-report']`
+  // was dropped here and never reached the loader that would have reported it
+  // as unresolvable — no section and no warning.
   const declared = alreadyInjected
-    ? agentDef.skills?.filter((name) => !alreadyInjected.has(name.trim().toLowerCase()))
+    ? normalizeDeclaredSkills(agentDef.skills)?.filter((name) => !alreadyInjected.has(name))
     : agentDef.skills;
   const injection = await resolvePreloadedSkills({ ...agentDef, skills: declared });
   if (!injection) return;
@@ -406,18 +417,30 @@ export async function buildSystemPromptSections(
     // instead of injecting the same body a second time.
     const skillSectionPreloaded = new Set<string>();
     if (route.skill.preloadSkills && route.skill.preloadSkills.length > 0) {
-      const preloadedBlocks: string[] = [];
+      const preloadedEntries: PreloadedSkillBlockInput[] = [];
       for (const declaredName of route.skill.preloadSkills) {
         const preloadedSkill = skillLoader.getSkill(declaredName);
         if (!preloadedSkill) continue;
         // Both spellings: the declared name and the skill's own, which the
-        // agent may equally well have used.
-        skillSectionPreloaded.add(declaredName.trim().toLowerCase());
-        skillSectionPreloaded.add(preloadedSkill.name.trim().toLowerCase());
-        preloadedBlocks.push(`### ${preloadedSkill.name}\n${preloadedSkill.content}`);
+        // agent may equally well have used. Exact, never case-folded — see
+        // pushAgentPreloadedSkills.
+        skillSectionPreloaded.add(declaredName.trim());
+        skillSectionPreloaded.add(preloadedSkill.name.trim());
+        preloadedEntries.push({
+          name: preloadedSkill.name,
+          description: preloadedSkill.description,
+          content: preloadedSkill.content,
+          label: declaredName,
+        });
       }
-      if (preloadedBlocks.length > 0) {
-        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + preloadedBlocks.join('\n\n'), cacheable: true });
+      if (preloadedEntries.length > 0) {
+        // Same loader, same third-party authors, therefore the same delimiting
+        // and the same byte cap as the agent's own `skills:` section — an
+        // undelimited sibling reads as MORE trusted once the safety anchor
+        // names `<preloaded-skill>`. The two sections carry independent
+        // budgets; only fork mode can hold both.
+        const { blocks } = renderPreloadedSkillBlocks(preloadedEntries);
+        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + blocks.join('\n\n'), cacheable: true });
       }
     }
 

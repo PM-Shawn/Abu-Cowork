@@ -1598,6 +1598,10 @@ export interface TranslationDict {
     importSkippedLinksSeparator: string;
     /** {path} — the chosen folder is itself a symlink. */
     importSymlinkRootRefused: string;
+    /** {name} — the .askill's frontmatter name is not one directory segment. */
+    importUnsafeName: string;
+    /** {n}, {names} — entries packSkill will not put in an exported archive. */
+    exportSymlinkRefused: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;

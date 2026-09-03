@@ -1405,6 +1405,8 @@ const enUS: TranslationDict = {
     importSkippedLinks: 'Skipped {n} link(s): {names} — they point outside this folder, so Abu did not follow them and the installed skill does not contain them',
     importSkippedLinksSeparator: ', ',
     importSymlinkRootRefused: 'That folder is itself a link to somewhere else ({path}), so Abu will not import it — what it appears to contain actually lives elsewhere. Choose the folder the link points at.',
+    importUnsafeName: 'The SKILL.md in this package declares a name that is not a usable folder name ("{name}") — it would write files outside the skills directory, so Abu refused to install it.',
+    exportSymlinkRefused: 'Export refused: this skill folder holds {n} entr(ies) Abu will not package — {names}. A symlink would put the file it points at — very likely one from outside the folder — into the archive under an ordinary-looking name, so the package you share would carry something that is not part of this skill. Replace them with real files and export again.',
     exportSuccess: 'Export Successful',
     exportFailed: 'Export Failed',
     manualAdd: 'Manual Setup',

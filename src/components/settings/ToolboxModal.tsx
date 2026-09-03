@@ -150,6 +150,8 @@ export default function ToolboxView() {
           title: t.toolbox.uploadFailed,
           // A folder that is itself a link is a refusal we can explain, and the
           // remedy (pick the folder it points at) only fits in the locale.
+          // Also defensive — see the note below the branch: only the skill
+          // installer returns SYMLINK_ROOT, and only agents reach this handler.
           message: result.code === 'SYMLINK_ROOT'
             ? format(t.toolbox.importSymlinkRootRefused, { path: folderPath as string })
             : result.message,
@@ -157,9 +159,16 @@ export default function ToolboxView() {
         return;
       }
 
-      // The skill installer refuses to follow symlinks; say so, or this picker
-      // is the one install path where the user cannot tell the skill that
-      // landed is missing entries the folder appeared to contain.
+      // The skill installer refuses to follow symlinks; say so rather than
+      // report a file count for a skill that is missing entries the folder
+      // appeared to contain.
+      //
+      // Defensive, not live: this handler is wired on the AGENTS tab only
+      // (`onUploadFile={handleUploadFile}` below) — the skills tab opens
+      // SkillUploadModal instead, which carries the same disclosure and has
+      // the tests for it. So `isAgent` is always true here today and
+      // `refusedLinks` always returns []. Kept correct for the day the skills
+      // tab is rewired through this path; do not read it as the live one.
       const links = refusedLinks(result);
 
       await refresh();

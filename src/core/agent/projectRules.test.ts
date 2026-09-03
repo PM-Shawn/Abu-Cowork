@@ -1,10 +1,24 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Mock Tauri APIs before importing the module
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn(),
   readDir: vi.fn(),
   exists: vi.fn(),
+  lstat: vi.fn(),
   mkdir: vi.fn(),
   writeTextFile: vi.fn(),
 }));
@@ -18,7 +32,7 @@ vi.mock('../../utils/pathUtils', () => ({
   ensureParentDir: vi.fn(),
 }));
 
-import { readTextFile, readDir, exists, mkdir, writeTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile, readDir, exists, lstat, mkdir, writeTextFile } from '@tauri-apps/plugin-fs';
 import {
   loadUserRules,
   loadProjectRules,
@@ -30,11 +44,15 @@ import {
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
 const mockExists = vi.mocked(exists);
+const mockLstat = vi.mocked(lstat);
 const mockMkdir = vi.mocked(mkdir);
 const mockWriteTextFile = vi.mocked(writeTextFile);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Nothing in the virtual fixtures is a link; the real-tree suite at the
+  // bottom of this file overrides this with `lstatSync`.
+  mockLstat.mockResolvedValue({ isSymlink: false } as never);
 });
 
 describe('loadUserRules', () => {
@@ -207,5 +225,134 @@ describe('initWorkspaceRules', () => {
       expect.stringContaining('# Project Rules')
     );
     expect(mockMkdir).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Everything below runs against a REAL temporary workspace containing REAL
+ * symlinks, deliberately NOT the hand-written dirents above: every one of
+ * those says `isDirectory: false` because it was typed that way, while a real
+ * dirent for a LINK says `isDirectory: false` too — and that collision is the
+ * whole defect. Only a real tree tells them apart.
+ *
+ * What makes this path different from an installer is the destination. These
+ * bytes are spliced into the SYSTEM PROMPT (`orchestrator.ts` calls
+ * `loadAllRules` on every non-fork prompt build) and sent to the model
+ * provider, so following a link here is an outbound read of an arbitrary local
+ * file — from a directory that arrived by `git clone`.
+ */
+
+/** Point the mocked plugin-fs surface at the real filesystem, as fsHost does. */
+function useRealFs() {
+  mockReadDir.mockImplementation(async (p: string | URL) =>
+    readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+      name: d.name,
+      isDirectory: d.isDirectory(),
+      isFile: d.isFile(),
+      isSymlink: d.isSymbolicLink(),
+    })) as never,
+  );
+  // `readFileSync` FOLLOWS a symlink — exactly what `plugin:fs|read_text_file`
+  // does in the privileged host (electron/fsHost.cjs).
+  mockReadTextFile.mockImplementation(async (p: string | URL) => readFileSync(String(p), 'utf8'));
+  mockExists.mockImplementation(async (p: string | URL) => existsSync(String(p)));
+  // `lstat` is the one call routed with `followFinalSymlink: false`.
+  mockLstat.mockImplementation(
+    async (p: string | URL) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+  );
+}
+
+describe('rules loading over a real workspace with real symlinks', () => {
+  let root: string;
+  let ws: string;
+  let secret: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-rules-'));
+    ws = join(root, 'cloned-repo');
+    secret = join(root, 'id_rsa');
+
+    mkdirSync(join(ws, '.abu', 'rules'), { recursive: true });
+    writeFileSync(secret, '-----BEGIN OPENSSH PRIVATE KEY-----\nPROBE-KEY\n');
+    writeFileSync(join(ws, '.abu', 'rules', 'benign.md'), 'benign project rule text');
+    // What `git clone` materialises from a mode-120000 entry.
+    symlinkSync(secret, join(ws, '.abu', 'rules', 'notes.md'));
+
+    useRealFs();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    mockReadDir.mockReset();
+    mockReadTextFile.mockReset();
+    mockExists.mockReset();
+    mockLstat.mockReset();
+  });
+
+  it('does not splice a linked rule file into the prompt', async () => {
+    const result = await loadModularRules(ws);
+
+    expect(result).not.toContain('BEGIN OPENSSH PRIVATE KEY');
+    expect(result).not.toContain('### notes.md');
+    // The repo's own real rule still loads — the refusal is per-entry, not a
+    // bail-out that silently drops the whole rules directory.
+    expect(result).toContain('benign project rule text');
+  });
+
+  it('names the file it left out on the console instead of failing silently', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await loadModularRules(ws);
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('notes.md'));
+    warn.mockRestore();
+  });
+
+  it('does not read a rules directory that is itself a link', async () => {
+    // One extra indirection defeats a per-entry check on its own: the entries
+    // inside the target are real files, so nothing below the directory looks
+    // like a link at all.
+    const other = join(root, 'elsewhere');
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, 'stolen.md'), 'CONTENTS OF A DIRECTORY THE REPO DOES NOT OWN');
+
+    const ws2 = join(root, 'repo2');
+    mkdirSync(join(ws2, '.abu'), { recursive: true });
+    symlinkSync(other, join(ws2, '.abu', 'rules'), 'dir');
+
+    const result = await loadModularRules(ws2);
+
+    expect(result).toBe('');
+  });
+
+  it('does not follow a linked {workspace}/.abu/ABU.md', async () => {
+    // The same defect one function away: `loadProjectRules` reads a
+    // workspace-controlled path with the same following `readTextFile`.
+    const ws3 = join(root, 'repo3');
+    mkdirSync(join(ws3, '.abu'), { recursive: true });
+    symlinkSync(secret, join(ws3, '.abu', 'ABU.md'));
+
+    const result = await loadProjectRules(ws3);
+
+    expect(result).toBe('');
+  });
+
+  it('applies no link gate to ~/.abu/ABU.md, which the user placed there', async () => {
+    // Deliberate asymmetry, pinned so it is not "tidied up" by accident: $HOME
+    // is the user's own configuration, where `~/.abu/ABU.md -> ~/dotfiles/abu.md`
+    // is a dotfile-farm convention and no repository can plant it. The rule is
+    // "what the opened workspace controls is hostile", not "links are bad".
+    //
+    // Asserted through lstat rather than a fixture because `homeDir()` is
+    // cached in module scope after the suites above have already resolved it.
+    mockLstat.mockClear();
+    await loadUserRules();
+    expect(mockLstat).not.toHaveBeenCalled();
+
+    // …while the workspace-controlled twin is gated.
+    const ws4 = join(root, 'repo4');
+    mkdirSync(join(ws4, '.abu'), { recursive: true });
+    writeFileSync(join(ws4, '.abu', 'ABU.md'), 'real rules');
+    await loadProjectRules(ws4);
+    expect(mockLstat).toHaveBeenCalledWith(join(ws4, '.abu', 'ABU.md'));
   });
 });

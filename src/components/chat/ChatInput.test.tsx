@@ -59,6 +59,12 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** The `+` button is a menu now; 添加文件 lives inside it. */
+async function clickAddFileMenuItem(): Promise<void> {
+  fireEvent.click(screen.getByTestId('composer-plus'));
+  fireEvent.click(await screen.findByTestId('composer-menu-add-file'));
+}
+
 const enterpriseBinding = (userId: string): EnterpriseBinding => ({
   serverUrl: 'https://example.test',
   orgId: 'org-1',
@@ -479,7 +485,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     const onSend = vi.fn();
     render(<ChatInput variant="welcome" onSend={onSend} />);
 
-    fireEvent.click(screen.getByLabelText(getI18n().chat.addAttachment));
+    await clickAddFileMenuItem();
     await waitFor(() => expect(electronHostMocks.selectElectronUserAttachments).toHaveBeenCalled());
     expect(screen.queryByText('plan.pdf')).not.toBeInTheDocument();
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'review' } });
@@ -503,7 +509,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     const onSend = vi.fn();
     render(<ChatInput variant="welcome" onSend={onSend} />);
 
-    fireEvent.click(screen.getByLabelText(getI18n().chat.addAttachment));
+    await clickAddFileMenuItem();
     await waitFor(() => expect(electronHostMocks.readElectronUserAttachment).toHaveBeenCalledWith({ token: 'i'.repeat(43) }));
     await waitFor(() => expect(screen.getByTitle(getI18n().chat.clickToViewFull)).toBeInTheDocument());
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
@@ -530,7 +536,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     electronHostMocks.readElectronUserAttachment.mockResolvedValueOnce(ONE_BY_ONE_PNG);
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
 
-    fireEvent.click(screen.getByLabelText(getI18n().chat.addAttachment));
+    await clickAddFileMenuItem();
 
     await waitFor(() => expect(electronHostMocks.releaseElectronUserAttachment).toHaveBeenCalledWith({
       token: 'i'.repeat(43),
@@ -549,7 +555,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     const onSend = vi.fn();
     render(<ChatInput variant="welcome" onSend={onSend} />);
 
-    fireEvent.click(screen.getByLabelText(getI18n().chat.addAttachment));
+    await clickAddFileMenuItem();
     await waitFor(() => expect(electronHostMocks.readElectronUserAttachment).toHaveBeenCalledWith({ token: 'b'.repeat(43) }));
     expect(screen.queryByText('broken.png')).not.toBeInTheDocument();
 
@@ -786,7 +792,7 @@ describe('ChatInput async attachment admission ownership', () => {
     electronHostMocks.selectElectronUserAttachments.mockRejectedValueOnce(new Error('dialog unavailable'));
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
 
-    fireEvent.click(screen.getByLabelText(getI18n().chat.addAttachment));
+    await clickAddFileMenuItem();
     await waitFor(() => expect(useToastStore.getState().toasts).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'error' })]),
     ));
@@ -867,6 +873,103 @@ describe('ChatInput inline agent selection', () => {
     } finally {
       useTeamStore.setState({ teams: [], tasks: [] });
     }
+  });
+
+  describe('team chip + composer `+` menu (in-conversation team)', () => {
+    async function seedTeam() {
+      const { useTeamStore } = await import('@/stores/teamStore');
+      useTeamStore.setState({
+        teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
+        tasks: [],
+      });
+      return useTeamStore;
+    }
+
+    it('picking a team from @ pins it (pending on welcome), shows the 👥 chip and sends plain text', async () => {
+      const useTeamStore = await seedTeam();
+      try {
+        const onSend = vi.fn();
+        render(<ChatInput variant="welcome" onSend={onSend} />);
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        fireEvent.change(textarea, { target: { value: '@' } });
+        fireEvent.click(screen.getByRole('option', { name: /zz数据小队/ }));
+
+        expect(useChatStore.getState().pendingTeamId).toBe('tm1');
+        const chip = screen.getByTestId('composer-team-chip');
+        expect(chip.textContent).toContain('zz数据小队');
+        expect(textarea.value).toBe('');
+        // Not an @ prefix: the pin lives on the conversation, the text goes as-is.
+        fireEvent.change(textarea, { target: { value: '出周报' } });
+        fireEvent.keyDown(textarea, { key: 'Enter' });
+        expect(onSend).toHaveBeenCalledWith('出周报', undefined, null);
+        // Sticky: the pin survives the send.
+        expect(useChatStore.getState().pendingTeamId).toBe('tm1');
+        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+
+        fireEvent.click(screen.getByTestId('composer-team-chip'));
+        expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
+      } finally {
+        useTeamStore.setState({ teams: [], tasks: [] });
+        useChatStore.setState({ pendingTeamId: undefined });
+      }
+    });
+
+    it('inside a conversation the pick pins the conversation itself, and an @agent pick replaces it', async () => {
+      const useTeamStore = await seedTeam();
+      try {
+        const convId = useChatStore.getState().createConversation(null);
+        render(<ChatInput variant="chat" onSend={vi.fn()} />);
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        fireEvent.change(textarea, { target: { value: '@' } });
+        fireEvent.click(screen.getByRole('option', { name: /zz数据小队/ }));
+        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
+        expect(useChatStore.getState().conversationIndex[convId].teamId).toBe('tm1');
+        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+
+        // One 接活方 at a time: choosing a member for the next message drops the team pin.
+        fireEvent.change(textarea, { target: { value: '@pub' } });
+        fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+        expect(useChatStore.getState().conversations[convId].teamId).toBeUndefined();
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
+        expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+      } finally {
+        useTeamStore.setState({ teams: [], tasks: [] });
+      }
+    });
+
+    it('the + menu offers 添加文件 / 队员·团队 / 技能 and the team entry opens the grouped @ picker', async () => {
+      const useTeamStore = await seedTeam();
+      try {
+        render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+        fireEvent.click(screen.getByTestId('composer-plus'));
+        const menu = await screen.findByRole('menu');
+        expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Member · Team', 'Skill']);
+
+        fireEvent.click(screen.getByTestId('composer-menu-team'));
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        await waitFor(() => expect(textarea.value).toBe('@'));
+        const listbox = await screen.findByRole('listbox');
+        expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Teams', 'Members']);
+      } finally {
+        useTeamStore.setState({ teams: [], tasks: [] });
+      }
+    });
+
+    it('the + menu skill entry turns the text into a / command so the skill picker opens', async () => {
+      useDiscoveryStore.setState({
+        skills: [{ name: 'weekly-report', description: 'Weekly report' } as never],
+        agents: [{ name: 'publisher', description: 'Draft and edit public posts' }],
+        isLoading: false,
+      });
+      render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+      fireEvent.click(screen.getByTestId('composer-plus'));
+      fireEvent.click(await screen.findByTestId('composer-menu-skill'));
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      await waitFor(() => expect(textarea.value).toBe('/'));
+      const listbox = await screen.findByRole('listbox');
+      expect(within(listbox).getByRole('option', { name: /weekly-report/ })).toBeTruthy();
+    });
   });
 
   it('gives the suggestion listbox a localized accessible name', () => {

@@ -315,6 +315,7 @@ const zhCN: TranslationDict = {
     inputTokens: '输入',
     outputTokens: '输出',
     addAttachment: '添加图片或文件',
+    composerMenu: { open: '更多', addFile: '添加文件', teamOrMember: '队员 · 团队', skill: '技能' },
     pickAgent: '选专家',
     pickAgentEmpty: '没有可用的专家',
     pickAgentClear: '不指定专家',

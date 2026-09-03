@@ -315,6 +315,7 @@ const enUS: TranslationDict = {
     inputTokens: 'Input',
     outputTokens: 'Output',
     addAttachment: 'Add images or files',
+    composerMenu: { open: 'More', addFile: 'Add files', teamOrMember: 'Member · Team', skill: 'Skill' },
     pickAgent: 'Pick expert',
     pickAgentEmpty: 'No experts available',
     pickAgentClear: 'No expert',

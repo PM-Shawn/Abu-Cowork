@@ -355,6 +355,8 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
+    composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
     // Agent selector in toolbar
     pickAgent: string;
     pickAgentEmpty: string;

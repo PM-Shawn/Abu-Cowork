@@ -1,95 +1,56 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
+import { matchTeamMention } from './chatEntry';
 
-const kickoffTask = vi.fn();
-vi.mock('./orchestrator', () => ({ kickoffTask: (id: string) => kickoffTask(id) }));
-
-import { tryHandleTeamMention } from './chatEntry';
-
-describe('tryHandleTeamMention (composer entry)', () => {
+describe('matchTeamMention (composer fallback for a typed @团队)', () => {
   beforeEach(() => {
     useTeamStore.setState({ teams: [], tasks: [] });
-    kickoffTask.mockClear();
   });
 
   function seedTeam(name = '数据小队') {
     return useTeamStore.getState().createTeam({ name, leaderRoleId: 'role-l', memberRoleIds: [] });
   }
 
-  it('creates a task from @团队 with the goal stored verbatim and kicks it off', () => {
-    seedTeam();
-    const res = tryHandleTeamMention('@数据小队 出一版 8 月周报，异常波动单独列一节');
-    expect(res.handled).toBe(true);
-    const task = useTeamStore.getState().tasks[0];
-    expect(task.goal).toBe('出一版 8 月周报，异常波动单独列一节');
-    expect(kickoffTask).toHaveBeenCalledWith(task.id);
+  it('names the team and returns the message without the mention', () => {
+    const team = seedTeam();
+    const res = matchTeamMention('@数据小队 出一版 8 月周报，异常波动单独列一节');
+    expect(res).toEqual({ teamId: team.id, teamName: '数据小队', rest: '出一版 8 月周报，异常波动单独列一节' });
   });
 
-  it('does not intercept non-team mentions — @agent keeps inline delegation', () => {
+  it('does not match non-team mentions — @agent keeps inline delegation', () => {
     seedTeam();
-    const res = tryHandleTeamMention('@writer 帮我看看这段');
-    expect(res.handled).toBe(false);
-    expect(useTeamStore.getState().tasks).toHaveLength(0);
+    expect(matchTeamMention('@writer 帮我看看这段')).toBeNull();
+    expect(matchTeamMention('@数据小队长 出周报')).toBeNull(); // prefix of a longer word is not the team
   });
 
   it('matches the longest team name and supports Chinese comma separators', () => {
     seedTeam('数据');
-    seedTeam('数据小队');
-    const res = tryHandleTeamMention('@数据小队，出周报');
-    expect(res.handled && res.teamName).toBe('数据小队');
-    expect(useTeamStore.getState().tasks[0].goal).toBe('出周报');
+    const long = seedTeam('数据小队');
+    const res = matchTeamMention('@数据小队，出周报');
+    expect(res?.teamId).toBe(long.id);
+    expect(res?.rest).toBe('出周报');
   });
 
-  it('hands empty-goal mentions back with a named reason (composer keeps the text)', () => {
+  it('returns an empty rest for a bare mention so the caller can hand the text back', () => {
     seedTeam();
-    const res = tryHandleTeamMention('@数据小队');
-    expect(res.handled).toBe(false);
-    expect(!res.handled && res.reason).toBe('empty_goal');
-    expect(useTeamStore.getState().tasks).toHaveLength(0);
+    expect(matchTeamMention('@数据小队')).toMatchObject({ teamName: '数据小队', rest: '' });
   });
 
   it('ignores archived teams', () => {
     const team = seedTeam();
     useTeamStore.getState().archiveTeam(team.id);
-    expect(tryHandleTeamMention('@数据小队 干活').handled).toBe(false);
-  });
-  it('handles an attachment marker that precedes the mention', () => {
-    // ChatInput prepends `[Attachment: …]` ahead of the user's text whenever
-    // the mention was typed inline rather than picked from the popup — the
-    // team route must not silently disappear as soon as a file is attached.
-    useTeamStore.setState({
-      teams: [{ id: 'tm1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
-    });
-    const result = tryHandleTeamMention('[Attachment: `/tmp/8月数据.xlsx`]\n\n@数据小队 出一版周报');
-    expect(result.handled).toBe(true);
-    const task = useTeamStore.getState().tasks[0];
-    expect(task.goal).toBe('出一版周报');
-    expect(task.attachments).toEqual(['/tmp/8月数据.xlsx']);
-  });
-  it('refuses instead of silently degrading when a quoted reference precedes the mention', () => {
-    // References are prepended ahead of the user's text like attachments are,
-    // but they carry blockquotes we cannot safely split back out — so the
-    // hand-off is refused out loud rather than becoming an ordinary chat turn.
-    useTeamStore.setState({
-      teams: [{ id: 'tm1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
-    });
-    const result = tryHandleTeamMention('[引用 1 · 来源：周报.md]\n> 上周完成了三件事\n\n@数据小队 出一版周报');
-    expect(result.handled).toBe(false);
-    expect(result.handled === false && result.reason).toBe('unsupported_context');
-    expect(result.handled === false && result.teamName).toBe('数据小队');
-    expect(useTeamStore.getState().tasks).toHaveLength(0);
+    expect(matchTeamMention('@数据小队 干活')).toBeNull();
   });
 
-  it('refuses a team mention that carries images, which cannot reach a task', () => {
-    useTeamStore.setState({
-      teams: [{ id: 'tm1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
-    });
-    const result = tryHandleTeamMention('@数据小队 看看这张图', { hasImages: true });
-    expect(result.handled).toBe(false);
-    expect(result.handled === false && result.reason).toBe('unsupported_context');
-    expect(useTeamStore.getState().tasks).toHaveLength(0);
+  it('keeps attachment markers that precede the mention in the message', () => {
+    seedTeam();
+    const res = matchTeamMention('[Attachment: `/tmp/a.csv`]\n@数据小队 看看这份数据');
+    expect(res?.teamName).toBe('数据小队');
+    expect(res?.rest).toBe('[Attachment: `/tmp/a.csv`]\n看看这份数据');
+  });
+
+  it('does not treat a mention buried behind other text as a team hand-off', () => {
+    seedTeam();
+    expect(matchTeamMention('> quoted\n@数据小队 干活')).toBeNull();
   });
 });

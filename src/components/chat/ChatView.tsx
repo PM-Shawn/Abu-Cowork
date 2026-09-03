@@ -30,8 +30,7 @@ import AgentStatusStrip from './AgentStatusStrip';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
-import { tryHandleTeamMention } from '@/core/team/chatEntry';
-import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
+import { matchTeamMention } from '@/core/team/chatEntry';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -199,6 +198,7 @@ export default function ChatView({
     setIsRenamingTitle(false);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
+  const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // Subscribe to messages count so ChatView re-renders when background processes
   // (IM agentLoop) add messages — even if the conversation object reference is stale
@@ -766,41 +766,22 @@ export default function ChatView({
       return;
     }
 
-    // `@<team> <goal>` hands work to a team — a local action like /compact,
-    // no LLM turn. The receipt is a toast with a jump into the 任务 kanban;
-    // execution happens in background conversations owned by the task.
-    {
-      // No '@'-prefix pre-check here: attachment markers are prepended ahead
-      // of the user's text, so the mention is not always first. The helper
-      // strips them and re-tests the prefix itself.
-      // Shelved: the task-board interception. Batch 1 block 2 replaces it with
-      // pinning the conversation to the team and sending normally (design §2.1).
-      const teamHit = TEAM_BOARD_ENABLED
-        ? tryHandleTeamMention(text, { hasImages: (images?.length ?? 0) > 0 })
-        : { handled: false as const };
-      if (teamHit.handled) {
-        useToastStore.getState().addToast({
-          type: 'success',
-          title: format(t.team.chatReceiptTitle, { team: teamHit.teamName, goal: teamHit.goal.split('\n')[0].slice(0, 20) }),
-          message: t.team.chatReceiptBody,
-          actions: [{ label: t.team.chatReceiptOpen, onClick: () => useSettingsStore.getState().openTeam('tasks') }],
-        });
-        return;
-      }
-      if (teamHit.reason === 'empty_goal') {
-        useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamHit.teamName ?? '' }) });
-        return false; // hand the text back to the composer
-      }
-      if (teamHit.reason === 'unsupported_context') {
-        useToastStore.getState().addToast({ type: 'info', title: t.team.chatReceiptUnsupported });
-        return false; // hand the text back — nothing was created, nothing lost
-      }
+    // A typed `@<team> …` that the composer did not turn into the team chip
+    // (sent before the exact-name detection, pasted, …) still pins the
+    // conversation to that team; the mention itself is not sent to the model.
+    const teamMention = matchTeamMention(text);
+    if (teamMention && !teamMention.rest) {
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
+      return false; // hand the text back to the composer
     }
+    const sendText = teamMention ? teamMention.rest : text;
 
     let convId = activeConv?.id;
     const isNewConversation = !convId;
     if (!convId) {
-      convId = createConversation(workspacePath);
+      convId = createConversation(workspacePath, teamMention ? { teamId: teamMention.teamId } : undefined);
+    } else if (teamMention) {
+      setConversationTeamId(convId, teamMention.teamId);
     }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
@@ -816,7 +797,7 @@ export default function ChatView({
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
     let dispatch: AgentLoopDispatchResult;
     try {
-      dispatch = await runAgentLoopDispatched(convId, text, { images });
+      dispatch = await runAgentLoopDispatched(convId, sendText, { images });
     } catch (error) {
       // The runner deliberately keeps persistence/transport failures as
       // rejections for non-UI callers. Once it has appended the user message,

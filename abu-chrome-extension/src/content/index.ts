@@ -147,11 +147,44 @@ function assertOriginPin(action: string, payload: Record<string, unknown>): void
   }
   const current = normalizedOrigin(location.href);
   if (current === expected) return;
+  // A SUBFRAME that fails the pin is a different situation from a top frame
+  // that drifted, and the drift wording is advice that can never work there:
+  // this frame is permanently a different site from the approved one, so "take
+  // a fresh snapshot" would send the model round a loop it cannot exit. Same
+  // refusal, honest attribution.
+  if (window.top !== window) {
+    throw new Error(
+      `Refused: this action targeted a frame from a different site than the one approved (approved `
+      + `${expected}, this frame is ${current ?? 'not an ordinary web page'}). Embedded third-party `
+      + 'frames are not covered by that approval and a fresh snapshot will not change it — act on the '
+      + 'main page, or ask for this site to be authorized separately.',
+    );
+  }
   throw new Error(
     `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, `
     + `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a `
     + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
     + 'approval does not carry over to a different site.',
+  );
+}
+
+/**
+ * A frame that does not service the action must not ACT either (N1).
+ *
+ * Locator actions already stop on their own: `frameServicesAction` and
+ * `findElementOrThrow` call the same `findElement` against the same document,
+ * so a frame that answered "not mine" is structurally guaranteed to throw
+ * "Element not found" moments later — that is a second guard, not a
+ * coincidence. `keyboard` has no such guard: it dispatches at
+ * `document.activeElement`, which every document has. So it needs an explicit
+ * abstention, or a subframe would skip the pin AND press the key — exactly
+ * what the pin exists to prevent.
+ */
+function assertFrameAbstains(payload: Record<string, unknown>): void {
+  if (payload.locator !== undefined) return;
+  throw new Error(
+    'Nothing is focused in this frame, so there is nowhere to send the key press. '
+    + 'Click the field you want to type into first, then send the key.',
   );
 }
 
@@ -195,8 +228,11 @@ function normalizedOrigin(href: string): string | null {
  * - **locator actions** (click/fill/select): the frame that resolves the
  *   target is the acting frame. A frame that cannot resolve it falls through
  *   to its ordinary "Element not found", exactly as it did before the pin
- *   existed. This is what keeps iframe-targeted actions working — an action
- *   aimed INTO an iframe is still pinned, by that iframe.
+ *   existed. This is what keeps iframe-targeted actions working: an action
+ *   aimed into a SAME-ORIGIN iframe is still pinned, by that iframe, and
+ *   passes. An action aimed into a CROSS-ORIGIN iframe is not "pinned" so much
+ *   as permanently refused — that frame can never match the approved origin —
+ *   which is fail-closed and correct, but is a refusal, not support.
  * - **`keyboard`** (no locator — it dispatches at `document.activeElement`):
  *   the frame holding a real focused element is acting, and the TOP frame
  *   always checks. The top frame checking is not a false refusal: it refuses
@@ -223,8 +259,13 @@ function frameServicesAction(action: string, payload: Record<string, unknown>): 
 
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
   // Before the switch, so no action can be added that forgets it — but only in
-  // the frame that is going to act (see `frameServicesAction`).
-  if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+  // the frame that is going to act (see `frameServicesAction`). A frame that
+  // is NOT acting abstains rather than falling through to do the work
+  // unchecked (see `assertFrameAbstains`).
+  if (ORIGIN_PINNED_ACTIONS.has(action)) {
+    if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+    else assertFrameAbstains(payload);
+  }
   switch (action) {
     case 'snapshot': return takeSnapshot(
       payload.selector as string | undefined,
@@ -1364,9 +1405,13 @@ function redactSensitiveValueAttributes(root: Element): void {
     // "redacted on one surface, plaintext on the next" shape this pass exists
     // to close, and `queryJsWorker` reading `.value` off the parsed html gets
     // its value from precisely this text.
-    if (el.tagName === 'TEXTAREA') {
-      if (el.textContent) el.textContent = REDACTED_VALUE;
-      continue;
+    if (el.tagName === 'TEXTAREA' && el.textContent) {
+      el.textContent = REDACTED_VALUE;
+      // FALLS THROUGH to the attribute rewrite on purpose. A `value` attribute
+      // on a textarea is invalid HTML and inert in the DOM, but hand-written
+      // SSR templates do emit it, and it is raw plaintext in the serialized
+      // source either way. An earlier revision returned here and silently
+      // stopped redacting exactly that case.
     }
     if (!el.getAttribute('value')) continue;
     el.setAttribute('value', REDACTED_VALUE);
@@ -1382,10 +1427,25 @@ function redactSensitiveValueAttributes(root: Element): void {
  * than edit the page the user is looking at, the extracted STRING is scrubbed
  * of any sensitive value the scope actually holds.
  *
- * Whether a given engine renders a textarea's content into `innerText` is a
- * detail that varies (Chrome does not; other DOM implementations do), which is
- * exactly why this does not depend on the answer: whatever the engine chose to
- * include, a declared-sensitive field's own value does not survive.
+ * ## A best-effort net, NOT a guarantee
+ *
+ * This is string matching, so it catches the common case (the value appears
+ * verbatim) and misses three known ones. Named rather than implied, because an
+ * over-stated guarantee here is worse than a modest one:
+ *
+ * - **Renders differently than it is stored.** A value containing whitespace
+ *   is compared against text the engine normalized, so `"pass\\nphrase"` will
+ *   not match `"pass phrase here"`.
+ * - **Echoed from outside the scope.** Only fields INSIDE the extract scope
+ *   contribute secrets; a page that copies a password into a `<div>` inside
+ *   the scope while the field itself sits outside it is not caught.
+ * - **Over-scrubs a short common value.** A password of `"admin"` turns "the
+ *   admin panel for admin users" into markers. That is the fail-safe
+ *   direction, and the 1-2 character floor below only blunts the worst of it.
+ *
+ * It does at least not depend on whether a given engine renders a textarea's
+ * content into `innerText` (Chrome does not; other DOM implementations do) —
+ * whatever the engine included, a verbatim occurrence is removed.
  */
 function sensitiveValuesIn(scope: Element | null): string[] {
   const root = scope ?? document.body;
@@ -1507,7 +1567,20 @@ function extractTable(selector?: string): { headers: string[]; rows: string[][];
     rows.push(row);
   }
 
-  return { headers, rows, rowCount: rows.length };
+  // The same best-effort scrub `extract_text` applies, for the same reason and
+  // with the same limits. Inert in Chrome today (neither input values nor
+  // textarea content reach `innerText` there), but this was the one reporting
+  // path that never got the U5 treatment, and "inert on one engine" is not a
+  // property worth relying on.
+  const secrets = sensitiveValuesIn(table);
+  const scrub = (cell: string): string =>
+    secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), cell);
+
+  return {
+    headers: headers.map(scrub),
+    rows: rows.map((row) => row.map(scrub)),
+    rowCount: rows.length,
+  };
 }
 
 // =============================================================================

@@ -533,6 +533,39 @@ describe('sensitive values are redacted, but the fields stay fillable (U5)', () 
       expect(await getHtml()).toContain('ordinary note');
     });
 
+    // N2 (round-2 regression): the TEXTAREA branch returned early, so a
+    // textarea carrying a `value` ATTRIBUTE with empty content stopped being
+    // redacted — the attribute rewrite that used to catch it never ran. The
+    // markup is invalid and inert in the DOM (hand-written SSR templates), but
+    // it is raw plaintext in `get_html` either way.
+    it('redacts a sensitive textarea\'s value ATTRIBUTE as well as its content', async () => {
+      document.body.innerHTML =
+        '<textarea id="t" autocomplete="cc-csc" value="4111111111111111"></textarea>';
+      expect(await getHtml()).not.toContain('4111111111111111');
+    });
+
+    it('redacts BOTH when a sensitive textarea carries content and an attribute', async () => {
+      document.body.innerHTML =
+        '<textarea id="t" autocomplete="cc-csc" value="ATTRSECRET111">CONTENTSECRET222</textarea>';
+      const html = await getHtml();
+      expect(html).not.toContain('ATTRSECRET111');
+      expect(html).not.toContain('CONTENTSECRET222');
+    });
+
+    it('extract_table gets the same scrub as extract_text', async () => {
+      document.body.innerHTML =
+        '<table><tbody><tr><td><textarea autocomplete="cc-csc">TBLSECRET999</textarea></td></tr></tbody></table>';
+      const table = await handleAction('extract_table', {}) as { rows: string[][] };
+      expect(JSON.stringify(table)).not.toContain('TBLSECRET999');
+    });
+
+    it('extract_table still returns ordinary cell text', async () => {
+      document.body.innerHTML =
+        '<table><tbody><tr><td>Q3 revenue</td></tr></tbody></table>';
+      const table = await handleAction('extract_table', {}) as { rows: string[][] };
+      expect(JSON.stringify(table)).toContain('Q3 revenue');
+    });
+
     it('extract_text does not return a sensitive textarea\'s content', async () => {
       document.body.innerHTML =
         '<div id="scope"><textarea id="t" autocomplete="cc-csc">TASERVER999</textarea></div>';
@@ -788,20 +821,59 @@ describe('execution-time origin pin, content-script half (I2)', () => {
       })).rejects.toThrow(/no longer on the page/);
     });
 
-    it('a SUBFRAME with nothing focused stays silent on keyboard', async () => {
+    /**
+     * N1 (round-2 invariant hole). `frameServicesAction` gated only the PIN,
+     * not the action, and `keyboard` has no second guard the way locator
+     * actions have `findElementOrThrow` — so a subframe with nothing focused
+     * skipped the check AND dispatched the key anyway. "Skips the check and
+     * acts" is precisely what the pin exists to prevent, so a frame that does
+     * not service the action must now abstain from it too.
+     */
+    it('a SUBFRAME with nothing focused abstains from keyboard instead of acting', async () => {
       pageAt('https://evil.example.com/');
       (document.activeElement as HTMLElement | null)?.blur?.();
+      let keydowns = 0;
+      const count = () => { keydowns += 1; };
+      document.addEventListener('keydown', count);
       // Model a subframe: `window.top !== window`. This is the benign
       // about:blank/srcdoc frame the ruling is about.
       const realTop = window.top;
       Object.defineProperty(window, 'top', { value: {}, configurable: true });
       try {
-        const result = await handleAction('keyboard', {
+        await expect(handleAction('keyboard', {
           key: 'Enter',
           unattended: true,
           expectedOrigin: APPROVED,
-        }) as ActionResult;
-        expect(result.success).toBe(true);
+        })).rejects.toThrow(/nothing is focused in this frame/i);
+        expect(keydowns).toBe(0);
+      } finally {
+        Object.defineProperty(window, 'top', { value: realTop, configurable: true });
+        document.removeEventListener('keydown', count);
+      }
+    });
+
+    /**
+     * N3 — a cross-origin subframe that genuinely holds focus is refused (fail
+     * closed is right), but "the page moved, take a fresh snapshot" is advice
+     * that can never work there: that frame is permanently a different site
+     * from the approved one, and no snapshot changes that.
+     */
+    it('a subframe on a different site is told SO, not told to re-snapshot', async () => {
+      pageAt('https://evil.example.com/');
+      (document.getElementById('f') as HTMLInputElement).focus();
+      const realTop = window.top;
+      Object.defineProperty(window, 'top', { value: {}, configurable: true });
+      try {
+        await expect(handleAction('keyboard', {
+          key: 'Enter',
+          unattended: true,
+          expectedOrigin: APPROVED,
+        })).rejects.toThrow(/frame from a different site/i);
+        await expect(handleAction('click', {
+          locator: { css: '#buy' },
+          unattended: true,
+          expectedOrigin: APPROVED,
+        })).rejects.toThrow(/will not change/i);
       } finally {
         Object.defineProperty(window, 'top', { value: realTop, configurable: true });
       }

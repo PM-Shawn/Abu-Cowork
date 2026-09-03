@@ -59,8 +59,19 @@
     }
     const current = normalizedOrigin(location.href);
     if (current === expected) return;
+    if (window.top !== window) {
+      throw new Error(
+        `Refused: this action targeted a frame from a different site than the one approved (approved ${expected}, this frame is ${current ?? "not an ordinary web page"}). Embedded third-party frames are not covered by that approval and a fresh snapshot will not change it \u2014 act on the main page, or ask for this site to be authorized separately.`
+      );
+    }
     throw new Error(
       `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
+    );
+  }
+  function assertFrameAbstains(payload) {
+    if (payload.locator !== void 0) return;
+    throw new Error(
+      "Nothing is focused in this frame, so there is nowhere to send the key press. Click the field you want to type into first, then send the key."
     );
   }
   function normalizedOrigin(href) {
@@ -88,7 +99,10 @@
     return hasRealFocus || window.top === window;
   }
   async function handleAction(action, payload) {
-    if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+    if (ORIGIN_PINNED_ACTIONS.has(action)) {
+      if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+      else assertFrameAbstains(payload);
+    }
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -751,9 +765,8 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     const candidates = root.tagName === "INPUT" || root.tagName === "TEXTAREA" || root.tagName === "SELECT" ? [root, ...root.querySelectorAll("input, textarea, select")] : [...root.querySelectorAll("input, textarea, select")];
     for (const el of candidates) {
       if (!hasSensitiveValue(el)) continue;
-      if (el.tagName === "TEXTAREA") {
-        if (el.textContent) el.textContent = REDACTED_VALUE;
-        continue;
+      if (el.tagName === "TEXTAREA" && el.textContent) {
+        el.textContent = REDACTED_VALUE;
       }
       if (!el.getAttribute("value")) continue;
       el.setAttribute("value", REDACTED_VALUE);
@@ -848,7 +861,13 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
       if (headers.length > 0 && row.join("") === headers.join("")) continue;
       rows.push(row);
     }
-    return { headers, rows, rowCount: rows.length };
+    const secrets = sensitiveValuesIn(table);
+    const scrub = (cell) => secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), cell);
+    return {
+      headers: headers.map(scrub),
+      rows: rows.map((row) => row.map(scrub)),
+      rowCount: rows.length
+    };
   }
   function scrollPage(payload) {
     const direction = payload.direction;

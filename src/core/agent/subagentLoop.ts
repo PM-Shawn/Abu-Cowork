@@ -52,7 +52,11 @@ import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
-import { appendPreloadedSkills, type PreloadedSkillsInjection } from './prompts/preloadedSkills';
+import {
+  appendPreloadedSkills,
+  normalizeDeclaredSkills,
+  type PreloadedSkillsInjection,
+} from './prompts/preloadedSkills';
 import {
   ActiveToolResultAdmission,
   type ActiveToolResultToken,
@@ -670,14 +674,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // own prompt and before the safety/boundary sections so the rules stay
     // last. Absent injection appends zero bytes.
     systemPrompt = appendPreloadedSkills(systemPrompt, options.preloadedSkills);
-    if (Array.isArray(agent.skills) && agent.skills.length > 0) {
+    // Normalised here as well as at AGENT.md parse time: a definition can reach
+    // this loop from any other ingress (a managed or enterprise catalog), and
+    // the scalar shape used to fall through the old `Array.isArray` guard —
+    // leaving the fail-loud warning as silent as the no-op it was reporting.
+    const declaredSkills = normalizeDeclaredSkills(agent.skills);
+    if (declaredSkills) {
       if (!options.preloadedSkills) {
         // Declared but never resolved for this run: a wiring gap, not a
         // legitimate "no skills" case. Say so rather than starting a run whose
         // `skills:` field silently did nothing.
         logger.warn('declared skills reached the subagent loop with no preload resolved', {
           agentName: agent.name,
-          skills: agent.skills.join(', '),
+          skills: declaredSkills.join(', '),
         });
       } else if (options.preloadedSkills.missing.length > 0) {
         logger.warn('declared skills could not be preloaded', {

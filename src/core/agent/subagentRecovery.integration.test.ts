@@ -239,6 +239,28 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(entry?.data?.skills).toBe('weekly-report');
   });
 
+  // A scalar `skills:` is normalised at AGENT.md parse time, but a definition
+  // from any other ingress (a managed or enterprise catalog) reaches this loop
+  // unnormalised — and the fail-loud warning sat behind `Array.isArray`, so
+  // that shape stayed exactly as silent as it was before the normaliser.
+  it('warns loudly when a scalar skills declaration reached the loop unresolved', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: 'weekly-report' } as never,
+      task: 'do the thing',
+    });
+
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('preload'));
+    expect(entry).toBeDefined();
+    expect(entry?.data?.skills).toBe('weekly-report');
+  });
+
   it('warns loudly about a declared skill that could not be found', async () => {
     clearLogs();
     mockClaudeChat.mockImplementationOnce(emits([

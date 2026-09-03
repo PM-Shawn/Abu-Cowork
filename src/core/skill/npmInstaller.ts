@@ -13,6 +13,7 @@ import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { parse as parseYaml } from 'yaml';
+import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
 
 // ── Constants ──────────────────────────────────────────────────────
@@ -128,35 +129,54 @@ export async function installSkillFromNpm(
     throw new NpmInstallError('ALREADY_EXISTS', `Skill "${skillName}" already exists at ${targetDir}`);
   }
 
-  await mkdir(targetDir, { recursive: true });
-
+  // Stage the whole package OUTSIDE ~/.abu/skills, then swap it in — the same
+  // primitive and the same reason as the folder route (see installer.ts).
+  //
+  // The per-entry guards below throw MID-LOOP, and the entry order belongs to
+  // whoever built the archive. Writing straight into `~/.abu/skills/<name>/`
+  // therefore left a REFUSED package's files on disk: `~/.abu/skills` is
+  // scanned as the `user` skill source and watched for changes, so an archive
+  // ordered SKILL.md-first got its instruction file loaded as a live,
+  // model-visible skill — under the frontmatter name IT chose, not the package
+  // name the user typed — while the install reported failure. The residue also
+  // bricked the honest retry with ALREADY_EXISTS.
+  //
+  // Staging also makes `overwrite` a replacement rather than a merge: the
+  // previous version's leftover files no longer survive an upgrade.
   const files: string[] = [];
-  for (const entry of entries) {
-    // Strip the npm "package/" prefix and skill-specific prefix
-    const relativePath = stripPrefix(entry.path, prefix);
-    if (!relativePath || relativePath.endsWith('/')) continue;
+  await atomicInstallDir({
+    targetDir,
+    workDir: joinPath(home, '.abu', 'skill-staging'),
+    write: async (stagingDir) => {
+      await mkdir(stagingDir, { recursive: true });
+      for (const entry of entries) {
+        // Strip the npm "package/" prefix and skill-specific prefix
+        const relativePath = stripPrefix(entry.path, prefix);
+        if (!relativePath || relativePath.endsWith('/')) continue;
 
-    // Security: reject path traversal
-    if (relativePath.includes('..') || relativePath.startsWith('/')) {
-      throw new NpmInstallError('PATH_TRAVERSAL', `Unsafe path: ${entry.path}`);
-    }
+        // Security: reject path traversal
+        if (relativePath.includes('..') || relativePath.startsWith('/')) {
+          throw new NpmInstallError('PATH_TRAVERSAL', `Unsafe path: ${entry.path}`);
+        }
 
-    // Size check
-    if (entry.data.length > MAX_SINGLE_FILE) {
-      throw new NpmInstallError('FILE_TOO_LARGE', `File "${relativePath}" exceeds 10MB limit`);
-    }
+        // Size check
+        if (entry.data.length > MAX_SINGLE_FILE) {
+          throw new NpmInstallError('FILE_TOO_LARGE', `File "${relativePath}" exceeds 10MB limit`);
+        }
 
-    const targetPath = joinPath(targetDir, relativePath);
+        const targetPath = joinPath(stagingDir, relativePath);
 
-    // Ensure parent directory exists
-    const lastSlash = targetPath.lastIndexOf('/');
-    if (lastSlash > 0) {
-      await mkdir(targetPath.substring(0, lastSlash), { recursive: true });
-    }
+        // Ensure parent directory exists
+        const lastSlash = targetPath.lastIndexOf('/');
+        if (lastSlash > 0) {
+          await mkdir(targetPath.substring(0, lastSlash), { recursive: true });
+        }
 
-    await writeFile(targetPath, entry.data);
-    files.push(relativePath);
-  }
+        await writeFile(targetPath, entry.data);
+        files.push(relativePath);
+      }
+    },
+  });
 
   progress('done', skillName);
 

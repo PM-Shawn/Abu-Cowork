@@ -1264,6 +1264,7 @@ const enUS: TranslationDict = {
     pluginsUnsupportedTitle: 'This one cannot be installed yet',
     pluginsUnsupportedRemote: '"{name}" lives in a remote git repository, which needs a network fetch with version pinning that this build cannot do yet. For now only packages bundled inside the marketplace directory install — pick one from the list without this notice.',
     pluginsPlanFailed: 'Could not read the plugin package',
+    pluginsPlanDenied: "Blocked by your organization's policy",
     footerDescription: 'Manage Skills, Agents, and MCP',
     // Skills Section
     installedSkills: 'Installed Skills',

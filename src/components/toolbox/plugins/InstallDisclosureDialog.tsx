@@ -29,7 +29,10 @@ export type InstallPlanState =
   /** `planInstall` threw `UnsupportedSourceError` — a real, expected outcome
    *  for ~82% of the official marketplace, not a crash. */
   | { kind: 'unsupported'; sourceKind: PluginSource['kind'] }
-  | { kind: 'error'; message: string };
+  /** A refusal, not always a corrupt package: the caller may supply its own
+   *  heading (e.g. an organization policy denial) so an administrator's block
+   *  does not read as "could not read the plugin package". */
+  | { kind: 'error'; message: string; title?: string };
 
 interface InstallDisclosureDialogProps {
   open: boolean;
@@ -114,7 +117,9 @@ export default function InstallDisclosureDialog({
           <div className="flex items-start gap-2.5 rounded-lg bg-[var(--abu-danger-bg)] p-3">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-danger)]" />
             <div className="min-w-0">
-              <p className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsPlanFailed}</p>
+              <p className="text-h-xs text-[var(--abu-text-primary)]">
+                {state.title ?? tb.pluginsPlanFailed}
+              </p>
               <p className="mt-1 break-words text-minor text-[var(--abu-text-tertiary)]">
                 {state.message}
               </p>

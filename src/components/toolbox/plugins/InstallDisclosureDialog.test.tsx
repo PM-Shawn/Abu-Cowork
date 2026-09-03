@@ -110,6 +110,19 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.queryByTestId('plugin-install-confirm')).toBeNull();
   });
 
+  it('lets the caller retitle a refusal that is not a read failure', () => {
+    // A policy denial is a refusal, not a corrupt package — the caller owns the
+    // heading so an administrator's block does not read as a broken download.
+    renderDialog({
+      state: { kind: 'error', message: '策略禁止的连接器：b。请联系组织管理员。', title: '管理员策略禁止安装' },
+    });
+
+    expect(screen.getByText('管理员策略禁止安装')).toBeInTheDocument();
+    expect(screen.queryByText('读取插件包失败')).toBeNull();
+    expect(screen.getByText(/策略禁止的连接器：b/)).toBeInTheDocument();
+    expect(screen.queryByTestId('plugin-install-confirm')).toBeNull();
+  });
+
   it('renders nothing when closed', () => {
     renderDialog({ open: false });
     expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull();

@@ -1448,6 +1448,7 @@ export interface TranslationDict {
     pluginsUnsupportedTitle: string;
     pluginsUnsupportedRemote: string;
     pluginsPlanFailed: string;
+    pluginsPlanDenied: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;

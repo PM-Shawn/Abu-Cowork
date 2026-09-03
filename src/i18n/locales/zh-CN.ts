@@ -1266,6 +1266,7 @@ const zhCN: TranslationDict = {
     pluginsUnsupportedTitle: '暂时装不了这个插件',
     pluginsUnsupportedRemote: '「{name}」的代码放在远程 Git 仓库里，需要联网拉取并校验版本，当前版本还做不到。现在只能安装市场目录里自带的插件包——在列表里挑一个没有这个提示的试试。',
     pluginsPlanFailed: '读取插件包失败',
+    pluginsPlanDenied: '管理员策略禁止安装',
     // Skills Section
     installedSkills: '已安装技能',
     noInstalledSkills: '暂无安装的技能',

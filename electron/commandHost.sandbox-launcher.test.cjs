@@ -624,6 +624,18 @@ test('Windows launcher statically wires restricted token and bounded handle inhe
   assert.match(source, /ActiveProcesses/);
 });
 
+test('launcher statically reports NTSTATUS exit codes on stderr for diagnosability', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'sandbox-launcher', 'src', 'main.rs'),
+    'utf8'
+  );
+  assert.match(source, /ntstatus_exit_hint/);
+  assert.match(source, /STATUS_DLL_INIT_FAILED/);
+  assert.match(source, /STATUS_DLL_NOT_FOUND/);
+  assert.match(source, /STATUS_ACCESS_VIOLATION/);
+  assert.match(source, /child exited with NTSTATUS/);
+});
+
 test('command host leaves SIGINT and SIGTERM exit ownership to the main process', () => {
   const source = fs.readFileSync(path.join(__dirname, 'commandHost.cjs'), 'utf8');
   assert.doesNotMatch(source, /process\.once\(['"]SIGINT['"]/);

@@ -58,6 +58,7 @@ describe('parseInboundMessage', () => {
         senderStaffId: 'staff123',
         conversationType: '2', // group
         conversationId: 'conv1',
+        msgId: 'dt-primary',
         sessionWebhook: 'https://oapi.dingtalk.com/robot/sendBySession?session=xxx',
         atUsers: [{ dingtalkId: 'bot1' }],
       });
@@ -67,6 +68,7 @@ describe('parseInboundMessage', () => {
       expect(msg!.text).toBe('查看发布记录');
       expect(msg!.isMention).toBe(true);
       expect(msg!.isDirect).toBe(false);
+      expect(msg!.replyContext.messageId).toBe('dt-primary');
       expect(msg!.replyContext.sessionWebhook).toContain('sendBySession');
     });
 
@@ -80,6 +82,29 @@ describe('parseInboundMessage', () => {
       });
       expect(msg!.isDirect).toBe(true);
     });
+
+    it('prefers msgId and falls back to compatible message ID spellings', () => {
+      expect(parseInboundMessage('dingtalk', {
+        text: { content: 'hello' },
+        senderStaffId: 'staff123',
+        conversationId: 'conv1',
+        msgId: 'primary',
+        msgid: 'lower',
+        messageId: 'camel',
+      })!.replyContext.messageId).toBe('primary');
+      expect(parseInboundMessage('dingtalk', {
+        text: { content: 'hello' },
+        senderStaffId: 'staff123',
+        conversationId: 'conv1',
+        msgid: 'lower',
+      })!.replyContext.messageId).toBe('lower');
+      expect(parseInboundMessage('dingtalk', {
+        text: { content: 'hello' },
+        senderStaffId: 'staff123',
+        conversationId: 'conv1',
+        messageId: 'camel',
+      })!.replyContext.messageId).toBe('camel');
+    });
   });
 
   describe('Slack', () => {
@@ -90,6 +115,7 @@ describe('parseInboundMessage', () => {
           text: '<@U12345> help me debug',
           user: 'U67890',
           channel: 'C111',
+          ts: '1234567890.654321',
           thread_ts: '1234567890.123456',
           channel_type: 'channel',
         },
@@ -99,6 +125,7 @@ describe('parseInboundMessage', () => {
       expect(msg!.text).toBe('help me debug');
       expect(msg!.isMention).toBe(true);
       expect(msg!.replyContext.chatId).toBe('C111');
+      expect(msg!.replyContext.messageId).toBe('1234567890.654321');
       expect(msg!.replyContext.threadId).toBe('1234567890.123456');
     });
 
@@ -127,6 +154,48 @@ describe('parseInboundMessage', () => {
       });
       expect(msg!.isDirect).toBe(true);
     });
+
+    it('prefers event.ts and falls back to Slack client/event IDs', () => {
+      expect(parseInboundMessage('slack', {
+        event: {
+          type: 'message',
+          text: 'hello',
+          user: 'U67890',
+          channel: 'C111',
+          ts: 'primary-ts',
+          client_msg_id: 'client-id',
+          event_ts: 'event-ts',
+        },
+        event_id: 'payload-event',
+      })!.replyContext.messageId).toBe('primary-ts');
+      expect(parseInboundMessage('slack', {
+        event: {
+          type: 'message',
+          text: 'hello',
+          user: 'U67890',
+          channel: 'C111',
+          client_msg_id: 'client-id',
+        },
+      })!.replyContext.messageId).toBe('client-id');
+      expect(parseInboundMessage('slack', {
+        event: {
+          type: 'message',
+          text: 'hello',
+          user: 'U67890',
+          channel: 'C111',
+          event_ts: 'event-ts',
+        },
+      })!.replyContext.messageId).toBe('event-ts');
+      expect(parseInboundMessage('slack', {
+        event: {
+          type: 'message',
+          text: 'hello',
+          user: 'U67890',
+          channel: 'C111',
+        },
+        event_id: 'payload-event',
+      })!.replyContext.messageId).toBe('payload-event');
+    });
   });
 
   describe('WeCom', () => {
@@ -136,6 +205,7 @@ describe('parseInboundMessage', () => {
         Content: '@Abu 检查服务状态',
         From: { UserId: 'wx_user1', Name: '王五' },
         ChatId: 'chat_group1',
+        MsgId: 'wc-primary',
       });
       expect(msg).not.toBeNull();
       expect(msg!.senderId).toBe('wx_user1');
@@ -143,6 +213,7 @@ describe('parseInboundMessage', () => {
       expect(msg!.text).toBe('检查服务状态');
       expect(msg!.isMention).toBe(true);
       expect(msg!.replyContext.chatId).toBe('chat_group1');
+      expect(msg!.replyContext.messageId).toBe('wc-primary');
     });
 
     it('skips non-text messages', () => {
@@ -151,6 +222,40 @@ describe('parseInboundMessage', () => {
         Content: '',
       });
       expect(msg).toBeNull();
+    });
+
+    it('prefers MsgId and falls back to compatible message ID spellings', () => {
+      expect(parseInboundMessage('wecom', {
+        MsgType: 'text',
+        Content: 'hello',
+        From: { UserId: 'wx_user1' },
+        ChatId: 'chat_group1',
+        MsgId: 'primary',
+        msgid: 'lower',
+        msgId: 'camel-short',
+        messageId: 'camel',
+      })!.replyContext.messageId).toBe('primary');
+      expect(parseInboundMessage('wecom', {
+        MsgType: 'text',
+        Content: 'hello',
+        From: { UserId: 'wx_user1' },
+        ChatId: 'chat_group1',
+        msgid: 'lower',
+      })!.replyContext.messageId).toBe('lower');
+      expect(parseInboundMessage('wecom', {
+        MsgType: 'text',
+        Content: 'hello',
+        From: { UserId: 'wx_user1' },
+        ChatId: 'chat_group1',
+        msgId: 'camel-short',
+      })!.replyContext.messageId).toBe('camel-short');
+      expect(parseInboundMessage('wecom', {
+        MsgType: 'text',
+        Content: 'hello',
+        From: { UserId: 'wx_user1' },
+        ChatId: 'chat_group1',
+        messageId: 'camel',
+      })!.replyContext.messageId).toBe('camel');
     });
   });
 

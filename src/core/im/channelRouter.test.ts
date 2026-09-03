@@ -15,6 +15,7 @@ import { checkReadPath, checkWritePath } from '../tools/pathSafety';
 // timestamp field is structurally required but its exact value is never
 // asserted on.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
+let inboundMessageIdCounter = 0;
 
 const typingMocks = vi.hoisted(() => ({
   sendTyping: vi.fn(),
@@ -52,6 +53,12 @@ const mockConversations: Record<string, { messages: { role: string; content: str
 const abortControllerMocks = vi.hoisted(() => ({
   has: vi.fn(() => false),
   get: vi.fn(() => new AbortController()),
+}));
+const authGateMocks = vi.hoisted(() => ({
+  resolveCapability: vi.fn((_userId: string, _channel: unknown) => ({
+    allowed: true,
+    capability: 'safe_tools',
+  })),
 }));
 // Deterministic id source (TESTING.md §3) — a monotonic counter guarantees each
 // createConversation() call gets a distinct id, which real Date.now() only did
@@ -104,14 +111,7 @@ vi.mock('../logging/logger', () => ({
 // hand-written stub here would let the tier ceiling regress unnoticed.
 vi.mock('./authGate', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./authGate')>()),
-  resolveCapability: vi.fn((_userId: string, _channel: unknown) => ({
-    allowed: true,
-    capability: 'safe_tools',
-  })),
-  getCallbacksForLevel: vi.fn(() => ({
-    commandConfirmCallback: undefined,
-    filePermissionCallback: undefined,
-  })),
+  resolveCapability: (...args: unknown[]) => authGateMocks.resolveCapability(...args),
 }));
 
 vi.mock('./sessionMapper', () => {
@@ -173,6 +173,16 @@ vi.mock('@/i18n', () => ({
       sessionExpiredHint: '',
       sessionQueueFull: '',
       errorReply: 'Abu 处理出错: {error}',
+      confirmCommandPrompt: 'confirm command',
+      confirmDeleteFilePrompt: 'confirm delete',
+      confirmFilePermissionPrompt: 'confirm file',
+      confirmGroupCommandPrompt: 'group confirm command',
+      confirmGroupDeleteFilePrompt: 'group confirm delete',
+      confirmGroupFileReadPrompt: 'group confirm file read',
+      confirmGroupFileWritePrompt: 'group confirm file write',
+      confirmGroupDetailsHidden: 'details hidden for group chat',
+      confirmReplyOptions: 'reply 1/2',
+      confirmInvalidReply: 'invalid confirmation reply',
     },
   }),
   format: (t: string, v: Record<string, string>) => {
@@ -185,6 +195,11 @@ vi.mock('@/i18n', () => ({
 // ── Import after mocks ──
 
 import { imChannelRouter } from './channelRouter';
+import {
+  __resetIMConfirmationRelayForTests,
+  consumeIMConfirmationReply,
+  getPendingIMConfirmationCount,
+} from './confirmationRelay';
 
 // Access private methods via type cast for testing
 type RouterInternal = {
@@ -221,6 +236,21 @@ async function drainTypingOperations(): Promise<void> {
   await Promise.all([...getInternal().typingOperations.values()]);
 }
 
+async function waitForIMConfirmationPrompt(): Promise<void> {
+  await vi.waitFor(() => expect(
+    mockSendFinal.mock.calls.some(([, body]) =>
+      typeof body?.content === 'string'
+      && (
+        body.content.includes('confirm command')
+        || body.content.includes('confirm file')
+        || body.content.includes('confirm delete')
+      ),
+    ),
+  ).toBe(true));
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
   return {
     id: 'ch1', platform: 'dingtalk', name: 'Test', enabled: true,
@@ -233,19 +263,31 @@ function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
   };
 }
 
-function makeMessage(overrides: Partial<NormalizedIMMessage> = {}): NormalizedIMMessage {
+function makeMessage(
+  overrides: Partial<Omit<NormalizedIMMessage, 'replyContext'>> & {
+    replyContext?: Partial<NormalizedIMMessage['replyContext']>;
+  } = {},
+): NormalizedIMMessage {
+  const replyContext = {
+    platform: 'dingtalk' as const,
+    sessionWebhook: 'https://hook.example.com',
+    messageId: `im-reply-${++inboundMessageIdCounter}`,
+    ...overrides.replyContext,
+  };
   return {
     senderId: 'u1', senderName: '张三', text: 'hello',
     isMention: true, isDirect: false, chatId: 'chat1',
     platform: 'dingtalk',
-    replyContext: { platform: 'dingtalk', sessionWebhook: 'https://hook.example.com' },
+    replyContext,
     raw: {},
     ...overrides,
+    replyContext,
   };
 }
 
 describe('IMChannelRouter', () => {
   beforeEach(() => {
+    inboundMessageIdCounter = 0;
     mockRunAgentLoop.mockReset();
     mockSendThinking.mockReset();
     mockSendFinal.mockReset();
@@ -261,6 +303,12 @@ describe('IMChannelRouter', () => {
     abortControllerMocks.has.mockReturnValue(false);
     abortControllerMocks.get.mockReset();
     abortControllerMocks.get.mockImplementation(() => new AbortController());
+    authGateMocks.resolveCapability.mockReset();
+    authGateMocks.resolveCapability.mockImplementation((_userId: string, _channel: unknown) => ({
+      allowed: true,
+      capability: 'safe_tools',
+    }));
+    __resetIMConfirmationRelayForTests();
     // Reset runningCount and session tracking
     getInternal().runningCount = 0;
     getInternal().queuedMessages.length = 0;
@@ -273,6 +321,7 @@ describe('IMChannelRouter', () => {
   });
 
   afterEach(async () => {
+    __resetIMConfirmationRelayForTests();
     for (const stopTyping of [...getInternal().activeTypingStops]) stopTyping();
     await drainTypingOperations();
   });
@@ -369,6 +418,16 @@ describe('IMChannelRouter', () => {
     expect(mockSendFinal).toHaveBeenCalledOnce();
     expect(mockSendFinal.mock.calls[0][1].content).toBe('AI reply');
     expect(typingMocks.sendTyping).not.toHaveBeenCalled();
+  });
+
+  it('does not route a direct message through a channel with malformed truthy enabled', () => {
+    const channel = makeChannel({ enabled: 'yes' as never, responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+
+    getInternal().dispatchMessage(makeMessage({ isDirect: true, isMention: false }));
+
+    expect(mockRunAgentLoop).not.toHaveBeenCalled();
+    delete mockChannels[channel.id];
   });
 
   it('refreshes WeChat typing every 5 seconds and stops without leaving a timer', async () => {
@@ -789,6 +848,24 @@ describe('IMChannelRouter', () => {
     delete mockChannels[channel.id];
   });
 
+  it('drops a global-queue item when the channel has malformed truthy enabled before recheck', () => {
+    const internal = getInternal();
+    const sessionKey = 'test:chat1:window';
+    const channel = makeChannel({ enabled: 'yes' as never, responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+    internal.queuedMessages.push({
+      message: makeMessage({ isDirect: true, text: 'queued malformed enabled' }),
+      channelId: channel.id,
+      sessionKey,
+    });
+
+    internal.processQueue();
+
+    expect(mockRunAgentLoop).not.toHaveBeenCalled();
+    expect(internal.queuedMessages).toHaveLength(0);
+    delete mockChannels[channel.id];
+  });
+
   it('applies the per-session queue cap even before that session starts from the global queue', () => {
     const internal = getInternal();
     const sessionKey = 'test:chat1:window';
@@ -939,6 +1016,381 @@ describe('IMChannelRouter', () => {
     // request_workspace + ask_user_question are always blocked in IM (no desktop
     // UI to answer them); browser tools remain available at higher tiers.
     expect(mockRunAgentLoop.mock.calls[0][2].blockedTools).toEqual(['request_workspace', 'ask_user_question']);
+  });
+
+  it('resumes the same IM full approval promise after the exact inbound 1 reply', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    let sideEffects = 0;
+    mockRunAgentLoop.mockImplementation(async (convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      const approved = await options.commandConfirmCallback({ command: 'echo ok', level: 'safe' });
+      if (approved) {
+        sideEffects++;
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: 'approved once' });
+      }
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: true, isMention: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    expect(sideEffects).toBe(0);
+
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    await processing;
+
+    expect(sideEffects).toBe(1);
+    delete mockChannels[channel.id];
+  });
+
+  it('fails the IM full approval promise closed when sending the prompt fails', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    mockSendFinal.mockResolvedValueOnce({ success: false, error: 'send failed' });
+    let sideEffects = 0;
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      if (await options.commandConfirmCallback({ command: 'echo ok', level: 'safe' })) sideEffects++;
+      return { reason: 'completed' };
+    });
+
+    await getInternal().processMessage(makeMessage(), channel, 'full');
+
+    expect(sideEffects).toBe(0);
+    expect(getPendingIMConfirmationCount()).toBe(0);
+    delete mockChannels[channel.id];
+  });
+
+  it('returns false and sends no prompt when a stopped run later asks for IM confirmation', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    let callback!: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    let finishRun!: () => void;
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      callback = options.commandConfirmCallback;
+      await new Promise<void>((resolve) => { finishRun = resolve; });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: true, isMention: false }), channel, 'full');
+    await vi.waitFor(() => expect(mockRunAgentLoop).toHaveBeenCalledOnce());
+    mockSendFinal.mockClear();
+
+    getInternal().stop();
+    await expect(callback({ command: 'echo ok', level: 'safe' })).resolves.toBe(false);
+    expect(getPendingIMConfirmationCount()).toBe(0);
+    expect(mockSendFinal).not.toHaveBeenCalled();
+
+    finishRun();
+    await processing;
+    delete mockChannels[channel.id];
+  });
+
+  it('fails an in-flight IM full approval when channel authority is downgraded before reply', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValueOnce({ allowed: true, capability: 'full' });
+    let sideEffects = 0;
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      if (await options.commandConfirmCallback({ command: 'echo ok', level: 'safe' })) sideEffects++;
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: true, isMention: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    mockChannels[channel.id] = { ...channel, capability: 'safe_tools', updatedAt: FIXED_TIMESTAMP + 1 };
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'safe_tools' });
+
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    await processing;
+
+    expect(sideEffects).toBe(0);
+    delete mockChannels[channel.id];
+  });
+
+  it('does not approve a second IM full operation from a late duplicate 1 during cooldown', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    let sideEffects = 0;
+    let secondApproved: boolean | undefined;
+    mockRunAgentLoop.mockImplementation(async (convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      const approved = await options.commandConfirmCallback({ command: 'echo ok', level: 'safe' });
+      if (approved) {
+        sideEffects++;
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: `approved ${sideEffects}` });
+      }
+      secondApproved = await options.commandConfirmCallback({ command: 'echo second', level: 'safe' });
+      if (secondApproved) sideEffects++;
+      return { reason: 'completed' };
+    });
+
+    const first = getInternal().processMessage(makeMessage(), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    await first;
+
+    expect(sideEffects).toBe(1);
+    expect(secondApproved).toBe(false);
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    delete mockChannels[channel.id];
+  });
+
+  it('does not let a queued fresh inbound message re-arm an older active turn twice', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'], responseMode: 'all_messages' });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    let continueOldTurn!: () => void;
+    let firstApproved: boolean | undefined;
+    let oldSecondApproved: boolean | undefined;
+    let queuedApproved: boolean | undefined;
+    const approvalPromptCount = () => mockSendFinal.mock.calls.filter(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes('confirm command'),
+    ).length;
+
+    mockRunAgentLoop
+      .mockImplementationOnce(async (convId: string, _text: string, options: {
+        commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+      }) => {
+        firstApproved = await options.commandConfirmCallback({ command: 'echo first', level: 'safe' });
+        await new Promise<void>((resolve) => { continueOldTurn = resolve; });
+        oldSecondApproved = await options.commandConfirmCallback({ command: 'echo old second', level: 'safe' });
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: 'old done' });
+        return { reason: 'completed' };
+      })
+      .mockImplementationOnce(async (convId: string, _text: string, options: {
+        commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+      }) => {
+        queuedApproved = await options.commandConfirmCallback({ command: 'echo queued', level: 'safe' });
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: 'queued done' });
+        return { reason: 'completed' };
+      });
+
+    getInternal().dispatchMessage(makeMessage({
+      text: 'delete first file',
+      isDirect: true,
+      isMention: false,
+      replyContext: { platform: 'dingtalk', messageId: 'old-turn' },
+    }));
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    await vi.waitFor(() => expect(firstApproved).toBe(true));
+    expect(approvalPromptCount()).toBe(1);
+
+    const queuedMessage = makeMessage({
+      text: 'delete second file',
+      isDirect: true,
+      isMention: false,
+      replyContext: { platform: 'dingtalk', messageId: 'queued-turn' },
+    });
+    expect(consumeIMConfirmationReply(queuedMessage)).toBe(false);
+    getInternal().dispatchMessage(queuedMessage);
+    expect(mockRunAgentLoop).toHaveBeenCalledTimes(1);
+    expect(getInternal().sessionQueues.get('test:chat1:window')).toHaveLength(1);
+
+    continueOldTurn();
+    await vi.waitFor(() => expect(oldSecondApproved).toBe(false));
+    await vi.waitFor(() => expect(approvalPromptCount()).toBe(2));
+    expect(consumeIMConfirmationReply(makeMessage({ text: '1' }))).toBe(true);
+    await vi.waitFor(() => expect(queuedApproved).toBe(true));
+    await vi.waitFor(() => expect(getInternal().activeSessions.size).toBe(0));
+    delete mockChannels[channel.id];
+  });
+
+  it('does not rearm a route tombstone from a nonnumeric inbound turn without a stable messageId', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    let secondApproved: boolean | undefined;
+    mockRunAgentLoop
+      .mockImplementationOnce(async (_convId: string, _text: string, options: {
+        commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+      }) => {
+        await options.commandConfirmCallback({ command: 'echo first', level: 'safe' });
+        return { reason: 'completed' };
+      })
+      .mockImplementationOnce(async (_convId: string, _text: string, options: {
+        commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+      }) => {
+        secondApproved = await options.commandConfirmCallback({ command: 'echo second', level: 'safe' });
+        return { reason: 'completed' };
+      });
+
+    const first = getInternal().processMessage(
+      makeMessage({ isDirect: true, isMention: false, replyContext: { messageId: 'first-turn' } }),
+      channel,
+      'full',
+    );
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    expect(consumeIMConfirmationReply(makeMessage({ text: '2', replyContext: { messageId: 'first-cancel' } }))).toBe(true);
+    await first;
+    mockSendFinal.mockClear();
+
+    await getInternal().processMessage(
+      makeMessage({
+        text: 'fresh ordinary turn without id',
+        isDirect: true,
+        isMention: false,
+        replyContext: { messageId: undefined },
+      }),
+      channel,
+      'full',
+    );
+
+    expect(secondApproved).toBe(false);
+    expect(mockSendFinal.mock.calls.some(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes('confirm command'),
+    )).toBe(false);
+    delete mockChannels[channel.id];
+  });
+
+  it('redacts credentials and local user paths and bounds long IM approval prompts', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    const longReason = 'r'.repeat(3_000);
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'safe'; reason?: string }) => Promise<boolean>;
+    }) => {
+      await options.commandConfirmCallback({
+        command: 'echo sk-abcdefghijklmnopqrstuvwxyz1234567890 > /Users/shawn/Desktop/token.txt',
+        level: 'safe',
+        reason: longReason,
+      });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: true, isMention: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    const prompt = mockSendFinal.mock.calls.find(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes('confirm command'),
+    )?.[1]?.content;
+
+    expect(prompt).toContain('[REDACTED:openai-key]');
+    expect(prompt).not.toContain('sk-abcdefghijklmnopqrstuvwxyz1234567890');
+    expect(prompt).toContain('~/Desktop/token.txt');
+    expect(prompt).not.toContain('/Users/shawn');
+    expect(prompt.length).toBeLessThanOrEqual(2_401);
+    expect(consumeIMConfirmationReply(makeMessage({ text: '2' }))).toBe(true);
+    await processing;
+    delete mockChannels[channel.id];
+  });
+
+  it('hides command and reason details in group IM confirmation prompts', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      commandConfirmCallback: (info: { command: string; level: 'danger'; reason: string }) => Promise<boolean>;
+    }) => {
+      await options.commandConfirmCallback({
+        command: 'curl -H "X-API-Key: sk-group-secret" https://user:pass@example.com/admin?PASSWORD=hunter2',
+        level: 'danger',
+        reason: 'PASSWORD=hunter2 in /Users/alice/Projects/acme/private.env from https://token:secret@example.test',
+      });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    const prompt = mockSendFinal.mock.calls.find(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes('group confirm command'),
+    )?.[1]?.content;
+
+    expect(prompt).toContain('group confirm command');
+    expect(prompt).toContain('details hidden for group chat');
+    expect(prompt).toContain('reply 1/2');
+    for (const secret of ['X-API-Key', 'sk-group-secret', 'PASSWORD', 'hunter2', 'user:pass', '/Users/alice', 'private.env', 'token:secret']) {
+      expect(prompt).not.toContain(secret);
+    }
+    expect(consumeIMConfirmationReply(makeMessage({ text: '2' }))).toBe(true);
+    await processing;
+    delete mockChannels[channel.id];
+  });
+
+  it('hides delete_file path details in group IM confirmation prompts', async () => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      filePermissionCallback: (request: { path: string; capability: 'write'; toolName: string }) => Promise<boolean>;
+    }) => {
+      await options.filePermissionCallback({
+        path: '/Users/alice/Projects/acme/PASSWORD-hunter2-X-API-Key-secret.env',
+        capability: 'write',
+        toolName: 'delete_file',
+      });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    const prompt = mockSendFinal.mock.calls.find(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes('group confirm delete'),
+    )?.[1]?.content;
+
+    expect(prompt).toContain('group confirm delete');
+    expect(prompt).toContain('details hidden for group chat');
+    for (const secret of ['PASSWORD', 'hunter2', 'X-API-Key', '/Users/alice', 'secret.env']) {
+      expect(prompt).not.toContain(secret);
+    }
+    expect(consumeIMConfirmationReply(makeMessage({ text: '2' }))).toBe(true);
+    await processing;
+    delete mockChannels[channel.id];
+  });
+
+  it.each([
+    ['read', 'read_file', 'group confirm file read'] as const,
+    ['write', 'write_file', 'group confirm file write'] as const,
+  ])('hides out-of-scope %s path details in group IM confirmation prompts', async (capability, toolName, fixedPrompt) => {
+    const channel = makeChannel({ capability: 'full', allowedUsers: ['u1'] });
+    mockChannels[channel.id] = channel;
+    authGateMocks.resolveCapability.mockReturnValue({ allowed: true, capability: 'full' });
+    mockRunAgentLoop.mockImplementation(async (_convId: string, _text: string, options: {
+      filePermissionCallback: (request: { path: string; capability: 'read' | 'write'; toolName: string }) => Promise<boolean>;
+    }) => {
+      await options.filePermissionCallback({
+        path: `/Users/alice/Projects/acme/${toolName}-PASSWORD-hunter2-X-API-Key-secret.md`,
+        capability,
+        toolName,
+      });
+      return { reason: 'completed' };
+    });
+
+    const processing = getInternal().processMessage(makeMessage({ isDirect: false }), channel, 'full');
+    await vi.waitFor(() => expect(getPendingIMConfirmationCount()).toBe(1));
+    await waitForIMConfirmationPrompt();
+    const prompt = mockSendFinal.mock.calls.find(([, body]) =>
+      typeof body?.content === 'string' && body.content.includes(fixedPrompt),
+    )?.[1]?.content;
+
+    expect(prompt).toContain(fixedPrompt);
+    expect(prompt).toContain('details hidden for group chat');
+    for (const secret of ['PASSWORD', 'hunter2', 'X-API-Key', '/Users/alice', 'secret.md', toolName]) {
+      expect(prompt).not.toContain(secret);
+    }
+    expect(consumeIMConfirmationReply(makeMessage({ text: '2' }))).toBe(true);
+    await processing;
+    delete mockChannels[channel.id];
   });
 
   it('sets channel error status when agentLoop throws', async () => {

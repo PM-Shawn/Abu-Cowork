@@ -17,6 +17,18 @@ export type AuthResult =
   | { allowed: true; capability: IMCapabilityLevel }
   | { allowed: false; reason: string };
 
+const VALID_CHANNEL_CAPABILITIES = new Set<IMCapabilityLevel>([
+  'chat_only',
+  'read_tools',
+  'safe_tools',
+  'full',
+]);
+
+export interface IMFullApprovalRelay {
+  confirmCommand: (info: ConfirmationInfo) => Promise<boolean>;
+  confirmFilePermission: (request: Parameters<FilePermissionCallback>[0]) => Promise<boolean>;
+}
+
 /**
  * Determine whether a user is allowed to interact and at what capability level.
  */
@@ -24,6 +36,16 @@ export function resolveCapability(
   userId: string,
   channel: IMChannel,
 ): AuthResult {
+  if (
+    !Array.isArray(channel.allowedUsers)
+    || !channel.allowedUsers.every((allowedUser): allowedUser is string => typeof allowedUser === 'string')
+  ) {
+    return { allowed: false, reason: 'Malformed allowedUsers' };
+  }
+  if (!VALID_CHANNEL_CAPABILITIES.has(channel.capability)) {
+    return { allowed: false, reason: 'Malformed capability' };
+  }
+
   // 1. Whitelist check (if configured)
   if (channel.allowedUsers.length > 0 && !channel.allowedUsers.includes(userId)) {
     return { allowed: false, reason: 'User not in whitelist' };
@@ -42,7 +64,7 @@ export function resolveCapability(
  * Build agentLoop callbacks for the given capability level.
  * Reuses existing permission infrastructure.
  */
-export function getCallbacksForLevel(level: IMCapabilityLevel): {
+export function getCallbacksForLevel(level: IMCapabilityLevel, relay?: IMFullApprovalRelay): {
   disableTools?: boolean;
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
@@ -72,8 +94,8 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
       };
     case 'full':
       return {
-        commandConfirmCallback: async () => true,
-        filePermissionCallback: async () => true,
+        commandConfirmCallback: relay?.confirmCommand ?? (async () => false),
+        filePermissionCallback: relay?.confirmFilePermission ?? (async () => false),
       };
   }
 }

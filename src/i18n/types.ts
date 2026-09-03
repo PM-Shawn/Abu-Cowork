@@ -2333,6 +2333,10 @@ export interface TranslationDict {
     sessionTimeout: string;
     sessionTimeoutMinutes: string;
     maxRounds: string;
+    allowLanWebhook: string;
+    allowLanWebhookHint: string;
+    allowLanWebhookRestart: string;
+    heartbeatRequiresLanWebhook: string;
     webhookUrl: string;
     webhookUrlHint: string;
     statusConnected: string;
@@ -2357,6 +2361,16 @@ export interface TranslationDict {
     /** Session rolled over after hitting the per-session round cap. {rounds} */
     sessionRolledOver: string;
     sessionQueueFull: string;
+    confirmCommandPrompt: string;
+    confirmDeleteFilePrompt: string;
+    confirmFilePermissionPrompt: string;
+    confirmGroupCommandPrompt: string;
+    confirmGroupDeleteFilePrompt: string;
+    confirmGroupFileReadPrompt: string;
+    confirmGroupFileWritePrompt: string;
+    confirmGroupDetailsHidden: string;
+    confirmReplyOptions: string;
+    confirmInvalidReply: string;
     timeoutHint: string;
     groupConnection: string;
     groupBehavior: string;

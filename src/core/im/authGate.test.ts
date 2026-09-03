@@ -1,7 +1,7 @@
 /**
  * AuthGate Tests
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel, getCallbacksForLevel } from './authGate';
 import { matchesToolName } from '../skill/toolFilter';
 import type { IMChannel } from '../../types/imChannel';
@@ -55,6 +55,22 @@ describe('resolveCapability', () => {
     const channel = makeChannel({ capability: 'full', allowedUsers: ['trusted_user'] });
     const result = resolveCapability('trusted_user', channel);
     expect(result).toEqual({ allowed: true, capability: 'full' });
+  });
+
+  it.each([
+    ['string substring', 'trusted_user' as never, 'trusted'],
+    ['object', { 0: 'trusted_user' } as never, 'trusted_user'],
+    ['mixed array', ['trusted_user', 123] as never, 'trusted_user'],
+  ])('fails closed for malformed allowedUsers: %s', (_label, allowedUsers, senderId) => {
+    const channel = makeChannel({ capability: 'full', allowedUsers });
+    const result = resolveCapability(senderId, channel);
+    expect(result).toEqual({ allowed: false, reason: 'Malformed allowedUsers' });
+  });
+
+  it('fails closed when channel capability is not a known enum value', () => {
+    const channel = makeChannel({ capability: 'garbage' as never });
+    const result = resolveCapability('u1', channel);
+    expect(result).toEqual({ allowed: false, reason: 'Malformed capability' });
   });
 
   it('chat_only → allowed with chat_only', () => {
@@ -153,5 +169,32 @@ describe('getAllowedToolsForLevel', () => {
       path: '/Users/testuser/Desktop/outside.txt',
       capability: 'read',
     })).resolves.toBe(false);
+  });
+
+  it('keeps full fallback callbacks fail-closed when no IM relay is available', async () => {
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({ command: 'rm file', level: 'danger' })).resolves.toBe(false);
+    await expect(callbacks.filePermissionCallback({
+      path: '/Users/testuser/Desktop/outside.txt',
+      capability: 'write',
+      toolName: 'delete_file',
+    })).resolves.toBe(false);
+  });
+
+  it('routes full callbacks through the provided IM relay', async () => {
+    const confirmCommand = vi.fn().mockResolvedValue(true);
+    const confirmFilePermission = vi.fn().mockResolvedValue(false);
+    const callbacks = getCallbacksForLevel('full', { confirmCommand, confirmFilePermission });
+    const commandInfo = { command: 'npm test', level: 'warn' as const };
+    const fileRequest = {
+      path: '/Users/testuser/Desktop/outside.txt',
+      capability: 'read' as const,
+      toolName: 'read_file',
+    };
+
+    await expect(callbacks.commandConfirmCallback(commandInfo)).resolves.toBe(true);
+    await expect(callbacks.filePermissionCallback(fileRequest)).resolves.toBe(false);
+    expect(confirmCommand).toHaveBeenCalledWith(commandInfo);
+    expect(confirmFilePermission).toHaveBeenCalledWith(fileRequest);
   });
 });

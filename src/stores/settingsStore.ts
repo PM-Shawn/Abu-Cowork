@@ -219,6 +219,15 @@ export interface SettingsState {
   networkIsolationEnabled: boolean;
   networkWhitelist: string[];
   allowPrivateNetworks: boolean;
+  /** IM channel security settings. */
+  imChannel: {
+    /**
+     * Opt-in only. When true, heartbeat/callback IM plugins may ask the
+     * trigger server to listen on LAN instead of loopback. Requires a full
+     * app restart because the trigger server binds only at startup.
+     */
+    allowLanWebhook: boolean;
+  };
   closeAction: 'ask' | 'minimize' | 'quit';
   /**
    * What a bare Enter does in the chat composer.
@@ -409,6 +418,7 @@ interface SettingsActions {
   setNetworkIsolationEnabled: (enabled: boolean) => void;
   setNetworkWhitelist: (whitelist: string[]) => void;
   setAllowPrivateNetworks: (allow: boolean) => void;
+  setIMAllowLanWebhook: (allow: boolean) => void;
   setCloseAction: (action: 'ask' | 'minimize' | 'quit') => void;
   setComposerEnterBehavior: (behavior: ComposerEnterBehavior) => void;
   setUpdateInfo: (info: UpdateInfo | null) => void;
@@ -653,6 +663,9 @@ export const useSettingsStore = create<SettingsStore>()(
       networkIsolationEnabled: false,
       networkWhitelist: [],
       allowPrivateNetworks: true,
+      imChannel: {
+        allowLanWebhook: false,
+      },
       closeAction: 'ask' as 'ask' | 'minimize' | 'quit',
       composerEnterBehavior: 'enter' as ComposerEnterBehavior,
       updateInfo: null,
@@ -1001,6 +1014,8 @@ export const useSettingsStore = create<SettingsStore>()(
       setNetworkIsolationEnabled: (networkIsolationEnabled) => set({ networkIsolationEnabled }),
       setNetworkWhitelist: (networkWhitelist) => set({ networkWhitelist }),
       setAllowPrivateNetworks: (allowPrivateNetworks) => set({ allowPrivateNetworks }),
+      setIMAllowLanWebhook: (allowLanWebhook) =>
+        set((s) => ({ imChannel: { ...s.imChannel, allowLanWebhook } })),
       setCloseAction: (closeAction) => set({ closeAction }),
       setComposerEnterBehavior: (composerEnterBehavior) => set({ composerEnterBehavior }),
       setUpdateInfo: (updateInfo) => set({ updateInfo }),
@@ -1084,9 +1099,20 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 45,
+      version: 46,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        if (version < 46) {
+          const current = state.imChannel;
+          const currentRecord = current && typeof current === 'object' && !Array.isArray(current)
+            ? current as Record<string, unknown>
+            : {};
+          state.imChannel = {
+            ...currentRecord,
+            allowLanWebhook: currentRecord.allowLanWebhook === true,
+          };
+        }
 
         if (version < 44) {
           // Browser site permissions start empty: every site keeps asking until
@@ -1919,6 +1945,7 @@ export const useSettingsStore = create<SettingsStore>()(
         networkIsolationEnabled: state.networkIsolationEnabled,
         networkWhitelist: state.networkWhitelist,
         allowPrivateNetworks: state.allowPrivateNetworks,
+        imChannel: state.imChannel,
         closeAction: state.closeAction,
         composerEnterBehavior: state.composerEnterBehavior,
         lastUpdateCheck: state.lastUpdateCheck,

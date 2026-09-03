@@ -8,7 +8,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
-import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { buildIMRunPermissionCeiling, buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
 import {
   createAuthorizationScope,
@@ -459,6 +459,182 @@ describe('enterprise policy confirm gate', () => {
       expect(decision).toEqual({ decision: 'deny', reason: 'Error: [policy] blocked destination' });
       expect(exists).not.toHaveBeenCalled();
       expect(stat).not.toHaveBeenCalled();
+    } finally {
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+});
+
+describe('IM full-control approval floor', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+  });
+
+  it('still blocks hard-blocked commands without asking the IM relay', async () => {
+    const confirm = vi.fn(async () => true);
+
+    const decision = await checkToolApproval(
+      TOOL_NAMES.RUN_COMMAND,
+      { command: 'rm -rf /' },
+      { runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('forces confirmation for warn and danger commands even under autonomous mode', async () => {
+    const confirm = vi.fn(async () => true);
+
+    const decision = await checkToolApproval(
+      TOOL_NAMES.RUN_COMMAND,
+      { command: 'git reset --hard' },
+      { runPermissionCeiling: buildIMRunPermissionCeiling('full'), loopId: 'loop-im' } as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0][1]).toBe('loop-im');
+  });
+
+  it('forces confirmation for safe commands that write outside the scoped cwd', async () => {
+    const cleanup = setPlatformForTest('macos');
+    const confirm = vi.fn(async () => true);
+    try {
+      const decision = await checkToolApproval(
+        TOOL_NAMES.RUN_COMMAND,
+        {
+          command: 'echo hi > /Users/testuser/Desktop/outside.txt',
+          cwd: '/Users/testuser/Projects/app',
+        },
+        { runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+        confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it.each(['standard', 'smart', 'autonomous'] as const)(
+    'forces confirmation for safe non-readonly commands with unknown boundary under %s mode',
+    async (mode) => {
+      useSettingsStore.setState({ permissionMode: mode });
+      const cleanup = setPlatformForTest('macos');
+      const confirm = vi.fn(async () => true);
+      try {
+        const decision = await checkToolApproval(
+          TOOL_NAMES.RUN_COMMAND,
+          {
+            command: 'python3 -c "from pathlib import Path; Path(input()).write_text(\\"x\\")"',
+            cwd: '/Users/testuser/Projects/app',
+          },
+          { runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+          confirm as never,
+        );
+
+        expect(decision.decision).toBe('allow');
+        expect(confirm).toHaveBeenCalledTimes(1);
+      } finally {
+        cleanup();
+      }
+    },
+  );
+
+  it('keeps non-IM-full unknown-boundary command behavior unchanged', async () => {
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    const confirm = vi.fn(async () => true);
+
+    const decision = await checkToolApproval(
+      TOOL_NAMES.RUN_COMMAND,
+      {
+        command: 'node -e "require(\\"fs\\").writeFileSync(process.argv[1], \\"x\\")" ./dynamic.txt',
+        cwd: '/Users/testuser/Projects/app',
+      },
+      {} as never,
+      confirm as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it('forces confirmation for delete_file even when the target is already authorized', async () => {
+    const scopeId = createAuthorizationScope();
+    const path = '/Users/testuser/Projects/app/file.txt';
+    const confirm = vi.fn(async () => true);
+    const filePermission = vi.fn(async () => false);
+    try {
+      scopedAuthorizeWorkspace(scopeId, '/Users/testuser/Projects/app', ['read', 'write']);
+
+      const decision = await checkToolApproval(
+        TOOL_NAMES.DELETE_FILE,
+        { path },
+        { authorizationScopeId: scopeId, runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+        confirm as never,
+        filePermission as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(filePermission).not.toHaveBeenCalled();
+    } finally {
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('asks only once for out-of-scope delete_file by using the file-permission relay', async () => {
+    const scopeId = createAuthorizationScope();
+    const path = '/Users/testuser/Desktop/delete-me.txt';
+    const confirm = vi.fn(async () => true);
+    const filePermission = vi.fn(async (request: { path: string; capability: 'read' | 'write' }) => {
+      scopedAuthorizeWorkspace(scopeId, request.path, [request.capability]);
+      return true;
+    });
+    try {
+      const decision = await checkToolApproval(
+        TOOL_NAMES.DELETE_FILE,
+        { path },
+        { authorizationScopeId: scopeId, runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+        confirm as never,
+        filePermission as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(filePermission).toHaveBeenCalledTimes(1);
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('routes out-of-scope file authorization through the IM file callback', async () => {
+    const scopeId = createAuthorizationScope();
+    const path = '/Users/testuser/Desktop/outside.txt';
+    const filePermission = vi.fn(async (request: { path: string; capability: 'read' | 'write' }) => {
+      scopedAuthorizeWorkspace(scopeId, request.path, [request.capability]);
+      return true;
+    });
+    try {
+      const decision = await checkToolApproval(
+        TOOL_NAMES.READ_FILE,
+        { path },
+        { authorizationScopeId: scopeId, runPermissionCeiling: buildIMRunPermissionCeiling('full') } as never,
+        undefined,
+        filePermission as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(filePermission).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/Users/testuser/Desktop', capability: 'read', toolName: TOOL_NAMES.READ_FILE }),
+        undefined,
+      );
     } finally {
       disposeAuthorizationScope(scopeId);
     }

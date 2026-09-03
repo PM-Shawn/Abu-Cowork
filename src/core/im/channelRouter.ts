@@ -15,6 +15,7 @@ import { buildIMRunPermissionCeiling } from '../permissions/runPermissionCeiling
 import { createAuthorizationScope, disposeAuthorizationScope, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { NormalizedIMMessage } from './inboundRouter';
 import { resolveCapability, getCallbacksForLevel, getBlockedToolsForLevel, getAllowedToolsForLevel } from './authGate';
+import { cancelAllIMConfirmations, parseIMConfirmationReply, requestIMConfirmation } from './confirmationRelay';
 import { sessionMapper } from './sessionMapper';
 import { sendThinking, sendFinal, addProcessingReaction } from './streamingReply';
 import type { AbuMessage } from './adapters/types';
@@ -24,6 +25,7 @@ import { consumeTriggerContext } from './triggerContextCache';
 import { getI18n, format } from '../../i18n';
 import { createLogger } from '../logging/logger';
 import type { IMAdapter } from './adapters/types';
+import { redactText } from '../session/shareRedactor';
 
 const MAX_CONCURRENT_IM = 5;
 const WECHAT_TYPING_REFRESH_MS = 5_000;
@@ -46,6 +48,10 @@ const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
  * timeout but quarantine the session until the original promise really settles.
  */
 const AGENT_ABORT_SETTLE_GRACE_MS = 6_000;
+const IM_CONFIRM_COMMAND_LIMIT = 1_200;
+const IM_CONFIRM_REASON_LIMIT = 600;
+const IM_CONFIRM_PATH_LIMIT = 800;
+const IM_CONFIRM_MESSAGE_LIMIT = 2_400;
 
 class TimedOutRunStillActiveError extends Error {
   readonly settlement: Promise<void>;
@@ -55,6 +61,34 @@ class TimedOutRunStillActiveError extends Error {
     this.name = 'TimedOutRunStillActiveError';
     this.settlement = settlement;
   }
+}
+
+function redactAndLimit(value: string | undefined, maxLength: number): string {
+  const redacted = redactText(value ?? '').text;
+  if (redacted.length <= maxLength) return redacted;
+  return `${redacted.slice(0, maxLength)}…`;
+}
+
+function buildIMConfirmationMessage(parts: string[]): string {
+  const content = parts.filter(Boolean).join('\n\n');
+  if (content.length <= IM_CONFIRM_MESSAGE_LIMIT) return content;
+  return `${content.slice(0, IM_CONFIRM_MESSAGE_LIMIT)}…`;
+}
+
+function buildGroupIMConfirmationMessage(kind: 'command' | 'delete_file' | 'file_read' | 'file_write'): string {
+  const t = getI18n().imChannel;
+  const summary = kind === 'command'
+    ? t.confirmGroupCommandPrompt
+    : kind === 'delete_file'
+      ? t.confirmGroupDeleteFilePrompt
+      : kind === 'file_read'
+        ? t.confirmGroupFileReadPrompt
+        : t.confirmGroupFileWritePrompt;
+  return buildIMConfirmationMessage([
+    summary,
+    t.confirmGroupDetailsHidden,
+    t.confirmReplyOptions,
+  ]);
 }
 
 const MAX_SESSION_QUEUE = 5;
@@ -160,6 +194,7 @@ class IMChannelRouter {
     // settles. Clearing either here would let a restarted router overlap the
     // same session and make the old finally callback corrupt new counters.
     this.sessionQueues.clear();
+    cancelAllIMConfirmations();
     for (const { timer } of this.pendingMedia.values()) clearTimeout(timer);
     this.pendingMedia.clear();
     console.log('[IMChannel] Router stopped');
@@ -218,7 +253,7 @@ class IMChannelRouter {
   private routeMessage(message: NormalizedIMMessage) {
     // Find matching enabled channel for this platform
     const store = useIMChannelStore.getState();
-    const channels = store.getChannelsByPlatform(message.platform).filter((c) => c.enabled);
+    const channels = store.getChannelsByPlatform(message.platform).filter((c) => c.enabled === true);
     if (channels.length === 0) return;
 
     const channel = channels[0];
@@ -524,6 +559,7 @@ class IMChannelRouter {
       }
 
       authorizationScopeId = createAuthorizationScope();
+      let ownedAbortController: AbortController | undefined;
       const workspacePath = channel.workspacePaths[0] ?? null;
       if (workspacePath && capability !== 'chat_only') {
         scopedAuthorizeWorkspace(
@@ -532,7 +568,66 @@ class IMChannelRouter {
           capability === 'read_tools' ? ['read'] : ['read', 'write'],
         );
       }
-      const baseCallbacks = getCallbacksForLevel(capability);
+      let canConsumeFreshIntentTombstone = parseIMConfirmationReply(message.text) === null
+        && Boolean(message.replyContext.messageId?.trim());
+      const consumeFreshIntentTombstone = () => {
+        const allowed = canConsumeFreshIntentTombstone;
+        canConsumeFreshIntentTombstone = false;
+        return allowed;
+      };
+      const confirmViaIM = (content: string) => {
+        if (lifecycleGeneration !== this.typingLifecycleGeneration) return Promise.resolve(false);
+        return requestIMConfirmation(
+          {
+            platform: message.platform,
+            channelId: channel.id,
+            senderId: message.senderId,
+            chatId: message.chatId,
+            threadId: message.replyContext.threadId,
+            sessionWebhook: message.replyContext.sessionWebhook,
+            sessionKey: session.key,
+            conversationId: session.conversationId,
+            replyContext: message.replyContext,
+          },
+          { content },
+          {
+            abortSignal: ownedAbortController?.signal,
+            invalidReplyMessage: getI18n().imChannel.confirmInvalidReply,
+            allowRouteRearm: consumeFreshIntentTombstone(),
+          },
+        );
+      };
+      const baseCallbacks = getCallbacksForLevel(capability, {
+        confirmCommand: async (info) => {
+          if (!message.isDirect) {
+            return confirmViaIM(buildGroupIMConfirmationMessage('command'));
+          }
+          const command = redactAndLimit(info.command, IM_CONFIRM_COMMAND_LIMIT);
+          const reason = redactAndLimit(info.reason, IM_CONFIRM_REASON_LIMIT);
+          return confirmViaIM(buildIMConfirmationMessage([
+            getI18n().imChannel.confirmCommandPrompt,
+            command,
+            reason,
+            getI18n().imChannel.confirmReplyOptions,
+          ]));
+        },
+        confirmFilePermission: async (request) => {
+          if (!message.isDirect) {
+            const kind = request.toolName === 'delete_file'
+              ? 'delete_file'
+              : request.capability === 'read' ? 'file_read' : 'file_write';
+            return confirmViaIM(buildGroupIMConfirmationMessage(kind));
+          }
+          const action = request.toolName === 'delete_file'
+            ? getI18n().imChannel.confirmDeleteFilePrompt
+            : getI18n().imChannel.confirmFilePermissionPrompt;
+          return confirmViaIM(buildIMConfirmationMessage([
+            action,
+            redactAndLimit(request.path, IM_CONFIRM_PATH_LIMIT),
+            getI18n().imChannel.confirmReplyOptions,
+          ]));
+        },
+      });
       const filePermissionCallback = async (...args: Parameters<typeof baseCallbacks.filePermissionCallback>) => {
         const [request] = args;
         const granted = await baseCallbacks.filePermissionCallback(...args);
@@ -541,7 +636,6 @@ class IMChannelRouter {
         }
         return granted;
       };
-      let ownedAbortController: AbortController | undefined;
       await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
           // Inbound images (e.g. a WeChat photo) forwarded as real vision content
@@ -733,7 +827,7 @@ class IMChannelRouter {
       const next = this.queuedMessages.shift()!;
       const store = useIMChannelStore.getState();
       const channel = store.channels[next.channelId];
-      if (!channel || !channel.enabled) continue;
+      if (!channel || channel.enabled !== true) continue;
 
       const authResult = resolveCapability(next.message.senderId, channel);
       if (!authResult.allowed) continue;

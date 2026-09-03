@@ -1,15 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
 import { useIMChannelStore } from '@/stores/imChannelStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
-import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, ChevronDown, ChevronUp, Copy, Check, HelpCircle, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
 import { getIMPlatformOptions, getPlatformDisplayName } from '@/core/im/platformLabels';
+import { getRegisteredPluginManifests } from '@/core/im/pluginRegistry';
 import WeChatQRPanel from './WeChatQRPanel';
 import type { WeChatCredentials } from '@/core/im/adapters/wechat';
 
@@ -142,6 +144,8 @@ export default function IMChannelSection() {
   const addChannel = useIMChannelStore(s => s.addChannel);
   const updateChannel = useIMChannelStore(s => s.updateChannel);
   const removeChannel = useIMChannelStore(s => s.removeChannel);
+  const allowLanWebhook = useSettingsStore(s => s.imChannel.allowLanWebhook);
+  const setIMAllowLanWebhook = useSettingsStore(s => s.setIMAllowLanWebhook);
   const capLabels = useCapLabels();
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -158,6 +162,12 @@ export default function IMChannelSection() {
 
   const channelList = Object.values(channels);
   const serverPort = triggerEngine.getServerPort() ?? 18080;
+  const heartbeatPlatforms = new Set(
+    getRegisteredPluginManifests()
+      .filter((m) => m.capabilities.connectionType === 'heartbeat')
+      .map((m) => m.platform),
+  );
+  const hasHeartbeatPlugin = heartbeatPlatforms.size > 0;
 
   const handleAdd = () => {
     if (!newName.trim()) return;
@@ -218,6 +228,29 @@ export default function IMChannelSection() {
         ) : undefined}
       />
 
+      <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3 space-y-2">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-body font-medium text-[var(--abu-text-primary)]">{t.imChannel.allowLanWebhook}</p>
+            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.imChannel.allowLanWebhookHint}</p>
+          </div>
+          <Toggle
+            checked={allowLanWebhook}
+            onChange={() => setIMAllowLanWebhook(!allowLanWebhook)}
+            size="lg"
+          />
+        </div>
+        <div className="flex items-start gap-2 text-minor text-[var(--abu-warning)]">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+          <span>{t.imChannel.allowLanWebhookRestart}</span>
+        </div>
+        {hasHeartbeatPlugin && !allowLanWebhook && (
+          <div className="rounded-lg border border-[var(--abu-warning)] bg-[var(--abu-warning-bg)] px-3 py-2 text-minor text-[var(--abu-warning)]">
+            {t.imChannel.heartbeatRequiresLanWebhook}
+          </div>
+        )}
+      </div>
+
       {/* Channel List */}
       {channelList.length === 0 && !showAddForm && (
         <div className="p-8 rounded-xl border border-dashed border-[var(--abu-border-hover)] bg-[var(--abu-bg-muted)] text-center">
@@ -250,6 +283,11 @@ export default function IMChannelSection() {
                     <span>{t.imChannel.activeSessions}: {sessionCount}</span>
                   )}
                 </div>
+                {heartbeatPlatforms.has(channel.platform) && !allowLanWebhook && (
+                  <div className="mt-1 text-minor text-[var(--abu-warning)]">
+                    {t.imChannel.heartbeatRequiresLanWebhook}
+                  </div>
+                )}
               </div>
               <Toggle
                 checked={channel.enabled}

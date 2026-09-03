@@ -98,6 +98,10 @@ const geometry = {
   anchorHeight: 40,
   baselineContentHeight: 100,
   contentHeight: 100,
+  /** Scroll range below the spacer that the arm's ledger never allocated —
+   *  models the cold-start settlement surplus (late Virtuoso list-height
+   *  materialization + native scroll anchoring adjustments). */
+  extraScrollRange: 0,
   scroller: null as HTMLElement | null,
 };
 
@@ -139,6 +143,7 @@ function installGeometry(scroller: HTMLElement): { getScrollTop: () => number } 
     300
     + Math.max(0, geometry.contentHeight - geometry.baselineContentHeight)
     + spacerHeight()
+    + geometry.extraScrollRange
   );
   Object.defineProperties(scroller, {
     clientHeight: { configurable: true, value: 300 },
@@ -180,6 +185,7 @@ describe('ChatView active-turn scroll state machine', () => {
     harness.scrollToIndex.mockReset();
     geometry.anchorHeight = 40;
     geometry.contentHeight = geometry.baselineContentHeight;
+    geometry.extraScrollRange = 0;
     geometry.scroller = null;
     useChatStore.setState(useChatStore.getInitialState(), true);
     useSettingsStore.setState(useSettingsStore.getInitialState(), true);
@@ -226,6 +232,61 @@ describe('ChatView active-turn scroll state machine', () => {
     expect(spacer.dataset.spacerHeight).toBe('0');
     expect(getScrollTop()).toBe(220);
     expect(harness.props?.followOutput?.(false)).toBe('auto');
+  });
+
+  it('reclaims a cold-start settlement surplus into the spacer without moving the viewport', async () => {
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    const spacer = await armNewTurn(conversationId);
+    expect(getScrollTop()).toBe(200);
+
+    // The arm's multi-frame settlement (late Virtuoso list-height + native
+    // scroll anchoring) leaves 26px of scroll range below the pinned anchor.
+    geometry.extraScrollRange = 26;
+    act(() => harness.props?.totalListHeightChanged?.(326));
+
+    // The surplus is returned by shrinking the spacer; the viewport (and the
+    // pinned anchor) do not move, and the bottom gap closes to zero.
+    expect(spacer.dataset.spacerHeight).toBe('174');
+    expect(getScrollTop()).toBe(200);
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+
+    // Later growth reconciles against the reduced ledger — the reclaimed
+    // pixels stay gone and the gap stays closed.
+    geometry.contentHeight = 180;
+    act(() => harness.props?.totalListHeightChanged?.(406));
+    expect(spacer.dataset.spacerHeight).toBe('94');
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+  });
+
+  it('does not re-reclaim while Virtuoso has not yet applied the previous shrink', async () => {
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    const spacer = await armNewTurn(conversationId);
+    expect(getScrollTop()).toBe(200);
+
+    geometry.extraScrollRange = 26;
+    act(() => harness.props?.totalListHeightChanged?.(326));
+    expect(spacer.dataset.spacerHeight).toBe('174');
+
+    // In the real renderer the spacer's style shrink reaches scrollHeight only
+    // on Virtuoso's next height pass. Model that lag: scrollHeight still
+    // carries the 26 reclaimed pixels, so the measured gap is stale — a second
+    // reconcile must NOT shave the spacer again.
+    geometry.extraScrollRange = 52;
+    act(() => harness.props?.totalListHeightChanged?.(326));
+    expect(spacer.dataset.spacerHeight).toBe('174');
+
+    // Virtuoso catches up (the stale pixels leave scrollHeight): the gap is
+    // truly closed and reconciliation stays quiet.
+    geometry.extraScrollRange = 26;
+    act(() => harness.props?.totalListHeightChanged?.(326));
+    expect(spacer.dataset.spacerHeight).toBe('174');
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
   });
 
   it('self-clears a pending gate whose dispatch never persisted a message', async () => {

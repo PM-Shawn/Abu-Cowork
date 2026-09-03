@@ -10,6 +10,7 @@ import {
   getAnchorScrollCorrection,
   isAtBottomFromGeometry,
   isChapterRailAtBottom,
+  reclaimTurnSpacerSurplus,
   reconcileTurnScrollAnchor,
   selectLatestUserAnchor,
   shouldFollowOutput,
@@ -90,6 +91,53 @@ describe('turn scroll anchor invariants', () => {
     expect(result.anchor).toMatchObject({ phase: 'exhausted', spacerHeight: 0 });
     expect(result.handoff).toBe('sync-bottom');
     expect(shouldFollowOutput(result.anchor)).toBe('auto');
+  });
+
+  it('risk G — reclaims a bottom surplus into the spacer without moving the viewport', () => {
+    // Cold-start arm settlement: the spacer's scroll range materializes
+    // asynchronously (react-virtuoso applies its list height on its own
+    // cycle), and native scroll anchoring can leave surplus range below the
+    // pinned anchor. Every surplus pixel is a spacer pixel that corresponds to
+    // no missing range — reconciliation must return it.
+    const initial = arm();
+    const reclaim = reclaimTurnSpacerSurplus(initial, 26);
+
+    expect(reclaim.reclaimed).toBe(26);
+    expect(reclaim.spacerHeight).toBe(374);
+    expect(reclaim.anchor).toMatchObject({
+      phase: 'armed',
+      spacerHeight: 374,
+      initialSpacerHeight: 374,
+    });
+
+    // The reduction is durable: later tail growth reconciles against the
+    // reduced ledger instead of reinstating the reclaimed pixels.
+    const afterGrowth = reconcileTurnScrollAnchor(reclaim.anchor, {
+      contentHeight: 1_100,
+      anchorPresent: true,
+    });
+    expect(afterGrowth.spacerHeight).toBe(274);
+  });
+
+  it('risk G — ignores sub-tolerance surplus and never reclaims below zero', () => {
+    const initial = arm();
+    expect(reclaimTurnSpacerSurplus(initial, ANCHOR_TOLERANCE_PX).reclaimed).toBe(0);
+    expect(reclaimTurnSpacerSurplus(initial, ANCHOR_TOLERANCE_PX).anchor).toBe(initial);
+
+    const capped = reclaimTurnSpacerSurplus(initial, 500);
+    expect(capped.reclaimed).toBe(400);
+    expect(capped.spacerHeight).toBe(0);
+    expect(capped.anchor.phase).toBe('exhausted');
+  });
+
+  it('risk G — an exhausted anchor has no spacer to reclaim', () => {
+    const exhausted = reconcileTurnScrollAnchor(arm(), {
+      contentHeight: 1_400,
+      anchorPresent: true,
+    }).anchor;
+    const reclaim = reclaimTurnSpacerSurplus(exhausted, 26);
+    expect(reclaim.reclaimed).toBe(0);
+    expect(reclaim.anchor).toBe(exhausted);
   });
 
   it('risk C — an unmounted anchor also requests a synchronous handoff', () => {

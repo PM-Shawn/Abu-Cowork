@@ -60,6 +60,7 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'helperBinaryVersion',
   'helperPlatform',
   'command',
+  'sandboxEnabled',
   'attemptCount',
   'consecutiveNoChange',
   'recoveryUsed',
@@ -441,6 +442,17 @@ function createRuntimeState({
     return true;
   }
 
+  function noteCommandFinished({ command, exitCode, durationMs, sandboxEnabled, executionPath } = {}) {
+    emitEvent('main', 'main.command_finished', {
+      command,
+      exitCode,
+      durationMs,
+      sandboxEnabled,
+      executionPath,
+      outcome: exitCode === 0 ? 'success' : 'error',
+    });
+  }
+
   function noteRendererResourcesCleared(attributes) {
     emitEvent('main', 'main.renderer_resources_cleared', attributes);
   }
@@ -560,6 +572,7 @@ function createRuntimeState({
     noteNativeHelperCrashed,
     noteNativeHelperStopped,
     noteNativeHelperCallTimeout,
+    noteCommandFinished,
     noteRpcWriteStarted,
     noteRpcWriteFinished,
     noteStdoutLine,

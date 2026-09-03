@@ -17,8 +17,16 @@ const {
   rewriteWindowsBundledPythonCommand,
   __resetCommandHostForTests,
 } = require('./commandHost.cjs');
+const { getRuntimeDiagnostics } = require('./runtimeObservability.cjs');
 
 const app = { isPackaged: false, once() {} };
+
+function lastCommandFinishedEvent() {
+  return getRuntimeDiagnostics()
+    .recentEventLines.map((line) => JSON.parse(line))
+    .filter((event) => event.event === 'main.command_finished')
+    .at(-1);
+}
 
 test('Windows shell rewrites bare Python aliases to the bundled executable', () => {
   const resourceRoot = tmpDir();
@@ -209,6 +217,72 @@ test('macOS cannot execute an osascript alias copied before sandbox launch', {
   });
 
   assert.notEqual(result.code, 0);
+});
+
+test('foreground shell execution records a diagnostics event with command, exit code, and duration', async () => {
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'printf observed-foreground',
+    background: false,
+    timeout: 5,
+    sandboxEnabled: false,
+  });
+  assert.equal(result.code, 0);
+
+  const event = lastCommandFinishedEvent();
+  assert.ok(event, 'run_shell_command must record a main.command_finished event');
+  assert.match(event.command, /observed-foreground/);
+  assert.equal(event.exitCode, 0);
+  assert.equal(event.sandboxEnabled, false);
+  assert.equal(event.executionPath, 'foreground');
+  assert.equal(event.outcome, 'success');
+  assert.equal(typeof event.durationMs, 'number');
+});
+
+test('foreground shell execution records a non-zero exit code as an error outcome', async () => {
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'exit 7',
+    background: false,
+    timeout: 5,
+    sandboxEnabled: false,
+  });
+  assert.equal(result.code, 7);
+
+  const event = lastCommandFinishedEvent();
+  assert.equal(event.exitCode, 7);
+  assert.equal(event.outcome, 'error');
+});
+
+test('background shell execution records a diagnostics event once the wait window settles', async () => {
+  const result = await commandDispatch(app, 'run_shell_command', {
+    command: 'printf observed-background',
+    background: true,
+    timeout: 5,
+    sandboxEnabled: false,
+  });
+  assert.equal(result.code, 0);
+
+  const event = lastCommandFinishedEvent();
+  assert.ok(event, 'background run_shell_command must record a main.command_finished event');
+  assert.match(event.command, /observed-background/);
+  assert.equal(event.exitCode, 0);
+  assert.equal(event.sandboxEnabled, false);
+  assert.equal(event.executionPath, 'background');
+});
+
+test('argv execution records a diagnostics event with the program summary', async () => {
+  const result = await commandDispatch(app, 'run_argv_command', {
+    program: process.execPath,
+    args: ['-e', 'process.exit(0)', 'observed-argv'],
+    timeout: 5,
+    sandboxEnabled: false,
+  });
+  assert.equal(result.code, 0);
+
+  const event = lastCommandFinishedEvent();
+  assert.ok(event, 'run_argv_command must record a main.command_finished event');
+  assert.match(event.command, /observed-argv/);
+  assert.equal(event.exitCode, 0);
+  assert.equal(event.executionPath, 'foreground');
 });
 
 test('run_argv_command preserves argv literally and does not pass through a shell', async () => {
@@ -548,6 +622,18 @@ test('Windows launcher statically wires restricted token and bounded handle inhe
   assert.match(source, /QueryInformationJobObject/);
   assert.match(source, /JobObjectBasicAccountingInformation/);
   assert.match(source, /ActiveProcesses/);
+});
+
+test('launcher statically reports NTSTATUS exit codes on stderr for diagnosability', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, 'sandbox-launcher', 'src', 'main.rs'),
+    'utf8'
+  );
+  assert.match(source, /ntstatus_exit_hint/);
+  assert.match(source, /STATUS_DLL_INIT_FAILED/);
+  assert.match(source, /STATUS_DLL_NOT_FOUND/);
+  assert.match(source, /STATUS_ACCESS_VIOLATION/);
+  assert.match(source, /child exited with NTSTATUS/);
 });
 
 test('command host leaves SIGINT and SIGTERM exit ownership to the main process', () => {

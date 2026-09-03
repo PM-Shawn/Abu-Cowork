@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 // AgentSelector hidden from UI; import kept for easy restore
@@ -358,7 +359,7 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
 const SUGGESTION_MAX_HEIGHT = 320;
 const SUGGESTION_TOP_MARGIN = 16;
 
-function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, optionId, onApply }: {
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, optionId, onApply, anchorRef }: {
   listboxId: string;
   ariaLabel: string;
   suggestions: SuggestionItem[];
@@ -367,21 +368,43 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   sectionLabels: { teams: string; agents: string; skills: string };
   optionId: (index: number) => string;
   onApply: (item: SuggestionItem) => void;
+  /** The composer card the popup opens above. */
+  anchorRef: React.RefObject<HTMLElement | null>;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [maxHeight, setMaxHeight] = useState(SUGGESTION_MAX_HEIGHT);
-  useLayoutEffect(() => {
+  // Rendered in a portal with FIXED positioning, anchored above the composer.
+  // As an absolutely-positioned child it was clipped by an overflow ancestor
+  // whenever it grew past the chat area's top edge — the top ~40px (padding +
+  // the first group header) simply were not painted, which read as "the card
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
+  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
+  // resize. Height is clamped to the space above the anchor so the popup never
+  // leaves the window either.
+  const [style, setStyle] = useState<React.CSSProperties | null>(null);
+  // useEffect, not useLayoutEffect: when the popup is already open on the
+  // composer's FIRST render (a restored draft ending in `@`), it mounts in the
+  // same commit as the anchor div, and React runs a child's layout effects
+  // before it attaches the parent's ref — the anchor would measure as null and
+  // nothing would be rendered until a scroll/resize. Passive effects run after
+  // every ref in the commit is attached. Nothing paints until `style` is set,
+  // so there is no mispositioned first frame either.
+  useEffect(() => {
     const update = () => {
-      // The popup is anchored to its parent's top edge (bottom-full); the
-      // usable height is whatever sits between that edge and the window top.
-      const anchorTop = ref.current?.parentElement?.getBoundingClientRect().top;
-      if (anchorTop === undefined) return;
-      setMaxHeight(Math.max(120, Math.min(SUGGESTION_MAX_HEIGHT, anchorTop - SUGGESTION_TOP_MARGIN)));
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setStyle({
+        position: 'fixed',
+        left: rect.left,
+        width: rect.width,
+        bottom: window.innerHeight - rect.top + 8,
+        maxHeight: Math.max(120, Math.min(SUGGESTION_MAX_HEIGHT, rect.top - SUGGESTION_TOP_MARGIN)),
+      });
     };
     update();
+    window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update);
-    return () => window.removeEventListener('resize', update);
-  }, []);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+  }, [anchorRef]);
 
   const teamCount = suggestions.filter((item) => item.team).length;
   const sections: Array<{ label: string; items: Array<{ item: SuggestionItem; idx: number }> }> = suggestionType === 'agent'
@@ -391,14 +414,17 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
       ]
     : [{ label: sectionLabels.skills, items: suggestions.map((item, i) => ({ item, idx: i })) }];
 
-  return (
+  if (!style) return null;
+  return createPortal(
     <div
-      ref={ref}
       id={listboxId}
       role="listbox"
       aria-label={ariaLabel}
-      style={{ maxHeight }}
-      className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-20"
+      style={style}
+      // Overlays painted above the window chrome must carve themselves out of
+      // the drag lane (src/styles/index.css) — this one can now overlap it.
+      data-electron-no-drag
+      className="bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-[10001]"
     >
       {sections.filter((section) => section.items.length > 0).map((section) => (
         <div key={section.label} role="group" aria-label={section.label}>
@@ -427,7 +453,8 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
           ))}
         </div>
       ))}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -462,6 +489,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   });
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const isMountedRef = useRef(false);
   const compositionResetTimerRef = useRef<number | null>(null);
@@ -1520,10 +1548,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         />
       )}
 
-      <div className="relative">
-        {/* Suggestions Popup (Skills / Agents) */}
+      <div className="relative" ref={composerAnchorRef}>
+        {/* Suggestions Popup (Skills / Agents) — portaled, anchored above this card */}
         {showSuggestions && suggestions.length > 0 && (
           <SuggestionPopup
+            anchorRef={composerAnchorRef}
             listboxId={suggestionListboxId}
             ariaLabel={t.chat.composerSuggestions}
             suggestions={suggestions}

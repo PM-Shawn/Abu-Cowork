@@ -81,6 +81,25 @@ test.describe('composer @ popup geometry', () => {
           anchorTop: anchor?.top ?? null,
           innerHeight: window.innerHeight,
           groupLabels: groups.map((g) => g.getAttribute('aria-label')),
+          // Occlusion: what is actually painted on top at the header's centre
+          // and at the popup's first row? Geometry alone cannot see a chrome
+          // band stacked above the listbox.
+          onTopOfHeader: (() => {
+            if (!h) return null;
+            const el = document.elementFromPoint(h.left + 40, (h.top + h.bottom) / 2) as HTMLElement | null;
+            const chain: string[] = [];
+            let cur: HTMLElement | null = el;
+            for (let i = 0; cur && i < 4; i += 1) {
+              const cs = getComputedStyle(cur);
+              chain.push(`${cur.tagName.toLowerCase()}${cur.id ? '#' + cur.id : ''}.${String(cur.className).split(' ').slice(0, 4).join('.')}[z=${cs.zIndex},pos=${cs.position},bg=${cs.backgroundColor}]`);
+              cur = cur.parentElement;
+            }
+            return { insideListbox: !!el?.closest('[role="listbox"]'), chain };
+          })(),
+          onTopOfPopupTopLeft: (() => {
+            const el = document.elementFromPoint(b.left + 20, b.top + 4) as HTMLElement | null;
+            return { insideListbox: !!el?.closest('[role="listbox"]'), tag: el ? `${el.tagName.toLowerCase()}.${String(el.className).split(' ').slice(0, 4).join('.')}` : null };
+          })(),
         };
       });
       const geo = await readGeometry();
@@ -96,6 +115,11 @@ test.describe('composer @ popup geometry', () => {
         expect(g.headerTop).not.toBeNull();
         expect(g.headerTop as number).toBeGreaterThanOrEqual(g.boxTop);
         expect(g.headerBottom as number).toBeLessThanOrEqual(g.boxBottom);
+        // …and actually PAINTED: geometry is blind to an overflow ancestor
+        // clipping the popup's top, so hit-test the header's centre and the
+        // popup's own top-left — both must land inside the listbox.
+        expect(g.onTopOfHeader?.insideListbox).toBe(true);
+        expect(g.onTopOfPopupTopLeft.insideListbox).toBe(true);
       };
       assertHeaderVisible(geo);
 

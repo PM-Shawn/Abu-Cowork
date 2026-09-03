@@ -13,7 +13,7 @@ import { useTeamStore } from '../../../stores/teamStore';
  */
 export const proposeTeamPlanTool: ToolDefinition = {
   name: 'team_propose_plan',
-  description: 'Report your proposed split of the current team task to the user for confirmation. Only available when you are planning a team task. Each item assigns one member (by exact member name) one clearly scoped piece of work. Use depends_on for ordering; independent items run in parallel. Call this exactly once, then stop — the user reviews and confirms the plan; execution is NOT started by this call.',
+  description: 'Report your proposed split of the current team task to the user for confirmation. Only available when you are planning a team task. Each item assigns one member (by exact member name) one clearly scoped piece of work. Use depends_on for ordering; independent items run in parallel. Call this exactly once, then stop. The system dispatches the members from your split (by default immediately; strict teams wait for the user first) — you never start the work yourself and you never ask the user to confirm in chat.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -97,6 +97,6 @@ export const proposeTeamPlanTool: ToolDefinition = {
     } catch (err) {
       return `Error: invalid plan: ${err instanceof Error ? err.message : String(err)}`;
     }
-    return 'Plan recorded and sent to the user for confirmation. Do not start any work — stop your turn now.';
+    return 'Plan recorded. The system will dispatch the members from this split (by default immediately; strict teams wait for the user first). Do not start any work yourself and do not ask the user to confirm — stop your turn now.';
   },
 };

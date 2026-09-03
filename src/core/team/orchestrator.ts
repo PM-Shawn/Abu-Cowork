@@ -153,7 +153,7 @@ Your team roster (assign work only to these members, by exact name):
 ${roster}
 ${note}
 
-Break the ask into 1-8 clear per-member assignments. Prefer parallel items; use depends_on only for real ordering needs. Draft done_when as how the USER will check the task is done. Then call the team_propose_plan tool exactly once and stop — the user confirms before anything runs.`;
+Break the ask into 1-8 clear per-member assignments. Prefer parallel items; use depends_on only for real ordering needs. Draft done_when as how the USER will check the task is done. Then call the team_propose_plan tool exactly once and stop. The system dispatches the members from your split (immediately by default; strict teams wait for the user's confirmation first) — never start the work yourself, and never ask the user to confirm in chat.`;
 }
 
 /** Sub-task prompt for one member. English scaffold; user goal verbatim. */

@@ -168,6 +168,8 @@ export interface PlannedStep {
   index: number;
   description: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Who does this step — a team member's exact agent name (in-conversation team). Optional for ordinary plans. */
+  owner?: string;
 }
 
 /**

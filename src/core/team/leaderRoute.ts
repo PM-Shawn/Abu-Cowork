@@ -81,7 +81,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   }
   lines.push('');
   lines.push('How to run the team:');
-  lines.push('1. Plan first: call report_plan with the steps, naming in each step the member responsible for it.' + (
+  lines.push('1. Plan first: call report_plan with the steps and set `owner` on every step to the exact name of the member who does it (yourself only for review/consolidation steps).' + (
     team.requirePlanApproval
       ? ' Strict team: after the plan, stop and wait for the user to say "开始" / "start" before dispatching anything.'
       : ' Then start dispatching right away — do not ask the user to confirm in chat.'));

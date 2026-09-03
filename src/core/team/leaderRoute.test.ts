@@ -58,6 +58,7 @@ describe('roster guard + prompt blocks', () => {
     expect(strict).toContain('先看数据');
     expect(strict).toContain('wait for the user to say');
     expect(strict).toContain('run_agent_batch');
+    expect(strict).toContain('set `owner` on every step');
     const loose = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [] });
     expect(loose).toContain('start dispatching right away');
     expect(loose).toContain('no members yet');

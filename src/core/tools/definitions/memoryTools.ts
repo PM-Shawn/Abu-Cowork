@@ -135,6 +135,7 @@ export const reportPlanTool: ToolDefinition = {
               enum: ['pending', 'in_progress', 'completed'],
               description: 'pending: not started | in_progress: currently working (at most ONE step) | completed: finished',
             },
+            owner: { type: 'string', description: 'Who does this step. When leading a team, the exact name of the team member responsible (set it on every step); omit otherwise.' },
           },
           required: ['content'],
         },
@@ -144,7 +145,7 @@ export const reportPlanTool: ToolDefinition = {
   },
   execute: async (input, context) => {
     const t = getI18n().toolResult.memory;
-    const steps = (input.steps as Array<{ content: string; status?: string }>) ?? [];
+    const steps = (input.steps as Array<{ content: string; status?: string; owner?: string }>) ?? [];
     const hasSteps = Array.isArray(steps) && steps.length > 0;
     const stepTexts = steps.map((s) => s.content);
 
@@ -181,11 +182,15 @@ export const reportPlanTool: ToolDefinition = {
       const store = useTaskExecutionStore.getState();
       const exec = store.getExecutionByLoopId(loopId);
       if (!exec) return;
-      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => ({
-        index: i + 1,
-        description: s.content,
-        status: (s.status as PlannedStep['status']) ?? 'pending',
-      })));
+      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => {
+        const owner = typeof s.owner === 'string' ? s.owner.trim().slice(0, 80) : '';
+        return {
+          index: i + 1,
+          description: s.content,
+          status: (s.status as PlannedStep['status']) ?? 'pending',
+          ...(owner ? { owner } : {}),
+        };
+      }));
     };
 
     // Plan approval (B1, auto-trigger): when a plan contains high-risk steps

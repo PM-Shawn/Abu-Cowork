@@ -503,6 +503,21 @@ describe('reportPlanTool — declarative full-replace', () => {
     expect(landed[0].description).toBe('a');
   });
 
+  it('lands a per-step owner (team leader plans) and drops blank owners', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [
+        { content: 'Pull the numbers', owner: 'analyst' },
+        { content: 'Draft the report', owner: '  writer ' },
+        { content: 'Review', owner: '' },
+      ] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.map((s) => s.owner)).toEqual(['analyst', 'writer', undefined]);
+  });
+
   it('defaults a missing status to pending', async () => {
     const store = useTaskExecutionStore.getState();
     const exec = store.createExecution('conv-1', 'loop-1');

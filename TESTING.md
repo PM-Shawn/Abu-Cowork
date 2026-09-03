@@ -404,3 +404,55 @@ Full documentation is in `docs/TAURI-SMOKE.md`. Summary:
 ### V2 activation
 
 See `docs/TAURI-SMOKE.md § V2 Activation Checklist` for the complete list of pre-conditions before setting `continue-on-error: false`.
+
+---
+
+## 13. 浏览器域对抗清单（Browser adversarial checklist）
+
+浏览器自动化在**用户已登录的真实会话里**动手，是本仓风险最高的一面。这一节不是散文，是一张**活清单**：每一行 = 一类攻击 → 期望行为 → **钉住它的测试**（`文件:测试名`）。
+
+规则三条，别破：
+
+1. **没有钉测的行不许写「已覆盖」**——要么补测试，要么把这行标成 ⚠️ 缺口。
+2. 加一类新攻击面（新工具、新通道、新策略档位）**必须同时加一行**并给出钉测。
+3. 引用必须是**真实存在**的测试名。改测试名时同步改这里（`grep` 一下即可验证整张表）。
+
+> 上下文：批次二里有过两次「各层单测全绿、整条链路是断的」——U6 的登录探测器静默漏检、U7 的审批审计字段在白名单边界被静默丢弃。所以这张表把**跨层的端到端见证**（`tests/e2e/browser-unattended.spec.ts`，真 Electron + 真原生 WebContentsView + 回环 fixture 页）和各层单测并列，两者缺一不可。
+
+### 13.1 清单
+
+| 攻击 | 期望行为 | 钉测（file:test） |
+|---|---|---|
+| **未授权域重定向**（已授权站点 302 到未授权站点，含跳转链落点） | fail-closed：后续动作按「已允许站点集之外」拒，不是按「origin 无法确认」拒；页面上不发生副作用 | `tests/e2e/browser-unattended.spec.ts:fails closed when an allowed origin redirects to an unauthorized one`<br>`src/core/tools/registry.operationPolicy.test.ts:denies the same action on a site with no standing grant (cross-origin fail-closed)`<br>`electron/browserHost.ownership.test.cjs:U5 pin: an unattended action refuses after the page drifted cross-origin` |
+| **诱导跳转 / 页面自称已获授权**（页面文本、标题、URL 里塞指令或「已批准」字样） | 页面派生数据只能**收紧**、永不构成授权，且不改变任何状态位 | `src/core/tools/registry.operationPolicy.test.ts:an authState the host never emits is treated as absent, not as approval`<br>`src/core/tools/registry.operationPolicy.test.ts:login_required cannot lift a blocked site — it only ever tightens`<br>`src/core/tools/registry.operationPolicy.test.ts:page-derived text cannot change the verdict in either direction`<br>`electron/browserHost.ownership.test.cjs:an in-page navigation may CLEAR the flag but must never SET one` |
+| **注入伪装授权进报告 / 进审批提示词**（origin 串里写「✓ 已获用户批准」；IM 提示词里伪造一行） | 报告卡片状态位只来自运行终局与封闭拒因码；IM 提示词里的注入被折行/剥围栏后失效 | `src/core/observability/browserRunReport.test.ts:cannot change a status bit however the origin string is dressed up`<br>`src/core/im/pendingApprovals.test.ts:renders an injection payload inert in the delivered prompt`<br>`src/core/im/pendingApprovals.test.ts:strips the fence characters so the fence cannot be closed` |
+| **中途登录失效** | 有人值守：跑完在结果尾附「先登录」提示；无人值守：状态变更类拒 + 走同一套拒绝通知（且**不计入**连拒）；SPA 重新登录后旗标能恢复 | `src/core/tools/registry.operationPolicy.test.ts:refuses an unattended state-changing action and says the session expired`<br>`src/core/tools/registry.operationPolicy.test.ts:lets an ATTENDED action through and marks the pin so the result can say so`<br>`src/core/tools/registry.operationPolicy.test.ts:a login-required detection is not consent and must not reset the streak`<br>`electron/browserHost.ownership.test.cjs:routing off the login page clears a login-page flag, including via replaceState`<br>`electron/browserHost.ownership.test.cjs:a later 2xx main-frame response on the same origin clears the login flag` |
+| **origin 变体绕过**（尾点 FQDN / 大小写 / userinfo / 默认端口 / 非 http(s)，含 `data:` base64 页面） | 归一化后同判：一种拼法拿到的授权，另一种拼法不能多拿；非 http(s) 页面永不获得常驻授权 | `src/core/permissions/browserToolPolicy.test.ts:collapses a FQDN trailing dot — evil.com. and evil.com share one key`<br>`src/core/permissions/browserToolPolicy.test.ts:lowercases the host and strips userinfo and default ports`<br>`src/core/permissions/browserToolPolicy.test.ts:refuses non-http(s) and unparseable URLs — those pages never earn a grant`<br>`electron/browserHost.ownership.test.cjs:U5 pin: a trailing-dot FQDN is the same origin, not a way past the pin` |
+| **工具名后缀变体**（`abu-browser__execute_js__x`——授权层与执行层曾对同一个名字给出两种解析） | 不能往返的名字一律 Unknown tool：**零执行、零弹框**，也不得被记成较弱的拒因或清零脚本类连拒 | `src/core/tools/registry.browserToolNameParse.test.ts:%s__%s%s never reaches the server — fail-closed like an unknown builtin`（`it.each`：两个 server × 浏览器工具 × 三种畸形后缀）<br>`src/core/tools/registry.browserToolNameParse.test.ts:does not silently run suffixed execute_js on the strength of a click grant`<br>`src/core/tools/registry.browserToolNameParse.test.ts:does not run suffixed execute_js through the interactive cell`<br>`src/core/tools/registry.browserToolNameParse.test.ts:never reports a suffixed execute_js refusal as the weaker "other" kind` |
+| **IM 审批重放 / 跨请求误批**（重发同一条「同意」；拿 A 请求的同意去过 B 请求；群里旁观者代批） | 一条消息只批一个请求：重放不消费第二条审批、答案不跨运行、不同 origin/操作类不合并、绑定指名时旁观者无效 | `src/core/im/pendingApprovals.test.ts:cannot consume a second approval`<br>`src/core/im/pendingApprovals.test.ts:treats the same id-less answer repeated inside the window as a replay`<br>`src/core/im/pendingApprovals.test.ts:does not carry an answer into a different run`<br>`src/core/im/pendingApprovals.test.ts:does NOT coalesce a different origin or a different operation class`<br>`src/core/im/pendingApprovals.test.ts:ignores a bystander in a group chat when the binding names the asker` |
+| **无人值守页面脚本注入**（`execute_js`，哪怕站点已被用户「始终允许」） | 拒：站点授权由「批准一次点击」铸造，永远不能覆盖脚本执行；页内**零 JS 执行** | `tests/e2e/browser-unattended.spec.ts:refuses unattended execute_js and runs no page script at all`（fixture 页埋 sentinel，拒后读回未变）<br>`src/core/tools/registry.operationPolicy.test.ts:still denies scripting — the unattended column denies it by default, allowed site or not`<br>`src/core/tools/registry.operationPolicy.test.ts:treats a stored unattended scripting "allow" as "ask", not allow` |
+| **站点授权稀释脚本类连拒**（`execute_js` 被拒 → 用站点授权放行一次点击 → 再 `execute_js`） | grant 级同意不清零含脚本类拒绝的连击，整条 dodge 序列仍然终止 | `src/core/tools/registry.operationPolicy.test.ts:the dodge sequence aborts end-to-end: execute_js denied → click by grant → execute_js denied`<br>`src/core/tools/registry.operationPolicy.test.ts:reports a scripting refusal as scripting, and a grant-consented allow as a grant` |
+| **用连续拒绝把运行拖死 / 把守卫刷掉** | 交互型拒绝连中 2 次即终止并给收尾文案；常驻配置型拒绝（总闸 / 拉黑 / 策略 deny / ceiling / origin 未验 / 无站点授权）一律**不计** | `tests/e2e/browser-unattended.spec.ts:stops the run after two consecutive refusals and never requests the third action`（第三个工具调用**从未到达** mock）<br>`src/core/tools/registry.operationPolicy.test.ts:an unattended "ask" refused (or timed out) at the approval seam counts as a denial`<br>`src/core/tools/registry.operationPolicy.test.ts:a blocked site does NOT count as a denial`<br>`src/core/tools/registry.operationPolicy.test.ts:an unverifiable origin does NOT count as a denial` |
+| **资金 / 政务页面** | 无人值守一律不动（连读都不给）；有人值守强制逐次询问且不提供「以后都允许该站点」；拉黑仍然优先 | `src/core/tools/registry.operationPolicy.test.ts:unattended: denies a click on a money-movement page even on an ALLOWED site`<br>`src/core/tools/registry.operationPolicy.test.ts:attended: forces a confirmation on a site the user had ALLOWED, with no "always allow"`<br>`src/core/tools/registry.operationPolicy.test.ts:a BLOCKED site stays blocked-shaped — high-risk never replaces a denied verdict`<br>`src/core/permissions/highRiskSites.test.ts:flags a subdomain of a listed money-movement domain` |
+| **借 `get_tabs` / `get_downloads` 读出被拉黑站点**（无人值守侧信道） | 拉黑站点的 url/title 被抹（保留行与计数，不撒谎）；门自己的 origin 探针不经过该过滤器，仍按「站点被拉黑」拒 | `src/core/tools/registry.browserOriginPin.test.ts:hides a BLOCKED site's address and title from an unattended run`<br>`src/core/tools/registry.browserOriginPin.test.ts:does not stop the gate from seeing the blocked tab's real origin`<br>`src/core/tools/registry.browserOriginPin.test.ts:an unattended run sees ONLY downloads from sites it was granted` |
+| **无人值守把弹窗当审批入口** | 无人值守永不弹桌面确认框：走审批 seam，无通道即 fail-closed；拒绝通知不得被塞回确认队列 | `tests/e2e/browser-unattended.spec.ts:runs a scheduled browser form fill unattended, with no confirmation dialog anywhere`（MutationObserver 全程录标题）<br>`src/core/tools/registry.operationPolicy.test.ts:fails closed by default — there is no approval channel yet`<br>`src/core/tools/registry.operationPolicy.test.ts:enqueues nothing and still denies, with the real permission bridge as the callback` |
+| **总闸关时仍被摸到浏览器** | 总闸关 = 整面不可用（连只读也拒），且卡片明说「这次没有真正操作浏览器」 | `src/core/tools/registry.operationPolicy.test.ts:denies unattended READ-ONLY browser tools too — the switch is the whole surface`<br>`src/core/tools/registry.operationPolicy.test.ts:notifies the run's callback of the refusal instead of asking it` |
+| **报告卡片被清空 / 被降级成静默**（重启后信号缓冲为空、未知拒因码） | 卡片是**快照**、渲染期零回查；未知码优雅降级成可读原码而非空行 | `src/core/observability/browserRunReport.test.ts:keeps the snapshot a plain serializable value (no live buffer references)`<br>`src/core/observability/browserRunReport.test.ts:groups denials by the shared reason code and lists their origins` |
+
+### 13.2 端到端见证（`tests/e2e/browser-unattended.spec.ts`）
+
+上表里带 `tests/e2e/` 的行由**真实 Electron** 跑：真 `electron/main.cjs`、真原生 `WebContentsView`、回环 mock LLM、回环 fixture 页、`frequency: 'manual'` 的定时任务手动触发。断言取**原生 view 的实况**（页内 `document` 读回），不看 React 标签条——标签条可以显示对的东西而底下的页面是错的。
+
+跑法：
+
+```
+npm run test:e2e:electron -- tests/e2e/browser-unattended.spec.ts
+```
+
+⚠️ 这四条不在 `verify:full` 里（E2E 是外层门禁，见 §9 Positioning）。改浏览器授权链路的任何一层，**必须**本地跑一次这个文件。
+
+### 13.3 纪律
+
+- **复审 finding 先证伪再动**：本仓 §15（`AGENTS.md`）的四步 sanity check 对这张表同样适用——对抗式审查产出量大、假阳性率高（本仓实测基线 82%），任何 🔴/🟡 finding 都要先读代码 `file:line`、复现失败模式、查既有防御，站得住才动手，站不住就**补一条回归测试**把这个假警报钉死，别让它下一轮再来一次。
+- **双周对抗节奏**：浏览器域跟随全项目「每 2-3 周一次从第一性原理出发的对抗式审查」（父目录 `AGENTS.md`「定期全局审查」）。每次审查后把新出现的攻击类别补进 13.1，并给出钉测；确认的债进 issue/TODO 排期，不许只留在报告里。
+- **门禁天然看不见静默失效**：U6 三轮、U7 一次的教训是「两道门禁对静默漏检/静默丢字段结构性失明」。所以判断一条防御是否真的活着，靠的是**变异测试**（把防御改坏，看有没有测试变红），不是「8000 条全绿」。新增行时请顺手做一次这个动作。

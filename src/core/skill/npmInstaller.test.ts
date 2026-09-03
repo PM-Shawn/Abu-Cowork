@@ -119,7 +119,12 @@ function tgz(files: Record<string, string>): Uint8Array {
     at += b.length;
   }
   tar.set(end, at);
-  return gzipSync(tar);
+  // Stored, not deflated: the installer must still gunzip a valid stream, and
+  // every assertion here is about what is INSIDE the archive, not how well it
+  // packs. The oversized-file case carries a real 10 MB member, and deflating
+  // that at the default level is ~1 s of CPU alone — enough to trip the 5 s
+  // test timeout on a loaded machine.
+  return gzipSync(tar, { level: 0 });
 }
 
 const TARBALL_URL = 'https://registry.npmjs.org/evil/-/evil-1.0.0.tgz';

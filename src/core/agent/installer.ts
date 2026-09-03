@@ -59,7 +59,7 @@ export async function installAgentFromFolder(
   //    never named, and nothing anywhere would say so. Only the root itself can
   //    catch that — from the entries' side it is invisible. A caller who meant
   //    the target can name the target.
-  if (await isSymlinkPath(folderPath)) {
+  if ((await lstatKind(folderPath)) === 'symlink') {
     // Never rendered: ToolboxModal branches on this code and supplies its own
     // localized text (the folder path is the user's to begin with).
     return { ok: false, code: 'SYMLINK_ROOT', message: `Refusing an agent folder that is itself a symlink: ${folderPath}` };
@@ -80,17 +80,13 @@ export async function installAgentFromFolder(
   //
   //    A link is therefore ABSENT here, exactly as a linked SKILL.md is absent
   //    to `installSkillFromFolder` and a linked `plugin.json` to
-  //    `scanPluginPackage` (src/core/plugin/fsOps.ts).
+  //    `scanPluginPackage` (src/core/plugin/fsOps.ts). So is anything else that
+  //    is not a REGULAR file — see {@link manifestAbsenceReason}, which is
+  //    where the copy walk's own `entry.isFile` rule lands for the manifest.
   const agentMdPath = joinPath(folderPath, 'AGENT.md');
-  const agentMdIsLink = await isSymlinkPath(agentMdPath);
-  if (agentMdIsLink || !(await exists(agentMdPath))) {
-    return {
-      ok: false,
-      code: 'NO_AGENT_MD',
-      message: agentMdIsLink
-        ? 'Folder does not contain an AGENT.md of its own: AGENT.md is a symlink. Copy the file into the folder instead of linking it.'
-        : 'Folder does not contain AGENT.md',
-    };
+  const missingManifest = await manifestAbsenceReason(agentMdPath);
+  if (missingManifest) {
+    return { ok: false, code: 'NO_AGENT_MD', message: missingManifest };
   }
 
   // 2. Parse name from frontmatter
@@ -169,22 +165,64 @@ export async function installAgentFromFolder(
 // ── Helpers ────────────────────────────────────────────────────────
 
 /**
- * Is `p` itself a symlink?
+ * What `p` itself is, without resolving it.
  *
  * `lstat` is the one fs call routed with `followFinalSymlink: false`
- * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what this
- * question needs — every other call would resolve the very thing being asked
- * about.
+ * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what an
+ * ownership question needs — every other call would resolve the very thing
+ * being asked about.
  *
- * A path that cannot be lstat'd is not a link we can prove, and answering
- * `false` here lets nothing through: a missing folder or manifest falls to the
- * NO_AGENT_MD check moments later, and an unreadable one fails the read.
+ * `'unknown'` for a path that cannot be lstat'd at all. That answer lets
+ * nothing through: a missing folder or manifest falls to the NO_AGENT_MD check
+ * moments later, and an unreadable one still fails the read.
  */
-async function isSymlinkPath(p: string): Promise<boolean> {
+async function lstatKind(p: string): Promise<'file' | 'directory' | 'symlink' | 'other' | 'unknown'> {
   try {
-    return (await lstat(p)).isSymlink;
+    const info = await lstat(p);
+    if (info.isSymlink) return 'symlink';
+    if (info.isDirectory) return 'directory';
+    return info.isFile ? 'file' : 'other';
   } catch {
-    return false;
+    return 'unknown';
+  }
+}
+
+/**
+ * Why the folder has no AGENT.md of its own, or `null` if it has one.
+ *
+ * The manifest decides the agent's identity — its name, and therefore the
+ * directory it installs over — so it has to be a REGULAR FILE the folder owns.
+ * Everything else is absent, for the same three reasons the skill route gives
+ * (`manifestAbsenceReason`, src/core/skill/installer.ts):
+ *
+ *   - a **link** is read straight through by `readTextFile` (the host resolves
+ *     the final component), so the identity would come from a file the folder
+ *     does not own, while `copyDirectory` rightly refuses to copy that same
+ *     link — gate and copy running two different rules, with `overwrite: true`
+ *     at the only caller to make the mismatch destructive;
+ *   - a **FIFO** is worse than wrong: `readTextFile` lands on
+ *     `fs.readFileSync` inside `ipcMain.handle('tauri:invoke')`, i.e. on the
+ *     MAIN process event loop, where a writer-less pipe never returns and every
+ *     window and the tray freeze until the user force-quits. `lstat` answers
+ *     `isSymlink: false` for it, so a link test alone does not catch it;
+ *   - a **directory** named AGENT.md fails the read with EISDIR.
+ *
+ * The messages are developer-facing English, like the rest of this module's:
+ * `ToolboxModal` branches on the code and renders `message` as-is otherwise.
+ */
+async function manifestAbsenceReason(agentMdPath: string): Promise<string | null> {
+  switch (await lstatKind(agentMdPath)) {
+    case 'file':
+      return null;
+    case 'symlink':
+      return 'Folder does not contain an AGENT.md of its own: AGENT.md is a symlink. Copy the file into the folder instead of linking it.';
+    case 'unknown':
+      // Not lstat-able. Absent if it is really not there; otherwise leave it to
+      // the read, which fails loudly rather than silently reporting "no
+      // AGENT.md" for a file that exists but cannot be examined.
+      return (await exists(agentMdPath)) ? null : 'Folder does not contain AGENT.md';
+    default:
+      return 'Folder does not contain an AGENT.md of its own: AGENT.md is not a regular file. Copy a real AGENT.md into the folder.';
   }
 }
 

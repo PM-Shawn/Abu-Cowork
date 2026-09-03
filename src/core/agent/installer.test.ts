@@ -82,8 +82,14 @@ beforeEach(() => {
   mockRemove.mockResolvedValue(undefined as never);
   mockRename.mockResolvedValue(undefined as never);
   mockExists.mockImplementation(async (p: string | URL) => String(p).endsWith('/AGENT.md'));
-  // Nothing in the virtual tree is a link; the real-tree suites below override this.
-  mockLstat.mockResolvedValue({ isSymlink: false } as never);
+  // Nothing in the virtual tree is a link, and its AGENT.md is a real file
+  // rather than a directory or a pipe; the real-tree suites below override this.
+  mockLstat.mockImplementation(
+    async (p: string | URL) =>
+      (String(p).endsWith('/AGENT.md')
+        ? { isSymlink: false, isFile: true, isDirectory: false }
+        : { isSymlink: false, isFile: false, isDirectory: true }) as never,
+  );
 });
 
 describe('installAgentFromFolder', () => {
@@ -170,6 +176,13 @@ describe('installAgentFromFolder', () => {
 
   it('fails with NO_AGENT_MD when AGENT.md is absent', async () => {
     mockExists.mockResolvedValue(false);
+    // A path that is not there cannot be lstat'd either — the two calls have to
+    // tell the same story, or the harness is describing a file that both exists
+    // and does not.
+    mockLstat.mockImplementation(async (p: string | URL) => {
+      if (String(p).endsWith('/AGENT.md')) throw new Error('ENOENT: no such file or directory, lstat');
+      return { isSymlink: false, isFile: false, isDirectory: true } as never;
+    });
     const result = await installAgentFromFolder(SRC);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -237,9 +250,19 @@ function useRealFs() {
   // (`plugin:fs|lstat`, electron/fsHost.cjs) — it must NOT resolve the final
   // component, because it is how the installer asks whether that component is
   // itself a link.
-  mockLstat.mockImplementation(
-    async (p: string | URL) => ({ isSymlink: lstatSync(resolve(String(p))).isSymbolicLink() }) as never,
-  );
+  //
+  // All three flags, as `toFileInfo` (electron/fsHost.cjs) returns them: a
+  // caller asking whether a manifest is a REGULAR file it owns needs `isFile`
+  // too, and answering only `isSymlink` would make a FIFO indistinguishable
+  // from an ordinary file in this harness.
+  mockLstat.mockImplementation(async (p: string | URL) => {
+    const info = lstatSync(resolve(String(p)));
+    return {
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      isSymlink: info.isSymbolicLink(),
+    } as never;
+  });
 }
 
 /** Absolute paths of every real file under `dir`, recursively. */
@@ -561,5 +584,30 @@ describe.skipIf(process.platform === 'win32')('installAgentFromFolder over a fol
     // have landed a bogus regular file in the installed agent.
     expect(existsSync(join(installed, 'pipe'))).toBe(false);
     expect(result.fileCount).toBe(1);
+  });
+
+  it('treats an AGENT.md that is a FIFO as absent instead of reading it', async () => {
+    // The gate reads the manifest with `readTextFile`, which resolves the final
+    // component in the privileged host exactly as `readFile` does — so the same
+    // pipe freezes the app one function earlier, before the copy is reached.
+    // A link test alone does not catch it: `lstat` on a FIFO answers
+    // `isSymlink:false`.
+    rmSync(join(src, 'AGENT.md'));
+    execFileSync('mkfifo', [join(src, 'AGENT.md')]);
+
+    const attempted: string[] = [];
+    mockReadTextFile.mockImplementation(async (p: string | URL) => {
+      const real = resolve(String(p));
+      attempted.push(real);
+      if (lstatSync(real).isFIFO()) throw new Error('readTextFile would have blocked the main process on a FIFO');
+      return readFileSync(real, 'utf8');
+    });
+
+    const result = await installAgentFromFolder(src, { overwrite: true });
+
+    expect(attempted).not.toContain(join(src, 'AGENT.md'));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('NO_AGENT_MD');
   });
 });

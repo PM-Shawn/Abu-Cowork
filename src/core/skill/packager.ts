@@ -49,7 +49,24 @@ export interface ValidationError {
     | 'FILE_TOO_LARGE'
     | 'ARCHIVE_TOO_LARGE'
     | 'INVALID_ZIP';
+  /**
+   * Developer-facing English, rendered as-is by callers that have nothing
+   * better — see `skillName` for the one code that does.
+   */
   message: string;
+  /**
+   * UNSAFE_NAME only: the refused name, so the caller can render the localized
+   * {@link UnsafeSkillNameError} text instead of `message`.
+   *
+   * `validateArchive` is a pure function with no locale of its own, and this is
+   * the branch a user importing a hostile .askill actually reaches —
+   * `unpackSkill`'s throw of the same rule sits behind it and cannot be hit
+   * (SkillUploadModal returns on any validation error before it, and the
+   * overwrite path is only reachable after a ConflictError, which requires a
+   * name that already passed). Handing the caller the name rather than the
+   * sentence keeps the string in the locale files where the repo requires it.
+   */
+  skillName?: string;
 }
 
 // ── Pack ───────────────────────────────────────────────────────────
@@ -165,7 +182,11 @@ export function validateArchive(bytes: Uint8Array): ValidationError | null {
   // The loop above screens entry PATHS for `..`; this screens the segment those
   // paths are written UNDER, which is the archive's own frontmatter name.
   if (!isSafeSkillDirName(name)) {
-    return { code: 'UNSAFE_NAME', message: `SKILL.md declares a name that is not a single directory segment: "${name}"` };
+    return {
+      code: 'UNSAFE_NAME',
+      message: `SKILL.md declares a name that is not a single directory segment: "${name}"`,
+      skillName: name,
+    };
   }
 
   return null;

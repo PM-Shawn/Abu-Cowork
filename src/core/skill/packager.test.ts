@@ -343,6 +343,10 @@ describe('a .askill declaring a name that is not one directory segment', () => {
     expect(err).not.toBeNull();
     expect(err!.code).toBe('UNSAFE_NAME');
     expect(err!.message).toContain('../../.ssh');
+    // The refused name travels structurally, not only inside the developer
+    // sentence: this is the one validation code with localized text, and the
+    // modal renders that text rather than `message` (SkillUploadModal.tsx).
+    expect(err!.skillName).toBe('../../.ssh');
   });
 
   it('is refused by unpackSkill too, with nothing written', async () => {

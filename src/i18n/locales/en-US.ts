@@ -1402,7 +1402,7 @@ const enUS: TranslationDict = {
     pickFolder: 'Select folder',
     pickFile: 'Import a .askill / .zip package',
     importSkippedFiles: 'Skipped {n} hidden file(s): {names}',
-    importSkippedLinks: 'Skipped {n} link(s): {names} — they point outside this folder, so Abu did not follow them and the installed skill does not contain them',
+    importSkippedLinks: 'Skipped {n} link(s): {names} — they point outside this folder, so Abu did not follow them and what was installed does not contain them',
     importSkippedLinksSeparator: ', ',
     importSymlinkRootRefused: 'That folder is itself a link to somewhere else ({path}), so Abu will not import it — what it appears to contain actually lives elsewhere. Choose the folder the link points at.',
     importUnsafeName: 'The SKILL.md in this package declares a name that is not a usable folder name ("{name}") — it would write files outside the skills directory, so Abu refused to install it.',

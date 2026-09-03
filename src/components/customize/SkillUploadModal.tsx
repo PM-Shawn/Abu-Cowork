@@ -52,7 +52,20 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
 
     const validationError = validateArchive(archiveBytes);
     if (validationError) {
-      addToast({ type: 'error', title: t.toolbox.importFailed, message: validationError.message });
+      addToast({
+        type: 'error',
+        title: t.toolbox.importFailed,
+        // A traversing name is a refusal we can explain, and the remedy is the
+        // user's, not a developer's. `validateArchive` has no locale of its own
+        // and short-circuits before `unpackSkill`, whose UnsafeSkillNameError
+        // carries the same localized sentence for the path nothing reaches — so
+        // this branch is where the user meets the rule. Every other code has no
+        // locale text and falls back to the developer message.
+        message:
+          validationError.code === 'UNSAFE_NAME'
+            ? format(t.toolbox.importUnsafeName, { name: validationError.skillName ?? '' })
+            : validationError.message,
+      });
       return false;
     }
 

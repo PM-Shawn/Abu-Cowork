@@ -49,15 +49,18 @@ vi.mock('@/i18n', () => ({
         importSymlinkRootRefused: 'that folder is itself a link ({path}); choose the folder it points at',
         importConflictTitle: 'Exists', importConflictMessage: '{name} exists',
         importConflictOverwrite: 'Overwrite',
+        importUnsafeName: 'the package declares an unusable folder name ("{name}"); Abu refused it',
       },
     },
   }),
 }));
 
 import { installSkillFromFolder } from '@/core/skill/installer';
+import { validateArchive } from '@/core/skill/packager';
 import SkillUploadModal from './SkillUploadModal';
 
 const mockInstall = vi.mocked(installSkillFromFolder);
+const mockValidateArchive = vi.mocked(validateArchive);
 const mockOpenDialog = vi.mocked(openDialog);
 
 function renderAndPickFolder(path = '/Users/test/some-skill') {
@@ -125,6 +128,40 @@ describe('SkillUploadModal folder install disclosure', () => {
     expect(addToast.mock.calls[0][0]).toMatchObject({
       type: 'error',
       message: 'Folder does not contain a SKILL.md of its own: SKILL.md is a symlink.',
+    });
+  });
+});
+
+describe('SkillUploadModal archive refusal', () => {
+  it('explains a traversing archive name in the user\'s language', async () => {
+    // `validateArchive` short-circuits before `unpackSkill`, so the localized
+    // text on `UnsafeSkillNameError` never reaches a toast — this branch is the
+    // one a user importing a hostile .askill actually sees, and a developer
+    // sentence about directory segments is not it.
+    mockValidateArchive.mockReturnValue({
+      code: 'UNSAFE_NAME',
+      message: 'SKILL.md declares a name that is not a single directory segment: "../../.ssh"',
+      skillName: '../../.ssh',
+    });
+
+    renderAndPickFolder('/Users/test/hostile.askill');
+
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(addToast.mock.calls[0][0]).toMatchObject({
+      type: 'error',
+      message: 'the package declares an unusable folder name ("../../.ssh"); Abu refused it',
+    });
+  });
+
+  it('still shows the developer message for the refusals with no locale text', async () => {
+    mockValidateArchive.mockReturnValue({ code: 'INVALID_ZIP', message: 'File is not a valid zip archive' });
+
+    renderAndPickFolder('/Users/test/broken.askill');
+
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(addToast.mock.calls[0][0]).toMatchObject({
+      type: 'error',
+      message: 'File is not a valid zip archive',
     });
   });
 });

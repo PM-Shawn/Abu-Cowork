@@ -25,9 +25,9 @@ import { Input } from '@/components/ui/input';
 /**
  * The symlinks an installer refused to copy, or [] when it reports none.
  *
- * Only the skill installer has such a list; the agent one — whose copy walk
- * still follows links — is a separate site with its own fix. Narrowing the
- * shared success value here keeps the one success toast cast-free.
+ * Both installers now report one — the agent copy walk refuses links too — but
+ * the field is optional on the shared success value, so narrowing it here keeps
+ * the one success toast cast-free.
  */
 function refusedLinks(result: Extract<SkillInstallResult | AgentInstallResult, { ok: true }>): string[] {
   return 'skippedSymlinks' in result ? result.skippedSymlinks : [];
@@ -149,9 +149,8 @@ export default function ToolboxView() {
           type: 'error',
           title: t.toolbox.uploadFailed,
           // A folder that is itself a link is a refusal we can explain, and the
-          // remedy (pick the folder it points at) only fits in the locale.
-          // Also defensive — see the note below the branch: only the skill
-          // installer returns SYMLINK_ROOT, and only agents reach this handler.
+          // remedy (pick the folder it points at) only fits in the locale. Both
+          // installers return this code, and this handler is the agents tab's.
           message: result.code === 'SYMLINK_ROOT'
             ? format(t.toolbox.importSymlinkRootRefused, { path: folderPath as string })
             : result.message,
@@ -159,16 +158,16 @@ export default function ToolboxView() {
         return;
       }
 
-      // The skill installer refuses to follow symlinks; say so rather than
-      // report a file count for a skill that is missing entries the folder
-      // appeared to contain.
+      // Both installers refuse to follow symlinks; say so rather than report a
+      // file count for something that is missing entries the folder appeared to
+      // contain.
       //
-      // Defensive, not live: this handler is wired on the AGENTS tab only
+      // This handler is wired on the AGENTS tab only
       // (`onUploadFile={handleUploadFile}` below) — the skills tab opens
-      // SkillUploadModal instead, which carries the same disclosure and has
-      // the tests for it. So `isAgent` is always true here today and
-      // `refusedLinks` always returns []. Kept correct for the day the skills
-      // tab is rewired through this path; do not read it as the live one.
+      // SkillUploadModal instead, which carries the same disclosure and has the
+      // tests for it. So `isAgent` is always true here today, and this is the
+      // live render of an AGENT install's `skippedSymlinks`; the skill branch is
+      // kept correct for the day that tab is rewired through this path.
       const links = refusedLinks(result);
 
       await refresh();

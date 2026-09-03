@@ -44,7 +44,7 @@ import {
   PluginSecurityError,
 } from './installer';
 import type { PluginSource } from './marketplace';
-import { copyPluginDir, PluginSymlinkRootError } from './fsOps';
+import { copyPluginDir, PluginPackageNotFoundError, PluginSymlinkRootError } from './fsOps';
 
 const mockRead = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
@@ -593,6 +593,73 @@ describe('a package that ships a symlink where Abu looks for its own payload', (
     await expect(
       planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry }),
     ).rejects.toThrow(/No plugin manifest found/);
+  });
+
+  it('does not list an ignored payload dir that is really a link', async () => {
+    // `discoverIgnoredPayloads` is the third consumer of the shared scan and
+    // the only one with no case of its own. A link here would otherwise put
+    // "this plugin also ships commands" on the screen for a directory the
+    // package does not own and the copy will not bring in.
+    mkdirSync(join(pkg, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(pkg, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'canva', version: '1.0.0' }),
+    );
+    mkdirSync(join(mkt, 'shared-commands'), { recursive: true });
+    writeFileSync(join(mkt, 'shared-commands', 'do.md'), '# do');
+    symlinkSync('../../shared-commands', join(pkg, 'commands'), 'dir');
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry });
+
+    expect(d.ignoredPayloads).toEqual([]);
+    expect(d.skippedSymlinks).toContain('commands');
+  });
+
+  it('does not promise a skill whose own directory is a link', async () => {
+    // The exact shape that started this: `canva` ships
+    // `.cursor/skills -> ../skills`, so a linked CHILD under a real `skills/`
+    // is the most likely thing to meet in the wild — and the disclosure has to
+    // list only the sibling that actually lands.
+    mkdirSync(join(pkg, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(pkg, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'canva', version: '1.0.0' }),
+    );
+    mkdirSync(join(pkg, 'skills', 'layout'), { recursive: true });
+    writeFileSync(join(pkg, 'skills', 'layout', 'SKILL.md'), '---\nname: layout\n---\n');
+    mkdirSync(join(mkt, 'shared-skills', 'design'), { recursive: true });
+    writeFileSync(join(mkt, 'shared-skills', 'design', 'SKILL.md'), '---\nname: design\n---\n');
+    symlinkSync('../../../shared-skills/design', join(pkg, 'skills', 'design'), 'dir');
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry });
+
+    expect(d.skills).toEqual(['layout']);
+    expect(d.skippedSymlinks).toContain('skills/design');
+  });
+
+  it('refuses to read a manifest out of a linked root, whoever asks', async () => {
+    // `readManifestFrom` is a public export and does no symlink collection of
+    // its own; before the check moved into the scan it was safe only because
+    // `planInstall` happened to call `collectPluginSymlinks` first.
+    const real = join(root, 'outside', 'canva');
+    mkdirSync(join(real, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(real, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'canva', version: '1.0.0' }),
+    );
+    rmSync(pkg, { recursive: true, force: true });
+    symlinkSync(real, pkg, 'dir');
+
+    await expect(readManifestFrom(pkg)).rejects.toThrow(PluginSymlinkRootError);
+  });
+
+  it('reports a package directory that is not there as a plugin error', async () => {
+    // A marketplace catalog can point at a folder the user has since deleted.
+    // Before this, the first call was `lstat` and the dialog rendered its raw
+    // `ENOENT ... lstat '<path>'` verbatim.
+    rmSync(pkg, { recursive: true, force: true });
+
+    await expect(readManifestFrom(pkg)).rejects.toThrow(PluginPackageNotFoundError);
   });
 
   it('refuses a marketplace that ships the package directory itself as a link', async () => {

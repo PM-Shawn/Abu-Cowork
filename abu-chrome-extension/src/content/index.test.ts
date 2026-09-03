@@ -496,6 +496,105 @@ describe('sensitive values are redacted, but the fields stay fillable (U5)', () 
       document.body.innerHTML = '<input id="code" type="text" value="EQ-001" />';
       expect(await getHtml()).toContain('EQ-001');
     });
+
+    /**
+     * M6 residual (re-review). A `<textarea>` has NO value attribute — its
+     * default value is the child text node — so rewriting attributes left it
+     * verbatim. Same "redacted on one surface, plaintext on the next" shape as
+     * C1: the field reads `[value redacted]` in a snapshot and `TASERVER999`
+     * to anything reading the page source.
+     */
+    it('redacts a sensitive textarea\'s CONTENT, not just attributes', async () => {
+      document.body.innerHTML =
+        '<textarea id="t" autocomplete="cc-csc">TASERVER999</textarea>';
+      const html = await getHtml();
+      expect(html).not.toContain('TASERVER999');
+      expect(html).toContain(REDACTED);
+    });
+
+    it('what query_js parses out of that html sees the marker, not the secret', async () => {
+      document.body.innerHTML =
+        '<textarea id="t" autocomplete="cc-csc">TASERVER999</textarea>';
+      // Stand-in for queryJsWorker.mjs: it parses the get_html output and the
+      // script reads `.value`, which for a textarea comes from its content.
+      const parsed = new DOMParser().parseFromString(await getHtml(), 'text/html');
+      const ta = parsed.querySelector('#t') as HTMLTextAreaElement;
+      expect(ta.value).not.toContain('TASERVER999');
+    });
+
+    it('redacts a password textarea that IS the serialization root', async () => {
+      document.body.innerHTML =
+        '<textarea id="t" autocomplete="one-time-code">483920</textarea>';
+      expect(await getHtml({ selector: '#t' })).not.toContain('483920');
+    });
+
+    it('leaves an ordinary textarea\'s content alone', async () => {
+      document.body.innerHTML = '<textarea id="t">ordinary note</textarea>';
+      expect(await getHtml()).toContain('ordinary note');
+    });
+
+    it('extract_text does not return a sensitive textarea\'s content', async () => {
+      document.body.innerHTML =
+        '<div id="scope"><textarea id="t" autocomplete="cc-csc">TASERVER999</textarea></div>';
+      expect(await handleAction('extract_text', {})).not.toContain('TASERVER999');
+      expect(await handleAction('extract_text', { selector: '#scope' })).not.toContain('TASERVER999');
+    });
+
+    it('extract_text still returns ordinary page text', async () => {
+      document.body.innerHTML = '<div id="scope"><p>Report for Q3</p></div>';
+      expect(await handleAction('extract_text', { selector: '#scope' })).toContain('Report for Q3');
+    });
+  });
+
+  /**
+   * Pre-existing hole (predates U5, ruled in scope for this round because it is
+   * the last plaintext channel on the surface U5 hardens).
+   *
+   * `fillElement` wrote the value being typed into the `#abu-status` bubble,
+   * which lives in `document.documentElement`. Any script on the page can read
+   * it, it outlives the tool call, and it comes back through `get_html` — so a
+   * value everything else redacts sat in the page in plaintext.
+   */
+  describe('the on-page status bubble never carries a typed value', () => {
+    it('does not put a filled password into the page DOM', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" />';
+      await fill({ css: '#pw' }, 'FILLEDSECRET777');
+
+      expect(document.documentElement.outerHTML).not.toContain('FILLEDSECRET777');
+      expect(await getHtml()).not.toContain('FILLEDSECRET777');
+    });
+
+    it('does not put an ORDINARY filled value into the page DOM either', async () => {
+      // The bubble cannot tell a password from an order number, and the page
+      // is the wrong place for either.
+      document.body.innerHTML = '<input id="code" type="text" />';
+      await fill({ css: '#code' }, 'ORDINARY-VALUE-42');
+
+      expect(document.documentElement.outerHTML).not.toContain('ORDINARY-VALUE-42');
+    });
+
+    it('still shows a status naming the field, so the user can see what happened', async () => {
+      document.body.innerHTML = '<input id="pw" type="password" placeholder="请输入密码" />';
+      await fill({ css: '#pw' }, 'FILLEDSECRET777');
+
+      const bubble = document.getElementById('abu-status');
+      expect(bubble?.textContent).toContain('Fill');
+      expect(bubble?.textContent).toContain('请输入密码');
+    });
+
+    it('does not echo a selected value into the status bubble', async () => {
+      // The custom-dropdown branch is the one that shows a status (the native
+      // <select> branch returns before it). The option text is the page's own
+      // markup, so the bubble — not the whole DOM — is what must stay clean.
+      renderAntdLikeForm();
+      await select({ css: '#form_item_equipmentTypeId' }, '动设备');
+
+      const bubble = document.getElementById('abu-status');
+      expect(bubble?.textContent).toContain('Select');
+      expect(bubble?.textContent).not.toContain('动设备');
+      // It names the field instead, which the page already knows about itself.
+      expect(bubble?.textContent).toContain('请选择设备类型');
+    });
   });
 });
 
@@ -618,6 +717,95 @@ describe('execution-time origin pin, content-script half (I2)', () => {
       expectedOrigin: APPROVED,
     }) as ActionResult;
     expect(result.success).toBe(true);
+  });
+
+  /**
+   * ── The all-frames race (re-review ruling) ────────────────────────────────
+   *
+   * `ensureContentScript` injects with `allFrames: true` and
+   * `chrome.tabs.sendMessage` broadcasts WITHOUT a frameId, so every frame
+   * answers and the FIRST response wins. A benign `about:blank` / `srcdoc` /
+   * cross-origin subframe would therefore answer "the page moved — take a
+   * fresh snapshot" for a top frame that never moved: a false, unactionable
+   * refusal that loops the model straight back into the same race.
+   *
+   * A frame that cannot resolve the target is modelled here the only way that
+   * matters to the code — a locator this document does not match. That is
+   * exactly the state a non-owning subframe is in.
+   *
+   * The invariant has two halves and both are asserted:
+   *   1. a frame that does NOT own the target never emits a pin refusal;
+   *   2. a frame that DOES own the target still enforces the pin.
+   */
+  describe('a frame that does not own the target never preempts with a pin refusal', () => {
+    it('answers its ordinary not-found error instead of the pin refusal', async () => {
+      pageAt('https://evil.example.com/');
+      await expect(handleAction('click', {
+        locator: { css: '#not-in-this-frame' },
+        unattended: true,
+        expectedOrigin: APPROVED,
+      })).rejects.toThrow(/Element not found/);
+    });
+
+    it('does not emit the pin refusal even with no pin carried at all', async () => {
+      pageAt('https://evil.example.com/');
+      await expect(handleAction('fill', {
+        locator: { css: '#not-in-this-frame' },
+        value: 'x',
+        unattended: true,
+      })).rejects.toThrow(/Element not found/);
+    });
+
+    it('but the frame that OWNS the target still enforces (invariant half two)', async () => {
+      pageAt('https://evil.example.com/');
+      await expect(handleAction('click', {
+        locator: { css: '#buy' },
+        unattended: true,
+        expectedOrigin: APPROVED,
+      })).rejects.toThrow(/no longer on the page/);
+    });
+
+    it('keyboard, which has no locator, is still pinned in the acting frame', async () => {
+      pageAt('https://evil.example.com/');
+      (document.getElementById('f') as HTMLInputElement).focus();
+      await expect(handleAction('keyboard', {
+        key: 'Enter',
+        unattended: true,
+        expectedOrigin: APPROVED,
+      })).rejects.toThrow(/no longer on the page/);
+    });
+
+    it('the TOP frame still checks keyboard even with nothing focused', async () => {
+      // Not a false refusal: the top frame refuses only when its OWN origin
+      // drifted, which is the true answer. Keeping it silent here would let a
+      // keyboard event run unpinned on a drifted top document.
+      pageAt('https://evil.example.com/');
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      await expect(handleAction('keyboard', {
+        key: 'Enter',
+        unattended: true,
+        expectedOrigin: APPROVED,
+      })).rejects.toThrow(/no longer on the page/);
+    });
+
+    it('a SUBFRAME with nothing focused stays silent on keyboard', async () => {
+      pageAt('https://evil.example.com/');
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      // Model a subframe: `window.top !== window`. This is the benign
+      // about:blank/srcdoc frame the ruling is about.
+      const realTop = window.top;
+      Object.defineProperty(window, 'top', { value: {}, configurable: true });
+      try {
+        const result = await handleAction('keyboard', {
+          key: 'Enter',
+          unattended: true,
+          expectedOrigin: APPROVED,
+        }) as ActionResult;
+        expect(result.success).toBe(true);
+      } finally {
+        Object.defineProperty(window, 'top', { value: realTop, configurable: true });
+      }
+    });
   });
 });
 

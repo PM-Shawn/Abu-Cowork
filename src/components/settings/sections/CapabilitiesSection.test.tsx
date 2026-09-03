@@ -804,7 +804,10 @@ describe('CapabilitiesSection', () => {
       // Origin-level, and the copy says so: entering the site is not the
       // same as every page on it being reachable (M8).
       expect(within(list).getByText(/may enter 1 site/)).toBeInTheDocument();
+      // Not an absolute promise: the classifier is deliberately incomplete
+      // (its own module doc says so), so the copy says "recognizes" (M8).
       expect(within(list).getByText(/each page is still judged on its own/)).toBeInTheDocument();
+      expect(within(list).getByText(/recognizes as payment/)).toBeInTheDocument();
     });
 
     it('says the same site is attended-only while the master switch is off', () => {

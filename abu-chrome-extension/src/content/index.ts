@@ -178,9 +178,53 @@ function normalizedOrigin(href: string): string | null {
   }
 }
 
+/**
+ * Will THIS frame actually service this action?
+ *
+ * `ensureContentScript` injects with `allFrames: true` and
+ * `chrome.tabs.sendMessage` broadcasts without a frameId, so every frame in
+ * the tab answers and the FIRST response wins. Without this check a benign
+ * `about:blank` / `srcdoc` / cross-origin subframe — which has nothing to do
+ * with the action — would answer the pin refusal ("the page moved, take a
+ * fresh snapshot") for a top frame that never moved: a false, unactionable
+ * refusal that loops the model back into the same race.
+ *
+ * So the pin is DEFERRED until the frame knows it is the one acting. Two
+ * shapes:
+ *
+ * - **locator actions** (click/fill/select): the frame that resolves the
+ *   target is the acting frame. A frame that cannot resolve it falls through
+ *   to its ordinary "Element not found", exactly as it did before the pin
+ *   existed. This is what keeps iframe-targeted actions working — an action
+ *   aimed INTO an iframe is still pinned, by that iframe.
+ * - **`keyboard`** (no locator — it dispatches at `document.activeElement`):
+ *   the frame holding a real focused element is acting, and the TOP frame
+ *   always checks. The top frame checking is not a false refusal: it refuses
+ *   only when its own origin genuinely drifted, which is the true answer.
+ *   A subframe with nothing focused stays silent.
+ */
+function frameServicesAction(action: string, payload: Record<string, unknown>): boolean {
+  const locator = payload.locator as ElementLocator | undefined;
+  if (locator !== undefined) {
+    try {
+      return findElement(locator) !== null;
+    } catch {
+      // A malformed locator resolves nowhere in any frame; let the ordinary
+      // handler report it rather than turning it into a pin refusal.
+      return false;
+    }
+  }
+  const focused = document.activeElement;
+  const hasRealFocus = focused !== null
+    && focused !== document.body
+    && focused !== document.documentElement;
+  return hasRealFocus || window.top === window;
+}
+
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
-  // Before the switch, so no action can be added that forgets it.
-  assertOriginPin(action, payload);
+  // Before the switch, so no action can be added that forgets it — but only in
+  // the frame that is going to act (see `frameServicesAction`).
+  if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
   switch (action) {
     case 'snapshot': return takeSnapshot(
       payload.selector as string | undefined,
@@ -252,6 +296,25 @@ function hasSensitiveValue(el: Element): boolean {
     .toLowerCase()
     .split(/\s+/)
     .some((token) => isSensitiveAutocompleteToken(token));
+}
+
+/**
+ * How to NAME a field in the on-page status bubble.
+ *
+ * The bubble lives in `document.documentElement`, so whatever goes into it is
+ * readable by every script on the page, outlives the tool call, and comes back
+ * out through `get_html`. `fill` and `select` used to put the value being
+ * written there verbatim — the last plaintext channel on this surface, and one
+ * that leaked values every other path redacts. The status now names the FIELD
+ * (which the page already knows about itself) and never the value.
+ */
+function fieldLabel(el: Element): string {
+  const placeholder = (el as HTMLInputElement).placeholder;
+  return placeholder
+    || el.getAttribute('aria-label')
+    || el.getAttribute('name')
+    || (el.id ? `#${el.id}` : '')
+    || `<${el.tagName.toLowerCase()}>`;
 }
 
 /**
@@ -708,7 +771,8 @@ function fillElement(locator: ElementLocator, value: string): { success: boolean
   const previousValue = reportableValue(el, el.value, 100);
 
   highlightElement(el);
-  showStatus(`Fill: "${value.slice(0, 30)}"`, 'info');
+  // NEVER the value: this string is written into the page (see `fieldLabel`).
+  showStatus(`Fill: ${fieldLabel(el)}`, 'info');
 
   // Use native setter to bypass React's synthetic event system
   const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -1050,7 +1114,8 @@ async function selectOption(
     );
   }
 
-  showStatus(`Select: "${value}"`, 'info');
+  // NEVER the value: same reason as fill (see `fieldLabel`).
+  showStatus(`Select: ${fieldLabel(el)}`, 'info');
   el.scrollIntoView({ behavior: 'instant', block: 'center' });
 
   // Open it if it is not already open. `aria-expanded` is the library's own
@@ -1292,11 +1357,52 @@ function redactSensitiveValueAttributes(root: Element): void {
     ? [root, ...root.querySelectorAll('input, textarea, select')]
     : [...root.querySelectorAll('input, textarea, select')];
   for (const el of candidates) {
-    if (!el.hasAttribute('value')) continue;
-    if (!el.getAttribute('value')) continue;
     if (!hasSensitiveValue(el)) continue;
+    // A TEXTAREA has no `value` attribute at all — its default value IS the
+    // child text node, so rewriting attributes left it verbatim while the
+    // snapshot of the same field said `[value redacted]`. Exactly the
+    // "redacted on one surface, plaintext on the next" shape this pass exists
+    // to close, and `queryJsWorker` reading `.value` off the parsed html gets
+    // its value from precisely this text.
+    if (el.tagName === 'TEXTAREA') {
+      if (el.textContent) el.textContent = REDACTED_VALUE;
+      continue;
+    }
+    if (!el.getAttribute('value')) continue;
     el.setAttribute('value', REDACTED_VALUE);
   }
+}
+
+/**
+ * Sensitive field values currently present in `scope`, for the one extraction
+ * path that cannot work on a redacted clone.
+ *
+ * `extract_text` reads `innerText` off the LIVE DOM, and it has to: `innerText`
+ * is layout-dependent, so a detached clone would return nothing at all. Rather
+ * than edit the page the user is looking at, the extracted STRING is scrubbed
+ * of any sensitive value the scope actually holds.
+ *
+ * Whether a given engine renders a textarea's content into `innerText` is a
+ * detail that varies (Chrome does not; other DOM implementations do), which is
+ * exactly why this does not depend on the answer: whatever the engine chose to
+ * include, a declared-sensitive field's own value does not survive.
+ */
+function sensitiveValuesIn(scope: Element | null): string[] {
+  const root = scope ?? document.body;
+  if (!root) return [];
+  const fields = [
+    ...(root.matches?.('input, textarea, select') ? [root] : []),
+    ...root.querySelectorAll('input, textarea, select'),
+  ];
+  const values: string[] = [];
+  for (const el of fields) {
+    if (!hasSensitiveValue(el)) continue;
+    const value = (el as HTMLInputElement).value || el.textContent || '';
+    // One-and-two-character values are skipped: scrubbing them would mangle
+    // unrelated page text far more than it would protect anything.
+    if (value.length > 2) values.push(value);
+  }
+  return values;
 }
 
 function serializeElementWithFrames(element: Element): string {
@@ -1340,12 +1446,20 @@ function getHtml(selector?: string): string {
 
 function extractText(selector?: string): string {
   let text: string;
+  let scope: Element | null;
   if (selector) {
     const el = document.querySelector(selector);
     if (!el) throw new Error(`Element not found: ${selector}`);
+    scope = el;
     text = (el as HTMLElement).innerText ?? el.textContent ?? '';
   } else {
+    scope = document.body;
     text = document.body.innerText ?? '';
+  }
+  // See `sensitiveValuesIn`: this path reads the live DOM (innerText needs
+  // layout), so the scrubbing happens on the extracted string.
+  for (const secret of sensitiveValuesIn(scope)) {
+    text = text.split(secret).join(REDACTED_VALUE);
   }
 
   // Truncate to prevent sending megabytes through the message channel

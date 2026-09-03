@@ -74,8 +74,21 @@
       return null;
     }
   }
+  function frameServicesAction(action, payload) {
+    const locator = payload.locator;
+    if (locator !== void 0) {
+      try {
+        return findElement(locator) !== null;
+      } catch {
+        return false;
+      }
+    }
+    const focused = document.activeElement;
+    const hasRealFocus = focused !== null && focused !== document.body && focused !== document.documentElement;
+    return hasRealFocus || window.top === window;
+  }
   async function handleAction(action, payload) {
-    assertOriginPin(action, payload);
+    if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -124,6 +137,10 @@
     const autocomplete = el.getAttribute("autocomplete");
     if (!autocomplete) return false;
     return autocomplete.toLowerCase().split(/\s+/).some((token) => isSensitiveAutocompleteToken(token));
+  }
+  function fieldLabel(el) {
+    const placeholder = el.placeholder;
+    return placeholder || el.getAttribute("aria-label") || el.getAttribute("name") || (el.id ? `#${el.id}` : "") || `<${el.tagName.toLowerCase()}>`;
   }
   function reportableValue(el, value, maxChars) {
     if (!value) return void 0;
@@ -397,7 +414,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     const el = findElementOrThrow(locator);
     const previousValue = reportableValue(el, el.value, 100);
     highlightElement(el);
-    showStatus(`Fill: "${value.slice(0, 30)}"`, "info");
+    showStatus(`Fill: ${fieldLabel(el)}`, "info");
     const nativeSetter = Object.getOwnPropertyDescriptor(
       el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       "value"
@@ -572,7 +589,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
         `${describeElement(el)} is not a dropdown: it is not a <select>, has no combobox/listbox role, and owns no options. If this is a text field use fill; if the control opens a menu, click it and take a snapshot to see what appeared.`
       );
     }
-    showStatus(`Select: "${value}"`, "info");
+    showStatus(`Select: ${fieldLabel(el)}`, "info");
     el.scrollIntoView({ behavior: "instant", block: "center" });
     if (el.getAttribute("aria-expanded") !== "true" && optionsFor(el).length === 0) {
       dispatchClickSequence(el);
@@ -733,11 +750,29 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   function redactSensitiveValueAttributes(root) {
     const candidates = root.tagName === "INPUT" || root.tagName === "TEXTAREA" || root.tagName === "SELECT" ? [root, ...root.querySelectorAll("input, textarea, select")] : [...root.querySelectorAll("input, textarea, select")];
     for (const el of candidates) {
-      if (!el.hasAttribute("value")) continue;
-      if (!el.getAttribute("value")) continue;
       if (!hasSensitiveValue(el)) continue;
+      if (el.tagName === "TEXTAREA") {
+        if (el.textContent) el.textContent = REDACTED_VALUE;
+        continue;
+      }
+      if (!el.getAttribute("value")) continue;
       el.setAttribute("value", REDACTED_VALUE);
     }
+  }
+  function sensitiveValuesIn(scope) {
+    const root = scope ?? document.body;
+    if (!root) return [];
+    const fields = [
+      ...root.matches?.("input, textarea, select") ? [root] : [],
+      ...root.querySelectorAll("input, textarea, select")
+    ];
+    const values = [];
+    for (const el of fields) {
+      if (!hasSensitiveValue(el)) continue;
+      const value = el.value || el.textContent || "";
+      if (value.length > 2) values.push(value);
+    }
+    return values;
   }
   function serializeElementWithFrames(element) {
     if (element.tagName === "IFRAME") {
@@ -767,12 +802,18 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   }
   function extractText(selector) {
     let text;
+    let scope;
     if (selector) {
       const el = document.querySelector(selector);
       if (!el) throw new Error(`Element not found: ${selector}`);
+      scope = el;
       text = el.innerText ?? el.textContent ?? "";
     } else {
+      scope = document.body;
       text = document.body.innerText ?? "";
+    }
+    for (const secret of sensitiveValuesIn(scope)) {
+      text = text.split(secret).join(REDACTED_VALUE);
     }
     if (text.length > MAX_EXTRACT_TEXT_SIZE) {
       return text.slice(0, MAX_EXTRACT_TEXT_SIZE) + `

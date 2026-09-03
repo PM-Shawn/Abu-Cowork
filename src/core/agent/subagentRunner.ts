@@ -880,11 +880,20 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     }
     if (!session.firstToolInvokeArrived) {
       // Nothing executed yet — safe to retry the whole run in-process.
+      // Retry from `withPreloadedSkills`, NOT the pre-resolution `options`:
+      // this is a rerun of the same agent, so it must carry the same prompt,
+      // and the shell already paid for resolving `agent.skills` above. A stale
+      // sidecar that rejects the `preloadedSkills` wire field through its
+      // unknown-key guard lands precisely here, so this is exactly the path
+      // where dropping the section is most likely.
+      // The scope id is deliberately fresh (no `runId`): progress the sidecar
+      // may already have published under `runId` is dropped, so the rerun must
+      // not reuse that namespace — see the fallback-scope test.
       logger.warn('subagent transport failed before first tool — retrying in-process', {
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-      return runSubagentLoop(scopeSubagentLoopProgress(options));
+      return runSubagentLoop(scopeSubagentLoopProgress(withPreloadedSkills));
     }
     logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
       runId,

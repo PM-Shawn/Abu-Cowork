@@ -12,6 +12,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Inbox, ListTodo, Bot, UsersRound, Search, Paperclip, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
+import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import TaskDetailDialog from './TaskDetailDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
@@ -414,7 +415,11 @@ export default function TeamView() {
   const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
   // A stale persisted value (e.g. the removed 'pipelines' tab) falls back to
   // the default tab instead of rendering an empty pane.
-  const activeTeamTab: TeamTab = persistedTeamTab === 'inbox' || persistedTeamTab === 'members' || persistedTeamTab === 'teams' ? persistedTeamTab : 'tasks';
+  const activeTeamTab: TeamTab = (() => {
+    if (persistedTeamTab === 'members' || persistedTeamTab === 'teams') return persistedTeamTab;
+    if (TEAM_BOARD_ENABLED && (persistedTeamTab === 'inbox' || persistedTeamTab === 'tasks')) return persistedTeamTab;
+    return TEAM_BOARD_ENABLED ? 'tasks' : 'members';
+  })();
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
   const tasks = useTeamStore((s) => s.tasks);
@@ -435,7 +440,7 @@ export default function TeamView() {
   // store; consume it once and open the detail.
   const focusTaskId = useTeamStore((s) => s.focusTaskId);
   useEffect(() => {
-    if (!focusTaskId) return;
+    if (!TEAM_BOARD_ENABLED || !focusTaskId) return;
     setDetailTaskId(focusTaskId);
     useTeamStore.getState().setFocusTaskId(null);
   }, [focusTaskId]);
@@ -448,8 +453,10 @@ export default function TeamView() {
 
   // Tab order user-pinned 2026-08-31: 任务 · 收件箱 · 队员 · 团队.
   const navItems = [
-    { id: 'tasks' as TeamTab, label: t.team.tabTasks, icon: ListTodo },
-    { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox, badgeCount: pending.length },
+    ...(TEAM_BOARD_ENABLED ? [
+      { id: 'tasks' as TeamTab, label: t.team.tabTasks, icon: ListTodo },
+      { id: 'inbox' as TeamTab, label: t.team.tabInbox, icon: Inbox, badgeCount: pending.length },
+    ] : []),
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
     { id: 'teams' as TeamTab, label: t.team.tabTeams, icon: UsersRound },
   ];
@@ -496,6 +503,7 @@ export default function TeamView() {
   const renderContent = () => {
     switch (activeTeamTab) {
       case 'inbox': {
+        if (!TEAM_BOARD_ENABLED) return null;
         if (pending.length === 0) {
           return <EmptyState icon={Inbox} title={t.team.inboxEmpty} hint={t.team.inboxEmptyHint} />;
         }
@@ -508,6 +516,7 @@ export default function TeamView() {
         );
       }
       case 'tasks': {
+        if (!TEAM_BOARD_ENABLED) return null;
         const list = tasks.filter((task) => !search || task.goal.toLowerCase().includes(search.toLowerCase()));
         if (list.length === 0) {
           return (
@@ -645,8 +654,12 @@ export default function TeamView() {
         onClose={() => setTeamDialog({ open: false, team: null })}
         onSwitchToMembers={() => { setActiveTeamTab('members'); setManualCreateTrigger((c) => c + 1); }}
       />
-      <TaskCreateDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} teams={activeTeams} agents={agents} />
-      <TaskDetailDialog taskId={detailTaskId} onClose={() => setDetailTaskId(null)} />
+      {TEAM_BOARD_ENABLED && (
+        <>
+          <TaskCreateDialog open={taskDialogOpen} onClose={() => setTaskDialogOpen(false)} teams={activeTeams} agents={agents} />
+          <TaskDetailDialog taskId={detailTaskId} onClose={() => setDetailTaskId(null)} />
+        </>
+      )}
     </div>
   );
 }

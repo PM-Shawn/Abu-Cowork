@@ -5,8 +5,8 @@
  * management journeys only (execution paths live in orchestrator unit tests).
  *
  * Journey: enable the labs flag → sidebar entry appears → tab order
- * 任务·收件箱·队员·团队 → create a team with a builtin leader →
- * task tab loses its dead end → team survives an app restart → archive
+ * 队员·团队 (task board shelved) → create a team with a builtin leader →
+ * team survives an app restart → archive
  * moves it to the 已归档 section and 恢复 brings it back.
  */
 import { expect, test } from '@playwright/test';
@@ -68,11 +68,7 @@ test.describe('team management surface (labs)', () => {
       const tabLabels = labels
         .map((l) => l.trim().replace(/\d+$/, '').trim())
         .filter((l) => ['任务', '收件箱', '队员', '团队'].includes(l));
-      expect(tabLabels).toEqual(['任务', '收件箱', '队员', '团队']);
-
-      // Default tab is 任务; builtin agents exist, so the empty state offers
-      // 新建任务 (single-member tasks are legal) — no dead end either way.
-      await expect(page.getByText('还没有团队任务')).toBeVisible();
+      expect(tabLabels).toEqual(['队员', '团队']);
 
       // ---- Create a team with a builtin leader ----------------------------
       await nav.getByRole('button', { name: '团队' }).click();
@@ -89,10 +85,6 @@ test.describe('team management surface (labs)', () => {
       await save.click();
 
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
-
-      // Back on 任务: the empty state now offers 新建任务.
-      await nav.getByRole('button', { name: '任务' }).click();
-      await expect(page.getByRole('main').getByRole('button', { name: '新建任务' })).toBeVisible();
 
       // ---- Restart persistence -------------------------------------------
       await closeAbuElectron(launched.app);

@@ -94,36 +94,24 @@ function seedAgent(name: string, roleId?: string) {
 describe('TeamView', () => {
   beforeEach(() => {
     useTeamStore.setState({ teams: [], tasks: [] });
-    settingsState.activeTeamTab = 'tasks';
+    settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     vi.clearAllMocks();
   });
 
-  it('renders the four tabs in the pinned order 任务·收件箱·队员·团队', () => {
+  it('renders only 队员·团队 while the task board is shelved', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
       ['收件箱', '任务', '队员', '团队'].includes(label ?? ''));
-    expect(tabs).toEqual(['任务', '收件箱', '队员', '团队']);
+    expect(tabs).toEqual(['队员', '团队']);
   });
 
-  it('shows the inbox empty state when nothing needs the user', () => {
-    settingsState.activeTeamTab = 'inbox';
-    render(<TeamView />);
-    expect(screen.getByText('没有需要你处理的事')).toBeTruthy();
-  });
-
-  it('teams tab empty state offers creating a team; task tab without teams routes to teams first', () => {
+  it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
     expect(screen.getByText('还没有团队')).toBeTruthy();
     expect(screen.getAllByText('新建团队').length).toBeGreaterThan(0);
-  });
-
-  it('task empty state has no dead end: without a team it offers 先建一个团队', () => {
-    settingsState.activeTeamTab = 'tasks';
-    render(<TeamView />);
-    expect(screen.getByText('先建一个团队')).toBeTruthy();
   });
 
   it('team dialog: create button stays disabled until name + leader are set', async () => {
@@ -156,20 +144,6 @@ describe('TeamView', () => {
     render(<TeamView />);
     fireEvent.click(screen.getAllByText('新建团队')[0]);
     expect(screen.getByText('新建队员')).toBeTruthy();
-  });
-
-  it('task dialog: single team preselected, creates task into awaiting_plan', async () => {
-    useTeamStore.setState({
-      teams: [{ id: 'tm1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
-    });
-    settingsState.activeTeamTab = 'tasks';
-    render(<TeamView />);
-    fireEvent.click(screen.getByText('新建任务'));
-    fireEvent.change(screen.getByTestId('task-goal-input'), { target: { value: '出一版 8 月周报' } });
-    fireEvent.click(screen.getByTestId('task-create'));
-    await waitFor(() => expect(useTeamStore.getState().tasks).toHaveLength(1));
-    expect(useTeamStore.getState().tasks[0].status).toBe('awaiting_plan');
   });
 
   it('members tab renders the shared AgentsSection (single identity source)', () => {

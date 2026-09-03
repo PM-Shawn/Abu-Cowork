@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTeamStore } from '@/stores/teamStore';
 import { useLabsFlag } from '@/core/labs/resolve';
+import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
 import { LABS_TEAM } from '@/core/labs/registry';
 import { SearchSelect } from '@/components/ui/search-select';
 import { useScheduleStore } from '@/stores/scheduleStore';
@@ -241,7 +242,7 @@ export default function ScheduleEditor() {
           </div>
 
           {/* Team executor (labs-gated) */}
-          {teamEnabled && teams.length > 0 && (
+          {TEAM_BOARD_ENABLED && teamEnabled && teams.length > 0 && (
             <div>
               <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
                 {t.schedule.teamExecutor}

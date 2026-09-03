@@ -1,3 +1,4 @@
+import { TEAM_BOARD_ENABLED } from '../team/taskBoardFlag';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
@@ -185,7 +186,9 @@ class SchedulerEngine {
     // and plan handling (reusing an accepted split for a repeated goal); the
     // scheduler records the run and enforces fail-loud — after 2 consecutive
     // failed runs the SCHEDULE pauses instead of quietly burning money.
-    if (task.teamId) {
+    // Shelved with the task-board model; batch 2 re-wires 交给团队 as a normal
+    // scheduled conversation pinned to the team (design §2.7).
+    if (task.teamId && TEAM_BOARD_ENABLED) {
       const scheduleStore = useScheduleStore.getState();
       const runId = scheduleStore.startRun(task.id, '');
       this.runningTasks.add(task.id);

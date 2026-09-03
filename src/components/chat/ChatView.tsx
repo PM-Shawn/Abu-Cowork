@@ -31,6 +31,7 @@ import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import { tryHandleTeamMention } from '@/core/team/chatEntry';
+import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -772,7 +773,11 @@ export default function ChatView({
       // No '@'-prefix pre-check here: attachment markers are prepended ahead
       // of the user's text, so the mention is not always first. The helper
       // strips them and re-tests the prefix itself.
-      const teamHit = tryHandleTeamMention(text, { hasImages: (images?.length ?? 0) > 0 });
+      // Shelved: the task-board interception. Batch 1 block 2 replaces it with
+      // pinning the conversation to the team and sending normally (design §2.1).
+      const teamHit = TEAM_BOARD_ENABLED
+        ? tryHandleTeamMention(text, { hasImages: (images?.length ?? 0) > 0 })
+        : { handled: false as const };
       if (teamHit.handled) {
         useToastStore.getState().addToast({
           type: 'success',

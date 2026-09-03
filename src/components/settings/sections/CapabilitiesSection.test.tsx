@@ -1459,6 +1459,42 @@ describe('CapabilitiesSection', () => {
       expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
     });
 
+    /*
+      Product ruling (security review of 52e47a40): the warning is gated on the
+      master switch as well as on the value. With the switch off the whole
+      automatic-tasks column is disabled and the gate refuses every automatic
+      browser action, so the stored 'allow' describes an intention, not a live
+      risk — and a warning that fires when nothing can happen is how a reader
+      learns to ignore these lines.
+    */
+    it('holds the risk warning back until the automatic-tasks master switch is on', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserOperationPolicy: {
+          ...DEFAULT_BROWSER_OPERATION_POLICY,
+          unattended: { ...DEFAULT_BROWSER_OPERATION_POLICY.unattended, scripting: 'allow' },
+        },
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const scriptCard = permissionCard('Run scripts (advanced)');
+      // The value really is stored, and the cell really is showing it...
+      const [, scriptUnattended] = policyCells(scriptCard);
+      expect(scriptUnattended).toHaveTextContent('Allow');
+      expect(scriptUnattended).toBeDisabled();
+      // ...but nothing can act on it yet, so nothing is warned about.
+      expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
+
+      // Turning the switch on is the moment the tier becomes live.
+      await user.click(within(permissionCard('Automatic tasks')).getByRole('switch'));
+
+      expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
+      expect(within(permissionCard('Run scripts (advanced)')).getByText(/Elevated risk/))
+        .toBeInTheDocument();
+    });
+
     it('toggles the automatic-tasks master switch', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);

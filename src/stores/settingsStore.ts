@@ -1057,10 +1057,16 @@ export const useSettingsStore = create<SettingsStore>()(
         delete next[origin];
         return { browserSitePermissions: next };
       }),
-      // Normalized on write, not just on read: `unattended.scripting` has no
-      // 'allow' value (see `browserOperationStatesFor`), and a setter that
-      // stored one would leave the persisted policy saying something the gate
-      // will never honor — a setting that lies about what it does.
+      // Normalized on write, not just on read: the persisted policy must never
+      // say something the gate will not honor — a setting that lies about what
+      // it does. What the normalizer enforces is SHAPE, not product policy: a
+      // malformed cell clamps to the strictest state for its column.
+      //
+      // In particular `unattended.scripting: 'allow'` IS storable (2026-09-04
+      // ruling) and passes through untouched. It ships as 'deny'; turning it on
+      // is an explicit opt-in, and the gate then honors it only where the
+      // master switch is on, the site carries a standing 'allowed' verdict, and
+      // the page is not high-risk (`decideBrowserOperation`).
       setBrowserOperationState: (runMode, opClass, verdict) => set((state) => ({
         browserOperationPolicy: normalizeBrowserOperationPolicy({
           ...state.browserOperationPolicy,

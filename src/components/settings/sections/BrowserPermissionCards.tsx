@@ -326,12 +326,18 @@ export function BrowserPermissionCards({
           </div>
           {/*
             The warning that comes WITH the choice, not before it: one line,
-            directly under the select that produced it, visible only while the
-            opt-in is the selected value. This is the shape Codex gives its own
-            high-risk switch — the risk is stated where the decision is made,
-            not hidden behind an ⓘ or a dialog.
+            directly under the select that produced it. This is the shape Codex
+            gives its own high-risk switch — the risk is stated where the
+            decision is made, not hidden behind an ⓘ or a dialog.
+
+            Gated on the master switch too (product ruling, security review of
+            52e47a40): with the switch off this whole column is disabled and
+            the gate refuses every automatic browser action, so there is no
+            live risk to warn about. A bright warning under a greyed-out
+            control describes a danger that does not currently exist — and
+            teaches the reader that these warnings can be ignored.
           */}
-          {policy.unattended.scripting === 'allow' && (
+          {allowUnattended && policy.unattended.scripting === 'allow' && (
             <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
               <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {t.settings.browserUnattendedScriptRiskWarning}

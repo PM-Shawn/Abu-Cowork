@@ -1026,10 +1026,10 @@ export interface TranslationDict {
     browserOpPolicyColumnUnattended: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
-    /** Scripting is split out of the 2x2 matrix into its own card: under
-     *  "automatic tasks" it is a degenerate cell (no allow), and it is the one
-     *  row an ordinary user should not skim past. The class name is that
-     *  card's title, so it carries a description of its own. */
+    /** Scripting is split out of the 2x2 matrix into its own card: it is the
+     *  one row an ordinary user should not skim past, and its automatic-tasks
+     *  cell is the only one that carries a risk warning. The class name is
+     *  that card's title, so it carries a description of its own. */
     browserOpClassScripting: string;
     browserOpClassScriptingDesc: string;
     browserOpStateAllow: string;
@@ -1038,17 +1038,16 @@ export interface TranslationDict {
     browserOpStateAllowDesc: string;
     browserOpStateDenyDesc: string;
     browserOpStateAskDesc: string;
-    /** Why "allow" is listed but not choosable for scripting under automatic
-     *  tasks (batch-二 security ruling: a site grant is consent collected under
-     *  "click" semantics and never buys silent code execution). Dropping the
-     *  option silently would leave the column looking broken next to the other
-     *  rows; offering it live would promise what the gate refuses to honor. */
     /**
-     * The `allow` option's description in the automatic-tasks × scripting
-     * cell specifically: the tier is real but site-scoped (2026-09-04 ruling).
+     * The `allow` option's description in the automatic-tasks × scripting cell
+     * specifically (2026-09-04 ruling). The tier is real and choosable, but it
+     * ships OFF and is honored only on sites the user set to 始终允许 — so the
+     * option states that scope itself, rather than promising "never asks
+     * again" like the generic `allow` description does.
      */
     browserOpStateAllowUnattendedScriptDesc: string;
-    /** ⚠ line under that select while `allow` is the selected value. */
+    /** ⚠ line under that select while `allow` is selected AND the automatic-
+     *  tasks master switch is on — i.e. only while the risk is live. */
     browserUnattendedScriptRiskWarning: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;

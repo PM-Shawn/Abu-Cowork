@@ -267,7 +267,9 @@ opening a PR.
 
 **`check` job — report steps.** These run even when the test step is red:
 - `coverage-report` and `test-results` artifacts (`coverage/`, `test-results/`, 14-day retention).
-- "Vitest results" junit check (`dorny/test-reporter`, `fail-on-error: false`).
+- "Vitest results" junit check run on the commit (`dorny/test-reporter`, `fail-on-error: false`,
+  `use-actions-summary: false` — the action defaults to writing the run summary and creating no
+  check run at all).
 - A coverage table (statements / branches / functions / lines) in the job summary.
 - On same-repo, non-Dependabot pull requests: a coverage comment with changed-files detail
   (`davelosert/vitest-coverage-report-action`, `file-coverage-mode: changes`). The junit check and

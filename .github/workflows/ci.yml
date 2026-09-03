@@ -108,6 +108,9 @@ jobs:
           path: test-results/junit.xml
           reporter: java-junit
           fail-on-error: false
+          # Default (true) posts the report to the run's job summary and creates no
+          # check run, so it never shows up in the PR's checks list.
+          use-actions-summary: false
 
       - name: Coverage summary (job summary)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

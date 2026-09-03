@@ -83,6 +83,19 @@ test('token-writing report steps are skipped when GITHUB_TOKEN is read-only (dep
   }
 });
 
+test('junit report creates a real check run instead of only a job summary', () => {
+  // dorny/test-reporter@v2 defaults to use-actions-summary: true, which writes the report
+  // to the run summary and creates NO check run — it never reaches the PR's checks list.
+  const start = ci.indexOf('- name: Test report (junit \u2192 check)');
+  assert.ok(start > -1, 'Test report step missing');
+  const next = ci.indexOf('\n      - name:', start + 1);
+  const block = ci.slice(start, next === -1 ? undefined : next);
+  assert.ok(
+    block.includes('use-actions-summary: false'),
+    'test-reporter must set use-actions-summary: false so it creates a check run',
+  );
+});
+
 test('Windows job relies on the config junit reporter (CLI --outputFile is inert in Vitest 4.1)', () => {
   const start = ci.indexOf('\n  test-windows:');
   assert.ok(start > -1, 'test-windows job missing');

@@ -363,6 +363,28 @@ describe('a .askill declaring a name that is not one directory segment', () => {
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 
+  it('writes no entry whose PATH escapes the skill directory', async () => {
+    // `validateArchive` screens entry paths for `..`, and `unpackSkill` must
+    // not depend on it having run — a direct caller would otherwise write
+    // outside the directory the name resolved to. It does not repeat the screen
+    // explicitly: the per-segment dotfile skip covers it, because `'..'` starts
+    // with a dot. Pinned here as an OUTCOME, so the coupling cannot be broken by
+    // narrowing that skip to a list of known dotfiles.
+    const zip = makeZip({
+      'SKILL.md': '---\nname: looks-fine\ndescription: d\n---\n# body',
+      // No dot-prefixed segment: the dotfile skip above must not be what
+      // catches this, or the screen under test is never exercised.
+      '../../../Documents/notes.md': 'CONTENT WRITTEN OUTSIDE THE SKILL',
+    });
+
+    const result = await unpackSkill(zip, '/home/.abu/skills');
+
+    expect(result.files).toEqual(['SKILL.md']);
+    expect(mockWriteFile.mock.calls.map((c) => String(c[0]))).toEqual([
+      '/home/.abu/skills/looks-fine/SKILL.md',
+    ]);
+  });
+
   it('is refused on the overwrite path as well', async () => {
     mockExists.mockResolvedValue(true);
     const zip = makeZip({ 'SKILL.md': TRAVERSING_SKILL_MD });

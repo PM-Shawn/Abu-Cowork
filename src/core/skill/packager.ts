@@ -252,6 +252,16 @@ export async function unpackSkill(
     // Defensive: archives from older/external packagers may contain dotfiles
     // that Tauri's fs scope won't let us write. Skip any path segment that
     // would be filtered on the pack side.
+    //
+    // 🔴 This is ALSO what confines an entry PATH, which is the other half of
+    // `validateArchive`'s loop and the half this function does not repeat
+    // explicitly: `shouldSkipEntry` refuses any segment starting with `.`, and
+    // `'..'.startsWith('.')` is true, so a traversing entry is dropped here.
+    // That coupling is load-bearing — `joinPath` does not collapse `..` and the
+    // host's guard only asks whether the RESOLVED path lands under an allowed
+    // root — so narrowing the dot rule to a known-dotfile list would reopen the
+    // escape. The test "writes no entry whose PATH escapes the skill
+    // directory" (packager.test.ts) pins the outcome rather than the spelling.
     const segments = relativePath.split('/');
     const skip = segments.some((seg, i) => {
       const isDir = i < segments.length - 1;

@@ -1,4 +1,5 @@
 import { ChevronRight, CircleAlert } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Select, type SelectOption } from '@/components/ui/select';
@@ -314,27 +315,34 @@ export function BrowserPermissionCards({
         </div>
       </div>
 
-      <div className={cn(settingsCardClass, 'flex items-start gap-3')}>
-        <div className="min-w-0 flex-1">
-          <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
+      {/*
+        Drills in, so it looks like every other thing on this page that drills
+        in: the whole row is the control and a trailing chevron is the only
+        affordance. A text button here would be the one exception on a surface
+        whose rule is that there are none.
+      */}
+      <Button
+        variant="ghost"
+        onClick={onManageSites}
+        aria-label={t.settings.browserSitePermsTitle}
+        className={cn(
+          settingsCardClass,
+          'h-auto w-full items-center justify-start gap-3 whitespace-normal text-left hover:bg-[var(--abu-bg-hover)]',
+        )}
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block text-body font-semibold text-[var(--abu-text-primary)]">
             {t.settings.browserSitePermsTitle}
-          </h4>
-          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+          </span>
+          <span className="mt-1 block text-minor font-normal leading-relaxed text-[var(--abu-text-muted)]">
             {format(t.settings.browserSitePermsSummary, {
               allowed: allowedCount,
               denied: deniedCount,
             })}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onManageSites}
-          className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-        >
-          {t.settings.capabilityManage}
-          <ChevronRight className="h-3.5 w-3.5" />
-        </button>
-      </div>
+          </span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-[var(--abu-text-muted)]" />
+      </Button>
     </div>
   );
 }

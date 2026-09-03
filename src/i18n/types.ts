@@ -984,7 +984,6 @@ export interface TranslationDict {
     capabilityBuiltinBrowserSubtitle: string;
     capabilityMyChromeSubtitle: string;
     capabilityComputerSubtitle: string;
-    capabilityManage: string;
     browserSitePermsTitle: string;
     browserSitePermsDesc: string;
     browserSitePermsEmpty: string;

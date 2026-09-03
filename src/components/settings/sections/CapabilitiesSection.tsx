@@ -36,6 +36,10 @@ import {
   readCapabilityRuntimeSnapshot,
 } from '@/core/capabilityPlugins/runtime';
 import { deriveCapabilityStatuses } from '@/core/capabilityPlugins/status';
+import {
+  hasChromeExtensionHandshaked,
+  setChromeExtensionHandshaked,
+} from '@/core/capabilityPlugins/chromeHandshakeLatch';
 import type {
   CapabilitySetupTarget,
   CapabilityStatus,
@@ -163,7 +167,10 @@ function ChannelCard({
     <Button
       variant="ghost"
       onClick={onOpen}
-      aria-label={title}
+      // The status is the whole reason this row exists, so it belongs in the
+      // accessible name — a screen reader hearing only "My Chrome" learns
+      // nothing the page did not already imply.
+      aria-label={`${title} · ${statusLabel}`}
       className="h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 text-left hover:bg-[var(--abu-bg-hover)]"
     >
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-base)] text-[var(--abu-clay)]">
@@ -218,13 +225,23 @@ export default function CapabilitiesSection({
   const [chromeChecking, setChromeChecking] = useState(false);
   const [chromeExtensionConnected, setChromeExtensionConnected] = useState<boolean>();
   /*
-    Monotonic within a session: has the extension ever answered the handshake.
-    It is what separates "never set up" from "was working and broke", and
-    because it only ever latches ON, two probes racing cannot make the card
-    describe the same machine two different ways depending on which lands
-    last. An explicit disconnect clears it — the user said they are done.
+    Has the extension ever answered the handshake. It separates "never set up"
+    from "was working and broke", and because it only ever latches ON, two
+    probes racing cannot make the card describe the same machine two different
+    ways depending on which lands last.
+
+    The truth lives in a module (see chromeHandshakeLatch), not here: this
+    component unmounts every time the settings dialog closes, and a genuinely
+    lost connection must not read as "never connected" again just because
+    someone closed and reopened settings. The local state exists only to
+    re-render on change.
   */
-  const [chromeExtensionEverConnected, setChromeExtensionEverConnected] = useState(false);
+  const [chromeExtensionEverConnected, setChromeExtensionEverConnectedState] =
+    useState(hasChromeExtensionHandshaked);
+  const setChromeExtensionEverConnected = useCallback((value: boolean) => {
+    setChromeExtensionHandshaked(value);
+    setChromeExtensionEverConnectedState(value);
+  }, []);
   /*
     Probe ordering. Several paths probe the extension (the bridge-status
     effect, the Check button, the setup flow, the setup-page poll) and they
@@ -280,10 +297,21 @@ export default function CapabilitiesSection({
     setChromeExtensionConnected(connected);
     if (connected === true) setChromeExtensionEverConnected(true);
     return connected;
-  }, []);
+  }, [setChromeExtensionEverConnected]);
 
   useEffect(() => {
     if (!chromeBridge || !chromeBridgeEnabled || chromeBridgeStatus !== 'connected') {
+      /*
+        Invalidate in-flight probes BEFORE clearing, exactly as an explicit
+        disconnect does. A probe started while the bridge was up can otherwise
+        land after the bridge has died and report `true` — its sequence is
+        still current, so the guard waves it through, and the derivation
+        (which tests `extensionConnected === true` first) then renders a dead
+        bridge as ready AND latches the handshake. The bridge's own status
+        used to backstop that; once "has it ever handshaked" was allowed to
+        outrank runtime status, this bump became the backstop.
+      */
+      chromeProbeSeqRef.current += 1;
       setChromeExtensionConnected(undefined);
       setChromeChecking(false);
       return;
@@ -413,7 +441,7 @@ export default function CapabilitiesSection({
     } finally {
       setChromeSetupWorking(false);
     }
-  }, [disconnectMCPServer, updateMCPServer]);
+  }, [disconnectMCPServer, setChromeExtensionEverConnected, updateMCPServer]);
 
   const openChromeSetup = () => {
     setSetupRequestedByTask(false);

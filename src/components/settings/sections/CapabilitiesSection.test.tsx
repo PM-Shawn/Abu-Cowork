@@ -11,6 +11,10 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import type { SkillMetadata } from '@/types';
 import type { ProviderInstance } from '@/types/provider';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
+import {
+  hasChromeExtensionHandshaked,
+  setChromeExtensionHandshaked,
+} from '@/core/capabilityPlugins/chromeHandshakeLatch';
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
@@ -49,10 +53,12 @@ function setElectronHost(enabled: boolean) {
     : undefined;
 }
 
-/** The overview card for a capability. It is a button, and its accessible
- *  name is the capability name. */
+/** The overview card for a capability: a button whose accessible name starts
+ *  with the capability name and continues with its current status. */
 function findCapabilityCard(title: string): HTMLElement {
-  return screen.getByRole('button', { name: title });
+  return screen.getByRole('button', {
+    name: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+  });
 }
 
 type User = ReturnType<typeof userEvent.setup>;
@@ -60,7 +66,7 @@ type User = ReturnType<typeof userEvent.setup>;
 /** Overview → a capability's own page, the way a user gets there: the card
  *  row IS the control (user ruling 2026-09-04 — no named buttons). */
 async function openDetail(user: User, cardTitle: string) {
-  await user.click(screen.getByRole('button', { name: cardTitle }));
+  await user.click(findCapabilityCard(cardTitle));
 }
 
 const openBuiltinBrowser = (user: User) => openDetail(user, 'Abu built-in browser');
@@ -68,8 +74,9 @@ const openBuiltinBrowser = (user: User) => openDetail(user, 'Abu built-in browse
 /** Built-in browser page → the site verdict list (one more drill-in). */
 async function openSitePermissions(user: User) {
   await openBuiltinBrowser(user);
-  const card = permissionCard('Site permissions');
-  await user.click(within(card).getByRole('button', { name: 'Manage' }));
+  // The site card drills in the same way every other row does: the row IS
+  // the control, no text button.
+  await user.click(screen.getByRole('button', { name: 'Site permissions' }));
 }
 
 /** A settings card by its heading. Matched on the heading element so a card
@@ -79,6 +86,17 @@ function permissionCard(title: string): HTMLElement {
   if (!heading) throw new Error(`Card not found: ${title}`);
   return heading.closest('div.rounded-lg.border') as HTMLElement;
 }
+
+/** Resolve a probe on demand, so a test can control which reply lands first. */
+function deferredProbe() {
+  let resolve!: (value: string) => void;
+  const promise = new Promise<string>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+const EXTENSION_ATTACHED = 'Browser extension is connected and ready.';
+const EXTENSION_MISSING =
+  'Browser extension is not connected. Please install and enable the Abu Browser Extension.';
 
 /** The two policy cells of one row, in column order (you are here, automatic). */
 function policyCells(row: HTMLElement): HTMLElement[] {
@@ -149,6 +167,9 @@ describe('CapabilitiesSection', () => {
     mcpManagerMock.listeners.clear();
     mcpManagerMock.connectedServers.clear();
     mcpManagerMock.connectedServers.add('abu-browser-bridge');
+    // Module-scoped on purpose (it must survive the dialog closing), so it is
+    // shared state between tests and has to be reset like any other.
+    setChromeExtensionHandshaked(false);
     mcpManagerMock.callTool.mockResolvedValue('Browser extension is connected and ready.');
     mcpManagerMock.isConnected.mockImplementation(
       (name: string) => mcpManagerMock.connectedServers.has(name),
@@ -275,6 +296,22 @@ describe('CapabilitiesSection', () => {
     expect(builtinCard).toHaveFocus();
     await user.keyboard('{Enter}');
     expect(screen.getByText('Action permissions')).toBeInTheDocument();
+  });
+
+  // The badge is the reason the row exists. A screen reader that hears only
+  // "My Chrome" learns nothing the surrounding page did not already say.
+  it('names each card by its capability AND its current status', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+    render(<CapabilitiesSection />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'My Chrome · Not connected' }))
+        .toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Abu built-in browser · Setup required' }))
+      .toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Computer Use · Off' })).toBeInTheDocument();
   });
 
   it('walks into the site list and back out through the breadcrumb', async () => {
@@ -454,6 +491,175 @@ describe('CapabilitiesSection', () => {
       expect(within(chromeCard).getByText('Not connected')).toBeInTheDocument();
     });
     expect(within(chromeCard).queryByText('Setup required')).not.toBeInTheDocument();
+  });
+
+  /*
+    R1 — the probe that outlived its bridge.
+
+    A probe started while the bridge was up can land after the bridge has
+    died. Its sequence number is still the newest, so the staleness guard
+    waves it through; it reports `true`; and because the derivation now tests
+    "is the extension attached" BEFORE the bridge's own runtime status, a dead
+    bridge would render as ready and latch the handshake on the way. The
+    bridge status used to backstop this on its own. It no longer can, so the
+    status effect has to invalidate in-flight probes when the bridge goes
+    away — the same thing an explicit disconnect does.
+
+    Mutation: drop the `chromeProbeSeqRef.current += 1` from that early
+    return and this test goes red.
+  */
+  it('ignores a probe that resolves after its bridge went away', async () => {
+    const inFlight = deferredProbe();
+    mcpManagerMock.callTool.mockReturnValue(inFlight.promise);
+    const { rerender } = render(<CapabilitiesSection />);
+
+    // The probe is out, launched while the bridge was connected.
+    await waitFor(() => {
+      expect(mcpManagerMock.callTool).toHaveBeenCalled();
+    });
+
+    // The bridge dies underneath it.
+    useMCPStore.setState((state) => ({
+      servers: {
+        ...state.servers,
+        'abu-browser-bridge': {
+          ...state.servers['abu-browser-bridge'],
+          status: 'error',
+          error: 'bridge died',
+        },
+      },
+    }));
+    rerender(<CapabilitiesSection />);
+
+    // ...and only now does the old probe come back, saying all is well.
+    inFlight.resolve(EXTENSION_ATTACHED);
+    await waitFor(() => {
+      expect(findCapabilityCard('My Chrome')).toBeInTheDocument();
+    });
+
+    const chromeCard = findCapabilityCard('My Chrome');
+    expect(within(chromeCard).queryByText('Ready')).not.toBeInTheDocument();
+    // ...and it must not have latched the handshake on its way past, which
+    // would turn every later "not connected" into an amber fault.
+    expect(hasChromeExtensionHandshaked()).toBe(false);
+  });
+
+  /*
+    R2 — the staleness guard itself. Two probes overlap; the NEWEST answer is
+    the true one even when it comes back first.
+
+    Mutation: delete the `seq !== chromeProbeSeqRef.current` early return and
+    this test goes red.
+  */
+  it('keeps the newest probe result when an older probe answers last', async () => {
+    const slowFirstProbe = deferredProbe();
+    const fastSecondProbe = deferredProbe();
+    mcpManagerMock.callTool
+      .mockReturnValueOnce(slowFirstProbe.promise)
+      .mockReturnValueOnce(fastSecondProbe.promise);
+
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await waitFor(() => {
+      expect(mcpManagerMock.callTool).toHaveBeenCalledTimes(1);
+    });
+
+    // A second, newer probe: the user asks to check the connection.
+    await openDetail(user, 'My Chrome');
+    await user.click(await screen.findByRole('button', { name: 'Check connection' }));
+    await waitFor(() => {
+      expect(mcpManagerMock.callTool).toHaveBeenCalledTimes(2);
+    });
+
+    // The newer probe answers first...
+    fastSecondProbe.resolve(EXTENSION_ATTACHED);
+    await waitFor(() => {
+      expect(hasChromeExtensionHandshaked()).toBe(true);
+    });
+
+    // ...and the older one contradicts it afterwards. It is history.
+    slowFirstProbe.resolve(EXTENSION_MISSING);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: 'Check connection' })).not.toBeInTheDocument();
+  });
+
+  /*
+    R3 — the latch is scoped to the process, not to the component. Settings
+    unmounts every time the dialog closes, and a connection that genuinely
+    broke must not read as "never connected" again just because the user
+    closed and reopened the dialog.
+  */
+  describe('handshake latch scope', () => {
+    it('survives the settings dialog closing and reopening', async () => {
+      const { unmount } = render(<CapabilitiesSection />);
+      await waitFor(() => {
+        expect(hasChromeExtensionHandshaked()).toBe(true);
+      });
+
+      unmount();
+      expect(hasChromeExtensionHandshaked()).toBe(true);
+
+      // Reopened, with the extension now gone: this is a LOST connection, and
+      // the remounted page has to still know that.
+      mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+      render(<CapabilitiesSection />);
+      const chromeCard = findCapabilityCard('My Chrome');
+      await waitFor(() => {
+        expect(within(chromeCard).getByText('Setup required')).toBeInTheDocument();
+      });
+      expect(within(chromeCard).queryByText('Not connected')).not.toBeInTheDocument();
+    });
+
+    it('starts false in a fresh process and clears on an explicit disconnect', async () => {
+      // Nothing has run yet in this test: the module default is the
+      // fresh-process value, and it is never read back from storage.
+      expect(hasChromeExtensionHandshaked()).toBe(false);
+
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await waitFor(() => {
+        expect(hasChromeExtensionHandshaked()).toBe(true);
+      });
+
+      await openDetail(user, 'My Chrome');
+      await user.click(screen.getByRole('button', { name: 'Disconnect My Chrome' }));
+
+      await waitFor(() => {
+        expect(hasChromeExtensionHandshaked()).toBe(false);
+      });
+    });
+  });
+
+  /*
+    R4 — the button that would not hide. `hidden={!capabilityEnabled}` was
+    defeated by Tailwind v4's layer order (`.inline-flex` in `@layer
+    utilities` outranks preflight's `[hidden] { display: none }`), so this
+    button offered to check a connection for a bridge that is not enabled.
+    Conditional rendering is what makes it actually absent — assert absence
+    from the DOM, since a CSS-only fix would still leave it present.
+  */
+  it('offers no connection check while the Chrome capability is disabled', async () => {
+    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+    useMCPStore.setState((state) => ({
+      servers: {
+        ...state.servers,
+        'abu-browser-bridge': {
+          ...state.servers['abu-browser-bridge'],
+          config: { ...state.servers['abu-browser-bridge'].config, enabled: false },
+          status: 'disconnected',
+        },
+      },
+    }));
+    useSettingsStore.setState({ capabilitySetupTarget: 'chrome' });
+    render(<CapabilitiesSection />);
+
+    expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Done' })).not.toBeInTheDocument();
+    // The way forward is the explicit opt-in, which is present.
+    expect(screen.getByRole('button', { name: 'Connect Chrome' })).toBeInTheDocument();
   });
 
   it('lets the user disconnect My Chrome without entering MCP settings', async () => {
@@ -916,7 +1122,7 @@ describe('CapabilitiesSection', () => {
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
-      expect(permissionCard('Site permissions')).toHaveTextContent(
+      expect(screen.getByRole('button', { name: 'Site permissions' })).toHaveTextContent(
         '2 allowed · 1 blocked · shared by the built-in browser and Chrome',
       );
     });

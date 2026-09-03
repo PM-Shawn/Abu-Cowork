@@ -74,9 +74,14 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
   }
 }
 
-/** The overview card for a capability: a single button named after it. */
+/**
+ * The overview card for a capability: a single button whose accessible name
+ * is `<capability> · <status>` (the badge is the point of the row, so it is
+ * part of the name). Matched on the leading capability name, which is why the
+ * shared `$`-anchored constants get their tail anchor dropped here.
+ */
 function capabilityCard(page: Page, title: RegExp) {
-  return page.getByRole('button', { name: title });
+  return page.getByRole('button', { name: new RegExp(title.source.replace(/\$$/, '')) });
 }
 
 /**
@@ -149,8 +154,6 @@ test.describe.serial('Electron capability overview', () => {
     // Not connected is not a fault, so the card spends its one line on what
     // connecting would buy rather than restating the badge next to it.
     await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
-    await expect(computerUse.getByText(OFF)).toBeVisible();
-
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
     await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
@@ -160,7 +163,10 @@ test.describe.serial('Electron capability overview', () => {
     await expect(page.getByRole('button', { name: MANAGE })).toHaveCount(0);
     await expect(page.getByRole('button', { name: CONNECT_CHROME })).toHaveCount(0);
     await expect(page.getByRole('button', { name: START_SETUP })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: BUILTIN_BROWSER })).toBeVisible();
+    await expect(builtinBrowser).toBeVisible();
+    // ...and the row itself is the button, including for the capability whose
+    // card used to carry "Start setup": clicking it drills in.
+    await expect(computerUse).toHaveJSProperty('tagName', 'BUTTON');
 
     // Let the previous navigation item's color transition finish so the visual
     // artifact reflects the stable selected state.
@@ -231,7 +237,7 @@ test.describe.serial('Electron capability overview', () => {
     await page.screenshot({ path: iaScreenshot('01-capabilities-overview-zh') });
 
     // ---- Built-in browser detail ----------------------------------------
-    await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
+    await capabilityCard(page, BUILTIN_BROWSER).click();
 
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(VIEW_PAGES)).toBeVisible();
@@ -275,11 +281,9 @@ test.describe.serial('Electron capability overview', () => {
     await expect(optionDescription).toHaveCount(0);
 
     // ---- Site list, two levels down -------------------------------------
-    const siteCard = page.locator('div.rounded-lg.border').filter({
-      has: page.getByText(SITE_PERMISSIONS, { exact: true }),
-    }).first();
-    await siteCard.getByRole('button', { name: MANAGE }).click();
-
+    // Same rule as the overview: the row drills in, no text button.
+    await expect(page.getByRole('button', { name: MANAGE })).toHaveCount(0);
+    await page.getByRole('button', { name: SITE_PERMISSIONS }).click();
 
     await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
     await expect(page.getByTitle('https://example.com')).toBeVisible();
@@ -294,7 +298,7 @@ test.describe.serial('Electron capability overview', () => {
     await expect(capabilityCard(page, MY_CHROME)).toBeVisible();
 
     // ---- My Chrome detail: same cards, one extra warning ----------------
-    await page.getByRole('button', { name: MY_CHROME }).click();
+    await capabilityCard(page, MY_CHROME).click();
     await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
@@ -311,7 +315,7 @@ test.describe.serial('Electron capability overview', () => {
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     // ---- Computer Use detail: now owns the active-model block -----------
-    await page.getByRole('button', { name: COMPUTER_USE }).click();
+    await capabilityCard(page, COMPUTER_USE).click();
     await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
     await page.screenshot({ path: iaScreenshot('05-computer-use-detail-zh') });

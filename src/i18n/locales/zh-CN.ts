@@ -808,7 +808,6 @@ const zhCN: TranslationDict = {
     capabilityBuiltinBrowserSubtitle: '独立会话，不用你的 Chrome 登录',
     capabilityMyChromeSubtitle: '复用你已登录的 Chrome 标签页',
     capabilityComputerSubtitle: '读取屏幕并操作界面',
-    capabilityManage: '管理',
     browserSitePermsTitle: '网站授权',
     browserSitePermsDesc: '适用于内置浏览器和已连接的 Chrome。移除后恢复为每次询问。',
     browserSitePermsEmpty: '还没有为任何网站定过规则。在浏览器操作确认弹窗里选择「此网站以后都允许」或「禁止此网站」，网站会出现在这里。',

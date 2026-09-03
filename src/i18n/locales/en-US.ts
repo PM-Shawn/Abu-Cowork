@@ -807,7 +807,6 @@ const enUS: TranslationDict = {
     capabilityBuiltinBrowserSubtitle: 'Its own session — none of your Chrome sign-ins',
     capabilityMyChromeSubtitle: 'Reuses the Chrome tabs you are already signed in to',
     capabilityComputerSubtitle: 'Reads the screen and operates the interface',
-    capabilityManage: 'Manage',
     browserSitePermsTitle: 'Site permissions',
     browserSitePermsDesc: 'Applies to the built-in browser and connected Chrome. Removing a site restores ask-every-time.',
     browserSitePermsEmpty: 'No site rules yet. Choose "Always allow this site" or "Block this site" in the browser action confirmation dialog and the site will appear here.',

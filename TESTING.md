@@ -142,17 +142,20 @@ npm run lint && npm run typecheck && npm run gen:models:check && npm run check:b
 
 - Full quality gate: lint + type errors + model-data freshness check + the full suite (file counts in §2 "Current inventory") + coverage threshold enforcement.
 - Two further freshness checks sit between `gen:models:check` and the suite: `check:browser-artifacts` verifies the built browser bundles (chrome-extension `dist/`, `electron/*-runtime/dist/`) are not older than their sources (the app loads the artifacts, not the sources), and `test:inventory:check` verifies the generated inventory block in §2 of this file matches the files on disk (regenerate with `npm run test:inventory`).
-- Use before marking a task complete and before opening a PR. Locally equivalent to what CI runs as independent steps.
+- Use before marking a task complete and before opening a PR. It overlaps with the CI `check` job but is not the same set of steps — see §7.
 - Coverage below the committed thresholds causes non-zero exit and fails the gate.
 
 ### verify (= verify:full)
 
 Single canonical entry point for local use and `/goal` completion criteria.
-CI does **not** call `verify:full` directly — the `check` job runs the same checks as individual
+CI does **not** call `verify:full` directly — the `check` job runs its own list of individual
 steps (Lint → Type check → Test with coverage → Test-infra scripts → TESTING.md inventory check →
 Build frontend → Chrome-extension sync check), each gated on
 `!cancelled() && steps.install.outcome == 'success'` so every stage reports independently (see §7).
-`verify:full` is the local shorthand that sequences those same steps in one command.
+The two lists **overlap but are not identical**: `verify:full` sequences lint, typecheck, the
+coverage run and the inventory check, plus two freshness checks with no CI step of their own
+(`gen:models:check`, `check:browser-artifacts`); `test:infra`, the production build and the
+Chrome-extension sync check are CI-only (see §7, "Steps that are NOT part of verify").
 
 ---
 
@@ -257,7 +260,10 @@ frontend → Chrome-extension sync check. Each is gated on
 `!cancelled() && steps.install.outcome == 'success'` (not `if: always()`): one red stage does not
 mask another — you see exactly which stages are red in one run — but nothing runs against an
 empty `node_modules` when the install step failed or the job was cancelled. `verify:full` is the
-local equivalent that sequences the same checks; use it before opening a PR.
+closest local gate, but it is **not** the same set: it covers lint, type check, the coverage run
+and the inventory check (plus `gen:models:check` and `check:browser-artifacts`, which have no CI
+step of their own) and skips `test:infra`, the build and the extension sync check. Run it before
+opening a PR.
 
 **`check` job — report steps.** These run even when the test step is red:
 - `coverage-report` and `test-results` artifacts (`coverage/`, `test-results/`, 14-day retention).
@@ -280,6 +286,8 @@ and again inside `npm run build` — no separate CI step is needed.
 
 Steps that are NOT part of verify (and must be kept):
 - Enterprise leak guard (`scripts/enterprise-leak-guard.sh`) — runs **before** npm install.
+- Test-infra scripts (`npm run test:infra`) — `node:test` checks over the CI workflow and the
+  inventory generator; not wired into `verify:full`.
 - Build frontend (`npm run build`) — separate from tests, validates production bundle.
 - Chrome extension bundle sync check — validates committed extension artifact is up to date.
 

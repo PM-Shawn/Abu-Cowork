@@ -81,6 +81,16 @@ function utf8Bytes(text: string): number {
  * Longest prefix of `text` that fits in `maxBytes` UTF-8 bytes, cut on a
  * character boundary (never mid-code-point). Binary search so a 50 KB body
  * costs a handful of encodes rather than one per character.
+ *
+ * The search runs over UTF-16 code units, so its boundary can land BETWEEN the
+ * two halves of an astral-plane character (emoji, rare CJK ext, most
+ * pictographs). A lone high surrogate is not a character: `TextEncoder` maps it
+ * to U+FFFD, which is 3 bytes — under the 4 the whole pair needed, so the
+ * budget check accepts it and the malformed unit is kept and then serialised
+ * onto the wire. Dropping that trailing half is the whole reason the last step
+ * exists; without it a cut with 3 bytes of headroom left in the budget emits
+ * `"\ud83d"`. (BMP characters, CJK included, are single code units and can
+ * never straddle the boundary.)
  */
 function sliceToBytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0) return '';
@@ -94,6 +104,13 @@ function sliceToBytes(text: string, maxBytes: number): string {
     } else {
       high = mid - 1;
     }
+  }
+  // Never end on the leading half of a surrogate pair. One step is enough: a
+  // high surrogate can only ever be followed by its own low half, so at most a
+  // single unit is unpaired at the boundary.
+  if (low > 0) {
+    const lastUnit = text.charCodeAt(low - 1);
+    if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) low -= 1;
   }
   return text.slice(0, low);
 }

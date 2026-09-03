@@ -173,6 +173,61 @@ describe('resolvePreloadedSkills', () => {
     expect(injection?.text).toContain(bigBody);
   });
 
+  /** A lone surrogate survives `.length`/`slice` but is not valid Unicode: it
+   *  encodes to U+FFFD, so an encode→decode round trip is lossy. Lib-agnostic
+   *  stand-in for `String.prototype.isWellFormed` (ES2024). */
+  const LONE_SURROGATE =
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  function isWellFormedUtf16(text: string): boolean {
+    return !LONE_SURROGATE.test(text)
+      && new TextDecoder().decode(new TextEncoder().encode(text)) === text;
+  }
+
+  // The body cap is a byte budget but the cut used to be searched over UTF-16
+  // code units, so a 4-byte astral character (emoji) straddling the boundary
+  // was split into a lone high surrogate — which encodes to 3 bytes, passes the
+  // budget check, is kept, and then crosses the NDJSON wire into the provider
+  // request. Residuals 7/11/15 are the reproducing cases; 5/8 already worked.
+  for (const residual of [5, 7, 8, 11, 15]) {
+    it(`cuts an emoji body on a code-point boundary with ${residual} bytes left`, async () => {
+      // `content` is the file body verbatim (parseSkillFile trims only the
+      // edges), so an all-ASCII body of N chars spends exactly N bytes and
+      // leaves `residual` bytes for the next skill.
+      writeSkill(skillsDir, 'fills-budget', 'A'.repeat(PRELOADED_SKILLS_MAX_BYTES - residual));
+      writeSkill(skillsDir, 'emoji-body', '\u{1F600}'.repeat(50));
+      await loader.discoverSkills(workspace);
+
+      const injection = await resolvePreloadedSkills(
+        { name: 'reporter', skills: ['fills-budget', 'emoji-body'] },
+        loader,
+      );
+
+      expect(injection?.truncated).toContain('emoji-body');
+      const text = injection?.text ?? '';
+      expect(isWellFormedUtf16(text)).toBe(true);
+      // Budget still honoured exactly: bodies never exceed the cap.
+      const bodyBytes = new TextEncoder().encode(
+        'A'.repeat(PRELOADED_SKILLS_MAX_BYTES - residual)
+          + (text.match(/\u{1F600}+/gu)?.join('') ?? ''),
+      ).byteLength;
+      expect(bodyBytes).toBeLessThanOrEqual(PRELOADED_SKILLS_MAX_BYTES);
+    });
+  }
+
+  it('keeps a CJK body well-formed at a cut that lands mid-character', async () => {
+    writeSkill(skillsDir, 'fills-budget', 'A'.repeat(PRELOADED_SKILLS_MAX_BYTES - 5));
+    writeSkill(skillsDir, 'cjk-body', '\u4e2d'.repeat(50));
+    await loader.discoverSkills(workspace);
+
+    const injection = await resolvePreloadedSkills(
+      { name: 'reporter', skills: ['fills-budget', 'cjk-body'] },
+      loader,
+    );
+
+    expect(injection?.truncated).toContain('cjk-body');
+    expect(isWellFormedUtf16(injection?.text ?? '')).toBe(true);
+  });
+
   it('gives a skill past the spent budget no body at all, and names it', async () => {
     const bigBody = 'B'.repeat(PRELOADED_SKILLS_MAX_BYTES);
     writeSkill(skillsDir, 'fills-budget', bigBody);

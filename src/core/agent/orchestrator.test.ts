@@ -351,6 +351,133 @@ describe('buildSystemPromptSections - agent preloaded skills', () => {
     expect(prompt).toContain('PRELOADED-BODY-MARKER');
   });
 
+  /** A fork-mode route whose skill delegates to `agentName`. */
+  function forkRouteTo(agentName: string) {
+    return {
+      type: 'skill' as const,
+      name: 'test-skill',
+      skill: {
+        name: 'test-skill',
+        description: 'test',
+        content: 'do stuff',
+        context: 'fork' as const,
+        agent: agentName,
+        filePath: '/test',
+        skillDir: '/test',
+      },
+      skillContent: 'do stuff',
+      cleanInput: 'test',
+    };
+  }
+
+  it('injects the declared skill body on the fork-mode path too', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reporter', systemPrompt: 'FORK-IDENTITY-MARKER', description: 'r', skills: ['weekly-report'],
+    } as never);
+    vi.mocked(skillLoader.loadSkill).mockResolvedValue({
+      name: 'weekly-report', description: 'A report skill', content: 'FORK-PRELOADED-BODY',
+      filePath: '/s/SKILL.md', skillDir: '/s',
+    } as never);
+
+    const sections = await buildSystemPromptSections(forkRouteTo('reporter'), basePrompt, 'test-conv');
+    const names = sections.map((section) => section.name);
+    expect(names).toContain('agent-preloaded-skills');
+    expect(names.indexOf('agent-preloaded-skills')).toBeGreaterThan(names.indexOf('identity'));
+
+    const prompt = await buildSystemPrompt(forkRouteTo('reporter'), basePrompt, 'test-conv');
+    expect(prompt).toContain('FORK-IDENTITY-MARKER');
+    expect(prompt).toContain('## Preloaded Skills');
+    expect(prompt).toContain('FORK-PRELOADED-BODY');
+  });
+
+  // `parseAgentFile` accepts an AGENT.md whose body is empty, and both call
+  // sites used to sit INSIDE `if (…systemPrompt)`. An agent that declared
+  // skills but wrote no prompt therefore got no preload AND no warning — the
+  // one place this fail-loud feature was silent. `skills:` is a declaration
+  // independent of the body, so it is honoured either way.
+  it('preloads for an agent whose system prompt is empty (fork mode)', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reporter', systemPrompt: '', description: 'r', skills: ['weekly-report'],
+    } as never);
+    vi.mocked(skillLoader.loadSkill).mockResolvedValue({
+      name: 'weekly-report', description: 'A report skill', content: 'EMPTY-PROMPT-BODY',
+      filePath: '/s/SKILL.md', skillDir: '/s',
+    } as never);
+
+    const prompt = await buildSystemPrompt(forkRouteTo('reporter'), basePrompt, 'test-conv');
+    expect(prompt).toContain('EMPTY-PROMPT-BODY');
+  });
+
+  it('preloads for an agent whose system prompt is empty (agent-role mode)', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'abu', systemPrompt: '', description: '桌面助手', skills: ['weekly-report'],
+    } as never);
+    vi.mocked(skillLoader.loadSkill).mockResolvedValue({
+      name: 'weekly-report', description: 'A report skill', content: 'EMPTY-PROMPT-BODY',
+      filePath: '/s/SKILL.md', skillDir: '/s',
+    } as never);
+
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'test-conv');
+    const names = sections.map((section) => section.name);
+    // Still no empty `## Role` section — an empty body contributes nothing.
+    expect(names).not.toContain('agent-role');
+    expect(names).toContain('agent-preloaded-skills');
+    const prompt = await buildSystemPrompt(routeInput('hello'), basePrompt, 'test-conv');
+    expect(prompt).toContain('EMPTY-PROMPT-BODY');
+  });
+
+  // Two similarly named sections can coexist in fork mode: `## Preloaded Skill
+  // Knowledge` (the SKILL's `preload-skills`, uncapped) and `## Preloaded
+  // Skills` (the AGENT's `skills:`). A skill listed in both used to be injected
+  // twice, paying for the same body twice.
+  it('does not inject a body the skill section already preloaded', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reporter', systemPrompt: 'identity', description: 'r',
+      skills: ['weekly-report', 'chart-builder'],
+    } as never);
+    vi.mocked(skillLoader.getSkill).mockImplementation((name: string) =>
+      (name === 'weekly-report'
+        ? { name: 'weekly-report', description: 'A report skill', content: 'SHARED-BODY' }
+        : undefined) as never);
+    vi.mocked(skillLoader.loadSkill).mockImplementation(async (name: string) =>
+      (name === 'chart-builder'
+        ? { name: 'chart-builder', description: 'A chart skill', content: 'AGENT-ONLY-BODY' }
+        : { name, description: 'A report skill', content: 'SHARED-BODY' }) as never);
+
+    const route = forkRouteTo('reporter');
+    const withPreload = {
+      ...route,
+      skill: { ...route.skill, preloadSkills: ['weekly-report'] },
+    };
+
+    const prompt = await buildSystemPrompt(withPreload, basePrompt, 'test-conv');
+
+    // The older section is untouched, name included.
+    expect(prompt).toContain('## Preloaded Skill Knowledge');
+    expect(prompt.match(/SHARED-BODY/g)).toHaveLength(1);
+    // The agent's own extra skill still preloads.
+    expect(prompt).toContain('## Preloaded Skills');
+    expect(prompt).toContain('AGENT-ONLY-BODY');
+  });
+
+  it('adds no agent section when the skill section already covers every declared skill', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reporter', systemPrompt: 'identity', description: 'r', skills: ['weekly-report'],
+    } as never);
+    vi.mocked(skillLoader.getSkill).mockReturnValue({
+      name: 'weekly-report', description: 'A report skill', content: 'SHARED-BODY',
+    } as never);
+
+    const route = forkRouteTo('reporter');
+    const sections = await buildSystemPromptSections(
+      { ...route, skill: { ...route.skill, preloadSkills: ['weekly-report'] } },
+      basePrompt,
+      'test-conv',
+    );
+
+    expect(sections.map((section) => section.name)).not.toContain('agent-preloaded-skills');
+  });
+
   it('enumerates <preloaded-skill> in the safety anchor\'s prompt-injection list', async () => {
     const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'test-conv');
     const anchor = sections.find((section) => section.name === 'safety-anchor')?.text ?? '';

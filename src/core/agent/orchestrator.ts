@@ -319,12 +319,30 @@ export async function buildSystemPrompt(
  * well as inside the section itself — a declared skill must never be silently
  * ineffective.
  */
+/**
+ * Render an agent's `skills:` field into its own section.
+ *
+ * Deliberately NOT gated on the agent having a system prompt: `parseAgentFile`
+ * accepts an empty body, and `skills:` is a declaration independent of it, so
+ * an agent that declares skills and writes no prompt must still get them —
+ * otherwise it is the one place this fail-loud feature stays silent.
+ *
+ * `alreadyInjected` is the fork-mode dedupe (lower-cased names). The SKILL's
+ * own `## Preloaded Skill Knowledge` section runs first and may already carry a
+ * body the AGENT also declares; injecting it a second time buys nothing and
+ * costs the context window twice. The older section keeps its name and content
+ * exactly as they are — this only trims the newer one.
+ */
 async function pushAgentPreloadedSkills(
   sections: PromptSection[],
   agentDef: { name: string; skills?: string[] } | undefined,
+  alreadyInjected?: ReadonlySet<string>,
 ): Promise<void> {
   if (!agentDef) return;
-  const injection = await resolvePreloadedSkills(agentDef);
+  const declared = alreadyInjected
+    ? agentDef.skills?.filter((name) => !alreadyInjected.has(name.trim().toLowerCase()))
+    : agentDef.skills;
+  const injection = await resolvePreloadedSkills({ ...agentDef, skills: declared });
   if (!injection) return;
   if (injection.missing.length > 0) {
     console.warn(
@@ -383,27 +401,32 @@ export async function buildSystemPromptSections(
     // Fork mode: Skill instructions come FIRST with maximum priority
     sections.push({ name: 'fork-task', text: '## Current Task — follow the steps below exactly\n' + processedSkillContent, cacheable: true });
 
-    // Preload other skills if specified
+    // Preload other skills if specified. The names that actually landed are
+    // remembered so the agent's own `skills:` section below can skip them
+    // instead of injecting the same body a second time.
+    const skillSectionPreloaded = new Set<string>();
     if (route.skill.preloadSkills && route.skill.preloadSkills.length > 0) {
-      const preloaded = route.skill.preloadSkills
-        .map(name => skillLoader.getSkill(name))
-        .filter((s): s is NonNullable<typeof s> => s !== undefined)
-        .map(s => `### ${s.name}\n${s.content}`)
-        .join('\n\n');
-      if (preloaded) {
-        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + preloaded, cacheable: true });
+      const preloadedBlocks: string[] = [];
+      for (const declaredName of route.skill.preloadSkills) {
+        const preloadedSkill = skillLoader.getSkill(declaredName);
+        if (!preloadedSkill) continue;
+        // Both spellings: the declared name and the skill's own, which the
+        // agent may equally well have used.
+        skillSectionPreloaded.add(declaredName.trim().toLowerCase());
+        skillSectionPreloaded.add(preloadedSkill.name.trim().toLowerCase());
+        preloadedBlocks.push(`### ${preloadedSkill.name}\n${preloadedSkill.content}`);
+      }
+      if (preloadedBlocks.length > 0) {
+        sections.push({ name: 'preload-skills', text: '\n## Preloaded Skill Knowledge\n' + preloadedBlocks.join('\n\n'), cacheable: true });
       }
     }
 
     // Use agent-specific persona if skill.agent is set
     if (route.skill.agent) {
       const agentDef = agentRegistry.getAgent(route.skill.agent);
-      if (agentDef?.systemPrompt) {
-        sections.push({ name: 'identity', text: '\n## Identity\n' + agentDef.systemPrompt, cacheable: true });
-        await pushAgentPreloadedSkills(sections, agentDef);
-      } else {
-        sections.push({ name: 'identity', text: '\n## Identity\n' + DEFAULT_PERSONA, cacheable: true });
-      }
+      sections.push({ name: 'identity', text: '\n## Identity\n' + (agentDef?.systemPrompt || DEFAULT_PERSONA), cacheable: true });
+      // Outside the prompt check on purpose — see pushAgentPreloadedSkills.
+      await pushAgentPreloadedSkills(sections, agentDef, skillSectionPreloaded);
     } else {
       sections.push({ name: 'identity', text: '\n## Identity\n' + DEFAULT_PERSONA, cacheable: true });
     }
@@ -731,10 +754,14 @@ ${isWindows()
 
   // Inject agent-specific system prompt (Abu unified agent)
   // Skip in fork mode — we already have a minimal identity
-  if (!isForkContext && route.definition?.systemPrompt) {
-    sections.push({ name: 'agent-role', text: '\n## Role\n' + route.definition.systemPrompt, cacheable: true });
-    // Right after the agent's own prompt, before the boundary/safety sections
-    // (available-skills guidance, response-language, and the pinned anchor).
+  if (!isForkContext && route.definition) {
+    // An empty body still contributes no `## Role` section…
+    if (route.definition.systemPrompt) {
+      sections.push({ name: 'agent-role', text: '\n## Role\n' + route.definition.systemPrompt, cacheable: true });
+    }
+    // …but declared skills are honoured either way. Right after the agent's own
+    // prompt, before the boundary/safety sections (available-skills guidance,
+    // response-language, and the pinned anchor).
     await pushAgentPreloadedSkills(sections, route.definition);
   }
 

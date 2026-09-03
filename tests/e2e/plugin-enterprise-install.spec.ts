@@ -1,7 +1,7 @@
 /**
  * The ORGANIZATION plugin loop in the real Electron shell, against a real
  * enterprise console over HTTP: bind through the product's own login UI, switch
- * the Toolbox to the 组织 scope, read the disclosure, install, verify the
+ * Extensions to the 组织 scope, read the disclosure, install, verify the
  * ON-DISK layout, uninstall, and (on a spec-owned package) update.
  *
  * Why this exists: every other test of this feature mocks either the installer
@@ -83,7 +83,7 @@ const CONTINUE_BUTTON = /^(继续|Continue)$/;
 const PASSWORD_PLACEHOLDER = /^(输入密码|Enter password)$/;
 const SIGN_IN_BUTTON = /^(登录|Sign in)$/;
 const BOUND_STATUS = /已绑定到企业实例|Connected to enterprise instance/;
-const TOOLBOX = /^(工具箱|插件|Toolbox|Plugins)$/;
+const EXTENSIONS = /^(扩展|Extensions)$/;
 const PLUGINS_TAB = /^(插件|Plugins)$/;
 const MARKETPLACE_TAB = /^(插件市场|Marketplace)$/;
 const SCOPE_PERSONAL = /^(我的|Mine)$/;
@@ -259,23 +259,6 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
   ).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-/** Flip the experiment on directly — the Labs UI is not what's under test. */
-async function enablePluginExperiment(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state?: Record<string, unknown> };
-    persisted.state = persisted.state ?? {};
-    persisted.state.labs = {
-      ...((persisted.state.labs as Record<string, boolean>) ?? {}),
-      'plugin-system': true,
-    };
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForWelcomeScreen(page);
-}
-
 /**
  * Bind through the PRODUCT's own flow: Settings → 企业模式 → server URL →
  * password login. Nothing is seeded: the bootstrap probe, the credential
@@ -304,9 +287,9 @@ async function bindToConsole(page: Page): Promise<void> {
 }
 
 async function openPluginsTab(page: Page): Promise<void> {
-  // Under the experiment the sidebar entry is renamed 「插件」 too, so it and
-  // the panel's own tab match the same name — scope each to its region.
-  await page.getByLabel('Main navigation').getByRole('button', { name: TOOLBOX }).click();
+  // Scope the sidebar entry to the navigation region and the tab to the panel
+  // so neither can match the other by accident.
+  await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
   const panel = page.getByRole('main');
   await expect(panel.getByRole('button', { name: PLUGINS_TAB })).toBeVisible({ timeout: READY_TIMEOUT });
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
@@ -372,7 +355,6 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     page = await app.firstWindow();
     await waitForWelcomeScreen(page);
     await dismissFirstRunOverlays(page);
-    await enablePluginExperiment(page);
     await bindToConsole(page);
   });
 

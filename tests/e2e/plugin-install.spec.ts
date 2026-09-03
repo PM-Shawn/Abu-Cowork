@@ -13,7 +13,7 @@ import {
 } from './electronHelpers';
 
 /**
- * The plugin loop in the real Electron shell: enable the experiment, add a
+ * The plugin loop in the real Electron shell: open Extensions → 插件, add a
  * marketplace directory, read the install disclosure, install, see the plugin
  * listed, uninstall, see it gone.
  *
@@ -40,7 +40,7 @@ function installRoot(dataRoot: ElectronDataRoot): string {
 
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
-const TOOLBOX = /^(工具箱|插件|Toolbox|Plugins)$/;
+const EXTENSIONS = /^(扩展|Extensions)$/;
 const PLUGINS_TAB = /^(插件|Plugins)$/;
 const MARKETPLACE_TAB = /^(插件市场|Marketplace)$/;
 const INSTALLED_TAB = /^(已安装|Installed)$/;
@@ -99,30 +99,13 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
   ).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-/** Flip the experiment on directly — the Labs UI is not what's under test. */
-async function enablePluginExperiment(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state?: Record<string, unknown> };
-    persisted.state = persisted.state ?? {};
-    persisted.state.labs = {
-      ...((persisted.state.labs as Record<string, boolean>) ?? {}),
-      'plugin-system': true,
-    };
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForWelcomeScreen(page);
-}
-
 async function openPluginsTab(page: Page): Promise<void> {
-  // The Toolbox is reachable straight from the sidebar. It reopens on whatever
-  // tab was last active (persisted), so select the Plugins tab explicitly
-  // rather than assuming; "插件市场" is a sub-tab *inside* it.
-  // Under the experiment the sidebar entry is renamed 「插件」 too, so both it
-  // and the panel's own tab match the same name — scope each to its region.
-  await page.getByLabel('Main navigation').getByRole('button', { name: TOOLBOX }).click();
+  // Extensions is reachable straight from the sidebar. It reopens on whatever
+  // tab was last active, so select the Plugins tab explicitly rather than
+  // assuming; "插件市场" is a sub-tab *inside* it. Scope the sidebar entry to
+  // the navigation region and the tab to the panel so neither can match the
+  // other by accident.
+  await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
   // The plugin page carries no separate title heading — it matches the original
   // toolbox layout, where the tabs are the header. Wait on the panel's own
   // Plugins tab button, then select it.
@@ -148,7 +131,6 @@ test.describe('plugin install loop', () => {
     page = await app.firstWindow();
     await waitForWelcomeScreen(page);
     await dismissFirstRunOverlays(page);
-    await enablePluginExperiment(page);
   });
 
   test.afterAll(async () => {

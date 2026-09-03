@@ -144,12 +144,14 @@ async function assertRealPackageRoot(dir: string): Promise<void> {
 
 /** One directory read under the single ownership rule. */
 interface OwnedListing {
-  /** Entries the copy brings in. */
+  /** Entries the copy brings in: real directories and real files. */
   owned: PackageEntry[];
   /**
    * Names of entries skipped for being links. Denylisted names are absent from
    * both lists: they are not part of the package at all, so there is nothing to
-   * disclose about them.
+   * disclose about them. So is a non-regular entry such as a FIFO — it carries
+   * no content the package could have meant to ship, and this list is rendered
+   * to the user as the LINKS the copy refused.
    */
   links: string[];
 }
@@ -158,10 +160,18 @@ interface OwnedListing {
  * THE rule: what a plugin package owns in one directory.
  *
  * Every walk in this module — the pre-consent scan, the copy, and the
- * read-only symlink collection — goes through here, so "denylisted or a link
- * ⇒ absent" is defined once. Three hand-kept copies of it is exactly how the
- * disclosure and the install drift apart: a fourth rule (a size cap, another
- * skipped name) added to two of three re-opens the disagreement silently.
+ * read-only symlink collection — goes through here, so "denylisted, a link, or
+ * not a real directory or file ⇒ absent" is defined once. Three hand-kept
+ * copies of it is exactly how the disclosure and the install drift apart: a
+ * fourth rule (a size cap, another skipped name) added to two of three re-opens
+ * the disagreement silently.
+ *
+ * The non-regular test lives HERE rather than in the copy's file branch because
+ * `scanPluginPackage` hands its entries to readers as well as to the copy:
+ * `readManifestWith` (`installer.ts`) does `if (!(await scan.find(candidate)))
+ * continue;` and then `readTextFile`s that path, so a `plugin.json` that is a
+ * FIFO would freeze the privileged host's event loop before any copy started.
+ * One rule, every consumer.
  */
 async function listPackageDir(absoluteDir: string): Promise<OwnedListing> {
   const entries = await readDir(absoluteDir).catch((error: unknown) => {
@@ -178,6 +188,16 @@ async function listPackageDir(absoluteDir: string): Promise<OwnedListing> {
       links.push(entry.name);
       continue;
     }
+    // A link is not the only non-regular shape a dirent can take. A FIFO
+    // reports `isDirectory:false / isFile:false / isSymlink:false` — the one
+    // combination the test above does not catch — and every read below lands on
+    // a synchronous `readFileSync` inside `ipcMain.handle('tauri:invoke')`, i.e.
+    // on the MAIN process event loop, where a writer-less pipe never returns:
+    // every window and the tray freeze until the user force-quits. tar
+    // round-trips a FIFO, so an extracted package can carry one. Absent from
+    // `links` on purpose — a pipe is not a link, and that list is a statement
+    // to the user about links.
+    if (!entry.isDirectory && !entry.isFile) continue;
     owned.push({ name: entry.name, isDirectory: entry.isDirectory });
   }
   return { owned, links };
@@ -232,6 +252,9 @@ async function walkOwnedTree<C>(
       const childContext = await visit.directory(walked, context);
       skipped.push(...(await walkOwnedTree(walked.srcPath, walked.relative, childContext, visit)));
     } else {
+      // A bare `else` is safe only because `listPackageDir` already dropped
+      // everything that is neither a real directory nor a real file — do not
+      // reintroduce the assumption that "not a directory" means "readable".
       await visit.file(walked, context);
     }
   }
@@ -239,7 +262,12 @@ async function walkOwnedTree<C>(
   return skipped;
 }
 
-/** One owned entry directly under a package directory. */
+/**
+ * One owned entry directly under a package directory.
+ *
+ * `isDirectory: false` means a REGULAR file — {@link listPackageDir} drops
+ * links and every other non-regular entry — so a consumer may read it.
+ */
 export interface PackageEntry {
   name: string;
   isDirectory: boolean;
@@ -365,6 +393,20 @@ export interface CopyPluginDirResult {
  * whoever reads the installed tree later would still be pointed out of it.
  * Skips are reported rather than swallowed so the install disclosure can say
  * what will be missing before the user confirms.
+ *
+ * Non-regular entries that are not links — a FIFO — are dropped by
+ * {@link listPackageDir} before the walk sees them, and deliberately not
+ * reported: see there for why reading one freezes the app, and why it does not
+ * belong on a list the user reads as "links".
+ *
+ * What none of this catches is a HARD link, whose dirent is
+ * `{isFile:true, isSymlink:false}` — indistinguishable from a real file at the
+ * `readDir` surface, so its bytes are copied in like any other file's.
+ * Detecting one needs `st_nlink`/`st_dev`, which the plugin-fs dirent surface
+ * does not expose. Read "the package does not own it" with that bound:
+ * archives cannot carry a hard link (tar refuses absolute link targets, git
+ * cannot store one), so it takes someone who can already run `ln` as this user
+ * — who could read the target directly anyway.
  */
 export async function copyPluginDir(
   srcDir: string,

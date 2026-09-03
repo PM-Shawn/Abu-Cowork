@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -108,8 +109,14 @@ beforeEach(() => {
   mockRename.mockResolvedValue(undefined as never);
   // Default: nothing exists except SKILL.md (validated first)
   mockExists.mockImplementation(async (p: string | URL) => String(p).endsWith('/SKILL.md'));
-  // Every virtual-tree case installs from a real directory, not a link to one.
-  mockLstat.mockResolvedValue({ isSymlink: false } as never);
+  // Every virtual-tree case installs from a real directory, not a link to one,
+  // and its SKILL.md is a real file rather than a directory or a pipe.
+  mockLstat.mockImplementation(
+    async (p: string | URL) =>
+      (String(p).endsWith('/SKILL.md')
+        ? { isSymlink: false, isFile: true, isDirectory: false }
+        : { isSymlink: false, isFile: false, isDirectory: true }) as never,
+  );
 });
 
 describe('installSkillFromFolder', () => {
@@ -243,6 +250,13 @@ describe('installSkillFromFolder', () => {
   describe('validation (unchanged)', () => {
     it('fails with NO_SKILL_MD when SKILL.md is absent', async () => {
       mockExists.mockResolvedValue(false);
+      // A path that is not there cannot be lstat'd either — the two calls have
+      // to tell the same story, or the harness is describing a file that both
+      // exists and does not.
+      mockLstat.mockImplementation(async (p: string | URL) => {
+        if (String(p).endsWith('/SKILL.md')) throw new Error('ENOENT: no such file or directory, lstat');
+        return { isSymlink: false, isFile: false, isDirectory: true } as never;
+      });
       const result = await installSkillFromFolder(SRC);
       expect(result.ok).toBe(false);
       if (result.ok) return;
@@ -303,10 +317,16 @@ function useRealFs() {
     return undefined as never;
   });
   // `lstat` is the one call that must NOT resolve the final component — it is
-  // how the installer decides whether the folder it was handed is itself a link.
-  mockLstat.mockImplementation(
-    async (p: string | URL) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
-  );
+  // how the installer decides whether the folder it was handed is itself a link
+  // and whether the manifest it is about to read is a real file.
+  mockLstat.mockImplementation(async (p: string | URL) => {
+    const info = lstatSync(String(p));
+    return {
+      isSymlink: info.isSymbolicLink(),
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+    } as never;
+  });
 }
 
 /** Absolute paths of every real file under `dir`, recursively. */
@@ -559,5 +579,101 @@ describe('installSkillFromFolder with a traversing frontmatter name', () => {
     expect(result.code).toBe('NO_NAME');
     // The directory the name pointed at is still exactly as it was.
     expect(readFileSync(join(victim, 'keep.txt'), 'utf8')).toBe('ORIGINAL CONTENT');
+  });
+});
+
+/**
+ * Non-regular entries: a FIFO.
+ *
+ * The rule the copy applies is "skip symlinks", but a symlink is not the only
+ * non-regular shape a dirent can take. A FIFO reports
+ * `isDirectory:false / isFile:false / isSymlink:false` — the one combination an
+ * `isSymlink` test does not catch — and `readFile` on a writer-less pipe lands
+ * on `fs.readFileSync` inside `ipcMain.handle('tauri:invoke')`, i.e. on the
+ * MAIN process event loop, where it never returns: every window and the tray
+ * freeze until the user force-quits. macOS's stock tar round-trips a FIFO, so a
+ * downloaded-and-extracted skill folder can carry one.
+ *
+ * A real `mkfifo`, deliberately: hand-written dirents all say
+ * `isFile: false, isSymlink: false` for directories too, so only a real one
+ * produces this combination by itself.
+ */
+describe('installSkillFromFolder over a folder containing a FIFO', () => {
+  let root: string;
+  let src: string;
+  let installed: string;
+  let fifo: string;
+  let readFileTargets: string[];
+  let readTextTargets: string[];
+
+  /**
+   * Point `readFile` / `readTextFile` at the real filesystem, EXCEPT on a
+   * non-regular file: a real read of a writer-less pipe never returns and would
+   * hang the whole run rather than fail it. Recording the call and handing back
+   * bytes turns the defect into an assertion.
+   */
+  function useNonBlockingReads() {
+    mockReadFile.mockImplementation(async (p: string | URL) => {
+      readFileTargets.push(String(p));
+      if (!lstatSync(String(p)).isFile()) return new Uint8Array([0xde, 0xad]) as never;
+      return new Uint8Array(readFileSync(String(p))) as never;
+    });
+    mockReadTextFile.mockImplementation(async (p: string | URL) => {
+      readTextTargets.push(String(p));
+      if (!lstatSync(String(p)).isFile()) return 'BYTES-FROM-A-PIPE' as never;
+      return readFileSync(String(p), 'utf8') as never;
+    });
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-fifo-'));
+    src = join(root, 'fifo-skill');
+    installed = join(root, '.abu', 'skills', 'fifo-skill');
+    fifo = join(src, 'pipe');
+
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'SKILL.md'), '---\nname: fifo-skill\ndescription: a skill\n---\n# body');
+    writeFileSync(join(src, 'notes.txt'), 'ordinary file');
+    execFileSync('mkfifo', [fifo]);
+
+    readFileTargets = [];
+    readTextTargets = [];
+    mockHomeDir.mockResolvedValue(root);
+    useRealFs();
+    useNonBlockingReads();
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('never reads the pipe, and never installs it', async () => {
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The read that would have frozen the main process was never issued.
+    expect(readFileTargets).not.toContain(fifo);
+    expect(existsSync(join(installed, 'pipe'))).toBe(false);
+    expect(result.fileCount).toBe(2); // SKILL.md + notes.txt
+    // Not a link, so it must not be reported as one: `skippedSymlinks` is
+    // rendered to the user as the links the copy refused.
+    expect(result.skippedSymlinks).toEqual([]);
+  });
+
+  it('treats a SKILL.md that is a FIFO as absent instead of reading it', async () => {
+    // The gate reads the manifest with `readTextFile`, which resolves the final
+    // component in the privileged host exactly as `readFile` does — so the same
+    // pipe freezes the app one function earlier, before the copy is reached.
+    rmSync(join(src, 'SKILL.md'));
+    const pipedManifest = join(src, 'SKILL.md');
+    execFileSync('mkfifo', [pipedManifest]);
+
+    const result = await installSkillFromFolder(src);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.code).toBe('NO_SKILL_MD');
+    expect(readTextTargets).not.toContain(pipedManifest);
   });
 });

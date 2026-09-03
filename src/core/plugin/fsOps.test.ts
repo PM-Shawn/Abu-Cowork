@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -456,5 +457,109 @@ describe('copyPluginDir over a package whose only link points at a file', () => 
     for (const p of writtenPaths()) {
       expect(readFileSync(p, 'utf8')).not.toContain('PRIVATE KEY');
     }
+  });
+});
+
+/**
+ * Non-regular entries: a FIFO.
+ *
+ * The ownership rule is "denylisted or a link ⇒ absent", but a link is not the
+ * only non-regular shape a dirent can take. A FIFO reports
+ * `isDirectory:false / isFile:false / isSymlink:false` — the one combination an
+ * `isSymlink` test does not catch — and every read below lands on a synchronous
+ * `readFileSync` / `readFileSync(utf8)` inside `ipcMain.handle('tauri:invoke')`,
+ * i.e. on the MAIN process event loop, where a writer-less pipe never returns:
+ * every window and the tray freeze until the user force-quits. tar round-trips a
+ * FIFO, so an extracted package can carry one.
+ *
+ * A real `mkfifo`, deliberately — the virtual trees above hand-write
+ * `isFile: !isDirectory`, which is exactly the assumption a pipe breaks.
+ */
+describe('a package containing a FIFO', () => {
+  let root: string;
+  let src: string;
+  let dst: string;
+  let fifo: string;
+  let readFileTargets: string[];
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-fifo-'));
+    src = join(root, 'pkg');
+    dst = join(root, 'installed');
+    fifo = join(src, 'pipe');
+    readFileTargets = [];
+
+    mkdirSync(join(src, '.claude-plugin'), { recursive: true });
+    writeFileSync(join(src, '.claude-plugin', 'plugin.json'), '{"name":"pipey"}');
+    writeFileSync(join(src, 'readme.md'), '# readme');
+    execFileSync('mkfifo', [fifo]);
+
+    mockReadDir.mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    // Real reads, EXCEPT on a non-regular file: a real read of a writer-less
+    // pipe never returns and would hang the whole run rather than fail it.
+    // Recording the call and handing back bytes turns the defect into an
+    // assertion.
+    mockReadFile.mockImplementation(async (p) => {
+      readFileTargets.push(String(p));
+      if (!lstatSync(String(p)).isFile()) return new Uint8Array([0xde, 0xad]);
+      return new Uint8Array(readFileSync(String(p)));
+    });
+    mockWriteFile.mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    mockMkdir.mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+    mockLstat.mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('is neither read nor copied by copyPluginDir', async () => {
+    const result = await copyPluginDir(src, dst);
+
+    // The read that would have frozen the main process was never issued.
+    expect(readFileTargets).not.toContain(fifo);
+    expect(existsSync(join(dst, 'pipe'))).toBe(false);
+    expect(existsSync(join(dst, 'readme.md'))).toBe(true);
+    expect(result.files).toBe(2); // plugin.json + readme.md
+    // Not a link, so it must not be reported as one — `skippedSymlinks` is the
+    // disclosure the user approved, and it says these were links.
+    expect(result.skippedSymlinks).toEqual([]);
+  });
+
+  it('is absent from the pre-consent scan too, so the disclosure and the copy agree', async () => {
+    const scan = scanPluginPackage(src);
+
+    expect((await scan.children('')).map((e) => e.name).sort()).toEqual([
+      '.claude-plugin',
+      'readme.md',
+    ]);
+    expect(await scan.find('pipe')).toBeUndefined();
+    expect(await collectPluginSymlinks(src)).toEqual([]);
+  });
+
+  it('is not offered to the manifest reader as a plugin.json', async () => {
+    // `readManifestWith` (src/core/plugin/installer.ts) does
+    // `if (!(await scan.find(candidate))) continue;` and then `readTextFile`s
+    // that path — a second reachable site for the same freeze, reached before
+    // any copy happens.
+    rmSync(join(src, '.claude-plugin', 'plugin.json'));
+    execFileSync('mkfifo', [join(src, '.claude-plugin', 'plugin.json')]);
+
+    const scan = scanPluginPackage(src);
+
+    expect(await scan.find('.claude-plugin/plugin.json')).toBeUndefined();
   });
 });

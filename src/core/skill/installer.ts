@@ -57,7 +57,7 @@ export async function installSkillFromFolder(
   //    never named, and nothing anywhere would say so. Only the root itself can
   //    catch that — from the entries' side it is invisible. A caller who meant
   //    the target can name the target.
-  if (await isSymlinkPath(folderPath)) {
+  if ((await lstatKind(folderPath)) === 'symlink') {
     // Never rendered: every caller branches on this code and supplies its own
     // localized text (the folder path is theirs to begin with).
     return { ok: false, code: 'SYMLINK_ROOT', message: `Refusing a skill folder that is itself a symlink: ${folderPath}` };
@@ -81,17 +81,22 @@ export async function installSkillFromFolder(
   //    A link is therefore ABSENT here, exactly as a linked `plugin.json` is
   //    absent to `scanPluginPackage` (src/core/plugin/fsOps.ts). The folder is
   //    already proven real above, so lstat on this basename asks precisely the
-  //    right question.
+  //    right question — and it answers the whole ownership question at once,
+  //    which a link test alone does not: a SKILL.md that is a FIFO freezes the
+  //    privileged host's event loop inside `readTextFile` (see `copyDirectory`).
+  //
+  //    ⚠️ Time-of-check: this is one syscall's answer about one moment. A
+  //    writer racing inside the source folder can swap the manifest for a link
+  //    after this lstat and before the read below, which no userland walk
+  //    without `openat`/`O_NOFOLLOW` can prevent. The invariant "the gate that
+  //    reads the manifest and the copy that writes files apply one rule" holds
+  //    for a tree that does not change under the walk — which is the stated
+  //    threat model (a hostile package, hostile frontmatter), not a hostile
+  //    process already running as the user.
   const skillMdPath = joinPath(folderPath, 'SKILL.md');
-  const skillMdIsLink = await isSymlinkPath(skillMdPath);
-  if (skillMdIsLink || !(await exists(skillMdPath))) {
-    return {
-      ok: false,
-      code: 'NO_SKILL_MD',
-      message: skillMdIsLink
-        ? 'Folder does not contain a SKILL.md of its own: SKILL.md is a symlink. Copy the file into the folder instead of linking it.'
-        : 'Folder does not contain SKILL.md',
-    };
+  const missingManifest = await manifestAbsenceReason(skillMdPath);
+  if (missingManifest) {
+    return { ok: false, code: 'NO_SKILL_MD', message: missingManifest };
   }
 
   // 2. Parse name from frontmatter
@@ -147,26 +152,61 @@ export async function installSkillFromFolder(
 // ── Helpers ────────────────────────────────────────────────────────
 
 /**
- * Is `p` itself a symlink?
+ * What `p` itself is, without resolving it.
  *
  * `lstat` is the one fs call routed with `followFinalSymlink: false`
- * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what a
- * root check needs — every other call would resolve the very thing being
- * asked about.
+ * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what an
+ * ownership question needs — every other call would resolve the very thing
+ * being asked about.
  *
- * Both the source folder and its SKILL.md are asked this: neither may be a
- * link, because every other fs call resolves the final component and would
- * read straight through one.
- *
- * A path that cannot be lstat'd is not a link we can prove, and answering
- * `false` here does not let one through: a missing folder or manifest falls to
- * the NO_SKILL_MD check moments later, and an unreadable one fails the read.
+ * `'unknown'` for a path that cannot be lstat'd at all. That answer lets
+ * nothing through: a missing folder or manifest falls to the NO_SKILL_MD check
+ * moments later, and an unreadable one still fails the read.
  */
-async function isSymlinkPath(p: string): Promise<boolean> {
+async function lstatKind(p: string): Promise<'file' | 'directory' | 'symlink' | 'other' | 'unknown'> {
   try {
-    return (await lstat(p)).isSymlink;
+    const info = await lstat(p);
+    if (info.isSymlink) return 'symlink';
+    if (info.isDirectory) return 'directory';
+    return info.isFile ? 'file' : 'other';
   } catch {
-    return false;
+    return 'unknown';
+  }
+}
+
+/**
+ * Why the folder has no SKILL.md of its own, or `null` if it has one.
+ *
+ * The manifest decides the skill's identity — its name, and therefore the
+ * directory it installs over — so it has to be a REGULAR FILE the folder owns.
+ * Everything else is absent:
+ *
+ *   - a **link** is read straight through by `readTextFile` (the host resolves
+ *     the final component), so the identity would come from a file the folder
+ *     does not own, while `copyDirectory` rightly refuses to copy that same
+ *     link — gate and copy running two different rules;
+ *   - a **FIFO** is worse than wrong: `readTextFile` lands on
+ *     `fs.readFileSync` inside `ipcMain.handle('tauri:invoke')`, i.e. on the
+ *     MAIN process event loop, where a writer-less pipe never returns and every
+ *     window and the tray freeze until the user force-quits;
+ *   - a **directory** named SKILL.md fails the read with EISDIR.
+ *
+ * The messages are developer-facing English, like the rest of this module's:
+ * every caller either branches on the code or renders `message` as-is.
+ */
+async function manifestAbsenceReason(skillMdPath: string): Promise<string | null> {
+  switch (await lstatKind(skillMdPath)) {
+    case 'file':
+      return null;
+    case 'symlink':
+      return 'Folder does not contain a SKILL.md of its own: SKILL.md is a symlink. Copy the file into the folder instead of linking it.';
+    case 'unknown':
+      // Not lstat-able. Absent if it is really not there; otherwise leave it to
+      // the read, which fails loudly rather than silently reporting "no
+      // SKILL.md" for a file that exists but cannot be examined.
+      return (await exists(skillMdPath)) ? null : 'Folder does not contain SKILL.md';
+    default:
+      return 'Folder does not contain a SKILL.md of its own: SKILL.md is not a regular file. Copy a real SKILL.md into the folder.';
   }
 }
 
@@ -213,6 +253,27 @@ function extractName(content: string): string | null {
  * Skipping fixes both, and re-creating the link would reintroduce the second:
  * whoever reads the installed skill later would still be pointed out of it.
  * (Same rule, same reasoning as `copyPluginDir` — see `src/core/plugin/fsOps.ts`.)
+ *
+ * The final branch is `isFile`, not a bare `else`, because a link is not the
+ * only non-regular shape a dirent can take. A FIFO reports
+ * `isDirectory:false / isFile:false / isSymlink:false` — the one combination an
+ * `isSymlink` test does not catch — and `readFile` on a writer-less pipe lands
+ * on `fs.readFileSync` inside `ipcMain.handle('tauri:invoke')`, i.e. on the
+ * MAIN process event loop, where it never returns: every window and the tray
+ * freeze until the user force-quits. macOS's stock tar round-trips a FIFO, so
+ * an extracted skill archive can carry one. Such entries are dropped without a
+ * report: unlike a link they carry no content the package could have meant to
+ * ship, and `skippedSymlinks` is rendered to the user as the links the copy
+ * refused — it must not be made to say a pipe was one.
+ *
+ * What this does NOT catch is a HARD link, whose dirent is
+ * `{isFile:true, isSymlink:false}` — indistinguishable from a real file at the
+ * `readDir` surface, so its bytes are copied in like any other file's.
+ * Detecting one needs `st_nlink`/`st_dev`, which the plugin-fs dirent surface
+ * does not expose. Read "nothing from outside the folder" with that bound:
+ * archives cannot carry a hard link (tar refuses absolute link targets, git
+ * cannot store one), so it takes someone who can already run `ln` as this user
+ * — who could read the target directly anyway.
  */
 async function copyDirectory(
   srcDir: string,
@@ -248,7 +309,7 @@ async function copyDirectory(
 
     if (entry.isDirectory) {
       count += await copyDirectory(srcPath, destPath, skipped, links, relative);
-    } else {
+    } else if (entry.isFile) {
       const bytes = await readFile(srcPath);
       await writeFile(destPath, new Uint8Array(bytes));
       count++;

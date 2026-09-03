@@ -1,5 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { readTextFile, readDir, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir, appDataDir, resolve, resolveResource } from '@tauri-apps/api/path';
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
 import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
@@ -258,11 +258,24 @@ export class SkillLoader {
 
       const entries = await readDir(dir);
       for (const entry of entries) {
-        if (!entry.isDirectory) continue;
+        // `read_dir`'s flags are lstat-based in the privileged host
+        // (`readdirSync(..., { withFileTypes: true })`), so a link to a
+        // directory already reports `isDirectory: false` and is dropped here.
+        // The `isSymlink` half is written out anyway because that is
+        // load-bearing behaviour nobody can see in `!entry.isDirectory`.
+        if (!entry.isDirectory || entry.isSymlink) continue;
 
         // Try both SKILL.md and skill.md (spec accepts both)
         for (const filename of ['SKILL.md', 'skill.md']) {
           const skillPath = joinPath(dir, entry.name, filename);
+          // The manifest has to be one the directory OWNS. `readTextFile`
+          // resolves the final component in the privileged host, so a LINKED
+          // SKILL.md is read straight through and the skill's identity — its
+          // name, its `skillDir`, and therefore every supporting file the model
+          // is later offered — comes from a file this directory does not own.
+          // (Same rule, same reasoning as the folder installer's SKILL.md gate:
+          // src/core/skill/installer.ts.)
+          if (!(await isOwnedFile(skillPath))) continue;
           try {
             const raw = await readTextFile(skillPath);
             const skill = parseSkillFile(raw, skillPath);
@@ -378,15 +391,28 @@ export class SkillLoader {
     }
   }
 
-  /** Load a supporting file from a skill's directory */
+  /**
+   * Load a supporting file from a skill's directory.
+   *
+   * The model picks `relativePath` — the skill's own SKILL.md body tells it
+   * which file to open — and `skill_view` is on the read-only allowlist, so
+   * this runs unattended and in plan mode with no path policy in front of it.
+   * The bytes therefore have to be the skill's own: every segment of the path
+   * is checked for ownership, not just the last one. A link anywhere along it
+   * is an instruction to read something the skill does not own, and
+   * `readTextFile` resolves the final component in the privileged host, so
+   * anything let through here is read THROUGH.
+   */
   async loadSupportingFile(skillName: string, relativePath: string): Promise<string | null> {
     const skill = this.skills.get(skillName);
     if (!skill) return null;
 
-    // Security: prevent path traversal
+    // Cheap pre-filter, kept for what it does catch. It is not the rule: it is
+    // a string test, and a symlink needs no `..` in the path at all.
     if (relativePath.includes('..')) return null;
 
-    const fullPath = joinPath(skill.skillDir, relativePath);
+    const fullPath = await resolveOwnedFile(skill.skillDir, relativePath);
+    if (!fullPath) return null;
     try {
       return await readTextFile(fullPath);
     } catch {
@@ -395,7 +421,78 @@ export class SkillLoader {
   }
 }
 
-/** Recursively list files in a directory, returning relative paths */
+/**
+ * Is `path` a regular file the skill directory OWNS, rather than a link to one
+ * (or a FIFO, or a socket, or a directory)?
+ *
+ * `lstat` is the one fs call routed with `followFinalSymlink: false`
+ * (`electron/fsHost.cjs`, `plugin:fs|lstat`), which is exactly what an
+ * ownership question needs — every other call resolves the very thing being
+ * asked about.
+ *
+ * `isFile`, not `!isDirectory`: a link reports both `isFile` and `isDirectory`
+ * false whichever kind of thing it points at, and so does a FIFO — on which
+ * `readTextFile` blocks the privileged host's event loop until a writer
+ * appears. Absent is the right answer for all of them.
+ *
+ * A path that cannot be lstat'd is absent too; the caller's read would fail on
+ * it moments later anyway.
+ */
+async function isOwnedFile(path: string): Promise<boolean> {
+  try {
+    const info = await lstat(path);
+    return info.isFile && !info.isSymlink;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Absolute path of `relativePath` under `skillDir`, or null unless the skill
+ * owns EVERY segment of it.
+ *
+ * Checking only the final component would be checking nothing: the privileged
+ * host's `lstat` resolves every PARENT component before it looks at the last
+ * one, so `references -> ~/.ssh` with a real `id_rsa` inside it answers
+ * "ordinary file" for `references/id_rsa`. Each segment is therefore asked
+ * about on its own, exactly as `scanPluginPackage.find` walks a plugin package
+ * (src/core/plugin/fsOps.ts).
+ */
+async function resolveOwnedFile(skillDir: string, relativePath: string): Promise<string | null> {
+  const segments = normalizeSeparators(relativePath).split('/').filter((s) => s !== '');
+  if (segments.length === 0) return null;
+
+  let current = skillDir;
+  for (const [index, segment] of segments.entries()) {
+    if (segment === '.' || segment === '..') return null;
+    current = joinPath(current, segment);
+    if (index === segments.length - 1) return (await isOwnedFile(current)) ? current : null;
+    if (!(await isOwnedDirectory(current))) return null;
+  }
+  return null;
+}
+
+/** Is `path` a real directory the skill owns, rather than a link to one? */
+async function isOwnedDirectory(path: string): Promise<boolean> {
+  try {
+    const info = await lstat(path);
+    return info.isDirectory && !info.isSymlink;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively list files in a directory, returning relative paths.
+ *
+ * This list is handed to the model as the skill's supporting files, and
+ * whatever is on it can then be asked for by name. So it holds only entries
+ * the skill OWNS: a link is skipped rather than advertised (following it would
+ * offer the model a file from outside the skill under an innocuous name, and
+ * descending into one would enumerate a directory that is not this skill's),
+ * and only regular files are listed — a FIFO would otherwise be offered as a
+ * readable file and block the privileged host's event loop when read.
+ */
 async function listFilesRecursive(
   baseDir: string,
   prefix: string,
@@ -405,11 +502,16 @@ async function listFilesRecursive(
   try {
     const entries = await readDir(joinPath(baseDir, prefix || '.'));
     for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;
+      // BEFORE the isDirectory branch: a link to a directory reports
+      // `isDirectory: false`, so testing it afterwards would be testing nothing.
+      if (entry.isSymlink) continue;
+
       const relativePath = prefix ? joinPath(prefix, entry.name) : entry.name;
-      if (entry.isDirectory && !entry.name.startsWith('.')) {
+      if (entry.isDirectory) {
         const nested = await listFilesRecursive(baseDir, relativePath, exclude);
         result.push(...nested);
-      } else if (!entry.isDirectory && entry.name !== exclude && !entry.name.startsWith('.')) {
+      } else if (entry.isFile && entry.name !== exclude) {
         result.push(relativePath);
       }
     }

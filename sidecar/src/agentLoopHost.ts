@@ -227,11 +227,22 @@ function assertAgentRunDigest(params: AgentRunParams): void {
   }
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire.
+ *
+ * Named explicitly rather than left to `JSON.stringify` dropping functions
+ * incidentally: the two browser-denial reporters are a shell-owned
+ * authorization seam (`ToolExecutionContext.reportBrowserDenial`), and "it
+ * happens to serialize away" is not a boundary — the moment one of them became
+ * a serializable value it would silently start travelling. R2, U4 re-review.
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
     reportMetadata: _reportMetadata,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
     ...wireContext
   } = context;
   return wireContext;

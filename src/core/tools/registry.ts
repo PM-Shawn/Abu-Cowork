@@ -27,7 +27,9 @@ import {
   normalizeBrowserOrigin,
   toLegacyBrowserToolConsequence,
   DEFAULT_BROWSER_OPERATION_POLICY,
+  type DecideBrowserOperationSiteVerdict,
 } from '../permissions/browserToolPolicy';
+import { isHighRiskUrl } from '../permissions/highRiskSites';
 import {
   notifyUnattendedDenial,
   resolveUnattendedConfirmation,
@@ -328,11 +330,40 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
  * directly before this function was extracted (P1-3d-3) — callers that
  * short-circuit on `'deny'` return `reason` verbatim to preserve behavior.
  */
+/**
+ * What the browser gate learned at APPROVAL time and the executor must carry
+ * down to the browser host — the fix for the TOCTOU gap U5 closes.
+ *
+ * The gate resolves which page an action targets, then approves it. Between
+ * that approval and the action landing, the page can move: a server redirect,
+ * `window.location`, a meta refresh. Until now nothing rechecked, so a click
+ * approved for `https://shop.example.com` could execute on whatever the tab
+ * had drifted to. `expectedOrigin` travels with the call (over `_meta`, never
+ * the model-visible tool schema) so the host can compare it against the view's
+ * actual URL immediately before acting.
+ *
+ * `runMode` rides along because the host's enforcement is scoped to unattended
+ * runs (attended keeps its exact shipped behavior — a human is watching the
+ * page move), and because `get_downloads` filtering needs it shell-side.
+ */
+export interface BrowserExecutionPin {
+  runMode: 'attended' | 'unattended';
+  /**
+   * The origin the gate approved. Absent when the action targets no resolvable
+   * page (`get_tabs`, `connection_status`, `get_downloads`, a history
+   * navigation) — which for an UNATTENDED state-changing action is itself a
+   * refusal at the host, since the gate never lets one of those through.
+   */
+  expectedOrigin?: string;
+}
+
 export interface ToolApprovalDecision {
   decision: 'allow' | 'deny';
   reason?: string;
   /** Canonical file path that the executor must use for an approved file tool. */
   executionPath?: string;
+  /** Browser-only: approval-time facts the executor must carry to the host. */
+  browserExecution?: BrowserExecutionPin;
 }
 
 /**
@@ -359,21 +390,27 @@ export interface ToolApprovalDecision {
  * stays exactly as it was — this function still runs shell-side only.
  */
 /**
- * Resolve which site a browser action targets, as an exact origin.
+ * Resolve which page a browser action targets: both the exact `origin` (the
+ * key every site verdict is stored under) and the FULL `url`.
+ *
+ * The full URL is what `highRiskSites.ts` needs — `/transfer`, `/checkout`
+ * and their kin live in the path, which an origin throws away — and it is
+ * deliberately kept alongside the origin rather than replacing it, so the
+ * site-verdict lookup keeps its exact pre-U5 key.
  *
  * `navigate` carries the destination in its input; every other action only
  * carries a `tabId`, so we ask the same browser server for its tab list
  * (`get_tabs` returns each tab's URL) and match the id. Best-effort: any
- * failure resolves to null, which the gate treats as "unknown site" — the
+ * failure resolves to nulls, which the gate treats as "unknown site" — the
  * action can still be approved, but only one conversation at a time, never
  * persistently.
  */
-async function resolveBrowserActionOrigin(
+async function resolveBrowserActionTarget(
   namespacedName: string,
   input: Record<string, unknown>,
   conversationId?: string,
   agentRunId?: string,
-): Promise<string | null> {
+): Promise<{ origin: string | null; url: string | null }> {
   const separator = namespacedName.indexOf('__');
   const serverName = namespacedName.slice(0, separator);
   const toolName = namespacedName.slice(separator + 2);
@@ -384,13 +421,17 @@ async function resolveBrowserActionOrigin(
     // decoy url ride an allowed-site verdict while the browser goes somewhere
     // else (history/reload). Destination is unknowable → null → ask.
     const action = typeof input.action === 'string' ? input.action : 'goto';
-    if (action !== 'goto') return null;
+    if (action !== 'goto') return { origin: null, url: null };
     const url = typeof input.url === 'string' ? input.url : undefined;
-    return url ? normalizeBrowserOrigin(url) : null;
+    const origin = url ? normalizeBrowserOrigin(url) : null;
+    // The url is reported only when it resolved to a real http(s) origin, so a
+    // `javascript:`/`about:` string never reaches the high-risk classifier as
+    // if it were a page address.
+    return { origin, url: origin !== null ? (url ?? null) : null };
   }
 
   const tabId = Number(input.tabId);
-  if (!Number.isFinite(tabId)) return null;
+  if (!Number.isFinite(tabId)) return { origin: null, url: null };
   try {
     // Approval must never hang on a wedged browser server: the MCP browser
     // timeout is 120s, so race a short deadline and fall back to "unknown
@@ -421,18 +462,20 @@ async function resolveBrowserActionOrigin(
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    if (result === null || typeof result !== 'string') return null;
+    if (result === null || typeof result !== 'string') return { origin: null, url: null };
     const parsed = JSON.parse(result) as {
       windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }>;
     };
     for (const win of parsed.windows ?? []) {
       for (const tab of win.tabs ?? []) {
-        if (tab.tabId === tabId) return normalizeBrowserOrigin(tab.url);
+        if (tab.tabId !== tabId) continue;
+        const origin = normalizeBrowserOrigin(tab.url);
+        return { origin, url: origin !== null ? (tab.url ?? null) : null };
       }
     }
-    return null;
+    return { origin: null, url: null };
   } catch {
-    return null;
+    return { origin: null, url: null };
   }
 }
 
@@ -614,6 +657,8 @@ export async function checkToolApproval(
   }
   let largeWritePathAfterApproval: string | null = null;
   let approvedExecutionPath: string | undefined;
+  /** Carried out of the browser block to the executor — see `BrowserExecutionPin`. */
+  let browserExecutionPin: BrowserExecutionPin | undefined;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -894,7 +939,10 @@ export async function checkToolApproval(
        * is a different conversation with the user.
        */
       const refusedByHuman = <T extends ToolApprovalDecision>(decision: T): T => {
-        toolContext?.reportBrowserDenial?.();
+        // The KIND matters to the tracker's R1 rule: a site grant can never
+        // authorize execute_js, so it must not be able to clear a scripting
+        // refusal. `opClass` is the gate's own classification of this call.
+        toolContext?.reportBrowserDenial?.(opClass === 'scripting' ? 'scripting' : 'other');
         return decision;
       };
       /**
@@ -905,8 +953,13 @@ export async function checkToolApproval(
        * attended read-only at its 'allow' default, a model could alternate
        * navigate (refused) / screenshot (auto-allowed, streak cleared) and
        * never trip. Set at the consent sites below, reported once at the end.
+       *
+       * WHICH kind of consent is carried too (R1): a `'grant'` is narrower
+       * than a `'dialog'` — it was minted from approving a click and can never
+       * cover `execute_js`, so the tracker refuses to let one clear a scripting
+       * refusal. `null` means no consent happened.
        */
-      let consented = false;
+      let consented: 'dialog' | 'grant' | null = null;
 
       const settingsSnapshot = getSettingsReader().getSnapshot();
       const masterSwitchUnattended = settingsSnapshot.allowUnattendedBrowser === true;
@@ -920,17 +973,32 @@ export async function checkToolApproval(
       // nobody is there to notice. (`get_tabs` and other tab-less tools cost
       // nothing here: `resolveBrowserActionOrigin` returns null without a
       // round-trip when there is no `tabId`/`url` to resolve.)
-      const origin = consequence === 'state-changing' || runMode === 'unattended'
-        ? await resolveBrowserActionOrigin(
+      const target = consequence === 'state-changing' || runMode === 'unattended'
+        ? await resolveBrowserActionTarget(
           name,
           input,
           toolContext?.conversationId,
           toolContext?.agentRunId,
         )
-        : null;
-      const siteVerdict = consequence === 'state-changing' || runMode === 'unattended'
+        : { origin: null, url: null };
+      const origin = target.origin;
+      const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
         ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
         : 'default';
+      /**
+       * Money movement / government, decided from the target URL and NOTHING
+       * else (see `highRiskSites.ts`'s URL-ONLY doc — page text claiming "this
+       * is not a payment page" has no path into this).
+       *
+       * It OUTRANKS an 'allowed' grant on purpose: "always allow this bank" is
+       * the exact artifact the control exists to prevent. It does NOT outrank
+       * 'denied' — a site the user blocked stays blocked, and letting the
+       * high-risk verdict replace it could only ever loosen things.
+       */
+      const highRisk = storedVerdict !== 'denied' && isHighRiskUrl(target.url);
+      const siteVerdict: DecideBrowserOperationSiteVerdict = highRisk
+        ? 'high-risk'
+        : storedVerdict;
 
       const browserActionLabel = origin
         ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
@@ -985,6 +1053,10 @@ export async function checkToolApproval(
       const unattendedDenialReason = (): string => {
         if (!masterSwitchUnattended) return t.commandConfirm.browserUnattendedDisabled;
         if (siteVerdict === 'denied') return t.commandConfirm.browserSiteDenied;
+        // Named before the generic policy sentence: "this looks like a payment
+        // page" is actionable, "your policy says deny" points at a setting the
+        // user never changed.
+        if (highRisk) return t.commandConfirm.browserUnattendedHighRiskSite;
         if (policyVerdict === 'deny') return t.commandConfirm.browserPolicyDenied;
         // The ceiling refused for a reason the operation policy did not: this
         // run's capability tier carries no browser access at all.
@@ -1096,8 +1168,9 @@ export async function checkToolApproval(
               approval.userFacingReason ?? t.commandConfirm.browserUnattendedConfirmUnavailable,
             ));
           }
-          // A human (or the channel standing in for one) said yes.
-          consented = true;
+          // A human (or the channel standing in for one) said yes — an
+          // answer to THIS request, so it is dialog-grade consent.
+          consented = 'dialog';
         }
         // Cross-origin fail-closed baseline: an unattended run acts only where
         // the user granted a standing "allowed" verdict. Reading a page is
@@ -1110,8 +1183,11 @@ export async function checkToolApproval(
             return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedSiteNotAllowed);
           }
           // The user's own standing "allow this site" grant is what let this
-          // act — a consented allow, so the streak is over.
-          consented = true;
+          // act — a consented allow, but a GRANT-grade one (R1): it can never
+          // answer for execute_js, so it must not clear a scripting refusal.
+          // An unattended 'ask' that a human just approved above already set
+          // 'dialog'; do not weaken it back down to 'grant'.
+          consented = consented ?? 'grant';
         }
         // Approved by policy (+ site grant) — an unattended run has no
         // conversation-grant/dialog concept, so nothing further to do.
@@ -1131,8 +1207,14 @@ export async function checkToolApproval(
         // dialog promises "each run asks separately", so it must neither ride
         // the conversation grant nor a persistent site grant.
         const scripting = isScriptingBrowserTool(name);
+        // A high-risk page is excluded from BOTH grant scopes, for the same
+        // reason scripting is: the conversation grant was minted from a dialog
+        // about some ordinary page, and the per-site verdict cannot even be
+        // 'allowed' here (the escalation above replaced it). Without the
+        // explicit `!highRisk` the conversation grant would still wave a
+        // transfer page through on the strength of an unrelated click.
         const granted =
-          !scripting &&
+          !scripting && !highRisk &&
           (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
         const decision = strategy.decideOtherTool(consequence, granted);
         if (decision !== 'allow') {
@@ -1152,25 +1234,35 @@ export async function checkToolApproval(
           const confirmed = await onRequireConfirmation({
             command: browserActionLabel,
             level: 'warn',
-            reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
+            reason: scripting
+              ? t.commandConfirm.browserScriptReason
+              : highRisk
+                ? t.commandConfirm.browserHighRiskReason
+                : t.commandConfirm.browserReason,
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,
-            allowPersistentGrant: !scripting && origin !== null,
+            // No "always allow this site" for a bank or a checkout page — the
+            // standing grant is the artifact this control exists to prevent.
+            allowPersistentGrant: !scripting && !highRisk && origin !== null,
           }, toolContext?.loopId);
           if (!confirmed) {
             return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
           }
-          consented = true;
+          consented = 'dialog';
           // A script approval covers that one run only — minting the
           // conversation grant from it would silently unlock 30 minutes of
-          // click/fill/navigate the user never approved.
-          if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
+          // click/fill/navigate the user never approved. Same for a high-risk
+          // page: confirming one transfer must not buy 30 minutes of silent
+          // clicking everywhere else in the conversation.
+          if (!scripting && !highRisk) grantBrowserAutomation(toolContext?.conversationId);
         } else if (granted) {
           // No dialog because the user already granted this — a standing site
           // verdict, or the conversation grant minted from an earlier dialog.
-          // Both are consent, unlike an unconditional permission-mode allow.
-          consented = true;
+          // Both are consent, unlike an unconditional permission-mode allow —
+          // but GRANT-grade consent (R1), which cannot clear a scripting
+          // refusal.
+          consented = 'grant';
         }
       } else if (policyVerdict === 'ask') {
         // Attended read-only explicitly configured to ask. Never reached under
@@ -1190,12 +1282,23 @@ export async function checkToolApproval(
         if (!confirmed) {
           return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
         }
-        consented = true;
+        consented = 'dialog';
       }
       // A consented allow ends the streak. An action that merely passed the
       // policy (attended read-only under the shipped default is the common
       // one) leaves the counter exactly where it was.
-      if (consented) toolContext?.reportBrowserAllow?.();
+      if (consented) toolContext?.reportBrowserAllow?.(consented);
+
+      // Everything below this line has approved the call. Record what the gate
+      // decided ON so the executor can pin it at the host — see
+      // `BrowserExecutionPin`. Set on EVERY approved browser call, including
+      // read-only and attended ones: the host decides what to enforce, and a
+      // pin that is only attached sometimes is a pin whose absence means
+      // nothing.
+      browserExecutionPin = {
+        runMode,
+        ...(origin !== null ? { expectedOrigin: origin } : {}),
+      };
     }
   }
 
@@ -1295,7 +1398,64 @@ export async function checkToolApproval(
   return {
     decision: 'allow',
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
+    ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+}
+
+/**
+ * `get_downloads` is classified pageless + read-only, so it is exempt from
+ * every site verdict: the gate never resolves an origin for it, and the host
+ * returns the last 20 downloads of the whole browser session with zero
+ * filtering. That is a hole the site verdicts were supposed to close — a
+ * download record carries the URL it came from, so a site the user explicitly
+ * BLOCKED can still put its addresses (and filenames) into the model's context
+ * through this one tool.
+ *
+ * The filter runs shell-side rather than in the host because the verdicts live
+ * in settingsStore, which the main process does not have.
+ *
+ * Two tiers, matching the rest of the gate:
+ * - always: drop entries from a `'denied'` origin. A blocked site is blocked in
+ *   both run modes, exactly like the read-only refusal U2 added.
+ * - unattended additionally: keep ONLY `'allowed'` origins. An unattended run
+ *   acts and reads within the set the user granted; a download from an
+ *   unlisted site is outside it. (Attended does NOT narrow to the allowed set —
+ *   a human asking "what did I just download" must still get the answer.)
+ *
+ * An entry whose url does not parse is treated as unknown: dropped unattended,
+ * kept attended. Fail-safe both ways.
+ */
+export function filterDownloadsByOrigin(
+  result: ToolResult,
+  runMode: 'attended' | 'unattended',
+  sitePermissions: Record<string, 'allowed' | 'denied'>,
+): ToolResult {
+  if (typeof result !== 'string') return result;
+  // An error string ("Error: ...") is not a listing; leave it alone.
+  if (result.startsWith('Error:')) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    // Unverifiable output. Attended keeps its exact shipped behavior (a human
+    // is reading it); unattended refuses rather than passing through a list it
+    // could not check — the same fail-closed reading as an unverifiable origin.
+    return runMode === 'unattended'
+      ? 'Error: the download list could not be verified against your site permissions, so it was withheld from this unattended run'
+      : result;
+  }
+  if (!Array.isArray(parsed)) return result;
+  const kept = parsed.filter((entry) => {
+    const url = entry && typeof entry === 'object'
+      ? (entry as { url?: unknown }).url
+      : undefined;
+    const origin = normalizeBrowserOrigin(typeof url === 'string' ? url : undefined);
+    const verdict = getSiteVerdict(origin, sitePermissions);
+    if (verdict === 'denied') return false;
+    return runMode === 'unattended' ? verdict === 'allowed' : true;
+  });
+  if (kept.length === parsed.length) return result;
+  return JSON.stringify(kept, null, 2);
 }
 
 /**
@@ -1363,6 +1523,14 @@ export async function executeAnyTool(
           conversationId: toolContext?.conversationId,
           agentRunId: toolContext?.agentRunId,
           signal: toolContext?.abortSignal,
+          // Approval-time origin pin — rides `_meta`, never the tool schema, so
+          // the model can neither read nor forge it. See `BrowserExecutionPin`.
+          ...(approval.browserExecution?.expectedOrigin !== undefined
+            ? { expectedOrigin: approval.browserExecution.expectedOrigin }
+            : {}),
+          ...(approval.browserExecution?.runMode === 'unattended'
+            ? { unattended: true }
+            : {}),
         });
       } catch (err) {
         if (isBrowserTool) {
@@ -1381,6 +1549,13 @@ export async function executeAnyTool(
         } catch {
           // Observability must never change product behavior.
         }
+      }
+      if (toolName === 'get_downloads' && isBrowserTool) {
+        result = filterDownloadsByOrigin(
+          result,
+          approval.browserExecution?.runMode ?? 'unattended',
+          getSettingsReader().getSnapshot().browserSitePermissions ?? {},
+        );
       }
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {

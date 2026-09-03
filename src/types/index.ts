@@ -3,6 +3,12 @@
 // ============================================================
 
 import { encodeBoundedIdentityPart } from '@/utils/boundedIdentity';
+// Type-only: `browserDenialTracker` imports nothing, so this cannot cycle, and
+// sharing the unions keeps the tool-context seam and the counter from drifting.
+import type {
+  BrowserAllowConsent,
+  BrowserDenialKind,
+} from '@/core/agent/browserDenialTracker';
 
 // --- Messages & Conversations ---
 
@@ -651,10 +657,15 @@ export interface ToolExecutionContext {
    * `browserDenialTracker.ts`). Deliberately a pair of narrow callbacks, NOT
    * the run's AbortController: a tool must be able to say "the user said no"
    * without being handed the power to cancel the run for any other reason.
-   * Functions, so they never cross the sidecar wire.
+   * Functions, so they never cross the sidecar wire (both `toWireToolContext`
+   * implementations strip them by name — see their docs).
+   *
+   * The arguments classify the event for the tracker's R1 rule (a site grant
+   * cannot dilute a scripting refusal); both default to the strict reading, so
+   * an un-argumented call keeps the pre-U5 semantics.
    */
-  reportBrowserDenial?: () => void;
-  reportBrowserAllow?: () => void;
+  reportBrowserDenial?: (kind?: BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: BrowserAllowConsent) => void;
   /**
    * IM reply target for the current run, set only when the loop was dispatched
    * from an IM channel (channelRouter → agentLoop). Lets outbound tools like

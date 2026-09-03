@@ -1265,8 +1265,8 @@ function contextForSession(
     // offered, so it is shell-owned like `interactionMode`.
     initiatedBy: session.options.initiatedBy,
     // Narrow seam only — the gate may say "denied"/"allowed", nothing else.
-    reportBrowserDenial: () => browserDenials.reportDenial(),
-    reportBrowserAllow: () => browserDenials.reportAllow(),
+    reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
+    reportBrowserAllow: (consent) => browserDenials.reportAllow(consent),
     // Security boundary: the shell session owns the ceiling. Never trust a
     // sidecar-provided context to omit or widen it.
     runPermissionCeiling: session.options.runPermissionCeiling,
@@ -2082,8 +2082,8 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     triggerId: session.options.triggerId,
     scheduledTaskId: session.options.scheduledTaskId,
     initiatedBy: session.options.initiatedBy,
-    reportBrowserDenial: () => browserDenials.reportDenial(),
-    reportBrowserAllow: () => browserDenials.reportAllow(),
+    reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
+    reportBrowserAllow: (consent) => browserDenials.reportAllow(consent),
     imReplyTarget: session.options.imReplyTarget
       ? { ...session.options.imReplyTarget }
       : undefined,

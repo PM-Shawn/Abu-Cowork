@@ -86,6 +86,21 @@
         throw new Error(`Unknown content action: ${action}`);
     }
   }
+  var REDACTED_VALUE = "[value redacted]";
+  function isSensitiveAutocompleteToken(token) {
+    return token === "one-time-code" || token === "current-password" || token === "new-password" || token.startsWith("cc-");
+  }
+  function hasSensitiveValue(el) {
+    const type = el.type;
+    if (typeof type === "string" && type.toLowerCase() === "password") return true;
+    const autocomplete = el.getAttribute("autocomplete");
+    if (!autocomplete) return false;
+    return autocomplete.toLowerCase().split(/\s+/).some((token) => isSensitiveAutocompleteToken(token));
+  }
+  function reportableValue(el, value, maxChars) {
+    if (!value) return void 0;
+    return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+  }
   function takeSnapshot(scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
     const roots = scopeSelector ? [...document.querySelectorAll(scopeSelector)] : document.body ? [document.body] : [];
     if (roots.length === 0) {
@@ -154,7 +169,8 @@
             const input = el;
             info.type = input.type;
             if (input.placeholder) info.placeholder = input.placeholder;
-            if (input.value) info.value = input.value.slice(0, 100);
+            const value = reportableValue(input, input.value, 100);
+            if (value !== void 0) info.value = value;
             if (input.type === "checkbox" || input.type === "radio") {
               info.checked = input.checked;
             }
@@ -162,7 +178,8 @@
           if (tag === "textarea") {
             const ta = el;
             if (ta.placeholder) info.placeholder = ta.placeholder;
-            if (ta.value) info.value = ta.value.slice(0, 200);
+            const value = reportableValue(ta, ta.value, 200);
+            if (value !== void 0) info.value = value;
           }
           if (tag === "select") {
             const select = el;
@@ -349,7 +366,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   }
   function fillElement(locator, value) {
     const el = findElementOrThrow(locator);
-    const previousValue = el.value;
+    const previousValue = reportableValue(el, el.value, 100);
     highlightElement(el);
     showStatus(`Fill: "${value.slice(0, 30)}"`, "info");
     const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -367,7 +384,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     return {
       success: true,
       message: `Filled field with "${value.slice(0, 50)}"`,
-      previousValue: previousValue || void 0
+      previousValue
     };
   }
   var DROPDOWN_OPEN_TIMEOUT_MS = 1500;

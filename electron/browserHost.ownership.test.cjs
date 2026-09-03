@@ -2751,3 +2751,217 @@ test('F1: a steal does not promote the stolen-onto tab to the owner current tab'
     restore();
   }
 });
+
+/**
+ * ── U5: the execution-time origin pin ──────────────────────────────────────
+ *
+ * The approval gate resolves WHICH PAGE an action targets, decides, and the
+ * call then travels here. Between those two moments the page can move — a
+ * server redirect, a `window.location`, a meta refresh — and nothing used to
+ * recheck: a click approved for `https://shop.example.com` executed on
+ * whatever the tab had drifted to. These tests pin the recheck.
+ *
+ * `payload.expectedOrigin` / `payload.unattended` are stamped by Abu's own
+ * approval gate into MCP `_meta` (`abu/expectedOrigin`, `abu/unattended`) and
+ * are unreachable from the tool's input schema, so the model can neither read
+ * nor forge them — see `abu-browser-bridge/src/tools.ts`.
+ */
+
+/** A tab parked on `url`, ready to receive a pinned action. */
+async function tabOn(host, url) {
+  const tab = tabIds(await getTabs(host, OWNER_A))[0];
+  await navigate(host, OWNER_A, tab, url);
+  return tab;
+}
+
+test('U5 pin: an unattended action on the approved origin runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an unattended action refuses after the page drifted cross-origin', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    // The redirect the gate could not see: same tab, different site.
+    contentsFor(tab).url = 'https://evil.example.com/cart';
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        unattended: true,
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      (error) => {
+        assert.match(error.message, /no longer on the page this action was approved for/);
+        // The model is told BOTH ends and what to do next, or it will just retry.
+        assert.match(error.message, /https:\/\/shop\.example\.com/);
+        assert.match(error.message, /https:\/\/evil\.example\.com/);
+        assert.match(error.message, /snapshot/);
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a same-origin path change is NOT a drift', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://shop.example.com/cart/step-2?x=1';
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: fail-closed — an unattended pinned action with NO expectedOrigin is refused', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    for (const action of ['click', 'fill', 'select', 'keyboard', 'execute_js']) {
+      await assert.rejects(
+        host.performBrowserAutomation(action, {
+          ownerId: OWNER_A,
+          tabId: tab,
+          selector: '#buy',
+          unattended: true,
+        }),
+        (error) => {
+          assert.match(error.message, /sent no approved origin/, `wrong message for ${action}`);
+          return true;
+        }
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a page that crashed onto a non-http url is a mismatch, not a pass', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'about:blank';
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        unattended: true,
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      /an unknown page/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: navigate is exempt — its target IS what the gate approved', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    // Pinned to the page it is LEAVING; navigating away must still work, or an
+    // unattended run could never move off any page at all.
+    await host.performBrowserAutomation('navigate', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      action: 'goto',
+      url: 'https://other.example.com/',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+    assert.equal(contentsFor(tab).getURL(), 'https://other.example.com/');
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: read-only actions are exempt — they change nothing', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    await host.performBrowserAutomation('snapshot', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an ATTENDED call is untouched, drifted or not (byte-compat)', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    // No `unattended` marker ⇒ the host reads "a human is watching", and the
+    // pin does not fire. Same call shape every pre-U5 attended run sends.
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a trailing-dot FQDN is the same origin, not a way past the pin', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com./cart');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});

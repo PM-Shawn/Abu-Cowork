@@ -53,9 +53,20 @@ interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire. The two
+ * browser-denial reporters are named for the same reason `agentLoopHost.ts`'s
+ * copy names them: they are a shell-owned authorization seam, and relying on
+ * `JSON.stringify` to drop functions is an incident, not a boundary (R2).
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 

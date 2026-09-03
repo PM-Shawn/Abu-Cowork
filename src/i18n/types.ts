@@ -879,6 +879,13 @@ export interface TranslationDict {
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
     browserSitePermsRevoke: string;
+    /** U5 authorization visibility — which sites an unattended run reaches. */
+    browserUnattendedReachTag: string;
+    browserAttendedOnlyTag: string;
+    browserHighRiskTag: string;
+    browserUnattendedReachSummary: string;
+    browserUnattendedReachNone: string;
+    browserUnattendedReachOff: string;
     // Operation-class three-state policy + unattended master switch (batch-二
     // 「无人值守授权闭环」T1). No UI consumes these yet — added ahead of the
     // settings-page task (U2) so that task only has to build the view.
@@ -2138,6 +2145,13 @@ export interface TranslationDict {
     denialSummary: string;
     /** The run stopped itself after consecutive browser-authorization refusals. */
     abortedBrowserDenials: string;
+    /** U5 authorization visibility on the task detail page. */
+    browserAuthTitle: string;
+    browserAuthDesc: string;
+    browserAuthOff: string;
+    browserAuthNone: string;
+    browserAuthMore: string;
+    browserAuthManage: string;
   };
 
   // Triggers
@@ -2537,6 +2551,14 @@ export interface TranslationDict {
     /** Unattended run whose target site could not be determined (the browser
      *  host did not answer, or the action names no resolvable page). */
     browserUnattendedOriginUnverified: string;
+    /** Unattended run on a URL `highRiskSites.ts` classified as money
+     *  movement / government. Denied outright — nobody can answer for a wire
+     *  transfer. */
+    browserUnattendedHighRiskSite: string;
+    /** Strengthened confirmation copy shown when an ATTENDED run wants to act
+     *  on a high-risk URL. Replaces `browserReason`, and the dialog offers no
+     *  "always allow this site". */
+    browserHighRiskReason: string;
     /** The user answered the IM approval prompt with "拒绝". */
     browserUnattendedImDenied: string;
     /** Nobody answered the IM approval prompt before it expired. {minutes} */

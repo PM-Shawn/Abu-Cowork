@@ -593,26 +593,72 @@ describe('browser tool policy', () => {
       });
     });
 
-    describe('reserved inputs (siteVerdict: \'high-risk\', targetOrigin) — accepted, no effect yet (U5)', () => {
-      it('a \'high-risk\' site verdict falls through to policy exactly like \'default\' — no deny yet', () => {
-        const withDefault = decideBrowserOperation({
-          opClass: 'interactive',
-          runMode: 'unattended',
-          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+    /**
+     * U5 gave `'high-risk'` teeth. The assertion inverted here is the pin the
+     * reserved-value test used to hold ("falls through to policy exactly like
+     * 'default' — no deny yet"); its replacement below is the intended
+     * behavior, in the same commit as the fix (the file's own convention).
+     */
+    describe('high-risk site verdict (U5 — money movement / government URLs)', () => {
+      it('unattended: denies EVERY class, even under a permissive policy and an allowed site', () => {
+        const base = {
+          runMode: 'unattended' as const,
+          policy: {
+            attended: DEFAULT_BROWSER_OPERATION_POLICY.attended,
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+          } as BrowserOperationPolicy,
           masterSwitchUnattended: true,
-          siteVerdict: 'default',
-        });
-        const withHighRisk = decideBrowserOperation({
-          opClass: 'interactive',
-          runMode: 'unattended',
-          policy: DEFAULT_BROWSER_OPERATION_POLICY,
-          masterSwitchUnattended: true,
-          siteVerdict: 'high-risk',
-        });
-        expect(withHighRisk).toBe(withDefault);
-        expect(withHighRisk).toBe('allow');
+          siteVerdict: 'high-risk' as const,
+        };
+        expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('deny');
+        expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('deny');
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('deny');
+        // Contrast: the same policy on an ordinary site allows the same calls.
+        expect(decideBrowserOperation({ ...base, siteVerdict: 'default', opClass: 'interactive' }))
+          .toBe('allow');
       });
 
+      it('attended: upgrades an acting-class \'allow\' to \'ask\', leaves read-only alone', () => {
+        const base = {
+          runMode: 'attended' as const,
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'high-risk' as const,
+        };
+        // attended.interactive ships as 'allow' → forced confirmation here.
+        expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('ask');
+        // attended.scripting already asks; unchanged.
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('ask');
+        // attended.readOnly ships as 'allow' and STAYS 'allow' — byte-compat
+        // for the observation path a human is watching.
+        expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('allow');
+      });
+
+      it('attended: a configured \'deny\' is not relaxed into an ask', () => {
+        expect(decideBrowserOperation({
+          opClass: 'interactive',
+          runMode: 'attended',
+          policy: {
+            attended: { readOnly: 'allow', interactive: 'deny', scripting: 'ask' },
+            unattended: DEFAULT_BROWSER_OPERATION_POLICY.unattended,
+          },
+          masterSwitchUnattended: true,
+          siteVerdict: 'high-risk',
+        })).toBe('deny');
+      });
+
+      it('\'denied\' still outranks \'high-risk\' — a blocked site stays blocked', () => {
+        expect(decideBrowserOperation({
+          opClass: 'read-only',
+          runMode: 'attended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'denied',
+        })).toBe('deny');
+      });
+    });
+
+    describe('reserved input (targetOrigin) — accepted, no effect', () => {
       it('passing targetOrigin does not change the outcome', () => {
         const withoutOrigin = decideBrowserOperation({
           opClass: 'scripting',

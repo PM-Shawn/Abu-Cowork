@@ -67,8 +67,8 @@ export interface LoopContext {
    * browser work could be refused forever and never trip, because the
    * subagent's refusals landed in nobody's counter.
    */
-  reportBrowserDenial?: () => void;
-  reportBrowserAllow?: () => void;
+  reportBrowserDenial?: (kind?: import('./browserDenialTracker').BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: import('./browserDenialTracker').BrowserAllowConsent) => void;
   /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
   imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */

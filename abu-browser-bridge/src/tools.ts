@@ -40,6 +40,26 @@ export const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
  */
 export const ABU_RUN_META_KEY = 'abu/runKey';
 
+/**
+ * MCP `_meta` key carrying the ORIGIN Abu's approval gate decided on for this
+ * exact call (U5 origin pinning). The browser host compares it against the
+ * tab's actual URL immediately before executing a state-changing action, so a
+ * page that redirected between approval and execution cannot inherit the
+ * approval given for the page before it.
+ *
+ * Same `_meta`-not-input-schema rationale as above, and more sharply: this is
+ * an authorization fact, so the model must be able to neither read nor forge
+ * it. Mirrors `src/core/mcp/client.ts`.
+ */
+export const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
+
+/**
+ * MCP `_meta` key marking a call issued by an UNATTENDED run. Present only when
+ * true. The host needs it to tell "attended, no pin expected" apart from
+ * "unattended and the pin is missing" — the second is a refusal.
+ */
+export const ABU_UNATTENDED_META_KEY = 'abu/unattended';
+
 export interface BrowserTransportResponse {
   success: boolean;
   data?: unknown;
@@ -109,23 +129,33 @@ function metaString(extra: unknown, key: string): string | undefined {
 }
 
 /**
- * Pull the calling OWNER — conversation id plus subagent run key — out of a tool
- * handler's `extra` (the MCP SDK's per-request context, `extra._meta?:
- * RequestMeta`), already shaped as the payload fragment every handler merges
- * into its `transport.send()` call, so the `_meta` lookup is not repeated at the
- * 19 call sites below. `extra` is typed as `unknown` here rather than importing
- * the SDK's `RequestHandlerExtra` type, to stay decoupled from its exact shape.
+ * Pull the caller's SHELL-STAMPED facts out of a tool handler's `extra` (the
+ * MCP SDK's per-request context, `extra._meta?: RequestMeta`), already shaped
+ * as the payload fragment every handler merges into its `transport.send()`
+ * call, so the `_meta` lookup is not repeated at the 19 call sites below.
+ * `extra` is typed as `unknown` here rather than importing the SDK's
+ * `RequestHandlerExtra` type, to stay decoupled from its exact shape.
+ *
+ * Carries the OWNER (conversation id plus subagent run key) and the U5 origin
+ * pin (`expectedOrigin` + `unattended`). All of it comes from `_meta`, which
+ * only Abu's own client writes — none of it is reachable from the tool's input
+ * schema, so the model can neither read nor forge any of these.
  *
  * Absent keys are OMITTED rather than defaulted: the host owns the "no run id ⇒
  * the conversation's own loop" default, and a payload that never carries the
  * field keeps its exact pre-N6 shape for every caller that sends no run.
  */
-function ownerPayloadFromExtra(extra: unknown): Record<string, string> {
+function ownerPayloadFromExtra(extra: unknown): Record<string, unknown> {
   const ownerId = metaString(extra, ABU_CONVERSATION_META_KEY);
   const runId = metaString(extra, ABU_RUN_META_KEY);
+  const expectedOrigin = metaString(extra, ABU_EXPECTED_ORIGIN_META_KEY);
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const unattended = meta?.[ABU_UNATTENDED_META_KEY] === true;
   return {
     ...(ownerId ? { ownerId } : {}),
     ...(runId ? { runId } : {}),
+    ...(expectedOrigin ? { expectedOrigin } : {}),
+    ...(unattended ? { unattended: true } : {}),
   };
 }
 

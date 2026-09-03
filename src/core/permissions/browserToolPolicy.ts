@@ -359,12 +359,14 @@ const OPERATION_CLASS_TO_POLICY_KEY: Record<
 };
 
 /**
- * `SiteVerdict` plus a reserved `'high-risk'` value for a later task (U5,
- * §三 T2's "high-risk site" classification — payment/transfer/checkout URL
- * patterns). Accepted by `decideBrowserOperation` now so U5 does not need a
- * signature break, but it currently has NO effect on the decision: it is not
- * `'denied'`, so it falls through to the ordinary policy lookup exactly like
- * `'default'` does, until U5 gives it teeth.
+ * `SiteVerdict` plus `'high-risk'` — a site `highRiskSites.ts` classified as
+ * money movement or government from its URL alone (U5, §三 T2).
+ *
+ * It is NOT a fourth stored verdict: nothing persists it, and it is computed
+ * per call from the target URL. It OUTRANKS an `'allowed'` grant on purpose —
+ * "always allow this bank" is precisely the artifact this control exists to
+ * prevent — while `'denied'` still outranks it (a blocked site stays blocked).
+ * See `decideBrowserOperation` for what it does.
  */
 export type DecideBrowserOperationSiteVerdict = SiteVerdict | 'high-risk';
 
@@ -464,8 +466,16 @@ export function normalizeBrowserOperationPolicy(input: unknown): BrowserOperatio
  *    master switch is the fail-safe global gate: off means no unattended
  *    browser use at all, independent of how permissive the per-class policy
  *    looks.
- * 3. Otherwise, the configured three-state policy for
- *    `policy[runMode][opClass]` decides.
+ * 3. `siteVerdict === 'high-risk' && runMode === 'unattended'` → deny, for
+ *    EVERY class including read-only. Nobody is there to answer for a wire
+ *    transfer, and quietly reading a bank page into an LLM context is the
+ *    exfiltration half of the same problem.
+ * 4. Otherwise, the configured three-state policy for
+ *    `policy[runMode][opClass]` decides — except that an ATTENDED `'allow'`
+ *    on a high-risk site is upgraded to `'ask'` for the two acting classes.
+ *    Read-only stays exactly as it was attended: a screenshot of a bank page
+ *    is not a transfer, and asking on every observation is how a control
+ *    trains users to click through it.
  *
  * `input.policy` is run through `normalizeBrowserOperationPolicy` before use
  * — defense in depth against a malformed value reaching this function
@@ -480,9 +490,18 @@ export function decideBrowserOperation(
   const policy = normalizeBrowserOperationPolicy(input.policy);
   if (siteVerdict === 'denied') return 'deny';
   if (runMode === 'unattended' && !masterSwitchUnattended) return 'deny';
+  // A money-movement / government URL, unattended: there is no answer an
+  // automated run can give to "confirm this transfer", so it does not get to
+  // act OR to read there. See `highRiskSites.ts`.
+  if (siteVerdict === 'high-risk' && runMode === 'unattended') return 'deny';
   const state = policy[runMode][OPERATION_CLASS_TO_POLICY_KEY[opClass]];
   // Belt and braces on top of the normalizer: this function must never hand
   // back 'allow' for unattended scripting, whatever the policy object said.
   if (runMode === 'unattended' && opClass === 'scripting' && state === 'allow') return 'ask';
+  // Attended on a high-risk URL: a human is watching, so this asks rather than
+  // denies — but it never runs silently. Read-only is exempt (see the
+  // precedence doc above); a configured 'deny' is left alone, since upgrading
+  // a deny to an ask would be a relaxation.
+  if (siteVerdict === 'high-risk' && opClass !== 'read-only' && state === 'allow') return 'ask';
   return state;
 }

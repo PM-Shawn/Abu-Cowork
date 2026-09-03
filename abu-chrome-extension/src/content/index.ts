@@ -127,6 +127,66 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
 }
 
 // =============================================================================
+// 0. SENSITIVE VALUE REDACTION (U5)
+// =============================================================================
+
+/**
+ * What a redacted field's value reads as. A marker, not an omission: an absent
+ * `value` means "this field is empty", and the agent would then try to fill a
+ * password box it should be leaving alone (or report the form as blank).
+ */
+const REDACTED_VALUE = '[value redacted]';
+
+/**
+ * `autocomplete` tokens whose value must never leave the page.
+ *
+ * `cc-*` covers the whole payment-card family the HTML spec defines
+ * (`cc-number`, `cc-csc`, `cc-exp`, `cc-name`, …) with one rule, so a token
+ * added to the spec later is covered without touching this file.
+ */
+function isSensitiveAutocompleteToken(token: string): boolean {
+  return token === 'one-time-code'
+    || token === 'current-password'
+    || token === 'new-password'
+    || token.startsWith('cc-');
+}
+
+/**
+ * Should this control's CURRENT value be withheld?
+ *
+ * Two signals, both read off the element itself — never off page text:
+ *  - `type="password"`;
+ *  - a sensitive `autocomplete` token. The attribute is space-separated and
+ *    may carry section/billing prefixes (`section-blue billing cc-number`), so
+ *    every token is checked, case-insensitively (authors shout it).
+ *
+ * NOTE what this does NOT cover, deliberately: a site that puts a card number
+ * in a `type="text"` box with no `autocomplete` is indistinguishable from an
+ * order-number box at this layer. This is a leak-reducer on the fields that
+ * declare themselves, not a classifier.
+ */
+function hasSensitiveValue(el: Element): boolean {
+  const type = (el as HTMLInputElement).type;
+  if (typeof type === 'string' && type.toLowerCase() === 'password') return true;
+  const autocomplete = el.getAttribute('autocomplete');
+  if (!autocomplete) return false;
+  return autocomplete
+    .toLowerCase()
+    .split(/\s+/)
+    .some((token) => isSensitiveAutocompleteToken(token));
+}
+
+/**
+ * The value to report for a control: the real one, the redaction marker, or
+ * `undefined` when the field is genuinely empty (an empty password box has
+ * nothing to hide, and marking it would misreport the form's state).
+ */
+function reportableValue(el: Element, value: string, maxChars: number): string | undefined {
+  if (!value) return undefined;
+  return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+}
+
+// =============================================================================
 // 1. SNAPSHOT — Structured page element extraction
 // =============================================================================
 
@@ -229,7 +289,10 @@ function takeSnapshot(
         const input = el as HTMLInputElement;
         info.type = input.type;
         if (input.placeholder) info.placeholder = input.placeholder;
-        if (input.value) info.value = input.value.slice(0, 100);
+        // Everything else about the field still ships — a redacted value must
+        // not cost the agent the ability to find and fill it.
+        const value = reportableValue(input, input.value, 100);
+        if (value !== undefined) info.value = value;
         if (input.type === 'checkbox' || input.type === 'radio') {
           info.checked = input.checked;
         }
@@ -238,7 +301,8 @@ function takeSnapshot(
       if (tag === 'textarea') {
         const ta = el as HTMLTextAreaElement;
         if (ta.placeholder) info.placeholder = ta.placeholder;
-        if (ta.value) info.value = ta.value.slice(0, 200);
+        const value = reportableValue(ta, ta.value, 200);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'select') {
@@ -552,7 +616,12 @@ function clickElement(locator: ElementLocator): {
 
 function fillElement(locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
   const el = findElementOrThrow(locator) as HTMLInputElement | HTMLTextAreaElement;
-  const previousValue = el.value;
+  // Same rule as the snapshot: what was ALREADY in the field is the user's
+  // secret (a browser-autofilled password, a saved card), and handing it back
+  // in the result would put it in the model's context, the logs, and any
+  // approval message quoting the result. The value being written is the
+  // caller's own and is echoed in `message` unchanged.
+  const previousValue = reportableValue(el, el.value, 100);
 
   highlightElement(el);
   showStatus(`Fill: "${value.slice(0, 30)}"`, 'info');
@@ -577,7 +646,7 @@ function fillElement(locator: ElementLocator, value: string): { success: boolean
   return {
     success: true,
     message: `Filled field with "${value.slice(0, 50)}"`,
-    previousValue: previousValue || undefined,
+    previousValue,
   };
 }
 

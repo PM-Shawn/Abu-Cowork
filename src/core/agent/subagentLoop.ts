@@ -485,8 +485,8 @@ export interface SubagentLoopOptions {
    * are functions, so they never cross the subagent.run wire; the shell
    * re-stamps them from its own session on the reverse tool.invoke channel.
    */
-  reportBrowserDenial?: () => void;
-  reportBrowserAllow?: () => void;
+  reportBrowserDenial?: (kind?: import('./browserDenialTracker').BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: import('./browserDenialTracker').BrowserAllowConsent) => void;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */

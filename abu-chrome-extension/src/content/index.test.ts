@@ -26,6 +26,9 @@ interface SnapshotElement {
   visible: boolean;
   text?: string;
   type?: string;
+  id?: string;
+  name?: string;
+  value?: string;
   placeholder?: string;
   href?: string;
   role?: string;
@@ -267,6 +270,107 @@ describe('snapshot contract (pinned — must not change)', () => {
     const texts = snap.elements.map((e) => e.text);
     expect(texts).toContain('动设备');
     expect(snap.elements.some((e) => e.role === 'combobox')).toBe(true);
+  });
+});
+
+/**
+ * ── U5: sensitive-value redaction ─────────────────────────────────────────
+ *
+ * A snapshot used to serialize `input.value` verbatim for every field,
+ * password boxes and card numbers included, and `fill` handed back the value
+ * that was already in the field as `previousValue`. Both land in the model's
+ * context (and from there in logs, IM approval messages, diagnostic bundles).
+ * The value is replaced by a marker; everything ELSE about the field — its
+ * ref, type, placeholder, name, id — stays, because the agent still has to be
+ * able to FIND and FILL these fields.
+ *
+ * One bundle serves both transports (the Chrome extension and the built-in
+ * Electron browser inject the same `content.js`), so these cases cover both.
+ */
+describe('sensitive values are redacted, but the fields stay fillable (U5)', () => {
+  const REDACTED = '[value redacted]';
+
+  const valueOf = (snap: PageSnapshot, id: string) =>
+    snap.elements.find((e) => e.id === id)?.value;
+
+  it('redacts a password field value', async () => {
+    document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+    expect(valueOf(await snapshot(), 'pw')).toBe(REDACTED);
+  });
+
+  it('redacts every autocomplete=cc-* field', async () => {
+    document.body.innerHTML = `
+      <input id="num" autocomplete="cc-number" value="4111111111111111" />
+      <input id="csc" autocomplete="cc-csc" value="123" />
+      <input id="exp" autocomplete="CC-EXP" value="12/30" />`;
+    const snap = await snapshot();
+    expect(valueOf(snap, 'num')).toBe(REDACTED);
+    expect(valueOf(snap, 'csc')).toBe(REDACTED);
+    // Case-insensitive: the attribute is author-written and often shouted.
+    expect(valueOf(snap, 'exp')).toBe(REDACTED);
+  });
+
+  it('redacts autocomplete=one-time-code', async () => {
+    document.body.innerHTML = '<input id="otp" autocomplete="one-time-code" value="483920" />';
+    expect(valueOf(await snapshot(), 'otp')).toBe(REDACTED);
+  });
+
+  it('reads the autocomplete token out of a multi-token attribute', async () => {
+    // The spec allows `section-* shipping cc-number`; a whole-string compare
+    // would miss every field written that way.
+    document.body.innerHTML =
+      '<input id="num" autocomplete="section-blue billing cc-number" value="4111111111111111" />';
+    expect(valueOf(await snapshot(), 'num')).toBe(REDACTED);
+  });
+
+  it('leaves an ordinary field value alone', async () => {
+    document.body.innerHTML = '<input id="code" type="text" value="EQ-001" />';
+    expect(valueOf(await snapshot(), 'code')).toBe('EQ-001');
+  });
+
+  it('keeps everything the agent needs to fill the redacted field', async () => {
+    document.body.innerHTML =
+      '<input id="pw" name="password" type="password" placeholder="请输入密码" value="hunter2" />';
+    const el = (await snapshot()).elements.find((e) => e.id === 'pw')!;
+    expect(el).toMatchObject({
+      id: 'pw',
+      name: 'password',
+      type: 'password',
+      placeholder: '请输入密码',
+      enabled: true,
+    });
+    expect(el.ref).toMatch(/^e\d+$/);
+  });
+
+  it('redacting does not stop the agent from filling the field', async () => {
+    document.body.innerHTML = '<input id="pw" type="password" value="old" />';
+    const result = await fill({ css: '#pw' }, 'new-secret');
+    expect(result.success).toBe(true);
+    expect((document.getElementById('pw') as HTMLInputElement).value).toBe('new-secret');
+  });
+
+  it('fill does not hand back the previous value of a sensitive field', async () => {
+    document.body.innerHTML = '<input id="pw" type="password" value="hunter2" />';
+    const result = await fill({ css: '#pw' }, 'new-secret');
+    expect(result.previousValue).toBe(REDACTED);
+  });
+
+  it('fill still reports the previous value of an ordinary field', async () => {
+    document.body.innerHTML = '<input id="code" type="text" value="EQ-001" />';
+    const result = await fill({ css: '#code' }, 'EQ-002');
+    expect(result.previousValue).toBe('EQ-001');
+  });
+
+  it('an empty sensitive field reports nothing rather than a redaction marker', async () => {
+    document.body.innerHTML = '<input id="pw" type="password" />';
+    expect(valueOf(await snapshot(), 'pw')).toBeUndefined();
+    const result = await fill({ css: '#pw' }, 'x');
+    expect(result.previousValue).toBeUndefined();
+  });
+
+  it('a textarea carrying a one-time-code autocomplete is redacted too', async () => {
+    document.body.innerHTML = '<textarea id="ta" autocomplete="one-time-code">483920</textarea>';
+    expect(valueOf(await snapshot(), 'ta')).toBe(REDACTED);
   });
 });
 

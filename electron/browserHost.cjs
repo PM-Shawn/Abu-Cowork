@@ -400,6 +400,36 @@ const TAKEOVER_GATED_ACTIONS = new Set([
   'start_recording',
 ]);
 
+/**
+ * ## Execution-time origin pin (U5)
+ *
+ * Abu's approval gate resolves WHICH PAGE an action targets, decides, and then
+ * the call travels here. In between, the page can move — a server redirect, a
+ * `window.location`, a meta refresh — and until this check existed nothing
+ * rechecked: a click approved for `https://shop.example.com` executed on
+ * whatever the tab had drifted to. That is a TOCTOU gap, and an unattended run
+ * is exactly where nobody notices it.
+ *
+ * The gate stamps the approved origin into `_meta['abu/expectedOrigin']`
+ * (never the tool's input schema, so the model can neither read nor forge it);
+ * this set names the actions that must match it before executing.
+ *
+ * Two deliberate exemptions:
+ * - READ-ONLY actions (snapshot/screenshot/extract/scroll/…): they change
+ *   nothing, and the run's site verdict already gated whether it may read at
+ *   all. A drifted read returns a page the model can see is different.
+ * - `navigate` ITSELF: its target IS the thing the gate approved, and the tab's
+ *   current origin is by definition the page it is leaving. Pinning it would
+ *   refuse every navigation away from anywhere.
+ */
+const ORIGIN_PINNED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'execute_js',
+]);
+
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
 const userInteractionAt = new Map();
 
@@ -686,6 +716,67 @@ function originOf(urlString) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * produces, so the pin compares like with like: http(s) only, host lowercased
+ * by URL, default ports dropped by URL, and a trailing FQDN dot stripped —
+ * `evil.com.` and `evil.com` resolve to one host over DNS and must not be two
+ * different origins here either.
+ *
+ * Returns null for anything unparseable or non-http(s) (`about:blank`,
+ * `chrome-error://…`), which the pin treats as a mismatch. That is deliberate:
+ * a tab that crashed onto an error page is not the page the user approved.
+ */
+function normalizedOriginOf(urlString) {
+  try {
+    const parsed = new URL(String(urlString || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Enforce the U5 origin pin for one action. Throws (which the transport turns
+ * into a tool error the model reads) when the tab is no longer on the page the
+ * approval was given for.
+ *
+ * Scoped to UNATTENDED runs. Attended keeps its exact shipped behavior: a human
+ * is looking at the browser, the confirmation dialog they answered named the
+ * origin, and adding a new refusal class there would change attended behavior
+ * for a case the human can see. (`payload.unattended` is stamped by Abu's own
+ * approval gate over `_meta`; a payload without it is read as attended.)
+ *
+ * Fail-closed: an unattended pinned action with NO `expectedOrigin` is refused.
+ * The gate never approves one — an unattended state-changing call requires a
+ * resolved, explicitly-allowed origin — so a missing pin means the chain broke,
+ * and "the pin is absent" must never be the permissive branch.
+ */
+function assertOriginPin(action, payload, view) {
+  if (payload.unattended !== true) return;
+  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
+        'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'
+    );
+  }
+  const current = normalizedOriginOf(view.webContents.getURL());
+  if (current === expected) return;
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, ` +
+      `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a ` +
+      'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier ' +
+      'approval does not carry over to a different site.'
+  );
 }
 
 function registerRateLimitHit(origin) {
@@ -1489,6 +1580,12 @@ async function runBrowserAutomation(action, payload, signal) {
       aiActionDepth += 1;
     }
   }
+
+  // As LATE as possible, and after `awaitUserIdle`: the whole point is to
+  // compare against where the tab is at the moment of acting, and the idle wait
+  // above can last long enough for the page to move under it. Nothing
+  // side-effecting has happened yet at this line.
+  assertOriginPin(action, payload, view);
 
   // Same rule as the listing's promotion: a read-only look at the user's pane
   // tab mid-window must not leave that tab as this owner's current one, or the

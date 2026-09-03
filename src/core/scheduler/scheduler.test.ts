@@ -132,6 +132,26 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     expect(outputSender.buildMessage).not.toHaveBeenCalled();
     expect(latestRunStatus(task.id)).toBe('error');
   });
+
+  // A run that stopped ITSELF after consecutive browser refusals is not the
+  // same event as a user pressing Stop, and the run history is the only place
+  // the user sees either. Without this the abort cause the guard records has
+  // no reader at all, and the run reads as a bare "Task was cancelled".
+  it('names the consecutive-browser-denial cause in the run result', async () => {
+    const task = makeTask({ id: 'task-browser-denials' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'aborted',
+      abortCause: 'consecutive_browser_denials',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    // The suite runs under en-US; the zh-CN string names 浏览器操作 the same way.
+    expect(runs[runs.length - 1]?.error).toContain('browser actions were refused');
+    expect(runs[runs.length - 1]?.error).not.toContain('Task was cancelled');
+  });
 });
 
 // ── Unattended autonomy tier (permission plan §3, redone per user

@@ -1301,6 +1301,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         triggerId: _convForContext?.triggerId,
         scheduledTaskId: _convForContext?.scheduledTaskId,
         initiatedBy: options?.initiatedBy,
+        // The `@agent` route delegates the WHOLE turn, so the run's browser
+        // guard has to follow it there or this entry point would be the one
+        // way to escape it.
+        reportBrowserDenial: toolContext.reportBrowserDenial,
+        reportBrowserAllow: toolContext.reportBrowserAllow,
         parentLoopId: loopId,
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,

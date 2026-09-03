@@ -2136,6 +2136,8 @@ export interface TranslationDict {
     denialMore: string;
     /** {mode} {list} — appended to a failed run's result text */
     denialSummary: string;
+    /** The run stopped itself after consecutive browser-authorization refusals. */
+    abortedBrowserDenials: string;
   };
 
   // Triggers

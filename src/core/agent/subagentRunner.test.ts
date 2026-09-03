@@ -367,6 +367,10 @@ describe('subagentRunner', () => {
         'capsPort',
         'workspaceReader',
         'skillCommandApprovalFactory',
+        // U4: the parent run's browser-denial seam is a pair of functions —
+        // shell-stamped into the trusted tool context, never serialized.
+        'reportBrowserDenial',
+        'reportBrowserAllow',
         // N6: run identity is shell-stamped into the trusted tool context, so
         // sending it would create a second, forgeable source of the same fact.
         'agentRunId',
@@ -1114,6 +1118,82 @@ describe('subagentRunner', () => {
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
         expect.objectContaining({ runPermissionCeiling: ceiling }),
       );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    // The parent run's consecutive-browser-denial guard has to survive the
+    // delegation boundary: the reporters are functions, so the sidecar's
+    // context cannot carry them and the shell must re-stamp them from the
+    // session. Without this a run that delegates its browser work could be
+    // refused indefinitely and never trip the guard.
+    it('two browser refusals inside a delegated run trip the PARENT run\'s abort', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const first = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      first.reportBrowserDenial!();
+      expect(onThreshold).not.toHaveBeenCalled();
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'y.txt' }, context: {} });
+      const second = executeAnyToolMock.mock.calls.at(-1)?.[4] as { reportBrowserDenial?: () => void };
+      second.reportBrowserDenial!();
+
+      expect(onThreshold).toHaveBeenCalledTimes(1);
+      expect(parentTracker.tripped).toBe(true);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('a consented allow inside a delegated run resets the PARENT run\'s streak', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const ctx = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      ctx.reportBrowserDenial!();
+      ctx.reportBrowserAllow!();
+      ctx.reportBrowserDenial!();
+
+      expect(onThreshold).not.toHaveBeenCalled();
+      expect(parentTracker.consecutiveDenials).toBe(1);
+
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
     });

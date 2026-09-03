@@ -7,10 +7,20 @@
  * stops and hands the floor back to the user with a closing message, instead
  * of burning turns and dialogs.
  *
- * Only BROWSER authorization refusals count (the gate in registry.ts calls
- * `reportDenial` at its own deny sites and nowhere else); an unrelated file or
- * command refusal never touches this counter. Any single allowed browser
- * action resets it — "in a row" is literal.
+ * Only BROWSER authorization refusals count, and only INTERACTION-shaped ones:
+ * a dialog answered "no", an IM approval denied or timed out, an ask that
+ * fail-closed for lack of a channel. Standing configuration (master switch,
+ * blocked site, policy 'deny', run-permission ceiling, unverifiable origin)
+ * refuses without anyone refusing, so it never counts — otherwise the shipped
+ * default (unattended browser off) would abort every unattended run that
+ * touched the browser twice. An unrelated file or command refusal never
+ * touches this counter either.
+ *
+ * Symmetrically, only a CONSENTED allow resets it: a dialog the user
+ * confirmed, an IM approval, or a standing grant they created being applied.
+ * A policy auto-allow must not reset, or the guard is dodged by alternating a
+ * refused action with an auto-allowed read-only one. registry.ts owns both
+ * classifications; this module only counts.
  *
  * The tracker is pure state: whoever owns the run (the shell-side RunSession
  * for a sidecar-hosted loop, agentLoop.ts for the in-process fallback) passes

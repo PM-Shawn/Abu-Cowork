@@ -574,7 +574,12 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserDenial).not.toHaveBeenCalled();
     });
 
-    it('a read-only action that passes without a dialog also resets the streak', async () => {
+    // I1: the streak only measures refusals a human issued, so only an allow a
+    // human CONSENTED to may clear it. A read-only action that sails through
+    // on the default policy — no dialog, no grant, nobody asked — used to
+    // reset it, which made the guard trivially dodgeable: navigate (denied),
+    // screenshot (auto-allowed, streak cleared), navigate (denied), ... forever.
+    it('a read-only action that passes without a dialog does NOT reset the streak', async () => {
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -584,11 +589,30 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a standing site grant applied attended DOES reset the streak', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        { conversationId: 'conv-1', ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('allow');
       expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
       expect(r.reportBrowserDenial).not.toHaveBeenCalled();
     });
 
-    it('an unattended policy refusal (master switch off) counts as a denial', async () => {
+    // I2: a standing-configuration refusal is not an interaction. With the
+    // master switch at its shipped default (off), EVERY browser call of an
+    // unattended run is refused here — counting those would abort any
+    // unattended run that touched the browser twice, though no human ever
+    // refused anything.
+    it('an unattended refusal from the master switch does NOT count as a denial', async () => {
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -598,8 +622,103 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('deny');
-      expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
       expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
+
+    it('a blocked site does NOT count as a denial', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
+      });
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, selector: 'a' },
+        { ...unattendedOwner, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a policy "deny" cell does NOT count as a denial', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserOperationPolicy: policyWith('unattended', 'readOnly', 'deny'),
+      });
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__extract_text', { tabId: 1 },
+        { ...unattended, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a run-permission ceiling refusal does NOT count as a denial', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
+        {
+          ...unattended,
+          runPermissionCeiling: buildScheduledRunPermissionCeiling([]),
+          ...r,
+        } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('an unverifiable origin does NOT count as a denial', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__extract_text', { tabId: 4242 },
+        { ...unattended, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('an unattended state-changing action refused for lack of a site grant does NOT count', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      withTabOrigin(UNKNOWN_URL);
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID, selector: 'a' },
+        { ...unattendedOwner, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('an attended ask with no dialog channel counts as a denial', async () => {
+      const r = reporters();
+
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL },
+        { conversationId: 'conv-1', ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
     });
 
     it('an unattended "ask" refused (or timed out) at the approval seam counts as a denial', async () => {

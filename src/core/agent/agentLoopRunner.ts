@@ -2061,6 +2061,9 @@ export function createShellEventRouterForRun(runId: string): EventRouter {
 export function installShellLoopContext(runId: string, session: RunSession): void {
   const eventRouter = session.eventRouter ?? createShellEventRouterForRun(runId);
   session.eventRouter = eventRouter;
+  // Same tracker the run's own tool contexts report to — delegated browser
+  // refusals count toward THIS run's streak (see browserDenialsForSession).
+  const browserDenials = browserDenialsForSession(session);
 
   setLoopContext(session.loopId, {
     commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,
@@ -2079,6 +2082,8 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     triggerId: session.options.triggerId,
     scheduledTaskId: session.options.scheduledTaskId,
     initiatedBy: session.options.initiatedBy,
+    reportBrowserDenial: () => browserDenials.reportDenial(),
+    reportBrowserAllow: () => browserDenials.reportAllow(),
     imReplyTarget: session.options.imReplyTarget
       ? { ...session.options.imReplyTarget }
       : undefined,

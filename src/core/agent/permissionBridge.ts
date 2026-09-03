@@ -60,6 +60,15 @@ export interface LoopContext {
   /** Who started the parent run — inherited by delegated work, so a subagent
    * spawned from a human-typed turn keeps the human's dialogs. */
   initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /**
+   * The parent run's consecutive-browser-denial seam, inherited by delegated
+   * work for the same reason `initiatedBy` is: a guard that stops at the
+   * delegation boundary is not a guard. Without it a run that delegates its
+   * browser work could be refused forever and never trip, because the
+   * subagent's refusals landed in nobody's counter.
+   */
+  reportBrowserDenial?: () => void;
+  reportBrowserAllow?: () => void;
   /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
   imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */

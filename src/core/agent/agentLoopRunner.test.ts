@@ -11,6 +11,9 @@
  * across tests.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+// NOT mocked: the real derivation, used to drive `isInteractiveDesktop` in the
+// run-initiator staging tests below.
+import { deriveRunInteractionMode } from './runInteractionMode';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -444,7 +447,7 @@ vi.mock('../../i18n', () => ({
       sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
       sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
-      browserDeniedAbort: '你连续拒绝了我的操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
+      browserDeniedAbort: '你连续拒绝了我的浏览器操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
       attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
       errorEmptyBody: '请求失败但无详情',
@@ -1378,7 +1381,7 @@ describe('agentLoopRunner', () => {
       expect(chatDeltaAddMessageMock).toHaveBeenCalledTimes(1);
       expect(chatDeltaAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({
         role: 'assistant',
-        content: '你连续拒绝了我的操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
+        content: '你连续拒绝了我的浏览器操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
         loopId: 'loop-1',
       }));
 
@@ -5142,6 +5145,80 @@ describe('agentLoopRunner', () => {
         });
         expect(runAgentLoopMock).not.toHaveBeenCalled();
         expect(sidecarRequestMock).not.toHaveBeenCalled();
+      });
+
+      // U4/I5: the run INITIATOR now feeds `isInteractiveDesktop`, and message
+      // staging is one of its consumers — so the change is observable here,
+      // not only at the browser gate. A human who types into a scheduled
+      // conversation while its task is running used to be refused with
+      // "conversation busy" (the conversation record's scheduledTaskId made
+      // the send look headless); the send is theirs, so it stages into the
+      // live run. The two cases below differ ONLY in who started the send.
+      describe('run initiator decides whether a busy scheduled conversation stages or refuses', () => {
+        /** The real derivation — this is the wiring under test. */
+        function useRealInteractionMode(): void {
+          isInteractiveDesktopMock.mockImplementation((...args: unknown[]) => {
+            const [options, conversation] = args as [
+              {
+                authorizationScopeId?: string;
+                runPermissionCeiling?: never;
+                imContext?: never;
+                initiatedBy?: 'user' | 'automation';
+              } | undefined,
+              { scheduledTaskId?: string; triggerId?: string } | undefined,
+            ];
+            return deriveRunInteractionMode({
+              ...(options?.authorizationScopeId !== undefined
+                ? { authorizationScopeId: options.authorizationScopeId }
+                : {}),
+              ...(options?.runPermissionCeiling !== undefined
+                ? { runPermissionCeiling: options.runPermissionCeiling }
+                : {}),
+              ...(options?.imContext !== undefined ? { imContext: options.imContext } : {}),
+              ...(conversation?.triggerId !== undefined ? { triggerId: conversation.triggerId } : {}),
+              ...(conversation?.scheduledTaskId !== undefined
+                ? { scheduledTaskId: conversation.scheduledTaskId }
+                : {}),
+              ...(options?.initiatedBy !== undefined ? { initiatedBy: options.initiatedBy } : {}),
+            }) === 'foreground';
+          });
+        }
+
+        it('stages a human-typed send into a busy scheduled conversation', async () => {
+          const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+          useRealInteractionMode();
+          getConversationMock.mockReturnValue({
+            id: 'conv-1', title: 't', messages: [], status: 'running', scheduledTaskId: 'task-1',
+          });
+          registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+
+          const result = await runAgentLoopDispatched('conv-1', 'actually, do X instead', {
+            initiatedBy: 'user',
+          });
+
+          expect(result).toEqual({ reason: 'enqueued' });
+          expect(enqueueUserInputMock).toHaveBeenCalledWith('conv-1', 'actually, do X instead');
+        });
+
+        it('still refuses the same send when a scheduler tick started it', async () => {
+          const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+          useRealInteractionMode();
+          getConversationMock.mockReturnValue({
+            id: 'conv-1', title: 't', messages: [], status: 'running', scheduledTaskId: 'task-1',
+          });
+          registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+
+          const result = await runAgentLoopDispatched('conv-1', 'the next scheduled prompt', {
+            initiatedBy: 'automation',
+          });
+
+          expect(result).toEqual({
+            reason: 'error',
+            error: '当前会话已有任务在运行，请等待结束后再启动新任务。',
+            messageTaken: false,
+          });
+          expect(enqueueUserInputMock).not.toHaveBeenCalled();
+        });
       });
 
       it('stages the message in the shell queue instead of injecting it into an existing sidecar run', async () => {

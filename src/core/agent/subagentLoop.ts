@@ -476,6 +476,17 @@ export interface SubagentLoopOptions {
   scheduledTaskId?: string;
   /** Who started the PARENT run — a subagent inherits it, never decides it. */
   initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /**
+   * The PARENT run's consecutive-browser-denial seam (browserDenialTracker.ts),
+   * threaded in at delegation time exactly like `initiatedBy`. A delegated
+   * browser refusal counts toward the parent's streak, and a delegated
+   * consented allow clears it — otherwise a run could dodge the guard
+   * entirely by doing its browser work through a subagent. Local-only: these
+   * are functions, so they never cross the subagent.run wire; the shell
+   * re-stamps them from its own session on the reverse tool.invoke channel.
+   */
+  reportBrowserDenial?: () => void;
+  reportBrowserAllow?: () => void;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
@@ -1100,6 +1111,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             interactionMode: resolveSubagentInteractionMode(options),
             authorizationScopeId: options.authorizationScopeId,
             runPermissionCeiling: options.runPermissionCeiling,
+            // The PARENT run's denial guard: a browser refusal inside a
+            // delegated run is still this run being refused.
+            reportBrowserDenial: options.reportBrowserDenial,
+            reportBrowserAllow: options.reportBrowserAllow,
             abortSignal: signal,
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely

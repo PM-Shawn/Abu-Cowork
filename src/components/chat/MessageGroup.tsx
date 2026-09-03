@@ -759,7 +759,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
         useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
       }
       announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
-      await runAgentLoopDispatched(convId, userContent, { images: retryImages });
+      // A retry is a human clicking a button, like MessageBubble's own
+      // retry/regenerate/edit-resend — the run is attended even when the
+      // conversation record carries a scheduler/trigger marker.
+      await runAgentLoopDispatched(convId, userContent, {
+        initiatedBy: 'user',
+        ...(retryImages ? { images: retryImages } : {}),
+      });
     };
 
     const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);

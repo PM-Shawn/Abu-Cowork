@@ -2,6 +2,7 @@ import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
 import { isIncompleteReason } from '../agent/agentLoop';
+import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyScheduledTaskCompleted,
@@ -302,8 +303,16 @@ class SchedulerEngine {
       } else {
         // aborted, error, or no_progress (degenerate output) — no delivery; mark the
         // run with a reason-specific message instead of "Unknown error".
+        // An abort the RUN issued is not the same event as a user pressing
+        // Stop, and the run history has to say which: a task that stopped
+        // itself after consecutive browser refusals reads as a bare
+        // "cancelled" otherwise, and the one fact that explains it — the
+        // abort cause — has no reader anywhere.
         const baseError = result.error ?? (
-          result.reason === 'aborted' ? 'Task was cancelled'
+          result.reason === 'aborted'
+            ? (result.abortCause === BROWSER_DENIAL_ABORT_CAUSE
+              ? getI18n().schedule.abortedBrowserDenials
+              : 'Task was cancelled')
           : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
           : 'Unknown error'
         );

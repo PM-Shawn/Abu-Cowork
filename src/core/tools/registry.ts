@@ -878,18 +878,35 @@ export async function checkToolApproval(
           : 'attended';
 
       /**
-       * Every refusal this block issues is a BROWSER-authorization refusal
-       * (a dialog's "deny", an IM "no" or timeout, a policy/site/ceiling
-       * refusal standing in for the absent human) — report it to the run so
-       * consecutive ones can stop the loop (browserDenialTracker.ts). Nothing
-       * outside this block reports: a file or command refusal is a different
-       * conversation with the user. `allowed` marks the one exit where the
-       * gate let the action through, resetting the streak.
+       * The run's consecutive-denial guard (browserDenialTracker.ts) measures
+       * ONE thing: a model that keeps asking for browser actions a human keeps
+       * refusing. So only an INTERACTION-shaped refusal is reported here —
+       * an attended dialog answered "no", an IM approval denied or timed out,
+       * and an ask that fail-closes because no channel could carry it (an
+       * unanswerable ask IS the refusal). A standing-configuration refusal is
+       * not an interaction and must NOT count: the master switch (off by
+       * default), a blocked site, a policy 'deny' cell, the run-permission
+       * ceiling and an unverifiable origin all refuse without anyone having
+       * refused anything, and counting them would abort every unattended run
+       * that touched the browser twice.
+       *
+       * Nothing outside this block reports at all — a file or command refusal
+       * is a different conversation with the user.
        */
-      const denied = <T extends ToolApprovalDecision>(decision: T): T => {
+      const refusedByHuman = <T extends ToolApprovalDecision>(decision: T): T => {
         toolContext?.reportBrowserDenial?.();
         return decision;
       };
+      /**
+       * The mirror image on the allow side: only an allow the user CONSENTED
+       * to clears the streak — a dialog they confirmed, an IM approval they
+       * approved, or a standing grant they created being applied. A policy
+       * auto-allow must not reset, or the guard is trivially dodged: with
+       * attended read-only at its 'allow' default, a model could alternate
+       * navigate (refused) / screenshot (auto-allowed, streak cleared) and
+       * never trip. Set at the consent sites below, reported once at the end.
+       */
+      let consented = false;
 
       const settingsSnapshot = getSettingsReader().getSnapshot();
       const masterSwitchUnattended = settingsSnapshot.allowUnattendedBrowser === true;
@@ -994,20 +1011,20 @@ export async function checkToolApproval(
               deniedNotice: noticeReason,
             }, toolContext?.loopId);
           }
-          return denied(browserCeilingDecision);
+          return browserCeilingDecision;
         }
       }
       if (siteVerdict === 'denied') {
         // Now reachable for read-only actions too, in unattended runs: a
         // blocked site is blocked for READING as well when nobody is watching.
-        return denied(runMode === 'unattended'
+        return runMode === 'unattended'
           ? await denyUnattendedBrowser(unattendedDenialReason())
-          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` });
+          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
       }
       if (policyVerdict === 'deny') {
-        return denied(runMode === 'unattended'
+        return runMode === 'unattended'
           ? await denyUnattendedBrowser(unattendedDenialReason())
-          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` });
+          : { decision: 'deny', reason: `Error: ${t.commandConfirm.browserPolicyDenied}` };
       }
 
       if (runMode === 'unattended') {
@@ -1023,7 +1040,7 @@ export async function checkToolApproval(
         // (`get_tabs`, `connection_status`, `get_downloads`) are exempt —
         // there is no site behind them to verify.
         if (browserToolTargetsPage(name) && origin === null) {
-          return denied(await denyUnattendedBrowser(t.commandConfirm.browserUnattendedOriginUnverified));
+          return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedOriginUnverified);
         }
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny (or, in a later task, an IM approval
@@ -1072,17 +1089,29 @@ export async function checkToolApproval(
             // be wrong about what happened. The generic key stays the
             // fallback for the fail-closed default resolver, whose reason is
             // an English diagnostic.
-            return denied(await denyUnattendedBrowser(
+            // Counted: this is the unattended stand-in for the dialog — a
+            // human said no in chat, nobody answered in time, or there was no
+            // channel to ask through at all.
+            return refusedByHuman(await denyUnattendedBrowser(
               approval.userFacingReason ?? t.commandConfirm.browserUnattendedConfirmUnavailable,
             ));
           }
+          // A human (or the channel standing in for one) said yes.
+          consented = true;
         }
         // Cross-origin fail-closed baseline: an unattended run acts only where
         // the user granted a standing "allowed" verdict. Reading a page is
         // exempt (it changes nothing); clicking, navigating and scripting are
         // not. A later task refines this per-origin.
-        if (consequence === 'state-changing' && siteVerdict !== 'allowed') {
-          return denied(await denyUnattendedBrowser(t.commandConfirm.browserUnattendedSiteNotAllowed));
+        if (consequence === 'state-changing') {
+          // Not counted: "this origin has no standing grant" is configuration,
+          // not a refusal anyone issued.
+          if (siteVerdict !== 'allowed') {
+            return await denyUnattendedBrowser(t.commandConfirm.browserUnattendedSiteNotAllowed);
+          }
+          // The user's own standing "allow this site" grant is what let this
+          // act — a consented allow, so the streak is over.
+          consented = true;
         }
         // Approved by policy (+ site grant) — an unattended run has no
         // conversation-grant/dialog concept, so nothing further to do.
@@ -1110,8 +1139,11 @@ export async function checkToolApproval(
           if (!onRequireConfirmation) {
             // No confirmation channel — fail closed rather than silently
             // acting in the user's session. Sites the user explicitly allowed
-            // were already let through above.
-            return denied({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
+            // were already let through above. Counted for the same reason the
+            // unattended no-channel case is: the gate needed an answer from a
+            // human and could not get one, so an insistent model must not be
+            // able to keep re-asking forever.
+            return refusedByHuman({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
           }
           safeRecordBrowserSignal(() => buildBrowserSignalRecord(
             { kind: 'confirm_prompt', origin: origin ?? undefined },
@@ -1127,19 +1159,25 @@ export async function checkToolApproval(
             allowPersistentGrant: !scripting && origin !== null,
           }, toolContext?.loopId);
           if (!confirmed) {
-            return denied({ decision: 'deny', reason: t.commandConfirm.userCancelled });
+            return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
           }
+          consented = true;
           // A script approval covers that one run only — minting the
           // conversation grant from it would silently unlock 30 minutes of
           // click/fill/navigate the user never approved.
           if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
+        } else if (granted) {
+          // No dialog because the user already granted this — a standing site
+          // verdict, or the conversation grant minted from an earlier dialog.
+          // Both are consent, unlike an unconditional permission-mode allow.
+          consented = true;
         }
       } else if (policyVerdict === 'ask') {
         // Attended read-only explicitly configured to ask. Never reached under
         // the default policy (attended read-only is 'allow'), but the setting
         // must do something when a user picks it.
         if (!onRequireConfirmation) {
-          return denied({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
+          return refusedByHuman({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
         }
         const confirmed = await onRequireConfirmation({
           command: browserActionLabel,
@@ -1150,11 +1188,14 @@ export async function checkToolApproval(
           allowPersistentGrant: false,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return denied({ decision: 'deny', reason: t.commandConfirm.userCancelled });
+          return refusedByHuman({ decision: 'deny', reason: t.commandConfirm.userCancelled });
         }
+        consented = true;
       }
-      // The browser gate let this action through — the streak is over.
-      toolContext?.reportBrowserAllow?.();
+      // A consented allow ends the streak. An action that merely passed the
+      // policy (attended read-only under the shipped default is the common
+      // one) leaves the counter exactly where it was.
+      if (consented) toolContext?.reportBrowserAllow?.();
     }
   }
 

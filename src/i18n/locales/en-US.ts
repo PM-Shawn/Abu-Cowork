@@ -1943,6 +1943,7 @@ const enUS: TranslationDict = {
     denialFile: 'blocked file access: {path}',
     denialMore: ', and {count} more',
     denialSummary: '\n\nThe task was blocked by permissions at the "{mode}" tier: {list}. Raise the task\'s autonomy in its settings, or authorize the site in Settings → Capabilities → Authorized sites.',
+    abortedBrowserDenials: 'Stopped: browser actions were refused repeatedly',
   },
 
   trigger: {

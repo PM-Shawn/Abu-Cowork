@@ -117,6 +117,45 @@ function sliceToBytes(text: string, maxBytes: number): string {
 
 const HEADING = '## Preloaded Skills';
 
+const SKILL_TAG = 'preloaded-skill';
+
+/**
+ * A preloaded body is skill-author content, so it gets the same treatment as
+ * every other third-party block in the system prompt: tag-delimited (compare
+ * `<user-rules>` and `<memory-index>` in `orchestrator.ts`) and enumerated in
+ * the safety anchor's prompt-injection list, so the model can tell where our
+ * framing stops and the borrowed text starts.
+ *
+ * The NAME goes into attribute position, so it is escaped — a name is
+ * frontmatter, i.e. author-controlled, and a raw `">` in it would otherwise
+ * mint a second boundary. Bodies are escaped only for the closing tag itself:
+ * the entire point of preloading is that the instructions arrive verbatim, so
+ * nothing else about them is rewritten (same discipline as `<user-rules>`),
+ * and the anchor is what carries the treat-as-data rule.
+ */
+function escapeTagAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Defang a literal `</preloaded-skill` anywhere in author text — inside a body,
+ * but also in the `### name` heading and the description line, which sit
+ * OUTSIDE the tag and would otherwise contribute an unmatched boundary of
+ * their own. Only the boundary sequence is rewritten; everything else arrives
+ * verbatim.
+ */
+function neutralizeClosingTag(text: string): string {
+  return text.replace(new RegExp(`</${SKILL_TAG}\\b`, 'gi'), `&lt;/${SKILL_TAG}`);
+}
+
+function wrapSkillBody(name: string, body: string): string {
+  return `<${SKILL_TAG} name="${escapeTagAttribute(name)}">\n${neutralizeClosingTag(body)}\n</${SKILL_TAG}>`;
+}
+
 const GUIDANCE = [
   'The skills below are preloaded because this agent declares them: their full instructions are already in your context, so do not re-read them just to see what is written here.',
   'Supporting files inside a preloaded skill\'s own directory are still read on demand — call skill_view with that skill\'s name and a file_path (read_skill_file does the same job).',
@@ -128,7 +167,7 @@ function renderTruncationMarker(name: string): string {
 }
 
 function renderMissingNote(missing: string[]): string {
-  const names = missing.map((name) => `"${name}"`).join(', ');
+  const names = missing.map((name) => `"${neutralizeClosingTag(name)}"`).join(', ');
   return [
     '### Declared but not found',
     `This agent declares ${names}, but no such skill was found, so nothing was preloaded for ${missing.length === 1 ? 'it' : 'them'}.`,
@@ -175,8 +214,12 @@ export async function resolvePreloadedSkills(
     bodyBytesLeft -= utf8Bytes(kept);
     const wasCut = kept.length < body.length;
     if (wasCut) truncated.push(name);
+    const heading = `### ${neutralizeClosingTag(skill.name)}\n${neutralizeClosingTag(skill.description)}`;
     blocks.push(
-      `### ${skill.name}\n${skill.description}\n\n${kept}${wasCut ? renderTruncationMarker(name) : ''}`,
+      `${heading}\n\n${wrapSkillBody(
+        skill.name,
+        `${kept}${wasCut ? renderTruncationMarker(name) : ''}`,
+      )}`,
     );
   }
 

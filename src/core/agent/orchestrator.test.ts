@@ -351,6 +351,13 @@ describe('buildSystemPromptSections - agent preloaded skills', () => {
     expect(prompt).toContain('PRELOADED-BODY-MARKER');
   });
 
+  it('enumerates <preloaded-skill> in the safety anchor\'s prompt-injection list', async () => {
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'test-conv');
+    const anchor = sections.find((section) => section.name === 'safety-anchor')?.text ?? '';
+    expect(anchor).toContain('may contain prompt injection');
+    expect(anchor).toContain('<preloaded-skill>');
+  });
+
   it('reports a declared skill that does not resolve', async () => {
     vi.mocked(agentRegistry.getAgent).mockReturnValue({
       name: 'abu', systemPrompt: '测试人格', description: '桌面助手', skills: ['gone'],

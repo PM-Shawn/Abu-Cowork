@@ -108,7 +108,7 @@ const zhCN: TranslationDict = {
     automation: '自动化',
     scheduledTasks: '定时任务',
     triggers: '监听事件',
-    toolbox: '工具箱',
+    extensions: '扩展',
     recents: '最近',
     searchPlaceholder: '搜索对话...',
     noSearchResults: '没有匹配的对话',
@@ -1212,7 +1212,7 @@ const zhCN: TranslationDict = {
     mcp: '连接器',
     searchPlaceholder: '搜索...',
     footerDescription: '技能、代理、连接器统一管理',
-    // Plugin System IA (labs flag LABS_PLUGIN_SYSTEM) — see ToolboxModal
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: '插件',
     pluginsEmptyState: '还没有安装任何插件',
     connectors: '连接器',
@@ -1587,8 +1587,8 @@ const zhCN: TranslationDict = {
     skillProposalCardDeferred: '稍后处理 · 可在草稿面板操作',
     skillProposalCardMissing: '草稿已不存在（可能已通过草稿面板处理或已过期）',
     skillProposalCardJump: '→ 打开技能面板',
-    skillProposalCardOnboardGate: '阿布给你推荐了第一个技能。点开工具箱选一下"主动度"，再来决定留不留。',
-    skillProposalCardOnboardGateAction: '打开工具箱完成引导',
+    skillProposalCardOnboardGate: '阿布给你推荐了第一个技能。点开「扩展」选一下"主动度"，再来决定留不留。',
+    skillProposalCardOnboardGateAction: '打开扩展完成引导',
     skillPatchedCardLabel: 'Abu 修正了技能',
     skillPatchGroupLabel: 'Abu 修改了技能',
     skillPatchGroupCount: '（{count} 处）',

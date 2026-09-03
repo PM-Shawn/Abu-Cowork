@@ -158,7 +158,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // the 阿布沉淀 category's visibility condition accounts for pending
   // drafts even when there are no workspace-auto skills yet.
   const draftsCount = useSkillDraftsStore((s) => s.drafts.length);
-  const { toolboxSearchQuery, disabledSkills, toggleSkillEnabled, closeToolbox } = useSettingsStore();
+  const { extensionsSearchQuery, disabledSkills, toggleSkillEnabled, closeExtensions } = useSettingsStore();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
@@ -207,7 +207,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
   // Filter by search
-  const searchLower = toolboxSearchQuery.toLowerCase();
+  const searchLower = extensionsSearchQuery.toLowerCase();
   const filteredSkills = useMemo(() => {
     if (!searchLower) return installedSkills;
     return installedSkills.filter((s) => {
@@ -431,7 +431,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                         setMenuSkill(null);
                         startNewConversation();
                         setPendingInput(`/${selected.name} `);
-                        closeToolbox();
+                        closeExtensions();
                       }}
                     >
                       <MessageCircle className="h-3 w-3" />

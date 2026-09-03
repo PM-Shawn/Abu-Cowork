@@ -17,8 +17,8 @@ const mockAcceptDraft = vi.fn();
 const mockRejectDraft = vi.fn();
 const mockSetAction = vi.fn();
 const mockAddToast = vi.fn();
-const mockOpenToolbox = vi.fn();
-const mockSetToolboxSearchQuery = vi.fn();
+const mockOpenExtensions = vi.fn();
+const mockSetExtensionsSearchQuery = vi.fn();
 const mockWriteMemory = vi.fn().mockResolvedValue('memo.md');
 
 // Filler timestamp (TESTING.md §3) — only used as the store's "has
@@ -63,8 +63,8 @@ vi.mock('@/stores/toastStore', () => ({
 // without needing to mock around the gate.
 const settingsState = {
   soul: { draftsOnboardingShown: true, proactivity: 'companion' as const },
-  openToolbox: mockOpenToolbox,
-  setToolboxSearchQuery: mockSetToolboxSearchQuery,
+  openExtensions: mockOpenExtensions,
+  setExtensionsSearchQuery: mockSetExtensionsSearchQuery,
 };
 
 vi.mock('@/stores/settingsStore', () => {
@@ -287,7 +287,7 @@ describe('SkillProposalCard · reject-category (writes feedback memory)', () => 
 });
 
 describe('SkillProposalCard · settled state', () => {
-  it('accepted pill links to Toolbox with skill name prefilled (Task #33)', async () => {
+  it('accepted pill links to Extensions with skill name prefilled (Task #33)', async () => {
     const user = userEvent.setup();
     renderCard({ settledAction: 'accepted' });
 
@@ -299,8 +299,8 @@ describe('SkillProposalCard · settled state', () => {
     expect(jump).toBeInTheDocument();
 
     await user.click(jump);
-    expect(mockOpenToolbox).toHaveBeenCalledWith('skills');
-    expect(mockSetToolboxSearchQuery).toHaveBeenCalledWith('weekly-digest');
+    expect(mockOpenExtensions).toHaveBeenCalledWith('skills');
+    expect(mockSetExtensionsSearchQuery).toHaveBeenCalledWith('weekly-digest');
   });
 
   it('rejected pill is non-interactive (no toolbox jump link)', () => {
@@ -342,13 +342,13 @@ describe('SkillProposalCard · first-use onboarding gate (Task #50)', () => {
     expect(screen.queryByRole('button', { name: /Decide later/ })).not.toBeInTheDocument();
   });
 
-  it('clicking the gate button opens the Toolbox skills tab', async () => {
+  it('clicking the gate button opens the Extensions skills tab', async () => {
     settingsState.soul.draftsOnboardingShown = false;
     const user = userEvent.setup();
     renderCard();
 
-    await user.click(screen.getByRole('button', { name: /Open Toolbox/ }));
-    expect(mockOpenToolbox).toHaveBeenCalledWith('skills');
+    await user.click(screen.getByRole('button', { name: /Open Extensions/ }));
+    expect(mockOpenExtensions).toHaveBeenCalledWith('skills');
   });
 
   it('settled actions take priority over the onboarding gate', () => {

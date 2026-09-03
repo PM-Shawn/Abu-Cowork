@@ -3,13 +3,15 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
+
 const settingsState = {
-  activeToolboxTab: 'skills' as 'skills' | 'agents' | 'mcp',
-  closeToolbox: vi.fn(),
-  setActiveToolboxTab: vi.fn(),
-  toolboxSearchQuery: '',
-  setToolboxSearchQuery: vi.fn((value: string) => {
-    settingsState.toolboxSearchQuery = value;
+  activeExtensionsTab: 'skills' as ExtensionsTab,
+  closeExtensions: vi.fn(),
+  setActiveExtensionsTab: vi.fn(),
+  extensionsSearchQuery: '',
+  setExtensionsSearchQuery: vi.fn((value: string) => {
+    settingsState.extensionsSearchQuery = value;
   }),
 };
 
@@ -22,10 +24,6 @@ vi.mock('@/stores/chatStore', () => ({
     setPendingInput: vi.fn(),
     startNewConversation: vi.fn(),
   }),
-}));
-
-vi.mock('@/stores/discoveryStore', () => ({
-  useDiscoveryStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ refresh: vi.fn() }),
 }));
 
 vi.mock('@/stores/enterpriseStore', () => ({
@@ -43,9 +41,9 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       toolbox: {
-        skills: 'Skills', agents: 'Agents', mcp: 'MCP', personalSource: 'Mine', organizationSource: 'Organization',
-        searchPlaceholder: 'Search', uploadFile: 'Upload', importEntry: 'Import', aiCreateAgentPrompt: '',
-        aiCreateSkillPrompt: '', uploadFailed: '', uploadSuccess: '', uploadSuccessDetail: '',
+        plugins: 'Plugins', skills: 'Skills', connectors: 'Connectors',
+        personalSource: 'Mine', organizationSource: 'Organization',
+        searchPlaceholder: 'Search', importEntry: 'Import', aiCreateSkillPrompt: '',
       },
     },
   }),
@@ -58,8 +56,8 @@ vi.mock('@/core/enterprise/mounts-registry', () => ({
 }));
 
 vi.mock('../customize/SkillsSection', () => ({ default: () => <div>Personal skills</div> }));
-vi.mock('../customize/AgentsSection', () => ({ default: () => <div>Personal agents</div> }));
 vi.mock('../customize/MCPSection', () => ({ default: () => <div>Personal MCP</div> }));
+vi.mock('@/components/toolbox/plugins/PluginsTab', () => ({ default: () => <div>Personal plugins</div> }));
 vi.mock('@/components/toolbox/TopTabNav', () => ({
   default: ({ items, right }: { items: Array<{ id: string; label: string }>; right: ReactNode }) => (
     <div>{items.map(item => <button key={item.id}>{item.label}</button>)}{right}</div>
@@ -68,22 +66,18 @@ vi.mock('@/components/toolbox/TopTabNav', () => ({
 vi.mock('@/components/toolbox/ToolboxCreateMenu', () => ({
   default: () => <button data-testid="create-control">Add</button>,
 }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
-vi.mock('@/core/skill/installer', () => ({ installSkillFromFolder: vi.fn() }));
-vi.mock('@/core/agent/installer', () => ({ installAgentFromFolder: vi.fn() }));
-vi.mock('@/stores/toastStore', () => ({ useToastStore: { getState: () => ({ addToast: vi.fn() }) } }));
 
-import ToolboxView from './ToolboxModal';
+import ExtensionsView from './ToolboxModal';
 
-describe('Toolbox capability sources', () => {
+describe('Extensions capability sources', () => {
   beforeEach(() => {
-    settingsState.activeToolboxTab = 'skills';
-    settingsState.toolboxSearchQuery = '';
+    settingsState.activeExtensionsTab = 'skills';
+    settingsState.extensionsSearchQuery = '';
     vi.clearAllMocks();
   });
 
   it('keeps personal create actions separate from the organization catalog', async () => {
-    const { rerender } = render(<ToolboxView />);
+    const { rerender } = render(<ExtensionsView />);
 
     expect(screen.getByText('Personal skills')).toBeInTheDocument();
     expect(screen.getByTestId('create-control')).toBeInTheDocument();
@@ -93,21 +87,17 @@ describe('Toolbox capability sources', () => {
     expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Search'), { target: { value: 'finance' } });
-    rerender(<ToolboxView />);
+    rerender(<ExtensionsView />);
     await waitFor(() => {
       expect(screen.getByTestId('organization-catalog')).toHaveTextContent('finance');
     });
   });
 
-  it('uses the same personal and organization source model for agents', async () => {
-    settingsState.activeToolboxTab = 'agents';
-    render(<ToolboxView />);
-
-    expect(screen.getByText('Personal agents')).toBeInTheDocument();
-    expect(screen.getByTestId('create-control')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
-
-    expect(await screen.findByTestId('organization-catalog')).toBeInTheDocument();
-    expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
+  it('offers the 个人/组织 switch on every tab for a bound enterprise client', () => {
+    render(<ExtensionsView />);
+    expect(screen.getByRole('button', { name: 'Organization' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Plugins' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connectors' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument();
   });
 });

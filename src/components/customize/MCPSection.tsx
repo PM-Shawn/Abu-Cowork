@@ -71,7 +71,7 @@ interface MCPSectionProps {
 }
 
 export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange }: MCPSectionProps = {}) {
-  const toolboxSearchQuery = useSettingsStore((s) => s.toolboxSearchQuery);
+  const extensionsSearchQuery = useSettingsStore((s) => s.extensionsSearchQuery);
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);
@@ -165,7 +165,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [templateArgs, setTemplateArgs] = useState<Record<string, string>>({});
 
   // Categorize: "我的" = custom (not from templates), "示例" = template-based (installed + uninstalled)
-  const searchLower = toolboxSearchQuery.toLowerCase();
+  const searchLower = extensionsSearchQuery.toLowerCase();
   const templateNames = useMemo(() => new Set(mcpTemplates.map((t) => t.name)), []);
   const editingNameLocked = !!editingServerName && templateNames.has(editingServerName);
 

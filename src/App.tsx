@@ -13,7 +13,7 @@ import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
-import ToolboxView from '@/components/settings/ToolboxModal';
+import ExtensionsView from '@/components/settings/ToolboxModal';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -858,7 +858,7 @@ function App() {
                 style={previewSplit ? { width: previewChatWidth } : undefined}
               >
                 {viewMode === 'automation' && <AutomationView />}
-                {viewMode === 'toolbox' && <ToolboxView />}
+                {viewMode === 'extensions' && <ExtensionsView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (

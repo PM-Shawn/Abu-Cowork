@@ -214,16 +214,16 @@ export default function SkillProposalCard({
             ? t.toolbox.skillProposalCardDeferred
             : t.toolbox.skillProposalCardRejected;
 
-    // Task #33: clicking an "accepted" pill deep-links to the Toolbox
+    // Task #33: clicking an "accepted" pill deep-links to Extensions → Skills
     // with the skill pre-filtered in the search box. Rejected pills stay
     // non-interactive — the skill isn't live, nothing useful to jump to.
     const isAccepted = settledAction === 'accepted';
-    const handleJumpToToolbox = () => {
-      const { openToolbox, setToolboxSearchQuery } = useSettingsStore.getState();
-      openToolbox('skills');
-      // openToolbox clears the search query first; set it after so the
-      // toolbox opens already narrowed to this skill.
-      setToolboxSearchQuery(proposal.skillName);
+    const handleJumpToExtensions = () => {
+      const { openExtensions, setExtensionsSearchQuery } = useSettingsStore.getState();
+      openExtensions('skills');
+      // openExtensions clears the search query first; set it after so the
+      // view opens already narrowed to this skill.
+      setExtensionsSearchQuery(proposal.skillName);
     };
 
     const baseClass = 'my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)]';
@@ -238,7 +238,7 @@ export default function SkillProposalCard({
 
     return isAccepted ? (
       <button
-        onClick={handleJumpToToolbox}
+        onClick={handleJumpToExtensions}
         className={`${baseClass} w-full text-left hover:bg-[var(--abu-bg-elevated)] hover:border-[var(--abu-clay-ring)] transition-colors cursor-pointer`}
       >
         {content}
@@ -273,8 +273,8 @@ export default function SkillProposalCard({
   // Still shows the skill name + description so the user has context,
   // but buttons are suppressed until preferences are set.
   if (!onboardingShown) {
-    const handleOpenToolbox = () => {
-      useSettingsStore.getState().openToolbox('skills');
+    const handleOpenExtensions = () => {
+      useSettingsStore.getState().openExtensions('skills');
     };
     return (
       <div className="my-2 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">
@@ -292,7 +292,7 @@ export default function SkillProposalCard({
             {t.toolbox.skillProposalCardOnboardGate}
           </div>
           <button
-            onClick={handleOpenToolbox}
+            onClick={handleOpenExtensions}
             className="mt-2 px-2.5 py-1 rounded-md text-caption font-medium text-white bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)] transition-colors"
           >
             {t.toolbox.skillProposalCardOnboardGateAction}

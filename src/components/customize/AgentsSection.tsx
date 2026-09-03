@@ -61,7 +61,7 @@ interface AgentsSectionProps {
 
 export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
-  const { toolboxSearchQuery, disabledAgents, toggleAgentEnabled, closeToolbox } = useSettingsStore();
+  const { extensionsSearchQuery, disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const setPendingAgent = useChatStore((s) => s.setPendingAgent);
@@ -101,8 +101,8 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
     const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
-    if (!toolboxSearchQuery) return visible;
-    const q = toolboxSearchQuery.toLowerCase();
+    if (!extensionsSearchQuery) return visible;
+    const q = extensionsSearchQuery.toLowerCase();
     return visible.filter((a) => {
       const haystack = [
         a.name,
@@ -114,7 +114,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       ];
       return haystack.some((s) => s && s.toLowerCase().includes(q));
     });
-  }, [installedAgents, toolboxSearchQuery]);
+  }, [installedAgents, extensionsSearchQuery]);
 
   // Split into user-defined vs builtin/system agents. Builtins go under the
   // "Examples" section, user agents under "My agents".
@@ -194,7 +194,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
     startNewConversation();
     setPendingInput(input);
     setPendingAgent(agent.name);
-    closeToolbox();
+    closeExtensions();
   };
 
   // If editor is open, show editor full-width

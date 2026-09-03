@@ -135,7 +135,8 @@ export interface TranslationDict {
     automation: string;
     scheduledTasks: string;
     triggers: string;
-    toolbox: string;
+    /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
+    extensions: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -1389,12 +1390,12 @@ export interface TranslationDict {
     mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
-    // Plugin System IA (labs flag LABS_PLUGIN_SYSTEM) — see ToolboxModal
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: string;
     pluginsEmptyState: string;
-    /** Third tab's label under the Plugin IA — "连接器"/Connectors. Distinct
-     *  from `mcp` (used unchanged for the flag-off MCP tab) because en-US's
-     *  `mcp` is literally "MCP", not a Connectors-flavored label. */
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
+     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
+     *  literally "MCP", not a Connectors-flavored label. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsInstalledTab: string;

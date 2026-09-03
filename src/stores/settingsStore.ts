@@ -156,10 +156,11 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
-export type ToolboxTab = 'skills' | 'agents' | 'mcp';
+/** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
+export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
@@ -204,8 +205,8 @@ export interface SettingsState {
   labs: Record<string, boolean>;
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
-  activeToolboxTab: ToolboxTab;
-  toolboxSearchQuery: string;
+  activeExtensionsTab: ExtensionsTab;
+  extensionsSearchQuery: string;
   installingItem: string | null;
   viewMode: ViewMode;
   /** System settings render as an overlay dialog on top of the current view,
@@ -396,10 +397,10 @@ interface SettingsActions {
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
-  openToolbox: (tab?: ToolboxTab) => void;
-  closeToolbox: () => void;
-  setActiveToolboxTab: (tab: ToolboxTab) => void;
-  setToolboxSearchQuery: (query: string) => void;
+  openExtensions: (tab?: ExtensionsTab) => void;
+  closeExtensions: () => void;
+  setActiveExtensionsTab: (tab: ExtensionsTab) => void;
+  setExtensionsSearchQuery: (query: string) => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
@@ -635,8 +636,8 @@ export const useSettingsStore = create<SettingsStore>()(
       labs: {},
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
-      activeToolboxTab: 'skills' as ToolboxTab,
-      toolboxSearchQuery: '',
+      activeExtensionsTab: 'plugins' as ExtensionsTab,
+      extensionsSearchQuery: '',
       installingItem: null,
       viewMode: 'chat' as ViewMode,
       systemSettingsOpen: false,
@@ -963,20 +964,20 @@ export const useSettingsStore = create<SettingsStore>()(
       closeAutomation: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
-      openToolbox: (tab) =>
+      openExtensions: (tab) =>
         set(() => ({
-          viewMode: 'toolbox' as ViewMode,
-          activeToolboxTab: tab ?? 'skills',
-          toolboxSearchQuery: '',
+          viewMode: 'extensions' as ViewMode,
+          activeExtensionsTab: tab ?? 'plugins',
+          extensionsSearchQuery: '',
         })),
-      closeToolbox: () =>
+      closeExtensions: () =>
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
-          toolboxSearchQuery: '',
+          extensionsSearchQuery: '',
         }),
-      setActiveToolboxTab: (tab) => set({ activeToolboxTab: tab, toolboxSearchQuery: '' }),
-      setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
+      setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab, extensionsSearchQuery: '' }),
+      setExtensionsSearchQuery: (query) => set({ extensionsSearchQuery: query }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       openTodos: () => set({ viewMode: 'todos' as ViewMode }),
@@ -1955,8 +1956,8 @@ export const useSettingsStore = create<SettingsStore>()(
         state.showSettings = false;
         state.activeSystemTab = 'usage';
         state.activeAutomationTab = 'schedule';
-        state.activeToolboxTab = 'skills';
-        state.toolboxSearchQuery = '';
+        state.activeExtensionsTab = 'plugins';
+        state.extensionsSearchQuery = '';
         state.installingItem = null;
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;

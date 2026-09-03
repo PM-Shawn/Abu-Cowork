@@ -7,8 +7,8 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useI18n, format } from '@/i18n';
 import { useLabsFlag } from '@/core/labs/resolve';
-import { LABS_TODOS_INBOX , LABS_PLUGIN_SYSTEM } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
+import { Plus, Workflow, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -84,8 +84,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const exportConversation = useChatStore((s) => s.exportConversation);
   const importConversation = useChatStore((s) => s.importConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
-  const openToolbox = useSettingsStore((s) => s.openToolbox);
-  const showPluginIA = useLabsFlag(LABS_PLUGIN_SYSTEM);
+  const openExtensions = useSettingsStore((s) => s.openExtensions);
   const updateCount = usePluginStore((s) => s.updateAvailableKeys.length);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
@@ -368,23 +367,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           </>
         )}
         <button
-          onClick={() => { openToolbox(); setShowFileTree(false); }}
+          onClick={() => { openExtensions(); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-            viewMode === 'toolbox'
+            viewMode === 'extensions'
               ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
               : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          {showPluginIA ? (
-            <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          ) : (
-            <Wrench className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          )}
-          {/* The panel this opens is titled 「插件」 under the experiment; a
-              sidebar still reading 「工具箱」 would name the same place twice. */}
-          <span>{showPluginIA ? t.toolbox.plugins : t.sidebar.toolbox}</span>
-          {showPluginIA && updateCount > 0 && (
+          <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          <span>{t.sidebar.extensions}</span>
+          {updateCount > 0 && (
             <span
               className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0"
               aria-label={format(t.toolbox.pluginsUpdatesAvailable, { count: updateCount })}

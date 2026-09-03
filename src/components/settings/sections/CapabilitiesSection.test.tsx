@@ -124,7 +124,7 @@ describe('CapabilitiesSection', () => {
       disabledSkills: ['disabled-skill'],
       systemSettingsOpen: true,
       viewMode: 'chat',
-      activeToolboxTab: 'skills',
+      activeExtensionsTab: 'skills',
     });
     useMCPStore.setState({
       servers: {

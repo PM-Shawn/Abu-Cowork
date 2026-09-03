@@ -108,7 +108,7 @@ const enUS: TranslationDict = {
     automation: 'Automation',
     scheduledTasks: 'Scheduled Tasks',
     triggers: 'Triggers',
-    toolbox: 'Toolbox',
+    extensions: 'Extensions',
     recents: 'Recents',
     searchPlaceholder: 'Search chats...',
     noSearchResults: 'No matching conversations',
@@ -1210,7 +1210,7 @@ const enUS: TranslationDict = {
     agents: 'Agents',
     mcp: 'MCP',
     searchPlaceholder: 'Search...',
-    // Plugin System IA (labs flag LABS_PLUGIN_SYSTEM) — see ToolboxModal
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: 'Plugins',
     pluginsEmptyState: 'No plugins installed yet',
     connectors: 'Connectors',
@@ -1585,8 +1585,8 @@ const enUS: TranslationDict = {
     skillProposalCardDeferred: 'Decide later · still available in drafts panel',
     skillProposalCardMissing: 'Draft no longer exists (may have been processed via the drafts panel or expired)',
     skillProposalCardJump: '→ Open skills panel',
-    skillProposalCardOnboardGate: "Abu proposed your first skill. Open the Toolbox to pick a proactivity level, then come back to decide.",
-    skillProposalCardOnboardGateAction: 'Open Toolbox to finish setup',
+    skillProposalCardOnboardGate: "Abu proposed your first skill. Open Extensions to pick a proactivity level, then come back to decide.",
+    skillProposalCardOnboardGateAction: 'Open Extensions to finish setup',
     skillPatchedCardLabel: 'Abu patched skill',
     skillPatchGroupLabel: 'Abu modified skill',
     skillPatchGroupCount: '({count} locations)',

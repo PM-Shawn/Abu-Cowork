@@ -105,13 +105,26 @@ function policyCells(row: HTMLElement): HTMLElement[] {
   );
 }
 
+/** The OPEN dropdown belonging to a trigger. It is portalled to `document.body`
+ *  (so a menu is never clipped by the card below it), which is why nothing here
+ *  can be found by searching inside the row the trigger sits in. */
+function openedMenu(trigger: HTMLElement): HTMLElement {
+  const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+  if (!dropdown) throw new Error('dropdown not open');
+  return dropdown;
+}
+
+/** One option of the open menu, by its accessible name. */
+function openedOption(trigger: HTMLElement, name: RegExp | string): HTMLElement {
+  return within(openedMenu(trigger)).getByRole('button', { name });
+}
+
 /** Read the OPEN dropdown, not the row: a closed trigger also renders its
  *  current value as button text and would match by name. Only the option
  *  LABEL is returned — the description is a child element, the label is the
  *  option button's own text. */
 function openedOptionLabels(trigger: HTMLElement): string[] {
-  const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
-  if (!dropdown) throw new Error('dropdown not open');
+  const dropdown = openedMenu(trigger);
   return within(dropdown).getAllByRole('button').map((b) =>
     Array.from(b.childNodes)
       .filter((node) => node.nodeType === Node.TEXT_NODE)
@@ -123,8 +136,7 @@ function openedOptionLabels(trigger: HTMLElement): string[] {
 
 /** Every description the OPEN dropdown offers, in option order. */
 function openedOptionDescriptions(trigger: HTMLElement): string[] {
-  const dropdown = document.getElementById(trigger.getAttribute('aria-controls') ?? '');
-  if (!dropdown) throw new Error('dropdown not open');
+  const dropdown = openedMenu(trigger);
   return within(dropdown)
     .getAllByRole('button')
     .map((b) => b.querySelector('span.block')?.textContent ?? '');
@@ -387,7 +399,7 @@ describe('CapabilitiesSection', () => {
 
     await openDetail(user, 'My Chrome');
 
-    expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
     await waitFor(() => {
       expect(ensureMCPServerMock).toHaveBeenCalledWith('abu-browser-bridge');
     });
@@ -577,10 +589,12 @@ describe('CapabilitiesSection', () => {
       expect(hasChromeExtensionHandshaked()).toBe(true);
     });
 
-    // ...and the older one contradicts it afterwards. It is history.
+    // ...and the older one contradicts it afterwards. It is history: the page
+    // still describes a connected channel, so it offers to disconnect it and
+    // has stopped offering to go install anything.
     slowFirstProbe.resolve(EXTENSION_MISSING);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Done' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Disconnect My Chrome' })).toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: 'Check connection' })).not.toBeInTheDocument();
   });
@@ -655,9 +669,8 @@ describe('CapabilitiesSection', () => {
     useSettingsStore.setState({ capabilitySetupTarget: 'chrome' });
     render(<CapabilitiesSection />);
 
-    expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
     expect(screen.queryByText('Check connection')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Done' })).not.toBeInTheDocument();
     // The way forward is the explicit opt-in, which is present.
     expect(screen.getByRole('button', { name: 'Connect Chrome' })).toBeInTheDocument();
   });
@@ -681,24 +694,140 @@ describe('CapabilitiesSection', () => {
     expect(mcpManagerMock.disconnectServer).toHaveBeenCalledWith('abu-browser-bridge');
   });
 
-  it('keeps My Chrome disconnect available when the enabled runtime has failed', async () => {
-    useMCPStore.setState((state) => ({
-      servers: {
-        ...state.servers,
-        'abu-browser-bridge': {
-          ...state.servers['abu-browser-bridge'],
-          status: 'error',
-          error: 'bridge failed',
-        },
-      },
-    }));
+  /*
+    U5 — "Disconnect" is a claim about the current state, not a menu item. A
+    page that offers to disconnect something that was never connected has told
+    the user it IS connected, which is exactly the confusion this round is
+    about. The way forward for a machine with no extension is to go install
+    one, so that is the button it gets.
+  */
+  it('offers no disconnect while My Chrome is not connected', async () => {
+    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
 
     await openDetail(user, 'My Chrome');
+    expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
 
-    expect(await screen.findByRole('button', { name: 'Disconnect My Chrome' }))
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Open install windows' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: 'Disconnect My Chrome' }))
+      .not.toBeInTheDocument();
+  });
+
+  /*
+    U6 — and the mirror image: someone who already has the extension attached
+    is not shown how to install one. The install block, its numbered steps and
+    the developer-mode warning that belongs to step 2 all belong to the
+    not-connected state only.
+  */
+  it('shows install steps only while the extension is missing', async () => {
+    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+    const user = userEvent.setup();
+    const { unmount } = render(<CapabilitiesSection />);
+
+    await openDetail(user, 'My Chrome');
+    expect(await screen.findByText('Install the extension')).toBeInTheDocument();
+    expect(screen.getByText(/local extension rather than the Chrome Web Store/))
       .toBeInTheDocument();
+    expect(screen.getByText(/read and interact with pages on all websites/))
+      .toBeInTheDocument();
+
+    unmount();
+    setChromeExtensionHandshaked(false);
+    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_ATTACHED);
+    const connectedUser = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openDetail(connectedUser, 'My Chrome');
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Disconnect My Chrome' })).toBeInTheDocument();
+    });
+    expect(screen.getByText('Connected')).toBeInTheDocument();
+    expect(screen.queryByText('Install the extension')).not.toBeInTheDocument();
+    expect(screen.queryByText(/local extension rather than the Chrome Web Store/))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open install windows' }))
+      .not.toBeInTheDocument();
+    // The permission cards are what a connected user is here for.
+    expect(screen.getByText('Action permissions')).toBeInTheDocument();
+    expect(screen.getByText('Site permissions')).toBeInTheDocument();
+  });
+
+  /*
+    U1 — every detail page is header line, then ONE status row, then cards.
+    A working built-in browser has no state to report that its own title does
+    not already carry and nothing to switch, so it renders no row at all —
+    the badge/`Its own session` pair used to say what the line above it says.
+  */
+  it('drops the status row on a working built-in browser and keeps it on a broken one', async () => {
+    const user = userEvent.setup();
+    mcpManagerMock.connectedServers.add('abu-browser');
+    render(<CapabilitiesSection />);
+    await openBuiltinBrowser(user);
+
+    expect(screen.getByRole('heading', { name: 'Abu built-in browser' })).toBeInTheDocument();
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.queryByText('Its own session')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    // ...but nothing about the page's actual job went with it.
+    expect(screen.getByText('Action permissions')).toBeInTheDocument();
+
+    // A disconnected runtime is the opposite: the row is the only place the
+    // fault and its retry can live.
+    cleanup();
+    mcpManagerMock.connectedServers.delete('abu-browser');
+    const brokenUser = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openBuiltinBrowser(brokenUser);
+
+    expect(screen.getByText('Setup required')).toBeInTheDocument();
+    expect(screen.getByText(/built-in browser runtime is disconnected/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  /*
+    U7 — Computer Use gets the same skeleton. "Off" is reported by the row like
+    any other state instead of by a callout arguing the user into enabling it,
+    and the row's single button is the one that changes that state. What
+    enabling DOES is untouched: the same store action, from a button in a new
+    place.
+  */
+  it('reports Computer Use on the same status row and enables through the same action', async () => {
+    useSettingsStore.setState({ computerUseEnabled: false });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openDetail(user, 'Computer Use');
+
+    // Header line is the capability's one-liner, not the old setup paragraph.
+    expect(screen.getByText('Reads the screen and operates the interface')).toBeInTheDocument();
+    expect(screen.queryByText(/needs two separate system permissions/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/cannot enable Computer Use by itself/)).not.toBeInTheDocument();
+    // ...and the long closing statement is gone with it.
+    expect(screen.queryByText(/Sensitive apps and dangerous key combinations/))
+      .not.toBeInTheDocument();
+
+    expect(screen.getByText('Off')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Turn off Computer Use' }))
+      .not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => {
+      expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
+    });
+
+    // On: same row, opposite verb, and no second "Enable" left anywhere.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Turn off Computer Use' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+    // The model card and the two permission rows are what the page is for.
+    expect(screen.getByText('Current model')).toBeInTheDocument();
+    expect(screen.getAllByText('View screen').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: 'Turn off Computer Use' }));
+    expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
   });
 
   it('refreshes built-in browser status when the existing MCP runtime connects', async () => {
@@ -839,8 +968,7 @@ describe('CapabilitiesSection', () => {
     expect(await screen.findByText('The current task needs Computer Use'))
       .toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Enable' }));
-    expect(await screen.findByText('Computer Use is ready')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Return to task' }));
+    await user.click(await screen.findByRole('button', { name: 'Return to task' }));
 
     expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
     expect(useSettingsStore.getState().capabilitySetupTarget).toBeNull();
@@ -1008,7 +1136,7 @@ describe('CapabilitiesSection', () => {
 
     render(<CapabilitiesSection />);
 
-    expect(await screen.findByText('Connect My Chrome')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
     expect(screen.getByText('The current task needs My Chrome')).toBeInTheDocument();
     expect(ensureMCPServerMock).not.toHaveBeenCalled();
     expect(useMCPStore.getState().servers['abu-browser-bridge'].config.enabled).toBe(false);
@@ -1066,8 +1194,9 @@ describe('CapabilitiesSection', () => {
         .toBeInTheDocument();
       expect(screen.getByTitle('https://blocked.example.com')).toBeInTheDocument();
 
-      await user.click(within(row as HTMLElement).getByRole('button', { name: 'Always allow' }));
-      await user.click(within(row as HTMLElement).getByRole('button', { name: /^Blocked/ }));
+      const trigger = within(row as HTMLElement).getByRole('button', { name: 'Always allow' });
+      await user.click(trigger);
+      await user.click(openedOption(trigger, /^Blocked/));
 
       expect(useSettingsStore.getState().browserSitePermissions).toEqual({
         'https://allowed.example.com': 'denied',
@@ -1191,7 +1320,7 @@ describe('CapabilitiesSection', () => {
       const [, unattendedCell] = policyCells(interactiveRow);
 
       await user.click(unattendedCell);
-      await user.click(within(interactiveRow).getByRole('button', { name: /^Deny/ }));
+      await user.click(openedOption(unattendedCell, /^Deny/));
 
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.interactive).toBe('deny');
       // The other column is untouched — the two run modes are independent.
@@ -1214,21 +1343,28 @@ describe('CapabilitiesSection', () => {
       const [attendedCell, unattendedCell] = policyCells(scriptCard);
 
       await user.click(attendedCell);
-      await user.click(within(scriptCard).getByRole('button', { name: /^Allow/ }));
+      await user.click(openedOption(attendedCell, /^Allow/));
       expect(useSettingsStore.getState().browserOperationPolicy.attended.scripting).toBe('allow');
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('deny');
 
       await user.click(unattendedCell);
-      await user.click(within(scriptCard).getByRole('button', { name: /^Ask every time/ }));
+      await user.click(openedOption(unattendedCell, /^Ask every time/));
       expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('ask');
       // And the grid rows it used to share a table with are untouched.
       expect(useSettingsStore.getState().browserOperationPolicy.attended.readOnly).toBe('allow');
       expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
     });
 
-    // The automatic-tasks scripting cell has no "allow": a site grant minted
-    // from a human approving a click must never buy silent page scripting.
-    it('offers only ask/deny for automatic scripting, all three elsewhere', async () => {
+    /*
+      The automatic-tasks scripting cell has no "allow": a site grant minted
+      from a human approving a CLICK must never buy silent page scripting.
+
+      The tier is still listed, disabled, carrying the reason — a cell quietly
+      missing the option every neighbouring cell has reads as a bug, and the
+      user asked for the absence to be explained inside the control rather
+      than argued for in a paragraph above it.
+    */
+    it('explains the missing allow tier for automatic scripting instead of hiding it', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1239,10 +1375,14 @@ describe('CapabilitiesSection', () => {
       );
 
       await user.click(scriptUnattended);
-      expect(openedOptionLabels(scriptUnattended)).toEqual(['Ask every time', 'Deny']);
+      expect(openedOptionLabels(scriptUnattended)).toEqual(['Allow', 'Ask every time', 'Deny']);
+      expect(openedOptionDescriptions(scriptUnattended)).toEqual([
+        'Scripts in automatic tasks must be approved one at a time',
+        'Confirms with a dialog before each action',
+        'Abu will not do this kind of thing',
+      ]);
 
-      // The attended half of the same class still offers all three.
-      await user.keyboard('{Escape}');
+      // The attended half of the same class still offers all three for real.
       await user.click(scriptAttended);
       expect(openedOptionLabels(scriptAttended)).toEqual(['Allow', 'Ask every time', 'Deny']);
       expect(openedOptionDescriptions(scriptAttended)).toEqual([
@@ -1250,6 +1390,41 @@ describe('CapabilitiesSection', () => {
         'Confirms with a dialog before each action',
         'Abu will not do this kind of thing',
       ]);
+    });
+
+    /*
+      Listed is not the same as offered. The withheld tier must be inert to
+      every input path a user has — pointer and keyboard — and must never
+      reach the store, because the gate that would refuse it lives elsewhere
+      and a stored 'allow' here would be a setting that silently does nothing.
+    */
+    it('never lets the explained allow tier be chosen, by mouse or by keyboard', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const [, scriptUnattended] = policyCells(permissionCard('Run scripts (advanced)'));
+      await user.click(scriptUnattended);
+      const withheld = openedOption(scriptUnattended, /^Allow/);
+      expect(withheld).toBeDisabled();
+
+      // Pointer: the click lands on it and nothing happens.
+      await user.click(withheld);
+      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting)
+        .toBe('deny');
+      expect(openedMenu(scriptUnattended)).toBeInTheDocument();
+
+      // Keyboard: it cannot hold focus, so neither Tab nor the menu's own
+      // arrow ring (which walks `button:not([disabled])`) can ever make it the
+      // option that Enter would pick.
+      withheld.focus();
+      expect(withheld).not.toHaveFocus();
+      const reachable = Array.from(
+        openedMenu(scriptUnattended).querySelectorAll('button:not([disabled])'),
+      );
+      expect(reachable).not.toContain(withheld);
+      expect(reachable).toHaveLength(2);
     });
 
     it('toggles the automatic-tasks master switch', async () => {

@@ -175,18 +175,39 @@ export function BrowserPermissionCards({
     ask: t.settings.browserOpStateAskDesc,
     deny: t.settings.browserOpStateDenyDesc,
   };
-  // The option list is asked for per cell, not shared: unattended scripting
-  // offers no "allow" (see `browserOperationStatesFor`), and offering one the
-  // gate would refuse to honor is worse than offering fewer.
+  /*
+    The option list is asked for per cell, not shared: unattended scripting
+    offers no "allow" (see `browserOperationStatesFor`) — a site grant is
+    consent the user gave to a CLICK, and it never buys the right to run code
+    in that page unwatched.
+
+    That tier is still LISTED, disabled, with the reason attached. Silently
+    dropping it left one cell in a grid of identical dropdowns quietly missing
+    its top option, which reads as a bug; offering it live would promise
+    something the gate refuses to honor. The withheld tier is derived from
+    `browserOperationStatesFor` rather than hardcoded, so if the policy ever
+    offers it the explanation disappears by itself.
+  */
   const optionsFor = (
     runMode: 'attended' | 'unattended',
     opClass: BrowserOperationClass,
-  ): SelectOption[] =>
-    browserOperationStatesFor(runMode, opClass).map((state) => ({
+  ): SelectOption[] => {
+    const offered = browserOperationStatesFor(runMode, opClass);
+    const options: SelectOption[] = offered.map((state) => ({
       value: state,
       label: stateLabels[state],
       description: stateDescriptions[state],
     }));
+    if (!offered.includes('allow')) {
+      options.unshift({
+        value: 'allow',
+        label: stateLabels.allow,
+        description: t.settings.browserOpStateAllowUnavailableDesc,
+        disabled: true,
+      });
+    }
+    return options;
+  };
 
   const attendedColumn = t.settings.browserOpPolicyColumnAttended;
   const unattendedColumn = t.settings.browserOpPolicyColumnUnattended;

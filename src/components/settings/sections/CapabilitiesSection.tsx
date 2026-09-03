@@ -4,7 +4,6 @@ import {
   Chrome,
   Eye,
   Globe2,
-  LoaderCircle,
   MonitorCog,
   MousePointer2,
   RefreshCw,
@@ -54,10 +53,13 @@ import { isMacOS } from '@/utils/platform';
 import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
 import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import {
+  CapabilityStatusRow,
   ChromeSetupView,
   ComputerUseSetupView,
   SetupHeader,
+  StatusBadge,
   settingsCardClass,
+  type StatusBadgeTone,
 } from './CapabilitySetupView';
 import {
   BrowserPermissionCards,
@@ -85,17 +87,8 @@ interface CapabilitiesSectionProps {
   onSetupRelaunch?: () => void;
 }
 
-/**
- * The only three outcomes a capability card reports. The five runtime status
- * codes collapse onto them because a badge answers "can I use this right now",
- * not "which subsystem failed" — the card's one-line subtitle carries the
- * specific reason, so nothing is lost by not spelling it out twice.
- *
- * `checking` is not a fourth outcome: it is the transient look of a probe in
- * flight, and the badge returns to one of the three as soon as it lands.
- */
-type StatusBadgeTone = 'ready' | 'neutral' | 'attention';
-
+/** The overview card's badge tone. See `StatusBadgeTone` for why there are
+ *  only three of them for five runtime status codes. */
 function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
   switch (code) {
     case 'ready':
@@ -108,32 +101,6 @@ function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
     case 'connection-lost':
       return 'attention';
   }
-}
-
-function StatusBadge({
-  label,
-  tone,
-  checking = false,
-}: {
-  label: string;
-  tone: StatusBadgeTone;
-  checking?: boolean;
-}) {
-  return (
-    <span className={cn(
-      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
-      checking
-        ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
-        : tone === 'ready'
-          ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
-          : tone === 'attention'
-            ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
-            : 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)]',
-    )}>
-      {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
-      {label}
-    </span>
-  );
 }
 
 /**
@@ -817,33 +784,40 @@ export default function CapabilitiesSection({
           breadcrumb={builtinTrail}
         />
 
-        <div className="flex flex-wrap items-center gap-3 border-y border-[var(--abu-border)] py-4">
-          <StatusBadge
+        {/*
+          No status row while the browser is working. Unlike the other two
+          channels there is nothing to connect and nothing to switch on, so a
+          working built-in browser has no state worth reporting and no action
+          to offer: the badge on the card the user just came through already
+          said "ready", and the line under the title already says what "its
+          own session" means. The row would have restated both.
+
+          A broken one is the opposite case — that is the only place the fault
+          and the retry can live, so the row comes back for it.
+        */}
+        {browserStatus.code !== 'ready' && (
+          <CapabilityStatusRow
             label={browserChecking
               ? t.settings.capabilityStatusChecking
               : statusLabels[browserStatus.code]}
             tone={badgeToneFor(browserStatus.code)}
             checking={browserChecking}
+            note={browserFaultNote}
+            action={(
+              <button
+                type="button"
+                onClick={handleBrowserRetry}
+                disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
+                {browserStatus.code === 'connection-lost'
+                  ? t.settings.capabilityRetry
+                  : t.settings.capabilityCheckStatus}
+              </button>
+            )}
           />
-          <span className="min-w-0 flex-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-            {browserStatus.code === 'ready'
-              ? t.settings.capabilityBuiltinBrowserSessionNote
-              : browserFaultNote}
-          </span>
-          {browserStatus.code !== 'ready' && (
-            <button
-              type="button"
-              onClick={handleBrowserRetry}
-              disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
-              {browserStatus.code === 'connection-lost'
-                ? t.settings.capabilityRetry
-                : t.settings.capabilityCheckStatus}
-            </button>
-          )}
-        </div>
+        )}
 
         <BrowserPermissionCards
           backend="builtin"

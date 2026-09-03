@@ -40,7 +40,10 @@ const OFF = /^(已关闭|Off)$/;
 const START_SETUP = /^(开始设置|Start setup)$/;
 const ENABLE = /^(开启|Enable)$/;
 const CONNECT_CHROME = /^(连接 Chrome|Connect Chrome)$/;
-const CHROME_SETUP = /^(连接我的 Chrome|Connect My Chrome)$/;
+const CHROME_HEADER = /^(我的 Chrome|My Chrome)$/;
+const COMPUTER_OFF_ACTION = /^(开启|Enable)$/;
+const DISCONNECT = /^(断开|Disconnect)$/;
+const INSTALL_STEPS = /^(安装扩展|Install the extension)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
 const COMPUTER_SETUP = /^(开启电脑操控|Enable Computer Use)$/;
 const QUICK_START = /^(快速入门|Quick Start)$/;
@@ -178,9 +181,14 @@ test.describe.serial('Electron capability overview', () => {
     // prompts only start from explicit buttons inside each guide. Abu's
     // first-party local bridge is already prepared in the background.
     await myChrome.click();
-    await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
+    // Install guidance is for someone with no extension attached, and the
+    // developer-mode warning now lives inside it rather than on its own.
+    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
     await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
     await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
+    // Nothing is connected, so nothing offers to disconnect it.
+    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
     const chromeCheckButton = page.getByRole('button', {
       name: /^(检查连接|Check connection)$/,
     });
@@ -226,7 +234,12 @@ test.describe.serial('Electron capability overview', () => {
 
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForWelcomeScreen(page);
-    await seedSettings(page, { browserSitePermissions: SEEDED_SITES });
+    // The master switch is seeded on because the automatic-tasks column is
+    // inert without it, and that column is what screenshot 07 is about.
+    await seedSettings(page, {
+      browserSitePermissions: SEEDED_SITES,
+      allowUnattendedBrowser: true,
+    });
     await waitForWelcomeScreen(page);
     await openCapabilities(page);
 
@@ -251,6 +264,9 @@ test.describe.serial('Electron capability overview', () => {
     await expect(page.getByText(AUTOMATIC_TASKS).first()).toBeVisible();
     // The Chrome-channel caveat belongs to the Chrome page only.
     await expect(page.getByText(CHROME_CAVEAT)).toHaveCount(0);
+    // U1 — a working built-in browser reports no status: the badge and the
+    // "its own session" note were the title and the card badge said twice.
+    await expect(page.getByText(READY)).toHaveCount(0);
     await page.screenshot({ path: iaScreenshot('02-builtin-browser-detail-zh') });
 
     // The page is taller than the settings pane, and the scripting card plus
@@ -260,17 +276,44 @@ test.describe.serial('Electron capability overview', () => {
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('02b-builtin-browser-detail-scrolled-zh') });
 
-    // What each option MEANS lives inside the option — the reason there is no
-    // ⓘ anywhere on this page. That is only visible with a menu open.
-    const optionDescription = page.getByText(/每次操作前弹窗确认|Confirms with a dialog/);
-    const clickAndFillCell = page
-      .getByText(CLICK_AND_FILL, { exact: true })
-      .locator('..')
-      .getByRole('button')
+    /*
+      What each option MEANS lives inside the option — the reason there is no
+      ⓘ anywhere on this page — and that is only visible with a menu open.
+
+      The scripting card's automatic column is the one worth photographing: it
+      is the cell with no "allow" to give, so it carries the WITHHELD tier
+      listed and disabled with its reason attached. It is also the menu that
+      used to be painted over by the site-permissions card directly below it.
+    */
+    const scriptCard = page
+      .locator('div.rounded-lg.border')
+      .filter({ has: page.getByText(RUN_SCRIPTS, { exact: true }) })
       .first();
-    await clickAndFillCell.scrollIntoViewIfNeeded();
-    await clickAndFillCell.click();
-    await expect(optionDescription).toBeVisible();
+    const scriptUnattendedCell = scriptCard.locator('button[aria-expanded]').nth(1);
+    await scriptUnattendedCell.scrollIntoViewIfNeeded();
+    await scriptUnattendedCell.click();
+
+    const withheldTier = page.getByText(/自动任务里的脚本必须逐次确认|approved one at a time/);
+    await expect(withheldTier).toBeVisible();
+    await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toBeVisible();
+
+    /*
+      Unclipped is the whole point of the fix, and "visible" does not prove it
+      — the card below used to paint straight over this menu while every
+      element in it stayed "visible" to the DOM. So ask the document what is
+      actually on top at the withheld option's own centre.
+    */
+    const withheldBox = await withheldTier.boundingBox();
+    expect(withheldBox).not.toBeNull();
+    const topmostText = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return el?.closest('button')?.textContent?.trim() ?? el?.textContent?.trim() ?? '';
+    }, {
+      x: withheldBox!.x + withheldBox!.width / 2,
+      y: withheldBox!.y + withheldBox!.height / 2,
+    });
+    expect(topmostText).toMatch(/允许|Allow/);
+
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
 
@@ -278,7 +321,7 @@ test.describe.serial('Electron capability overview', () => {
     // itself on Escape regardless of what is open inside it, so Escape here
     // would take the whole page down rather than just this menu.
     await page.getByText(ACTION_PERMISSIONS).first().click();
-    await expect(optionDescription).toHaveCount(0);
+    await expect(withheldTier).toHaveCount(0);
 
     // ---- Site list, two levels down -------------------------------------
     // Same rule as the overview: the row drills in, no text button.
@@ -297,9 +340,16 @@ test.describe.serial('Electron capability overview', () => {
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
     await expect(capabilityCard(page, MY_CHROME)).toBeVisible();
 
-    // ---- My Chrome detail: same cards, one extra warning ----------------
+    // ---- My Chrome detail: same skeleton, one extra warning -------------
     await capabilityCard(page, MY_CHROME).click();
-    await expect(page.getByText(CHROME_SETUP, { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
+    // Header carries the one-liner, not the paragraph it used to open with.
+    await expect(page.getByText(/复用你已登录的 Chrome 标签页/)).toBeVisible();
+    await expect(page.getByText(/让阿布在你明确要求时使用现有标签页/)).toHaveCount(0);
+    // One status row, one action — and on a machine with no extension the
+    // action is never "disconnect".
+    await expect(page.getByText(NOT_CONNECTED)).toBeVisible();
+    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
     await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });
@@ -318,6 +368,15 @@ test.describe.serial('Electron capability overview', () => {
     await capabilityCard(page, COMPUTER_USE).click();
     await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
+    // Same skeleton: the one-line subtitle, then ONE status row saying it is
+    // off with the single button that changes that — no consent callout, and
+    // no closing paragraph restating both.
+    await expect(page.getByText(/读取屏幕并操作界面|Reads the screen and operates/)).toBeVisible();
+    await expect(page.getByText(OFF)).toBeVisible();
+    await expect(page.getByRole('button', { name: COMPUTER_OFF_ACTION })).toBeVisible();
+    await expect(page.getByText(/阿布不会自行开启电脑操控|cannot enable Computer Use by itself/))
+      .toHaveCount(0);
+    await expect(page.getByText(/敏感应用和危险按键|dangerous key combinations/)).toHaveCount(0);
     await page.screenshot({ path: iaScreenshot('05-computer-use-detail-zh') });
 
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();

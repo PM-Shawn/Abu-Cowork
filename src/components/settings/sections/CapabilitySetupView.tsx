@@ -48,6 +48,79 @@ function SetupStateLabel({ state }: { state: SetupState }) {
 }
 
 /**
+ * The only three outcomes a capability reports. The five runtime status codes
+ * collapse onto them because a badge answers "can I use this right now", not
+ * "which subsystem failed" — the one line beside it carries the specific
+ * reason, so nothing is lost by not spelling it out twice.
+ *
+ * `checking` is not a fourth outcome: it is the transient look of a probe in
+ * flight, and the badge returns to one of the three as soon as it lands.
+ */
+export type StatusBadgeTone = 'ready' | 'neutral' | 'attention';
+
+export function StatusBadge({
+  label,
+  tone,
+  checking = false,
+}: {
+  label: string;
+  tone: StatusBadgeTone;
+  checking?: boolean;
+}) {
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
+      checking
+        ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
+        : tone === 'ready'
+          ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
+          : tone === 'attention'
+            ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
+            : 'bg-[var(--abu-bg-active)] text-[var(--abu-text-muted)]',
+    )}>
+      {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
+      {label}
+    </span>
+  );
+}
+
+/**
+ * The one row every capability detail page carries under its title: what state
+ * the capability is in, one line saying what that state means, and the single
+ * action that changes it.
+ *
+ * One row and one action is the whole rule. A page that also restated the
+ * state in a callout, a second badge, and a closing paragraph made the reader
+ * cross-check four descriptions of one fact to find out whether the thing was
+ * on — so the row is the ONLY place any of them appears, and a page with
+ * nothing to say and nothing to do simply does not render it.
+ */
+export function CapabilityStatusRow({
+  label,
+  tone,
+  checking = false,
+  note,
+  action,
+}: {
+  label: string;
+  tone: StatusBadgeTone;
+  checking?: boolean;
+  /** One line. If it only restates the badge, there is no row to build. */
+  note: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-y border-[var(--abu-border)] py-4">
+      <StatusBadge label={label} tone={tone} checking={checking} />
+      <span className="min-w-0 flex-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {note}
+      </span>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+/**
  * Trail back to the capability overview. Replaces the plain back arrow on any
  * detail page reached by the user's own drill-in, so the page says WHERE it
  * sits, not just that there is a way out. A detail page opened BY A TASK keeps
@@ -176,6 +249,11 @@ export const settingsCardClass =
 const secondaryButtonClass =
   'inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
 
+/** The status row's action. Same height as the secondary button beside it, so
+ *  the row reads as one control strip whichever state the page is in. */
+const rowActionButtonClass =
+  'inline-flex h-8 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-3 text-minor font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:cursor-not-allowed disabled:opacity-50';
+
 export function ChromeSetupView({
   capabilityEnabled,
   requestedByTask,
@@ -213,95 +291,112 @@ export function ChromeSetupView({
   children?: React.ReactNode;
 }) {
   const { t } = useI18n();
-  const extensionState: SetupState = extensionConnected
-    ? 'complete'
-    : working
-      ? 'working'
-      : 'pending';
+
+  /*
+    One row, one action, and the action is decided by what is actually
+    missing:
+      - the bridge was never enabled (or was disconnected) → the explicit
+        opt-in, which is still the ONLY thing that starts the local runtime;
+      - enabled but the local runtime is down → retry it;
+      - running but no extension answering → open the install windows;
+      - connected → disconnect.
+    Disconnect appears in exactly one of those, because offering to disconnect
+    something that is not connected is the page telling the user it is
+    connected.
+  */
+  const needsRuntime = capabilityEnabled && !runtimeReady;
+  const statusLabel = extensionConnected
+    ? t.settings.capabilityStatusConnected
+    : needsRuntime
+      ? t.settings.capabilityStatusSetupRequired
+      : t.settings.capabilityStatusNotConnected;
+  const statusTone: StatusBadgeTone = extensionConnected
+    ? 'ready'
+    : needsRuntime
+      ? 'attention'
+      : 'neutral';
+  const statusNote = extensionConnected
+    // The one consent sentence this page keeps, in place of the footer
+    // paragraph that said it at four times the length.
+    ? t.settings.capabilityMyChromeScope
+    : requestedByTask && !capabilityEnabled
+      ? t.settings.capabilityChromeTaskNeedsSetup
+      : needsRuntime
+        ? t.settings.capabilityChromeServiceUnavailable
+        : t.settings.capabilityChromeExtensionDesc;
+
+  const statusAction = extensionConnected ? (
+    <button
+      type="button"
+      onClick={onDisconnect}
+      disabled={working}
+      // Shown short because the page is already titled "My Chrome"; the
+      // accessible name keeps the full phrase, and contains the visible text.
+      aria-label={t.settings.capabilityChromeDisconnect}
+      className={secondaryButtonClass}
+    >
+      {t.settings.capabilityChromeDisconnectShort}
+    </button>
+  ) : !capabilityEnabled ? (
+    <button
+      type="button"
+      onClick={onPrepare}
+      disabled={working}
+      className={rowActionButtonClass}
+    >
+      {working && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+      {t.settings.capabilityChromeConnect}
+    </button>
+  ) : needsRuntime ? (
+    <button
+      type="button"
+      onClick={onPrepare}
+      disabled={working}
+      className={rowActionButtonClass}
+    >
+      <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
+      {t.settings.capabilityRetry}
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={onOpenInstaller}
+      disabled={working || !extensionPath || openingInstaller}
+      className={rowActionButtonClass}
+    >
+      {openingInstaller || working
+        ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+        : <FolderOpen className="h-3.5 w-3.5" />}
+      {t.settings.capabilityChromeOpenInstaller}
+    </button>
+  );
 
   return (
     <div className="space-y-7">
       <SetupHeader
         icon={Chrome}
-        title={t.settings.capabilityChromeSetupTitle}
-        description={t.settings.capabilityChromeSetupDesc}
+        title={t.settings.capabilityMyChrome}
+        description={t.settings.capabilityMyChromeSubtitle}
         onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}
         breadcrumb={requestedByTask ? undefined : breadcrumb}
-        action={capabilityEnabled ? (
-          <button
-            type="button"
-            onClick={onDisconnect}
-            disabled={working}
-            className="text-minor font-medium text-[var(--abu-text-muted)] transition-colors hover:text-[var(--abu-danger)] disabled:opacity-50"
-          >
-            {t.settings.capabilityChromeDisconnect}
-          </button>
-        ) : undefined}
       />
 
-      {!capabilityEnabled && (
-        <div className="flex items-start justify-between gap-4 border-l-2 border-[var(--abu-clay)] pl-3">
-          <div>
-            <p className="text-body font-medium text-[var(--abu-text-primary)]">
-              {requestedByTask
-                ? t.settings.capabilityChromeTaskNeedsSetup
-                : t.settings.capabilityChromeConfirmEnable}
-            </p>
-            <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-              {t.settings.capabilityChromeConsent}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onPrepare}
-            disabled={working}
-            className="inline-flex h-9 shrink-0 items-center rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:opacity-50"
-          >
-            {working && <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            {t.settings.capabilityChromeConnect}
-          </button>
-        </div>
-      )}
+      <CapabilityStatusRow
+        label={working ? t.settings.capabilityStatusChecking : statusLabel}
+        tone={statusTone}
+        checking={working}
+        note={statusNote}
+        action={statusAction}
+      />
 
+      {/*
+        Installation guidance, and nothing but: it is addressed to someone who
+        has no extension attached, so a user who already connected one never
+        sees it. The developer-mode warning lives INSIDE it rather than as a
+        standalone callout, because it is a fact about step 2.
+      */}
       {!extensionConnected && (
-        <div className="flex items-start gap-2 border-l-2 border-[var(--abu-warning)] pl-3 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-          <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-warning)]" />
-          {t.settings.capabilityChromeExperimental}
-        </div>
-      )}
-
-      <div className="border-y border-[var(--abu-border)]">
-        <SetupRow
-          icon={Chrome}
-          title={t.settings.capabilityChromeExtensionTitle}
-          description={!runtimeReady
-            ? t.settings.capabilityChromeServiceUnavailable
-            : extensionConnected
-              ? t.settings.capabilityChromeExtensionConnected
-              : t.settings.capabilityChromeExtensionDesc}
-          state={extensionState}
-          action={capabilityEnabled && !extensionConnected ? (
-            <button
-              type="button"
-              onClick={runtimeReady ? onOpenInstaller : onPrepare}
-              disabled={working || (runtimeReady && (!extensionPath || openingInstaller))}
-              className={secondaryButtonClass}
-            >
-              {openingInstaller || working
-                ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                : runtimeReady
-                  ? <FolderOpen className="h-3.5 w-3.5" />
-                  : <RefreshCw className="h-3.5 w-3.5" />}
-              {runtimeReady
-                ? t.settings.capabilityChromeOpenInstaller
-                : t.settings.capabilityRetry}
-            </button>
-          ) : undefined}
-        />
-      </div>
-
-      {capabilityEnabled && !extensionConnected && (
         <div className="space-y-3">
           <h4 className="text-body font-medium text-[var(--abu-text-primary)]">
             {t.settings.capabilityChromeManualTitle}
@@ -320,6 +415,10 @@ export function ChromeSetupView({
               </li>
             ))}
           </ol>
+          <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
+            <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />
+            {t.settings.capabilityChromeExperimental}
+          </p>
           <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-text-muted)]">
             <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />
             {t.settings.capabilityChromePermissionScope}
@@ -329,6 +428,26 @@ export function ChromeSetupView({
               <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {t.settings.capabilityChromeResourceMissing}
             </p>
+          )}
+          {/*
+            Abu detects the connection on its own; this is the manual nudge for
+            someone who does not want to wait. Conditionally rendered, NOT
+            `hidden={!capabilityEnabled}`: Tailwind v4 puts utilities in a later
+            cascade layer than preflight, so `.inline-flex` outranks preflight's
+            `[hidden] { display: none }` and the attribute does nothing — the
+            button went on offering to check a connection for a bridge that is
+            not even enabled.
+          */}
+          {capabilityEnabled && (
+            <button
+              type="button"
+              onClick={onCheck}
+              disabled={working}
+              className={secondaryButtonClass}
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
+              {t.settings.capabilityCheckConnection}
+            </button>
           )}
         </div>
       )}
@@ -340,37 +459,22 @@ export function ChromeSetupView({
         </p>
       )}
 
-      {/*
-        Conditionally rendered, NOT `hidden={!capabilityEnabled}`: Tailwind v4
-        puts utilities in a later cascade layer than preflight, so
-        `.inline-flex` outranks preflight's `[hidden] { display: none }` and
-        the attribute does nothing. This button offered to check a connection
-        for a bridge that is not even enabled.
-      */}
-      {capabilityEnabled && (
-        <div className="flex flex-wrap items-center gap-3">
+      {children}
+
+      {/* Only a task has somewhere to go back TO; everyone else has the
+          breadcrumb, and a second way out is not a feature. */}
+      {extensionConnected && requestedByTask && (
+        <div className="flex flex-wrap items-center gap-3 border-t border-[var(--abu-border)] pt-4">
           <button
             type="button"
-            onClick={extensionConnected ? onDone : onCheck}
-            disabled={working}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:opacity-50"
+            onClick={onDone}
+            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)]"
           >
-            {extensionConnected
-              ? <CheckCircle2 className="h-4 w-4" />
-              : <RefreshCw className={cn('h-4 w-4', working && 'animate-spin')} />}
-            {extensionConnected
-              ? t.settings.capabilityDone
-              : t.settings.capabilityCheckConnection}
+            <CheckCircle2 className="h-4 w-4" />
+            {t.settings.capabilityReturnToTask}
           </button>
         </div>
       )}
-
-      {children}
-
-      <div className="flex items-start gap-2 border-t border-[var(--abu-border)] pt-4 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-success)]" />
-        {t.settings.capabilityChromePrivacy}
-      </div>
     </div>
   );
 }
@@ -443,47 +547,66 @@ export function ComputerUseSetupView({
     : t.settings.capabilityUIControlInstruction;
   const currentRequesting = requesting === currentPermission;
 
+  // Off is a state the user chose, so it is reported like any other state —
+  // one badge, one line, one button — instead of as a callout arguing for
+  // itself. Turning it on does exactly what it did before.
+  const statusLabel = !enabled
+    ? t.settings.capabilityStatusOff
+    : fullyReady && !restartRequired
+      ? t.settings.capabilityStatusReady
+      : t.settings.capabilityStatusSetupRequired;
+  const statusTone: StatusBadgeTone = !enabled
+    ? 'neutral'
+    : fullyReady && !restartRequired
+      ? 'ready'
+      : 'attention';
+  const statusNote = !enabled
+    ? (requestedByTask
+      ? t.settings.capabilityComputerTaskNeedsSetup
+      : t.settings.capabilityComputerConfirmEnable)
+    : fullyReady && !restartRequired
+      // The one clause worth keeping from the closing paragraph: WHEN Abu
+      // looks at the screen. The rest of it repeated the badge and the button.
+      ? t.settings.capabilityComputerReadyNote
+      : t.settings.capabilityComputerPermissionMissing;
+
   return (
     <div className="space-y-7">
       <SetupHeader
         icon={MonitorCog}
         title={t.settings.capabilityComputerSetupTitle}
-        description={t.settings.capabilityComputerSetupDesc}
+        description={t.settings.capabilityComputerSubtitle}
         onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}
         breadcrumb={requestedByTask ? undefined : breadcrumb}
+      />
+
+      <CapabilityStatusRow
+        label={checking ? t.settings.capabilityStatusChecking : statusLabel}
+        tone={statusTone}
+        checking={checking}
+        note={statusNote}
         action={enabled ? (
           <button
             type="button"
             onClick={onDisable}
-            className="text-minor font-medium text-[var(--abu-text-muted)] transition-colors hover:text-[var(--abu-danger)]"
+            // Short on screen, full phrase as the accessible name — see
+            // `capabilityChromeDisconnect` for the same pairing.
+            aria-label={t.settings.capabilityComputerDisable}
+            className={secondaryButtonClass}
           >
-            {t.settings.capabilityComputerDisable}
+            {t.settings.capabilityComputerDisableShort}
           </button>
-        ) : undefined}
-      />
-
-      {!enabled && (
-        <div className="flex items-start justify-between gap-4 border-l-2 border-[var(--abu-clay)] pl-3">
-          <div>
-            <p className="text-body font-medium text-[var(--abu-text-primary)]">
-              {requestedByTask
-                ? t.settings.capabilityComputerTaskNeedsSetup
-                : t.settings.capabilityComputerConfirmEnable}
-            </p>
-            <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-              {t.settings.capabilityComputerConsent}
-            </p>
-          </div>
+        ) : (
           <button
             type="button"
             onClick={onEnable}
-            className="inline-flex h-9 shrink-0 items-center rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)]"
+            className={rowActionButtonClass}
           >
             {t.settings.capabilityComputerEnable}
           </button>
-        </div>
-      )}
+        )}
+      />
 
       {children}
 
@@ -618,38 +741,24 @@ export function ComputerUseSetupView({
             </div>
           )}
 
-          {fullyReady && !restartRequired && (
-            <div className="space-y-4 border-l-2 border-[var(--abu-success)] pl-4">
-              <div className="flex items-start gap-3">
-                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-[var(--abu-success)]" />
-                <div>
-                  <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
-                    {t.settings.capabilityComputerReadyTitle}
-                  </h4>
-                  <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-                    {t.settings.capabilityComputerReadyDesc}
-                  </p>
-                </div>
-              </div>
+          {/* The status row already says it is ready, in the same words it
+              uses for every other state. What is left is the one thing the
+              row cannot do: hand a waiting task back its turn. Nobody else
+              needs a second exit — the breadcrumb is the first. */}
+          {fullyReady && !restartRequired && requestedByTask && (
+            <div className="border-t border-[var(--abu-border)] pt-4">
               <button
                 type="button"
                 onClick={onDone}
                 className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)]"
               >
                 <CheckCircle2 className="h-4 w-4" />
-                {requestedByTask
-                  ? t.settings.capabilityReturnToTask
-                  : t.settings.capabilityDone}
+                {t.settings.capabilityReturnToTask}
               </button>
             </div>
           )}
         </>
       )}
-
-      <div className="flex items-start gap-2 border-t border-[var(--abu-border)] pt-4 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-        <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-success)]" />
-        {t.settings.capabilityComputerPrivacy}
-      </div>
     </div>
   );
 }

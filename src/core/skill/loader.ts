@@ -459,12 +459,19 @@ async function isOwnedFile(path: string): Promise<boolean> {
  * (src/core/plugin/fsOps.ts).
  */
 async function resolveOwnedFile(skillDir: string, relativePath: string): Promise<string | null> {
-  const segments = normalizeSeparators(relativePath).split('/').filter((s) => s !== '');
+  // A `.` segment names the directory it is already in, so it cannot leave
+  // the skill; drop it with the empty segments. Models routinely write
+  // `./references/api.md` on `skill_view`, and refusing that only teaches
+  // them the file does not exist. `..` is the segment that can escape, and
+  // it stays refused below.
+  const segments = normalizeSeparators(relativePath)
+    .split('/')
+    .filter((s) => s !== '' && s !== '.');
   if (segments.length === 0) return null;
 
   let current = skillDir;
   for (const [index, segment] of segments.entries()) {
-    if (segment === '.' || segment === '..') return null;
+    if (segment === '..') return null;
     current = joinPath(current, segment);
     if (index === segments.length - 1) return (await isOwnedFile(current)) ? current : null;
     if (!(await isOwnedDirectory(current))) return null;

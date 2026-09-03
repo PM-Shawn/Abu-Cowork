@@ -419,6 +419,21 @@ describe('SkillLoader over a real tree with real symlinks', () => {
     expect(await loader.loadSupportingFile('helper', 'references/api.md')).toBe('real reference');
   });
 
+  it('accepts a leading "./" — the form a model writes — while still refusing ".."', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    // `skill_view` hands the model's string straight through, and models
+    // routinely spell a relative path `./references/api.md`. A `.` segment
+    // names the directory it is already in, so it cannot escape anything —
+    // refusing it would only teach the model that the file does not exist.
+    expect(await loader.loadSupportingFile('helper', './references/api.md')).toBe('real reference');
+    expect(await loader.loadSupportingFile('helper', 'references/./api.md')).toBe('real reference');
+    // `..` is the segment that can leave the skill; it stays refused.
+    expect(await loader.loadSupportingFile('helper', '../helper/references/api.md')).toBeNull();
+    expect(await loader.loadSupportingFile('helper', 'references/../references/api.md')).toBeNull();
+  });
+
   it('never reads through a symlinked INTERMEDIATE directory', async () => {
     // `relativePath.includes('..')` is a string test; a link needs no `..` at
     // all. Every segment has to be owned, not just the last one.

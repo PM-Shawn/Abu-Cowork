@@ -137,6 +137,7 @@ describe('subagentHost', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'preloadedSkills',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -164,6 +165,12 @@ describe('subagentHost', () => {
         runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
       }],
       ['unknown wire field', { ...baseParams(), injectedByRenderer: true }],
+      ['preloadedSkills not an object', { ...baseParams(), preloadedSkills: 'section' }],
+      ['preloadedSkills without text', { ...baseParams(), preloadedSkills: { resolved: [], missing: [], truncated: [] } }],
+      ['preloadedSkills with a non-string name list', {
+        ...baseParams(),
+        preloadedSkills: { text: '## Preloaded Skills', resolved: [7], missing: [], truncated: [] },
+      }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleSubagentRun(params)).rejects.toThrow(RpcError);
       await expect(handleSubagentRun(params)).rejects.toMatchObject({ code: -32602 });
@@ -773,6 +780,12 @@ describe('subagentHost', () => {
         allowedTools: ['read_*'],
         blockedTools: ['write_*'],
         authorizationScopeId: 'scope-wire',
+        preloadedSkills: {
+          text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+          resolved: ['weekly-report'],
+          missing: [],
+          truncated: [],
+        },
       });
 
       await handleSubagentRun(request);

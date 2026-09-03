@@ -52,6 +52,7 @@ import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { appendPreloadedSkills, type PreloadedSkillsInjection } from './prompts/preloadedSkills';
 import {
   ActiveToolResultAdmission,
   type ActiveToolResultToken,
@@ -439,6 +440,13 @@ export interface SubagentLoopOptions {
   signal?: AbortSignal;
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback?: FilePermissionCallback;
+  /**
+   * Shell-resolved `## Preloaded Skills` section for `agent.skills` (see
+   * prompts/preloadedSkills.ts). Precomputed by the caller rather than
+   * resolved here because the skill loader's index is only ever filled by
+   * shell-side discovery — the sidecar hosts this loop with an empty loader.
+   */
+  preloadedSkills?: PreloadedSkillsInjection;
   /** Parent-run tool whitelist inherited by delegated work. */
   allowedTools?: string[];
   /** Parent-run path authorization scope inherited by delegated work. */
@@ -654,6 +662,29 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       }
     } catch {
       // Non-critical: proceed without memory
+    }
+
+    // Skills this agent's definition declares for preloading. Resolved
+    // shell-side (see prompts/preloadedSkills.ts — the skill loader's index is
+    // shell-only), so it lands here already rendered. Placed after the agent's
+    // own prompt and before the safety/boundary sections so the rules stay
+    // last. Absent injection appends zero bytes.
+    systemPrompt = appendPreloadedSkills(systemPrompt, options.preloadedSkills);
+    if (Array.isArray(agent.skills) && agent.skills.length > 0) {
+      if (!options.preloadedSkills) {
+        // Declared but never resolved for this run: a wiring gap, not a
+        // legitimate "no skills" case. Say so rather than starting a run whose
+        // `skills:` field silently did nothing.
+        logger.warn('declared skills reached the subagent loop with no preload resolved', {
+          agentName: agent.name,
+          skills: agent.skills.join(', '),
+        });
+      } else if (options.preloadedSkills.missing.length > 0) {
+        logger.warn('declared skills could not be preloaded', {
+          agentName: agent.name,
+          missing: options.preloadedSkills.missing.join(', '),
+        });
+      }
     }
 
     // Safety boundary for subagents

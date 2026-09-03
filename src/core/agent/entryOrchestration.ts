@@ -68,6 +68,7 @@ import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
+import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getCapabilityPrompt } from './prompts/capabilityPrompt';
 import type { SettingsState } from '@/stores/settingsStore';
@@ -104,6 +105,18 @@ export async function precomputeOrchestration(
       route.skill = fresh;
       route.skillContent = fresh.content;
     }
+  }
+
+  // Resolve the delegate agent's `skills:` preload HERE, while we are still
+  // shell-side: `agentLoop.ts`'s `@agent` route runs in the sidecar whenever
+  // the main loop does, and the sidecar's skill loader has no index. The
+  // route is what both venues receive (a sidecar-run loop gets this exact
+  // object as `AgentLoopOptions.orchestration.route`), so it is the one place
+  // that covers them together. Unresolvable names are named inside the
+  // rendered section and warned about by the loop that receives it.
+  const delegateAgent = route.type === 'delegate' ? route.delegateAgent : undefined;
+  if (delegateAgent && (delegateAgent.skills?.length ?? 0) > 0) {
+    route.delegatePreloadedSkills = (await resolvePreloadedSkills(delegateAgent)) ?? undefined;
   }
 
   // Pure duplicate of the loop's own effectiveModelId/entryModelDeclared

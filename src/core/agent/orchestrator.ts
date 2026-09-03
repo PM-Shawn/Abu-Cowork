@@ -1,6 +1,7 @@
 import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
+import { resolvePreloadedSkills, type PreloadedSkillsInjection } from './prompts/preloadedSkills';
 import { loadAllRules } from './projectRules';
 import { loadSoul } from './soulConfig';
 import { getDefaultSoul } from './prompts/defaultSoul';
@@ -137,6 +138,14 @@ export interface RouteResult {
   args?: string;
   cleanInput: string;     // User input with command stripped
   delegateAgent?: SubagentDefinition;  // For @agent direct delegation
+  /**
+   * `## Preloaded Skills` for `delegateAgent`, resolved shell-side by
+   * `entryOrchestration.ts` (see prompts/preloadedSkills.ts). It rides on the
+   * route because that is what reaches `agentLoop.ts`'s `@agent` delegation in
+   * BOTH venues: a sidecar-run main loop gets its route precomputed by the
+   * shell, and the skill loader's index only exists shell-side.
+   */
+  delegatePreloadedSkills?: PreloadedSkillsInjection;
 }
 
 /**
@@ -304,6 +313,29 @@ export async function buildSystemPrompt(
 }
 
 /**
+ * Push an agent definition's preloaded-skills section, if it declares any.
+ * Cacheable: stable for the agent, so it stays inside the cached prefix.
+ * Unresolvable names are surfaced on this module's existing warn channel as
+ * well as inside the section itself — a declared skill must never be silently
+ * ineffective.
+ */
+async function pushAgentPreloadedSkills(
+  sections: PromptSection[],
+  agentDef: { name: string; skills?: string[] } | undefined,
+): Promise<void> {
+  if (!agentDef) return;
+  const injection = await resolvePreloadedSkills(agentDef);
+  if (!injection) return;
+  if (injection.missing.length > 0) {
+    console.warn(
+      `[orchestrator] agent "${agentDef.name}" declares skills that could not be preloaded:`,
+      injection.missing.join(', '),
+    );
+  }
+  sections.push({ name: 'agent-preloaded-skills', text: '\n' + injection.text, cacheable: true });
+}
+
+/**
  * Build system prompt as structured sections with cacheability annotations.
  *
  * Cacheable sections (persona, rules, safety) get `cache_control: { type: 'ephemeral' }`
@@ -368,6 +400,7 @@ export async function buildSystemPromptSections(
       const agentDef = agentRegistry.getAgent(route.skill.agent);
       if (agentDef?.systemPrompt) {
         sections.push({ name: 'identity', text: '\n## Identity\n' + agentDef.systemPrompt, cacheable: true });
+        await pushAgentPreloadedSkills(sections, agentDef);
       } else {
         sections.push({ name: 'identity', text: '\n## Identity\n' + DEFAULT_PERSONA, cacheable: true });
       }
@@ -700,6 +733,9 @@ ${isWindows()
   // Skip in fork mode — we already have a minimal identity
   if (!isForkContext && route.definition?.systemPrompt) {
     sections.push({ name: 'agent-role', text: '\n## Role\n' + route.definition.systemPrompt, cacheable: true });
+    // Right after the agent's own prompt, before the boundary/safety sections
+    // (available-skills guidance, response-language, and the pinned anchor).
+    await pushAgentPreloadedSkills(sections, route.definition);
   }
 
   // NOTE: Active skills content (from use_skill tool) is now injected dynamically

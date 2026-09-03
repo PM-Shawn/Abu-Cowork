@@ -16,6 +16,7 @@ vi.mock('./registry', () => ({
 vi.mock('../skill/loader', () => ({
   skillLoader: {
     getSkill: vi.fn(),
+    loadSkill: vi.fn().mockResolvedValue(null),
     getAvailableSkills: vi.fn().mockReturnValue([]),
     findMatchingSkills: vi.fn().mockReturnValue([]),
   },
@@ -81,6 +82,7 @@ import { buildSystemPrompt, buildSystemPromptSections, formatAvailableAgentTools
 import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 import { agentRegistry } from './registry';
+import { skillLoader } from '../skill/loader';
 
 const mockLoadAllRules = vi.mocked(loadAllRules);
 const mockLoadMemoryIndex = vi.mocked(loadMemoryIndex);
@@ -310,6 +312,54 @@ describe('buildSystemPrompt - structure', () => {
     // Note: safety anchor may reference tag names, but no actual tagged content blocks
     expect(prompt).not.toContain('## Project Rules');
     expect(prompt).not.toContain('## Your Long-term Memory');
+  });
+});
+
+describe('buildSystemPromptSections - agent preloaded skills', () => {
+  const basePrompt = 'base prompt';
+
+  it('adds no section for an agent that declares no skills', async () => {
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'test-conv');
+    expect(sections.map((section) => section.name)).not.toContain('agent-preloaded-skills');
+    const prompt = await buildSystemPrompt(routeInput('hello'), basePrompt, 'test-conv');
+    expect(prompt).not.toContain('Preloaded Skills');
+  });
+
+  it('injects the declared skill body after the role and before the safety anchor', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'abu', systemPrompt: '测试人格', description: '桌面助手', skills: ['weekly-report'],
+    } as never);
+    vi.mocked(skillLoader.loadSkill).mockResolvedValue({
+      name: 'weekly-report',
+      description: 'A report skill',
+      content: 'PRELOADED-BODY-MARKER',
+      filePath: '/s/SKILL.md',
+      skillDir: '/s',
+    } as never);
+
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'test-conv');
+    const names = sections.map((section) => section.name);
+    expect(names).toContain('agent-preloaded-skills');
+    expect(names.indexOf('agent-preloaded-skills')).toBeGreaterThan(names.indexOf('agent-role'));
+    expect(names.indexOf('agent-preloaded-skills')).toBeLessThan(names.indexOf('safety-anchor'));
+    // Cacheable: the section is stable for the agent, so it must not break the
+    // cacheable prefix partition.
+    expect(sections.find((section) => section.name === 'agent-preloaded-skills')?.cacheable).toBe(true);
+
+    const prompt = await buildSystemPrompt(routeInput('hello'), basePrompt, 'test-conv');
+    expect(prompt).toContain('## Preloaded Skills');
+    expect(prompt).toContain('PRELOADED-BODY-MARKER');
+  });
+
+  it('reports a declared skill that does not resolve', async () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'abu', systemPrompt: '测试人格', description: '桌面助手', skills: ['gone'],
+    } as never);
+    vi.mocked(skillLoader.loadSkill).mockResolvedValue(null);
+
+    const prompt = await buildSystemPrompt(routeInput('hello'), basePrompt, 'test-conv');
+    expect(prompt).toContain('Declared but not found');
+    expect(prompt).toContain('"gone"');
   });
 });
 

@@ -104,6 +104,7 @@ vi.mock('../session/outputSnapshots', () => ({
 }));
 
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
+import { clearLogs, getRecentLogs } from '../logging/logger';
 import { agentRegistry } from './registry';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
@@ -152,6 +153,85 @@ describe('subagent max_tokens recovery (integration)', () => {
     }));
     mockCompressContextIfNeeded.mockReset();
     mockCompressContextIfNeeded.mockResolvedValue({ compressed: false, messages: [] });
+  });
+
+  it('injects the preloaded-skills section after the agent prompt and before the safety rules', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['weekly-report'] } as never,
+      task: 'do the thing',
+      preloadedSkills: {
+        text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nPRELOADED-BODY-MARKER',
+        resolved: ['weekly-report'],
+        missing: [],
+        truncated: [],
+      },
+    });
+
+    const systemPrompt = (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    expect(systemPrompt).toContain('PRELOADED-BODY-MARKER');
+    // The agent's own prompt comes first, the rules still come last.
+    expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Preloaded Skills'));
+    expect(systemPrompt.indexOf('## Preloaded Skills')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
+    expect(systemPrompt.indexOf('## Preloaded Skills')).toBeLessThan(systemPrompt.indexOf('## Tool and Permission Boundaries'));
+  });
+
+  it('leaves the prompt untouched for an agent that declares no skills', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'do the thing' });
+
+    const systemPrompt = (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    expect(systemPrompt).not.toContain('Preloaded Skills');
+  });
+
+  it('warns loudly when declared skills reached the loop unresolved', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['weekly-report'] } as never,
+      task: 'do the thing',
+    });
+
+    // Surfaced on the run's own log channel, not invented storage.
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('preload'));
+    expect(entry).toBeDefined();
+    expect(entry?.data?.skills).toBe('weekly-report');
+  });
+
+  it('warns loudly about a declared skill that could not be found', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['gone'] } as never,
+      task: 'do the thing',
+      preloadedSkills: {
+        text: '## Preloaded Skills\nguidance\n\n### Declared but not found\n"gone"',
+        resolved: [],
+        missing: ['gone'],
+        truncated: [],
+      },
+    });
+
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('could not be preloaded'));
+    expect(entry?.data?.missing).toBe('gone');
   });
 
   it('uses the IM workspace inherited by a delegate instead of the global workspace reader', async () => {

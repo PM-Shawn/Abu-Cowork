@@ -84,6 +84,7 @@ import {
   type SubagentStopReason,
 } from './subagentLoop';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
@@ -196,6 +197,12 @@ export interface SubagentRunParams {
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Shell-resolved `## Preloaded Skills` section for `agent.skills`. MUST
+   *  cross the wire: the sidecar hosts `runSubagentLoop` with an empty skill
+   *  loader, so a sidecar-run subagent can only get its declared skills
+   *  preloaded from here. Omitting it would make `skills:` silently no-op for
+   *  exactly the runtime that serves most runs. */
+  preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -669,6 +676,7 @@ function buildSubagentRunParams(
     runPermissionCeiling: options.runPermissionCeiling,
     triggerId: options.triggerId,
     scheduledTaskId: options.scheduledTaskId,
+    preloadedSkills: options.preloadedSkills,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -754,11 +762,28 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
 
+  // Resolve `agent.skills` HERE, before either runtime is chosen: this is the
+  // shell, the only place the skill loader's index is populated (the sidecar
+  // hosts the loop with an empty loader). A caller that already resolved one
+  // — `agentLoop.ts`'s `@agent` route, whose section is precomputed with the
+  // rest of the entry orchestration — keeps its own.
+  // The `await` is taken ONLY when the agent actually declares skills: for
+  // every other run this stays synchronous up to dispatch, which the
+  // reverse-channel tests (and the pre-commit ordering of
+  // `ensureHandlersRegistered` before the first `sidecarRequest`) rely on.
+  let withPreloadedSkills = options;
+  if (!options.preloadedSkills && (options.agent?.skills?.length ?? 0) > 0) {
+    withPreloadedSkills = {
+      ...options,
+      preloadedSkills: (await resolvePreloadedSkills(options.agent)) ?? undefined,
+    };
+  }
+
   // Generate an app-owned scope for EVERY runtime path. Provider tool-call ids
   // are only run-local; exposing them raw to the parent causes cross-agent
   // collisions in child-step replay and hidden image persistence.
   const runId = createSubagentProgressScopeId();
-  const localOptions = scopeSubagentLoopProgress(options, runId);
+  const localOptions = scopeSubagentLoopProgress(withPreloadedSkills, runId);
 
   if (getSidecarStatus() !== 'running') {
     logger.debug('subagent path selected', { path: 'local', runId, sidecarStatus: getSidecarStatus() });
@@ -771,7 +796,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
 
   let params: SubagentRunParams;
   try {
-    params = buildSubagentRunParams(runId, options, availableTools);
+    params = buildSubagentRunParams(runId, withPreloadedSkills, availableTools);
   } catch (err) {
     // Failed before any dispatch — no tool has executed. Fall back to the
     // in-process engine, which hits the identical real error path (e.g.
@@ -784,7 +809,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   }
 
   const sessionOptions: SubagentLoopOptions = {
-    ...options,
+    ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
   const session: RunSession = {

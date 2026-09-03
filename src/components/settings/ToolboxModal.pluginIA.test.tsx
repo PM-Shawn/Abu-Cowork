@@ -165,4 +165,31 @@ describe('ToolboxModal — Plugin System IA (LABS_PLUGIN_SYSTEM)', () => {
 
     expect(screen.getByTestId('plugins-panel')).toBeInTheDocument();
   });
+
+  it('personal (OSS) mode: no 个人/组织 switch on any tab, flag on or off — same gate as skills/agents', () => {
+    // The organization view exists only for a bound enterprise client. In the
+    // OSS build `enterpriseMode.kind` is always 'personal' (enterprise-modules
+    // stub), so the toggle must never render and every tab shows its personal
+    // panel. Plugins follow exactly the gate skills/agents/mcp already use.
+    const noSwitch = () =>
+      expect(screen.queryByRole('group', { name: '个人 / 组织' })).not.toBeInTheDocument();
+
+    labsFlagOn = false;
+    const { unmount } = render(<ToolboxView />);
+    noSwitch();
+    unmount();
+
+    labsFlagOn = true;
+    render(<ToolboxView />);
+    noSwitch();
+    fireEvent.click(screen.getByRole('button', { name: '插件' }));
+    expect(screen.getByTestId('plugins-panel')).toBeInTheDocument();
+    noSwitch();
+    fireEvent.click(screen.getByRole('button', { name: '技能' }));
+    expect(screen.getByText('Personal skills')).toBeInTheDocument();
+    noSwitch();
+    fireEvent.click(screen.getByRole('button', { name: '连接器' }));
+    expect(screen.getByText('Personal MCP')).toBeInTheDocument();
+    noSwitch();
+  });
 });

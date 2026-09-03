@@ -12,7 +12,8 @@ import {
   MousePointer2,
   RefreshCw,
 } from 'lucide-react';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
+import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
 import { cn } from '@/lib/utils';
 import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
@@ -159,6 +160,7 @@ function CapabilityCard({
 function BrowserSitePermissionsList() {
   const { t } = useI18n();
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
   const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
   const origins = Object.keys(sitePermissions).sort();
@@ -166,6 +168,20 @@ function BrowserSitePermissionsList() {
     { value: 'allowed', label: t.settings.browserSitePermsAllowed },
     { value: 'denied', label: t.settings.browserSitePermsDenied },
   ];
+  // U5 authorization visibility: "allowed" is also what a run with nobody
+  // watching acts on, and this list never said so. The per-row tag answers
+  // "would a scheduled task use this?" without making the user reconstruct it
+  // from the master switch plus the high-risk rule.
+  const authorization = summarizeBrowserAuthorization(sitePermissions, allowUnattended);
+  const reachable = new Set(authorization.reachableUnattended);
+  const highRisk = new Set(authorization.highRiskAllowed);
+  const reachSummary = !authorization.masterSwitchOn
+    ? t.settings.browserUnattendedReachOff
+    : authorization.reachableUnattended.length === 0
+      ? t.settings.browserUnattendedReachNone
+      : format(t.settings.browserUnattendedReachSummary, {
+        count: authorization.reachableUnattended.length,
+      });
 
   return (
     <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
@@ -174,6 +190,9 @@ function BrowserSitePermissionsList() {
       </h4>
       <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
         {t.settings.browserSitePermsDesc}
+      </p>
+      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
+        {reachSummary}
       </p>
       {origins.length === 0 ? (
         <p className="mt-3 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
@@ -186,6 +205,24 @@ function BrowserSitePermissionsList() {
               <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
                 {origin}
               </span>
+              {sitePermissions[origin] === 'allowed' && (
+                <span
+                  className={cn(
+                    'shrink-0 rounded-md px-1.5 py-0.5 text-caption',
+                    highRisk.has(origin)
+                      ? 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]'
+                      : reachable.has(origin)
+                        ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]'
+                        : 'bg-[var(--abu-bg-base)] text-[var(--abu-text-tertiary)]',
+                  )}
+                >
+                  {highRisk.has(origin)
+                    ? t.settings.browserHighRiskTag
+                    : reachable.has(origin)
+                      ? t.settings.browserUnattendedReachTag
+                      : t.settings.browserAttendedOnlyTag}
+                </span>
+              )}
               <Select
                 variant="inline"
                 value={sitePermissions[origin]}

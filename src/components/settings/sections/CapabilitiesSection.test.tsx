@@ -772,4 +772,63 @@ describe('CapabilitiesSection', () => {
       expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
     });
   });
+
+  /**
+   * U5 authorization visibility. "Allowed" is also what a run with nobody
+   * watching acts on, and this list never said so — the user had to hold the
+   * master switch, the site verdicts and the high-risk rule in their head to
+   * answer "which sites would my nightly task touch?".
+   */
+  describe('unattended reach of the site list', () => {
+    function withSites(
+      sitePermissions: Record<string, 'allowed' | 'denied'>,
+      allowUnattendedBrowser: boolean,
+    ) {
+      useSettingsStore.setState({
+        browserSitePermissions: sitePermissions,
+        allowUnattendedBrowser,
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+    }
+
+    function siteList(): HTMLElement {
+      return screen.getByText('Authorized sites').closest('div.rounded-lg.border') as HTMLElement;
+    }
+
+    it('marks an allowed ordinary site as reachable unattended, and says how many', () => {
+      withSites({ 'https://reports.example.com': 'allowed' }, true);
+      render(<CapabilitiesSection />);
+
+      const list = siteList();
+      expect(within(list).getByText('Reachable unattended')).toBeInTheDocument();
+      expect(within(list).getByText(/can currently act on 1 site/)).toBeInTheDocument();
+    });
+
+    it('says the same site is attended-only while the master switch is off', () => {
+      withSites({ 'https://reports.example.com': 'allowed' }, false);
+      render(<CapabilitiesSection />);
+
+      const list = siteList();
+      expect(within(list).getByText('Only while you are here')).toBeInTheDocument();
+      expect(within(list).getByText(/master switch is off/)).toBeInTheDocument();
+    });
+
+    it('flags an allowed site that is high-risk anyway, and leaves it out of the count', () => {
+      withSites({ 'https://www.paypal.com': 'allowed' }, true);
+      render(<CapabilitiesSection />);
+
+      const list = siteList();
+      expect(within(list).getByText('High-risk · asks every time')).toBeInTheDocument();
+      expect(within(list).getByText(/cannot act on any site right now/)).toBeInTheDocument();
+    });
+
+    it('puts no reach tag on a blocked site', () => {
+      withSites({ 'https://blocked.example.com': 'denied' }, true);
+      render(<CapabilitiesSection />);
+
+      const list = siteList();
+      expect(within(list).queryByText('Reachable unattended')).not.toBeInTheDocument();
+      expect(within(list).queryByText('Only while you are here')).not.toBeInTheDocument();
+    });
+  });
 });

@@ -52,23 +52,43 @@ async function safeReadTextFile(path: string): Promise<string> {
 }
 
 /**
- * Is `p` itself a symlink?
+ * What `p` itself is, without resolving it.
  *
  * `lstat` is the one fs call routed with `followFinalSymlink: false`
  * (`electron/fsHost.cjs`, `plugin:fs|lstat`); `exists`, `readDir` and
  * `readTextFile` all resolve the final component, so none of them can answer
  * this about the thing they are being pointed at.
  *
- * A path that cannot be lstat'd is not a link we can prove, and answering
- * `false` is safe: the read that follows either succeeds on a real file or
+ * `'unknown'` for a path that cannot be lstat'd at all — which is what an
+ * ABSENT rules file looks like, so callers let it through to the read rather
+ * than reporting a refusal: the read then either succeeds on a real file or
  * fails into `safeReadTextFile`'s empty string.
  */
-async function isSymlinkPath(p: string): Promise<boolean> {
+async function lstatKind(p: string): Promise<'file' | 'directory' | 'symlink' | 'other' | 'unknown'> {
   try {
-    return (await lstat(p)).isSymlink;
+    const info = await lstat(p);
+    if (info.isSymlink) return 'symlink';
+    if (info.isDirectory) return 'directory';
+    return info.isFile ? 'file' : 'other';
   } catch {
-    return false;
+    return 'unknown';
   }
+}
+
+/**
+ * Is `{workspace}/.abu` itself a link? Warns and answers true if so.
+ *
+ * One level above the files: gating `ABU.md` and `rules/` but not the directory
+ * that holds them leaves the same read one indirection away, because everything
+ * inside a linked `.abu` is an ordinary file and nothing below it looks like a
+ * link at all — the same reason `loadModularRules` gates the rules directory
+ * and not just its entries.
+ */
+async function workspaceDotAbuIsLink(workspacePath: string): Promise<boolean> {
+  const dotAbu = joinPath(workspacePath, '.abu');
+  if ((await lstatKind(dotAbu)) !== 'symlink') return false;
+  warnRefusedLink('{workspace}/.abu', [dotAbu]);
+  return true;
 }
 
 /**
@@ -109,6 +129,18 @@ function warnRefusedLink(what: string, names: string[]): void {
 }
 
 /**
+ * The other half of {@link warnRefusedLink}: a path that is not a link but is
+ * not a regular file either — a directory named `ABU.md`, or a FIFO, on which
+ * the read would block the privileged host's event loop rather than fail.
+ */
+function warnRefusedNonFile(what: string, name: string): void {
+  console.warn(
+    `Ignoring ${what} that is not a regular file (reading it would fail, or block ` +
+      `the main process if it is a pipe): ${name}`,
+  );
+}
+
+/**
  * Load user-level rules from ~/.abu/ABU.md
  */
 export async function loadUserRules(): Promise<string> {
@@ -123,12 +155,28 @@ export async function loadUserRules(): Promise<string> {
  * Load project main rules from {workspace}/.abu/ABU.md
  */
 export async function loadProjectRules(workspacePath: string): Promise<string> {
+  if (await workspaceDotAbuIsLink(workspacePath)) return '';
+
   const rulesPath = joinPath(workspacePath, '.abu', 'ABU.md');
   // See warnRefusedLink: workspace-controlled, and read straight through.
-  if (await isSymlinkPath(rulesPath)) {
+  //
+  // The same predicate as the sibling `loadModularRules` below — a regular file
+  // the workspace owns, not merely "not a link". A FIFO's `lstat` answers
+  // `isSymlink: false`, and reading a writer-less pipe does not throw into
+  // `safeReadTextFile`'s catch: it blocks the privileged host's `readFileSync`
+  // on the MAIN process event loop, and `loadAllRules` runs on every non-fork
+  // system-prompt build.
+  const kind = await lstatKind(rulesPath);
+  if (kind === 'symlink') {
     warnRefusedLink('{workspace}/.abu/ABU.md', [rulesPath]);
     return '';
   }
+  if (kind === 'directory' || kind === 'other') {
+    warnRefusedNonFile('{workspace}/.abu/ABU.md', rulesPath);
+    return '';
+  }
+  // 'file', or 'unknown' — an absent ABU.md cannot be lstat'd either, and the
+  // read below is where absence has always been handled.
   return await safeReadTextFile(rulesPath);
 }
 
@@ -140,11 +188,12 @@ export async function loadProjectRules(workspacePath: string): Promise<string> {
 export async function loadModularRules(workspacePath: string): Promise<string> {
   const rulesDir = joinPath(workspacePath, '.abu', 'rules');
   try {
+    if (await workspaceDotAbuIsLink(workspacePath)) return '';
     if (!(await exists(rulesDir))) return '';
     // The directory itself, before its entries: a per-entry check is defeated
     // by one extra indirection, because everything inside a linked directory is
     // a real file and nothing below it looks like a link at all.
-    if (await isSymlinkPath(rulesDir)) {
+    if ((await lstatKind(rulesDir)) === 'symlink') {
       warnRefusedLink('{workspace}/.abu/rules', [rulesDir]);
       return '';
     }

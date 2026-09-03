@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import {
   existsSync,
   lstatSync,
@@ -50,9 +51,15 @@ const mockWriteTextFile = vi.mocked(writeTextFile);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Nothing in the virtual fixtures is a link; the real-tree suite at the
-  // bottom of this file overrides this with `lstatSync`.
-  mockLstat.mockResolvedValue({ isSymlink: false } as never);
+  // Nothing in the virtual fixtures is a link, and every rules file in them is
+  // a regular file rather than a directory or a pipe; the real-tree suite at
+  // the bottom of this file overrides this with `lstatSync`.
+  mockLstat.mockImplementation(
+    async (p: string | URL) =>
+      (String(p).endsWith('.md')
+        ? { isSymlink: false, isFile: true, isDirectory: false }
+        : { isSymlink: false, isFile: false, isDirectory: true }) as never,
+  );
 });
 
 describe('loadUserRules', () => {
@@ -242,6 +249,12 @@ describe('initWorkspaceRules', () => {
  * file — from a directory that arrived by `git clone`.
  */
 
+/** What the non-blocking read hands back where the real host would block. */
+const BYTES_FROM_A_PIPE = 'BYTES-FROM-A-PIPE';
+
+/** Every path `useRealFs`'s readTextFile was asked for, in call order. */
+let readTextTargets: string[] = [];
+
 /** Point the mocked plugin-fs surface at the real filesystem, as fsHost does. */
 function useRealFs() {
   mockReadDir.mockImplementation(async (p: string | URL) =>
@@ -254,12 +267,32 @@ function useRealFs() {
   );
   // `readFileSync` FOLLOWS a symlink — exactly what `plugin:fs|read_text_file`
   // does in the privileged host (electron/fsHost.cjs).
-  mockReadTextFile.mockImplementation(async (p: string | URL) => readFileSync(String(p), 'utf8'));
+  //
+  // EXCEPT on a non-regular file: a faithful read of a writer-less pipe never
+  // returns, so a regression would HANG this run rather than fail it (the
+  // blocked `readFileSync` stalls the worker's event loop, so vitest's own
+  // timeout cannot fire either). Recording the call and handing back
+  // recognisable bytes turns the defect into an assertion, as
+  // `useNonBlockingReads` does in skill/installer.test.ts.
+  readTextTargets = [];
+  mockReadTextFile.mockImplementation(async (p: string | URL) => {
+    readTextTargets.push(String(p));
+    if (!lstatSync(String(p)).isFile()) return BYTES_FROM_A_PIPE;
+    return readFileSync(String(p), 'utf8');
+  });
   mockExists.mockImplementation(async (p: string | URL) => existsSync(String(p)));
-  // `lstat` is the one call routed with `followFinalSymlink: false`.
-  mockLstat.mockImplementation(
-    async (p: string | URL) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
-  );
+  // `lstat` is the one call routed with `followFinalSymlink: false`. All three
+  // flags, as `toFileInfo` (electron/fsHost.cjs) returns them: a caller asking
+  // whether a rules file is a REGULAR file the workspace owns needs `isFile`
+  // too, and answering only `isSymlink` would make a FIFO look ordinary here.
+  mockLstat.mockImplementation(async (p: string | URL) => {
+    const info = lstatSync(String(p));
+    return {
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      isSymlink: info.isSymbolicLink(),
+    } as never;
+  });
 }
 
 describe('rules loading over a real workspace with real symlinks', () => {
@@ -334,6 +367,42 @@ describe('rules loading over a real workspace with real symlinks', () => {
     const result = await loadProjectRules(ws3);
 
     expect(result).toBe('');
+  });
+
+  it.skipIf(process.platform === 'win32')('does not read a {workspace}/.abu/ABU.md that is a FIFO', async () => {
+    // A FIFO is the one non-regular shape a link test does not catch: `lstat`
+    // answers `isSymlink: false` for it. `safeReadTextFile`'s try/catch is no
+    // help either — a writer-less pipe does not throw, it blocks the privileged
+    // host's `readFileSync` on the MAIN process event loop, and `loadAllRules`
+    // runs on every non-fork system-prompt build. Same predicate as the sibling
+    // `loadModularRules` four lines below it.
+    const ws5 = join(root, 'repo5');
+    mkdirSync(join(ws5, '.abu'), { recursive: true });
+    execFileSync('mkfifo', [join(ws5, '.abu', 'ABU.md')]);
+
+    const result = await loadProjectRules(ws5);
+
+    expect(result).toBe('');
+    // The read that would have frozen the main process was never issued.
+    expect(readTextTargets).not.toContain(join(ws5, '.abu', 'ABU.md'));
+  });
+
+  it('does not read through a {workspace}/.abu that is itself a link', async () => {
+    // One level above the gated files. Gating ABU.md and rules/ but not the
+    // directory holding them leaves the same read one indirection away: the
+    // target's ABU.md and rules/*.md are ordinary files, so nothing below `.abu`
+    // looks like a link at all.
+    const donor = join(root, 'donor-abu');
+    mkdirSync(join(donor, 'rules'), { recursive: true });
+    writeFileSync(join(donor, 'ABU.md'), 'RULES THE REPO DOES NOT OWN');
+    writeFileSync(join(donor, 'rules', 'stolen.md'), 'MORE RULES THE REPO DOES NOT OWN');
+
+    const ws6 = join(root, 'repo6');
+    mkdirSync(ws6, { recursive: true });
+    symlinkSync(donor, join(ws6, '.abu'), 'dir');
+
+    expect(await loadProjectRules(ws6)).toBe('');
+    expect(await loadModularRules(ws6)).toBe('');
   });
 
   it('applies no link gate to ~/.abu/ABU.md, which the user placed there', async () => {

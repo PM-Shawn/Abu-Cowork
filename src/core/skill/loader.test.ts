@@ -1,18 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import {
-  closeSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
-  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -286,7 +283,14 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
  */
 
 /** Point the mocked plugin-fs surface at the real filesystem. */
+/** What the non-blocking read hands back where the real host would block. */
+const BYTES_FROM_A_PIPE = 'BYTES-FROM-A-PIPE';
+
+/** Every path `useRealFs`'s readTextFile was asked for, in call order. */
+let readTextTargets: string[] = [];
+
 function useRealFs() {
+  readTextTargets = [];
   mockReadDir.mockImplementation(async (p: string | URL) =>
     readdirSync(String(p), { withFileTypes: true }).map((d) => ({
       name: d.name,
@@ -297,7 +301,18 @@ function useRealFs() {
   );
   // Both of these FOLLOW a symlink — what the privileged host does, and the
   // whole reason a link may not be treated as an ordinary entry.
-  mockReadTextFile.mockImplementation(async (p: string | URL) => readFileSync(String(p), 'utf8'));
+  //
+  // EXCEPT on a non-regular file: a faithful read of a writer-less pipe never
+  // returns, so a regression would HANG this run rather than fail it (vitest's
+  // own timeout cannot fire either — the blocked `readFileSync` stalls the
+  // worker's event loop). Handing back recognisable bytes instead turns the
+  // defect into an assertion, exactly as `useNonBlockingReads` does in
+  // installer.test.ts and the `0xde 0xad` mock does in plugin/fsOps.test.ts.
+  mockReadTextFile.mockImplementation(async (p: string | URL) => {
+    readTextTargets.push(String(p));
+    if (!lstatSync(String(p)).isFile()) return BYTES_FROM_A_PIPE as never;
+    return readFileSync(String(p), 'utf8');
+  });
   mockExists.mockImplementation(async (p: string | URL) => existsSync(String(p)));
   // `lstat` is the one call routed with `followFinalSymlink: false`, which is
   // exactly what an ownership question needs.
@@ -424,18 +439,20 @@ describe('SkillLoader over a real tree with real symlinks', () => {
     // on one blocks the privileged host's event loop until a writer appears, so
     // "not a directory" is not a good enough reason to read something.
     //
-    // The pipe is pre-loaded and its only writer closed, so a REGRESSION returns
-    // those bytes and fails this test rather than hanging the run.
+    // Pre-loading the pipe would NOT make a regression fail instead of hang: a
+    // FIFO keeps no buffer once its last descriptor closes, so the next `open`
+    // for read blocks all the same. `useRealFs` is what keeps this test honest
+    // — it refuses to issue a blocking read and hands back BYTES_FROM_A_PIPE,
+    // so a regression fails on the assertions below.
     const fifo = join(helperDir, 'pipe.md');
     execFileSync('mkfifo', [fifo]);
-    const fd = openSync(fifo, 'r+');
-    writeSync(fd, 'FIFO-BYTES');
-    closeSync(fd);
 
     const loader = new SkillLoader();
     await loader.discoverSkills(workspace);
 
     expect(await loader.listSupportingFiles('helper')).toEqual(['references/api.md']);
     expect(await loader.loadSupportingFile('helper', 'pipe.md')).toBeNull();
+    // The read that would have frozen the main process was never issued.
+    expect(readTextTargets).not.toContain(fifo);
   });
 });

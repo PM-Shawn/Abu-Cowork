@@ -59,8 +59,16 @@ export default defineConfig({
     // (Tauri/SDKs mocked — no real DB or network), so they stay in the default
     // gate. If P3 introduces slow / external-dependency tests, give them a
     // dedicated script + exclude them here then — never silently drop them.
+    // Machine-readable outputs for CI: junit feeds the PR test report
+    // (dorny/test-reporter); coverage json/lcov feed the PR coverage comment
+    // (vitest-coverage-report-action) and the downloadable HTML report.
+    // Both directories are gitignored.
+    reporters: ['default', ['junit', { outputFile: 'test-results/junit.xml' }]],
     coverage: {
       provider: 'v8',
+      reporter: ['text', 'html', 'lcov', 'json-summary', 'json'],
+      // Still write reports when thresholds fail so the PR comment can show WHY.
+      reportOnFailure: true,
       exclude: [
         'src/components/**',
         'src/test/**',

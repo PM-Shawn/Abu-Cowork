@@ -710,14 +710,6 @@ function backoffDelayForLevel(level) {
   return Math.min(BACKOFF_BASE_MS * 2 ** (level - 1), BACKOFF_CAP_MS);
 }
 
-function originOf(urlString) {
-  try {
-    return new URL(String(urlString || '')).origin;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
  * produces, so the pin compares like with like: http(s) only, host lowercased
@@ -728,6 +720,15 @@ function originOf(urlString) {
  * Returns null for anything unparseable or non-http(s) (`about:blank`,
  * `chrome-error://…`), which the pin treats as a mismatch. That is deliberate:
  * a tab that crashed onto an error page is not the page the user approved.
+ *
+ * ## The ONLY origin spelling in this file (M2)
+ *
+ * There used to be a second one — a bare `new URL(u).origin` used by the 429
+ * backoff — and the two disagreed on exactly the inputs that matter: a
+ * trailing-FQDN-dot host got one key for the backoff and a different key for
+ * the login flag, and a non-http URL got the literal string `'null'` as a
+ * backoff key shared by every such page. Both maps in this file are keyed
+ * through here now, so "same site" means one thing.
  */
 function normalizedOriginOf(urlString) {
   try {
@@ -813,14 +814,42 @@ function assertOriginPin(action, payload, view) {
  * hand back, and they can never widen authorization (see the shell gate in
  * `registry.ts`, where the flag is only ever read on the deny side).
  *
- * ## Cleared by success
+ * ## What a page CAN do to this flag (M1 — stated honestly)
  *
- * A 2xx main-frame response on the same origin clears the flag: that is what
- * "the user logged in and the page came back" looks like from here. Ordering
- * works out because Chromium delivers headers BEFORE `did-navigate`, so a 200
- * on `/login` clears and is then immediately re-flagged by the URL shape,
- * while a 200 on `/dashboard` clears and stays clear.
+ * Not "beyond page influence". A page can clear its OWN origin's flag by
+ * navigating itself somewhere that answers 2xx (`location.href = '/anything'`),
+ * and an SPA can clear a `login-page`-sourced flag by routing away from the
+ * login URL. Both are acceptable because clearing only restores the PRE-U6
+ * baseline — the run goes back to acting under the master switch, the site
+ * verdict, the operation policy and the execution-time origin pin, none of
+ * which this flag touches. It can never widen past that baseline. Setting is
+ * the direction that is kept out of a page's reach: `did-navigate-in-page`
+ * (a `pushState`, which a page fires at will) may CLEAR but never SET.
+ *
+ * ## Three exits, because one was not enough (I1)
+ *
+ * 1. **A 2xx main-frame response on the same origin.** "The user logged in and
+ *    the page came back", as seen from HTTP.
+ *    Ordering works out because Chromium delivers headers BEFORE
+ *    `did-navigate`, so a 200 on `/login` clears and is then immediately
+ *    re-flagged by the URL shape, while a 200 on `/dashboard` clears and stays
+ *    clear.
+ * 2. **Routing off the login page**, for a `login-page`-sourced flag only. The
+ *    SPA case has no exit otherwise: `POST /api/login` is an XHR (excluded by
+ *    `types: ['mainFrame']`) and the redirect to `/dashboard` is a
+ *    `history.replaceState` (a `did-navigate-in-page`), so NO main-frame 2xx
+ *    ever happens and rule 1 never fires. Without this, an unattended run kept
+ *    refusing "the session has expired" after the user had signed in exactly
+ *    as asked. Scoped to `login-page` on purpose: an `auth-challenge` flag must
+ *    NOT be cleared by the very navigation that carried the 401 (the error page
+ *    commits a `did-navigate` on a non-login URL microseconds later).
+ * 3. **Staleness.** `at` is read, not just stored: a flag older than
+ *    `LOGIN_REQUIRED_TTL_MS` is not evidence about now. Expired entries are
+ *    pruned on read and on write, so the map cannot grow across origins that
+ *    logged out once and were never visited again — the same discipline
+ *    `originBackoff` above already applies, which this map was missing.
  */
+const LOGIN_REQUIRED_TTL_MS = 10 * 60 * 1000;
 const LOGIN_PAGE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|oauth2|oauth|login|sso|auth)(?:[/_.-]|$)/i;
 
 /** origin -> { at: ts, source: 'auth-challenge' | 'login-page' }. */
@@ -858,9 +887,18 @@ function isAuthChallengeResponse(details) {
   return Object.keys(headers).some((name) => name.toLowerCase() === 'www-authenticate');
 }
 
+/** Drop every entry past its TTL. Cheap: this map holds one key per origin. */
+function pruneLoginRequired() {
+  const now = clock.now();
+  for (const [origin, entry] of loginRequiredOrigins) {
+    if (now - entry.at >= LOGIN_REQUIRED_TTL_MS) loginRequiredOrigins.delete(origin);
+  }
+}
+
 function noteLoginRequired(urlString, source) {
   const origin = normalizedOriginOf(urlString);
   if (!origin) return;
+  pruneLoginRequired();
   loginRequiredOrigins.set(origin, { at: clock.now(), source });
 }
 
@@ -870,13 +908,35 @@ function clearLoginRequired(urlString) {
 }
 
 /**
+ * Exit 2 (see the module note): the tab routed off the login page. Only a
+ * `login-page`-sourced flag may be cleared this way — an `auth-challenge` flag
+ * would otherwise be erased by the `did-navigate` that carries the 401 itself.
+ */
+function clearLoginPageFlagOnNavigation(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  const entry = loginRequiredOrigins.get(origin);
+  if (entry && entry.source === 'login-page') loginRequiredOrigins.delete(origin);
+}
+
+/**
  * `'login_required'` or null. Null (rather than a `'ok'` sentinel) so callers
  * can spread the key in only when there is something to say — a listing for a
  * healthy tab keeps byte-for-byte the shape it had before this existed.
+ *
+ * Prunes on read, like `backoffRemainingMs`: a stale flag must not answer a
+ * question about now, and a listing is the one path guaranteed to run.
  */
 function authStateForUrl(urlString) {
   const origin = normalizedOriginOf(urlString);
-  return origin && loginRequiredOrigins.has(origin) ? 'login_required' : null;
+  if (!origin) return null;
+  const entry = loginRequiredOrigins.get(origin);
+  if (!entry) return null;
+  if (clock.now() - entry.at >= LOGIN_REQUIRED_TTL_MS) {
+    loginRequiredOrigins.delete(origin);
+    return null;
+  }
+  return 'login_required';
 }
 
 function registerRateLimitHit(origin) {
@@ -1044,7 +1104,9 @@ function browserSessionForViews() {
   // would silently REPLACE this one (last registration wins), not add to it.
   browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['mainFrame'] }, (details, callback) => {
     if (details.resourceType === 'mainFrame') {
-      const origin = originOf(details.url);
+      // ONE origin spelling for both halves of this listener (M2) — see
+      // `normalizedOriginOf`.
+      const origin = normalizedOriginOf(details.url);
       if (details.statusCode === 429) {
         registerRateLimitHit(origin);
       } else if (details.statusCode >= 200 && details.statusCode < 300) {
@@ -1183,11 +1245,20 @@ function configureBrowserView(id, view) {
   contents.on('did-navigate', onNav);
   contents.on('did-navigate-in-page', onNav);
   // U6 / F2.4 — the redirect-to-login case, which answers 200 and so leaves no
-  // HTTP signal. Only real navigations count: `did-navigate-in-page` is a
+  // HTTP signal.
+  //
+  // SETTING is restricted to real navigations: `did-navigate-in-page` is a
   // `pushState`, i.e. something a page can fire at will, and a page must not be
-  // able to author this flag for itself.
-  contents.on('did-navigate', (_event, navUrl) => {
+  // able to author this flag for itself. CLEARING listens to both, because
+  // clearing only ever restores the pre-U6 baseline (module note, M1) and the
+  // SPA sign-in that this fixes IS a `replaceState` (I1).
+  const onLoginShapeNavigation = (_event, navUrl) => {
     if (isLoginPageUrl(navUrl)) noteLoginRequired(navUrl, 'login-page');
+    else clearLoginPageFlagOnNavigation(navUrl);
+  };
+  contents.on('did-navigate', onLoginShapeNavigation);
+  contents.on('did-navigate-in-page', (_event, navUrl) => {
+    if (!isLoginPageUrl(navUrl)) clearLoginPageFlagOnNavigation(navUrl);
   });
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
@@ -1683,8 +1754,8 @@ async function runBrowserAutomation(action, payload, signal) {
     // `navigateAutomationTab()`, which is the right place to report it.
     const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
     const backoffOrigin = isGotoNavigate
-      ? originOf(payload.url)
-      : originOf(view.webContents.getURL());
+      ? normalizedOriginOf(payload.url)
+      : normalizedOriginOf(view.webContents.getURL());
     const remainingMs = backoffRemainingMs(backoffOrigin);
     if (remainingMs > 0) {
       throw new Error(

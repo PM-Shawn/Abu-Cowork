@@ -771,6 +771,27 @@ describe('CapabilitiesSection', () => {
 
       expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
     });
+
+    /**
+     * U6 — the two browser channels do not protect an unattended run equally:
+     * only the built-in one can refuse BEFORE acting on an expired session,
+     * because the extension channel has no `webRequest` to see the 401 with.
+     * That was documented in a code comment, where the person taking the risk
+     * cannot read it.
+     */
+    it('warns that the extension channel has a weaker safety net, once the switch is on', () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: false });
+      const { rerender } = render(<CapabilitiesSection />);
+
+      expect(screen.queryByText(/weaker safety net/)).toBeNull();
+
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      rerender(<CapabilitiesSection />);
+
+      const caveat = screen.getByText(/weaker safety net/);
+      expect(caveat.textContent).toMatch(/built-in browser/);
+      expect(caveat.textContent).toMatch(/Chrome extension channel/);
+    });
   });
 
   /**

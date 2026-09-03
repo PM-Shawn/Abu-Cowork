@@ -181,12 +181,23 @@
   }
   var CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
   var CAPTCHA_SELECTOR = '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+  var CAPTCHA_INTERACTIVE_SELECTOR = 'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex],img[src^="data:"]';
+  function containerIsOperable(el) {
+    if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
+    for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
+      if (hasBox(child)) return true;
+    }
+    return false;
+  }
   function hasCaptcha() {
     for (const frame of document.querySelectorAll("iframe")) {
       const surface = `${frame.getAttribute("src") ?? ""} ${frame.getAttribute("title") ?? ""}`;
       if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
     }
-    return visibleMatch(CAPTCHA_SELECTOR) !== null;
+    for (const el of document.querySelectorAll(CAPTCHA_SELECTOR)) {
+      if (hasBox(el) && containerIsOperable(el)) return true;
+    }
+    return false;
   }
   var QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
   var QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
@@ -195,11 +206,24 @@
     return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
   }
   var OTP_TEXT_PATTERN = /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+  var NUMERIC_CODE_INPUT_SELECTOR = 'input[inputmode="numeric"],input[type="tel"],input[pattern*="0-9"],input[pattern*="d"]';
+  function hasShortCodeInput() {
+    if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+    for (const el of document.querySelectorAll("input[maxlength]")) {
+      const max = Number(el.getAttribute("maxlength"));
+      if (Number.isFinite(max) && max >= 4 && max <= 8 && hasBox(el)) return true;
+    }
+    return false;
+  }
   function hasOneTimeCodeEntry(text) {
     if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
-    return OTP_TEXT_PATTERN.test(text) && visibleMatch("input") !== null;
+    return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
   }
   var MFA_PUSH_PATTERN = /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+  var PENDING_WIDGET_SELECTOR = '[role="progressbar"],[role="status"],[aria-busy="true"],[aria-live="polite"],[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+  function hasMfaPush(text) {
+    return MFA_PUSH_PATTERN.test(text) && visibleMatch(PENDING_WIDGET_SELECTOR) !== null;
+  }
   var WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
   function isWeChatInterstitial(text) {
     const host = location.hostname.toLowerCase();
@@ -207,11 +231,16 @@
     return wechatHost || WECHAT_PATTERN.test(text);
   }
   var OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+  var blankOauthObservation = null;
   function isStrandedOauthPage(text) {
-    if (document.readyState === "loading") return false;
-    if (!OAUTH_URL_PATTERN.test(location.pathname)) return false;
-    if (text.trim().length > 40) return false;
-    return visibleMatch("input,button,a[href],form") === null;
+    const blankNow = document.readyState !== "loading" && OAUTH_URL_PATTERN.test(location.pathname) && text.trim().length <= 40 && visibleMatch("input,button,a[href],form") === null;
+    if (!blankNow) {
+      blankOauthObservation = null;
+      return false;
+    }
+    const href = location.href;
+    blankOauthObservation = blankOauthObservation?.href === href ? { href, passes: blankOauthObservation.passes + 1 } : { href, passes: 1 };
+    return blankOauthObservation.passes > 1;
   }
   var HANDOFF_HINTS = {
     captcha: "This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the action and do not try to solve it. Stop, tell the user which page is asking, and ask them to complete the challenge themselves before you continue.",
@@ -222,12 +251,22 @@
     oauth_popup: "The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do not retry the popup. Ask for the provider's redirect flow instead (navigate to the authorization URL in this tab), or ask the user to complete the sign-in themselves."
   };
   function detectHandoff(text) {
-    const kind = isWeChatInterstitial(text) ? "wechat_external_link" : hasCaptcha() ? "captcha" : hasQrLogin(text) ? "qr_login" : MFA_PUSH_PATTERN.test(text) ? "mfa_push" : hasOneTimeCodeEntry(text) ? "sms_code" : isStrandedOauthPage(text) ? "oauth_popup" : null;
+    const kind = isWeChatInterstitial(text) ? "wechat_external_link" : hasCaptcha() ? "captcha" : hasQrLogin(text) ? "qr_login" : hasMfaPush(text) ? "mfa_push" : hasOneTimeCodeEntry(text) ? "sms_code" : isStrandedOauthPage(text) ? "oauth_popup" : null;
     return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
   }
-  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|401 unauthorized|请先登录|登录已过期|请重新登录)/i;
+  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+  var NOT_A_SIGN_IN_PATTERN = /(create (an? )?account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+  var IDENTIFIER_INPUT_SELECTOR = 'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],[id*="user" i],[id*="email" i]';
+  function looksLikeSignInForm() {
+    const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
+    if (passwords.length !== 1) return false;
+    const autocomplete = (passwords[0].getAttribute("autocomplete") ?? "").toLowerCase();
+    if (autocomplete.includes("new-password")) return false;
+    return visibleMatch(IDENTIFIER_INPUT_SELECTOR) !== null;
+  }
   function detectAuthWall(text) {
-    if (visibleMatch('input[type="password"]') !== null) return true;
+    if (NOT_A_SIGN_IN_PATTERN.test(text)) return false;
+    if (looksLikeSignInForm()) return true;
     return AUTH_WALL_TEXT_PATTERN.test(text);
   }
   var ADVISORY_ANNOTATED_ACTIONS = /* @__PURE__ */ new Set([

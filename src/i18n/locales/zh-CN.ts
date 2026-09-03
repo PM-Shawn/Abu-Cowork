@@ -760,6 +760,7 @@ const zhCN: TranslationDict = {
     browserOpStateAsk: '每次都问',
     browserUnattendedMasterSwitchLabel: '允许无人值守任务使用浏览器',
     browserUnattendedMasterSwitchDesc: '关闭时，定时任务、触发器和 IM 无人值守运行一律不能使用浏览器，不受下方操作权限设置影响。',
+    browserUnattendedChannelCaveat: '注意：两条浏览器通道的保护强度不同。内置浏览器能在动手前发现网站登录已失效并直接拒绝；Chrome 扩展通道（用你本人已登录的 Chrome）看不到这个信号，只能在动作发生之后提示，因此无人值守运行在扩展通道上的兜底更弱——把它留给你更信任的网站。',
     capabilityComputerTitle: '操作电脑',
     capabilityComputerDesc: '让阿布读取屏幕并通过辅助功能操作界面。高风险应用和按键仍受安全规则保护。',
     capabilityExtensionsTitle: '扩展能力',

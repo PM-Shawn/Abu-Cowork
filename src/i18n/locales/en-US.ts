@@ -759,6 +759,7 @@ const enUS: TranslationDict = {
     browserOpStateAsk: 'Ask every time',
     browserUnattendedMasterSwitchLabel: 'Allow unattended tasks to use the browser',
     browserUnattendedMasterSwitchDesc: 'When off, scheduled tasks, triggers, and unattended IM runs can never use the browser, regardless of the operation permissions below.',
+    browserUnattendedChannelCaveat: 'Note: the two browser channels do not protect you equally. The built-in browser can tell that a site\'s session has expired and refuse before acting; the Chrome extension channel (your own signed-in Chrome) cannot see that signal and can only flag it after the fact, so an unattended run has a weaker safety net there — keep it to sites you trust.',
     capabilityComputerTitle: 'Control the computer',
     capabilityComputerDesc: 'Let Abu read the screen and operate the interface through Accessibility. Sensitive apps and key combinations remain protected.',
     capabilityExtensionsTitle: 'Extended capabilities',

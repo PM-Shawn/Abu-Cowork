@@ -425,13 +425,23 @@ function reportableValue(el: Element, value: string, maxChars: number): string |
  * locked, or flagged for compromise. The `mfa_push` hint says so in as many
  * words because the model's default instinct on a pending state is to retry.
  *
- * ## Deliberately incomplete
+ * ## Deliberately incomplete, and why misses beat false positives
  *
  * Like `highRiskSites.ts`'s domain table, the patterns below are a short list
  * of unambiguous cases, not a classifier. Everything they miss simply behaves
  * as it did before this existed — the agent gets no hint, which is today's
- * status quo, not a new hole. Misses are preferred to false positives: a
- * wrongly-announced CAPTCHA sends the user to a page that does not need them.
+ * status quo, not a new hole.
+ *
+ * A FALSE POSITIVE is the expensive direction, and the asymmetry is worth
+ * spelling out because it drove every co-signal below. The narration rules
+ * tell the model to STOP acting on the site and tell the user what to do by
+ * hand. So a wrong detection does not merely add noise: it halts a working run
+ * and reports something untrue. That is why every text pattern here is paired
+ * with a STRUCTURAL co-signal — a CAPTCHA must be operable, an MFA push must
+ * be polling, a one-time code must have a box short enough to hold one, a
+ * login wall must be a sign-in-shaped form rather than any password box (a
+ * signup page and a change-password page both have one of those). Text alone
+ * matched a help article, a docs page, a blog post and a news story in review.
  */
 
 /** Cap on the page text scanned per detection pass. */
@@ -465,13 +475,32 @@ const CAPTCHA_SELECTOR =
   '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],'
   + '[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
 
+/**
+ * A CAPTCHA is something you OPERATE. Naming alone is not enough — a blog's
+ * `<div class="post-captcha-explainer">` is an article about CAPTCHAs, and
+ * announcing one there stops a working run on a page that has no challenge.
+ */
+const CAPTCHA_INTERACTIVE_SELECTOR =
+  'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex],img[src^="data:"]';
+
+function containerIsOperable(el: Element): boolean {
+  if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
+  for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
+    if (hasBox(child)) return true;
+  }
+  return false;
+}
+
 /** Slider puzzles included: they are a CAPTCHA wearing a different coat. */
 function hasCaptcha(): boolean {
   for (const frame of document.querySelectorAll('iframe')) {
     const surface = `${frame.getAttribute('src') ?? ''} ${frame.getAttribute('title') ?? ''}`;
     if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
   }
-  return visibleMatch(CAPTCHA_SELECTOR) !== null;
+  for (const el of document.querySelectorAll(CAPTCHA_SELECTOR)) {
+    if (hasBox(el) && containerIsOperable(el)) return true;
+  }
+  return false;
 }
 
 const QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
@@ -487,13 +516,46 @@ function hasQrLogin(text: string): boolean {
 const OTP_TEXT_PATTERN =
   /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
 
+/**
+ * A box that could actually hold a 6-digit code. `visibleMatch('input')` was
+ * no co-signal at all — nearly every page has an input, so a docs page with a
+ * search box and the phrase "verification code flow" was classified as a code
+ * prompt.
+ */
+const NUMERIC_CODE_INPUT_SELECTOR =
+  'input[inputmode="numeric"],input[type="tel"],input[pattern*="0-9"],input[pattern*="d"]';
+
+function hasShortCodeInput(): boolean {
+  if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+  for (const el of document.querySelectorAll('input[maxlength]')) {
+    const max = Number(el.getAttribute('maxlength'));
+    if (Number.isFinite(max) && max >= 4 && max <= 8 && hasBox(el)) return true;
+  }
+  return false;
+}
+
 function hasOneTimeCodeEntry(text: string): boolean {
   if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
-  return OTP_TEXT_PATTERN.test(text) && visibleMatch('input') !== null;
+  return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
 }
 
 const MFA_PUSH_PATTERN =
   /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+
+/**
+ * What a page WAITING on a push looks like structurally: it is polling, or it
+ * is a dedicated push/2FA surface. Without this the sentence alone matched any
+ * help article that describes the flow — and rule ④ then tells the model to
+ * stop working on a documentation site.
+ */
+const PENDING_WIDGET_SELECTOR =
+  '[role="progressbar"],[role="status"],[aria-busy="true"],[aria-live="polite"],'
+  + '[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],'
+  + '[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+
+function hasMfaPush(text: string): boolean {
+  return MFA_PUSH_PATTERN.test(text) && visibleMatch(PENDING_WIDGET_SELECTOR) !== null;
+}
 
 const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
 
@@ -511,15 +573,34 @@ const OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/
  * can be closed by the user or severed from its opener by COOP — either way
  * the flow strands on a blank provider page that no click can advance.
  *
- * Both halves are required (a blank page on an ordinary URL is just a page
- * still loading), and `document.readyState` must be past loading so a slow
- * first paint is not mistaken for a dead end.
+ * ## Why it has to SETTLE first (I3)
+ *
+ * A perfectly healthy `/auth/callback` is blank and `readyState === 'complete'`
+ * for as long as its JS takes to exchange the code — the single commonest
+ * shape in OAuth. Calling that a dead end tells the model to abandon a sign-in
+ * that was about to succeed. So "blank" must hold across MORE THAN ONE
+ * detection pass, i.e. two separate tool calls against the same URL, which is
+ * long enough that a real exchange has either rendered or redirected.
+ *
+ * The counter is keyed on the URL, so any navigation restarts the observation
+ * rather than inheriting the previous page's evidence.
  */
+let blankOauthObservation: { href: string; passes: number } | null = null;
+
 function isStrandedOauthPage(text: string): boolean {
-  if (document.readyState === 'loading') return false;
-  if (!OAUTH_URL_PATTERN.test(location.pathname)) return false;
-  if (text.trim().length > 40) return false;
-  return visibleMatch('input,button,a[href],form') === null;
+  const blankNow = document.readyState !== 'loading'
+    && OAUTH_URL_PATTERN.test(location.pathname)
+    && text.trim().length <= 40
+    && visibleMatch('input,button,a[href],form') === null;
+  if (!blankNow) {
+    blankOauthObservation = null;
+    return false;
+  }
+  const href = location.href;
+  blankOauthObservation = blankOauthObservation?.href === href
+    ? { href, passes: blankOauthObservation.passes + 1 }
+    : { href, passes: 1 };
+  return blankOauthObservation.passes > 1;
 }
 
 const HANDOFF_HINTS: Record<PageHandoffKind, string> = {
@@ -558,22 +639,57 @@ function detectHandoff(text: string): PageHandoff | null {
     isWeChatInterstitial(text) ? 'wechat_external_link'
       : hasCaptcha() ? 'captcha'
         : hasQrLogin(text) ? 'qr_login'
-          : MFA_PUSH_PATTERN.test(text) ? 'mfa_push'
+          : hasMfaPush(text) ? 'mfa_push'
             : hasOneTimeCodeEntry(text) ? 'sms_code'
               : isStrandedOauthPage(text) ? 'oauth_popup'
                 : null;
   return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
 }
 
+// `401 Unauthorized` is deliberately ABSENT: an article about HTTP status codes
+// contains it, and the built-in browser already detects a REAL 401 at the HTTP
+// layer (`browserHost.cjs`), which is both earlier and unforgeable. Keeping the
+// weakest string here bought nothing and cost a false positive.
 const AUTH_WALL_TEXT_PATTERN =
-  /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|401 unauthorized|请先登录|登录已过期|请重新登录)/i;
+  /(sign in to continue|log in to continue|please (sign|log) in|login required|authentication required|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
 
 /**
- * A login wall, from page features. Either an actual password box that is on
- * screen, or one of a short list of auth-wall sentences.
+ * Pages that HAVE a password box and are NOT asking you to sign in. Signing up
+ * and changing a password are things an agent legitimately does while fully
+ * authenticated; reporting "your session expired" there stops a working run and
+ * tells the user something false.
+ */
+const NOT_A_SIGN_IN_PATTERN =
+  /(create (an? )?account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+
+/** A field that names WHO is signing in — a login form has one, a password-change form does not. */
+const IDENTIFIER_INPUT_SELECTOR =
+  'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],'
+  + '[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],'
+  + '[id*="user" i],[id*="email" i]';
+
+/**
+ * Exactly ONE on-screen password box, not a new-password one, next to a field
+ * naming the account. Signup and password-change forms fail on the count or on
+ * `new-password`; a re-auth prompt with no identifier field is a deliberate
+ * miss (misses are preferred — see the module note).
+ */
+function looksLikeSignInForm(): boolean {
+  const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
+  if (passwords.length !== 1) return false;
+  const autocomplete = (passwords[0].getAttribute('autocomplete') ?? '').toLowerCase();
+  if (autocomplete.includes('new-password')) return false;
+  return visibleMatch(IDENTIFIER_INPUT_SELECTOR) !== null;
+}
+
+/**
+ * A login wall, from page features: a sign-in-shaped form, or one of a short
+ * list of auth-wall sentences — and neither counts on a page that is plainly
+ * about creating or changing a password instead.
  */
 function detectAuthWall(text: string): boolean {
-  if (visibleMatch('input[type="password"]') !== null) return true;
+  if (NOT_A_SIGN_IN_PATTERN.test(text)) return false;
+  if (looksLikeSignInForm()) return true;
   return AUTH_WALL_TEXT_PATTERN.test(text);
 }
 

@@ -306,6 +306,17 @@ function BrowserOperationPolicySection() {
           <p className="mt-0.5 text-minor leading-relaxed text-[var(--abu-text-muted)]">
             {t.settings.browserUnattendedMasterSwitchDesc}
           </p>
+          {/*
+            U6 — the two browser channels do not protect an unattended run
+            equally, and only the built-in one can refuse BEFORE acting on an
+            expired session. Shown only while the switch is on: it is advice
+            about a risk the user has actually taken on.
+          */}
+          {allowUnattended && (
+            <p className="mt-1.5 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+              {t.settings.browserUnattendedChannelCaveat}
+            </p>
+          )}
         </div>
         <Toggle
           checked={allowUnattended}

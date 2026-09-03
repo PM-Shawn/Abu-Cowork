@@ -903,6 +903,10 @@ export interface TranslationDict {
     browserOpStateAsk: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;
+    /** U6 — the built-in browser can refuse an unattended action on an expired
+     *  session before it happens; the Chrome-extension channel can only report
+     *  it after the fact. Shown under the master switch while it is ON. */
+    browserUnattendedChannelCaveat: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
     capabilityExtensionsTitle: string;

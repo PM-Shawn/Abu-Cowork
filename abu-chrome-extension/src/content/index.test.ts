@@ -916,8 +916,12 @@ describe('login walls and dead ends (U6)', () => {
   });
 
   describe('login walls', () => {
-    it('reports login_required when the page shows a password box', async () => {
-      document.body.innerHTML = '<form><input type="password" /><button>Sign in</button></form>';
+    it('reports login_required on a sign-in-shaped form', async () => {
+      // A password box ALONE is not the signal — signup and password-change
+      // pages have one too. What makes it a login is the single
+      // current-password field next to a field naming the account.
+      document.body.innerHTML =
+        '<form><input name="username" /><input type="password" /><button>Sign in</button></form>';
 
       expect((await advise()).authState).toBe('login_required');
     });
@@ -954,7 +958,11 @@ describe('login walls and dead ends (U6)', () => {
     });
 
     it('classifies a slider verification widget', async () => {
-      document.body.innerHTML = '<div class="nc-container"><span>请按住滑块拖动</span></div>';
+      // A real slider carries a draggable handle; the class name alone is not
+      // the challenge (see the blog-post probe below).
+      document.body.innerHTML =
+        '<div class="nc-container"><span>请按住滑块拖动</span>'
+        + '<div class="nc-handle" tabindex="0"></div></div>';
 
       expect((await advise()).handoff?.kind).toBe('captcha');
     });
@@ -982,7 +990,11 @@ describe('login walls and dead ends (U6)', () => {
     });
 
     it('classifies an MFA push and says in as many words never to retry it', async () => {
-      document.body.innerHTML = '<div>Approve this sign-in: open your authenticator app on your phone.</div>';
+      // A real push screen is polling for the answer; the sentence alone is
+      // what a help article contains (see the false-positive probes below).
+      document.body.innerHTML =
+        '<div class="mfa-prompt"><p>Approve this sign-in: open your authenticator app'
+        + ' on your phone.</p><div class="spinner" role="progressbar"></div></div>';
 
       const { handoff } = await advise();
       expect(handoff?.kind).toBe('mfa_push');
@@ -1002,6 +1014,8 @@ describe('login walls and dead ends (U6)', () => {
       pageAt('https://idp.example.com/oauth2/authorize?client_id=x');
       document.body.innerHTML = '';
 
+      // Blank on one look is an in-flight exchange; blank on two is stranded.
+      await advise();
       const { handoff } = await advise();
       expect(handoff?.kind).toBe('oauth_popup');
       expect(handoff?.hint).toMatch(/redirect flow/i);
@@ -1012,6 +1026,117 @@ describe('login walls and dead ends (U6)', () => {
       document.body.innerHTML = '<h1>Allow Abu to access your account?</h1><button>Allow</button>';
 
       expect((await advise()).handoff).toBeUndefined();
+    });
+  });
+
+  /**
+   * I2/I3 — the false positives the review probed for. Every one of these is a
+   * page an agent legitimately works on, and reporting a dead end on one tells
+   * the model to stop and tells the user something untrue: a broken working
+   * run. `hasQrLogin` was built from the start to avoid exactly this ("an
+   * article ABOUT QR codes is not a QR login"); its neighbours now match.
+   */
+  describe('ordinary pages are not dead ends (false-positive probes)', () => {
+    it('a help doc explaining push approval is not an MFA push screen', async () => {
+      document.body.innerHTML = `
+        <article>
+          <h1>Troubleshooting two-factor sign-in</h1>
+          <p>When you approve this sign-in, open your authenticator app on your phone
+             and tap Approve. If nothing arrives, check your notification settings.</p>
+        </article>`;
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+
+    it('a docs page about verification codes with a search box is not a code prompt', async () => {
+      document.body.innerHTML = `
+        <nav><input type="search" name="q" placeholder="Search docs" /></nav>
+        <article><p>The verification code flow sends a one-time password to the user.</p></article>`;
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+
+    it('a blog post explaining CAPTCHAs is not a CAPTCHA', async () => {
+      document.body.innerHTML =
+        '<div class="post-captcha-explainer"><h2>Why sites use a captcha</h2>'
+        + '<p>A captcha is a challenge that separates people from scripts.</p></div>';
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+
+    it('an in-flight OAuth callback is not a stranded popup on its first look', async () => {
+      // The page is legitimately blank while its JS exchanges the code. Calling
+      // this a dead end mid-flow tells the model to abandon a working sign-in.
+      pageAt('https://app.example.com/auth/callback?code=abc');
+      document.body.innerHTML = '';
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+
+    it('still reports a popup that is STILL blank on a later look', async () => {
+      pageAt('https://app.example.com/auth/callback?code=abc');
+      document.body.innerHTML = '';
+
+      await advise();
+      expect((await advise()).handoff?.kind).toBe('oauth_popup');
+    });
+
+    it('a callback that rendered between looks is not a dead end', async () => {
+      pageAt('https://app.example.com/auth/callback?code=abc');
+      document.body.innerHTML = '';
+      await advise();
+      document.body.innerHTML = '<h1>Signed in</h1><a href="/home">Continue</a>';
+
+      expect((await advise()).handoff).toBeUndefined();
+    });
+  });
+
+  describe('ordinary password pages are not login walls (false-positive probes)', () => {
+    it('a signup page is not an expired session', async () => {
+      pageAt('https://app.example.com/signup');
+      document.body.innerHTML = `
+        <form>
+          <h1>Create your account</h1>
+          <input type="email" name="email" />
+          <input type="password" autocomplete="new-password" name="password" />
+          <button>Sign up</button>
+        </form>`;
+
+      expect((await advise()).authState).toBeUndefined();
+    });
+
+    it('a password-change page is not an expired session', async () => {
+      pageAt('https://app.example.com/settings/security');
+      document.body.innerHTML = `
+        <form>
+          <h1>Change password</h1>
+          <input type="password" autocomplete="current-password" name="current" />
+          <input type="password" autocomplete="new-password" name="next" />
+          <input type="password" autocomplete="new-password" name="confirm" />
+          <button>Update password</button>
+        </form>`;
+
+      expect((await advise()).authState).toBeUndefined();
+    });
+
+    it('a news article about HTTP status codes is not an expired session', async () => {
+      document.body.innerHTML =
+        '<article><h1>What a 401 Unauthorized really means</h1>'
+        + '<p>A 401 Unauthorized response tells the client to authenticate.</p></article>';
+
+      expect((await advise()).authState).toBeUndefined();
+    });
+
+    it('a real sign-in form is still reported', async () => {
+      document.body.innerHTML = `
+        <form>
+          <h1>Sign in</h1>
+          <input type="email" name="email" autocomplete="username" />
+          <input type="password" autocomplete="current-password" name="password" />
+          <button>Sign in</button>
+        </form>`;
+
+      expect((await advise()).authState).toBe('login_required');
     });
   });
 

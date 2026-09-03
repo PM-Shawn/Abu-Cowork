@@ -993,6 +993,129 @@ test('the login-URL shape is segment-anchored, so ordinary paths do not trip it'
   }
 });
 
+/**
+ * I1 — the flag has to be able to GO AWAY. The first round's only exit was a
+ * same-origin main-frame 2xx, which an SPA sign-in never produces: the POST is
+ * an XHR (filtered out) and the redirect is a `history.replaceState`. The user
+ * signed in exactly as asked and every later action was still refused.
+ */
+test('routing off the login page clears a login-page flag, including via replaceState', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    commitNavigation(aTab, 'https://spa.example.com/login');
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    // The SPA signs in over XHR and rewrites the URL without a navigation.
+    contentsFor(aTab).url = 'https://spa.example.com/dashboard';
+    contentsFor(aTab).fire('did-navigate-in-page', {}, 'https://spa.example.com/dashboard');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'the user did what was asked — the flag must not outlive it');
+  } finally {
+    restore();
+  }
+});
+
+test('an in-page navigation may CLEAR the flag but must never SET one', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    contentsFor(aTab).url = 'https://spa.example.com/login';
+    // A pushState is something any page can fire at will.
+    contentsFor(aTab).fire('did-navigate-in-page', {}, 'https://spa.example.com/login');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'a page must not be able to author this flag for itself');
+  } finally {
+    restore();
+  }
+});
+
+test('the navigation that carries a 401 does not erase the flag it just set', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    // Real ordering: headers first, then the error page commits did-navigate
+    // on a URL that is not login-shaped.
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    commitNavigation(aTab, 'https://example.com/reports');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+  } finally {
+    restore();
+  }
+});
+
+test('a login flag goes stale on its own — `at` is read, not just stored', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    state.t += 10 * 60 * 1000; // the TTL
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'a flag older than the TTL is not evidence about now');
+  } finally {
+    restore();
+  }
+});
+
+test('a stale login entry is pruned, not merely hidden', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    state.t += 10 * 60 * 1000;
+    // Reading prunes; going BACK in virtual time must not resurrect the entry.
+    await getTabs(host, OWNER_A);
+    state.t -= 5 * 60 * 1000;
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * M2 — the 429 backoff and the login flag are set from the SAME listener and
+ * used to spell origins two different ways, so `example.com.` was one site for
+ * one control and another site for the other.
+ */
+test('both halves of the headers listener key origins the same way', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    // A trailing-dot FQDN is the same host over DNS. Both signals arrive
+    // spelled that way; both must land on the dotless origin the tab reports.
+    respond(fireHeadersReceived, 'https://example.com./reports', 401);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    respond(fireHeadersReceived, 'https://example.com./reports', 429);
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://example.com/reports?retry=1'),
+      /Backing off/,
+    );
+  } finally {
+    restore();
+  }
+});
+
 test('the login flag is keyed by ORIGIN, so a sibling tab on that site sees it too', async () => {
   const { host, fireHeadersReceived, restore } = loadHost();
   try {

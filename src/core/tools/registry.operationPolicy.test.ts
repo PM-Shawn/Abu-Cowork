@@ -1038,6 +1038,49 @@ describe('browser gate — operation-class policy', () => {
         expect(decision.reason).toContain('You have blocked automation on this site');
       });
 
+      /**
+       * The two widenings the first round's tests missed. Both slipped past
+       * 105/105 because the existing cases either forge a value that parses to
+       * null, or run with the master switch already ON, or assert a refusal
+       * that a DIFFERENT check wins first — so the mutant stayed invisible.
+       * These two name the exact wire that must not exist.
+       */
+      it('master switch off + login_required still denies a read-only action', async () => {
+        // Mutant this kills: `masterSwitchUnattended || loginRequired`. The
+        // master switch is the whole surface; a page-observable state must not
+        // be able to short-circuit it. Read-only on an ALLOWED site is chosen
+        // deliberately — every other refusal is out of the way, so only the
+        // switch can be producing the deny.
+        useSettingsStore.setState({
+          allowUnattendedBrowser: false,
+          browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        });
+        withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+
+        const decision = await checkToolApproval(
+          'abu-browser__snapshot', { tabId: OWNED_TAB_ID },
+          unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      });
+
+      it('login_required does not relax the origin pin', async () => {
+        // Mutant this kills: dropping `expectedOrigin` from the pin when the
+        // flag is set. That would switch U5's execution-time pin OFF on
+        // precisely the pages most likely to redirect mid-action — a login
+        // wall is a redirect engine — which is a widening dressed as a
+        // detection.
+        withTabOrigin(ALLOWED_URL, LOGGED_OUT);
+
+        const decision = await checkToolApproval(
+          'abu-browser__click', { tabId: OWNED_TAB_ID, locator: '{}' },
+          attendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
+      });
+
       it('does not turn an attended refusal into an allow', async () => {
         withTabOrigin(UNKNOWN_URL, LOGGED_OUT);
 

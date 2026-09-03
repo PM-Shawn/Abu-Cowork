@@ -1,4 +1,5 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { isTeamRosterMember } from '../../team/leaderRoute';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
@@ -223,6 +224,11 @@ export const delegateToAgentTool: ToolDefinition = {
     // 1. Resolve agent: by name (user-defined) or by type (system preset)
     let agent: SubagentDefinition | undefined;
 
+    // In-conversation team mode: only roster members may be dispatched (presets included).
+    if (toolExecContext?.teamRoster && !isTeamRosterMember(toolExecContext.teamRoster, agentName)) {
+      const t = getI18n().toolResult.agent;
+      return format(t.errNotTeamMember, { agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
+    }
     if (agentType && PRESET_AGENTS[agentType]) {
       // System preset role
       agent = buildPresetAgent(agentType, task);

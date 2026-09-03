@@ -16,6 +16,8 @@ import { substituteVariables, executeInlineCommands } from '../skill/preprocesso
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
 import type { PromptSection } from '../llm/promptSections';
+import type { TeamRouteContext } from '../team/leaderRoute';
+import { buildTeamRoleBlock, buildTeamAvailableAgentsText } from '../team/leaderRoute';
 import { sectionsToString, orderSectionsForCaching } from '../llm/promptSections';
 
 const DEFAULT_PERSONA = 'You are Abu (阿布), a professional and reliable desktop assistant. Reply in a friendly and concise manner.';
@@ -137,6 +139,9 @@ export interface RouteResult {
   args?: string;
   cleanInput: string;     // User input with command stripped
   delegateAgent?: SubagentDefinition;  // For @agent direct delegation
+  /** In-conversation team mode: set when the conversation is pinned to a team and
+   *  the main loop runs as its leader (see core/team/leaderRoute). */
+  team?: TeamRouteContext;
 }
 
 /**
@@ -384,7 +389,9 @@ export async function buildSystemPromptSections(
   } else {
     // Normal mode: capability + soul + planning instruction
     sections.push({ name: 'persona', text: basePrompt, cacheable: true });
-    sections.push({ name: 'soul', text: '\n## Your Personality\nThe following describes your personality traits and communication style. Express them naturally in all interactions.\n\n' + soulText, cacheable: true });
+    // Team mode: the leader's Role section is the identity; Abu's own
+    // personality would contradict it, so it is not injected.
+    if (!route.team) sections.push({ name: 'soul', text: '\n## Your Personality\nThe following describes your personality traits and communication style. Express them naturally in all interactions.\n\n' + soulText, cacheable: true });
     // Append examples only on first turn to save ~400 tokens per subsequent turn
     const planningText = (turnCount === 0 ? PLANNING_INSTRUCTION + PLANNING_EXAMPLES : PLANNING_INSTRUCTION)
       .replace(
@@ -399,7 +406,7 @@ export async function buildSystemPromptSections(
   // Soul bootstrap: one-time personality introduction prompt
   // Triggers after user has had at least one deep conversation (≥3 user messages)
   const settings = getSettingsReader().getSnapshot();
-  if (!settings.soulInitialized && !isForkContext && !isSkillMode) {
+  if (!settings.soulInitialized && !isForkContext && !isSkillMode && !route.team) {
     const chatMod = await import('../../stores/chatStore');
     const conversations = Object.values(chatMod.useChatStore.getState().conversations);
     const hasDeep = conversations.some(c =>
@@ -698,8 +705,11 @@ ${isWindows()
 
   // Inject agent-specific system prompt (Abu unified agent)
   // Skip in fork mode — we already have a minimal identity
-  if (!isForkContext && route.definition?.systemPrompt) {
-    sections.push({ name: 'agent-role', text: '\n## Role\n' + route.definition.systemPrompt, cacheable: true });
+  if (!isForkContext && (route.definition?.systemPrompt || route.team)) {
+    const roleText = [route.definition?.systemPrompt ?? '', route.team ? buildTeamRoleBlock(route.team) : '']
+      .filter(Boolean)
+      .join('\n\n');
+    sections.push({ name: 'agent-role', text: '\n## Role\n' + roleText, cacheable: true });
   }
 
   // NOTE: Active skills content (from use_skill tool) is now injected dynamically
@@ -826,7 +836,12 @@ ${isWindows()
   }
 
   // List available agents for delegation
-  try {
+  if (route.team) {
+    // Team mode: only the roster is offered (and enforced at dispatch time
+    // via ToolExecutionContext.teamRoster).
+    const teamText = buildTeamAvailableAgentsText(route.team, formatAvailableAgentTools);
+    if (teamText) sections.push({ name: 'available-agents', text: teamText, cacheable: true });
+  } else try {
     const disabledAgents = new Set(settingsState.disabledAgents ?? []);
     const availableAgents = agentRegistry.getAvailableAgents().filter(
       (a) => a.name !== 'abu' && !disabledAgents.has(a.name)

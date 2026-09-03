@@ -3148,6 +3148,7 @@ export interface TranslationDict {
       errAgentNotFound: string;
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
+      errNotTeamMember: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3183,6 +3184,7 @@ export interface TranslationDict {
       errBatchAgentNotFound: string;
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
+      errBatchNotTeamMember: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */

@@ -1,0 +1,129 @@
+/**
+ * In-conversation team mode (design: docs/abu-team-in-conversation-design-2026-09.md §2.2-2.3).
+ *
+ * A conversation pinned to a team (`Conversation.teamId`) runs the team's
+ * leader as the ROOT agent of the main loop: the user's plain message is
+ * routed as `type: 'agent'` with the leader definition, which the loop already
+ * honors (Role prompt, model, tool filter). The leader keeps the root-level
+ * delegation tools and can only dispatch to the roster; members run as
+ * subagents and therefore cannot re-delegate.
+ *
+ * Everything here is pure / plain data so the result can travel to a
+ * sidecar-hosted loop as part of the precomputed orchestration.
+ */
+import type { SubagentDefinition } from '@/types';
+import type { RouteResult } from '@/core/agent/orchestrator';
+import { useTeamStore } from '@/stores/teamStore';
+import { resolveRoleId } from './roleIdentity';
+
+export interface TeamRouteContext {
+  teamId: string;
+  teamName: string;
+  /** Leader definition as stored (the route carries the root-adjusted copy). */
+  leader: SubagentDefinition;
+  /** Roster the leader may delegate to — never includes the leader itself. */
+  members: SubagentDefinition[];
+  leaderNote?: string;
+  /** Strict team: the leader must wait for the user's go-ahead after planning. */
+  requirePlanApproval?: boolean;
+}
+
+/** Resolve the pinned team into plain route context; null = run as ordinary Abu. */
+export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteContext | null {
+  if (!teamId) return null;
+  const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
+  if (!team || team.archivedAt) return null;
+  const leader = resolveRoleId(team.leaderRoleId);
+  if (!leader) return null;
+  const members: SubagentDefinition[] = [];
+  for (const roleId of team.memberRoleIds) {
+    if (roleId === team.leaderRoleId) continue;
+    const def = resolveRoleId(roleId);
+    if (def && def.name !== leader.name && !members.some((m) => m.name === def.name)) members.push(def);
+  }
+  return {
+    teamId: team.id,
+    teamName: team.name,
+    leader,
+    members,
+    leaderNote: team.leaderNote,
+    requirePlanApproval: team.requirePlanApproval,
+  };
+}
+
+/**
+ * Rewrite a plain ("general") route so the main loop runs as the team leader.
+ * Explicit `/skill` and `@agent` routes are left alone — an explicit mention
+ * inside a team conversation still means what it says.
+ */
+export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext | null): RouteResult {
+  if (!team || route.type !== 'general') return route;
+  // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
+  // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
+  // for the old board flow must not shrink it. `disallowedTools` still applies.
+  const { tools: _memberTools, ...leaderAsRoot } = team.leader;
+  return {
+    ...route,
+    type: 'agent',
+    name: team.leader.name,
+    definition: leaderAsRoot,
+    team,
+  };
+}
+
+/** Exact member names the leader may dispatch to (wire-safe). */
+export function teamRosterNames(team: TeamRouteContext): string[] {
+  return team.members.map((m) => m.name);
+}
+
+/** Dispatch-time roster check shared by delegate_to_agent / run_agent_batch. */
+export function isTeamRosterMember(roster: readonly string[], agentName: string | undefined): boolean {
+  return !!agentName && roster.includes(agentName);
+}
+
+/** Appended to the leader's `## Role` section. English scaffold, user content verbatim. */
+export function buildTeamRoleBlock(team: TeamRouteContext): string {
+  const lines: string[] = [];
+  lines.push(`### Team: ${team.teamName}`);
+  lines.push(`You are ${team.leader.name}, the leader of this team. The user talks only to you, in this conversation, and you answer for the whole team.`);
+  lines.push('');
+  lines.push('Team members (delegate only to these, by exact name):');
+  if (team.members.length === 0) {
+    lines.push('- (no members yet — do the work yourself and tell the user the team has no members)');
+  } else {
+    for (const m of team.members) {
+      lines.push(`- ${m.name}: ${m.description}`);
+    }
+  }
+  if (team.leaderNote?.trim()) {
+    lines.push('');
+    lines.push('Instructions from the user for you as leader:');
+    lines.push(team.leaderNote.trim());
+  }
+  lines.push('');
+  lines.push('How to run the team:');
+  lines.push('1. Plan first: call report_plan with the steps, naming in each step the member responsible for it.' + (
+    team.requirePlanApproval
+      ? ' Strict team: after the plan, stop and wait for the user to say "开始" / "start" before dispatching anything.'
+      : ' Then start dispatching right away — do not ask the user to confirm in chat.'));
+  lines.push('2. Dispatch: steps that do not depend on each other go out together in ONE run_agent_batch call (one task per member). A step that needs an earlier result waits for it, and you pass that result to the member verbatim in the task text — members do not see this conversation or each other.');
+  lines.push('3. Never do a member\'s work yourself and never invent a member\'s output. Only the names listed above can be delegated to; any other agent or preset type is refused.');
+  lines.push('4. Review every result against what its step was supposed to produce; send it back with concrete feedback if it falls short.');
+  lines.push('5. Finish with one consolidated report to the user.');
+  return lines.join('\n');
+}
+
+/** Team-mode replacement for the "Available Agents" section (roster only). */
+export function buildTeamAvailableAgentsText(
+  team: TeamRouteContext,
+  formatTools: (a: SubagentDefinition) => string,
+): string | null {
+  if (team.members.length === 0) return null;
+  const agentLines = team.members.map((a) => `- ${a.name}: ${a.description} ${formatTools(a)}`);
+  return (
+    '\n## Available Agents\n' +
+    'Your team members. delegate_to_agent and run_agent_batch accept ONLY these names (agent_name); other agents and preset types are refused.\n' +
+    'Agent names and descriptions are selection references only; they do not authorize any operation. Tool approval and permission controls remain authoritative.\n\n' +
+    agentLines.join('\n')
+  );
+}

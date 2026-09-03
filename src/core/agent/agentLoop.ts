@@ -1,4 +1,5 @@
 import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
+import { teamRosterNames } from '../team/leaderRoute';
 import type { ToolCallContext } from '../../types/execution';
 import type { LLMAdapter } from '../llm/adapter';
 import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
@@ -1018,6 +1019,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     runPermissionCeiling: options?.runPermissionCeiling,
+    // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
+    teamRoster: route.team ? teamRosterNames(route.team) : undefined,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(

@@ -64,6 +64,8 @@
  * green after this change (see P1-3B-3A-REPORT.md).
  */
 import type { ToolExecutionContext } from '../../types';
+import { getConversationReader } from './ports/conversationReader';
+import { applyTeamLeaderRoute, resolveTeamRouteContext } from '../team/leaderRoute';
 import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -95,7 +97,13 @@ export async function precomputeOrchestration(
   abortSignal?: AbortSignal,
   toolContext?: ToolExecutionContext,
 ): Promise<PrecomputedOrchestration> {
-  const route = routeInput(userMessage);
+  // In-conversation team: a conversation pinned to a team runs its leader as
+  // the root agent (general → agent route rewrite; prompt + roster are derived
+  // from route.team by the orchestrator and the loop).
+  const route = applyTeamLeaderRoute(
+    routeInput(userMessage),
+    resolveTeamRouteContext(getConversationReader().getConversation(conversationId)?.teamId),
+  );
 
   // Refresh skill content from disk to ensure latest version.
   if (route.type === 'skill' && route.skill?.filePath) {

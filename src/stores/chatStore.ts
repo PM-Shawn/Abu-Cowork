@@ -604,15 +604,21 @@ interface ChatState {
    *  Consumed by createConversation() and applied as the new conversation's initial
    *  permissionMode. Does NOT modify the global settingsStore default. Ephemeral. */
   pendingPermissionMode: PermissionMode | undefined;
+  /** Team picked in the composer before a conversation exists (welcome page);
+   *  consumed by createConversation, mirrors pendingPermissionMode. */
+  pendingTeamId: string | undefined;
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamTaskId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamTaskId?: string; teamId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
+  setConversationTeamId: (convId: string, teamId: string | undefined) => void;
+  setPendingTeamId: (teamId: string | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
@@ -798,6 +804,7 @@ export const useChatStore = create<ChatStore>()(
       pendingReferences: [],
       pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
+      pendingTeamId: undefined,
 
       createConversation: (workspacePath, options) => {
         const id = generateId();
@@ -811,6 +818,7 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
+        const initialTeamId = options?.teamId ?? get().pendingTeamId;
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -821,6 +829,7 @@ export const useChatStore = create<ChatStore>()(
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
           ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
           ...(options?.teamTaskId ? { teamTaskId: options.teamTaskId } : {}),
+          ...(initialTeamId ? { teamId: initialTeamId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
         };
@@ -837,6 +846,7 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = id;
           }
           state.pendingPermissionMode = undefined;
+          state.pendingTeamId = undefined;
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.
@@ -960,6 +970,29 @@ export const useChatStore = create<ChatStore>()(
         import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
           const meta = get().conversationIndex[convId];
           if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setConversationTeamId: (convId, teamId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.teamId = teamId;
+          }
+          if (state.conversationIndex[convId]) {
+            state.conversationIndex[convId].teamId = teamId;
+          }
+        });
+        // Persist to disk index (same path as the per-conversation model pin)
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setPendingTeamId: (teamId) => {
+        set((state) => {
+          state.pendingTeamId = teamId;
         });
       },
 
@@ -2446,7 +2479,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 8,
+      version: 9,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2467,6 +2500,10 @@ export const useChatStore = create<ChatStore>()(
         // field; absent = an ordinary chat that stays in 最近, which is exactly
         // right for every conversation that predates the team feature).
         if (version < 8) { /* no transform needed */ }
+        // v8 → v9: added teamId on Conversation/ConversationMeta (optional field;
+        // absent = ordinary chat, present = the main loop runs as that team's
+        // leader. Nothing to transform for pre-team conversations).
+        if (version < 9) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

@@ -462,6 +462,7 @@ export interface Conversation {
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
   teamTaskId?: string;  // If set, this conversation is a team task's planning/member run (hidden from 最近 — reached from the task detail)
+  teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
@@ -610,6 +611,13 @@ export interface ToolExecutionContext {
    * registry for schemas without relying on cross-process module state.
    */
   deferredToolNames?: string[];
+  /**
+   * In-conversation team mode: exact agent names the leader may delegate to.
+   * Set by the trusted runtime from the pinned team's roster (never from model
+   * input); delegate_to_agent / run_agent_batch refuse any other agent or
+   * preset type while it is present. Wire-safe (plain strings).
+   */
+  teamRoster?: string[];
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would

@@ -19,6 +19,7 @@ import type {
   SubagentStopReason,
 } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
+import { isTeamRosterMember } from '../../team/leaderRoute';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -434,6 +435,9 @@ export const runAgentBatchTool: ToolDefinition = {
       const agentType = item.type;
       const agentName = item.agent_name;
 
+      if (toolExecContext?.teamRoster && !isTeamRosterMember(toolExecContext.teamRoster, agentName)) {
+        return format(ot.errBatchNotTeamMember, { i, agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
+      }
       if (agentType && PRESET_AGENTS[agentType]) {
         agent = buildPresetAgent(agentType);
       } else if (agentName) {

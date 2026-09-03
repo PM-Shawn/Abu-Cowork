@@ -695,25 +695,59 @@ describe('CapabilitiesSection', () => {
   });
 
   /*
-    U5 — "Disconnect" is a claim about the current state, not a menu item. A
-    page that offers to disconnect something that was never connected has told
-    the user it IS connected, which is exactly the confusion this round is
-    about. The way forward for a machine with no extension is to go install
-    one, so that is the button it gets.
+    U5 — "Disconnect" is a claim about state, and the state it claims is the
+    HANDSHAKE LATCH, not the live connection. Three cases, three offers:
+
+      never handshaked → no disconnect (the complaint: "I never installed
+        anything, why am I being offered a disconnect?"); go install one.
+      handshaked, now lost → disconnect stays, alongside the check button.
+        It is the only way to turn the listener off, and a page whose every
+        button demands a repair strands anyone who just wants it off.
+      connected → disconnect, obviously.
   */
-  it('offers no disconnect while My Chrome is not connected', async () => {
-    mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
-    const user = userEvent.setup();
-    render(<CapabilitiesSection />);
+  describe('disconnect follows the handshake latch', () => {
+    it('offers none on a machine that never handshaked', async () => {
+      mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
 
-    await openDetail(user, 'My Chrome');
-    expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
+      await openDetail(user, 'My Chrome');
+      expect(await screen.findByRole('heading', { name: 'My Chrome' })).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Open install windows' })).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Open install windows' })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('button', { name: 'Disconnect My Chrome' }))
+        .not.toBeInTheDocument();
+      expect(screen.getByText('Not connected')).toBeInTheDocument();
     });
-    expect(screen.queryByRole('button', { name: 'Disconnect My Chrome' }))
-      .not.toBeInTheDocument();
+
+    it('keeps it after a connection that worked and then broke', async () => {
+      // Handshaked in a previous mount of this process, then the extension
+      // stopped answering — which is what the latch is for.
+      setChromeExtensionHandshaked(true);
+      mcpManagerMock.callTool.mockResolvedValue(EXTENSION_MISSING);
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+
+      await openDetail(user, 'My Chrome');
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Disconnect My Chrome' })).toBeInTheDocument();
+      });
+      // ...reported as a fault, not as "never set up", and the repair path is
+      // still there beside it.
+      expect(screen.getByText('Setup required')).toBeInTheDocument();
+      expect(screen.getByText(/connection was lost/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Check connection' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Open install windows' })).toBeInTheDocument();
+
+      // And it still disconnects through the same two calls it always did.
+      await user.click(screen.getByRole('button', { name: 'Disconnect My Chrome' }));
+      await waitFor(() => {
+        expect(mcpManagerMock.disconnectServer).toHaveBeenCalledWith('abu-browser-bridge');
+      });
+      expect(useMCPStore.getState().servers['abu-browser-bridge'].config.enabled).toBe(false);
+    });
   });
 
   /*
@@ -869,7 +903,8 @@ describe('CapabilitiesSection', () => {
 
     await openDetail(user, 'Computer Use');
 
-    expect(screen.getByText('Enable Computer Use')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Computer Use' })).toBeInTheDocument();
+    expect(screen.queryByText('Enable Computer Use')).not.toBeInTheDocument();
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
 
     await user.click(screen.getByRole('button', { name: 'Enable' }));

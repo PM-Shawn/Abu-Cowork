@@ -834,6 +834,7 @@ export default function CapabilitiesSection({
         requestedByTask={setupRequestedByTask}
         runtimeReady={chromeBridgeEnabled && chromeBridgeStatus === 'connected'}
         extensionConnected={chromeExtensionConnected === true}
+        everConnected={chromeExtensionEverConnected}
         extensionPath={chromeExtensionPath}
         working={chromeSetupWorking || chromeChecking || chromeRuntimeChecking}
         openingInstaller={chromeInstallerOpening}

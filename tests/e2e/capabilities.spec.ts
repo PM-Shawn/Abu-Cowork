@@ -199,7 +199,7 @@ test.describe.serial('Electron capability overview', () => {
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     await computerUse.click();
-    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
     await expect(page.getByRole('button', { name: ENABLE })).toBeVisible();
     await expect(page.getByText(/current task needs|当前任务需要/)).toHaveCount(0);
     await page.getByRole('button', { name: ENABLE }).click();
@@ -366,7 +366,10 @@ test.describe.serial('Electron capability overview', () => {
 
     // ---- Computer Use detail: now owns the active-model block -----------
     await capabilityCard(page, COMPUTER_USE).click();
-    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toBeVisible();
+    // Titled by the capability, like the other two pages — the verb lives on
+    // the status row's button.
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toHaveCount(0);
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
     // Same skeleton: the one-line subtitle, then ONE status row saying it is
     // off with the single button that changes that — no consent callout, and

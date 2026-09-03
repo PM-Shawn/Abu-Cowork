@@ -259,6 +259,7 @@ export function ChromeSetupView({
   requestedByTask,
   runtimeReady,
   extensionConnected,
+  everConnected,
   extensionPath,
   working,
   openingInstaller,
@@ -276,6 +277,11 @@ export function ChromeSetupView({
   requestedByTask: boolean;
   runtimeReady: boolean;
   extensionConnected: boolean;
+  /** Has the extension EVER answered the handshake in this process (the
+   *  session-scoped latch). It is what separates "never set up" from "was
+   *  working and broke" — two states that look identical from
+   *  `extensionConnected` alone but call for opposite offers. */
+  everConnected: boolean;
   extensionPath: string | null | undefined;
   working: boolean;
   openingInstaller: boolean;
@@ -299,33 +305,41 @@ export function ChromeSetupView({
         opt-in, which is still the ONLY thing that starts the local runtime;
       - enabled but the local runtime is down → retry it;
       - running but no extension answering → open the install windows;
-      - connected → disconnect.
-    Disconnect appears in exactly one of those, because offering to disconnect
-    something that is not connected is the page telling the user it is
-    connected.
+      - connected, or connected once and now lost → disconnect.
+
+    Disconnect is gated on the HANDSHAKE LATCH, not on the live connection.
+    The complaint it answers is "I never installed anything — why am I being
+    offered a disconnect?", and that is the never-handshaked case. A channel
+    that worked and then broke is the opposite: disconnect is the only way to
+    turn the listener back off, and taking it away would strand the user on a
+    page whose every button asks them to fix something they may not want.
   */
+  const lostConnection = !extensionConnected && everConnected;
+  const canDisconnect = extensionConnected || everConnected;
   const needsRuntime = capabilityEnabled && !runtimeReady;
   const statusLabel = extensionConnected
     ? t.settings.capabilityStatusConnected
-    : needsRuntime
+    : lostConnection || needsRuntime
       ? t.settings.capabilityStatusSetupRequired
       : t.settings.capabilityStatusNotConnected;
   const statusTone: StatusBadgeTone = extensionConnected
     ? 'ready'
-    : needsRuntime
+    : lostConnection || needsRuntime
       ? 'attention'
       : 'neutral';
   const statusNote = extensionConnected
     // The one consent sentence this page keeps, in place of the footer
     // paragraph that said it at four times the length.
     ? t.settings.capabilityMyChromeScope
-    : requestedByTask && !capabilityEnabled
-      ? t.settings.capabilityChromeTaskNeedsSetup
-      : needsRuntime
-        ? t.settings.capabilityChromeServiceUnavailable
-        : t.settings.capabilityChromeExtensionDesc;
+    : lostConnection
+      ? t.settings.capabilityChromeDisconnected
+      : requestedByTask && !capabilityEnabled
+        ? t.settings.capabilityChromeTaskNeedsSetup
+        : needsRuntime
+          ? t.settings.capabilityChromeServiceUnavailable
+          : t.settings.capabilityChromeExtensionDesc;
 
-  const statusAction = extensionConnected ? (
+  const statusAction = canDisconnect ? (
     <button
       type="button"
       onClick={onDisconnect}
@@ -439,15 +453,33 @@ export function ChromeSetupView({
             not even enabled.
           */}
           {capabilityEnabled && (
-            <button
-              type="button"
-              onClick={onCheck}
-              disabled={working}
-              className={secondaryButtonClass}
-            >
-              <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
-              {t.settings.capabilityCheckConnection}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Step 1 names this button, so it cannot go missing just
+                  because the status row above is offering "disconnect" for a
+                  connection that broke. */}
+              {canDisconnect && (
+                <button
+                  type="button"
+                  onClick={onOpenInstaller}
+                  disabled={working || !extensionPath || openingInstaller}
+                  className={secondaryButtonClass}
+                >
+                  {openingInstaller
+                    ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                    : <FolderOpen className="h-3.5 w-3.5" />}
+                  {t.settings.capabilityChromeOpenInstaller}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onCheck}
+                disabled={working}
+                className={secondaryButtonClass}
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
+                {t.settings.capabilityCheckConnection}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -574,7 +606,11 @@ export function ComputerUseSetupView({
     <div className="space-y-7">
       <SetupHeader
         icon={MonitorCog}
-        title={t.settings.capabilityComputerSetupTitle}
+        // The capability's NAME, like the other two detail pages. The verb
+        // belongs on the status row's button, which is the thing that acts.
+        // `capabilityComputerSetupTitle` still titles the floating permission
+        // guide and the task-requested dialog, where "Enable ..." is right.
+        title={t.settings.computerUse}
         description={t.settings.capabilityComputerSubtitle}
         onBack={onBack}
         backLabel={requestedByTask ? t.common.cancel : undefined}

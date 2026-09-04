@@ -22,6 +22,8 @@ import type { Skill, SkillMetadata } from '@/types';
 import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import type { DraftRecord } from '@/core/skill/drafts';
 import SkillsSection from './SkillsSection';
 
 const tb = () => getI18n().toolbox;
@@ -39,6 +41,17 @@ const CATALOG: SkillMetadata[] = [
   meta('pdf-fill', 'builtin'),
 ];
 
+const draft = (skillName: string): DraftRecord => ({
+  id: skillName,
+  skillName,
+  skillDir: `/drafts/${skillName}`,
+  skillMdPath: `/drafts/${skillName}/SKILL.md`,
+  action: 'create',
+  triggerReason: 'a 6-step task succeeded',
+  createdAt: 1_700_000_000_000,
+  expiresAt: 1_700_600_000_000,
+});
+
 const full = (m: SkillMetadata): Skill => ({
   ...m,
   content: `# ${m.name}`,
@@ -50,6 +63,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   useDiscoveryStore.setState({ skills: CATALOG });
   useSkillDraftsStore.setState({ drafts: [] });
+  // Past the one-time onboarding card, so the drafts list itself renders.
+  useSettingsStore.setState({ soul: { proactivity: 'companion', draftsOnboardingShown: true } });
   vi.spyOn(skillLoader, 'getSkill').mockImplementation((name: string) => {
     const m = CATALOG.find((s) => s.name === name);
     return m ? full(m) : undefined;
@@ -80,6 +95,23 @@ describe('SkillsSection · sourceFilter="mine"', () => {
     });
     render(<SkillsSection sourceFilter="mine" />);
     expect(await screen.findByText(tb().skillsMineEmptyTitle)).toBeTruthy();
+  });
+
+  /**
+   * Drafts are the whole point of 阿布沉淀: skills Abu wrote and is waiting on a
+   * verdict for. A user who has written nothing themselves is exactly the user
+   * most likely to have unreviewed drafts, so an empty 我的 must not swallow
+   * them — `draft` is in MINE_SOURCES, and 市场 will never show them either.
+   */
+  it('shows pending drafts even when the user has authored nothing', async () => {
+    useDiscoveryStore.setState({
+      skills: [meta('weather-report', 'plugin'), meta('pdf-fill', 'builtin')],
+    });
+    useSkillDraftsStore.setState({ drafts: [draft('meeting-notes')] });
+    render(<SkillsSection sourceFilter="mine" />);
+    expect(await screen.findByText(tb().categoryAgentEvolved)).toBeTruthy();
+    expect(screen.getByText('meeting-notes')).toBeTruthy();
+    expect(screen.queryByText(tb().skillsMineEmptyTitle)).toBeNull();
   });
 
   it('opens the shared detail panel on a card', async () => {

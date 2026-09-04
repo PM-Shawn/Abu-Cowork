@@ -62,7 +62,7 @@ function openMenu(name: string): HTMLElement {
 beforeEach(() => {
   vi.clearAllMocks();
   useDiscoveryStore.setState({ skills: CATALOG });
-  useSettingsStore.setState({ activeExtensionsTab: 'skills' });
+  useSettingsStore.setState({ activeExtensionsTab: 'skills', disabledSkills: [] });
   vi.spyOn(skillLoader, 'getSkill').mockImplementation((name: string) => {
     const m = CATALOG.find((s) => s.name === name);
     return m ? full(m) : undefined;
@@ -134,6 +134,30 @@ describe('ExternalSkillsPanel', () => {
     const detail = screen.getByTestId('skill-detail');
     expect(within(detail).getByText('weather-report does things')).toBeTruthy();
     expect(screen.getByTestId('markdown').textContent).toContain('body of weather-report');
+  });
+
+  /**
+   * Silencing a skill is exactly what a user wants from a builtin or a
+   * plugin-shipped one — the skills they did not choose. The row therefore
+   * carries the same Toggle a 我的 card does, driven by the same
+   * `settingsStore.disabledSkills`, so a skill's enabled state means one thing
+   * no matter which half of the tab it is looked at from.
+   */
+  it('reflects the skill\'s enabled state in a toggle on the row', () => {
+    useSettingsStore.setState({ disabledSkills: ['weather-report'] });
+    render(<ExternalSkillsPanel searchQuery="" />);
+    expect(within(rowFor('pdf-fill')).getByRole('switch').getAttribute('aria-checked')).toBe('true');
+    expect(within(rowFor('weather-report')).getByRole('switch').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('toggles through the same settingsStore action 「我的」 uses', () => {
+    const toggleSkillEnabled = vi.spyOn(useSettingsStore.getState(), 'toggleSkillEnabled');
+    render(<ExternalSkillsPanel searchQuery="" />);
+    fireEvent.click(within(rowFor('pdf-fill')).getByRole('switch'));
+    expect(toggleSkillEnabled).toHaveBeenCalledWith('pdf-fill');
+    expect(useSettingsStore.getState().disabledSkills).toContain('pdf-fill');
+    fireEvent.click(within(rowFor('pdf-fill')).getByRole('switch'));
+    expect(useSettingsStore.getState().disabledSkills).not.toContain('pdf-fill');
   });
 
   it('narrows the list by the search query', () => {

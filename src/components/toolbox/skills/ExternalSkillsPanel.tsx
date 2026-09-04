@@ -19,6 +19,7 @@ import { FileText, Puzzle } from 'lucide-react';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Toggle } from '@/components/ui/toggle';
 import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -65,8 +66,16 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
   const tb = t.toolbox;
   const skills = useDiscoveryStore((s) => s.skills);
   const setActiveExtensionsTab = useSettingsStore((s) => s.setActiveExtensionsTab);
+  // Same switch, same store action as a 「我的」 card (customize/SkillsSection.tsx
+  // renderSkillCard) — a skill is enabled or not, and which half of the tab it
+  // is looked at from must not change that. Read-only here means "you cannot
+  // delete what a plugin owns", not "you cannot silence it".
+  const disabledSkills = useSettingsStore((s) => s.disabledSkills);
+  const toggleSkillEnabled = useSettingsStore((s) => s.toggleSkillEnabled);
   const launchTrial = useTrialLauncher();
   const [viewing, setViewing] = useState<Skill | null>(null);
+
+  const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
   const external = useMemo(
     () => skills.filter((s) => s.source !== undefined && EXTERNAL_SOURCES.has(s.source)).map(toSkill),
@@ -128,6 +137,12 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
                     </div>
                     <p className="truncate text-minor text-[var(--abu-text-tertiary)]">{skill.description}</p>
                   </div>
+                  <Toggle
+                    checked={!disabledSet.has(skill.name)}
+                    onChange={() => toggleSkillEnabled(skill.name)}
+                    size="sm"
+                    tone="green"
+                  />
                   <InstalledItemMenu
                     testId="skill-item-menu"
                     ariaLabel={format(tb.itemMenuLabel, { name: skill.name })}

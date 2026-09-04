@@ -259,7 +259,12 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {filteredSkills.length === 0 ? (
+        {/* Drafts are not skills on disk yet, so they are absent from
+            filteredSkills — but 阿布沉淀 is rendered from the grid branch below.
+            Falling into the empty state while drafts are pending would hide
+            them behind 「还没有你创建的技能」, and 「市场」 never shows drafts
+            (`draft` ∈ MINE_SOURCES), so nothing else would surface them. */}
+        {filteredSkills.length === 0 && draftsCount === 0 ? (
           sourceFilter === 'mine' && scopedSkills.length === 0 ? (
             <div className="py-16 text-center">
               <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.skillsMineEmptyTitle}</p>

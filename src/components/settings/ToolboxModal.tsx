@@ -10,7 +10,8 @@ import SkillsSection from '../customize/SkillsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
-import SourceSubNav, { type ExtensionSource } from '@/components/toolbox/SourceSubNav';
+import SourceSubNav from '@/components/toolbox/SourceSubNav';
+import { sourceTabId, type ExtensionSource } from '@/components/toolbox/extensionSource';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
 import ExternalSkillsPanel from '@/components/toolbox/skills/ExternalSkillsPanel';
 import ConnectorCatalog from '@/components/toolbox/connectors/ConnectorCatalog';
@@ -45,6 +46,8 @@ export default function ExtensionsView() {
     setActiveExtensionsTab,
     extensionsSearchQuery,
     setExtensionsSearchQuery,
+    pendingExtensionsSource,
+    clearPendingExtensionsSource,
   } = useSettingsStore();
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
@@ -58,17 +61,42 @@ export default function ExtensionsView() {
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   // Per-tab, so 插件 staying on 我的 does not drag 技能 there too. Deliberately
-  // not persisted: the view opens on what is on offer, every time.
-  const [sourceByTab, setSourceByTab] = useState<Record<ExtensionsTab, ExtensionSource>>({
-    plugins: 'market', skills: 'market', mcp: 'market',
+  // not persisted: the view opens on what is on offer, every time — unless a
+  // deep link says otherwise. A link that knows its target lives in 「我的」
+  // (SkillProposalCard jumping to a skill the user just accepted) names the
+  // source, and it is applied HERE, in the initializer, rather than in an
+  // effect: seeding it after the first paint would both flash the wrong panel
+  // and count as a source CHANGE, whose reset would wipe the query the same
+  // deep link just set.
+  const [sourceByTab, setSourceByTab] = useState<Record<ExtensionsTab, ExtensionSource>>(() => {
+    const initial: Record<ExtensionsTab, ExtensionSource> = {
+      plugins: 'market', skills: 'market', mcp: 'market',
+    };
+    if (pendingExtensionsSource) initial[activeTab] = pendingExtensionsSource;
+    return initial;
   });
   const source = sourceByTab[activeTab];
   const setSource = (tab: ExtensionsTab, next: ExtensionSource) =>
     setSourceByTab((prev) => ({ ...prev, [tab]: next }));
 
+  // Apply and SPEND the pending source. At mount the initializer has already
+  // applied it, so the updater returns `prev` untouched and only the store
+  // write happens; the branch still matters for a link that arrives while this
+  // view is open. Either way the value is one-shot — left armed it would
+  // hijack the next, unrelated open.
+  useEffect(() => {
+    if (!pendingExtensionsSource) return;
+    setSourceByTab((prev) => (
+      prev[activeTab] === pendingExtensionsSource
+        ? prev
+        : { ...prev, [activeTab]: pendingExtensionsSource }
+    ));
+    clearPendingExtensionsSource();
+  }, [pendingExtensionsSource, activeTab, clearPendingExtensionsSource]);
+
   // Reset manual-create trigger, clear search and spend the pending 「管理」
   // target when the tab or source CHANGES — not on first paint. A deep link
-  // (SkillProposalCard → openExtensions('skills') + setExtensionsSearchQuery(name))
+  // (SkillProposalCard → openExtensions('skills', 'mine') + setExtensionsSearchQuery(name))
   // sets the query right before this view mounts; clearing on mount would wipe it.
   const lastTabSource = useRef<{ tab: ExtensionsTab; source: ExtensionSource }>({ tab: activeTab, source });
   useEffect(() => {
@@ -244,8 +272,16 @@ export default function ExtensionsView() {
         </div>
       </div>
 
-      {/* Content */}
-      <div id={SOURCE_PANEL_ID} role="tabpanel" className="flex-1 overflow-hidden">
+      {/* Content — the one panel the sub-nav's two tabs switch between, so it
+          names the selected tab back (aria-labelledby) and takes focus itself
+          (tabIndex) the way a tabpanel must. */}
+      <div
+        id={SOURCE_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={sourceTabId(source)}
+        tabIndex={0}
+        className="flex-1 overflow-hidden"
+      >
         {renderContent()}
       </div>
     </div>

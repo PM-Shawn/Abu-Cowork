@@ -299,7 +299,9 @@ describe('SkillProposalCard · settled state', () => {
     expect(jump).toBeInTheDocument();
 
     await user.click(jump);
-    expect(mockOpenExtensions).toHaveBeenCalledWith('skills');
+    // 'mine', not the default 市场: an accepted proposal becomes a user/draft
+    // skill, which only the 我的 panel lists.
+    expect(mockOpenExtensions).toHaveBeenCalledWith('skills', 'mine');
     expect(mockSetExtensionsSearchQuery).toHaveBeenCalledWith('weekly-digest');
   });
 
@@ -348,7 +350,8 @@ describe('SkillProposalCard · first-use onboarding gate (Task #50)', () => {
     renderCard();
 
     await user.click(screen.getByRole('button', { name: /Open Extensions/ }));
-    expect(mockOpenExtensions).toHaveBeenCalledWith('skills');
+    // The proactivity picker the gate sends the user to lives in 我的 too.
+    expect(mockOpenExtensions).toHaveBeenCalledWith('skills', 'mine');
   });
 
   it('settled actions take priority over the onboarding gate', () => {

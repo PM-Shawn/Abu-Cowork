@@ -220,7 +220,11 @@ export default function SkillProposalCard({
     const isAccepted = settledAction === 'accepted';
     const handleJumpToExtensions = () => {
       const { openExtensions, setExtensionsSearchQuery } = useSettingsStore.getState();
-      openExtensions('skills');
+      // 「我的」, not the default 「市场」: accepting a proposal writes a
+      // user/draft skill, and the market panel lists builtin/plugin/enterprise
+      // skills only — landing there would filter a catalog that can never
+      // contain this name.
+      openExtensions('skills', 'mine');
       // openExtensions clears the search query first; set it after so the
       // view opens already narrowed to this skill.
       setExtensionsSearchQuery(proposal.skillName);
@@ -274,7 +278,9 @@ export default function SkillProposalCard({
   // but buttons are suppressed until preferences are set.
   if (!onboardingShown) {
     const handleOpenExtensions = () => {
-      useSettingsStore.getState().openExtensions('skills');
+      // 「我的」 for the same reason as the accepted pill above: the drafts and
+      // the proactivity picker this gate sends the user to live there.
+      useSettingsStore.getState().openExtensions('skills', 'mine');
     };
     return (
       <div className="my-2 rounded-xl border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden">

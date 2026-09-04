@@ -109,6 +109,7 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
       viewMode: 'chat',
       activeExtensionsTab: 'plugins',
       extensionsSearchQuery: '',
+      pendingExtensionsSource: null,
     });
     vi.clearAllMocks();
   });
@@ -209,7 +210,7 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
       expect(screen.getByTestId('plugins-panel')).toHaveAttribute('data-source', 'mine');
     });
 
-    it('names the panel the sub-nav controls', () => {
+    it('names the panel the sub-nav controls, and the panel names the active tab back', () => {
       render(<ExtensionsView />);
 
       const panelId = market().getAttribute('aria-controls');
@@ -217,6 +218,17 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
       const panel = document.getElementById(panelId as string);
       expect(panel).toHaveAttribute('role', 'tabpanel');
       expect(panel).toContainElement(screen.getByTestId('plugins-panel'));
+      // A tabpanel that nobody can reach by keyboard is a tabpanel in name only.
+      expect(panel).toHaveAttribute('tabindex', '0');
+
+      // The pair is a tablist over one panel only if the naming goes both ways:
+      // aria-controls points down, aria-labelledby points back at the SELECTED
+      // tab — and it follows the selection.
+      const labelledTab = () =>
+        document.getElementById(panel?.getAttribute('aria-labelledby') ?? '');
+      expect(labelledTab()).toBe(market());
+      fireEvent.click(mine());
+      expect(labelledTab()).toBe(mine());
     });
   });
 
@@ -248,19 +260,36 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
     });
   });
 
-  it('the skills deep link lands on the skills tab with the search query applied', () => {
-    // SkillProposalCard's jump: open on skills, then narrow to the skill name.
-    // Mounting the view must NOT wipe that query (it only resets on a real
-    // tab/source change, never on first paint).
+  it('the skills deep link lands on 技能 「我的」 with the search query applied', () => {
+    // SkillProposalCard's jump: open on skills' 我的 half, then narrow to the
+    // skill name. It must be 我的: accepting a proposal writes a user/draft
+    // skill, and the 市场 panel renders builtin/plugin/enterprise skills only —
+    // landing there would filter a catalog that structurally cannot contain it.
+    // Mounting the view must NOT wipe that query either (the reset only fires
+    // on a real tab/source change, never on first paint).
     const { openExtensions, setExtensionsSearchQuery } = useSettingsStore.getState();
-    openExtensions('skills');
+    openExtensions('skills', 'mine');
     setExtensionsSearchQuery('weekly-digest');
     render(<ExtensionsView />);
 
     expect(useSettingsStore.getState().viewMode).toBe('extensions');
-    expect(screen.getByTestId('skills-market')).toHaveTextContent('weekly-digest');
+    expect(mine()).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Personal skills')).toBeInTheDocument();
+    expect(screen.queryByTestId('skills-market')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
     expect(useSettingsStore.getState().extensionsSearchQuery).toBe('weekly-digest');
+    // Spent on arrival — a source that stayed armed would hijack the next open.
+    expect(useSettingsStore.getState().pendingExtensionsSource).toBeNull();
+  });
+
+  it('a deep link that names no source still lands on 市场', () => {
+    // The source is opt-in: only a link that knows where its target lives says
+    // so. Everything else keeps the default landing on what is on offer.
+    useSettingsStore.getState().openExtensions('skills');
+    render(<ExtensionsView />);
+
+    expect(market()).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('skills-market')).toBeInTheDocument();
   });
 
   it('switching tabs clears the search query', () => {

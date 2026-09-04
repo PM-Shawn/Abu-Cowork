@@ -1,4 +1,5 @@
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
@@ -207,6 +208,13 @@ export interface SettingsState {
   activeAutomationTab: AutomationTab;
   activeExtensionsTab: ExtensionsTab;
   extensionsSearchQuery: string;
+  /** Which half of the landing tab (市场 | 我的) a deep link is aiming at, when
+   *  it knows — `openExtensions('skills', 'mine')` for a jump to a skill the
+   *  user authored, which the 市场 panel structurally cannot list. The
+   *  Extensions view seeds that tab's source from it once and then clears it,
+   *  so it can never hijack a later open. Ephemeral, one-shot.
+   *  Do NOT add to partialize. */
+  pendingExtensionsSource: ExtensionSource | null;
   installingItem: string | null;
   viewMode: ViewMode;
   /** System settings render as an overlay dialog on top of the current view,
@@ -397,8 +405,12 @@ interface SettingsActions {
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
-  openExtensions: (tab?: ExtensionsTab) => void;
+  /** Open the Extensions view. `source` names the half of `tab` to land on —
+   *  omit it to land on 「市场」, the default for every tab. */
+  openExtensions: (tab?: ExtensionsTab, source?: ExtensionSource) => void;
   closeExtensions: () => void;
+  /** Spend the one-shot `pendingExtensionsSource` once the view has applied it. */
+  clearPendingExtensionsSource: () => void;
   setActiveExtensionsTab: (tab: ExtensionsTab) => void;
   setExtensionsSearchQuery: (query: string) => void;
   setInstallingItem: (itemId: string | null) => void;
@@ -638,6 +650,7 @@ export const useSettingsStore = create<SettingsStore>()(
       activeAutomationTab: 'schedule' as AutomationTab,
       activeExtensionsTab: 'plugins' as ExtensionsTab,
       extensionsSearchQuery: '',
+      pendingExtensionsSource: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
       systemSettingsOpen: false,
@@ -964,18 +977,23 @@ export const useSettingsStore = create<SettingsStore>()(
       closeAutomation: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
-      openExtensions: (tab) =>
+      openExtensions: (tab, source) =>
         set(() => ({
           viewMode: 'extensions' as ViewMode,
           activeExtensionsTab: tab ?? 'plugins',
           extensionsSearchQuery: '',
+          // Always written, so a source left over from an unconsumed open
+          // cannot leak into this one.
+          pendingExtensionsSource: source ?? null,
         })),
       closeExtensions: () =>
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
           extensionsSearchQuery: '',
+          pendingExtensionsSource: null,
         }),
+      clearPendingExtensionsSource: () => set({ pendingExtensionsSource: null }),
       setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab, extensionsSearchQuery: '' }),
       setExtensionsSearchQuery: (query) => set({ extensionsSearchQuery: query }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
@@ -1958,6 +1976,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.activeAutomationTab = 'schedule';
         state.activeExtensionsTab = 'plugins';
         state.extensionsSearchQuery = '';
+        state.pendingExtensionsSource = null;
         state.installingItem = null;
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;

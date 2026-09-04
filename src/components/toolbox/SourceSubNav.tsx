@@ -1,15 +1,15 @@
 import { cn } from '@/lib/utils';
+import { DEFAULT_SOURCE_ID_PREFIX, sourceTabId, type ExtensionSource } from './extensionSource';
 
-/** The two SOURCES an Extensions tab can show — a marketplace catalog, or the
- *  user's own installed/authored items. This is NOT an install-state filter. */
-export type ExtensionSource = 'market' | 'mine';
+export type { ExtensionSource };
 
 interface SourceSubNavProps {
   value: ExtensionSource;
   onChange: (value: ExtensionSource) => void;
   marketLabel: string;
   mineLabel: string;
-  /** Prefix for the per-tab `data-testid` (`{prefix}-market` / `{prefix}-mine`). */
+  /** Prefix for each tab's `data-testid` AND its `id`
+   *  (`{prefix}-market` / `{prefix}-mine` — see {@link sourceTabId}). */
   testIdPrefix?: string;
   /** `id` of the element rendering the selected source, named by `aria-controls`
    *  so the pair reads as tabs over one panel rather than two loose buttons. */
@@ -22,7 +22,7 @@ interface SourceSubNavProps {
  * `tablist` so the active source is announced, not just coloured.
  */
 export default function SourceSubNav({
-  value, onChange, marketLabel, mineLabel, testIdPrefix = 'extensions-source', panelId,
+  value, onChange, marketLabel, mineLabel, testIdPrefix = DEFAULT_SOURCE_ID_PREFIX, panelId,
 }: SourceSubNavProps) {
   const items: { id: ExtensionSource; label: string }[] = [
     { id: 'market', label: marketLabel },
@@ -41,9 +41,10 @@ export default function SourceSubNav({
             key={item.id}
             type="button"
             role="tab"
+            id={sourceTabId(item.id, testIdPrefix)}
             aria-selected={active}
             aria-controls={panelId}
-            data-testid={`${testIdPrefix}-${item.id}`}
+            data-testid={sourceTabId(item.id, testIdPrefix)}
             onClick={() => onChange(item.id)}
             className={cn(
               'rounded-full px-3 py-1 text-body transition-colors',

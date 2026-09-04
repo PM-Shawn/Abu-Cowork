@@ -117,6 +117,22 @@ describe('ConnectorCatalog · 精选连接器', () => {
     });
   });
 
+  /**
+   * A template carries install affordances a registry entry has no notion of —
+   * a labeled secret field with a hint, a configurable argument, a setup note.
+   * The prefill therefore names the template it came from, so 「我的」 can open
+   * that install flow instead of a bare form. A registry-sourced entry names
+   * none: it is host-resolved and has nothing extra to ask for.
+   */
+  it('names the template a template-sourced entry came from, and only that one', () => {
+    const onPrefillAdd = vi.fn();
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
+    fireEvent.click(within(rowFor('sentry')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('sentry');
+    fireEvent.click(within(rowFor('github')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[1][0].templateId).toBeUndefined();
+  });
+
   it('searches a template-only connector by its localized description', () => {
     render(<ConnectorCatalog searchQuery="Chrome DevTools" onPrefillAdd={noop} onManage={noop} />);
     expect(rowFor('chrome-devtools')).toBeTruthy();

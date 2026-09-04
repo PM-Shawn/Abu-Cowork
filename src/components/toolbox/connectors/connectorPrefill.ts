@@ -35,6 +35,16 @@ export interface ConnectorPrefill {
   transport?: 'stdio' | 'http';
   url?: string;
   description?: string;
+  /**
+   * The marketplace template this entry came from, when it came from one. A
+   * template carries install affordances the plain add-server form has nowhere
+   * to put — a labeled secret field with a hint, a configurable argument with a
+   * placeholder, a setup note, a longer default timeout — so 「我的」 opens that
+   * template's own install flow instead of the bare form. Absent on a
+   * registry-sourced entry (including a name both catalogs carry, which the
+   * registry wins): there is nothing extra to ask for.
+   */
+  templateId?: string;
 }
 
 /** A prefill plus the extra terms the catalog's search box matches on. */
@@ -74,6 +84,7 @@ function fromTemplate(template: MCPTemplate, locale: string): ConnectorCatalogIt
     transport: isHttp ? 'http' : 'stdio',
     url: isHttp ? template.url : undefined,
     description: locale.startsWith('zh') ? template.description : (template.descriptionEn ?? template.description),
+    templateId: template.id,
     keywords: [],
   };
 }

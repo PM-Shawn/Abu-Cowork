@@ -273,3 +273,99 @@ describe('MCPSection · prefill does not hijack the form', () => {
     expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('');
   });
 });
+
+/**
+ * 「市场」 unions two catalogs, and one of them — the marketplace templates —
+ * carries install affordances the other has no notion of: a labeled secret
+ * field with a hint, a configurable argument with a placeholder, a setup note,
+ * a longer default timeout. Handing such an entry to the plain add-server form
+ * throws all of that away: the user gets the raw arg and an env JSON blob with
+ * nothing explaining either. A prefill that names its template opens the
+ * template's own install flow instead — the same one 「安装」 has always used.
+ */
+describe('MCPSection · prefill from a template', () => {
+  const sqlite: ConnectorPrefill = {
+    name: 'sqlite',
+    command: 'npx',
+    args: ['-y', '@anthropic/mcp-server-sqlite', '/path/to/database.db'],
+    env: {},
+    transport: 'stdio',
+    templateId: 'sqlite',
+  };
+
+  /** A host that owns `showAddForm` and withdraws the offer on close, as Task 7 will. */
+  function Host({ initial }: { initial: ConnectorPrefill | null }) {
+    const [open, setOpen] = useState(true);
+    const [offer, setOffer] = useState<ConnectorPrefill | null>(initial);
+    return (
+      <>
+        <button data-testid="offer-slack" onClick={() => setOffer({
+          name: 'slack', command: 'npx', args: ['-y', 'slack-mcp'], env: {}, transport: 'stdio',
+        })}>slack</button>
+        <MCPSection
+          sourceFilter="mine"
+          showAddForm={open}
+          onAddFormChange={(o) => { setOpen(o); if (!o) setOffer(null); }}
+          prefill={offer}
+        />
+      </>
+    );
+  }
+
+  it('opens the template install UI, not the plain form', async () => {
+    render(<Host initial={sqlite} />);
+    // Only the template path renders a configurable argument's placeholder.
+    await waitFor(() => expect(screen.getByPlaceholderText('/path/to/your/database.db')).toBeTruthy());
+    expect(screen.getByText(tb().serverArgs)).toBeTruthy();
+    expect(screen.queryByPlaceholderText(tb().serverName)).toBeNull();
+  });
+
+  it('installs through the template path, carrying the value the user typed', async () => {
+    const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
+    vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+    render(<Host initial={sqlite} />);
+
+    const arg = await screen.findByPlaceholderText('/path/to/your/database.db');
+    fireEvent.change(arg, { target: { value: '/tmp/mine.db' } });
+    fireEvent.click(screen.getByText(tb().install));
+
+    await waitFor(() => expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'sqlite',
+      command: 'npx',
+      args: ['-y', '@anthropic/mcp-server-sqlite', '/tmp/mine.db'],
+    })));
+  });
+
+  it('keeps a template secret’s label and placeholder, which the form has nowhere to put', async () => {
+    render(<Host initial={{ name: 'sentry', command: 'npx', args: [], env: { SENTRY_AUTH_TOKEN: '' }, transport: 'stdio', templateId: 'sentry' }} />);
+    await waitFor(() => expect(screen.getByText('Sentry Auth Token')).toBeTruthy());
+    expect(screen.getByPlaceholderText('sntrys_...')).toBeTruthy();
+  });
+
+  it('keeps the plain form for a registry-sourced prefill, which names no template', async () => {
+    render(<Host initial={{ name: 'github', command: 'npx', args: ['-y', 'server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' }, transport: 'stdio' }} />);
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('github');
+    });
+  });
+
+  /** A template id nothing resolves (a host filtered it out) must still add the connector. */
+  it('falls back to the plain form when the named template is not available here', async () => {
+    render(<Host initial={{ ...sqlite, templateId: 'no-such-template' }} />);
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('sqlite');
+    });
+  });
+
+  /** A spent offer blocks only its own name — the next connector still applies. */
+  it('applies a different connector offered while the form is still open', async () => {
+    render(<Host initial={{ name: 'github', command: 'npx', args: [], env: {}, transport: 'stdio' }} />);
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('github');
+    });
+    fireEvent.click(screen.getByTestId('offer-slack'));
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('slack');
+    });
+  });
+});

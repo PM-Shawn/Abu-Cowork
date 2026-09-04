@@ -454,6 +454,24 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     if (!showAddForm || editingServerName) return;
     if (consumedPrefillRef.current === entry.name) return;
     consumedPrefillRef.current = entry.name;
+    // A template-sourced connector goes through the template's own install
+    // flow — the one 「安装」 has always used — because the plain form has
+    // nowhere to put what a template knows: a labeled secret field with a hint,
+    // a configurable argument with a placeholder, a setup note, a longer
+    // default timeout. Prefilling the raw arg and an env JSON blob would strip
+    // every one of those and leave the user guessing what to type where.
+    // A template the host filtered out resolves to nothing; the plain form is
+    // then still better than no way to add the connector at all.
+    const template = entry.templateId
+      ? availableTemplates.find((tmpl) => tmpl.id === entry.templateId)
+      : undefined;
+    if (template) {
+      setTemplateArgs({});
+      setSelected({ kind: 'template', id: template.id });
+      // The add form was opened for a connector that does not use it.
+      setShowAddForm(false);
+      return;
+    }
     const env: Record<string, string> = {};
     for (const key of Object.keys(entry.env)) env[key] = '';
     // The catalog unions two sources and one of them can be an HTTP endpoint;
@@ -478,7 +496,8 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Keyed on the entry's identity (its name) via the ref, not the object
   // reference: a host that rebuilds the entry object each render would otherwise
   // wipe a form the user has already started editing.
-  }, [prefill?.name, showAddForm, editingServerName]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- setShowAddForm is recreated each render (it wraps the onAddFormChange prop); availableTemplates is a mount-time memo
+  }, [prefill?.name, showAddForm, editingServerName, availableTemplates]);
 
   // 「市场」's 「管理」 lands here — the per-server editor lives in this section, so
   // the host only has to name the server. A server that is not configured is

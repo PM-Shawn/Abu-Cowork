@@ -62,6 +62,34 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
 }
 
 /**
+ * Child env for the Electron launch. Starts from process.env, then strips
+ * every `*_proxy` / `*_PROXY` variable and pins NO_PROXY to loopback, keeping
+ * the launch hermetic against the developer shell's proxy state: the suite
+ * only ever talks to per-test localhost mock servers, so no spec legitimately
+ * needs a proxy, while a shell `http_proxy` (e.g. a local Clash on
+ * 127.0.0.1:7897) was observed on 2026-08-30 to stall the sidecar's loopback
+ * SSE stream until the 90s test timeout. Stripping (rather than only setting
+ * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
+ * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
+ */
+function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/_proxy$/i.test(key)) delete env[key];
+  }
+  env.NO_PROXY = '127.0.0.1,localhost';
+  env.no_proxy = '127.0.0.1,localhost';
+  env[E2E_APP_DATA_ROOT_ENV] = dataRoot.appDataDir;
+  env[E2E_SIDECAR_CRASH_TOKEN_ENV] = dataRoot.sidecarCrashToken;
+  // Native modal dialogs cannot be driven by Playwright. On hosts where
+  // the OS grants Computer Use permissions (hosted CI runners), the CU
+  // approval prompts would block a headless run forever — this makes them
+  // auto-DECLINE (fail-closed; see tauriHost.cjs).
+  env.ABU_E2E_DECLINE_CU_APPROVALS = '1';
+  return env;
+}
+
+/**
  * Launch electron/main.cjs with fully isolated Chromium userData and appData.
  *
  * `--lang=zh-CN` pins the renderer's `navigator.language` (and therefore the
@@ -89,16 +117,7 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   const app = await electron.launch({
     args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
-      [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
-      // Native modal dialogs cannot be driven by Playwright. On hosts where
-      // the OS grants Computer Use permissions (hosted CI runners), the CU
-      // approval prompts would block a headless run forever — this makes them
-      // auto-DECLINE (fail-closed; see tauriHost.cjs).
-      ABU_E2E_DECLINE_CU_APPROVALS: '1',
-    },
+    env: buildLaunchEnv(dataRoot),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the

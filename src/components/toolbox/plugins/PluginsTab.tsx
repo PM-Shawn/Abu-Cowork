@@ -10,39 +10,38 @@
  * session would have its MCP tools run unapproved until the next install.
  * Opening this tab is the earliest guaranteed point for that today — a startup
  * hydrate belongs with the skill loader's bootstrap and is tracked separately.
+ *
+ * What it deliberately does NOT own any more is navigation. 市场 | 我的 is a
+ * choice shared by every Extensions tab, so the sub-nav lives above this
+ * component and arrives as `source`; the old 已安装 / 插件市场 sub-tabs are
+ * gone, and installed plugins are shown in place inside 市场 instead.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
-import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
-import { useI18n } from '@/i18n';
-import SubTabBar from '@/components/customize/SubTabBar';
 import { usePluginStore } from '@/stores/pluginStore';
+import type { ExtensionSource } from '@/components/toolbox/SourceSubNav';
 import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
 
-type PluginSubTab = 'installed' | 'marketplace';
-
 interface PluginsTabProps {
   /** Shared toolbox header search box. */
   searchQuery: string;
+  /**
+   * Which source to show. Optional (defaulting to 市场) because the sub-nav
+   * that supplies it is wired in a separate change — until then the tab must
+   * still render its main surface rather than a blank panel.
+   */
+  source?: ExtensionSource;
 }
 
-export default function PluginsTab({ searchQuery }: PluginsTabProps) {
-  const { t } = useI18n();
-  const tb = t.toolbox;
+export default function PluginsTab({ searchQuery, source = 'market' }: PluginsTabProps) {
   const [home, setHome] = useState<string | null>(null);
-  const [subTab, setSubTab] = useState<PluginSubTab>('installed');
   const [addOpen, setAddOpen] = useState(false);
-  const installed = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
-  // Organization (enterprise-market) installs are shown in their own surface
-  // (private module), so the installed-tab count should read as "how many of
-  // MY installs" rather than being inflated by an org-managed catalog.
-  const personalInstalledCount = useMemo(() => partitionInstalled(installed).personal.length, [installed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +55,8 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
       .catch((err) => console.error('Plugins tab: failed to resolve home', err));
     // Preload the built-in Abu market so a fresh install already has a market
     // to browse. Best-effort: a missing bundle degrades to no built-in market.
+    // It is also what tells the market panel that the marketplace list has
+    // hydrated, so orphaned installs are only claimed once it lands.
     resolveBuiltinMarketDir()
       .then((marketDir) => {
         if (cancelled || !marketDir) return;
@@ -69,26 +70,9 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 px-8 pt-2">
-        <div className="inline-block">
-          <SubTabBar
-            tabs={[
-              { id: 'installed', label: tb.pluginsInstalledTab, count: personalInstalledCount },
-              { id: 'marketplace', label: tb.pluginsMarketplaceTab },
-            ]}
-            activeTab={subTab}
-            onChange={(id) => setSubTab(id as PluginSubTab)}
-          />
-        </div>
-      </div>
-
       <div className="min-h-0 flex-1">
-        {home === null ? null : subTab === 'installed' ? (
-          <InstalledPluginList
-            home={home}
-            searchQuery={searchQuery}
-            onBrowseMarketplace={() => setSubTab('marketplace')}
-          />
+        {home === null ? null : source === 'mine' ? (
+          <InstalledPluginList home={home} mode="authored" searchQuery={searchQuery} />
         ) : (
           <MarketplaceBrowser
             home={home}
@@ -99,12 +83,7 @@ export default function PluginsTab({ searchQuery }: PluginsTabProps) {
       </div>
 
       {home !== null && (
-        <AddMarketplaceDialog
-          open={addOpen}
-          home={home}
-          onClose={() => setAddOpen(false)}
-          onAdded={() => setSubTab('marketplace')}
-        />
+        <AddMarketplaceDialog open={addOpen} home={home} onClose={() => setAddOpen(false)} />
       )}
     </div>
   );

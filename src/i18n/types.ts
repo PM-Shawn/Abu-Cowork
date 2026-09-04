@@ -1444,6 +1444,13 @@ export interface TranslationDict {
     pluginsServerCount: string;
     pluginsFromMarketplace: string;
     pluginsGoToMarketplace: string;
+    /** 「我的」 empty state — the user has authored no plugins yet. */
+    pluginsMineEmptyTitle: string;
+    pluginsMineEmptyHint: string;
+    /** Heading of the group for installs whose marketplace is gone. */
+    pluginsOrphanGroup: string;
+    /** Title of the installed-plugin detail dialog opened from 「管理」. */
+    pluginsManageTitle: string;
     /** Install disclosure — the screen that shows what executable code is coming in. */
     pluginsDisclosureTitle: string;
     pluginsDisclosureSubtitle: string;

@@ -18,6 +18,12 @@
  * user still reads the real contents before confirming. `UnsupportedSourceError`
  * remains only as the graceful degradation when no fetcher is wired (headless
  * surfaces) — it renders as an explanatory notice, not a toast-shaped failure.
+ *
+ * 3. **Installed entries stay in the list**, showing their actions behind a
+ *    `···` menu instead of moving to a separate 已安装 tab. Installs whose
+ *    marketplace is gone have no row to sit in, so they get their own group
+ *    below the list — otherwise removing a market would make its plugins
+ *    invisible while they were still loaded and running.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -27,8 +33,12 @@ import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import InstalledItemMenu from '@/components/toolbox/InstalledItemMenu';
+import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import { orphanedInstalls } from '@/core/plugin/authored';
+import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
@@ -41,6 +51,8 @@ import {
 } from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from './loadMarketplace';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
+import InstalledPluginDetail from './InstalledPluginDetail';
+import UninstallPluginDialog from './UninstallPluginDialog';
 
 const ALL_CATEGORIES = '__all__';
 
@@ -113,6 +125,9 @@ export default function MarketplaceBrowser({
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+  const [managing, setManaging] = useState<InstalledPlugin | null>(null);
+  const [uninstallTarget, setUninstallTarget] = useState<InstalledPlugin | null>(null);
+  const launchTrial = useTrialLauncher();
 
   /**
    * Bumped on every new plan request and on every close. A `planInstall` that
@@ -222,14 +237,18 @@ export default function MarketplaceBrowser({
     setUpdateAvailableKeys(updateAvailableKeysFor(marketplace.plugins, installedByName, selected.name), 'personal');
   }, [marketplace, marketplaceForName, selected, installedByName, setUpdateAvailableKeys]);
 
-  const installedNames = useMemo(() => {
-    if (!marketplace) return new Set<string>();
-    return new Set(
-      installed
-        .filter((p) => p.marketplace === marketplace.name)
-        .map((p) => resolveRename(p.name, marketplace.renames)),
-    );
-  }, [installed, marketplace]);
+  /**
+   * Installs whose marketplace is no longer in the user's list. Only asked
+   * once the built-in market is present: `orphanedInstalls` cannot tell "no
+   * markets" from "markets have not hydrated yet", and the built-in entry is
+   * re-injected right after hydration (it is stripped by the store's
+   * `partialize`), so its arrival is the signal that the list is real.
+   */
+  const marketsHydrated = useMemo(() => marketplaces.some((m) => m.builtin), [marketplaces]);
+  const orphans = useMemo(
+    () => (marketsHydrated ? orphanedInstalls(installed, marketplaces) : []),
+    [marketsHydrated, installed, marketplaces],
+  );
 
   const categoryOptions = useMemo(() => {
     const names = new Set<string>();
@@ -351,8 +370,11 @@ export default function MarketplaceBrowser({
   // margin would collapse through the item wrapper and escape that measurement
   // (same rule ChatView's message rows follow).
   const renderEntry = (entry: MarketplaceEntry) => {
-    const isInstalled = installedNames.has(entry.name);
-    const updateStatus = entryUpdateStatus(entry, installedByName.get(entry.name));
+    // "Installed" is read from the record map, not a separate name set: the
+    // row's menu acts on that exact record, so a row that claims to be
+    // installed without one would offer 管理/卸载 that quietly do nothing.
+    const installedRecord = installedByName.get(entry.name);
+    const updateStatus = entryUpdateStatus(entry, installedRecord);
     const hasUpdate = updateStatus === 'update-available';
     return (
       <div className="pb-1.5">
@@ -394,18 +416,49 @@ export default function MarketplaceBrowser({
               </p>
             )}
           </div>
-          <Button
-            size="sm"
-            variant={hasUpdate ? 'default' : isInstalled ? 'outline' : 'default'}
-            disabled={isInstalled && !hasUpdate}
-            data-testid={hasUpdate ? 'plugin-update-button' : undefined}
-            onClick={() => void handlePlan(entry)}
-            aria-label={`${
-              hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall
-            }: ${entry.name}`}
-          >
-            {hasUpdate ? tb.pluginsUpdate : isInstalled ? tb.pluginsAlreadyInstalled : tb.pluginsInstall}
-          </Button>
+          {installedRecord ? (
+            <div className="flex shrink-0 items-center gap-1">
+              {/* Update stays a plain button rather than a menu item: it is the
+                  one action a user comes to an installed row *for*, and it is
+                  only offered when there is genuinely a newer version. */}
+              {hasUpdate && (
+                <Button
+                  size="sm"
+                  data-testid="plugin-update-button"
+                  onClick={() => void handlePlan(entry)}
+                  aria-label={`${tb.pluginsUpdate}: ${entry.name}`}
+                >
+                  {tb.pluginsUpdate}
+                </Button>
+              )}
+              <InstalledItemMenu
+                testId="plugin-item-menu"
+                ariaLabel={format(tb.itemMenuLabel, { name: entry.name })}
+                actions={[
+                  {
+                    id: 'trial',
+                    label: tb.menuTrial,
+                    onSelect: () => launchTrial({ name: entry.name, description: entry.description }),
+                  },
+                  { id: 'manage', label: tb.menuManage, onSelect: () => setManaging(installedRecord) },
+                  {
+                    id: 'uninstall',
+                    label: tb.menuUninstall,
+                    destructive: true,
+                    onSelect: () => setUninstallTarget(installedRecord),
+                  },
+                ]}
+              />
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => void handlePlan(entry)}
+              aria-label={`${tb.pluginsInstall}: ${entry.name}`}
+            >
+              {tb.pluginsInstall}
+            </Button>
+          )}
         </div>
       </div>
     );
@@ -526,6 +579,62 @@ export default function MarketplaceBrowser({
           )}
         </div>
       )}
+
+      {orphans.length > 0 && (
+        <section
+          data-testid="plugin-orphan-group"
+          className="shrink-0 border-t border-[var(--abu-border)] px-8 py-3"
+        >
+          <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
+          <ul className="mt-2 space-y-1.5">
+            {orphans.map((plugin) => (
+              <li
+                key={plugin.key}
+                data-testid="plugin-orphan-row"
+                className="flex items-center gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
+                    {plugin.name}
+                  </span>
+                  <p className="mt-0.5 truncate text-minor text-[var(--abu-text-tertiary)]">
+                    {format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+                  </p>
+                </div>
+                {/* Removal is the only honest action left: there is nowhere to
+                    update from, and nothing to re-read the listing out of. */}
+                <InstalledItemMenu
+                  testId="plugin-orphan-menu"
+                  ariaLabel={format(tb.itemMenuLabel, { name: plugin.name })}
+                  actions={[
+                    {
+                      id: 'uninstall',
+                      label: tb.menuUninstall,
+                      destructive: true,
+                      onSelect: () => setUninstallTarget(plugin),
+                    },
+                  ]}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <InstalledPluginDetail
+        plugin={managing}
+        onClose={() => setManaging(null)}
+        onUninstall={(plugin) => {
+          setManaging(null);
+          setUninstallTarget(plugin);
+        }}
+      />
+
+      <UninstallPluginDialog
+        home={home}
+        target={uninstallTarget}
+        onClose={() => setUninstallTarget(null)}
+      />
 
       <InstallDisclosureDialog
         open={flow.kind !== 'closed'}

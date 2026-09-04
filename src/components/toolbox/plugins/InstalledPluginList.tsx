@@ -1,5 +1,10 @@
 /**
- * The installed-plugins list.
+ * The installed-plugins list — 「我的」 when `mode="authored"`.
+ *
+ * 「我的」 means *authored by the user*, not merely "installed": a plugin
+ * fetched from someone else's repo is somebody else's work and belongs in 市场
+ * (shown in place there), never under a heading that reads as the user's own.
+ * `isSelfAuthoredPlugin` is the single definition of that; see `authored.ts`.
  *
  * Counts come from the install record's `contributed` list — the same list the
  * uninstaller withdraws from — rather than from rescanning the package
@@ -7,78 +12,82 @@
  * what removal actually takes back out, even if the package grew files after
  * the user approved its disclosure.
  *
- * Uninstall is destructive (it deletes the package directory and withdraws its
- * skills and MCP servers), so it goes through `ConfirmDialog` and the
- * confirmation names what disappears, not just the plugin.
+ * Uninstall is destructive, so it goes through the shared
+ * {@link UninstallPluginDialog}, which owns the confirmation and the store call.
  */
 
 import { useMemo, useState } from 'react';
 import { Package, Trash2 } from 'lucide-react';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
-import ConfirmDialog from '@/components/common/ConfirmDialog';
-import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
+import { isSelfAuthoredPlugin } from '@/core/plugin/authored';
+import { InstalledPluginSummary } from './InstalledPluginDetail';
+import UninstallPluginDialog from './UninstallPluginDialog';
 
 interface InstalledPluginListProps {
   home: string;
   searchQuery: string;
-  onBrowseMarketplace: () => void;
+  /**
+   * `'authored'` narrows the list to plugins the user wrote themselves (the
+   * 「我的」 panel). `'all'` keeps the whole personal set — no surface ships it
+   * today, but it is the difference this component's own tests pin, so the
+   * authored filter cannot silently become the only behaviour there is.
+   */
+  mode?: 'authored' | 'all';
+  /** Only offered in `'all'` mode — 「我的」 explains authoring instead. */
+  onBrowseMarketplace?: () => void;
 }
 
 export default function InstalledPluginList({
   home,
   searchQuery,
+  mode = 'all',
   onBrowseMarketplace,
 }: InstalledPluginListProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
   const installed = usePluginStore((s) => s.installed);
-  const uninstall = usePluginStore((s) => s.uninstall);
-  const addToast = useToastStore((s) => s.addToast);
   const [pendingRemoval, setPendingRemoval] = useState<InstalledPlugin | null>(null);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
 
   // The personal view never lists organization-installed plugins — those
   // are managed (and uninstalled) from the 组织 view only, same as skills.
   // Both the list and the empty state key off this partition, so a user whose
   // installs are all organization-scoped sees the empty state, not "no matches".
-  const { personal } = useMemo(() => partitionInstalled(installed), [installed]);
+  const scoped = useMemo(() => {
+    const { personal } = partitionInstalled(installed);
+    return mode === 'authored' ? personal.filter(isSelfAuthoredPlugin) : personal;
+  }, [installed, mode]);
 
   const visible = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return personal;
-    return personal.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
-  }, [personal, searchQuery]);
+    if (!query) return scoped;
+    return scoped.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
+  }, [scoped, searchQuery]);
 
-  const handleConfirmUninstall = async () => {
-    const target = pendingRemoval;
-    if (!target) return;
-    setPendingRemoval(null);
-    setBusyKey(target.key);
-    try {
-      await uninstall(home, target.key);
-    } catch (err) {
-      addToast({
-        type: 'error',
-        title: tb.pluginsUninstallFailed,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  if (personal.length === 0) {
+  if (scoped.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-        <p className="text-body text-[var(--abu-text-tertiary)]">{tb.pluginsEmptyState}</p>
-        <Button variant="outline" onClick={onBrowseMarketplace}>
-          {tb.pluginsGoToMarketplace}
-        </Button>
+        {mode === 'authored' ? (
+          <>
+            <p className="text-h-sm text-[var(--abu-text-primary)]">{tb.pluginsMineEmptyTitle}</p>
+            <p className="max-w-md text-body text-[var(--abu-text-tertiary)]">
+              {tb.pluginsMineEmptyHint}
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-body text-[var(--abu-text-tertiary)]">{tb.pluginsEmptyState}</p>
+            {onBrowseMarketplace && (
+              <Button variant="outline" onClick={onBrowseMarketplace}>
+                {tb.pluginsGoToMarketplace}
+              </Button>
+            )}
+          </>
+        )}
       </div>
     );
   }
@@ -94,7 +103,7 @@ export default function InstalledPluginList({
           {visible.map((plugin) => (
             <li
               key={plugin.key}
-              data-testid="installed-plugin-row"
+              data-testid="plugin-mine-row"
               className="flex items-center gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
             >
               <div className="min-w-0 flex-1">
@@ -106,18 +115,11 @@ export default function InstalledPluginList({
                     v{plugin.version}
                   </span>
                 </div>
-                <p className="mt-0.5 truncate text-minor text-[var(--abu-text-tertiary)]">
-                  {format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                  {' · '}
-                  {format(tb.pluginsSkillCount, { count: plugin.contributed.skills.length })}
-                  {' · '}
-                  {format(tb.pluginsServerCount, { count: plugin.contributed.mcpServers.length })}
-                </p>
+                <InstalledPluginSummary plugin={plugin} />
               </div>
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={busyKey === plugin.key}
                 aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
                 onClick={() => setPendingRemoval(plugin)}
               >
@@ -129,19 +131,10 @@ export default function InstalledPluginList({
         </ul>
       )}
 
-      <ConfirmDialog
-        open={pendingRemoval !== null}
-        title={tb.pluginsUninstallTitle}
-        message={format(tb.pluginsUninstallMessage, {
-          name: pendingRemoval?.name ?? '',
-          skills: pendingRemoval?.contributed.skills.length ?? 0,
-          servers: pendingRemoval?.contributed.mcpServers.length ?? 0,
-        })}
-        confirmText={tb.pluginsUninstall}
-        cancelText={t.common.cancel}
-        variant="danger"
-        onConfirm={() => void handleConfirmUninstall()}
-        onCancel={() => setPendingRemoval(null)}
+      <UninstallPluginDialog
+        home={home}
+        target={pendingRemoval}
+        onClose={() => setPendingRemoval(null)}
       />
     </div>
   );

@@ -42,12 +42,10 @@ const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
 const EXTENSIONS = /^(扩展|Extensions)$/;
 const PLUGINS_TAB = /^(插件|Plugins)$/;
-const MARKETPLACE_TAB = /^(插件市场|Marketplace)$/;
-const INSTALLED_TAB = /^(已安装|Installed)$/;
 const INSTALL = /^(安装|Install)$/;
 const UNINSTALL = /^(卸载|Uninstall)$/;
-const UNINSTALL_ROW = /^(卸载|Uninstall)[:：]/;
 const UNINSTALL_TITLE = /^(卸载插件|Uninstall plugin)$/;
+const MINE_EMPTY = /还没有你自己开发的插件|No plugins of your own yet/;
 
 
 /** A self-contained marketplace + plugin written to a temp dir for this run. */
@@ -102,9 +100,8 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
 async function openPluginsTab(page: Page): Promise<void> {
   // Extensions is reachable straight from the sidebar. It reopens on whatever
   // tab was last active, so select the Plugins tab explicitly rather than
-  // assuming; "插件市场" is a sub-tab *inside* it. Scope the sidebar entry to
-  // the navigation region and the tab to the panel so neither can match the
-  // other by accident.
+  // assuming. Scope the sidebar entry to the navigation region and the tab to
+  // the panel so neither can match the other by accident.
   await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
   // The plugin page carries no separate title heading — it matches the original
   // toolbox layout, where the tabs are the header. Wait on the panel's own
@@ -114,7 +111,9 @@ async function openPluginsTab(page: Page): Promise<void> {
     timeout: READY_TIMEOUT,
   });
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
-  await expect(panel.getByText(MARKETPLACE_TAB).first()).toBeVisible({ timeout: READY_TIMEOUT });
+  // 市场 | 我的 replaced the old 已安装 / 插件市场 sub-tabs: installed plugins
+  // are now shown in place inside 市场, and 我的 lists only what the user wrote.
+  await page.getByTestId('extensions-source-market').click();
 }
 
 test.describe('plugin install loop', () => {
@@ -141,10 +140,6 @@ test.describe('plugin install loop', () => {
 
   test('installs from a local marketplace, keeps the manifest, and uninstalls', async () => {
     await openPluginsTab(page);
-
-    // The Plugins tab opens on "已安装"; the add-marketplace affordance lives
-    // in the Marketplace sub-tab.
-    await page.getByRole('main').getByRole('button', { name: MARKETPLACE_TAB }).first().click();
 
     // --- add the marketplace -------------------------------------------------
     // Opener testid differs by state: the empty-state CTA when no market exists,
@@ -191,24 +186,31 @@ test.describe('plugin install loop', () => {
       })
       .toBe(true);
 
-    await page.getByText(INSTALLED_TAB).first().click();
-    const row = page.getByTestId('installed-plugin-row').first();
-    await expect(row).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(row).toContainText('e2e-weather');
+    // The installed plugin stays on its market row — no separate 已安装 tab —
+    // and swaps its install button for the `···` menu.
+    await expect(entry.getByTestId('plugin-item-menu')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(entry.getByText(INSTALL)).toHaveCount(0);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-installed.png') });
 
     // --- uninstall removes the package from disk ----------------------------
-    // The row's button carries an aria-label that names the plugin
-    // ("卸载: e2e-weather"), so match on the prefix rather than exactly.
-    // The dialog's confirm button reuses the bare "卸载" label instead of a
-    // generic "确定", so scope that one to the dialog.
-    await row.getByRole('button', { name: UNINSTALL_ROW }).first().click();
+    await entry.getByTestId('plugin-item-menu').click();
+    await page.getByTestId('plugin-item-menu-uninstall').click();
     // ConfirmDialog renders a portal without role="dialog", so anchor on its
-    // title. Its confirm button's accessible name is the bare label, while the
-    // row's is "卸载: <name>" — an exact match therefore hits only the dialog.
+    // title. The menu is closed by now, and its items claim role="menuitem"
+    // rather than button, so this exact-name button match hits only the dialog.
     await expect(page.getByText(UNINSTALL_TITLE)).toBeVisible({ timeout: READY_TIMEOUT });
     await page.getByRole('button', { name: UNINSTALL }).click();
 
     await expect.poll(() => fs.existsSync(pkgDir), { timeout: READY_TIMEOUT }).toBe(false);
+
+    // The row returns to offering an install rather than disappearing.
+    await expect(entry.getByText(INSTALL).first()).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(entry.getByTestId('plugin-item-menu')).toHaveCount(0);
+
+    // --- 我的 lists authored plugins only -----------------------------------
+    // Nothing is installed at all now, so 我的 shows its own empty state — not
+    // "no matches", and not a marketplace pitch.
+    await page.getByTestId('extensions-source-mine').click();
+    await expect(page.getByText(MINE_EMPTY)).toBeVisible({ timeout: READY_TIMEOUT });
   });
 });

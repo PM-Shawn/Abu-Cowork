@@ -28,6 +28,7 @@ vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn().mockResolvedValue([]),
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
 vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 // happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
@@ -68,6 +69,8 @@ import {
   type InstallDisclosure,
 } from '@/core/plugin/installer';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
+import { uninstallPlugin } from '@/core/plugin/uninstaller';
+import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { format, getI18n } from '@/i18n';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -106,6 +109,18 @@ const disclosure: InstallDisclosure = {
   ignoredPayloads: [],
 };
 
+const installedWeather: InstalledPlugin = {
+  key: 'weather@official',
+  marketplace: 'official',
+  name: 'weather',
+  version: '1.0.0',
+  installedAt: '2026-08-31T00:00:00.000Z',
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
+};
+
+/** Locale-resolved toolbox strings — these tests run under either locale. */
+const tb = () => getI18n().toolbox;
+
 function renderBrowser() {
   return render(
     <MarketplaceBrowser home="/Users/tester" searchQuery="" onAddMarketplace={vi.fn()} />,
@@ -121,6 +136,10 @@ beforeEach(() => {
     error: null,
   });
   vi.mocked(loadMarketplaceFromDir).mockResolvedValue(marketplace);
+  vi.mocked(uninstallPlugin).mockResolvedValue({
+    key: 'weather@official',
+    withdrawn: { skills: [], mcpServers: [] },
+  });
   vi.mocked(planInstall).mockResolvedValue(disclosure);
   // installPlugin now returns { record, mcpServers } (single-plan outcome).
   vi.mocked(installPlugin).mockResolvedValue({
@@ -320,25 +339,101 @@ describe('MarketplaceBrowser', () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
-  it('marks entries already installed from this marketplace as installed', async () => {
-    usePluginStore.setState({
-      installed: [
-        {
-          key: 'weather@official',
-          marketplace: 'official',
-          name: 'weather',
-          version: '1.0.0',
-          installedAt: '2026-08-31T00:00:00.000Z',
-          contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
-        },
-      ],
-    });
+  it('replaces the install button with the `···` menu on an installed entry', async () => {
+    // 市场 now shows installed items in place: an installed row must not offer
+    // "安装" at all — its actions live behind the menu instead.
+    usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
-    expect(rows[0].querySelector('button')).toBeDisabled();
-    expect(rows[1].querySelector('button')).not.toBeDisabled();
+    expect(rows[0].querySelector('[data-testid="plugin-item-menu"]')).toBeTruthy();
+    expect(rows[0].textContent).not.toContain(tb().pluginsInstall);
+    // The not-installed row still gets the plain install button.
+    expect(rows[1].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
+    expect(rows[1].textContent).toContain(tb().pluginsInstall);
+  });
+
+  it('offers 立即试用 / 管理 / 卸载 behind the installed row\'s menu', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    fireEvent.click(screen.getByTestId('plugin-item-menu'));
+    expect(screen.getByTestId('plugin-item-menu-trial')).toHaveTextContent(tb().menuTrial);
+    expect(screen.getByTestId('plugin-item-menu-manage')).toHaveTextContent(tb().menuManage);
+    expect(screen.getByTestId('plugin-item-menu-uninstall')).toHaveTextContent(tb().menuUninstall);
+  });
+
+  it('uninstalls through the menu, but only after the confirmation', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    fireEvent.click(screen.getByTestId('plugin-item-menu'));
+    fireEvent.click(screen.getByTestId('plugin-item-menu-uninstall'));
+    // Confirmation is up; nothing removed yet.
+    expect(uninstallPlugin).not.toHaveBeenCalled();
+    expect(screen.getByText(tb().pluginsUninstallTitle)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: `${tb().pluginsUninstall}` }));
+    await waitFor(() => expect(uninstallPlugin).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(uninstallPlugin).mock.calls[0][0]).toMatchObject({
+      home: '/Users/tester',
+      key: 'weather@official',
+    });
+  });
+
+  it('opens the installed record in a manage dialog', async () => {
+    usePluginStore.setState({ installed: [installedWeather] });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    fireEvent.click(screen.getByTestId('plugin-item-menu'));
+    fireEvent.click(screen.getByTestId('plugin-item-menu-manage'));
+
+    const detail = screen.getByTestId('plugin-manage-dialog');
+    expect(detail).toHaveTextContent('weather');
+    expect(detail).toHaveTextContent('official');
+    expect(detail).toHaveTextContent('forecast');
+    expect(detail).toHaveTextContent('weather-mcp');
+  });
+
+  it('lists installs whose marketplace is gone under their own group', async () => {
+    // The built-in market is present, so the marketplace list has hydrated and
+    // "not in the list" genuinely means the source is gone.
+    usePluginStore.setState({
+      marketplaces: [
+        { name: 'abu-official', dir: '/m/abu', builtin: true },
+        { name: 'official', dir: '/m/official' },
+      ],
+      installed: [{ ...installedWeather, key: 'stale@removed', marketplace: 'removed', name: 'stale' }],
+    });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    const group = screen.getByTestId('plugin-orphan-group');
+    expect(group).toHaveTextContent(tb().pluginsOrphanGroup);
+    expect(group).toHaveTextContent('stale');
+    expect(group).toHaveTextContent('removed');
+
+    // Its only action is removal — there is nowhere left to update it from.
+    fireEvent.click(screen.getByTestId('plugin-orphan-menu'));
+    expect(screen.getByTestId('plugin-orphan-menu-uninstall')).toBeInTheDocument();
+    expect(screen.queryByTestId('plugin-orphan-menu-manage')).toBeNull();
+  });
+
+  it('does not guess at orphans before the marketplace list has hydrated', async () => {
+    // No built-in entry yet: `marketplaces` may simply not have loaded, and
+    // flagging every install as orphaned on cold start would be a lie.
+    usePluginStore.setState({
+      marketplaces: [{ name: 'official', dir: '/m/official' }],
+      installed: [{ ...installedWeather, key: 'stale@removed', marketplace: 'removed', name: 'stale' }],
+    });
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+
+    expect(screen.queryByTestId('plugin-orphan-group')).toBeNull();
   });
 
   it('hands every entry of a large marketplace to the virtualized list', async () => {

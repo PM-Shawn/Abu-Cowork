@@ -81,6 +81,18 @@ describe('InstalledItemMenu', () => {
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
 
+  it('returns focus to the trigger after a successful select', () => {
+    const trial = vi.fn();
+    render(<InstalledItemMenu ariaLabel="x" testId="m" actions={[
+      { id: 'trial', label: '立即试用', onSelect: trial },
+    ]} />);
+    const trigger = screen.getByRole('button', { name: 'x' });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('menuitem', { name: '立即试用' }));
+    expect(trial).toHaveBeenCalledTimes(1);
+    expect(trigger).toHaveFocus();
+  });
+
   it('does not leak an enabled item click to a clickable ancestor row', () => {
     const rowSpy = vi.fn();
     const trial = vi.fn();

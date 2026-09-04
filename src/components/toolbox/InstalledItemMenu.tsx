@@ -109,7 +109,9 @@ export default function InstalledItemMenu({ actions, ariaLabel, testId }: Instal
           // for disabled items too (their click is a no-op, not the row's).
           event.stopPropagation();
           if (disabled) return;
-          setOpen(false);
+          // Restore focus to the trigger before onSelect: the focused item is about to
+          // unmount, and an onSelect that moves focus itself (opening a dialog) still wins.
+          closeAndRestoreFocus();
           action.onSelect();
         }}
         className={cn(

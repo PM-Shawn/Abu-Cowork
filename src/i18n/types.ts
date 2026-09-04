@@ -1679,6 +1679,12 @@ export interface TranslationDict {
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    /** Skills 「市场」 hint card — outside skills arrive with plugins. */
+    skillsMarketHintTitle: string;
+    skillsMarketHintBody: string;
+    skillsMarketGoPlugins: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    skillsMineEmptyTitle: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;

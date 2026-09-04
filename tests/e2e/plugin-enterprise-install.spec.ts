@@ -5,6 +5,17 @@
  * read the disclosure, install, verify the ON-DISK layout, uninstall, and (on a
  * spec-owned package) update.
  *
+ * What the IA assertions here prove, and what they do NOT: on a bound shell
+ * 「市场」 is the console catalog and 「我的」 is what this user wrote
+ * themselves, so an organization install shows up in the first and never in the
+ * second. That is a statement about which panel lists what — it is NOT the
+ * proof that installs are keyed `name@marketplace`. A bound client has no
+ * personal-market surface left to install a same-named plugin from, so that
+ * keying is pinned by unit tests instead: src/core/plugin/enterpriseMarket.test.ts
+ * (an install is enterprise by its marketplace, not its name) and
+ * src/core/plugin/installedStore.test.ts (records are stored and removed by the
+ * composite key).
+ *
  * Why this exists: every other test of this feature mocks either the installer
  * or the filesystem, so the on-disk layout it produces had never been proven by
  * an end-to-end run. That layout broke twice during development —
@@ -489,7 +500,7 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     await selectSource(page, 'market');
   });
 
-  test('uninstalling from the 组织 view removes the record and the directory', async () => {
+  test('uninstalling from the 「市场」 card removes the record and the directory', async () => {
     const packageRoot = path.join(enterpriseRoot(dataRoot), CATALOG_PLUGIN);
     expect(fs.existsSync(packageRoot)).toBe(true);
 

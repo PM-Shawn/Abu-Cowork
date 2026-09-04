@@ -12,7 +12,8 @@
  * the user supplies the secrets — nothing is written behind their back.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { getI18n } from '@/i18n';
@@ -140,5 +141,73 @@ describe('MCPSection · focusServer', () => {
   it('ignores a server that is not configured', () => {
     render(<MCPSection sourceFilter="mine" focusServer="never-existed" />);
     expect(screen.queryByRole('heading')).toBeNull();
+  });
+});
+
+/**
+ * A prefill is an *offer*, not a standing instruction. The add-server form is
+ * also the edit form, so an offer that stays armed will overwrite whatever the
+ * user opens next: 「编辑 postgres」 becomes 「添加 github」, silently, with the
+ * edit target dropped. One prefill therefore applies exactly once, and never to
+ * a form that is already editing a server.
+ */
+describe('MCPSection · prefill does not hijack the form', () => {
+  const entry: MCPRegistryEntry = {
+    name: 'github',
+    keywords: ['github'],
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-github'],
+    env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
+  };
+
+  /** A host that owns `showAddForm` the way ToolboxModal will. */
+  function Host({ initialOpen = false }: { initialOpen?: boolean }) {
+    const [open, setOpen] = useState(initialOpen);
+    return (
+      <>
+        <button data-testid="host-open" onClick={() => setOpen(true)}>open</button>
+        <MCPSection
+          sourceFilter="mine"
+          showAddForm={open}
+          onAddFormChange={setOpen}
+          prefill={entry}
+          focusServer="my-db"
+        />
+      </>
+    );
+  }
+
+  it('leaves an edit alone — 编辑 my-db must not become 添加 github', async () => {
+    useMCPStore.setState({
+      servers: {
+        'my-db': {
+          config: { name: 'my-db', command: 'psql', args: ['--local'], enabled: true },
+          status: 'disconnected',
+          tools: [],
+        },
+      },
+    });
+    render(<Host />);
+
+    // 「市场」's 管理 opened the detail; the user clicks its edit pencil.
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'my-db' })).toBeTruthy());
+    fireEvent.click(screen.getByTitle(tb().skillEdit));
+
+    const name = await screen.findByPlaceholderText(tb().serverName);
+    expect((name as HTMLInputElement).value).toBe('my-db');
+    expect(screen.getByText(tb().skillEdit, { selector: 'h2' })).toBeTruthy();
+  });
+
+  it('applies once — reopening the form manually starts blank', async () => {
+    render(<Host initialOpen />);
+
+    await waitFor(() => {
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('github');
+    });
+    fireEvent.click(screen.getByText(getI18n().common.cancel));
+    fireEvent.click(screen.getByTestId('host-open'));
+
+    await waitFor(() => expect(screen.getByPlaceholderText(tb().serverName)).toBeTruthy());
+    expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('');
   });
 });

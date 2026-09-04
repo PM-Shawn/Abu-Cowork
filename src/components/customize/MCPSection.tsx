@@ -79,8 +79,9 @@ interface MCPSectionProps {
    *  is open. 「市场」's 「添加」 routes through here rather than adding a server
    *  itself: a registry entry's `env` carries key names with empty values, so a
    *  silent add would persist a config that cannot connect. The user fills in
-   *  the secrets and saves. Clear it (pass `null`) when the form closes,
-   *  otherwise re-opening the form re-applies the same entry. */
+   *  the secrets and saves. An offer is spent once: it is ignored while the form
+   *  is editing a server, and a re-open of the form does not re-apply it. Pass
+   *  `null` to withdraw the offer — the same name may then be offered again. */
   prefill?: MCPRegistryEntry | null;
   /** Open this server's detail on mount/prop change — how 「市场」's 「管理」 lands
    *  in the editor that lives here. Ignored when no such server is configured. */
@@ -437,9 +438,19 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // outright instead would persist a config that cannot connect.
   const prefillRef = useRef(prefill);
   prefillRef.current = prefill;
+  // The name of the prefill already spent on this form. An offer applies exactly
+  // once: the add form is also the *edit* form, so an offer left armed would
+  // re-fire on the next false→true of `showAddForm` and rewrite 「编辑 postgres」
+  // into 「添加 github」 — dropping the edit target with it.
+  const consumedPrefillRef = useRef<string | null>(null);
   useEffect(() => {
     const entry = prefillRef.current;
-    if (!entry || !showAddForm) return;
+    // The host withdrew the offer: a later re-offer of the same name is new.
+    if (!entry) { consumedPrefillRef.current = null; return; }
+    // Never overwrite an edit in progress, and never apply the same offer twice.
+    if (!showAddForm || editingServerName) return;
+    if (consumedPrefillRef.current === entry.name) return;
+    consumedPrefillRef.current = entry.name;
     const env: Record<string, string> = {};
     for (const key of Object.keys(entry.env)) env[key] = '';
     setEditingServerName(null);
@@ -457,7 +468,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Keyed on the entry's identity (its name) via the ref, not the object
   // reference: a host that rebuilds the entry object each render would otherwise
   // wipe a form the user has already started editing.
-  }, [prefill?.name, showAddForm]);
+  }, [prefill?.name, showAddForm, editingServerName]);
 
   // 「市场」's 「管理」 lands here — the per-server editor lives in this section, so
   // the host only has to name the server. A server that is not configured is

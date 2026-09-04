@@ -1,12 +1,13 @@
 // The browser gate under the operation-class policy (batch-二 §二).
 //
-// Two columns, three classes, one master switch. The attended column must
-// behave EXACTLY as it shipped — that column's regressions are covered by
+// Three classes, one value each, one master switch — the two run modes stopped
+// being separate columns in the 2026-09-04 collapse and now read the same row.
+// The shipped attended behaviour for click/fill is covered by
 // `registry.permissionMode.test.ts` and `registry.browserGateOwnership.test.ts`,
 // which this change left untouched on purpose; the cases below pin the parts
-// those files cannot see: the unattended column, the master switch, the
-// cross-origin fail-closed baseline, and the confirmation seam that stands in
-// for a human who is not there.
+// those files cannot see: automatic runs, the master switch, the cross-origin
+// fail-closed baseline, the confirmation seam that stands in for a human who is
+// not there, and (R1) the one attended path the row's own 'allow' now decides.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
 import { createBrowserDenialTracker } from '../agent/browserDenialTracker';
@@ -1540,6 +1541,162 @@ describe('browser gate — operation-class policy', () => {
 
       expect(decision.decision).toBe('allow');
       expect(confirm).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * 2026-09-04 ruling R1 — 「只要得到了用户允许，都能做」.
+   *
+   * The attended branch used to refuse the scripting row its 'allow': every
+   * `execute_js` opened a dialog whatever the row said, so 「允许」 and
+   * 「每次询问」 were byte-for-byte identical while a human was watching —
+   * under an option labelled 「不再询问」. It now stops asking, on exactly the
+   * sites an automatic run would act on (the standing 「始终允许」 verdict).
+   *
+   * Driven through the REAL gate (`checkToolApproval`), not through
+   * `decideBrowserOperation`: the decision function already said 'allow' here
+   * before this fix, and the gate is where the dialog was.
+   */
+  describe('attended scripting: the 「允许」 row really stops asking (2026-09-04 R1)', () => {
+    const allowScripting = () => useSettingsStore.setState({
+      browserOperationPolicy: policyWith('scripting', 'allow'),
+    });
+    const HIGH_RISK_URL = `${ALLOWED_SITE}/account/transfer`;
+
+    it('runs with no dialog at all on a site the user set to 始终允许', async () => {
+      allowScripting();
+      withTabOrigin(ALLOWED_URL);
+      const confirm = vi.fn(async () => true);
+
+      const decision = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).not.toHaveBeenCalled();
+      // The pin still travels with an approved call — an allow that skipped
+      // the dialog is still an allow the host has to bind to an origin.
+      expect(decision.browserExecution).toEqual({
+        runMode: 'attended',
+        expectedOrigin: ALLOWED_SITE,
+      });
+    });
+
+    it('still opens the dialog on a site with no standing verdict, and runs only if the user says yes', async () => {
+      allowScripting();
+      withTabOrigin(UNKNOWN_URL);
+
+      // The site gate is unchanged: 「允许」 says WHAT, the site says WHERE.
+      const refuse = vi.fn(async () => false);
+      const refused = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, refuse as never,
+      );
+      expect(refused.decision).toBe('deny');
+      expect(refuse).toHaveBeenCalledTimes(1);
+
+      const accept = vi.fn(async () => true);
+      const allowed = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, accept as never,
+      );
+      expect(allowed.decision).toBe('allow');
+      expect(accept).toHaveBeenCalledTimes(1);
+    });
+
+    it('still asks on every money-movement call, and offers no "always allow" there', async () => {
+      allowScripting();
+      withTabOrigin(HIGH_RISK_URL);
+      const confirm = vi.fn(async () => true);
+
+      const first = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, confirm as never,
+      );
+      await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '2' },
+        attendedOwner, confirm as never,
+      );
+
+      expect(first.decision).toBe('allow');
+      // EVERY time — the row's allow buys nothing on a transfer page.
+      expect(confirm).toHaveBeenCalledTimes(2);
+      const info = confirm.mock.calls[0][0] as unknown as { allowPersistentGrant?: boolean };
+      expect(info.allowPersistentGrant).toBe(false);
+    });
+
+    it('leaves the shipped default asking every single time — the ruling moved 「允许」, not 「每次询问」', async () => {
+      // No policy override: scripting ships as 「每次询问」.
+      withTabOrigin(ALLOWED_URL);
+      const confirm = vi.fn(async () => true);
+
+      await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, confirm as never,
+      );
+      await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '2' },
+        attendedOwner, confirm as never,
+      );
+
+      // Twice, on an ALLOWED site, in the same conversation: neither the site
+      // verdict nor the grant an earlier dialog minted may answer for a script.
+      expect(confirm).toHaveBeenCalledTimes(2);
+    });
+
+    it('a 「拒绝」 row still refuses before any dialog', async () => {
+      useSettingsStore.setState({
+        browserOperationPolicy: policyWith('scripting', 'deny'),
+      });
+      withTabOrigin(ALLOWED_URL);
+      const confirm = vi.fn(async () => true);
+
+      const decision = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, confirm as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('is not consent — a script the policy allowed must not clear a scripting refusal', async () => {
+      allowScripting();
+      const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
+      withTabOrigin(ALLOWED_URL);
+
+      const decision = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        { conversationId: OWNER, ...r } as never,
+        (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      // Same rule the unattended opt-in follows: nobody answered anything for
+      // THIS call, so U4's streak stays exactly where it was.
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+    });
+
+    it('does not ride the conversation grant a click dialog minted', async () => {
+      allowScripting();
+      withTabOrigin(UNKNOWN_URL);
+      const confirm = vi.fn(async () => true);
+
+      // A click on an unknown site, approved → 30-minute conversation grant.
+      await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+      );
+      // The script on that same site must still ask: the grant was minted
+      // from a dialog about a click, and the row's allow is scoped to the
+      // sites the user set to 「始终允许」.
+      const decision = await checkToolApproval(
+        'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
+        attendedOwner, confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).toHaveBeenCalledTimes(2);
     });
   });
 

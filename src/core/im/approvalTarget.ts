@@ -135,6 +135,29 @@ export function resolveUnattendedImTarget(
     };
   }
   if (ownerId) {
+    /*
+      R3 (final review) — a DM is only answerable while this platform has
+      exactly ONE enabled channel, so refuse up front rather than deliver.
+
+      The matcher cannot attribute a DM reply to a channel: an inbound message
+      carries no channel id anywhere in the pipeline
+      (`inboundDispatcher.dispatch` takes `{platform, payload}`), and the DM
+      branch has already traded chat identity for owner + privacy. With two
+      enabled channels "a feishu DM from this person" is ambiguous, so
+      `dmReplyProvenanceIsUnambiguous` refuses the answer.
+
+      Building the target anyway would reproduce exactly the sequence R1 was
+      written to eliminate: prompt delivered, reply ignored, and five minutes
+      later a 「没收到回复」 receipt into the very inbox they answered from.
+      Same ruling as R1 and R2 — refuse at construction, get an immediate
+      `no_binding` plus a desktop notice, and say so in the editor hint.
+    */
+    const enabledOnPlatform = useIMChannelStore
+      .getState()
+      .getChannelsByPlatform(channel.platform)
+      .filter((c) => c.enabled);
+    if (enabledOnPlatform.length > 1) return null;
+
     // DM: the id addresses a PERSON, and the person addressed is by definition
     // the owner of the ask.
     return {

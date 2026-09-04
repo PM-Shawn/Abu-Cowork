@@ -111,6 +111,77 @@ describe('resolveUnattendedImTarget', () => {
 
   describe('a person the automation named', () => {
     /*
+      R3 (final review) — a DM on a platform running two enabled channels is
+      refused at construction, not delivered and then silently ignored.
+
+      A DM reply cannot be attributed to a channel (inbound messages carry no
+      channel id), so with two enabled channels the answer-time check refuses
+      it. Building the target anyway would reproduce the exact sequence R1
+      removed: prompt delivered, reply ignored, 「没收到回复」 receipt posted
+      into the inbox that answered. Same ruling as R1/R2 — refuse up front.
+    */
+    it('is refused when the platform has more than one enabled channel', () => {
+      useIMChannelStore.setState({
+        channels: {
+          [CHANNEL_ID]: channel(),
+          'ch-second-app': channel({ id: 'ch-second-app', name: 'Second Feishu app' }),
+        },
+      });
+      expect(
+        resolveUnattendedImTarget({ outputChannelId: CHANNEL_ID, outputUserIds: 'ou_li' }),
+      ).toBeNull();
+    });
+
+    it('is built again once the second channel is switched off', () => {
+      useIMChannelStore.setState({
+        channels: {
+          [CHANNEL_ID]: channel(),
+          'ch-second-app': channel({ id: 'ch-second-app', enabled: false }),
+        },
+      });
+      expect(
+        resolveUnattendedImTarget({ outputChannelId: CHANNEL_ID, outputUserIds: 'ou_li' })?.chatId,
+      ).toBe('ou_li');
+    });
+
+    /*
+      A CHAT target is unaffected: it matches on chat id, which is unambiguous
+      no matter how many apps could have delivered the prompt. Narrowing that
+      too would refuse a working configuration for no gain.
+    */
+    it('leaves a chat target alone on a multi-channel platform', () => {
+      useIMChannelStore.setState({
+        channels: {
+          [CHANNEL_ID]: channel(),
+          'ch-second-app': channel({ id: 'ch-second-app' }),
+        },
+      });
+      expect(
+        resolveUnattendedImTarget({
+          outputChannelId: CHANNEL_ID,
+          outputChatIds: 'oc_team',
+          outputUserIds: 'ou_li',
+        }),
+      ).toMatchObject({ chatId: 'oc_team', chatIdType: 'chat_id' });
+    });
+
+    /*
+      Another PLATFORM's channels are irrelevant — the ambiguity is only
+      between apps that could deliver the same inbound message.
+    */
+    it('ignores enabled channels on other platforms', () => {
+      useIMChannelStore.setState({
+        channels: {
+          [CHANNEL_ID]: channel(),
+          'ch-dingtalk': channel({ id: 'ch-dingtalk', platform: 'dingtalk' }),
+        },
+      });
+      expect(
+        resolveUnattendedImTarget({ outputChannelId: CHANNEL_ID, outputUserIds: 'ou_li' })?.chatId,
+      ).toBe('ou_li');
+    });
+
+    /*
       No chat id: the id addresses a PERSON, and the adapter opens a 1:1 chat
       to reach them. The person addressed is by definition the owner — there is
       nobody else in the room — so the owner binding is not optional here.

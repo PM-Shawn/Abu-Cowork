@@ -45,6 +45,7 @@ import {
   type UnattendedImTarget,
 } from '../permissions/unattendedConfirmation';
 import type { NormalizedIMMessage } from './inboundRouter';
+import type { IMPlatform } from '../../types/im';
 import { createLogger } from '../logging/logger';
 
 const log = createLogger('im-approval');
@@ -73,11 +74,17 @@ export function setImApprovalTimeoutMs(ms: number): void {
 }
 
 /**
- * Most approval prompts one conversation may have outstanding at once.
+ * Most approval prompts that may be outstanding at once — counted BOTH per
+ * conversation and per destination chat, with the tighter one binding (R4).
  *
  * The cap is a spam bound AND an ambiguity bound: a bare `同意` answers the
  * OLDEST outstanding prompt (the one the user saw first), so the fewer that
  * can be in flight, the smaller the chance an answer lands on the wrong ask.
+ *
+ * Both scopes are needed because an automation defeats the conversation one by
+ * construction: every scheduled run gets a brand-new conversation, so N runs
+ * of one task could pile 3N prompts into a single chat while no conversation
+ * ever exceeded three.
  */
 export const MAX_PENDING_APPROVALS_PER_CONVERSATION = 3;
 
@@ -166,6 +173,19 @@ export function classifyApprovalReply(text: string): 'approve' | 'deny' | null {
 interface PendingApproval {
   conversationId: string;
   platform: string;
+  /**
+   * The channel this prompt was sent THROUGH.
+   *
+   * Only the DM branch reads it, and it has to: that branch matches on owner +
+   * privacy rather than chat identity, so without the channel a prompt armed
+   * via one channel is answerable from a different channel on the same
+   * platform (two Feishu apps in one workspace — an entirely ordinary setup,
+   * and one of them may be a bot the approver does not control). The chat
+   * branch is already pinned by `chatId`, which is channel-specific in
+   * practice, but the field is set for every entry so the rule cannot silently
+   * become "sometimes checked".
+   */
+  channelId?: string;
   chatId: string;
   /** When the binding names the person who owns this conversation, only they
    *  may answer — a bystander in a group chat must not be able to approve
@@ -274,6 +294,27 @@ export function __resetPendingApprovalsForTests(): void {
  * everything else, including a LATE answer to a prompt that already timed out
  * — that is an ordinary message and belongs to the conversation.
  */
+/**
+ * R3 — can a DM reply be attributed to this entry's channel at all?
+ *
+ * The DM branch trades chat identity for owner + privacy, which also drops the
+ * only thing that tied an entry to the channel it was sent through. Inbound
+ * messages carry no channel id (see the matcher's note), so provenance is only
+ * unambiguous while the entry's platform has exactly ONE enabled channel.
+ *
+ * Re-checked at ANSWER time, not just at send time: a second channel enabled
+ * while a prompt is outstanding makes that outstanding prompt ambiguous too,
+ * and the safe reading of an ambiguous answer is "not an answer".
+ */
+function dmReplyProvenanceIsUnambiguous(entry: PendingApproval): boolean {
+  if (entry.channelId === undefined) return false;
+  const enabled = useIMChannelStore
+    .getState()
+    .getChannelsByPlatform(entry.platform as IMPlatform)
+    .filter((c) => c.enabled);
+  return enabled.length === 1 && enabled[0]?.id === entry.channelId;
+}
+
 export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
   const messageId = message.replyContext.messageId;
   const idKey = messageId ? `${message.platform}:${messageId}` : null;
@@ -312,13 +353,27 @@ export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
 
           What replaces it is strictly tighter than the chat rule, not looser:
           the owner is known exactly (we chose whom to message), the reply must
-          come from that exact person, AND it must be private. The same person
-          typing 「同意」 in a group room is a different room and does not
-          count.
+          come from that exact person, it must be private, AND it must arrive
+          through the same channel the prompt went out on. That last clause is
+          R3 from the security review: dropping chat identity also dropped the
+          only thing tying the entry to its channel, so one workspace running
+          two apps on the same platform could answer either app's prompt from
+          the other.
+
+          🔴 Abu cannot TELL those two apart today: an inbound message arrives
+          as `{ platform, payload }` and carries no channel identity at all
+          (`inboundDispatcher.dispatch`), which is also why the router picks a
+          channel by platform rather than by provenance. So the check that can
+          be enforced is the one below — a DM prompt is answerable only while
+          its channel is the ONLY enabled one on its platform, i.e. only while
+          "a feishu DM from this person" can mean exactly one thing. With two
+          enabled channels the prompt becomes unanswerable rather than
+          cross-answerable: fail-closed, in the direction that matters.
         */
         ? entry.senderId !== undefined
           && entry.senderId === message.senderId
           && message.isDirect === true
+          && dmReplyProvenanceIsUnambiguous(entry)
         : entry.chatId === message.chatId
           // No bound owner means we do not know whose approval this is. In a
           // 1:1 chat there is only one candidate, so the reply is unambiguous;
@@ -531,8 +586,33 @@ export async function requestImApprovalDetailed(
   if (!channelId || !chatId) return { outcome: 'denied', cause: 'no_binding' };
   if (options.abortSignal?.aborted) return { outcome: 'denied', cause: 'aborted' };
 
-  const outstanding = pending.filter((e) => e.conversationId === conversationId).length;
-  if (outstanding >= MAX_PENDING_APPROVALS_PER_CONVERSATION) {
+  /*
+    R4 — the cap is per CONVERSATION and per DESTINATION, and the tighter of
+    the two wins.
+
+    Per-conversation alone was a spam bound that automations walked straight
+    through: a scheduled run mints a fresh conversation every time, so three
+    runs of one nightly task put nine prompts into one chat, each with its own
+    "answer within 5 minutes" deadline. The destination is what a human
+    actually experiences, so it has to carry a bound of its own.
+
+    It is also the ambiguity bound the per-conversation cap was reaching for:
+    a bare 同意 answers the OLDEST armed prompt in that chat, and the fewer
+    that can be waiting there, the smaller the chance an answer lands on the
+    wrong one — which is a property of the CHAT, not of the conversation.
+
+    Keyed by platform + chatId, which for a DM entry is the owner's id, so one
+    person's inbox is bounded whether they are addressed as a chat or by name.
+  */
+  const outstandingInConversation =
+    pending.filter((e) => e.conversationId === conversationId).length;
+  const outstandingAtDestination = pending.filter(
+    (e) => e.platform === imTarget.platform && e.chatId === chatId,
+  ).length;
+  if (
+    Math.max(outstandingInConversation, outstandingAtDestination)
+    >= MAX_PENDING_APPROVALS_PER_CONVERSATION
+  ) {
     publishApprovalNotice(conversationId, prompt);
     return { outcome: 'denied', cause: 'too_many' };
   }
@@ -540,6 +620,7 @@ export async function requestImApprovalDetailed(
   const entry: PendingApproval = {
     conversationId,
     platform: imTarget.platform,
+    channelId,
     chatId,
     ...(imTarget.chatIdType !== undefined ? { chatIdType: imTarget.chatIdType } : {}),
     ...(senderId !== undefined ? { senderId } : {}),

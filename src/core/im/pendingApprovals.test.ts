@@ -1477,6 +1477,44 @@ describe('an automation supplies its own approval target', () => {
   describe('a DM to a named person', () => {
     const DM_P2P_CHAT = 'oc_p2p_generated';
 
+    /*
+      A DM prompt is only answerable while its channel is the ONLY enabled one
+      on its platform (R3) — an inbound message carries no channel id, so with
+      two enabled channels "a feishu DM from this person" is ambiguous. These
+      cases are about the ordinary single-channel workspace, so seed exactly
+      one.
+    */
+    function seedOneChannel(id = 'ch-task', enabled = true) {
+      useIMChannelStore.setState({
+        channels: {
+          [id]: {
+            id,
+            platform: 'feishu',
+            name: 'Ops',
+            appId: 'a',
+            appSecret: 's',
+            capability: 'full',
+            responseMode: 'mention_only',
+            allowedUsers: [],
+            workspacePaths: [],
+            sessionTimeoutMinutes: 0,
+            maxRoundsPerSession: 0,
+            enabled,
+            status: 'connected',
+            createdAt: 1,
+          },
+        },
+      });
+    }
+
+    beforeEach(() => {
+      seedOneChannel();
+    });
+
+    afterEach(() => {
+      useIMChannelStore.setState({ channels: {} });
+    });
+
     function dmRequest(): UnattendedConfirmationRequest {
       return seamRequest({
         imTarget: {
@@ -1549,6 +1587,75 @@ describe('an automation supplies its own approval target', () => {
       await promise;
     });
 
+    /*
+      R3 (security review of 0b04b84a) — the DM branch trades chat identity for
+      owner + privacy, which also drops the only thing tying the entry to the
+      channel it was sent through. Inbound messages carry NO channel id
+      (`inboundDispatcher.dispatch` takes `{platform, payload}`), so provenance
+      is only unambiguous while the platform has exactly one enabled channel.
+      A second one appearing makes the outstanding prompt ambiguous too, and an
+      ambiguous answer is not an answer.
+    */
+    it('stops accepting the DM answer once a second channel could have carried it', async () => {
+      const promise = imApprovalResolver(dmRequest());
+      await settle();
+
+      useIMChannelStore.setState({
+        channels: {
+          ...useIMChannelStore.getState().channels,
+          'ch-other': {
+            ...useIMChannelStore.getState().channels['ch-task']!,
+            id: 'ch-other',
+            name: 'Second Feishu app',
+          },
+        },
+      });
+
+      // Right person, right platform, private chat — but Abu can no longer
+      // tell which of the two apps delivered the question.
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+        ),
+      ).toBe(false);
+      expect(pendingApprovalCountForTests()).toBe(1);
+
+      // Disabling the newcomer restores an unambiguous reading.
+      useIMChannelStore.setState({
+        channels: {
+          ...useIMChannelStore.getState().channels,
+          'ch-other': {
+            ...useIMChannelStore.getState().channels['ch-other']!,
+            enabled: false,
+          },
+        },
+      });
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+        ),
+      ).toBe(true);
+      await promise;
+    });
+
+    it('does not accept a DM answer when the prompt went out on another channel', async () => {
+      const promise = imApprovalResolver(dmRequest());
+      await settle();
+
+      // The workspace's one enabled channel is now a DIFFERENT one from the
+      // channel this prompt was armed with.
+      seedOneChannel('ch-somewhere-else');
+
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+        ),
+      ).toBe(false);
+      expect(pendingApprovalCountForTests()).toBe(1);
+      await Promise.resolve();
+      void promise;
+    });
+
     it('sends the outcome receipt back to the same inbox', async () => {
       vi.useFakeTimers();
       const promise = imApprovalResolver(dmRequest());
@@ -1567,11 +1674,16 @@ describe('an automation supplies its own approval target', () => {
 
   /*
     A group chat with NO bound owner is unanswerable by construction (U3 M5:
-    unknown owner ⇒ private-only). That is fail-closed and deliberate, but it
-    is also a configuration trap, so it is pinned here rather than left to be
-    discovered as "the task just never gets approved".
+    unknown owner ⇒ private-only), which is why `approvalTarget.ts` refuses to
+    BUILD one (R1) and no automation can produce this shape any more.
+
+    The primitive still has to hold the line for any other caller, so the
+    property is pinned here rather than deleted along with its producer: a
+    delivered prompt nobody can answer is the exact sequence R1 exists to
+    prevent — ask the room, ignore the room, then tell the room nobody
+    answered.
   */
-  it('cannot be answered in a group when the automation named no owner', async () => {
+  it('cannot be answered in a group when the caller named no owner', async () => {
     vi.useFakeTimers();
     const promise = imApprovalResolver(
       seamRequest({
@@ -1591,5 +1703,61 @@ describe('an automation supplies its own approval target', () => {
 
     await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
     await expect(promise).resolves.toMatchObject({ approved: false });
+  });
+
+  /*
+    R4 — the cap is per destination as well as per conversation.
+
+    A scheduled run mints a fresh conversation every time, so the
+    per-conversation cap was one an automation walked straight through: three
+    runs of one nightly task put nine prompts, each with its own five-minute
+    deadline, into a single chat. The chat is what a human experiences, and it
+    is also where the ambiguity lives — a bare 同意 answers the oldest armed
+    prompt THERE, not the oldest in some conversation.
+  */
+  it('bounds prompts per destination chat, across separate runs', async () => {
+    vi.useFakeTimers();
+    const target = {
+      platform: 'feishu',
+      channelId: 'ch-task',
+      chatId: TASK_CHAT,
+      chatIdType: 'chat_id' as const,
+      senderId: OWNER,
+    };
+    // Three runs, three conversations, one chat — the automation shape.
+    for (let i = 0; i < MAX_PENDING_APPROVALS_PER_CONVERSATION; i++) {
+      void requestImApproval({
+        conversationId: `conv-run-${i}`,
+        imTarget: target,
+        prompt: `p${i}`,
+      });
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(pendingApprovalCountForTests())
+      .toBe(MAX_PENDING_APPROVALS_PER_CONVERSATION);
+
+    // A fourth run, in yet another fresh conversation, is refused on the
+    // DESTINATION bound — the per-conversation count for it is zero.
+    const fourth = requestImApprovalDetailed({
+      conversationId: 'conv-run-3',
+      imTarget: target,
+      prompt: 'p3',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(fourth).resolves.toEqual({ outcome: 'denied', cause: 'too_many' });
+    expect(pendingApprovalCountForTests())
+      .toBe(MAX_PENDING_APPROVALS_PER_CONVERSATION);
+
+    // A different chat is a different inbox and is unaffected.
+    void requestImApproval({
+      conversationId: 'conv-run-4',
+      imTarget: { ...target, chatId: 'oc_elsewhere' },
+      prompt: 'p4',
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pendingApprovalCountForTests())
+      .toBe(MAX_PENDING_APPROVALS_PER_CONVERSATION + 1);
+
+    await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
   });
 });

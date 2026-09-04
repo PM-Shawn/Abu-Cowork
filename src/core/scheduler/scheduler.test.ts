@@ -939,19 +939,69 @@ describe('scheduled runs carry an approval target built from the task', () => {
       name: '每日销售简报',
       outputChannelId: 'channel-1',
       outputChatIds: 'oc_team,oc_second',
+      outputUserIds: 'ou_li',
     }));
 
     // The contract `pendingApprovals.askOverIm` consumes: platform picks the
     // adapter AND gates inbound matching, channelId + chatId address the send,
-    // chatIdType says how to address it.
+    // chatIdType says how to address it, senderId says whose reply counts.
     expect(captured.current?.imTarget).toEqual({
       platform: 'feishu',
       channelId: 'channel-1',
       chatId: 'oc_team',
       chatIdType: 'chat_id',
+      senderId: 'ou_li',
     });
     expect(captured.current?.runLabel).toBe('每日销售简报');
     expect(captured.current?.source).toBe('scheduler');
+  });
+
+  /*
+    R1 (security review) — a task that names only a group chat gets NO target,
+    so the ask is refused immediately instead of being delivered into a room
+    where nobody's reply can count. The task editor's hint now tells the user
+    to name a person; this is what happens until they do.
+  */
+  it('hands over no target when the task names a chat but nobody to answer', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-ownerless',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team',
+      outputUserIds: undefined,
+    }));
+
+    expect(captured.current?.imTarget).toBeUndefined();
+  });
+
+  /*
+    R2 (security review) — a channel the user switched off still DELIVERS
+    (`sendViaIMChannel` has no `enabled` check) while its inbound socket is
+    stopped: one unwanted message, then five minutes of stall, then the same
+    refusal. Refuse up front instead.
+  */
+  it('hands over no target when the task channel is switched off', async () => {
+    seedChannel();
+    useIMChannelStore.setState({
+      channels: {
+        'channel-1': {
+          ...useIMChannelStore.getState().channels['channel-1']!,
+          enabled: false,
+        },
+      },
+    });
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-disabled',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team',
+      outputUserIds: 'ou_li',
+    }));
+
+    expect(captured.current?.imTarget).toBeUndefined();
   });
 
   it('binds the owner when the task names DM recipients as well', async () => {

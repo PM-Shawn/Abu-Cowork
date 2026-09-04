@@ -46,12 +46,16 @@ describe('resolveUnattendedImTarget', () => {
         resolveUnattendedImTarget({
           outputChannelId: CHANNEL_ID,
           outputChatIds: 'oc_team, oc_second',
+          // An owner is required for a chat target (R1); this case is about
+          // WHICH chat is addressed.
+          outputUserIds: 'ou_li',
         }),
       ).toEqual({
         platform: 'feishu',
         channelId: CHANNEL_ID,
         chatId: 'oc_team',
         chatIdType: 'chat_id',
+        senderId: 'ou_li',
       });
     });
 
@@ -73,10 +77,7 @@ describe('resolveUnattendedImTarget', () => {
 
     /*
       "Post it in the team room, but only Li may approve it." The chat decides
-      where it is visible; the bound owner decides whose 「同意」 counts. Without
-      the owner, `tryConsumeApprovalReply` falls back to private-chat-only and
-      a group prompt is unanswerable by construction — fail-closed, and the
-      reason the settings copy asks for a DM recipient.
+      where it is visible; the bound owner decides whose 「同意」 counts.
     */
     it('binds the owner from the user ids even when the target is a chat', () => {
       const target = resolveUnattendedImTarget({
@@ -87,12 +88,24 @@ describe('resolveUnattendedImTarget', () => {
       expect(target).toMatchObject({ chatId: 'oc_team', senderId: 'ou_li' });
     });
 
-    it('leaves the owner unbound when the automation names nobody', () => {
-      const target = resolveUnattendedImTarget({
-        outputChannelId: CHANNEL_ID,
-        outputChatIds: 'oc_team',
-      });
-      expect(target?.senderId).toBeUndefined();
+    /*
+      R1 (security review of 0b04b84a) — a chat with NO named owner is not a
+      target at all.
+
+      U3 M5 stands: with no bound owner only a PRIVATE chat's reply counts, and
+      a group chat can never be one. Building the target anyway produced the
+      worst possible sequence: a prompt telling a room to 「回复同意」, every
+      reply ignored, and five minutes later a 「没收到回复」 receipt posted into
+      a room where somebody had in fact replied. Refusing makes it immediate
+      and honest — the caller reports `no_binding`.
+    */
+    it('refuses a group chat the automation gave no owner for', () => {
+      expect(
+        resolveUnattendedImTarget({
+          outputChannelId: CHANNEL_ID,
+          outputChatIds: 'oc_team',
+        }),
+      ).toBeNull();
     });
   });
 
@@ -157,12 +170,62 @@ describe('resolveUnattendedImTarget', () => {
     });
   });
 
+  /*
+    R2 (security review) — a channel the user switched OFF is not a target.
+
+    The earlier rationale ("it just fails to deliver, which is fail-closed")
+    was wrong: `outputSender.sendViaIMChannel` has no `enabled` check, so a
+    disabled channel really does DELIVER the prompt — pushed through a channel
+    the user turned off — while the inbound socket is stopped, so no answer can
+    arrive. Five minutes of stall, one unwanted message, same refusal.
+  */
+  describe('a channel that is switched off', () => {
+    it('is not a target, for a chat or for a DM', () => {
+      useIMChannelStore.setState({
+        channels: { [CHANNEL_ID]: channel({ enabled: false }) },
+      });
+      expect(
+        resolveUnattendedImTarget({
+          outputChannelId: CHANNEL_ID,
+          outputChatIds: 'oc_team',
+          outputUserIds: 'ou_li',
+        }),
+      ).toBeNull();
+      expect(
+        resolveUnattendedImTarget({ outputChannelId: CHANNEL_ID, outputUserIds: 'ou_li' }),
+      ).toBeNull();
+    });
+
+    /*
+      NOT gated on `status`, deliberately. `status` is a live connection state
+      that flaps across ordinary reconnects; turning a transient blip into a
+      refused action would make automations unreliable for a reason the user
+      never chose. `enabled` is a standing decision.
+    */
+    it('is still a target while merely disconnected', () => {
+      useIMChannelStore.setState({
+        channels: { [CHANNEL_ID]: channel({ enabled: true, status: 'disconnected' }) },
+      });
+      expect(
+        resolveUnattendedImTarget({
+          outputChannelId: CHANNEL_ID,
+          outputChatIds: 'oc_team',
+          outputUserIds: 'ou_li',
+        }),
+      ).not.toBeNull();
+    });
+  });
+
   it('reads the platform from the channel, not from the caller', () => {
     useIMChannelStore.setState({
       channels: { [CHANNEL_ID]: channel({ platform: 'dingtalk' }) },
     });
     expect(
-      resolveUnattendedImTarget({ outputChannelId: CHANNEL_ID, outputChatIds: 'cid' })?.platform,
+      resolveUnattendedImTarget({
+        outputChannelId: CHANNEL_ID,
+        outputChatIds: 'cid',
+        outputUserIds: 'uid',
+      })?.platform,
     ).toBe('dingtalk');
   });
 });

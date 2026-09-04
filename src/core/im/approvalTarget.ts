@@ -25,9 +25,13 @@
  *   A group is not a voting booth: a bystander must never be able to approve
  *   an action running inside someone else's signed-in browser sessions.
  * - `senderId` absent → only a reply from a PRIVATE chat counts (U3 M5:
- *   unknown owner ⇒ private-only). A prompt sent to a group with no bound
- *   owner is therefore unanswerable by construction and expires — fail-closed,
- *   and the reason the settings copy tells users to name a DM recipient.
+ *   unknown owner ⇒ private-only).
+ *
+ * That second rule is why this module now REFUSES a chat target with no named
+ * owner (R1) instead of building one: such a prompt is unanswerable by
+ * construction, and a delivered-but-unanswerable prompt is strictly worse than
+ * a refusal — it asks a room to reply, ignores the reply, and then tells the
+ * room nobody answered.
  *
  * ## Deliberately NOT here
  *
@@ -85,18 +89,49 @@ export function resolveUnattendedImTarget(
   const channel = useIMChannelStore.getState().channels?.[channelId];
   if (!channel?.platform) return null;
 
+  /*
+    R2 — a channel the user switched OFF is not a target either.
+
+    `outputSender.sendViaIMChannel` has no `enabled` check, so a disabled
+    channel still DELIVERS: the prompt is pushed through a channel the user
+    turned off, while the inbound socket (`feishuWsManager`) is stopped, so no
+    answer can ever arrive. The run then stalls for the full five minutes and
+    fails closed anyway. Refusing here makes that immediate and honest.
+
+    Deliberately NOT gated on `status`: that is a live connection state which
+    flaps across ordinary reconnects, and a target that disappears mid-outage
+    would turn a transient blip into a refused action. `enabled` is a standing
+    user decision; `status` is weather.
+  */
+  if (channel.enabled !== true) return null;
+
   // The owner of the ask, when the automation names one. Used even with a
   // chat target: "post it in the team room, but only Li may approve it".
   const ownerId = firstId(binding?.outputUserIds);
   const chatId = firstId(binding?.outputChatIds);
 
   if (chatId) {
+    /*
+      R1 — a chat with NO named owner is unanswerable, so it is not a target.
+
+      U3 M5 stands: with no bound owner, only a reply from a PRIVATE chat
+      counts. A group chat can never satisfy that, so the prompt would be
+      delivered, tell people 「回复同意」, count nobody's reply, and then post a
+      「5 分钟没收到回复」 receipt into a room where someone did in fact reply.
+      That is worse than a refusal in every direction: it spends five minutes,
+      spams the room, and teaches the reader that answering does nothing.
+
+      Refusing here turns it into an immediate `no_binding` — and the task
+      editor's hint now tells the user to name a person if they want approvals
+      to work.
+    */
+    if (ownerId === null) return null;
     return {
       platform: channel.platform,
       channelId,
       chatId,
       chatIdType: 'chat_id',
-      ...(ownerId !== null ? { senderId: ownerId } : {}),
+      senderId: ownerId,
     };
   }
   if (ownerId) {

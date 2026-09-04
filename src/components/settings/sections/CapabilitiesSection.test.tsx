@@ -98,11 +98,20 @@ const EXTENSION_ATTACHED = 'Browser extension is connected and ready.';
 const EXTENSION_MISSING =
   'Browser extension is not connected. Please install and enable the Abu Browser Extension.';
 
-/** The two policy cells of one row, in column order (you are here, automatic). */
+/** Every dropdown trigger inside a row or card, in document order. */
 function policyCells(row: HTMLElement): HTMLElement[] {
   return within(row).getAllByRole('button').filter(
     (b) => b.getAttribute('aria-expanded') !== null,
   );
+}
+
+/** The ONE policy dropdown of a row — and an assertion that there is only one,
+ *  since the 2026-09-04 ruling collapsed the attended/automatic columns into a
+ *  single setting. */
+function policySelect(row: HTMLElement): HTMLElement {
+  const cells = policyCells(row);
+  expect(cells).toHaveLength(1);
+  return cells[0];
 }
 
 /** The OPEN dropdown belonging to a trigger. It is portalled to `document.body`
@@ -1447,9 +1456,10 @@ describe('CapabilitiesSection', () => {
     });
   });
 
-  // The operation-class policy grid + its master switch. The switch overrides
-  // the automatic-tasks column entirely, so the column must not offer live
-  // controls while it is off.
+  // The operation-class policy rows + the automatic-tasks master switch.
+  // ONE dropdown per class since the 2026-09-04 ruling («不应该分在不在场，只要
+  // 得到了用户允许，都能做»): the permission is one value, and the run mode only
+  // decides how it is carried out.
   describe('browser operation policy', () => {
     beforeEach(() => {
       useSettingsStore.setState({
@@ -1458,234 +1468,188 @@ describe('CapabilitiesSection', () => {
       });
     });
 
-    // Two ordinary classes in the grid; scripting is its own card. The split
-    // must not change which setter a cell writes through — that is the whole
-    // point of the refactor being cosmetic.
-    it('renders a 2x2 matrix plus a separate scripting card, with the shipped defaults', async () => {
+    it('renders one dropdown per class plus a separate scripting card, with the shipped defaults', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
       const grid = permissionCard('Action permissions');
-      expect(within(grid).getByText('While you are here')).toBeInTheDocument();
-      expect(within(grid).getByText('Automatic tasks')).toBeInTheDocument();
+      // The column headings are gone with the columns. 'Automatic tasks' still
+      // names the master-switch card, so it is asserted absent from THIS card.
+      expect(within(grid).queryByText('While you are here')).toBeNull();
+      expect(within(grid).queryByText('Automatic tasks')).toBeNull();
       expect(within(grid).getByText('View pages')).toBeInTheDocument();
       expect(within(grid).getByText('Click and fill in')).toBeInTheDocument();
       expect(within(grid).queryByText('Run scripts (advanced)')).not.toBeInTheDocument();
+      // One control per row, not two.
+      expect(policyCells(grid)).toHaveLength(2);
 
       const scriptCard = permissionCard('Run scripts (advanced)');
       expect(scriptCard).not.toBe(grid);
       expect(scriptCard).toHaveTextContent('Lets Abu run code inside the page.');
-      // attended = ask, unattended = deny (the product default table)
-      const [scriptAttended, scriptUnattended] = policyCells(scriptCard);
-      expect(scriptAttended).toHaveTextContent('Ask every time');
-      expect(scriptUnattended).toHaveTextContent('Deny');
+      expect(policySelect(scriptCard)).toHaveTextContent('Ask every time');
     });
 
-    it('disables the automatic-tasks column while the master switch is off', async () => {
+    /*
+      The column that used to grey out with the master switch off is gone, and
+      with it the reason to disable anything: the value the user picks here
+      describes what Abu may do, and the switch decides separately whether an
+      automatic run may act on it at all. Greying the control now would hide a
+      setting that is still in force for the session the user is sitting in.
+    */
+    it('leaves every policy dropdown live while the master switch is off', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
       const readOnlyRow = within(permissionCard('Action permissions'))
         .getByText('View pages').closest('li') as HTMLElement;
-      const [attendedCell, unattendedCell] = policyCells(readOnlyRow);
 
-      expect(attendedCell).not.toBeDisabled();
-      expect(unattendedCell).toBeDisabled();
-
-      // Same rule in the split-out card — it is the same column.
-      const [, scriptUnattended] = policyCells(permissionCard('Run scripts (advanced)'));
-      expect(scriptUnattended).toBeDisabled();
+      expect(policySelect(readOnlyRow)).not.toBeDisabled();
+      expect(policySelect(permissionCard('Run scripts (advanced)'))).not.toBeDisabled();
     });
 
-    it('writes a changed matrix cell to the store', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    it('writes a changed row to the store', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
       const interactiveRow = within(permissionCard('Action permissions'))
         .getByText('Click and fill in').closest('li') as HTMLElement;
-      const [, unattendedCell] = policyCells(interactiveRow);
+      const cell = policySelect(interactiveRow);
 
-      await user.click(unattendedCell);
-      await user.click(openedOption(unattendedCell, /^Deny/));
+      await user.click(cell);
+      await user.click(openedOption(cell, /^Deny/));
 
-      expect(useSettingsStore.getState().browserOperationPolicy.unattended.interactive).toBe('deny');
-      // The other column is untouched — the two run modes are independent.
-      expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.interactive).toBe('deny');
+      // The neighbouring rows are untouched — the classes stay independent.
+      expect(useSettingsStore.getState().browserOperationPolicy.readOnly).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('ask');
     });
 
     /**
      * The zero-semantic-change pin. Pulling scripting out of the grid moved
-     * the control to another card; it must still write `scripting` on the same
-     * run mode, with the same three-state vocabulary, through the same store
-     * action it did while it was a grid row.
+     * the control to another card; it must still write `scripting` through the
+     * same store action, with the same three-state vocabulary.
      */
     it('keeps the split-out scripting card wired to the same store setter', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const cell = policySelect(permissionCard('Run scripts (advanced)'));
+
+      await user.click(cell);
+      await user.click(openedOption(cell, /^Allow/));
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('allow');
+
+      await user.click(cell);
+      await user.click(openedOption(cell, /^Ask every time/));
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('ask');
+      // And the rows it used to share a table with are untouched.
+      expect(useSettingsStore.getState().browserOperationPolicy.readOnly).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.interactive).toBe('allow');
+    });
+
+    /*
+      One setting, two execution contexts — so each option says what it means
+      in BOTH, on one line, and says the same thing on every row. Before the
+      collapse there were two columns and two descriptions per state; what did
+      not change is that the explanation travels with the choice instead of
+      sitting in a paragraph above the control.
+
+      «Ask every time» is the one that carries a real second fact: attended it
+      is a dialog, and in an automatic task it is an IM approval at the channel
+      the automation itself named (`core/im/approvalTarget.ts`), refused when
+      none is bound. Promising only a dialog would promise something nobody is
+      there to answer.
+    */
+    it('says what each state means in both execution contexts, on every row', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const rows = ['View pages', 'Click and fill in'].map((label) => (
+        within(permissionCard('Action permissions')).getByText(label).closest('li') as HTMLElement
+      ));
+
+      for (const row of [...rows, permissionCard('Run scripts (advanced)')]) {
+        const cell = policySelect(row);
+        await user.click(cell);
+        expect(openedOptionLabels(cell)).toEqual(['Allow', 'Ask every time', 'Deny']);
+        expect(openedOptionDescriptions(cell)).toEqual([
+          'Never asks again',
+          'Asks you here, and over IM in automatic tasks',
+          'Abu will not do this kind of thing',
+        ]);
+        await user.click(cell);
+      }
+
+      // The two facts the merged sentence had to keep: it must not promise
+      // only a dialog, and it must name the automatic-task channel.
+      const cell = policySelect(rows[1]);
+      await user.click(cell);
+      const ask = openedOptionDescriptions(cell)[openedOptionLabels(cell).indexOf('Ask every time')];
+      expect(ask).not.toMatch(/dialog/i);
+      expect(ask).toMatch(/IM/);
+      expect(ask).toMatch(/automatic tasks/);
+      // ...and the withdrawn per-column strings are gone from the surface.
+      expect(openedOptionDescriptions(cell)).not.toContain('Only on sites set to Always allow');
+    });
+
+    it('writes the scripting allow to the store and warns, once, directly under that select', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: true });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
       const scriptCard = permissionCard('Run scripts (advanced)');
-      const [attendedCell, unattendedCell] = policyCells(scriptCard);
-
-      await user.click(attendedCell);
-      await user.click(openedOption(attendedCell, /^Allow/));
-      expect(useSettingsStore.getState().browserOperationPolicy.attended.scripting).toBe('allow');
-      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('deny');
-
-      await user.click(unattendedCell);
-      await user.click(openedOption(unattendedCell, /^Ask every time/));
-      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('ask');
-      // And the grid rows it used to share a table with are untouched.
-      expect(useSettingsStore.getState().browserOperationPolicy.attended.readOnly).toBe('allow');
-      expect(useSettingsStore.getState().browserOperationPolicy.attended.interactive).toBe('allow');
-    });
-
-    /*
-      RETARGETED (2026-09-04 ruling). This pair used to be
-      "explains the missing allow tier for automatic scripting instead of
-      hiding it" and "never lets the explained allow tier be chosen, by mouse
-      or by keyboard" — the tier was listed but disabled.
-
-      It is now a real, choosable option, off by default, whose description
-      carries its scope ("only on sites set to Always allow"). What the tier
-      is NOT is silent: picking it puts a single ⚠ line under the select.
-    */
-    it('offers the automatic-scripting allow tier as a real option, scoped in its own description', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
-      const user = userEvent.setup();
-      render(<CapabilitiesSection />);
-      await openBuiltinBrowser(user);
-
-      const [scriptAttended, scriptUnattended] = policyCells(
-        permissionCard('Run scripts (advanced)'),
-      );
-
-      await user.click(scriptUnattended);
-      expect(openedOptionLabels(scriptUnattended)).toEqual(['Allow', 'Ask every time', 'Deny']);
-      expect(openedOption(scriptUnattended, /^Allow/)).not.toBeDisabled();
-      expect(openedOptionDescriptions(scriptUnattended)).toEqual([
-        'Only on sites set to Always allow',
-        "Asks in the task's IM channel; refused automatically if none is bound",
-        'Abu will not do this kind of thing',
-      ]);
-
-      // The attended half of the same class keeps the generic descriptions —
-      // the site scoping is an automatic-tasks rule, not a scripting rule.
-      await user.click(scriptAttended);
-      expect(openedOptionLabels(scriptAttended)).toEqual(['Allow', 'Ask every time', 'Deny']);
-      expect(openedOptionDescriptions(scriptAttended)).toEqual([
-        'Never asks again',
-        'Confirms with a dialog before each action',
-        'Abu will not do this kind of thing',
-      ]);
-    });
-
-    /*
-      F2 — "ask every time" is the same WORD in both columns and two different
-      facts, and only one of them was ever written down. Attended it is a
-      dialog. Unattended there is no screen: `askOverIm` resolves a channel
-      from the conversation's IM session binding, which a scheduled task (a
-      fresh conversation per run) and a trigger never have — so the request is
-      refused with `no_binding`. Pinning the split by COLUMN, on an ordinary
-      row, because the divergence is a run-mode property and not a
-      scripting one.
-    */
-    it('says what "ask every time" means in each column, since it is not the same thing', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
-      const user = userEvent.setup();
-      render(<CapabilitiesSection />);
-      await openBuiltinBrowser(user);
-
-      const [attended, unattended] = policyCells(
-        within(permissionCard('Action permissions')).getByText('Click and fill in')
-          .closest('li') as HTMLElement,
-      );
-
-      await user.click(attended);
-      const attendedAsk = openedOptionDescriptions(attended)[
-        openedOptionLabels(attended).indexOf('Ask every time')
-      ];
-      await user.click(unattended);
-      const unattendedAsk = openedOptionDescriptions(unattended)[
-        openedOptionLabels(unattended).indexOf('Ask every time')
-      ];
-
-      expect(attendedAsk).toBe('Confirms with a dialog before each action');
-      expect(unattendedAsk).toBe("Asks in the task's IM channel; refused automatically if none is bound");
-      // The point of the change: the two columns no longer say the same thing.
-      expect(unattendedAsk).not.toBe(attendedAsk);
-      // ...and it must not promise a dialog nobody is there to answer. What it
-      // promises instead is the task's own IM channel, which the scheduler and
-      // the trigger engine really do hand the seam
-      // (`core/im/approvalTarget.ts`), plus the refusal when none is bound.
-      expect(unattendedAsk).not.toMatch(/dialog/i);
-      expect(unattendedAsk).toMatch(/IM channel/);
-      expect(unattendedAsk).toMatch(/refused/);
-    });
-
-    it('writes the opt-in to the store and warns, once, directly under that select', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
-      const user = userEvent.setup();
-      render(<CapabilitiesSection />);
-      await openBuiltinBrowser(user);
-
-      const scriptCard = permissionCard('Run scripts (advanced)');
-      const [, scriptUnattended] = policyCells(scriptCard);
+      const cell = policySelect(scriptCard);
       // Nothing to warn about until the user chooses it.
       expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
 
-      await user.click(scriptUnattended);
-      await user.click(openedOption(scriptUnattended, /^Allow/));
+      await user.click(cell);
+      await user.click(openedOption(cell, /^Allow/));
 
-      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting)
-        .toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('allow');
       const warning = within(scriptCard).getByText(/Elevated risk/);
-      expect(warning.textContent).toMatch(/signed-in state/);
+      expect(warning.textContent).toMatch(/Always allow/);
       // ONE line — not a banner plus an ⓘ plus a dialog.
       expect(within(scriptCard).getAllByText(/Elevated risk/)).toHaveLength(1);
-      // ...and it belongs to the scripting card, not to the matrix above it.
+      // ...and it belongs to the scripting card, not to the rows above it.
       expect(within(permissionCard('Action permissions')).queryByText(/Elevated risk/)).toBeNull();
 
       // Choosing something else takes the warning away with it.
-      await user.click(scriptUnattended);
-      await user.click(openedOption(scriptUnattended, /^Deny/));
+      await user.click(cell);
+      await user.click(openedOption(cell, /^Deny/));
       expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
     });
 
     /*
-      Product ruling (security review of 52e47a40): the warning is gated on the
-      master switch as well as on the value. With the switch off the whole
-      automatic-tasks column is disabled and the gate refuses every automatic
-      browser action, so the stored 'allow' describes an intention, not a live
-      risk — and a warning that fires when nothing can happen is how a reader
-      learns to ignore these lines.
+      Product ruling (security review of 52e47a40), and the column collapse did
+      not retire it: with the master switch off, the gate refuses every
+      automatic browser action, and an ATTENDED script is asked about every
+      time whatever this row says (`registry.ts` never lets scripting ride a
+      grant). So a stored 'allow' describes an intention, not a live risk —
+      and a warning that fires when nothing can happen is how a reader learns
+      to ignore these lines.
     */
     it('holds the risk warning back until the automatic-tasks master switch is on', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: false,
-        browserOperationPolicy: {
-          ...DEFAULT_BROWSER_OPERATION_POLICY,
-          unattended: { ...DEFAULT_BROWSER_OPERATION_POLICY.unattended, scripting: 'allow' },
-        },
+        browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, scripting: 'allow' },
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
       const scriptCard = permissionCard('Run scripts (advanced)');
-      // The value really is stored, and the cell really is showing it...
-      const [, scriptUnattended] = policyCells(scriptCard);
-      expect(scriptUnattended).toHaveTextContent('Allow');
-      expect(scriptUnattended).toBeDisabled();
-      // ...but nothing can act on it yet, so nothing is warned about.
+      // The value really is stored, and the control really is showing it...
+      expect(policySelect(scriptCard)).toHaveTextContent('Allow');
+      // ...but nothing automatic can act on it yet, so nothing is warned about.
       expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
 
-      // Turning the switch on is the moment the tier becomes live.
+      // Turning the switch on is the moment it becomes live.
       await user.click(within(permissionCard('Automatic tasks')).getByRole('switch'));
 
       expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
@@ -1820,9 +1784,10 @@ describe('CapabilitiesSection', () => {
       expect(screen.getByText('操作权限')).toBeInTheDocument();
       expect(screen.getByText('只看页面')).toBeInTheDocument();
       expect(screen.getByText('点击和填写')).toBeInTheDocument();
-      // Card title + two column headers (matrix and scripting card).
-      expect(screen.getAllByText('自动任务').length).toBe(3);
-      expect(screen.getAllByText('你在场时').length).toBe(2);
+      // Only the master-switch card is called 自动任务 now: the column headings
+      // went with the columns, and 你在场时 has no surface left at all.
+      expect(screen.getAllByText('自动任务').length).toBe(1);
+      expect(screen.queryByText('你在场时')).toBeNull();
       expect(permissionCard('运行脚本（高级）')).toHaveTextContent('让阿布在页面里执行代码');
       expect(screen.queryByText(/登录失效/)).toBeNull();
 

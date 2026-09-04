@@ -1038,18 +1038,17 @@ export interface TranslationDict {
     browserUnattendedReachNone: string;
     browserUnattendedReachOff: string;
     // Operation-class three-state policy + unattended master switch (batch-二
-    // 「无人值守授权闭环」T1). No UI consumes these yet — added ahead of the
-    // settings-page task (U2) so that task only has to build the view.
+    // 「无人值守授权闭环」T1). ONE row per class since the 2026-09-04 ruling
+    // collapsed the attended/automatic columns — the two column headings that
+    // used to live here have no surface left to name.
     browserOpPolicyTitle: string;
     browserOpPolicyDesc: string;
-    browserOpPolicyColumnAttended: string;
-    browserOpPolicyColumnUnattended: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
-    /** Scripting is split out of the 2x2 matrix into its own card: it is the
-     *  one row an ordinary user should not skim past, and its automatic-tasks
-     *  cell is the only one that carries a risk warning. The class name is
-     *  that card's title, so it carries a description of its own. */
+    /** Scripting is split out into its own card: it is the one row an ordinary
+     *  user should not skim past, and the only one that carries a risk
+     *  warning. The class name is that card's title, so it carries a
+     *  description of its own. */
     browserOpClassScripting: string;
     browserOpClassScriptingDesc: string;
     browserOpStateAllow: string;
@@ -1057,28 +1056,20 @@ export interface TranslationDict {
     browserOpStateAsk: string;
     browserOpStateAllowDesc: string;
     browserOpStateDenyDesc: string;
-    browserOpStateAskDesc: string;
     /**
-     * F2 (2026-09-04) — the automatic-tasks column's own 「每次询问」, because
-     * "asks with a dialog" is false there: nobody is in front of the screen.
-     *
-     * It asks over IM instead, at the channel the automation itself names
+     * One line covering BOTH execution contexts, because one setting now
+     * governs both: a dialog while the user is here, and an IM approval at
+     * the channel the automation itself names when a task is running alone
      * (`core/im/approvalTarget.ts` → `askOverIm`). With no channel bound
      * there is nobody to ask and the action is refused (`no_binding`) with a
-     * desktop notice — which is the second half of what this string says, and
-     * the reason the task editor's field is now called 结果与审批推送频道.
+     * desktop notice — the reason the task editor's field is called
+     * 结果与审批推送频道.
      */
-    browserOpStateAskUnattendedDesc: string;
-    /**
-     * The `allow` option's description in the automatic-tasks × scripting cell
-     * specifically (2026-09-04 ruling). The tier is real and choosable, but it
-     * ships OFF and is honored only on sites the user set to 始终允许 — so the
-     * option states that scope itself, rather than promising "never asks
-     * again" like the generic `allow` description does.
-     */
-    browserOpStateAllowUnattendedScriptDesc: string;
-    /** ⚠ line under that select while `allow` is selected AND the automatic-
-     *  tasks master switch is on — i.e. only while the risk is live. */
+    browserOpStateAskDesc: string;
+    /** ⚠ line under the scripting select while `allow` is selected AND the
+     *  automatic-tasks master switch is on — i.e. only while the risk is
+     *  live. An attended script is asked about every time whatever this row
+     *  says, so the switch is what makes an `allow` here mean anything. */
     browserUnattendedScriptRiskWarning: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;

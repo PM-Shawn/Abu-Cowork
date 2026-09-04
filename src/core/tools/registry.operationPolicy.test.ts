@@ -90,15 +90,13 @@ const attended = { conversationId: 'conv-1' } as never;
 const unattendedOwner = { conversationId: OWNER, interactionMode: 'background' } as never;
 const attendedOwner = { conversationId: OWNER } as never;
 
+/** The default policy with ONE row overridden. There is no column argument
+ *  since the 2026-09-04 collapse: both execution contexts read this value. */
 function policyWith(
-  column: 'attended' | 'unattended',
-  cell: keyof BrowserOperationPolicy['attended'],
+  cell: keyof BrowserOperationPolicy,
   state: 'allow' | 'deny' | 'ask',
 ): BrowserOperationPolicy {
-  return {
-    ...DEFAULT_BROWSER_OPERATION_POLICY,
-    [column]: { ...DEFAULT_BROWSER_OPERATION_POLICY[column], [cell]: state },
-  };
+  return { ...DEFAULT_BROWSER_OPERATION_POLICY, [cell]: state };
 }
 
 describe('browser gate — operation-class policy', () => {
@@ -247,7 +245,7 @@ describe('browser gate — operation-class policy', () => {
     it('a blocked site still wins over everything', async () => {
       useSettingsStore.setState({
         browserSitePermissions: { 'https://evil.com': 'denied' },
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'allow'),
+        browserOperationPolicy: policyWith('interactive', 'allow'),
       });
 
       const decision = await checkToolApproval(
@@ -259,7 +257,7 @@ describe('browser gate — operation-class policy', () => {
 
     it('a policy cell set to deny stops the class outright', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'deny'),
+        browserOperationPolicy: policyWith('interactive', 'deny'),
       });
 
       const decision = await checkToolApproval(
@@ -274,7 +272,7 @@ describe('browser gate — operation-class policy', () => {
     beforeEach(() => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'ask'),
+        browserOperationPolicy: policyWith('interactive', 'ask'),
       });
     });
 
@@ -434,7 +432,7 @@ describe('browser gate — operation-class policy', () => {
     it('reports the scheduled run as the seam\'s source', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'ask'),
+        browserOperationPolicy: policyWith('interactive', 'ask'),
       });
       useChatStore.setState({
         conversations: {
@@ -653,7 +651,7 @@ describe('browser gate — operation-class policy', () => {
     it('a policy "deny" cell does NOT count as a denial', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
-        browserOperationPolicy: policyWith('unattended', 'readOnly', 'deny'),
+        browserOperationPolicy: policyWith('readOnly', 'deny'),
       });
       const r = reporters();
 
@@ -730,7 +728,7 @@ describe('browser gate — operation-class policy', () => {
     it('an unattended "ask" refused (or timed out) at the approval seam counts as a denial', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'ask'),
+        browserOperationPolicy: policyWith('interactive', 'ask'),
       });
       setUnattendedConfirmationResolver(async () => ({ approved: false, reason: 'timeout' }));
       const r = reporters();
@@ -1045,7 +1043,7 @@ describe('browser gate — operation-class policy', () => {
       it('page state cannot widen a scripting deny with the master switch ON and the opt-in configured', async () => {
         useSettingsStore.setState({
           allowUnattendedBrowser: true,
-          browserOperationPolicy: policyWith('unattended', 'scripting', 'allow'),
+          browserOperationPolicy: policyWith('scripting', 'allow'),
         });
         const forgedShapes = [
           { authState: 'allowed' },
@@ -1210,7 +1208,7 @@ describe('browser gate — operation-class policy', () => {
   describe('unattended scripting: the opt-in allow tier (2026-09-04 ruling)', () => {
     const optedIn = () => useSettingsStore.setState({
       allowUnattendedBrowser: true,
-      browserOperationPolicy: policyWith('unattended', 'scripting', 'allow'),
+      browserOperationPolicy: policyWith('scripting', 'allow'),
     });
     /** Fails the test if the approval seam is consulted at all — an opt-in
      *  allow must NOT become an IM round-trip nobody is there to answer. */
@@ -1279,7 +1277,7 @@ describe('browser gate — operation-class policy', () => {
     it('denies with the master switch off, however the cell is set', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: false,
-        browserOperationPolicy: policyWith('unattended', 'scripting', 'allow'),
+        browserOperationPolicy: policyWith('scripting', 'allow'),
       });
       withTabOrigin(ALLOWED_URL);
 
@@ -1370,10 +1368,10 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserAllow).toHaveBeenCalledWith('grant');
     });
 
-    it('can be stored as allow — the opt-in is a real setting, not a silently dropped one', () => {
-      useSettingsStore.getState().setBrowserOperationState('unattended', 'scripting', 'allow');
+    it('can be stored as allow — a real setting, not a silently dropped one', () => {
+      useSettingsStore.getState().setBrowserOperationState('scripting', 'allow');
 
-      expect(useSettingsStore.getState().browserOperationPolicy.unattended.scripting).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('allow');
     });
 
     /**
@@ -1507,7 +1505,7 @@ describe('browser gate — operation-class policy', () => {
   describe('attended column', () => {
     it('a user-configured deny stops an attended action before any dialog', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('attended', 'interactive', 'deny'),
+        browserOperationPolicy: policyWith('interactive', 'deny'),
       });
       const confirm = vi.fn(async () => true);
 
@@ -1521,7 +1519,7 @@ describe('browser gate — operation-class policy', () => {
 
     it('a user-configured ask on read-only asks — the setting is not inert', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('attended', 'readOnly', 'ask'),
+        browserOperationPolicy: policyWith('readOnly', 'ask'),
       });
       const confirm = vi.fn(async () => true);
 
@@ -1718,7 +1716,7 @@ describe('browser gate — operation-class policy', () => {
   describe('R1 — a site grant cannot dilute a scripting refusal', () => {
     it('reports a scripting refusal as scripting, and a grant-consented allow as a grant', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('attended', 'scripting', 'ask'),
+        browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
 
@@ -1756,7 +1754,7 @@ describe('browser gate — operation-class policy', () => {
 
     it('the dodge sequence aborts end-to-end: execute_js denied → click by grant → execute_js denied', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('attended', 'scripting', 'ask'),
+        browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       const onThreshold = vi.fn();
       const tracker = createBrowserDenialTracker(onThreshold);

@@ -21,9 +21,17 @@ import { CapabilityBreadcrumb, settingsCardClass } from './CapabilitySetupView';
  *  are shared: the verdicts and the policy grid are one setting for both. */
 export type BrowserBackend = 'builtin' | 'chrome';
 
-/** Every policy select on this surface shares one width, so the two columns
- *  line up across the matrix card and the split-out scripting card. */
-const policySelectWidthClass = 'w-28 shrink-0 justify-center';
+/**
+ * Every dropdown on the capability pages is this wide — the policy rows, the
+ * scripting card, the site list's verdicts and its add row — so the pane
+ * reads as one control repeated rather than one per length of its own label.
+ *
+ * 13rem is picked to hold the longest option label with its description on
+ * two lines in both locales; the menu is exactly this wide too (the `Select`
+ * menu hugs its trigger), so a description wraps inside the menu instead of
+ * setting its width.
+ */
+const policySelectWidthClass = 'w-52 shrink-0';
 
 /**
  * Persistent per-site browser-automation verdicts, written from the
@@ -248,13 +256,16 @@ export function BrowserSitePermissionsPage({
  * Chrome channel's weaker safety net gets called out.
  *
  * Layout follows the shape of the decision:
- *  - the master switch is FIRST because it overrides everything under it (with
- *    it off, no automatic-task cell can allow anything, and that column is
- *    disabled to say so rather than showing settings that do nothing);
- *  - the two ordinary operation classes form a 2x2 grid;
- *  - scripting gets its own card. Under "automatic tasks" it is a degenerate
- *    cell (`browserOperationStatesFor` offers no "allow" there), and it is the
- *    one row a user should not skim past inside a grid.
+ *  - the master switch is FIRST because it overrides everything under it: with
+ *    it off, nothing an automatic task asks for is allowed, whatever the rows
+ *    below say;
+ *  - the two ordinary operation classes are one row each, one dropdown each.
+ *    They used to be a 2x2 grid — one column for «while you are here», one for
+ *    «automatic tasks» — until the 2026-09-04 ruling («不应该分在不在场，只要
+ *    得到了用户允许，都能做») made the permission one value that both contexts
+ *    read;
+ *  - scripting gets its own card: it is the one row a user should not skim
+ *    past inside a grid, and the only one carrying a risk warning.
  */
 export function BrowserPermissionCards({
   backend,
@@ -281,60 +292,38 @@ export function BrowserPermissionCards({
     deny: t.settings.browserOpStateDenyDesc,
   };
   /*
-    The option list is asked for per cell, not shared — `browserOperationStatesFor`
-    is the single seam that says which tiers a cell may hold.
+    The option list is asked for per row, not shared — `browserOperationStatesFor`
+    is the single seam that says which tiers a row may hold.
 
-    Automatic-task scripting used to be the one cell without an "allow": a site
-    grant is consent the user gave to a CLICK, and it did not buy the right to
-    run code in that page unwatched. The 2026-09-04 ruling reopened that tier
-    as an OPT-IN — still off by default, still refused everywhere except sites
-    the user set to 始终允许 — so the option is now live, and it says that
-    scope in its own description instead of in a paragraph above the control.
-
-    Two descriptions therefore vary by COLUMN, not by row: the scripting
-    opt-in's scope, and "ask every time", which cannot mean "a dialog" in a
-    column where nobody is at the screen. There it means the IM channel the
-    automation itself named — see `browserOpStateAskUnattendedDesc`.
+    Each description now covers BOTH execution contexts in one line, because
+    the setting does: «ask every time» is a dialog while the user is here and
+    an IM approval when a task is running alone. Before the 2026-09-04 ruling
+    there were two columns and two descriptions per state; keeping the second
+    sentence out of a paragraph above the control and inside the option is the
+    part that did not change.
   */
-  const optionsFor = (
-    runMode: 'attended' | 'unattended',
-    opClass: BrowserOperationClass,
-  ): SelectOption[] => {
-    const unattended = runMode === 'unattended';
-    const unattendedScript = unattended && opClass === 'scripting';
-    return browserOperationStatesFor(runMode, opClass).map((state) => ({
+  const optionsFor = (opClass: BrowserOperationClass): SelectOption[] =>
+    browserOperationStatesFor(opClass).map((state) => ({
       value: state,
       label: stateLabels[state],
-      description: state === 'allow' && unattendedScript
-        ? t.settings.browserOpStateAllowUnattendedScriptDesc
-        : state === 'ask' && unattended
-          ? t.settings.browserOpStateAskUnattendedDesc
-          : stateDescriptions[state],
+      description: stateDescriptions[state],
     }));
-  };
 
-  const attendedColumn = t.settings.browserOpPolicyColumnAttended;
-  const unattendedColumn = t.settings.browserOpPolicyColumnUnattended;
-
-  /** Both cards render their cells through here, so the matrix and the
-   *  split-out scripting card write to the store through the same call. */
-  const policyCell = (
-    runMode: 'attended' | 'unattended',
+  /** Both cards render their rows through here, so the two ordinary classes
+   *  and the split-out scripting card write to the store through the same
+   *  call. */
+  const policyRow = (
     key: 'readOnly' | 'interactive' | 'scripting',
     opClass: BrowserOperationClass,
     rowLabel: string,
   ) => (
     <Select
       variant="inline"
-      value={policy[runMode][key]}
-      options={optionsFor(runMode, opClass)}
-      onChange={(v) => setBrowserOperationState(runMode, key, v as BrowserOperationState)}
-      disabled={runMode === 'unattended' && !allowUnattended}
-      ariaLabel={`${rowLabel} · ${runMode === 'attended' ? attendedColumn : unattendedColumn}`}
-      className={cn(
-        policySelectWidthClass,
-        runMode === 'unattended' && !allowUnattended && 'opacity-50',
-      )}
+      value={policy[key]}
+      options={optionsFor(opClass)}
+      onChange={(v) => setBrowserOperationState(key, v as BrowserOperationState)}
+      ariaLabel={rowLabel}
+      className={policySelectWidthClass}
     />
   );
 
@@ -349,18 +338,6 @@ export function BrowserPermissionCards({
 
   const allowedCount = Object.values(sitePermissions).filter((v) => v === 'allowed').length;
   const deniedCount = Object.values(sitePermissions).filter((v) => v === 'denied').length;
-
-  const columnHeader = (
-    <div className="flex items-center gap-3 pb-1">
-      <span className="min-w-0 flex-1" />
-      <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-        {attendedColumn}
-      </span>
-      <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-        {unattendedColumn}
-      </span>
-    </div>
-  );
 
   return (
     <div className="space-y-3">
@@ -408,15 +385,13 @@ export function BrowserPermissionCards({
         )}
 
         <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
-          {columnHeader}
           <ul className="divide-y divide-[var(--abu-border)]">
             {matrixRows.map((row) => (
               <li key={row.key} className="flex items-center gap-3 py-2">
                 <span className="min-w-0 flex-1 text-body text-[var(--abu-text-secondary)]">
                   {row.label}
                 </span>
-                {policyCell('attended', row.key, row.opClass, row.label)}
-                {policyCell('unattended', row.key, row.opClass, row.label)}
+                {policyRow(row.key, row.opClass, row.label)}
               </li>
             ))}
           </ul>
@@ -431,11 +406,9 @@ export function BrowserPermissionCards({
           {t.settings.browserOpClassScriptingDesc}
         </p>
         <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
-          {columnHeader}
           <div className="flex items-center gap-3 py-2">
             <span className="min-w-0 flex-1" />
-            {policyCell('attended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
-            {policyCell('unattended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
+            {policyRow('scripting', 'scripting', t.settings.browserOpClassScripting)}
           </div>
           {/*
             The warning that comes WITH the choice, not before it: one line,
@@ -443,14 +416,16 @@ export function BrowserPermissionCards({
             gives its own high-risk switch — the risk is stated where the
             decision is made, not hidden behind an ⓘ or a dialog.
 
-            Gated on the master switch too (product ruling, security review of
-            52e47a40): with the switch off this whole column is disabled and
-            the gate refuses every automatic browser action, so there is no
-            live risk to warn about. A bright warning under a greyed-out
-            control describes a danger that does not currently exist — and
-            teaches the reader that these warnings can be ignored.
+            Still gated on the master switch (product ruling, security review
+            of 52e47a40), and the merge into one column did not change that:
+            with the switch off, the gate refuses every automatic browser
+            action, and an ATTENDED script is asked about every time whatever
+            this row says (`registry.ts` never lets scripting ride a grant).
+            So an 'allow' stored with the switch off is an intention, not a
+            live risk — and a bright warning under a control that is currently
+            harmless teaches the reader that these warnings can be ignored.
           */}
-          {allowUnattended && policy.unattended.scripting === 'allow' && (
+          {allowUnattended && policy.scripting === 'allow' && (
             <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
               <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {t.settings.browserUnattendedScriptRiskWarning}

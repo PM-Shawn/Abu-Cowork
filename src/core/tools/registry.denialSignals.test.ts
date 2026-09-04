@@ -176,10 +176,7 @@ describe('browser gate — denial and approval signals', () => {
     beforeEach(() => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
-        browserOperationPolicy: {
-          ...DEFAULT_BROWSER_OPERATION_POLICY,
-          unattended: { ...DEFAULT_BROWSER_OPERATION_POLICY.unattended, interactive: 'ask' },
-        },
+        browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
       });
     });
 

@@ -1641,7 +1641,6 @@ const enUS: TranslationDict = {
     categoryBlocksHint: 'Skills you marked "don\'t propose this kind". Unblock to let Abu suggest them again.',
     enterpriseSkills: 'Enterprise Skills',
     enterpriseMcp: 'Enterprise MCP',
-    personalSource: 'Mine',
     organizationSource: 'Organization',
   },
 

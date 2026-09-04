@@ -11,6 +11,9 @@ interface SourceSubNavProps {
   mineLabel: string;
   /** Prefix for the per-tab `data-testid` (`{prefix}-market` / `{prefix}-mine`). */
   testIdPrefix?: string;
+  /** `id` of the element rendering the selected source, named by `aria-controls`
+   *  so the pair reads as tabs over one panel rather than two loose buttons. */
+  panelId?: string;
 }
 
 /**
@@ -19,7 +22,7 @@ interface SourceSubNavProps {
  * `tablist` so the active source is announced, not just coloured.
  */
 export default function SourceSubNav({
-  value, onChange, marketLabel, mineLabel, testIdPrefix = 'extensions-source',
+  value, onChange, marketLabel, mineLabel, testIdPrefix = 'extensions-source', panelId,
 }: SourceSubNavProps) {
   const items: { id: ExtensionSource; label: string }[] = [
     { id: 'market', label: marketLabel },
@@ -29,7 +32,7 @@ export default function SourceSubNav({
     <div
       role="tablist"
       aria-label={`${marketLabel} / ${mineLabel}`}
-      className="flex items-center gap-1 px-8 pt-2 pb-1"
+      className="flex items-center gap-1 pt-2 pb-1"
     >
       {items.map((item) => {
         const active = item.id === value;
@@ -39,6 +42,7 @@ export default function SourceSubNav({
             type="button"
             role="tab"
             aria-selected={active}
+            aria-controls={panelId}
             data-testid={`${testIdPrefix}-${item.id}`}
             onClick={() => onChange(item.id)}
             className={cn(

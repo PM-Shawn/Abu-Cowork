@@ -1856,10 +1856,9 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
-    // Enterprise capability source (shown inside Skill / MCP when bound)
+    // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
     organizationSource: string;
   };
 

@@ -1,8 +1,9 @@
 /**
  * The ORGANIZATION plugin loop in the real Electron shell, against a real
- * enterprise console over HTTP: bind through the product's own login UI, switch
- * Extensions to the 组织 scope, read the disclosure, install, verify the
- * ON-DISK layout, uninstall, and (on a spec-owned package) update.
+ * enterprise console over HTTP: bind through the product's own login UI, open
+ * the 插件 tab's 「市场」 — which for a bound client IS the organization catalog —
+ * read the disclosure, install, verify the ON-DISK layout, uninstall, and (on a
+ * spec-owned package) update.
  *
  * Why this exists: every other test of this feature mocks either the installer
  * or the filesystem, so the on-disk layout it produces had never been proven by
@@ -25,7 +26,7 @@
  *   ABU_E2E_CONSOLE_PASSWORD
  * plus an enterprise renderer build — run with ABU_BUILD_TARGET=enterprise so
  * the suite's global setup rebuilds dist-electron-spike against the private
- * modules (the 组织 scope and its plugin tab do not exist in an OSS build).
+ * modules (the organization plugin tab does not exist in an OSS build).
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
@@ -85,12 +86,7 @@ const SIGN_IN_BUTTON = /^(登录|Sign in)$/;
 const BOUND_STATUS = /已绑定到企业实例|Connected to enterprise instance/;
 const EXTENSIONS = /^(扩展|Extensions)$/;
 const PLUGINS_TAB = /^(插件|Plugins)$/;
-const MARKETPLACE_TAB = /^(插件市场|Marketplace)$/;
-const SCOPE_PERSONAL = /^(我的|Mine)$/;
-const SCOPE_ORGANIZATION = /^(组织|Organization)$/;
 const CANCEL_BUTTON = /^(取消|Cancel)$/;
-/** Personal marketplace row action — `安装: <name>` while NOT installed. */
-const MARKET_INSTALL_ACTION = /^(安装|Install)[:：] /;
 
 // EnterprisePluginTab is single-locale by design (see its module header), so
 // these are exact strings, not alternations.
@@ -293,17 +289,22 @@ async function openPluginsTab(page: Page): Promise<void> {
   const panel = page.getByRole('main');
   await expect(panel.getByRole('button', { name: PLUGINS_TAB })).toBeVisible({ timeout: READY_TIMEOUT });
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
+  await selectSource(page, 'market');
 }
 
-/** The 我的/组织 selector; only rendered once the client is bound. */
-function scopeToggle(page: Page) {
-  return page.getByRole('group', { name: /^(我的|Mine) \/ (组织|Organization)$/ });
+/**
+ * 市场 | 我的 — the source sub-nav every Extensions tab carries. There is no
+ * 我的/组织 scope toggle any more: for a bound client the organization catalog
+ * IS the 「市场」 panel, so 「市场」 is where the whole organization loop happens
+ * and 「我的」 stays what the user wrote themselves.
+ */
+function sourceTab(page: Page, source: 'market' | 'mine') {
+  return page.getByTestId(`extensions-source-${source}`);
 }
 
-async function selectScope(page: Page, scope: 'personal' | 'organization'): Promise<void> {
-  const name = scope === 'personal' ? SCOPE_PERSONAL : SCOPE_ORGANIZATION;
-  await scopeToggle(page).getByRole('button', { name }).click();
-  await expect(scopeToggle(page).getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true');
+async function selectSource(page: Page, source: 'market' | 'mine'): Promise<void> {
+  await sourceTab(page, source).click();
+  await expect(sourceTab(page, source)).toHaveAttribute('aria-selected', 'true');
 }
 
 /**
@@ -318,11 +319,11 @@ function orgCard(page: Page, name: string) {
   return page.getByRole('main').getByTitle(name, { exact: true }).locator('xpath=../..');
 }
 
-/** Force a catalog re-sync: the tab polls every 5 min, but re-syncs on mount. */
+/** Force a catalog re-sync: the tab polls every 5 min, but re-syncs on mount.
+ *  Leaving for 「我的」 unmounts it; coming back remounts it. */
 async function resyncOrgCatalog(page: Page): Promise<void> {
-  await selectScope(page, 'personal');
-  await expect(page.getByText(MARKETPLACE_TAB).first()).toBeVisible({ timeout: READY_TIMEOUT });
-  await selectScope(page, 'organization');
+  await selectSource(page, 'mine');
+  await selectSource(page, 'market');
 }
 
 // ─── the walkthrough ─────────────────────────────────────────────────────────
@@ -364,26 +365,22 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     if (adminCookie) await deleteOwnedPackage();
   });
 
-  test('the bound shell shows the 组织 scope and renders the organization catalog', async () => {
+  test('the bound shell renders the organization catalog as the 插件 「市场」', async () => {
     await openPluginsTab(page);
 
-    // Personal scope first: the organization catalog must not be what a
-    // personal view shows.
-    await expect(page.getByText(MARKETPLACE_TAB).first()).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(scopeToggle(page).getByRole('button', { name: SCOPE_PERSONAL })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-
-    await selectScope(page, 'organization');
-
-    // The organization tab has no 插件市场 sub-tab — that is the personal
-    // market. Its own header is the 组织 section with a count.
+    // 「市场」 is the landing source, and for a bound client it is the console's
+    // catalog rather than Abu's own market.
+    await expect(sourceTab(page, 'market')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('main').getByText(CATALOG_PLUGIN).first()).toBeVisible({
       timeout: READY_TIMEOUT,
     });
-    await expect(page.getByText(MARKETPLACE_TAB)).toHaveCount(0);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-enterprise-plugin-catalog.png') });
+
+    // 「我的」 is the other half of the same tab and stays personal: the
+    // organization catalog must not be what it shows.
+    await selectSource(page, 'mine');
+    await expect(page.getByTestId('plugin-mine-row').filter({ hasText: CATALOG_PLUGIN })).toHaveCount(0);
+    await selectSource(page, 'market');
   });
 
   test('the catalog row states the disclosure counts and the 组织审核 badge', async () => {
@@ -477,26 +474,19 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     expect(fs.existsSync(path.join(stagingRoot(dataRoot), CATALOG_PLUGIN))).toBe(false);
   });
 
-  test('the card reads 已安装 and the personal 插件 view does not list it', async () => {
+  test('the card reads 已安装 and 「我的」 does not list it', async () => {
     await expect(orgCard(page, CATALOG_PLUGIN)).toContainText(BADGE_INSTALLED, { timeout: READY_TIMEOUT });
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-enterprise-plugin-installed.png') });
 
-    await selectScope(page, 'personal');
-    await expect(page.getByText(MARKETPLACE_TAB).first()).toBeVisible({ timeout: READY_TIMEOUT });
-    // The personal view's own installed list must stay clean: an organization
-    // install is not a personal one, in either sub-tab.
-    await expect(page.getByTestId('installed-plugin-row').filter({ hasText: CATALOG_PLUGIN })).toHaveCount(0);
-    // The personal 插件市场 does carry a same-named entry — this repository's
-    // built-in `abu-official` market ships the very same plugin — and that is
-    // correct: installs are keyed `name@marketplace`, so the two coexist. What
-    // must NOT happen is the organization install marking that row installed;
-    // the row still offers 安装, not 已安装.
-    await page.getByRole('main').getByRole('button', { name: MARKETPLACE_TAB }).first().click();
-    const personalRow = page.getByTestId('plugin-marketplace-entry').filter({ hasText: CATALOG_PLUGIN });
-    await expect(personalRow).toHaveCount(1);
-    await expect(personalRow.getByRole('button', { name: MARKET_INSTALL_ACTION })).toBeEnabled();
+    // 「我的」 lists what this user wrote. An organization install is not that,
+    // so it must not appear there — the row asserted absent here is the same
+    // `plugin-mine-row` the personal spec asserts PRESENT for a self-authored
+    // plugin, so an implementation that simply rendered nothing would fail
+    // that spec rather than pass this one.
+    await selectSource(page, 'mine');
+    await expect(page.getByTestId('plugin-mine-row').filter({ hasText: CATALOG_PLUGIN })).toHaveCount(0);
 
-    await selectScope(page, 'organization');
+    await selectSource(page, 'market');
   });
 
   test('uninstalling from the 组织 view removes the record and the directory', async () => {

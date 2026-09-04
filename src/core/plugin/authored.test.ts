@@ -46,6 +46,26 @@ describe('isSelfAuthoredPlugin', () => {
     ).toBe(false);
   });
 
+  describe('sourceKind takes precedence over the legacy sha fallback', () => {
+    it('is false for a url source even with no sha — the fallback alone would say true', () => {
+      expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'url' }))).toBe(false);
+    });
+
+    it('is true for a relative source even with a sha — the fallback alone would say false', () => {
+      expect(
+        isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'relative', sha: 'abc123' })),
+      ).toBe(true);
+    });
+  });
+
+  it('is false for an enterprise install recorded as relative — enterprise staging copies bytes locally', () => {
+    expect(
+      isSelfAuthoredPlugin(
+        makePlugin({ marketplace: ENTERPRISE_MARKET_NAME, sourceKind: 'relative', sha: undefined }),
+      ),
+    ).toBe(false);
+  });
+
   describe('legacy records written before sourceKind existed', () => {
     it('falls back to "has a sha" ⇒ remote ⇒ not self-authored', () => {
       expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sha: 'abc123' }))).toBe(false);
@@ -73,12 +93,17 @@ describe('orphanedInstalls', () => {
     expect(orphanedInstalls([org], [{ name: 'here' }])).toEqual([]);
   });
 
-  it('does not orphan the built-in market when it is present in the list', () => {
+  it('never orphans a built-in install, present in the list or not — the user cannot remove that market', () => {
     const builtin = makePlugin({ key: 'b@abu-official', marketplace: BUILTIN_MARKET_NAME });
     expect(orphanedInstalls([builtin], [{ name: BUILTIN_MARKET_NAME }])).toEqual([]);
+    expect(orphanedInstalls([builtin], [{ name: 'here' }])).toEqual([]);
+    expect(orphanedInstalls([builtin], [])).toEqual([]);
   });
 
-  it('orphans everything personal when the marketplace list is empty', () => {
+  // Caller-owned caveat: this predicate cannot distinguish "the user has no markets"
+  // from "markets have not loaded yet" — the caller must render the orphan group only
+  // after the marketplace list has hydrated.
+  it('orphans everything personal when the marketplace list is empty (caller must only ask after hydration)', () => {
     const a = makePlugin({ key: 'a@one', marketplace: 'one' });
     const b = makePlugin({ key: 'b@two', marketplace: 'two' });
     expect(orphanedInstalls([a, b], [])).toEqual([a, b]);

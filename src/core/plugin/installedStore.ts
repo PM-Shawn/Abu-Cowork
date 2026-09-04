@@ -10,7 +10,11 @@ export interface InstalledPlugin {
   checksum?: string;
   installedAt: string;
   /**
-   * How the package was obtained — mirrors `PluginSource['kind']`.
+   * How the bytes were copied in — the `PluginSource['kind']` the installer was
+   * handed, not a claim about where the package came from. Enterprise installs
+   * verify the artifact first and then stage it on disk, so they all arrive as
+   * `'relative'`; the field is only meaningful once an install is known not to
+   * be enterprise (see `isEnterpriseInstall`).
    *
    * Optional because records written before this field existed must still
    * load; consumers that need "was this authored locally?" fall back to the

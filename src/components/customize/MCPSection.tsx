@@ -71,9 +71,11 @@ interface MCPSectionProps {
   onAddFormChange?: (open: boolean) => void;
   /** `'mine'` narrows the list to the servers the user configured by hand — the
    *  「我的」 half of the Extensions source sub-nav. A plugin's server belongs to
-   *  the package that brought it, and the catalog belongs to 「市场」
-   *  (ConnectorCatalog), so both are absent here. Omitted = every source, the
-   *  pre-split behaviour. */
+   *  the package that brought it, and un-installed catalog cards are offers
+   *  「市场」 (ConnectorCatalog) makes, so both are absent here. What is left is
+   *  rendered as ONE ungrouped list: the 我的/市场 split describes where a config
+   *  came from, and here the answer is always "the user". Omitted = every
+   *  source, grouped as before. */
   sourceFilter?: 'mine';
   /** A catalog entry to pre-fill the add-server form with, applied when the form
    *  is open. 「市场」's 「添加」 routes through here rather than adding a server
@@ -246,43 +248,44 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return true;
   }
 
-  // Scope by source first, search second — the two answer different questions,
-  // and the empty state needs them apart: nothing of the user's own at all
-  // ("还没有你添加的连接器") reads differently from "your servers, none matching".
+  // 「我的」 = every configured server no plugin owns. Scope by source first,
+  // search second — the two answer different questions, and the empty state
+  // needs them apart: nothing of the user's own at all ("还没有你添加的连接器")
+  // reads differently from "your servers, none matching".
   const scopedServers = useMemo(
-    () => (sourceFilter === 'mine' ? mcpServers.filter((s) => !serverOwners[s.config.name]) : mcpServers),
-    [mcpServers, serverOwners, sourceFilter],
+    () => mcpServers.filter((s) => !serverOwners[s.config.name]),
+    [mcpServers, serverOwners],
   );
+
+  // One ungrouped list. The custom/template split is a statement about where a
+  // config *came from*, and under 「我的」 the answer is always "the user" — so
+  // filing a configured `github` under 「市场」 would contradict the tab it sits
+  // in. It also silently lost `abu-browser-bridge`, which is a template name
+  // (never "custom") that the Electron host drops from the template list
+  // (never an "example") — a server in neither group at all.
+  const mineServers = useMemo(() => {
+    if (!searchLower) return scopedServers;
+    return scopedServers.filter((s) => s.config.name.toLowerCase().includes(searchLower));
+  }, [scopedServers, searchLower]);
 
   // "我的": user-added custom servers (not matching any template)
   const customServers = useMemo(() => {
-    const list = scopedServers.filter((s) => !templateNames.has(s.config.name));
+    const list = mcpServers.filter((s) => !templateNames.has(s.config.name));
     if (!searchLower) return list;
     return list.filter((s) => s.config.name.toLowerCase().includes(searchLower));
-  }, [scopedServers, templateNames, searchLower]);
+  }, [mcpServers, templateNames, searchLower]);
 
   // "示例": all templates — installed ones first, then uninstalled
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: typeof mcpTemplates[0] };
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
-    const scopedNames = new Set(scopedServers.map((s) => s.config.name));
     for (const tmpl of availableTemplates) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
-      if (entry) {
-        // Under 'mine' an installed template server is still the user's, unless
-        // a plugin owns it — scopedServers is the authority on that.
-        if (sourceFilter === 'mine' && !scopedNames.has(tmpl.name)) continue;
-        items.push({ kind: 'installed', entry });
-      } else {
-        // A card for something not installed is an offer, not a possession —
-        // 「市场」 makes those, so 「我的」 shows none.
-        if (sourceFilter === 'mine') continue;
-        items.push({ kind: 'template', template: tmpl });
-      }
+      items.push(entry ? { kind: 'installed', entry } : { kind: 'template', template: tmpl });
     }
     return items;
-  }, [availableTemplates, servers, scopedServers, sourceFilter, searchLower]);
+  }, [availableTemplates, servers, searchLower]);
 
   // The detail is a modal now, so it stays closed until the user clicks a card
   // — no auto-select on load. Still guard against a dangling selection: if the
@@ -524,9 +527,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       if (tmpl) {
         setSelected({ kind: 'template', id: tmpl.id });
       } else {
-        // Custom server: select adjacent item
-        const idx = customServers.findIndex((s) => s.config.name === name);
-        const nextName = customServers[idx - 1]?.config.name ?? customServers[idx + 1]?.config.name;
+        // Custom server: select adjacent item in whichever list is on screen
+        const siblings = sourceFilter === 'mine' ? mineServers : customServers;
+        const idx = siblings.findIndex((s) => s.config.name === name);
+        const nextName = siblings[idx - 1]?.config.name ?? siblings[idx + 1]?.config.name;
         setSelected(nextName ? { kind: 'server', name: nextName } : null);
       }
     }
@@ -637,14 +641,22 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {customServers.length === 0 && exampleItems.length === 0 ? (
-          sourceFilter === 'mine' && scopedServers.length === 0 ? (
-            <div className="py-16 text-center">
-              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.connectorsMineEmptyTitle}</p>
-            </div>
+        {sourceFilter === 'mine' ? (
+          mineServers.length === 0 ? (
+            scopedServers.length === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.connectorsMineEmptyTitle}</p>
+              </div>
+            ) : (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+            )
           ) : (
-            <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
+            </div>
           )
+        ) : customServers.length === 0 && exampleItems.length === 0 ? (
+          <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
             {/* "我的" — user-added custom servers */}

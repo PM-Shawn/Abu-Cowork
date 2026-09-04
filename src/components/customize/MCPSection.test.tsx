@@ -70,6 +70,49 @@ describe('MCPSection · sourceFilter="mine"', () => {
     expect(screen.getByText('github')).toBeTruthy();
   });
 
+  /**
+   * Under 「我的」 the custom/template split is meaningless — everything left is
+   * the user's. Sorting a configured `github` into the 「市场」 group would file
+   * the user's own server under a heading that says it came from elsewhere.
+   */
+  it('renders one ungrouped list — no 市场 heading over the user\u2019s own servers', () => {
+    useMCPStore.setState({
+      servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
+    });
+    render(<MCPSection sourceFilter="mine" />);
+    expect(screen.getByText('github')).toBeTruthy();
+    expect(screen.getByText('hand-rolled')).toBeTruthy();
+    expect(screen.queryByText(tb().exampleServers)).toBeNull();
+    expect(screen.queryByText(tb().myServers)).toBeNull();
+  });
+
+  /**
+   * `abu-browser-bridge` fell through both lists: a template name (so not
+   * "custom") that the Electron host filters out of the template list (so not
+   * an example either). One list cannot lose it.
+   */
+  it('keeps a configured server that belongs to neither of the old two groups', () => {
+    // The Electron command host is what drops the bridge from the template list.
+    vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
+    try {
+      useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
+      render(<MCPSection sourceFilter="mine" />);
+      expect(screen.getByText('abu-browser-bridge')).toBeTruthy();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('still narrows the ungrouped list by the extensions search box', () => {
+    useMCPStore.setState({
+      servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
+    });
+    useSettingsStore.setState({ extensionsSearchQuery: 'hand' });
+    render(<MCPSection sourceFilter="mine" />);
+    expect(screen.getByText('hand-rolled')).toBeTruthy();
+    expect(screen.queryByText('github')).toBeNull();
+  });
+
   it('says 还没有你添加的连接器 when every server came from a plugin', () => {
     useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });

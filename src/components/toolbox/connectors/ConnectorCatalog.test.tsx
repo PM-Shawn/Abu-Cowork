@@ -121,16 +121,36 @@ describe('ConnectorCatalog · 精选连接器', () => {
    * A template carries install affordances a registry entry has no notion of —
    * a labeled secret field with a hint, a configurable argument, a setup note.
    * The prefill therefore names the template it came from, so 「我的」 can open
-   * that install flow instead of a bare form. A registry-sourced entry names
-   * none: it is host-resolved and has nothing extra to ask for.
+   * that install flow instead of a bare form. A connector only the registry
+   * knows names none: there is no such flow to open.
    */
-  it('names the template a template-sourced entry came from, and only that one', () => {
+  it('names the template a template-sourced entry came from, and none for a registry-only one', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
     fireEvent.click(within(rowFor('sentry')).getByTestId('connector-add-button'));
     expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('sentry');
-    fireEvent.click(within(rowFor('github')).getByTestId('connector-add-button'));
+    fireEvent.click(within(rowFor('filesystem')).getByTestId('connector-add-button'));
     expect(onPrefillAdd.mock.calls[1][0].templateId).toBeUndefined();
+  });
+
+  /**
+   * A name both catalogs carry keeps the registry's data — that entry is the
+   * host-resolved one, so it describes what this machine would actually run —
+   * but the template beside it still knows how to ask for what that data cannot
+   * express: sqlite's database path, postgres's connection string,
+   * abu-browser-bridge's setup note. Dropping its id sent exactly those three
+   * connectors to a bare form holding a placeholder `/path/to/database.db`.
+   */
+  it('names the template of a connector both catalogs carry, and still prefills the registry command', () => {
+    const onPrefillAdd = vi.fn();
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
+    fireEvent.click(within(rowFor('sqlite')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
+      name: 'sqlite',
+      command: getRegistryEntry('sqlite')!.command,
+      args: getRegistryEntry('sqlite')!.args,
+      templateId: 'sqlite',
+    });
   });
 
   it('searches a template-only connector by its localized description', () => {

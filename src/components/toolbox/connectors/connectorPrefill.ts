@@ -10,9 +10,10 @@
  * stopped rendering un-installed template cards, those five had no surface left
  * anywhere in the app — so 「市场」 lists the union, deduplicated by name.
  *
- * A registry entry wins a name collision: it is the one resolved per host (the
- * Electron build swaps the Chrome bridge's command), so it describes what this
- * machine would actually run.
+ * A registry entry wins a name collision on every plain-path field: it is the
+ * one resolved per host (the Electron build swaps the Chrome bridge's command),
+ * so it describes what this machine would actually run. It still names the
+ * template it collided with, though — see {@link ConnectorPrefill.templateId}.
  *
  * `ConnectorPrefill` is deliberately *not* `MCPRegistryEntry`: the two catalogs
  * carry different metadata (a template can be HTTP, a registry entry cannot),
@@ -22,7 +23,7 @@
  */
 
 import { BUILTIN_REGISTRY, getEntryDescription, getRegistryEntry, type MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
-import { getMCPTemplatesForHost } from '@/data/marketplace/mcp';
+import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
 import type { MCPTemplate } from '@/types/marketplace';
 
 /** A proposed server config, filled into the add-server form for the user to complete. */
@@ -36,13 +37,20 @@ export interface ConnectorPrefill {
   url?: string;
   description?: string;
   /**
-   * The marketplace template this entry came from, when it came from one. A
+   * The marketplace template that describes this connector, when one does. A
    * template carries install affordances the plain add-server form has nowhere
    * to put — a labeled secret field with a hint, a configurable argument with a
    * placeholder, a setup note, a longer default timeout — so 「我的」 opens that
-   * template's own install flow instead of the bare form. Absent on a
-   * registry-sourced entry (including a name both catalogs carry, which the
-   * registry wins): there is nothing extra to ask for.
+   * template's own install flow instead of the bare form. A name both catalogs
+   * carry gets one too: the registry still wins every plain-path field, but
+   * sqlite's database path and postgres's connection string are exactly what
+   * that path cannot ask for.
+   *
+   * It is an offer, not a guarantee. The consumer resolves the id against its
+   * own host-filtered template list and falls back to the fields beside it when
+   * nothing matches — which is what the Electron host does for
+   * `abu-browser-bridge`, whose template it drops and whose command it swaps.
+   * Absent only on a connector no template describes.
    */
   templateId?: string;
 }
@@ -95,7 +103,16 @@ function fromTemplate(template: MCPTemplate, locale: string): ConnectorCatalogIt
  * localized description (registry descriptions resolve their own locale).
  */
 export function buildConnectorCatalog(locale: string): ConnectorCatalogItem[] {
-  const items = BUILTIN_REGISTRY.map(fromRegistry);
+  // Collisions are matched against the *unfiltered* template list: naming a
+  // template is an offer the consumer resolves against its own host-filtered
+  // list, and a host that dropped the template still gets a usable prefill from
+  // the registry fields the offer travels with.
+  const templatesByName = new Map(mcpTemplates.map((template) => [template.name, template]));
+  const items = BUILTIN_REGISTRY.map((entry) => {
+    const item = fromRegistry(entry);
+    const template = templatesByName.get(item.name);
+    return template ? { ...item, templateId: template.id } : item;
+  });
   const claimed = new Set(items.map((item) => item.name));
   for (const template of getMCPTemplatesForHost()) {
     if (claimed.has(template.name)) continue;

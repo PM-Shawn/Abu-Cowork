@@ -1570,8 +1570,7 @@ describe('CapabilitiesSection', () => {
       expect(openedOption(scriptUnattended, /^Allow/)).not.toBeDisabled();
       expect(openedOptionDescriptions(scriptUnattended)).toEqual([
         'Only on sites set to Always allow',
-        'Only a run started from an IM chat can reach you; scheduled tasks and '
-          + 'triggers have nobody to ask and are refused',
+        "Asks in the task's IM channel; refused automatically if none is bound",
         'Abu will not do this kind of thing',
       ]);
 
@@ -1617,14 +1616,16 @@ describe('CapabilitiesSection', () => {
       ];
 
       expect(attendedAsk).toBe('Confirms with a dialog before each action');
-      expect(unattendedAsk).toBe(
-        'Only a run started from an IM chat can reach you; scheduled tasks and '
-        + 'triggers have nobody to ask and are refused',
-      );
+      expect(unattendedAsk).toBe("Asks in the task's IM channel; refused automatically if none is bound");
       // The point of the change: the two columns no longer say the same thing.
       expect(unattendedAsk).not.toBe(attendedAsk);
-      // ...and it must not promise a dialog nobody is there to answer.
+      // ...and it must not promise a dialog nobody is there to answer. What it
+      // promises instead is the task's own IM channel, which the scheduler and
+      // the trigger engine really do hand the seam
+      // (`core/im/approvalTarget.ts`), plus the refusal when none is bound.
       expect(unattendedAsk).not.toMatch(/dialog/i);
+      expect(unattendedAsk).toMatch(/IM channel/);
+      expect(unattendedAsk).toMatch(/refused/);
     });
 
     it('writes the opt-in to the store and warns, once, directly under that select', async () => {
@@ -1756,13 +1757,15 @@ describe('CapabilitiesSection', () => {
       render(<CapabilitiesSection />);
       await openSitePermissions(user);
 
-      // Origin-level, and the copy says so: entering the site is not the
+      // Origin-level, and the copy still says so: entering the site is not the
       // same as every page on it being reachable (M8).
       expect(screen.getByText(/may enter 1 site/)).toBeInTheDocument();
-      // Not an absolute promise: the classifier is deliberately incomplete
-      // (its own module doc says so), so the copy says "recognizes" (M8).
-      expect(screen.getByText(/each page is still judged on its own/)).toBeInTheDocument();
-      expect(screen.getByText(/recognizes as payment/)).toBeInTheDocument();
+      // Shortened on a user ruling (2026-09-04: no long lines on this page).
+      // The two facts that had to survive the trim are the COUNT and the
+      // per-page refusal — dropping the latter would leave the line reading
+      // like a blanket grant over every page of those sites.
+      expect(screen.getByText(/payment \/ transfer pages are still refused/))
+        .toBeInTheDocument();
       // The row itself no longer restates "an allowed site is allowed".
       const row = screen.getByTitle('https://reports.example.com').closest('li') as HTMLElement;
       expect(row).not.toHaveTextContent('Unattended');

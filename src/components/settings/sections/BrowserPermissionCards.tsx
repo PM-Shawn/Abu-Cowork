@@ -293,9 +293,8 @@ export function BrowserPermissionCards({
 
     Two descriptions therefore vary by COLUMN, not by row: the scripting
     opt-in's scope, and "ask every time", which cannot mean "a dialog" in a
-    column where nobody is at the screen. What it does mean there is narrow
-    and worth saying plainly — see `browserOpStateAskUnattendedDesc`, whose
-    doc carries the code path it was checked against.
+    column where nobody is at the screen. There it means the IM channel the
+    automation itself named — see `browserOpStateAskUnattendedDesc`.
   */
   const optionsFor = (
     runMode: 'attended' | 'unattended',

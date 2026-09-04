@@ -304,12 +304,13 @@ test.describe.serial('Electron capability overview', () => {
     await expect(optInTier).toBeVisible();
     /*
       F2 — this is the AUTOMATIC-TASKS column, where "ask every time" cannot
-      mean a dialog: nobody is at the screen, and `askOverIm` refuses
-      (`no_binding`) unless the run came from an IM chat that can be replied
-      to. The menu now says which, and must NOT be promising a dialog.
+      mean a dialog: nobody is at the screen. It means the IM channel the task
+      itself named, which the scheduler now hands the confirmation seam
+      (`core/im/approvalTarget.ts`) — and a refusal when no channel is bound.
+      The dialog wording must NOT appear in this column.
     */
     await expect(
-      page.getByText(/只有 IM 频道发起的运行能问到你|Only a run started from an IM chat/),
+      page.getByText(/发到任务绑定的 IM 频道确认|Asks in the task's IM channel/),
     ).toBeVisible();
     await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toHaveCount(0);
 
@@ -468,16 +469,15 @@ test.describe.serial('Electron capability overview', () => {
    * F2 — the other half of the approval story, on the screen where a user
    * actually sets an automatic task up.
    *
-   * The field is the only IM-channel-shaped control on that page, which
-   * invites exactly one wrong conclusion: "this is where the task asks me".
-   * It is not. `askOverIm` resolves its channel from the conversation's IM
-   * SESSION binding (`resolveImTargetForConversation`), and the scheduler
-   * mints a fresh conversation per run and supplies no `imTarget` — so an
-   * approval is refused with cause `no_binding` and raised as a desktop
-   * notice. The hint now says that instead of leaving the user to discover it
-   * as a nightly task that quietly achieved nothing.
+   * The field is the only IM-channel-shaped control on that page, and it
+   * invites exactly one question: "is this where the task asks me?" It now
+   * is. The scheduler builds its approval target from these same fields
+   * (`core/im/approvalTarget.ts`), so a confirmation lands where the results
+   * land — and 「不推送」 means an ask has nowhere to go and is refused. The
+   * label and the hint have to say both halves, or the user learns the second
+   * one as a nightly task that quietly achieved nothing.
    */
-  test('says on the task editor that approvals do not go to the results channel', async () => {
+  test('names the task editor channel as the approvals channel too', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
     dataRoot = launched;
@@ -496,11 +496,20 @@ test.describe.serial('Electron capability overview', () => {
     // (it starts a chat), and only the header one opens this editor.
     await page.getByRole('main').getByRole('button', { name: NEW_TASK }).click();
 
-    const hint = page.getByText(/运行中需要你确认的操作不会发到这里|are NOT sent here/);
+    const hint = page.getByText(
+      /运行中需要你确认的操作也会发到这里|actions that need your confirmation during the run are sent here too/,
+    );
     await hint.scrollIntoViewIfNeeded();
     await expect(hint).toBeVisible();
-    // The label still promises RESULTS, because that is all this field does.
-    await expect(page.getByText(/^(结果推送频道|Push results to)$/)).toBeVisible();
+    // ...and the other half: choosing 不推送 is choosing to have those asks
+    // refused, which is the fact a user setting up a task must not learn later.
+    await expect(
+      page.getByText(/需要确认的操作会被自动拒绝|refused automatically/),
+    ).toBeVisible();
+    // The label carries both jobs now, because the field does both.
+    await expect(
+      page.getByText(/^(结果与审批推送频道|Results & approvals channel)$/),
+    ).toBeVisible();
 
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('10-schedule-editor-channel-zh') });

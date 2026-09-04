@@ -20,6 +20,7 @@ import {
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
+import { resolveUnattendedImTarget } from '../im/approvalTarget';
 import type { OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
@@ -104,15 +105,35 @@ function resolveScheduledRunPermissions(
   // produce one line, not ten.
   const denials = new Set<string>();
 
+  /*
+    Where this run may ask, when its policy says「每次询问」.
+
+    A scheduled run mints a fresh conversation every time, so the seam's
+    fallback — the IM session bound to the conversation — never finds
+    anything, and until this was passed, every ask in an automatic task
+    refused itself with `no_binding`. The task already names a channel: the
+    one its RESULTS go to. Approvals now go to the same place, addressed the
+    same way (`resolveUnattendedImTarget` mirrors `pushToIMChannel`).
+
+    Null when the task nominates no channel — the old behavior, deliberately:
+    guessing a channel would route a 3am approval for someone's signed-in
+    banking session into a chat they never chose.
+  */
+  const imTarget = resolveUnattendedImTarget(task);
+
   return {
     // One seam for "an unattended run needs approval" (see
     // `unattendedConfirmation.ts`) instead of a hand-rolled always-false
-    // closure per entry point. Today it still resolves false — the recorder
-    // below is what turns that into a user-readable line — but when an IM
-    // approval round-trip lands, all three entry points gain it at once.
+    // closure per entry point. The recorder below turns a refusal into a
+    // user-readable line; the IM round-trip is what can now turn it into an
+    // approval instead.
     commandConfirmCallback: createUnattendedConfirmation({
       source: 'scheduler',
       ...(conversationId !== undefined ? { conversationId } : {}),
+      ...(imTarget !== null ? { imTarget } : {}),
+      // Names the automation in the IM prompt: a user with several tasks
+      // cannot otherwise tell which one is asking.
+      runLabel: task.name,
       onDenied: (reason, info) => {
         const t = getI18n();
         denials.add(

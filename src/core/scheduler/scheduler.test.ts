@@ -18,6 +18,13 @@ import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
 import { checkWritePath, hasFullShellAuthorizationScope, revokeWorkspace } from '../tools/pathSafety';
 import { checkToolApproval } from '../tools/registry';
+import { useIMChannelStore } from '../../stores/imChannelStore';
+import type { IMChannel } from '../../types/imChannel';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+  type UnattendedConfirmationRequest,
+} from '../permissions/unattendedConfirmation';
 
 const getSchedulerToolsMock = vi.fn(() => [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
@@ -847,5 +854,173 @@ describe('SchedulerEngine trigger drift signal (F1.4)', () => {
     await schedulerEngine.runNow(task.id);
 
     expect(latestRunStatus(task.id)).toBe('completed');
+  });
+});
+
+/**
+ * The approval target a scheduled run hands the confirmation seam.
+ *
+ * Before this, 「每次询问」 in the automatic-tasks column was unreachable:
+ * `askOverIm` looks for a caller-supplied `imTarget` or the IM session bound
+ * to the run's conversation, the scheduler supplied neither, and a scheduled
+ * run mints a brand-new conversation every time — so every ask refused itself
+ * as `no_binding`. The task already names a channel (the one its results go
+ * to); these pin that the ask now goes to the same place, and that the shape
+ * handed over is the one `pendingApprovals` consumes.
+ */
+describe('scheduled runs carry an approval target built from the task', () => {
+  /** Capture what the scheduler hands the seam, without an IM channel behind it. */
+  function captureSeamRequest(): { current: UnattendedConfirmationRequest | null } {
+    const captured: { current: UnattendedConfirmationRequest | null } = { current: null };
+    setUnattendedConfirmationResolver(async (request) => {
+      captured.current = request;
+      return { approved: false, reason: 'captured', audit: {} };
+    });
+    return captured;
+  }
+
+  function seedChannel(platform: IMChannel['platform'] = 'feishu') {
+    useIMChannelStore.setState({
+      channels: {
+        'channel-1': {
+          id: 'channel-1',
+          platform,
+          name: 'Team',
+          appId: 'a',
+          appSecret: 's',
+          capability: 'full',
+          responseMode: 'mention_only',
+          allowedUsers: [],
+          workspacePaths: [],
+          sessionTimeoutMinutes: 0,
+          maxRoundsPerSession: 0,
+          enabled: true,
+          status: 'connected',
+          createdAt: 1,
+        },
+      },
+    });
+  }
+
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useIMChannelStore.setState({ channels: {} });
+  });
+
+  afterEach(() => {
+    __resetUnattendedConfirmationForTests();
+    useIMChannelStore.setState({ channels: {} });
+  });
+
+  /** Drive one confirmation through a real scheduled run. */
+  async function runOnce(task: ScheduledTask): Promise<void> {
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (_conv, _msg, options) => {
+      await (options as unknown as {
+        commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
+      }).commandConfirmCallback({
+        command: 'abu-browser__click (https://example.com)',
+        level: 'warn',
+        reason: '',
+        kind: 'browser',
+        browserOrigin: 'https://example.com',
+      });
+      return { reason: 'error', error: 'boom' } as never;
+    });
+    await schedulerEngine.runNow(task.id);
+  }
+
+  it('addresses the task chat and names the task', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-chat',
+      name: '每日销售简报',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team,oc_second',
+    }));
+
+    // The contract `pendingApprovals.askOverIm` consumes: platform picks the
+    // adapter AND gates inbound matching, channelId + chatId address the send,
+    // chatIdType says how to address it.
+    expect(captured.current?.imTarget).toEqual({
+      platform: 'feishu',
+      channelId: 'channel-1',
+      chatId: 'oc_team',
+      chatIdType: 'chat_id',
+    });
+    expect(captured.current?.runLabel).toBe('每日销售简报');
+    expect(captured.current?.source).toBe('scheduler');
+  });
+
+  it('binds the owner when the task names DM recipients as well', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-owner',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team',
+      outputUserIds: 'ou_li,ou_wang',
+    }));
+
+    expect(captured.current?.imTarget).toMatchObject({
+      chatId: 'oc_team',
+      senderId: 'ou_li',
+    });
+  });
+
+  it('addresses a DM when the task names only people', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-dm',
+      outputChannelId: 'channel-1',
+      outputChatIds: undefined,
+      outputUserIds: 'ou_li',
+    }));
+
+    expect(captured.current?.imTarget).toEqual({
+      platform: 'feishu',
+      channelId: 'channel-1',
+      chatId: 'ou_li',
+      chatIdType: 'open_id',
+      senderId: 'ou_li',
+    });
+  });
+
+  /*
+    No channel → no target, deliberately. Guessing one ("the only channel
+    configured") would route a 3am approval for a signed-in banking session
+    into a chat the user never nominated. The seam then falls back to the
+    conversation's session binding and, finding none, refuses.
+  */
+  it('hands over no target when the task nominates no channel', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-none',
+      outputChannelId: undefined,
+      outputChatIds: undefined,
+      outputUserIds: undefined,
+    }));
+
+    expect(captured.current).not.toBeNull();
+    expect(captured.current?.imTarget).toBeUndefined();
+  });
+
+  it('hands over no target when the named channel is gone', async () => {
+    const captured = captureSeamRequest();
+
+    await runOnce(makeTask({
+      id: 'task-target-deleted',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team',
+    }));
+
+    expect(captured.current?.imTarget).toBeUndefined();
   });
 });

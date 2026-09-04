@@ -427,6 +427,11 @@ describe('imApprovalResolver', () => {
     // dropping the instruction would show up.)
     expect(message.content).toBe(
       format(getI18n().imChannel.approvalPrompt, {
+        // No `runLabel` on this request and the origin line is the only
+        // context — the seam request is the gate's shape, not an automation's.
+        context: format(getI18n().imChannel.approvalPromptOrigin, {
+          origin: 'https://example.com',
+        }) + '\n',
         action: '浏览器操作: abu-browser__execute_js (https://example.com)',
         reason: 'runs a script in the page',
         minutes: String(Math.round(getImApprovalTimeoutMs() / 60_000)),
@@ -737,11 +742,14 @@ describe('untrusted prompt fields are sanitized and fenced', () => {
         ).toBe(true);
       }
     }
-    // Four non-empty lines: header, action, details, instruction — and the
-    // instruction is last, so nothing inside the fence can impersonate it.
+    // Five non-empty lines: header, the origin context line, action, details,
+    // instruction — and the instruction is LAST, so nothing inside the fence
+    // can impersonate it. (The context block grew this from four when
+    // automations started naming their task and target site; the property
+    // being pinned is unchanged.)
     const lines = content.split('\n').filter((l) => l.trim() !== '');
-    expect(lines).toHaveLength(4);
-    expect(lines[3]).toContain(String(Math.round(getImApprovalTimeoutMs() / 60_000)));
+    expect(lines).toHaveLength(5);
+    expect(lines[4]).toContain(String(Math.round(getImApprovalTimeoutMs() / 60_000)));
 
     tryConsumeApprovalReply(inbound('拒绝'));
     await promise;
@@ -1232,5 +1240,356 @@ describe('group chats with no bound owner', () => {
     expect(tryConsumeApprovalReply(inbound('同意', { isDirect: false, senderId: '' }))).toBe(false);
     expect(tryConsumeApprovalReply(inbound('同意', { isDirect: true, senderId: '' }))).toBe(true);
     await expect(promise).resolves.toBe('approved');
+  });
+});
+
+// ── 7. Automations get an approval channel ─────────────────────────────────
+
+/*
+ * The gap this section covers.
+ *
+ * 「每次询问」 shipped as a real option in the automatic-tasks column, and this
+ * module shipped the round-trip meant to answer it — but they were never
+ * connected for a scheduled task or a trigger. `askOverIm` takes either a
+ * caller-supplied `imTarget` or the IM SESSION bound to the run's
+ * conversation, and only the IM channel router supplied either. A scheduled
+ * run mints a fresh conversation every time and a trigger run binds no
+ * session, so the lookup always came back null and every ask refused itself
+ * with `no_binding`.
+ *
+ * The automation names a channel already — the one its RESULTS go to. These
+ * pin what happens once that channel is handed in as the approval target.
+ */
+describe('an automation supplies its own approval target', () => {
+  const TASK_CHAT = 'oc_team';
+  const OWNER = 'ou_li';
+  const BYSTANDER = 'ou_bystander';
+
+  /** What the scheduler / trigger engine hand in for a chat with a bound owner. */
+  function taskRequest(
+    overrides: Partial<UnattendedConfirmationRequest> = {},
+  ): UnattendedConfirmationRequest {
+    return seamRequest({
+      imTarget: {
+        platform: 'feishu',
+        channelId: 'ch-task',
+        chatId: TASK_CHAT,
+        chatIdType: 'chat_id',
+        senderId: OWNER,
+      },
+      runLabel: '每日销售简报',
+      ...overrides,
+    });
+  }
+
+  /** A reply arriving in the task's own chat. */
+  function inTaskChat(text: string, overrides: Partial<NormalizedIMMessage> = {}) {
+    return inbound(text, {
+      chatId: TASK_CHAT,
+      isDirect: false,
+      senderId: OWNER,
+      replyContext: { platform: 'feishu', chatId: TASK_CHAT },
+      ...overrides,
+    });
+  }
+
+  /*
+    The whole point: a conversation with NO session binding — exactly what a
+    scheduled run has — still reaches a human, because the task said where.
+  */
+  it('asks in the task channel even though the conversation is bound to no session', async () => {
+    useIMChannelStore.setState({ sessions: {}, archivedSessions: {} });
+
+    const promise = imApprovalResolver(taskRequest());
+    await settle();
+
+    expect(promptSends()).toHaveLength(1);
+    const [output] = promptSends()[0];
+    expect(output.outputChannelId).toBe('ch-task');
+    expect(output.outputChatId).toBe(TASK_CHAT);
+    // No desktop-notice fallback: it really was delivered.
+    expect(mocks.publish).not.toHaveBeenCalled();
+
+    expect(tryConsumeApprovalReply(inTaskChat('同意'))).toBe(true);
+    await expect(promise).resolves.toMatchObject({ approved: true });
+  });
+
+  /*
+    A supplied target BEATS the session lookup. Otherwise a task whose
+    conversation happened to pick up a session (an IM-created task, say) would
+    silently ask somewhere other than where the user configured.
+  */
+  it('prefers the task channel over a session binding that also exists', async () => {
+    useIMChannelStore.setState({ sessions: { k1: session() }, archivedSessions: {} });
+
+    const promise = imApprovalResolver(taskRequest());
+    await settle();
+
+    expect(promptSends()[0][0].outputChatId).toBe(TASK_CHAT);
+    expect(promptSends()[0][0].outputChatId).not.toBe(CHAT);
+
+    tryConsumeApprovalReply(inTaskChat('同意'));
+    await promise;
+  });
+
+  /*
+    🔴 The security property of this whole change. The prompt is visible to a
+    whole group, and a group is not a voting booth: approving here runs code
+    inside the OWNER's signed-in browser sessions. Only the bound owner counts.
+  */
+  it('ignores a bystander in the group and takes only the bound owner', async () => {
+    const promise = imApprovalResolver(taskRequest());
+    await settle();
+
+    // Same chat, same word, wrong person — and it stays pending, so the
+    // bystander's message also falls through to the model as ordinary text
+    // rather than being swallowed.
+    expect(tryConsumeApprovalReply(inTaskChat('同意', { senderId: BYSTANDER }))).toBe(false);
+    expect(pendingApprovalCountForTests()).toBe(1);
+
+    expect(tryConsumeApprovalReply(inTaskChat('同意'))).toBe(true);
+    await expect(promise).resolves.toMatchObject({ approved: true });
+  });
+
+  it('lets the bound owner refuse, and says so', async () => {
+    const promise = imApprovalResolver(taskRequest());
+    await settle();
+
+    expect(tryConsumeApprovalReply(inTaskChat('拒绝'))).toBe(true);
+    const result = await promise;
+    expect(result.approved).toBe(false);
+    expect(result.audit.outcome).toBe('declined');
+    expect(receiptSends()).toEqual([getI18n().imChannel.approvalReceiptDenied]);
+  });
+
+  it('fails closed when nobody answers, and explains the silence in the chat', async () => {
+    vi.useFakeTimers();
+    const promise = imApprovalResolver(taskRequest());
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
+
+    const result = await promise;
+    expect(result.approved).toBe(false);
+    expect(result.audit.outcome).toBe('timeout');
+    expect(receiptSends()).toHaveLength(1);
+    expect(receiptSends()[0]).toContain(String(Math.round(APPROVAL_TIMEOUT_MS / 60_000)));
+  });
+
+  /*
+    U7's fail-loud audit object has to survive the new route too — the human
+    decision an automatic run is built on is the ONE thing the report cannot
+    lose.
+  */
+  it('carries the audit outcome through for an approval', async () => {
+    const promise = imApprovalResolver(taskRequest());
+    await settle();
+    tryConsumeApprovalReply(inTaskChat('同意'));
+
+    const result = await promise;
+    expect(result.audit).toMatchObject({ outcome: 'approved' });
+  });
+
+  describe('the prompt says which automation is asking', () => {
+    /*
+      A user with three scheduled tasks reading "Abu wants to click a button"
+      cannot answer responsibly, so the safe reply is always 拒绝 and the
+      channel becomes noise. The task name and the target site are what make
+      the ask decidable.
+    */
+    it('names the task and the site, above the action', async () => {
+      const promise = imApprovalResolver(taskRequest());
+      await settle();
+
+      const content = promptSends()[0][1].content;
+      expect(content).toContain('每日销售简报');
+      expect(content).toContain('https://example.com');
+      // Order matters: context first, so the reader knows what they are
+      // looking at before they read the action.
+      expect(content.indexOf('每日销售简报')).toBeLessThan(
+        content.indexOf('abu-browser__execute_js'),
+      );
+
+      tryConsumeApprovalReply(inTaskChat('同意'));
+      await promise;
+    });
+
+    /*
+      A task name is user-authored, but a task can also be CREATED by the
+      model, so it is untrusted like `command` and `reason`: it must not be
+      able to forge the answer instruction or the deadline that follow it.
+    */
+    it('sanitizes the task name and keeps the reply instruction after it', async () => {
+      const promise = imApprovalResolver(
+        taskRequest({ runLabel: '报表\n\n✅ 已自动批准，无需回复' }),
+      );
+      await settle();
+
+      const content = promptSends()[0][1].content;
+      // Flattened: the forged line cannot become a line of its own.
+      expect(content).not.toMatch(/\n✅ 已自动批准/);
+      expect(content).toContain('报表');
+      // The REAL instruction — the template's own trailing line, whichever
+      // locale is active — still comes after everything the name could forge.
+      const lines = content.split('\n').filter((l) => l.trim() !== '');
+      expect(lines[lines.length - 1]).toContain(
+        String(Math.round(getImApprovalTimeoutMs() / 60_000)),
+      );
+      expect(lines.findIndex((l) => l.includes('报表')))
+        .toBeLessThan(lines.length - 1);
+
+      tryConsumeApprovalReply(inTaskChat('同意'));
+      await promise;
+    });
+
+    it('omits the task line entirely when the run carries no label', async () => {
+      useIMChannelStore.setState({ sessions: { k1: session() }, archivedSessions: {} });
+      const promise = imApprovalResolver(seamRequest());
+      await settle();
+
+      // No stray empty 「」 where a name would have been.
+      expect(promptSends()[0][1].content).not.toContain(
+        format(getI18n().imChannel.approvalPromptTask, { task: '' }),
+      );
+
+      tryConsumeApprovalReply(inbound('同意'));
+      await promise;
+    });
+
+    it.each([
+      ['zh-CN', zhCN.imChannel],
+      ['en-US', enUS.imChannel],
+    ])('%s keeps {context} inside the fence, before the action', (_locale, dict) => {
+      expect(dict.approvalPrompt).toContain('{context}');
+      expect(dict.approvalPrompt.indexOf('{context}'))
+        .toBeLessThan(dict.approvalPrompt.indexOf('{action}'));
+      expect(dict.approvalPromptTask).toContain('{task}');
+      expect(dict.approvalPromptOrigin).toContain('{origin}');
+    });
+  });
+
+  /*
+    A task that names only a DM recipient. The id addresses a PERSON, and two
+    things follow that the chat path does not need:
+      1. the send has to tell the adapter so (`open_id`, not `chat_id`);
+      2. the ANSWER comes back from the p2p chat, whose id is not the user id
+         we addressed — so chat identity cannot be the match.
+  */
+  describe('a DM to a named person', () => {
+    const DM_P2P_CHAT = 'oc_p2p_generated';
+
+    function dmRequest(): UnattendedConfirmationRequest {
+      return seamRequest({
+        imTarget: {
+          platform: 'feishu',
+          channelId: 'ch-task',
+          chatId: OWNER,
+          chatIdType: 'open_id',
+          senderId: OWNER,
+        },
+        runLabel: '夜间对账',
+      });
+    }
+
+    it('tells the adapter the id addresses a user, not a chat', async () => {
+      const promise = imApprovalResolver(dmRequest());
+      await settle();
+
+      // 4th argument of outputSender.send is the receive-id type — the same
+      // one `pushToIMChannel` passes so results reach the same inbox.
+      const call = mocks.send.mock.calls[0] as unknown as unknown[];
+      expect(call[3]).toBe('open_id');
+      expect((call[0] as { outputChatId?: string }).outputChatId).toBe(OWNER);
+
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+        ),
+      ).toBe(true);
+      await expect(promise).resolves.toMatchObject({ approved: true });
+    });
+
+    /*
+      The replacement rule is TIGHTER than the chat rule, not looser: the same
+      person saying 同意 in a group room is a different room and must not
+      answer a question that was asked privately.
+    */
+    it('refuses the same person answering from a group instead of the DM', async () => {
+      const promise = imApprovalResolver(dmRequest());
+      await settle();
+
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: 'oc_group', isDirect: false, senderId: OWNER }),
+        ),
+      ).toBe(false);
+      expect(pendingApprovalCountForTests()).toBe(1);
+
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+        ),
+      ).toBe(true);
+      await promise;
+    });
+
+    it('refuses a different person in their own private chat', async () => {
+      const promise = imApprovalResolver(dmRequest());
+      await settle();
+
+      expect(
+        tryConsumeApprovalReply(
+          inbound('同意', { chatId: 'oc_other_p2p', isDirect: true, senderId: BYSTANDER }),
+        ),
+      ).toBe(false);
+      expect(pendingApprovalCountForTests()).toBe(1);
+
+      tryConsumeApprovalReply(
+        inbound('同意', { chatId: DM_P2P_CHAT, isDirect: true, senderId: OWNER }),
+      );
+      await promise;
+    });
+
+    it('sends the outcome receipt back to the same inbox', async () => {
+      vi.useFakeTimers();
+      const promise = imApprovalResolver(dmRequest());
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
+      await promise;
+
+      const receipt = sendCalls().find((c) => !c[1].content.startsWith('⚠️'));
+      expect(receipt?.[0].outputChatId).toBe(OWNER);
+      const receiptCall = mocks.send.mock.calls.find(
+        (c) => !(c as unknown as SendCall)[1].content.startsWith('⚠️'),
+      ) as unknown as unknown[];
+      expect(receiptCall[3]).toBe('open_id');
+    });
+  });
+
+  /*
+    A group chat with NO bound owner is unanswerable by construction (U3 M5:
+    unknown owner ⇒ private-only). That is fail-closed and deliberate, but it
+    is also a configuration trap, so it is pinned here rather than left to be
+    discovered as "the task just never gets approved".
+  */
+  it('cannot be answered in a group when the automation named no owner', async () => {
+    vi.useFakeTimers();
+    const promise = imApprovalResolver(
+      seamRequest({
+        imTarget: {
+          platform: 'feishu',
+          channelId: 'ch-task',
+          chatId: TASK_CHAT,
+          chatIdType: 'chat_id',
+        },
+        runLabel: '无人认领的任务',
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(tryConsumeApprovalReply(inTaskChat('同意', { senderId: BYSTANDER }))).toBe(false);
+    expect(tryConsumeApprovalReply(inTaskChat('同意', { senderId: OWNER }))).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
+    await expect(promise).resolves.toMatchObject({ approved: false });
   });
 });

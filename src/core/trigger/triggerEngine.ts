@@ -19,6 +19,7 @@ import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { resolveTriggerCallbacks } from './triggerPermission';
+import { resolveUnattendedImTarget } from '../im/approvalTarget';
 import { createAuthorizationScope, disposeAuthorizationScope } from '../tools/pathSafety';
 import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
@@ -341,9 +342,24 @@ class TriggerEngine {
     let reportOutcome = browserRunReportOutcomeFor('error', false);
 
     try {
+      /*
+        Where this run may ask when its policy says「每次询问」— the trigger's
+        own IM output binding, i.e. the chat its results already go to. A
+        trigger run binds no IM session to its conversation, so without this
+        the seam has nowhere to ask and refuses with `no_binding`.
+
+        Only for `target: 'im_channel'`: a webhook is a one-way URL with
+        nobody behind it to answer.
+      */
+      const approvalTarget =
+        trigger.output?.enabled === true && trigger.output.target === 'im_channel'
+          ? resolveUnattendedImTarget(trigger.output)
+          : null;
       const callbacks = resolveTriggerCallbacks(actionWithWorkspace, {
         authorizationScopeId,
         conversationId,
+        ...(approvalTarget !== null ? { imTarget: approvalTarget } : {}),
+        runLabel: trigger.name,
       });
       const result = await runAgentLoopDispatched(conversationId, prompt, {
         commandConfirmCallback: callbacks.commandConfirmCallback,

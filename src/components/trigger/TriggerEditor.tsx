@@ -806,12 +806,13 @@ export default function TriggerEditor() {
                         </p>
                       )}
                       {/*
-                        The field invites a question it never answered: "does
-                        the run ask ME here?" It does not — `triggerPermission.ts`
-                        supplies no `imTarget`, so an approval falls through to
-                        the conversation's IM session binding, which a trigger
-                        run does not have. Said here rather than left for the
-                        user to discover as a run that quietly achieved nothing.
+                        This channel is also where the run ASKS. `triggerEngine`
+                        builds the approval target from this same output config
+                        (`core/im/approvalTarget.ts`), so a confirmation lands
+                        where the results land — and with no channel chosen it
+                        has nowhere to go and is refused. Said here rather than
+                        left for the user to discover as a run that quietly
+                        achieved nothing.
                       */}
                       <p className="text-caption text-[var(--abu-text-muted)] mt-1">
                         {t.trigger.outputChannelApprovalHint}

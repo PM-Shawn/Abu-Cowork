@@ -56,6 +56,19 @@ export interface UnattendedImTarget {
    *  a reason an approval can never be delivered. */
   chatId?: string;
   /**
+   * How `chatId` addresses its recipient. `'chat_id'` (the default) is a
+   * conversation; `'open_id'` is a PERSON, and the adapter opens or reuses a
+   * 1:1 chat to reach them.
+   *
+   * 🔴 The distinction is load-bearing for matching the answer, not just for
+   * sending it. A reply to a DM comes back from the p2p conversation, whose
+   * id is NOT the user id we addressed — so an `'open_id'` prompt can never
+   * be matched by chat identity and is matched by its bound owner in a
+   * private chat instead (`tryConsumeApprovalReply`). Absent means
+   * `'chat_id'`, which keeps every pre-existing caller on the old rule.
+   */
+  chatIdType?: 'chat_id' | 'open_id';
+  /**
    * The person this run belongs to. When set, only their reply counts as an
    * answer: a group chat is not a voting booth, and a bystander must not be
    * able to approve automation running inside someone else's logged-in
@@ -85,6 +98,17 @@ export interface UnattendedConfirmationRequest {
    */
   runKey?: string;
   imTarget?: UnattendedImTarget;
+  /**
+   * Human-readable name of the automation this run belongs to — the scheduled
+   * task's or the trigger's own name.
+   *
+   * An approval that arrives in a group chat at 03:00 saying only "Abu wants
+   * to click a button" is unanswerable in practice: the reader cannot tell
+   * WHICH of their automations is asking, and approving the wrong one is the
+   * failure this whole gate exists to prevent. Untrusted for prompt purposes
+   * (a task can be created by the model) and sanitized like any other field.
+   */
+  runLabel?: string;
   /**
    * The run's cancellation signal. An approval channel that waits minutes for
    * a human MUST honor it: without this, pressing Stop leaves a prompt sitting
@@ -305,7 +329,18 @@ export async function resolveUnattendedConfirmation(
 export interface CreateUnattendedConfirmationOptions {
   source: UnattendedRunSource;
   conversationId?: string;
+  /**
+   * Where this run may ask. The scheduler and the trigger engine build it
+   * from the automation's own IM output binding — the channel the user
+   * already chose for results — so "每次询问" in the automatic-tasks column
+   * has somewhere to go. Absent (no channel configured) keeps the original
+   * behavior: the seam falls back to the conversation's IM session binding,
+   * and failing that refuses with `no_binding`.
+   */
   imTarget?: UnattendedImTarget;
+  /** The automation's name, carried into the prompt. See `runLabel` on
+   *  {@link UnattendedConfirmationRequest}. */
+  runLabel?: string;
   /** Called with the refusal reason whenever the request is not approved —
    *  the hook the scheduler uses to build its user-visible denial summary and
    *  the trigger/IM tiers use for their console trail. */
@@ -344,6 +379,7 @@ export function createUnattendedConfirmation(
       ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
       ...(loopId !== undefined ? { runKey: loopId } : {}),
       ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+      ...(options.runLabel !== undefined ? { runLabel: options.runLabel } : {}),
       ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
     if (!result.approved) options.onDenied?.(result.reason, info);

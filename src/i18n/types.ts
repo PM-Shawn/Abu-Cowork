@@ -1062,17 +1062,11 @@ export interface TranslationDict {
      * F2 (2026-09-04) — the automatic-tasks column's own 「每次询问」, because
      * "asks with a dialog" is false there: nobody is in front of the screen.
      *
-     * 🔴 What it says was checked against the code, not against the intent:
-     * `askOverIm` (`core/im/pendingApprovals.ts`) reaches its channel through
-     * `resolveImTargetForConversation`, i.e. the IM SESSION bound to the run's
-     * conversation, or an `imTarget` the caller supplies. Only
-     * `core/im/channelRouter.ts` supplies one. The scheduler
-     * (`core/scheduler/scheduler.ts`, which mints a fresh conversation per
-     * run) and the trigger engine (`core/trigger/triggerPermission.ts`) supply
-     * none and bind no session — so for them the lookup always returns null
-     * and the request is refused with cause `no_binding` plus a desktop
-     * notice. A scheduled task's 「结果推送频道」 is NOT consulted: it feeds
-     * `outputSender` after the run, nothing else.
+     * It asks over IM instead, at the channel the automation itself names
+     * (`core/im/approvalTarget.ts` → `askOverIm`). With no channel bound
+     * there is nobody to ask and the action is refused (`no_binding`) with a
+     * desktop notice — which is the second half of what this string says, and
+     * the reason the task editor's field is now called 结果与审批推送频道.
      */
     browserOpStateAskUnattendedDesc: string;
     /**
@@ -2318,13 +2312,12 @@ export interface TranslationDict {
     outputChannel: string;
     outputChannelNone: string;
     /**
-     * F2 (2026-09-04) — extended to answer the question this field invites and
-     * never answered: "does the run ask ME here?" It does not. Approvals route
-     * through `resolveImTargetForConversation`, and a scheduled task's fresh
-     * conversation is bound to no IM session, so 「每次询问」 in the
-     * automatic-tasks column is refused (`no_binding`) and raised as a desktop
-     * notice. This field feeds `outputSender` after the run, nothing else —
-     * the label deliberately still says RESULTS.
+     * F2 (2026-09-04) — answers the question this field always invited and
+     * never answered: "does the run ask ME here?" It does now. The scheduler
+     * builds its approval target from these same fields
+     * (`core/im/approvalTarget.ts`), so a prompt lands exactly where the
+     * results land, and 「不推送」 means an ask has nowhere to go and is
+     * refused. The label says 结果与审批 for the same reason.
      */
     outputChannelHint: string;
     outputToGroup: string;
@@ -2525,9 +2518,9 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
-    /** F2 — the trigger editor's output channel carries the same false
-     *  implication as the scheduler's, and `triggerPermission.ts` supplies no
-     *  `imTarget` either. Same sentence, same reason. */
+    /** F2 — the trigger editor's output channel is the trigger's approval
+     *  channel too (`triggerEngine.ts` builds the target from it), and says
+     *  so here for the same reason the scheduler's hint does. */
     outputChannelApprovalHint: string;
     outputToGroup: string;
     outputToDM: string;
@@ -2611,8 +2604,17 @@ export interface TranslationDict {
      *  🔴 {action} and {reason} are MODEL-AUTHORED and sanitized+fenced by
      *  `sanitizeUntrustedPromptField`; the reply instruction and the deadline
      *  MUST stay AFTER the fenced region in every translation, or a crafted
-     *  action string can forge them. */
+     *  action string can forge them.
+     *  {context} is the pre-composed, already-sanitized task/origin block (or
+     *  empty). It must stay INSIDE the fenced region, before {action}. */
     approvalPrompt: string;
+    /** One line of {@link approvalPrompt}'s {context}: which automation is
+     *  asking. Without it a user with several scheduled tasks cannot tell what
+     *  they are approving, and the only safe answer is always 拒绝. {task} */
+    approvalPromptTask: string;
+    /** One line of {@link approvalPrompt}'s {context}: the site the action
+     *  targets. {origin} */
+    approvalPromptOrigin: string;
     /** Receipt after the user replied 拒绝. */
     approvalReceiptDenied: string;
     /** Receipt after nobody answered in time. {minutes} */

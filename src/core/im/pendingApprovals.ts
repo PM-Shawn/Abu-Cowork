@@ -178,6 +178,9 @@ interface PendingApproval {
    * is no message on screen for anyone to be answering.
    */
   armed: boolean;
+  /** How `chatId` addressed its recipient — decides which matching rule the
+   *  inbound hook applies to this entry. See `tryConsumeApprovalReply`. */
+  chatIdType?: 'chat_id' | 'open_id';
   timer?: ReturnType<typeof setTimeout>;
   detachAbort?: () => void;
   settle?: (outcome: ImApprovalOutcome) => void;
@@ -300,14 +303,30 @@ export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
     (entry) =>
       entry.armed &&
       entry.platform === message.platform &&
-      entry.chatId === message.chatId &&
-      // No bound owner means we do not know whose approval this is. In a 1:1
-      // chat there is only one candidate, so the reply is unambiguous; in a
-      // group it is not, and "anyone in the group may approve" is not a
-      // default anybody chose. Such a prompt simply expires.
-      (entry.senderId !== undefined
-        ? entry.senderId === message.senderId
-        : message.isDirect === true),
+      (entry.chatIdType === 'open_id'
+        /*
+          Addressed to a PERSON, not a conversation. The adapter opened (or
+          reused) a 1:1 chat to deliver it, and the answer comes back carrying
+          THAT chat's id — never the user id we addressed — so chat identity
+          cannot be the check here.
+
+          What replaces it is strictly tighter than the chat rule, not looser:
+          the owner is known exactly (we chose whom to message), the reply must
+          come from that exact person, AND it must be private. The same person
+          typing 「同意」 in a group room is a different room and does not
+          count.
+        */
+        ? entry.senderId !== undefined
+          && entry.senderId === message.senderId
+          && message.isDirect === true
+        : entry.chatId === message.chatId
+          // No bound owner means we do not know whose approval this is. In a
+          // 1:1 chat there is only one candidate, so the reply is unambiguous;
+          // in a group it is not, and "anyone in the group may approve" is not
+          // a default anybody chose. Such a prompt simply expires.
+          && (entry.senderId !== undefined
+            ? entry.senderId === message.senderId
+            : message.isDirect === true)),
   );
   if (index === -1) return false;
   if (verdict === null) return false;
@@ -388,11 +407,19 @@ function publishApprovalNotice(conversationId: string | null, prompt: string): v
   }
 }
 
-/** Push one line into an IM chat. Returns delivery success. */
+/**
+ * Push one line into an IM chat. Returns delivery success.
+ *
+ * `chatIdType` is forwarded to `outputSender` because a DM is addressed by a
+ * USER id, and the adapter has to be told that — `sendViaIMChannel` otherwise
+ * defaults a bare `outputChatId` to `'chat_id'` and the send fails or lands
+ * nowhere. Same argument `pushToIMChannel` already passes for results.
+ */
 async function sendToChat(
   channelId: string,
   chatId: string,
   content: string,
+  chatIdType?: 'chat_id' | 'open_id',
 ): Promise<{ success: boolean; error?: string }> {
   return await outputSender
     .send(
@@ -404,6 +431,8 @@ async function sendToChat(
         extractMode: 'last_message',
       },
       { content },
+      undefined,
+      chatIdType ?? 'chat_id',
     )
     .catch((error: unknown) => ({
       success: false,
@@ -451,7 +480,7 @@ async function sendOutcomeReceipt(
         : format(t.imChannel.approvalReceiptTooMany, {
             max: String(MAX_PENDING_APPROVALS_PER_CONVERSATION),
           });
-  const sent = await sendToChat(target.channelId, target.chatId, text);
+  const sent = await sendToChat(target.channelId, target.chatId, text, target.chatIdType);
   if (!sent.success) log.warn(`approval receipt undelivered: ${sent.error ?? 'unknown error'}`);
 }
 
@@ -512,6 +541,7 @@ export async function requestImApprovalDetailed(
     conversationId,
     platform: imTarget.platform,
     chatId,
+    ...(imTarget.chatIdType !== undefined ? { chatIdType: imTarget.chatIdType } : {}),
     ...(senderId !== undefined ? { senderId } : {}),
     armed: false,
   };
@@ -542,7 +572,7 @@ export async function requestImApprovalDetailed(
       entry.detachAbort = () => signal.removeEventListener('abort', onAbort);
     }
 
-    void sendToChat(channelId, chatId, prompt).then((sent) => {
+    void sendToChat(channelId, chatId, prompt, imTarget.chatIdType).then((sent) => {
       clearTimeout(sendTimer);
       // Aborted or timed out while the message was in flight: the ask is
       // already over, whatever the adapter now says.
@@ -658,7 +688,37 @@ export function sanitizeUntrustedPromptField(
  */
 function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number): string {
   const t = getI18n();
+  /*
+    WHICH automation is asking, and WHERE it is acting.
+
+    A prompt that arrives in a chat at 03:00 saying only "Abu wants to click a
+    button" cannot be answered responsibly: the reader has several automations
+    and no way to tell them apart, so the safe reply is always 拒绝 — which
+    turns the whole channel into noise. The task name and the target origin are
+    what make the ask decidable.
+
+    Both go through `sanitizeUntrustedPromptField` like the other two: a task
+    can be created by the model, and an origin comes from a page. And both sit
+    INSIDE the fenced region — `approvalPrompt` keeps the reply instruction and
+    the deadline after it, so nothing here can forge them.
+  */
+  const context: string[] = [];
+  if (request.runLabel !== undefined && request.runLabel.trim() !== '') {
+    context.push(
+      format(t.imChannel.approvalPromptTask, {
+        task: sanitizeUntrustedPromptField(request.runLabel),
+      }),
+    );
+  }
+  if (request.info.browserOrigin !== undefined && request.info.browserOrigin !== '') {
+    context.push(
+      format(t.imChannel.approvalPromptOrigin, {
+        origin: sanitizeUntrustedPromptField(request.info.browserOrigin),
+      }),
+    );
+  }
   return format(t.imChannel.approvalPrompt, {
+    context: context.length > 0 ? `${context.join('\n')}\n` : '',
     action: sanitizeUntrustedPromptField(request.info.command),
     reason: sanitizeUntrustedPromptField(request.info.reason),
     minutes: String(Math.round(timeoutMs / 60_000)),
@@ -701,9 +761,18 @@ async function askOverIm(
   conversationId: string,
   prompt: string,
 ): Promise<ImApprovalResult> {
-  // A caller that already knows where it is answering (the IM channel router
-  // builds its callbacks with the live reply target) beats the store lookup,
-  // which can only find the session mapper's record.
+  /*
+    A caller that already knows where it is answering beats the store lookup,
+    which can only find the session mapper's record.
+
+    Two kinds of caller supply one now: the IM channel router (the live reply
+    target of the message that started the run) and — since approvals were
+    wired to automations — the scheduler and the trigger engine, which build
+    it from the automation's own IM output binding
+    (`core/im/approvalTarget.ts`). Without that second kind, an automatic
+    run's conversation is bound to no session and every「每次询问」refused
+    itself with `no_binding`.
+  */
   const supplied = request.imTarget;
   const target: DeliverableImTarget | null =
     supplied?.channelId && supplied.chatId
@@ -711,6 +780,7 @@ async function askOverIm(
           platform: supplied.platform,
           channelId: supplied.channelId,
           chatId: supplied.chatId,
+          ...(supplied.chatIdType !== undefined ? { chatIdType: supplied.chatIdType } : {}),
           ...(supplied.senderId !== undefined ? { senderId: supplied.senderId } : {}),
         }
       : resolveImTargetForConversation(conversationId);

@@ -4,16 +4,21 @@
  *
  * Abu ships **two** connector catalogs that predate this tab:
  * {@link BUILTIN_REGISTRY} (what the agent searches when it hits a capability
- * gap) and {@link mcpTemplates} (what the old 示例 cards installed). They
+ * gap) and the marketplace templates (what the old 示例 cards installed). They
  * overlap by ten names and disagree about five: `playwright`, `docker`,
  * `sentry`, `linear` and `chrome-devtools` exist only as templates. Once 「我的」
  * stopped rendering un-installed template cards, those five had no surface left
- * anywhere in the app — so 「市场」 lists the union, deduplicated by name.
+ * anywhere in the app — so 「市场」 lists the union, deduplicated by name, minus
+ * the ones whose package npm does not have (see
+ * {@link UNPUBLISHED_TEMPLATE_PACKAGES}).
  *
- * A registry entry wins a name collision on every plain-path field: it is the
- * one resolved per host (the Electron build swaps the Chrome bridge's command),
- * so it describes what this machine would actually run. It still names the
- * template it collided with, though — see {@link ConnectorPrefill.templateId}.
+ * A registry entry wins a name collision outright: it is the one resolved per
+ * host (the Electron build swaps the Chrome bridge's command), so it describes
+ * what this machine would actually run — and the two catalogs disagree about
+ * the npm package for nine of their ten shared names, where the registry's
+ * `@modelcontextprotocol/*` packages are the published ones. A collision
+ * therefore carries no `templateId`: routing it through the template install
+ * flow would run the template's command, which is the unpublished one.
  *
  * `ConnectorPrefill` is deliberately *not* `MCPRegistryEntry`: the two catalogs
  * carry different metadata (a template can be HTTP, a registry entry cannot),
@@ -23,7 +28,7 @@
  */
 
 import { BUILTIN_REGISTRY, getEntryDescription, getRegistryEntry, type MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
-import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
+import { getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import type { MCPTemplate } from '@/types/marketplace';
 
 /** A proposed server config, filled into the add-server form for the user to complete. */
@@ -41,18 +46,45 @@ export interface ConnectorPrefill {
    * template carries install affordances the plain add-server form has nowhere
    * to put — a labeled secret field with a hint, a configurable argument with a
    * placeholder, a setup note, a longer default timeout — so 「我的」 opens that
-   * template's own install flow instead of the bare form. A name both catalogs
-   * carry gets one too: the registry still wins every plain-path field, but
-   * sqlite's database path and postgres's connection string are exactly what
-   * that path cannot ask for.
+   * template's own install flow instead of the bare form. Only a connector the
+   * registry does *not* carry gets one — a name both catalogs know belongs to
+   * the registry outright.
    *
    * It is an offer, not a guarantee. The consumer resolves the id against its
    * own host-filtered template list and falls back to the fields beside it when
-   * nothing matches — which is what the Electron host does for
-   * `abu-browser-bridge`, whose template it drops and whose command it swaps.
-   * Absent only on a connector no template describes.
+   * nothing matches, so a host that filtered the template out can still add the
+   * connector from the plain form.
    */
   templateId?: string;
+}
+
+/**
+ * npm packages named by `mcpTemplates` that do not exist on the registry —
+ * every one of them 404s on `npm view` as of **2026-09-05**. A template-only
+ * row is the only surface a connector has, and its 「添加」 ends in
+ * `npx -y <package>`, so offering these promises an install that cannot
+ * succeed. 「市场」 withholds such a row instead.
+ *
+ * **Follow-up:** the real fix is in the template data — `src/data/marketplace/mcp.ts`
+ * should name published packages (as the registry's `@modelcontextprotocol/*`
+ * entries do). Shrink this set as those are corrected; it is a shield over
+ * stale data, not a policy.
+ */
+export const UNPUBLISHED_TEMPLATE_PACKAGES: ReadonlySet<string> = new Set([
+  '@anthropic/mcp-server-docker',
+  '@anthropic/mcp-server-linear',
+  '@sentry/mcp-server-sentry',
+]);
+
+/** `@scope/name@1.2.3` / `name@latest` → the package name the deny-list holds. */
+function packageBaseName(arg: string): string {
+  const at = arg.lastIndexOf('@');
+  return at > 0 ? arg.slice(0, at) : arg;
+}
+
+/** True when a template would install a package npm does not have. */
+function namesUnpublishedPackage(template: MCPTemplate): boolean {
+  return (template.defaultArgs ?? []).some((arg) => UNPUBLISHED_TEMPLATE_PACKAGES.has(packageBaseName(arg)));
 }
 
 /** A prefill plus the extra terms the catalog's search box matches on. */
@@ -103,19 +135,13 @@ function fromTemplate(template: MCPTemplate, locale: string): ConnectorCatalogIt
  * localized description (registry descriptions resolve their own locale).
  */
 export function buildConnectorCatalog(locale: string): ConnectorCatalogItem[] {
-  // Collisions are matched against the *unfiltered* template list: naming a
-  // template is an offer the consumer resolves against its own host-filtered
-  // list, and a host that dropped the template still gets a usable prefill from
-  // the registry fields the offer travels with.
-  const templatesByName = new Map(mcpTemplates.map((template) => [template.name, template]));
-  const items = BUILTIN_REGISTRY.map((entry) => {
-    const item = fromRegistry(entry);
-    const template = templatesByName.get(item.name);
-    return template ? { ...item, templateId: template.id } : item;
-  });
+  const items = BUILTIN_REGISTRY.map(fromRegistry);
   const claimed = new Set(items.map((item) => item.name));
   for (const template of getMCPTemplatesForHost()) {
     if (claimed.has(template.name)) continue;
+    // A template-only row is this connector's only surface; withholding it
+    // beats offering an install that 404s.
+    if (namesUnpublishedPackage(template)) continue;
     claimed.add(template.name);
     items.push(fromTemplate(template, locale));
   }

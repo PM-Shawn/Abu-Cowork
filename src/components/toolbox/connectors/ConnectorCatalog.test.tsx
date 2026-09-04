@@ -86,8 +86,25 @@ describe('ConnectorCatalog · 精选连接器', () => {
    */
   it('lists the template-only connectors, which 我的 no longer offers', () => {
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
-    for (const name of ['playwright', 'docker', 'sentry', 'linear', 'chrome-devtools']) {
+    for (const name of ['playwright', 'chrome-devtools']) {
       expect(within(rowFor(name)).getByTestId('connector-add-button')).toBeTruthy();
+    }
+  });
+
+  /**
+   * A template-only row is the *only* way to add that connector, and 「添加」 on
+   * it runs `npx -y <package>`. Three of `mcpTemplates`' template-only entries
+   * name a package npm does not have — `@anthropic/mcp-server-docker`,
+   * `@anthropic/mcp-server-linear` and `@sentry/mcp-server-sentry` all 404 as of
+   * 2026-09-05 — so the row promises an install that cannot succeed. Until the
+   * template data is fixed, 「市场」 withholds them rather than offering a dead
+   * button.
+   */
+  it('hides a template connector whose npm package does not exist', () => {
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
+    const rows = screen.getAllByTestId('connector-row');
+    for (const name of ['docker', 'linear', 'sentry']) {
+      expect(rows.find((el) => within(el).queryByText(name))).toBeUndefined();
     }
   });
 
@@ -108,11 +125,11 @@ describe('ConnectorCatalog · 精选连接器', () => {
   it('prefills a template-only connector from its template', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
-    fireEvent.click(within(rowFor('sentry')).getByTestId('connector-add-button'));
+    fireEvent.click(within(rowFor('playwright')).getByTestId('connector-add-button'));
     expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
-      name: 'sentry',
+      name: 'playwright',
       command: 'npx',
-      env: { SENTRY_AUTH_TOKEN: '' },
+      args: ['-y', '@playwright/mcp@latest'],
       transport: 'stdio',
     });
   });
@@ -127,21 +144,22 @@ describe('ConnectorCatalog · 精选连接器', () => {
   it('names the template a template-sourced entry came from, and none for a registry-only one', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
-    fireEvent.click(within(rowFor('sentry')).getByTestId('connector-add-button'));
-    expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('sentry');
+    fireEvent.click(within(rowFor('playwright')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('playwright');
     fireEvent.click(within(rowFor('filesystem')).getByTestId('connector-add-button'));
     expect(onPrefillAdd.mock.calls[1][0].templateId).toBeUndefined();
   });
 
   /**
-   * A name both catalogs carry keeps the registry's data — that entry is the
-   * host-resolved one, so it describes what this machine would actually run —
-   * but the template beside it still knows how to ask for what that data cannot
-   * express: sqlite's database path, postgres's connection string,
-   * abu-browser-bridge's setup note. Dropping its id sent exactly those three
-   * connectors to a bare form holding a placeholder `/path/to/database.db`.
+   * A name both catalogs carry belongs to the registry outright: its entry is
+   * the host-resolved one, and the two catalogs disagree about the npm package
+   * for nine of the ten collision names (the registry's `@modelcontextprotocol/*`
+   * packages are published; the templates' `@anthropic/mcp-server-*` ones are
+   * not). Naming the colliding template would route 「添加」 into the template
+   * install flow, which runs the template's command — the unpublished one. So a
+   * collision carries no `templateId` at all.
    */
-  it('names the template of a connector both catalogs carry, and still prefills the registry command', () => {
+  it('carries no template id for a connector both catalogs carry — the registry entry wins', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
     fireEvent.click(within(rowFor('sqlite')).getByTestId('connector-add-button'));
@@ -149,8 +167,8 @@ describe('ConnectorCatalog · 精选连接器', () => {
       name: 'sqlite',
       command: getRegistryEntry('sqlite')!.command,
       args: getRegistryEntry('sqlite')!.args,
-      templateId: 'sqlite',
     });
+    expect(onPrefillAdd.mock.calls[0][0].templateId).toBeUndefined();
   });
 
   it('searches a template-only connector by its localized description', () => {

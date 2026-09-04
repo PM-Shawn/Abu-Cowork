@@ -359,18 +359,16 @@ describe('MCPSection · prefill from a template', () => {
   });
 
   /**
-   * `abu-browser-bridge` is in both catalogs, so its offer names a template —
-   * but the Electron build resolves that command itself and
-   * `getMCPTemplatesForHost` drops the template on that host, so the id
-   * resolves to nothing. The plain form is then the only way to add the
-   * connector at all, and it must open on the registry's host-resolved command,
-   * not the template's npx one.
+   * `abu-browser-bridge` is in both catalogs, and a collision belongs to the
+   * registry outright — the Electron build resolves that command itself, so the
+   * offer names no template and opens the plain form on the host-resolved
+   * command, not the template's npx one.
    */
-  it('falls back to the registry command when this host filtered the named template out', async () => {
+  it('opens the plain form on the registry command for a name both catalogs carry', async () => {
     process.env.ABU_ELECTRON_COMMAND_HOST = '1';
     try {
       const bridge = buildConnectorCatalog('zh-CN').find((item) => item.name === 'abu-browser-bridge');
-      expect(bridge?.templateId).toBe('abu-browser-bridge');
+      expect(bridge?.templateId).toBeUndefined();
       render(<Host initial={bridge ?? null} />);
       await waitFor(() => {
         expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('abu-browser-bridge');

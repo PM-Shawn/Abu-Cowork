@@ -1,8 +1,10 @@
 /**
  * 「市场」 for the Connectors tab — connectors the user did not write: the
- * curated catalog Abu ships (the same {@link BUILTIN_REGISTRY} the agent
- * searches when it hits a capability gap) and the servers an installed plugin
- * brought with it.
+ * curated catalog Abu ships and the servers an installed plugin brought with
+ * it. The catalog is the union of Abu's two pre-existing lists — the registry
+ * the agent searches on a capability gap, and the marketplace templates the old
+ * 示例 cards installed — deduplicated by {@link buildConnectorCatalog}. Neither
+ * list alone covers the other, and 「我的」 no longer offers un-installed cards.
  *
  * Two rules shape the panel:
  *
@@ -28,7 +30,7 @@
 import { useCallback, useMemo } from 'react';
 import { Server } from 'lucide-react';
 import { format, useI18n } from '@/i18n';
-import { BUILTIN_REGISTRY, getEntryDescription, getRegistryEntry, type MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
+import { buildConnectorCatalog, type ConnectorPrefill } from './connectorPrefill';
 import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -38,9 +40,9 @@ import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 
 interface ConnectorCatalogProps {
   searchQuery: string;
-  /** 「添加」 — hand the catalog entry to the host, which opens the add-server
-   *  form pre-filled. Deliberately not an install: see rule 1 above. */
-  onPrefillAdd: (entry: MCPRegistryEntry) => void;
+  /** 「添加」 — hand the connector to the host, which opens the add-server form
+   *  pre-filled. Deliberately not an install: see rule 1 above. */
+  onPrefillAdd: (entry: ConnectorPrefill) => void;
   /** 「管理」 — the host switches to 「我的」 focused on this server, which owns
    *  the per-server editor. Required: a menu item that goes nowhere is worse
    *  than no menu item. */
@@ -55,7 +57,7 @@ function commandLine(entry: MCPServerEntry): string {
 }
 
 export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }: ConnectorCatalogProps) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const tb = t.toolbox;
   const servers = useMCPStore((s) => s.servers);
   const removeServer = useMCPStore((s) => s.removeServer);
@@ -66,12 +68,10 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
   // server name → owning plugin. The single source of "this is not yours".
   const owners = useMemo(() => pluginServerOwners(installedPlugins), [installedPlugins]);
 
-  // Resolved the way this host would actually run them, so a prefill matches
-  // what an install would have produced (Electron swaps the Chrome bridge).
-  const catalog = useMemo(
-    () => BUILTIN_REGISTRY.map((entry) => getRegistryEntry(entry.name) ?? entry),
-    [],
-  );
+  // The union of Abu's two connector catalogs, deduplicated by name and resolved
+  // per host. Locale is a dependency: a template's description is localized here
+  // (a registry entry's resolves its own).
+  const catalog = useMemo(() => buildConnectorCatalog(locale), [locale]);
   const catalogNames = useMemo(() => new Set(catalog.map((e) => e.name)), [catalog]);
 
   const query = searchQuery.trim().toLowerCase();
@@ -80,7 +80,7 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
     if (!query) return catalog;
     return catalog.filter((entry) =>
       entry.name.toLowerCase().includes(query)
-      || getEntryDescription(entry.name).toLowerCase().includes(query)
+      || (entry.description ?? '').toLowerCase().includes(query)
       || entry.keywords.some((k) => k.toLowerCase().includes(query)));
   }, [catalog, query]);
 
@@ -166,7 +166,7 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
             <ul className="space-y-1.5">
               {visibleCatalog.map((entry) => {
                 const configured = servers[entry.name];
-                const description = getEntryDescription(entry.name);
+                const description = entry.description ?? entry.name;
                 const owner = owners[entry.name];
                 const provenance = owner ? format(tb.mcpFromPlugin, { name: owner }) : undefined;
                 return row(

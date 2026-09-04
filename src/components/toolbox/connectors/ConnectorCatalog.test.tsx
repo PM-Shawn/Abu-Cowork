@@ -23,7 +23,8 @@ const { launchTrial } = vi.hoisted(() => ({ launchTrial: vi.fn() }));
 vi.mock('@/components/toolbox/useTrialLauncher', () => ({ useTrialLauncher: () => launchTrial }));
 
 import { format, getI18n } from '@/i18n';
-import { BUILTIN_REGISTRY, getEntryDescription } from '@/core/agent/mcpDiscovery';
+import { BUILTIN_REGISTRY, getEntryDescription, getRegistryEntry } from '@/core/agent/mcpDiscovery';
+import { buildConnectorCatalog } from './connectorPrefill';
 import type { MCPServerEntry } from '@/stores/mcpStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -71,10 +72,54 @@ describe('ConnectorCatalog · 精选连接器', () => {
   it('lists every catalog entry under its heading, with the localized description', () => {
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
     expect(screen.getByText(tb().connectorsMarketTitle)).toBeTruthy();
-    expect(screen.getAllByTestId('connector-row')).toHaveLength(BUILTIN_REGISTRY.length);
+    expect(screen.getAllByTestId('connector-row')).toHaveLength(buildConnectorCatalog('zh-CN').length);
     for (const entry of BUILTIN_REGISTRY) {
       expect(within(rowFor(entry.name)).getByText(getEntryDescription(entry.name))).toBeTruthy();
     }
+  });
+
+  /**
+   * `BUILTIN_REGISTRY` and `mcpTemplates` are two catalogs that disagree.
+   * 「我的」 no longer renders the un-installed template cards, so a
+   * template-only connector that 「市场」 does not list has no surface anywhere
+   * in the app.
+   */
+  it('lists the template-only connectors, which 我的 no longer offers', () => {
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
+    for (const name of ['playwright', 'docker', 'sentry', 'linear', 'chrome-devtools']) {
+      expect(within(rowFor(name)).getByTestId('connector-add-button')).toBeTruthy();
+    }
+  });
+
+  it('lists a name both catalogs carry once, and prefills the registry version', () => {
+    const onPrefillAdd = vi.fn();
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
+    const githubRows = screen.getAllByTestId('connector-row')
+      .filter((el) => within(el).queryByText('github'));
+    expect(githubRows).toHaveLength(1);
+    fireEvent.click(within(githubRows[0]).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
+      command: getRegistryEntry('github')!.command,
+      args: getRegistryEntry('github')!.args,
+      transport: 'stdio',
+    });
+  });
+
+  it('prefills a template-only connector from its template', () => {
+    const onPrefillAdd = vi.fn();
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
+    fireEvent.click(within(rowFor('sentry')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
+      name: 'sentry',
+      command: 'npx',
+      env: { SENTRY_AUTH_TOKEN: '' },
+      transport: 'stdio',
+    });
+  });
+
+  it('searches a template-only connector by its localized description', () => {
+    render(<ConnectorCatalog searchQuery="Chrome DevTools" onPrefillAdd={noop} onManage={noop} />);
+    expect(rowFor('chrome-devtools')).toBeTruthy();
   });
 
   it('offers 添加 — and only 添加 — for an entry with no configured server', () => {
@@ -215,6 +260,8 @@ describe('ConnectorCatalog · 插件带来的连接器', () => {
     useMCPStore.setState({ servers: { github: serverEntry('github') } });
     usePluginStore.setState({ installed: [plugin('gh-pack', ['github'])] });
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
+    // …and it is still listed once, in the catalog, not again under the plugin group.
+    expect(screen.getAllByTestId('connector-row')).toHaveLength(buildConnectorCatalog('zh-CN').length);
     const provenance = format(tb().mcpFromPlugin, { name: 'gh-pack' });
     const row = rowFor('github');
     // The row itself explains the disabled action, not just the tooltip.

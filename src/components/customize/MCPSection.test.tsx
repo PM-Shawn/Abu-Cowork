@@ -22,7 +22,7 @@ import { useMCPStore } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
-import type { MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
+import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import MCPSection from './MCPSection';
 
 const tb = () => getI18n().toolbox;
@@ -143,12 +143,12 @@ describe('MCPSection · sourceFilter="mine"', () => {
 });
 
 describe('MCPSection · prefill', () => {
-  const entry: MCPRegistryEntry = {
+  const entry: ConnectorPrefill = {
     name: 'github',
-    keywords: ['github'],
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
-    env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ignored-sample-value' },
+    env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
+    transport: 'stdio',
   };
 
   it('fills the add-server form from the catalog entry, secrets left blank', async () => {
@@ -166,6 +166,25 @@ describe('MCPSection · prefill', () => {
     render(<MCPSection sourceFilter="mine" showAddForm prefill={entry} />);
     expect(addServer).not.toHaveBeenCalled();
     expect(useMCPStore.getState().servers.github).toBeUndefined();
+  });
+
+  /**
+   * The two catalogs 「市场」 unions are not both stdio — a marketplace template
+   * may be an HTTP endpoint. Hardcoding stdio would have opened the form on the
+   * wrong transport with an empty command the user cannot fill.
+   */
+  it('opens on the HTTP transport when the connector is one', async () => {
+    const http: ConnectorPrefill = {
+      name: 'remote-mcp',
+      command: '',
+      args: [],
+      env: {},
+      transport: 'http',
+      url: 'https://mcp.example.com/sse',
+    };
+    render(<MCPSection sourceFilter="mine" showAddForm prefill={http} />);
+    await waitFor(() => expect(screen.getByDisplayValue('https://mcp.example.com/sse')).toBeTruthy());
+    expect(screen.getByDisplayValue('remote-mcp')).toBeTruthy();
   });
 
   it('leaves the form alone while it is closed', () => {
@@ -195,12 +214,12 @@ describe('MCPSection · focusServer', () => {
  * a form that is already editing a server.
  */
 describe('MCPSection · prefill does not hijack the form', () => {
-  const entry: MCPRegistryEntry = {
+  const entry: ConnectorPrefill = {
     name: 'github',
-    keywords: ['github'],
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
     env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
+    transport: 'stdio',
   };
 
   /** A host that owns `showAddForm` the way ToolboxModal will. */

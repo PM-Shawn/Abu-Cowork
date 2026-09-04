@@ -9,7 +9,7 @@ import { useI18n, format } from '@/i18n';
 import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
-import type { MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
+import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
@@ -77,14 +77,14 @@ interface MCPSectionProps {
    *  came from, and here the answer is always "the user". Omitted = every
    *  source, grouped as before. */
   sourceFilter?: 'mine';
-  /** A catalog entry to pre-fill the add-server form with, applied when the form
+  /** A connector to pre-fill the add-server form with, applied when the form
    *  is open. 「市场」's 「添加」 routes through here rather than adding a server
-   *  itself: a registry entry's `env` carries key names with empty values, so a
+   *  itself: a catalog entry's `env` carries key names with empty values, so a
    *  silent add would persist a config that cannot connect. The user fills in
    *  the secrets and saves. An offer is spent once: it is ignored while the form
    *  is editing a server, and a re-open of the form does not re-apply it. Pass
    *  `null` to withdraw the offer — the same name may then be offered again. */
-  prefill?: MCPRegistryEntry | null;
+  prefill?: ConnectorPrefill | null;
   /** Open this server's detail on mount/prop change — how 「市场」's 「管理」 lands
    *  in the editor that lives here. Ignored when no such server is configured. */
   focusServer?: string | null;
@@ -456,15 +456,22 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     consumedPrefillRef.current = entry.name;
     const env: Record<string, string> = {};
     for (const key of Object.keys(entry.env)) env[key] = '';
+    // The catalog unions two sources and one of them can be an HTTP endpoint;
+    // the offer says which, so the form does not open on the wrong transport.
+    const isHttp = entry.transport === 'http';
     setEditingServerName(null);
     setNewServerName(entry.name);
-    setNewTransportType('stdio');
-    setNewServerCommand(entry.command);
-    setNewServerArgs(entry.args.join(' '));
-    setNewServerUrl('');
+    setNewTransportType(isHttp ? 'http' : 'stdio');
+    setNewServerCommand(isHttp ? '' : entry.command);
+    setNewServerArgs(isHttp ? '' : entry.args.join(' '));
+    setNewServerUrl(isHttp ? (entry.url ?? '') : '');
     setNewServerHeaders('');
-    setNewServerEnv(Object.keys(env).length > 0 ? JSON.stringify(env) : '');
-    setJsonInput(JSON.stringify({ [entry.name]: { command: entry.command, args: entry.args, env } }, null, 2));
+    setNewServerEnv(!isHttp && Object.keys(env).length > 0 ? JSON.stringify(env) : '');
+    setJsonInput(JSON.stringify({
+      [entry.name]: isHttp
+        ? { url: entry.url ?? '' }
+        : { command: entry.command, args: entry.args, env },
+    }, null, 2));
     setAddMode('form');
     setJsonError('');
     setServerNameError('');

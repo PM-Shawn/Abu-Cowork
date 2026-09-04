@@ -192,6 +192,22 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByText(INSTALL)).toHaveCount(0);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-installed.png') });
 
+    // --- 我的 lists it while it is installed ---------------------------------
+    // `e2e-weather` comes from a user-added market with a `relative` source, so
+    // `isSelfAuthoredPlugin` counts it as the user's own. Asserting it is
+    // *present* here is what makes the post-uninstall empty state mean
+    // something: without this, an implementation that dropped the authored
+    // filter (or rendered nothing at all) would still satisfy the tail.
+    // Sub-nav mounted by ToolboxModal (plan Task 7)
+    await page.getByTestId('extensions-source-mine').click();
+    await expect(
+      page.getByTestId('plugin-mine-row').filter({ hasText: 'e2e-weather' }).first(),
+    ).toBeVisible({ timeout: READY_TIMEOUT });
+
+    // Uninstall is driven from the market row, so go back to 市场.
+    await page.getByTestId('extensions-source-market').click();
+    await expect(entry.getByTestId('plugin-item-menu')).toBeVisible({ timeout: READY_TIMEOUT });
+
     // --- uninstall removes the package from disk ----------------------------
     await entry.getByTestId('plugin-item-menu').click();
     await page.getByTestId('plugin-item-menu-uninstall').click();
@@ -207,7 +223,7 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByText(INSTALL).first()).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(entry.getByTestId('plugin-item-menu')).toHaveCount(0);
 
-    // --- 我的 lists authored plugins only -----------------------------------
+    // --- 我的 drops it again once uninstalled --------------------------------
     // Nothing is installed at all now, so 我的 shows its own empty state — not
     // "no matches", and not a marketplace pitch.
     await page.getByTestId('extensions-source-mine').click();

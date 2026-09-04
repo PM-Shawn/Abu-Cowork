@@ -1689,6 +1689,8 @@ export interface TranslationDict {
     connectorsMarketTitle: string;
     connectorsFromPlugins: string;
     connectorsAdd: string;
+    /** Accessible name of one catalog row's 添加 button — `{name}` is the connector. */
+    connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
     installAgentSkills: string;

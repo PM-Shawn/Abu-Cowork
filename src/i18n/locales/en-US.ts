@@ -1482,6 +1482,7 @@ const enUS: TranslationDict = {
     connectorsMarketTitle: 'Featured connectors',
     connectorsFromPlugins: 'Connectors from plugins',
     connectorsAdd: 'Add',
+    connectorAddLabel: 'Add {name}',
     connectorsMineEmptyTitle: 'No connectors of your own yet',
     installAgentSkills: 'Install Agent Skills',
     installAgentSkillsPlaceholder: 'GitHub repo, e.g. larksuite/cli',

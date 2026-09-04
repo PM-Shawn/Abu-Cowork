@@ -1483,6 +1483,7 @@ const zhCN: TranslationDict = {
     connectorsMarketTitle: '精选连接器',
     connectorsFromPlugins: '插件带来的连接器',
     connectorsAdd: '添加',
+    connectorAddLabel: '添加 {name}',
     connectorsMineEmptyTitle: '还没有你添加的连接器',
     installAgentSkills: '安装 Agent Skills',
     installAgentSkillsPlaceholder: '输入 GitHub 仓库名，如 larksuite/cli',

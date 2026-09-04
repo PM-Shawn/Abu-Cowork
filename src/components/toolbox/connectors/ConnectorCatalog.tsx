@@ -18,9 +18,11 @@
  *    try it, or manage it.
  *
  * Rule 2 applies by ownership, not by group: a plugin is free to contribute a
- * server named after a catalog entry, and that catalog row loses its 移除 too.
- * Such a server is listed once — in the catalog, where its name belongs — and
- * not repeated below.
+ * server named after a catalog entry, and that catalog row cannot offer 移除
+ * either. There the item stays but is disabled and names the owning plugin —
+ * among rows that otherwise look identical, an item that quietly disappears
+ * reads as a glitch, and a disabled one answers "why not". Such a server is
+ * listed once — in the catalog, where its name belongs — and not repeated below.
  */
 
 import { useCallback, useMemo } from 'react';
@@ -106,18 +108,36 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
     removeServer(name);
   }, [disconnectServer, removeServer]);
 
-  const menuActions = useCallback((name: string, description: string, removable: boolean): InstalledItemMenuAction[] => {
+  /**
+   * `remove` describes what this row's 移除 may do: `undefined` withholds the
+   * item (the plugin group, whose rows never carried one), `{}` enables it, and
+   * a `disabledReason` keeps it visible but inert. A catalog row whose server a
+   * plugin owns takes the third: silently dropping an item from a menu that is
+   * otherwise identical to its neighbours' reads as a glitch, and leaves the
+   * user hunting for an action that is gone for a reason nobody stated.
+   */
+  const menuActions = useCallback((
+    name: string,
+    description: string,
+    remove?: { disabledReason?: string },
+  ): InstalledItemMenuAction[] => {
     const actions: InstalledItemMenuAction[] = [
       { id: 'trial', label: tb.menuTrial, onSelect: () => launchTrial({ name, description }) },
       { id: 'manage', label: tb.menuManage, onSelect: () => onManage(name) },
     ];
-    if (removable) {
-      actions.push({ id: 'remove', label: tb.menuRemove, destructive: true, onSelect: () => { void handleRemove(name); } });
+    if (remove) {
+      actions.push({
+        id: 'remove',
+        label: tb.menuRemove,
+        destructive: true,
+        disabledReason: remove.disabledReason,
+        onSelect: () => { void handleRemove(name); },
+      });
     }
     return actions;
   }, [tb, launchTrial, onManage, handleRemove]);
 
-  const row = (name: string, description: string, trailing: React.ReactNode) => (
+  const row = (name: string, description: string, trailing: React.ReactNode, provenance?: string) => (
     <li
       key={name}
       data-testid="connector-row"
@@ -127,6 +147,9 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
       <div className="min-w-0 flex-1">
         <span className="block truncate text-h-xs text-[var(--abu-text-primary)]">{name}</span>
         <p className="truncate text-minor text-[var(--abu-text-tertiary)]">{description}</p>
+        {provenance && (
+          <p className="truncate text-caption text-[var(--abu-text-muted)]">{provenance}</p>
+        )}
       </div>
       {trailing}
     </li>
@@ -144,6 +167,8 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
               {visibleCatalog.map((entry) => {
                 const configured = servers[entry.name];
                 const description = getEntryDescription(entry.name);
+                const owner = owners[entry.name];
+                const provenance = owner ? format(tb.mcpFromPlugin, { name: owner }) : undefined;
                 return row(
                   entry.name,
                   description,
@@ -151,18 +176,20 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
                     <InstalledItemMenu
                       testId="connector-item-menu"
                       ariaLabel={format(tb.itemMenuLabel, { name: entry.name })}
-                      actions={menuActions(entry.name, description, !owners[entry.name])}
+                      actions={menuActions(entry.name, description, { disabledReason: provenance })}
                     />
                   ) : (
                     <Button
                       variant="outline"
                       size="sm"
                       data-testid="connector-add-button"
+                      aria-label={format(tb.connectorAddLabel, { name: entry.name })}
                       onClick={() => onPrefillAdd(entry)}
                     >
                       {tb.connectorsAdd}
                     </Button>
                   ),
+                  provenance,
                 );
               })}
             </ul>
@@ -184,7 +211,7 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
                   <InstalledItemMenu
                     testId="connector-item-menu"
                     ariaLabel={format(tb.itemMenuLabel, { name })}
-                    actions={menuActions(name, description, false)}
+                    actions={menuActions(name, description)}
                   />,
                 );
               })}

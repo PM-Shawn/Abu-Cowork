@@ -7,7 +7,9 @@
  * wrong here: a catalog server the user configured is theirs to remove, while a
  * plugin's server is not — it arrived with a package and leaves when that
  * package is uninstalled, from the Plugins tab. Removing one here would strand
- * the plugin's install record describing a server that is gone.
+ * the plugin's install record describing a server that is gone. A catalog row
+ * in that state keeps 移除 visible but disabled, naming the owner, rather than
+ * silently dropping the item from an otherwise identical menu.
  *
  * 「添加」 never writes a server: a catalog entry carries env-var *keys* with
  * empty values (a token slot, not a token), so it hands the entry to the
@@ -146,6 +148,20 @@ describe('ConnectorCatalog · 精选连接器', () => {
     });
   });
 
+  /**
+   * Thirteen buttons all named 「添加」 are indistinguishable to a screen reader
+   * (and to any name-based query): the row's name is visible text, not part of
+   * the control. Each button carries the connector it adds.
+   */
+  it('names every 添加 button after the connector it adds', () => {
+    const onPrefillAdd = vi.fn();
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
+    const add = screen.getByRole('button', { name: format(tb().connectorAddLabel, { name: 'github' }) });
+    expect(add.textContent).toBe(tb().connectorsAdd);
+    fireEvent.click(add);
+    expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({ name: 'github' });
+  });
+
   it('narrows the catalog by name, description and keyword', () => {
     render(<ConnectorCatalog searchQuery="postgres" onPrefillAdd={noop} onManage={noop} />);
     expect(screen.getAllByTestId('connector-row')).toHaveLength(1);
@@ -190,18 +206,33 @@ describe('ConnectorCatalog · 插件带来的连接器', () => {
 
   /**
    * A plugin is free to contribute a server named after a catalog entry. The
-   * catalog row then describes a server the user does not own, so it must not
-   * offer the removal the plain-catalog row does.
+   * catalog row then describes a server the user does not own, so its 移除 must
+   * not work — but dropping the item outright leaves the user hunting for an
+   * action that was there a moment ago on an identical-looking row. It stays,
+   * disabled, saying who owns the server, and the row says so too.
    */
-  it('withholds 移除 from a catalog row whose server a plugin owns', () => {
+  it('disables 移除 on a catalog row whose server a plugin owns, and names the owner', () => {
     useMCPStore.setState({ servers: { github: serverEntry('github') } });
     usePluginStore.setState({ installed: [plugin('gh-pack', ['github'])] });
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
-    // …and it is listed once, in the catalog, not again under the plugin group.
-    expect(screen.getAllByTestId('connector-row')).toHaveLength(BUILTIN_REGISTRY.length);
-    const row = openMenu('github');
+    const provenance = format(tb().mcpFromPlugin, { name: 'gh-pack' });
+    const row = rowFor('github');
+    // The row itself explains the disabled action, not just the tooltip.
+    expect(within(row).getByText(provenance)).toBeTruthy();
+    openMenu('github');
     expect(within(row).getByTestId('connector-item-menu-manage')).toBeTruthy();
-    expect(within(row).queryByTestId('connector-item-menu-remove')).toBeNull();
+    const remove = within(row).getByTestId('connector-item-menu-remove');
+    expect(remove.getAttribute('aria-disabled')).toBe('true');
+    expect(remove.getAttribute('title')).toBe(provenance);
+  });
+
+  it('never removes through the disabled 移除', () => {
+    useMCPStore.setState({ servers: { github: serverEntry('github') } });
+    usePluginStore.setState({ installed: [plugin('gh-pack', ['github'])] });
+    const removeServer = vi.spyOn(useMCPStore.getState(), 'removeServer').mockImplementation(() => {});
+    render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
+    fireEvent.click(within(openMenu('github')).getByTestId('connector-item-menu-remove'));
+    expect(removeServer).not.toHaveBeenCalled();
   });
 
   it('hides the plugin group when no plugin contributed a server', () => {

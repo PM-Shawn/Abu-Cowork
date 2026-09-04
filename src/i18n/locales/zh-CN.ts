@@ -1216,6 +1216,18 @@ const zhCN: TranslationDict = {
     // Plugins tab (Task 10 UI)
     pluginsInstalledTab: '已安装',
     pluginsMarketplaceTab: '插件市场',
+    // Extensions source sub-nav + installed-item menu
+    sourceMarket: '市场',
+    sourceMine: '我的',
+    itemMenuLabel: '{name} 的操作',
+    menuTrial: '立即试用',
+    menuManage: '管理',
+    menuUninstall: '卸载',
+    menuEdit: '编辑',
+    menuView: '查看',
+    menuDelete: '删除',
+    menuRemove: '移除',
+    menuManagedByOrg: '由组织管理，不能在这里卸载',
     pluginsAddMarketplace: '添加市场',
     pluginsAddMarketplaceTitle: '添加插件市场',
     pluginsMarketplaceDirLabel: '市场目录',

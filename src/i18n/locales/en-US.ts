@@ -1214,6 +1214,18 @@ const enUS: TranslationDict = {
     // Plugins tab (Task 10 UI)
     pluginsInstalledTab: 'Installed',
     pluginsMarketplaceTab: 'Marketplace',
+    // Extensions source sub-nav + installed-item menu
+    sourceMarket: 'Market',
+    sourceMine: 'Mine',
+    itemMenuLabel: 'Actions for {name}',
+    menuTrial: 'Try now',
+    menuManage: 'Manage',
+    menuUninstall: 'Uninstall',
+    menuEdit: 'Edit',
+    menuView: 'View',
+    menuDelete: 'Delete',
+    menuRemove: 'Remove',
+    menuManagedByOrg: 'Managed by your organization; cannot be uninstalled here',
     pluginsAddMarketplace: 'Add marketplace',
     pluginsAddMarketplaceTitle: 'Add a plugin marketplace',
     pluginsMarketplaceDirLabel: 'Marketplace directory',

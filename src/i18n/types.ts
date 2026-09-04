@@ -1397,6 +1397,19 @@ export interface TranslationDict {
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsInstalledTab: string;
     pluginsMarketplaceTab: string;
+    // Extensions 「市场 | 我的」 source sub-nav + the `···` menu on an installed item
+    sourceMarket: string;
+    sourceMine: string;
+    /** "{name} 的操作" — accessible name of an installed item's `···` trigger. */
+    itemMenuLabel: string;
+    menuTrial: string;
+    menuManage: string;
+    menuUninstall: string;
+    menuEdit: string;
+    menuView: string;
+    menuDelete: string;
+    menuRemove: string;
+    menuManagedByOrg: string;
     pluginsAddMarketplace: string;
     pluginsAddMarketplaceTitle: string;
     pluginsMarketplaceDirLabel: string;

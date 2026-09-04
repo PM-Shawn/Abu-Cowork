@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -9,6 +9,7 @@ import { useI18n, format } from '@/i18n';
 import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
+import type { MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
 import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
@@ -68,9 +69,25 @@ type SelectedItem =
 interface MCPSectionProps {
   showAddForm?: boolean;
   onAddFormChange?: (open: boolean) => void;
+  /** `'mine'` narrows the list to the servers the user configured by hand — the
+   *  「我的」 half of the Extensions source sub-nav. A plugin's server belongs to
+   *  the package that brought it, and the catalog belongs to 「市场」
+   *  (ConnectorCatalog), so both are absent here. Omitted = every source, the
+   *  pre-split behaviour. */
+  sourceFilter?: 'mine';
+  /** A catalog entry to pre-fill the add-server form with, applied when the form
+   *  is open. 「市场」's 「添加」 routes through here rather than adding a server
+   *  itself: a registry entry's `env` carries key names with empty values, so a
+   *  silent add would persist a config that cannot connect. The user fills in
+   *  the secrets and saves. Clear it (pass `null`) when the form closes,
+   *  otherwise re-opening the form re-applies the same entry. */
+  prefill?: MCPRegistryEntry | null;
+  /** Open this server's detail on mount/prop change — how 「市场」's 「管理」 lands
+   *  in the editor that lives here. Ignored when no such server is configured. */
+  focusServer?: string | null;
 }
 
-export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange }: MCPSectionProps = {}) {
+export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange, sourceFilter, prefill, focusServer }: MCPSectionProps = {}) {
   const extensionsSearchQuery = useSettingsStore((s) => s.extensionsSearchQuery);
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
@@ -228,28 +245,43 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return true;
   }
 
+  // Scope by source first, search second — the two answer different questions,
+  // and the empty state needs them apart: nothing of the user's own at all
+  // ("还没有你添加的连接器") reads differently from "your servers, none matching".
+  const scopedServers = useMemo(
+    () => (sourceFilter === 'mine' ? mcpServers.filter((s) => !serverOwners[s.config.name]) : mcpServers),
+    [mcpServers, serverOwners, sourceFilter],
+  );
+
   // "我的": user-added custom servers (not matching any template)
   const customServers = useMemo(() => {
-    const list = mcpServers.filter((s) => !templateNames.has(s.config.name));
+    const list = scopedServers.filter((s) => !templateNames.has(s.config.name));
     if (!searchLower) return list;
     return list.filter((s) => s.config.name.toLowerCase().includes(searchLower));
-  }, [mcpServers, templateNames, searchLower]);
+  }, [scopedServers, templateNames, searchLower]);
 
   // "示例": all templates — installed ones first, then uninstalled
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: typeof mcpTemplates[0] };
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
+    const scopedNames = new Set(scopedServers.map((s) => s.config.name));
     for (const tmpl of availableTemplates) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
       if (entry) {
+        // Under 'mine' an installed template server is still the user's, unless
+        // a plugin owns it — scopedServers is the authority on that.
+        if (sourceFilter === 'mine' && !scopedNames.has(tmpl.name)) continue;
         items.push({ kind: 'installed', entry });
       } else {
+        // A card for something not installed is an offer, not a possession —
+        // 「市场」 makes those, so 「我的」 shows none.
+        if (sourceFilter === 'mine') continue;
         items.push({ kind: 'template', template: tmpl });
       }
     }
     return items;
-  }, [availableTemplates, servers, searchLower]);
+  }, [availableTemplates, servers, scopedServers, sourceFilter, searchLower]);
 
   // The detail is a modal now, so it stays closed until the user clicks a card
   // — no auto-select on load. Still guard against a dangling selection: if the
@@ -398,6 +430,43 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setNewServerArgs(''); setNewServerUrl(''); setNewServerHeaders(''); setNewServerEnv('');
     setAddMode('form'); setJsonInput(''); setJsonError(''); setServerNameError('');
   };
+
+  // 「市场」's 「添加」 lands here. The form opens describing the catalog entry, with
+  // every env var reduced to its key and an empty value: a registry entry ships
+  // slots, not secrets, so the user supplies those and saves. Adding the server
+  // outright instead would persist a config that cannot connect.
+  const prefillRef = useRef(prefill);
+  prefillRef.current = prefill;
+  useEffect(() => {
+    const entry = prefillRef.current;
+    if (!entry || !showAddForm) return;
+    const env: Record<string, string> = {};
+    for (const key of Object.keys(entry.env)) env[key] = '';
+    setEditingServerName(null);
+    setNewServerName(entry.name);
+    setNewTransportType('stdio');
+    setNewServerCommand(entry.command);
+    setNewServerArgs(entry.args.join(' '));
+    setNewServerUrl('');
+    setNewServerHeaders('');
+    setNewServerEnv(Object.keys(env).length > 0 ? JSON.stringify(env) : '');
+    setJsonInput(JSON.stringify({ [entry.name]: { command: entry.command, args: entry.args, env } }, null, 2));
+    setAddMode('form');
+    setJsonError('');
+    setServerNameError('');
+  // Keyed on the entry's identity (its name) via the ref, not the object
+  // reference: a host that rebuilds the entry object each render would otherwise
+  // wipe a form the user has already started editing.
+  }, [prefill?.name, showAddForm]);
+
+  // 「市场」's 「管理」 lands here — the per-server editor lives in this section, so
+  // the host only has to name the server. A server that is not configured is
+  // ignored rather than opening an empty detail.
+  useEffect(() => {
+    if (!focusServer || !servers[focusServer]) return;
+    setSelected({ kind: 'server', name: focusServer });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- servers omitted: an object ref that changes on every store update, and re-opening a detail the user just closed would fight them
+  }, [focusServer]);
 
   // Install from template
   const handleInstallTemplate = async (template: typeof mcpTemplates[0]) => {
@@ -558,7 +627,13 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
         {customServers.length === 0 && exampleItems.length === 0 ? (
-          <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+          sourceFilter === 'mine' && scopedServers.length === 0 ? (
+            <div className="py-16 text-center">
+              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.connectorsMineEmptyTitle}</p>
+            </div>
+          ) : (
+            <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+          )
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
             {/* "我的" — user-added custom servers */}

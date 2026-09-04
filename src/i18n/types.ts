@@ -1685,6 +1685,12 @@ export interface TranslationDict {
     skillsMarketGoPlugins: string;
     /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
     skillsMineEmptyTitle: string;
+    /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
+    connectorsMarketTitle: string;
+    connectorsFromPlugins: string;
+    connectorsAdd: string;
+    /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
+    connectorsMineEmptyTitle: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;

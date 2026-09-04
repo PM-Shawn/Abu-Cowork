@@ -32,8 +32,13 @@ export interface MCPRegistryEntry {
  * localized and resolved on demand from the `toolResult.system` i18n namespace
  * (`mcpCatalog` keyed by server name, `mcpEnvHints` keyed by env-var name). See
  * getEntryDescription() / getEnvHint() below.
+ *
+ * Exported so the Connectors 「市场」 can list the same catalog the agent
+ * searches — one registry, not a second hand-kept copy that drifts from it.
+ * Consumers that need the entry as this host would run it must resolve it
+ * through getRegistryEntry(); the raw array is unresolved by design.
  */
-const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
+export const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
   {
     name: 'github',
     keywords: ['github', 'pr', 'pull request', 'issue', 'repository', 'repo', 'code review', 'git'],

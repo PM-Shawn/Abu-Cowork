@@ -1275,8 +1275,11 @@ describe('CapabilitiesSection', () => {
       const trigger = within(row).getByRole('button', { name: 'Always allow' });
       await user.click(trigger);
 
+      // Short enough to wrap inside the 208px menu rather than running past
+      // two lines — the menu hugs its trigger now, so a long description is
+      // the reader's problem instead of the layout's.
       expect(openedOptionDescriptions(trigger)).toEqual([
-        'This site stops asking each time; payment / transfer pages are still stopped',
+        'Stops asking on this site; payment pages still stop',
         'Abu never acts on this site, automatic tasks included',
       ]);
     });
@@ -1598,7 +1601,8 @@ describe('CapabilitiesSection', () => {
     });
 
     it('writes the scripting allow to the store and warns, once, directly under that select', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      // Shipped defaults, master switch included: since 2026-09-04 R1 the line
+      // is about this row, not about the switch.
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
@@ -1626,15 +1630,19 @@ describe('CapabilitiesSection', () => {
     });
 
     /*
-      Product ruling (security review of 52e47a40), and the column collapse did
-      not retire it: with the master switch off, the gate refuses every
-      automatic browser action, and an ATTENDED script is asked about every
-      time whatever this row says (`registry.ts` never lets scripting ride a
-      grant). So a stored 'allow' describes an intention, not a live risk —
-      and a warning that fires when nothing can happen is how a reader learns
-      to ignore these lines.
+      This line used to be gated on the automatic-tasks master switch (security
+      review of 52e47a40): an ATTENDED script was asked about every time
+      whatever this row said, so an 'allow' stored with the switch off was an
+      intention rather than a live risk, and a warning that fires when nothing
+      can happen is how a reader learns to ignore these lines.
+
+      2026-09-04 R1 ended that premise — 「允许」 now really stops asking on
+      「始终允许」 sites while the user is watching. The risk is live the moment
+      the row reads allow, on either side of the switch, and the sentence has
+      to describe BOTH execution contexts rather than scoping itself to
+      automatic tasks.
     */
-    it('holds the risk warning back until the automatic-tasks master switch is on', async () => {
+    it('shows the risk warning whenever the row says allow, master switch or not', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: false,
         browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, scripting: 'allow' },
@@ -1646,15 +1654,23 @@ describe('CapabilitiesSection', () => {
       const scriptCard = permissionCard('Run scripts (advanced)');
       // The value really is stored, and the control really is showing it...
       expect(policySelect(scriptCard)).toHaveTextContent('Allow');
-      // ...but nothing automatic can act on it yet, so nothing is warned about.
-      expect(within(scriptCard).queryByText(/Elevated risk/)).toBeNull();
+      // ...and with the switch OFF the warning is there anyway, because an
+      // attended script can now run unprompted on an always-allowed site.
+      const warning = within(scriptCard).getByText(/Elevated risk/);
+      expect(within(scriptCard).getAllByText(/Elevated risk/)).toHaveLength(1);
+      // It names the scope that actually applies — and BOTH contexts it
+      // applies in. Scoping the sentence to automatic tasks alone is what made
+      // the old copy false for the person sitting in front of the app.
+      expect(warning.textContent).toMatch(/Always allow/);
+      expect(warning.textContent).toMatch(/here/);
+      expect(warning.textContent).toMatch(/automatic tasks/i);
 
-      // Turning the switch on is the moment it becomes live.
+      // Turning the switch on changes nothing about this line.
       await user.click(within(permissionCard('Automatic tasks')).getByRole('switch'));
 
       expect(useSettingsStore.getState().allowUnattendedBrowser).toBe(true);
-      expect(within(permissionCard('Run scripts (advanced)')).getByText(/Elevated risk/))
-        .toBeInTheDocument();
+      expect(within(permissionCard('Run scripts (advanced)')).getAllByText(/Elevated risk/))
+        .toHaveLength(1);
     });
 
     it('toggles the automatic-tasks master switch', async () => {

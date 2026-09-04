@@ -416,16 +416,17 @@ export function BrowserPermissionCards({
             gives its own high-risk switch — the risk is stated where the
             decision is made, not hidden behind an ⓘ or a dialog.
 
-            Still gated on the master switch (product ruling, security review
-            of 52e47a40), and the merge into one column did not change that:
-            with the switch off, the gate refuses every automatic browser
-            action, and an ATTENDED script is asked about every time whatever
-            this row says (`registry.ts` never lets scripting ride a grant).
-            So an 'allow' stored with the switch off is an intention, not a
-            live risk — and a bright warning under a control that is currently
-            harmless teaches the reader that these warnings can be ignored.
+            It used to be gated on the automatic-tasks master switch, on the
+            reasoning that an attended script was asked about every time
+            whatever this row said, so an 'allow' stored with the switch off
+            was an intention rather than a live risk. The 2026-09-04 R1 fix
+            ended that: 「允许」 now really stops asking on 「始终允许」 sites
+            while the user is watching, master switch or not. So the moment
+            this row reads 'allow' something can happen without a prompt, and
+            the line has to be there — the copy names both contexts because
+            the setting does.
           */}
-          {allowUnattended && policy.scripting === 'allow' && (
+          {policy.scripting === 'allow' && (
             <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
               <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {t.settings.browserUnattendedScriptRiskWarning}

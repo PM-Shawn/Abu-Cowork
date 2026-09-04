@@ -357,10 +357,13 @@ test.describe.serial('Electron capability overview', () => {
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });
 
-    // Put the row back to the shipped default so the rest of this journey
-    // photographs the default surface, then reopen the menu for the shot below.
+    // Put the row back to the SHIPPED DEFAULT — 「每次询问」, not 「拒绝」 —
+    // so the shot below photographs the surface a new install actually shows.
+    // (It used to click 「拒绝」, which was the default only until the ruling
+    // moved the automatic-task scripting cell to 「每次询问」.)
     await scriptCell.click();
-    await page.getByText(/阿布不会做这类操作|Abu will not do this kind of thing/).click();
+    await askOption.click();
+    await expect(scriptCell).toContainText(/每次询问|Ask every time/);
     await expect(riskWarning).toHaveCount(0);
     await scriptCell.click();
     await expect(askOption).toBeVisible();

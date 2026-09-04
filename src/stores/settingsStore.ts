@@ -1146,6 +1146,11 @@ export const useSettingsStore = create<SettingsStore>()(
         // none of which moved. `normalizeBrowserOperationPolicy` reads either
         // shape, so this branch is the same one-liner for a v46 store
         // carrying the old shape and for anything older.
+        //
+        // No released build ever persisted 46 (`dev`, `main` and v0.42.0 all
+        // write 45), so the two-column shape exists only on this branch's
+        // development machines and in its e2e stores — a real install steps
+        // 45 → 47 and the legacy sniff never fires for it.
         // ════════════════════════════════════════════════
         if (version < 47) {
           state.browserOperationPolicy = state.browserOperationPolicy === undefined

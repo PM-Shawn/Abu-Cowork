@@ -549,15 +549,20 @@ function normalizeClassPolicy(raw: unknown): BrowserOperationPolicy {
  * of a PRESENT-but-broken value.
  *
  * It also accepts the LEGACY two-column shape (`{attended, unattended}`,
- * settingsStore ≤ v46), which is what sits in every already-installed copy of
- * the app. The 2026-09-04 ruling collapsed the columns by keeping the
- * ATTENDED one — that is where the user expressed what Abu may do, and the
- * defaults the merged policy ships are that column's values — so the
- * unattended column is read once, at migration time, only to be dropped. A
- * user who had tightened `attended` keeps that tightening; one who had
- * tightened only `unattended` loses a restriction whose column no longer
- * exists, and the automatic-run prerequisites (master switch, standing site
- * grant, high-risk exclusion) are what still stand behind it.
+ * settingsStore v46). That shape sits in NO released copy of the app: v46 was
+ * never published — `dev`, `main` and v0.42.0 all persist version 45 — so the
+ * only stores carrying it are the ones this branch's own development machines
+ * and e2e runs wrote. The compatibility is for those, and a released install
+ * migrates 45 → 47 without ever seeing two columns.
+ *
+ * The 2026-09-04 ruling collapsed the columns by keeping the ATTENDED one —
+ * that is where the user expressed what Abu may do, and the defaults the
+ * merged policy ships are that column's values — so the unattended column is
+ * read once, at migration time, only to be dropped. A dev store that had
+ * tightened `attended` keeps that tightening; one that had tightened only
+ * `unattended` loses a restriction whose column no longer exists, and the
+ * automatic-run prerequisites (master switch, standing site grant, high-risk
+ * exclusion) are what still stand behind it.
  *
  * A fully well-formed input passes through with the same values (not
  * necessarily the same object identity).

@@ -429,9 +429,12 @@ export async function notifyUnattendedDenial(
  * tier, so a future gate refactor (or a new caller of `getCallbacksForLevel`)
  * cannot reopen it.
  *
- * Returns true only when the unattended column of the operation policy says
- * `allow` for this operation class on this site. `ask` is NOT approval — the
- * tier is not an approval channel, `resolveUnattendedConfirmation` is.
+ * Returns true only when the operation policy, read for an UNATTENDED run,
+ * says `allow` for this operation class on this site. (There is one row per
+ * class since the 2026-09-04 collapse; the run mode is an argument to
+ * `decideBrowserOperation`, not a column of the stored value.) `ask` is NOT
+ * approval — the tier is not an approval channel,
+ * `resolveUnattendedConfirmation` is.
  *
  * Scripting is NOT hard-coded here, and deliberately so: since the 2026-09-04
  * ruling the user may opt automatic-task scripting into `allow`, and this

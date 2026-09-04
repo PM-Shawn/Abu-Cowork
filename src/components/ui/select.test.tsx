@@ -76,6 +76,38 @@ describe('Select menu geometry', () => {
     expect(menu?.className).not.toContain('min-w-');
   });
 
+  /**
+   * The OTHER half of the width fix, and the half no menu assertion can see.
+   *
+   * `menuHugsTrigger` used to mean two things at once: "the menu copies the
+   * trigger's width" AND "the wrapper stretches to its parent". Letting the
+   * inline variant hug required splitting them (`stretchesToWrapper`), and the
+   * split is only correct because the second flag kept the OLD expression —
+   * which is exactly the kind of invariant that holds by code equality and
+   * dies silently on the next edit. `GeneralSection`'s three inline Selects
+   * sit in a row and must stay content-width; a form field must still fill its
+   * field.
+   */
+  it('stretches only the form-field variant to its wrapper — a settings row sizes itself', () => {
+    const { rerender } = render(
+      <Select variant="inline" value="ask" options={OPTIONS} onChange={() => {}} ariaLabel="设置行" />,
+    );
+    expect(screen.getByRole('button', { name: /设置行/ }).parentElement?.className)
+      .not.toContain('w-full');
+
+    rerender(
+      <Select variant="ghost" value="ask" options={OPTIONS} onChange={() => {}} ariaLabel="快捷行" />,
+    );
+    expect(screen.getByRole('button', { name: /快捷行/ }).parentElement?.className)
+      .not.toContain('w-full');
+
+    rerender(
+      <Select value="ask" options={OPTIONS} onChange={() => {}} ariaLabel="表单字段" />,
+    );
+    expect(screen.getByRole('button', { name: /表单字段/ }).parentElement?.className)
+      .toContain('w-full');
+  });
+
   it('leaves the borderless ghost row shrink-to-fit — its trigger is too narrow to host a menu', async () => {
     const user = userEvent.setup();
     stubTriggerRect();

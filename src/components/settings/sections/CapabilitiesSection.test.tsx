@@ -1272,6 +1272,161 @@ describe('CapabilitiesSection', () => {
       ]);
     });
 
+    /*
+      F1 — the list is an ENTRY point, not only a record of dialogs already
+      answered. Before this, the only road to 「始终允许」 ran through the
+      confirmation dialog, so preparing a scheduled task meant running it
+      attended, being refused, clicking allow, and re-running.
+
+      Everything below goes through the SAME store setter the rows use, so
+      these tests are also what pins that the add row is not a second,
+      differently-behaved writer.
+    */
+    describe('adding a site from the list', () => {
+      // Earlier tests in this file leave verdicts behind; every assertion here
+      // is about the exact contents of the map, so it starts empty.
+      beforeEach(() => {
+        useSettingsStore.setState({ browserSitePermissions: {} });
+      });
+
+      /** The verdict select of the ADD row — named for its job, so it never
+       *  collides with a per-site row's select (which is named by its value). */
+      const addVerdictSelect = () =>
+        screen.getByRole('button', { name: /^Permission for the added site/ });
+
+      /** Type an address, pick a verdict, press the button. */
+      async function addSite(user: User, url: string, verdict?: RegExp) {
+        await user.clear(screen.getByLabelText('Site address'));
+        await user.type(screen.getByLabelText('Site address'), url);
+        if (verdict) {
+          await user.click(addVerdictSelect());
+          await user.click(openedOption(addVerdictSelect(), verdict));
+        }
+        await user.click(screen.getByRole('button', { name: 'Add' }));
+      }
+
+      it('normalizes what was typed the way the gate resolves a live tab', async () => {
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        // Path, query and fragment are not part of a verdict's identity...
+        await addSite(user, 'https://example.com/reports?q=1#top');
+        // ...nor is case, userinfo, a default port, or a FQDN trailing dot
+        // (`evil.com.` and `evil.com` are one host over DNS, and storing them
+        // as two keys is how one spelling slips past the other's verdict).
+        await addSite(user, 'https://EVIL.com./login');
+        await addSite(user, 'https://user:pass@third.example.com:443/');
+        // A non-default port IS part of the identity, and http is a different
+        // origin from https — neither is folded away.
+        await addSite(user, 'http://example.com/');
+        await addSite(user, 'https://example.com:8443/');
+
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({
+          'https://example.com': 'allowed',
+          'https://evil.com': 'allowed',
+          'https://third.example.com': 'allowed',
+          'http://example.com': 'allowed',
+          'https://example.com:8443': 'allowed',
+        });
+      });
+
+      it('refuses anything that is not an http(s) address, and writes nothing', async () => {
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        for (const bad of ['not a url', 'file:///etc/passwd', 'chrome://settings', 'about:blank']) {
+          await addSite(user, bad);
+          expect(
+            screen.getByText('Enter a full web address, for example https://example.com'),
+          ).toBeInTheDocument();
+          expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+        }
+
+        // A bare hostname is the likely typo, and it is still a refusal rather
+        // than a guess about which scheme the user meant.
+        await addSite(user, 'example.com');
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+      });
+
+      it('updates an origin that is already listed instead of duplicating it', async () => {
+        useSettingsStore.setState({
+          browserSitePermissions: { 'https://example.com': 'allowed' },
+        });
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        // Same origin, spelled differently, with the other verdict.
+        await addSite(user, 'https://example.com/some/page', /^Blocked/);
+
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({
+          'https://example.com': 'denied',
+        });
+        expect(screen.getAllByTitle('https://example.com')).toHaveLength(1);
+      });
+
+      /*
+        The one refusal that is a SECURITY property rather than input
+        validation: a standing "always allow" for a bank is the exact artifact
+        `highRiskSites.ts` exists to prevent, and the confirmation dialog
+        already withholds it there (`allowPersistentGrant: false`). Typing the
+        address by hand must not be the way around that.
+      */
+      it('will not let a high-risk origin be added as always-allow', async () => {
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        await addSite(user, 'https://www.paypal.com');
+
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+        expect(screen.getByText(/cannot be set to Always allow/)).toBeInTheDocument();
+
+        // BLOCKING one is still offered: this rule only ever tightens.
+        await addSite(user, 'https://www.paypal.com', /^Blocked/);
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({
+          'https://www.paypal.com': 'denied',
+        });
+      });
+
+      it('shows the new site in the list and in the card summary, and clears the field', async () => {
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        // The empty state is what a first-time user actually meets, and it now
+        // points at the row above it rather than only at the dialog.
+        expect(screen.getByText(/Add one above/)).toBeInTheDocument();
+
+        await addSite(user, 'https://reports.example.com');
+
+        expect(screen.getByTitle('https://reports.example.com')).toBeInTheDocument();
+        expect(screen.getByLabelText('Site address')).toHaveValue('');
+        expect(screen.queryByText(/Add one above/)).toBeNull();
+
+        // ...and the count on the card one level up, which is where a user
+        // checks what a scheduled task can reach.
+        await user.click(screen.getByRole('button', { name: 'Abu built-in browser' }));
+        expect(screen.getByRole('button', { name: 'Site permissions' })).toHaveTextContent(
+          '1 allowed · 0 blocked',
+        );
+      });
+
+      it('submits on Enter, without reaching for the button', async () => {
+        const user = userEvent.setup();
+        render(<CapabilitiesSection />);
+        await openSitePermissions(user);
+
+        await user.type(screen.getByLabelText('Site address'), 'https://typed.example.com{Enter}');
+
+        expect(useSettingsStore.getState().browserSitePermissions).toEqual({
+          'https://typed.example.com': 'allowed',
+        });
+      });
+    });
+
     // The card the user drills in FROM has to say how many verdicts are
     // waiting behind it, and that both channels answer to the same list.
     it('summarizes the list on the card that leads to it', async () => {
@@ -1415,7 +1570,8 @@ describe('CapabilitiesSection', () => {
       expect(openedOption(scriptUnattended, /^Allow/)).not.toBeDisabled();
       expect(openedOptionDescriptions(scriptUnattended)).toEqual([
         'Only on sites set to Always allow',
-        'Confirms with a dialog before each action',
+        'Only a run started from an IM chat can reach you; scheduled tasks and '
+          + 'triggers have nobody to ask and are refused',
         'Abu will not do this kind of thing',
       ]);
 
@@ -1428,6 +1584,47 @@ describe('CapabilitiesSection', () => {
         'Confirms with a dialog before each action',
         'Abu will not do this kind of thing',
       ]);
+    });
+
+    /*
+      F2 — "ask every time" is the same WORD in both columns and two different
+      facts, and only one of them was ever written down. Attended it is a
+      dialog. Unattended there is no screen: `askOverIm` resolves a channel
+      from the conversation's IM session binding, which a scheduled task (a
+      fresh conversation per run) and a trigger never have — so the request is
+      refused with `no_binding`. Pinning the split by COLUMN, on an ordinary
+      row, because the divergence is a run-mode property and not a
+      scripting one.
+    */
+    it('says what "ask every time" means in each column, since it is not the same thing', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const [attended, unattended] = policyCells(
+        within(permissionCard('Action permissions')).getByText('Click and fill in')
+          .closest('li') as HTMLElement,
+      );
+
+      await user.click(attended);
+      const attendedAsk = openedOptionDescriptions(attended)[
+        openedOptionLabels(attended).indexOf('Ask every time')
+      ];
+      await user.click(unattended);
+      const unattendedAsk = openedOptionDescriptions(unattended)[
+        openedOptionLabels(unattended).indexOf('Ask every time')
+      ];
+
+      expect(attendedAsk).toBe('Confirms with a dialog before each action');
+      expect(unattendedAsk).toBe(
+        'Only a run started from an IM chat can reach you; scheduled tasks and '
+        + 'triggers have nobody to ask and are refused',
+      );
+      // The point of the change: the two columns no longer say the same thing.
+      expect(unattendedAsk).not.toBe(attendedAsk);
+      // ...and it must not promise a dialog nobody is there to answer.
+      expect(unattendedAsk).not.toMatch(/dialog/i);
     });
 
     it('writes the opt-in to the store and warns, once, directly under that select', async () => {

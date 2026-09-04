@@ -55,6 +55,11 @@ const SITE_PERMISSIONS = /^(网站授权|Site permissions)$/;
 const VIEW_PAGES = /^(只看页面|View pages)$/;
 const CLICK_AND_FILL = /^(点击和填写|Click and fill in)$/;
 const CHROME_CAVEAT = /(登录失效|expired sign-in)/;
+const ADD_SITE_LABEL = /^(网站地址|Site address)$/;
+const ADD_SITE_BUTTON = /^(添加|Add)$/;
+const AUTOMATION_NAV = /^(自动化|Automation)$/;
+const SCHEDULED_TASKS_TAB = /^(定时任务|Scheduled Tasks)$/;
+const NEW_TASK = /^(新建任务|New Task)$/;
 
 /** Seeded site verdicts, so the list page has something to show. */
 const SEEDED_SITES = {
@@ -297,7 +302,16 @@ test.describe.serial('Electron capability overview', () => {
 
     const optInTier = page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/);
     await expect(optInTier).toBeVisible();
-    await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toBeVisible();
+    /*
+      F2 — this is the AUTOMATIC-TASKS column, where "ask every time" cannot
+      mean a dialog: nobody is at the screen, and `askOverIm` refuses
+      (`no_binding`) unless the run came from an IM chat that can be replied
+      to. The menu now says which, and must NOT be promising a dialog.
+    */
+    await expect(
+      page.getByText(/只有 IM 频道发起的运行能问到你|Only a run started from an IM chat/),
+    ).toBeVisible();
+    await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toHaveCount(0);
 
     /*
       Unclipped is the whole point of the fix, and "visible" does not prove it
@@ -355,6 +369,35 @@ test.describe.serial('Electron capability overview', () => {
     await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
     await expect(page.getByTitle('https://example.com')).toBeVisible();
     await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
+
+    /*
+      F1 — the list is also where a verdict is CREATED. Until this row existed
+      the only road to 「始终允许」 ran through the confirmation dialog, so
+      preparing a scheduled task meant running it attended, being refused,
+      clicking allow, and re-running. Driven here through the real keyboard,
+      because "Enter submits" is the interaction a user actually performs and
+      no unit test exercises the real shell's key handling.
+    */
+    const addField = page.getByLabel(ADD_SITE_LABEL);
+    await expect(addField).toBeVisible();
+    await addField.fill('https://Added.Example.com/reports?q=1');
+    await addField.press('Enter');
+
+    // Normalized the same way the gate resolves a live tab: lowercased host,
+    // no path, no query.
+    await expect(page.getByTitle('https://added.example.com')).toBeVisible();
+    await expect(addField).toHaveValue('');
+    await page.screenshot({ path: iaScreenshot('09-site-list-add-zh') });
+
+    // A bank cannot be given a standing grant by typing its address, the same
+    // way the confirmation dialog withholds one there.
+    await addField.fill('https://www.paypal.com');
+    await page.getByRole('button', { name: ADD_SITE_BUTTON }).click();
+    await expect(
+      page.getByText(/不能设为「始终允许」|cannot be set to Always allow/),
+    ).toBeVisible();
+    await expect(page.getByTitle('https://www.paypal.com')).toHaveCount(0);
+    await addField.fill('');
 
     // One step up lands on the page we came from, not the overview.
     await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
@@ -419,6 +462,48 @@ test.describe.serial('Electron capability overview', () => {
     ).toBeVisible({ timeout: READY_TIMEOUT });
     await page.waitForTimeout(250);
     await page.screenshot({ path: iaScreenshot('06-capabilities-overview-en') });
+  });
+
+  /**
+   * F2 — the other half of the approval story, on the screen where a user
+   * actually sets an automatic task up.
+   *
+   * The field is the only IM-channel-shaped control on that page, which
+   * invites exactly one wrong conclusion: "this is where the task asks me".
+   * It is not. `askOverIm` resolves its channel from the conversation's IM
+   * SESSION binding (`resolveImTargetForConversation`), and the scheduler
+   * mints a fresh conversation per run and supplies no `imTarget` — so an
+   * approval is refused with cause `no_binding` and raised as a desktop
+   * notice. The hint now says that instead of leaving the user to discover it
+   * as a nightly task that quietly achieved nothing.
+   */
+  test('says on the task editor that approvals do not go to the results channel', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForWelcomeScreen(page);
+
+    await page
+      .getByRole('navigation', { name: /^(Main navigation|主导航)$/ })
+      .getByRole('button', { name: AUTOMATION_NAV })
+      .evaluate((element: HTMLElement) => element.click());
+    const tab = page.getByRole('button', { name: SCHEDULED_TASKS_TAB });
+    await expect(tab).toBeVisible({ timeout: READY_TIMEOUT });
+    await tab.click();
+    // Scoped to the content area: the sidebar carries a "new task" of its own
+    // (it starts a chat), and only the header one opens this editor.
+    await page.getByRole('main').getByRole('button', { name: NEW_TASK }).click();
+
+    const hint = page.getByText(/运行中需要你确认的操作不会发到这里|are NOT sent here/);
+    await hint.scrollIntoViewIfNeeded();
+    await expect(hint).toBeVisible();
+    // The label still promises RESULTS, because that is all this field does.
+    await expect(page.getByText(/^(结果推送频道|Push results to)$/)).toBeVisible();
+
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('10-schedule-editor-channel-zh') });
   });
 
   test('rejects a direct privileged Computer Use IPC call without a task token', async () => {

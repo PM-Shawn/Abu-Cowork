@@ -1003,6 +1003,26 @@ export interface TranslationDict {
     browserSitePermsAllowedDesc: string;
     browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** F1 (2026-09-04) — the list is also an ENTRY point, not only a record of
+     *  dialogs already answered. Without it, the ONLY way to reach 「始终允许」
+     *  was to run the thing attended, be refused, and click the dialog — so
+     *  setting up a scheduled task meant deliberately failing once first.
+     *  `browserSitePermsAddInvalid` is the one rejection this row can produce
+     *  on its own; a high-risk origin reuses `browserHighRiskReason`, the same
+     *  sentence the confirmation dialog gives for the same refusal. */
+    browserSitePermsAddLabel: string;
+    browserSitePermsAddPlaceholder: string;
+    browserSitePermsAddVerdictLabel: string;
+    browserSitePermsAddButton: string;
+    browserSitePermsAddInvalid: string;
+    /** The one refusal here that is a SECURITY property, not input validation:
+     *  `highRiskSites.ts` withholds a standing grant for money-movement and
+     *  government origins, and the confirmation dialog already declines to
+     *  offer one (`allowPersistentGrant: false`). Same reason as
+     *  `commandConfirm.browserHighRiskReason`, minus its "check the page
+     *  before you confirm" tail — there is nothing to confirm on this page —
+     *  plus the thing the user CAN still do here. */
+    browserSitePermsAddHighRisk: string;
     /** Card summary on a capability detail page: counts + the fact that the
      *  verdicts are one shared list across both browser channels. */
     browserSitePermsSummary: string;
@@ -1038,6 +1058,23 @@ export interface TranslationDict {
     browserOpStateAllowDesc: string;
     browserOpStateDenyDesc: string;
     browserOpStateAskDesc: string;
+    /**
+     * F2 (2026-09-04) — the automatic-tasks column's own 「每次询问」, because
+     * "asks with a dialog" is false there: nobody is in front of the screen.
+     *
+     * 🔴 What it says was checked against the code, not against the intent:
+     * `askOverIm` (`core/im/pendingApprovals.ts`) reaches its channel through
+     * `resolveImTargetForConversation`, i.e. the IM SESSION bound to the run's
+     * conversation, or an `imTarget` the caller supplies. Only
+     * `core/im/channelRouter.ts` supplies one. The scheduler
+     * (`core/scheduler/scheduler.ts`, which mints a fresh conversation per
+     * run) and the trigger engine (`core/trigger/triggerPermission.ts`) supply
+     * none and bind no session — so for them the lookup always returns null
+     * and the request is refused with cause `no_binding` plus a desktop
+     * notice. A scheduled task's 「结果推送频道」 is NOT consulted: it feeds
+     * `outputSender` after the run, nothing else.
+     */
+    browserOpStateAskUnattendedDesc: string;
     /**
      * The `allow` option's description in the automatic-tasks × scripting cell
      * specifically (2026-09-04 ruling). The tier is real and choosable, but it
@@ -2280,6 +2317,15 @@ export interface TranslationDict {
     // Output
     outputChannel: string;
     outputChannelNone: string;
+    /**
+     * F2 (2026-09-04) — extended to answer the question this field invites and
+     * never answered: "does the run ask ME here?" It does not. Approvals route
+     * through `resolveImTargetForConversation`, and a scheduled task's fresh
+     * conversation is bound to no IM session, so 「每次询问」 in the
+     * automatic-tasks column is refused (`no_binding`) and raised as a desktop
+     * notice. This field feeds `outputSender` after the run, nothing else —
+     * the label deliberately still says RESULTS.
+     */
     outputChannelHint: string;
     outputToGroup: string;
     outputToDM: string;
@@ -2479,6 +2525,10 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
+    /** F2 — the trigger editor's output channel carries the same false
+     *  implication as the scheduler's, and `triggerPermission.ts` supplies no
+     *  `imTarget` either. Same sentence, same reason. */
+    outputChannelApprovalHint: string;
     outputToGroup: string;
     outputToDM: string;
     outputChatIdPlaceholder: string;

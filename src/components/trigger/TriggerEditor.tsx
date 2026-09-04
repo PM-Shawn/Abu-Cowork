@@ -805,6 +805,17 @@ export default function TriggerEditor() {
                           {t.trigger.imNoChannels}
                         </p>
                       )}
+                      {/*
+                        The field invites a question it never answered: "does
+                        the run ask ME here?" It does not — `triggerPermission.ts`
+                        supplies no `imTarget`, so an approval falls through to
+                        the conversation's IM session binding, which a trigger
+                        run does not have. Said here rather than left for the
+                        user to discover as a run that quietly achieved nothing.
+                      */}
+                      <p className="text-caption text-[var(--abu-text-muted)] mt-1">
+                        {t.trigger.outputChannelApprovalHint}
+                      </p>
                     </div>
                     <div>
                       <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.outputToGroup}</label>

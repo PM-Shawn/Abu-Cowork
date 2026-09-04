@@ -2463,6 +2463,8 @@ const enUS: TranslationDict = {
     tabPassword: 'Password',
     tabMagicLink: 'Magic link',
     tabSso: 'SSO',
+    webDesktopLoginButton: 'Sign in with browser and open app',
+    webDesktopLoginHint: 'Recommended: finish login in the browser, then this app opens automatically. Use the options below when a browser is unavailable.',
     emailLabel: 'Email',
     emailPlaceholder: 'you@company.com',
     passwordLabel: 'Password',

@@ -93,6 +93,12 @@ app.whenReady().then(async () => {
     checks.normalizeRejectsUnknownHost = normalizeDeepLinkUrl('abu://wat?x=1') === null;
     checks.normalizeRejectsForeignScheme = normalizeDeepLinkUrl('https://evil.com') === null;
     checks.normalizeRejectsGarbage = normalizeDeepLinkUrl('not a url') === null;
+    checks.normalizeLoginRewritesDevScheme =
+      normalizeDeepLinkUrl('abu-dev://login?code=once&server=https://ex.com') ===
+      'abu://login?code=once&server=https://ex.com';
+    checks.normalizeLoginPassesCanonical =
+      normalizeDeepLinkUrl('abu://login?code=once&server=https://ex.com') ===
+      'abu://login?code=once&server=https://ex.com';
     checks.extractFindsUrlInArgv =
       extractDeepLinkFromArgv(['electron', 'main.cjs', 'abu://enroll?server=x']) ===
       'abu://enroll?server=x';
@@ -147,6 +153,14 @@ app.whenReady().then(async () => {
   await sleep(60);
   received = await readReceived();
   checks.foreignUrlIgnored = received.length === 2; // unchanged
+
+  // ── 4b) login host delivered (Web → desktop one-time code) ──
+  fireOpenUrl('abu-dev://login?code=smoke&server=https://login.example.com');
+  await sleep(80);
+  received = await readReceived();
+  checks.loginUrlDelivered =
+    received.length === 3 &&
+    received[2] === 'abu://login?code=smoke&server=https://login.example.com';
 
   // ── 5) get_current reaches the real handler (null: no cold-start here) ──
   const cur = await win.webContents.executeJavaScript(

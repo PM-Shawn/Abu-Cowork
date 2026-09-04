@@ -113,8 +113,10 @@ export interface PendingEnroll {
 export function useDeepLinkEnroll(): {
   pendingEnroll: PendingEnroll | null
   dismissEnroll: () => void
+  pendingLogin: null
+  dismissLogin: () => void
 } {
-  return { pendingEnroll: null, dismissEnroll() {} }
+  return { pendingEnroll: null, dismissEnroll() {}, pendingLogin: null, dismissLogin() {} }
 }
 
 export function BindToEnterpriseFlow(_props: {
@@ -122,5 +124,12 @@ export function BindToEnterpriseFlow(_props: {
   onCancel: () => void
   initialServerUrl?: string
 }): null { return null }
+
+export function DesktopLoginConfirm(_props: {
+  pending: { serverUrl: string; code: string }
+  onDone: () => void
+  onCancel: () => void
+}): null { return null }
+
 export function PolicyConfirmModal(): null { return null }
 export function EnterpriseLlmBadge(): null { return null }

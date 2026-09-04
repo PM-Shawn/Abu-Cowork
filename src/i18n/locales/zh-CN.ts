@@ -2465,6 +2465,8 @@ const zhCN: TranslationDict = {
     tabPassword: '密码登录',
     tabMagicLink: '验证码登录',
     tabSso: 'SSO 登录',
+    webDesktopLoginButton: '在浏览器中登录并打开客户端',
+    webDesktopLoginHint: '推荐：浏览器完成登录后自动唤起本客户端。下方方式用于无法打开浏览器时。',
     emailLabel: '邮箱',
     emailPlaceholder: 'you@company.com',
     passwordLabel: '密码',

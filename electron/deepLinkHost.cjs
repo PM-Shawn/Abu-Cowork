@@ -1,7 +1,9 @@
 /**
  * Deep-link host — the Electron equivalent of tauri_plugin_deep_link.
  *
- * Abu's only deep link today is `abu://enroll?server=<url>&token=<token>`,
+ * Abu deep links today:
+ *   - `abu://enroll?server=<url>&token=<token>` — pre-fill enterprise bind
+ *   - `abu://login?code=<once>&server=<url>` — Web → desktop one-time login
  * used to pre-fill the enterprise-binding form (an admin sends the user a link;
  * clicking it launches/focuses Abu with the server address filled in). The
  * frontend consumes it unchanged via `@tauri-apps/plugin-deep-link`:
@@ -38,9 +40,9 @@ const PROD_SCHEME = 'abu';
 const DEV_SCHEME = 'abu-dev';
 const NEW_URL_EVENT = 'deep-link://new-url';
 
-// The single known deep-link action today. New actions must be added here so
-// the whitelist keeps rejecting everything else.
-const KNOWN_HOSTS = new Set(['enroll']);
+// Known deep-link actions. New hosts must be added here so the whitelist
+// keeps rejecting everything else.
+const KNOWN_HOSTS = new Set(['enroll', 'login']);
 
 let activeScheme = PROD_SCHEME;
 let coldStartUrls = []; // URLs that cold-launched the app (get_current path)

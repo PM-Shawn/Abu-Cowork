@@ -1410,6 +1410,10 @@ export interface TranslationDict {
     menuDelete: string;
     menuRemove: string;
     menuManagedByOrg: string;
+    /** 「立即试用」prefilled prompt — `{name}` = item name, `{hint}` = its description. */
+    trialPrompt: string;
+    /** Hint used when an item has no description. */
+    trialPromptFallback: string;
     pluginsAddMarketplace: string;
     pluginsAddMarketplaceTitle: string;
     pluginsMarketplaceDirLabel: string;

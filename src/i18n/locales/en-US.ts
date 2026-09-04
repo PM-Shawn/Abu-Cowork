@@ -1226,6 +1226,8 @@ const enUS: TranslationDict = {
     menuDelete: 'Delete',
     menuRemove: 'Remove',
     menuManagedByOrg: 'Managed by your organization; cannot be uninstalled here',
+    trialPrompt: 'Try "{name}": {hint}',
+    trialPromptFallback: 'show me what it can do',
     pluginsAddMarketplace: 'Add marketplace',
     pluginsAddMarketplaceTitle: 'Add a plugin marketplace',
     pluginsMarketplaceDirLabel: 'Marketplace directory',

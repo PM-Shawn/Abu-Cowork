@@ -1228,6 +1228,8 @@ const zhCN: TranslationDict = {
     menuDelete: '删除',
     menuRemove: '移除',
     menuManagedByOrg: '由组织管理，不能在这里卸载',
+    trialPrompt: '试试用「{name}」：{hint}',
+    trialPromptFallback: '帮我看看它能做什么',
     pluginsAddMarketplace: '添加市场',
     pluginsAddMarketplaceTitle: '添加插件市场',
     pluginsMarketplaceDirLabel: '市场目录',

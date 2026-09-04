@@ -10,6 +10,14 @@ export interface InstalledPlugin {
   checksum?: string;
   installedAt: string;
   /**
+   * How the package was obtained — mirrors `PluginSource['kind']`.
+   *
+   * Optional because records written before this field existed must still
+   * load; consumers that need "was this authored locally?" fall back to the
+   * absence of `sha` for those (see `authored.ts`).
+   */
+  sourceKind?: 'relative' | 'url' | 'git-subdir';
+  /**
    * What this plugin contributed to the app (skill ids, MCP server names).
    * Uninstall correctness is derived from this record — never by rescanning
    * directories and guessing what belonged to the plugin.
@@ -45,7 +53,7 @@ export async function readInstalled(home: string): Promise<InstalledPlugin[]> {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isInstalledPlugin);
+    return parsed.filter(isInstalledPlugin).map(withValidSourceKind);
   } catch {
     return [];
   }
@@ -94,6 +102,27 @@ function isInstalledPlugin(value: unknown): value is InstalledPlugin {
     return false;
   }
   return true;
+}
+
+/**
+ * Drop a `sourceKind` that is not one of the known kinds, keeping the record.
+ *
+ * Unlike the identity fields above, this one is advisory: it only feeds the
+ * "did I author this?" split in the UI, so a nonsense value is not worth
+ * discarding an otherwise-valid install over. Dropping the field puts the
+ * record back on the legacy fallback path instead of letting an unvalidated
+ * string leak out typed as the union. The copy is shallow so any *other*
+ * unknown key still round-trips untouched.
+ */
+function withValidSourceKind(p: InstalledPlugin): InstalledPlugin {
+  // Typed as the union by the interface, but it came straight out of JSON and
+  // nothing has checked it yet — widen before comparing.
+  const raw = p.sourceKind as unknown;
+  if (raw === undefined) return p;
+  if (raw === 'relative' || raw === 'url' || raw === 'git-subdir') return p;
+  const copy = { ...p };
+  delete copy.sourceKind;
+  return copy;
 }
 
 async function writeInstalled(home: string, plugins: InstalledPlugin[]): Promise<void> {

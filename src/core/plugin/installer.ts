@@ -325,6 +325,11 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       // Pin the record to the verified sha for remote sources, so "what is
       // installed" is answerable down to the commit.
       sha: 'sha' in opts.entry.source ? opts.entry.source.sha : undefined,
+      // Recorded at install time because it is the only moment the source is
+      // known: the marketplace entry can be edited or removed afterwards, and
+      // inferring "local vs remote" from the presence of a sha only works by
+      // accident.
+      sourceKind: opts.entry.source.kind,
       checksum: opts.checksum,
       installedAt: (opts.now?.() ?? new Date()).toISOString(),
       contributed: {

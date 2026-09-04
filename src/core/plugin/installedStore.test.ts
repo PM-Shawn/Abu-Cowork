@@ -63,6 +63,38 @@ describe('readInstalled', () => {
     const result = await readInstalled(HOME);
     expect(result).toEqual([plugin]);
   });
+
+  it('round-trips sourceKind', async () => {
+    const plugin = makePlugin({ sourceKind: 'git-subdir' });
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([plugin]));
+    expect(await readInstalled(HOME)).toEqual([plugin]);
+  });
+
+  it('keeps a record written before sourceKind existed', async () => {
+    const plugin = makePlugin();
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([plugin]));
+    const [read] = await readInstalled(HOME);
+    expect(read).toEqual(plugin);
+    expect(read.sourceKind).toBeUndefined();
+  });
+
+  it('drops an out-of-union sourceKind but keeps the record', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([{ ...makePlugin(), sourceKind: 'ftp' }]));
+    const [read] = await readInstalled(HOME);
+    expect(read).toEqual(makePlugin());
+    expect(read.sourceKind).toBeUndefined();
+  });
+
+  it('drops a non-string sourceKind but keeps the record', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([{ ...makePlugin(), sourceKind: 7 }]));
+    const [read] = await readInstalled(HOME);
+    expect(read).toEqual(makePlugin());
+    expect(read.sourceKind).toBeUndefined();
+  });
 });
 
 describe('upsertInstalled', () => {

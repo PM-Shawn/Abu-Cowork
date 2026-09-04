@@ -272,6 +272,18 @@ describe('installPlugin', () => {
     );
   });
 
+  it('records how the plugin was sourced, so "mine" can be told from "installed"', async () => {
+    const copyDir = vi.fn(async () => {});
+    const { record } = await installPlugin({
+      home: '/home/u',
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry,
+      copyDir,
+    });
+    expect(record.sourceKind).toBe('relative');
+  });
+
   it('records the caller-supplied checksum on the install record', async () => {
     const copyDir = vi.fn(async () => {});
     const { record } = await installPlugin({
@@ -363,6 +375,9 @@ describe('remote sources', () => {
     );
     expect(record.sha).toBe('abc123');
     expect(record.version).toBe('2.0.0');
+    // A remote install is never "mine" — the record says so on its own, without
+    // having to infer it from the presence of a sha.
+    expect(record.sourceKind).toBe('url');
   });
 });
 

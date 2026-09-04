@@ -224,7 +224,7 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.reason).toContain('unattended');
     });
 
-    it('still denies scripting — the unattended column denies it by default, allowed site or not', async () => {
+    it('still refuses scripting on an allowed site — the default asks, and an automatic run has nobody to ask', async () => {
       const decision = await checkToolApproval(
         'abu-browser__execute_js', { tabId: 1, url: ALLOWED_URL, code: '1' }, unattended, (async () => true) as never,
       );

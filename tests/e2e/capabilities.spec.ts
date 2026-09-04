@@ -239,8 +239,8 @@ test.describe.serial('Electron capability overview', () => {
 
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForWelcomeScreen(page);
-    // The master switch is seeded on because the automatic-tasks column is
-    // inert without it, and that column is what screenshot 07 is about.
+    // The master switch is seeded on because the scripting risk warning only
+    // fires while it is, and that warning is what screenshot 08 is about.
     await seedSettings(page, {
       browserSitePermissions: SEEDED_SITES,
       allowUnattendedBrowser: true,
@@ -285,73 +285,85 @@ test.describe.serial('Electron capability overview', () => {
       What each option MEANS lives inside the option — the reason there is no
       ⓘ anywhere on this page — and that is only visible with a menu open.
 
-      The scripting card's automatic column is the one worth photographing.
-      Until 2026-09-04 it was the cell with no "allow" to give and carried the
-      WITHHELD tier listed and disabled; the ruling turned that into a real
-      OPT-IN whose description carries its scope ("只在始终允许的网站上生效").
-      Either way it is the menu that used to be painted over by the
-      site-permissions card directly below it.
+      The scripting card is the one worth photographing: it is the menu that
+      used to be painted over by the site-permissions card directly below it,
+      and since the 2026-09-04 column collapse there is exactly ONE dropdown
+      on it, not one per run mode.
     */
     const scriptCard = page
       .locator('div.rounded-lg.border')
       .filter({ has: page.getByText(RUN_SCRIPTS, { exact: true }) })
       .first();
-    const scriptUnattendedCell = scriptCard.locator('button[aria-expanded]').nth(1);
-    await scriptUnattendedCell.scrollIntoViewIfNeeded();
-    await scriptUnattendedCell.click();
-
-    const optInTier = page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/);
-    await expect(optInTier).toBeVisible();
-    /*
-      F2 — this is the AUTOMATIC-TASKS column, where "ask every time" cannot
-      mean a dialog: nobody is at the screen. It means the IM channel the task
-      itself named, which the scheduler now hands the confirmation seam
-      (`core/im/approvalTarget.ts`) — and a refusal when no channel is bound.
-      The dialog wording must NOT appear in this column.
-    */
-    await expect(
-      page.getByText(/发到任务绑定的 IM 频道确认|Asks in the task's IM channel/),
-    ).toBeVisible();
-    await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toHaveCount(0);
+    const scriptCell = scriptCard.locator('button[aria-expanded]');
+    await expect(scriptCell).toHaveCount(1);
+    await scriptCell.scrollIntoViewIfNeeded();
+    await scriptCell.click();
 
     /*
-      Unclipped is the whole point of the fix, and "visible" does not prove it
-      — the card below used to paint straight over this menu while every
-      element in it stayed "visible" to the DOM. So ask the document what is
-      actually on top at the opt-in option's own centre.
+      One setting, two execution contexts — so 「每次询问」 has to say both, on
+      one line: a dialog while the user is here, and the IM channel the task
+      itself named when it is running alone (`core/im/approvalTarget.ts`),
+      refused when none is bound. The two withdrawn per-column strings must
+      not survive anywhere on this surface.
     */
-    const optInBox = await optInTier.boundingBox();
-    expect(optInBox).not.toBeNull();
+    const askOption = page.getByText(
+      /你在场时弹窗确认，自动任务发到 IM 审批|Asks you here, and over IM in automatic tasks/,
+    );
+    await expect(askOption).toBeVisible();
+    await expect(page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/))
+      .toHaveCount(0);
+    await expect(page.getByText(/发到任务绑定的 IM 频道确认|Asks in the task's IM channel/))
+      .toHaveCount(0);
+
+    /*
+      The menu is exactly as wide as the trigger that opened it. It used to be
+      shrink-to-fit with a min-width floor, so this description — one unbroken
+      line — set the width and the menu spilled ~560px across a 185px control.
+    */
+    const [menuBox, triggerBox] = await Promise.all([
+      page.locator(`#${await scriptCell.getAttribute('aria-controls')}`).boundingBox(),
+      scriptCell.boundingBox(),
+    ]);
+    expect(menuBox).not.toBeNull();
+    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThanOrEqual(1);
+
+    /*
+      Unclipped is the whole point of the portal fix, and "visible" does not
+      prove it — the card below used to paint straight over this menu while
+      every element in it stayed "visible" to the DOM. So ask the document
+      what is actually on top at the option's own centre.
+    */
+    const askBox = await askOption.boundingBox();
+    expect(askBox).not.toBeNull();
     const topmostText = await page.evaluate(({ x, y }) => {
       const el = document.elementFromPoint(x, y);
       return el?.closest('button')?.textContent?.trim() ?? el?.textContent?.trim() ?? '';
     }, {
-      x: optInBox!.x + optInBox!.width / 2,
-      y: optInBox!.y + optInBox!.height / 2,
+      x: askBox!.x + askBox!.width / 2,
+      y: askBox!.y + askBox!.height / 2,
     });
-    expect(topmostText).toMatch(/允许|Allow/);
+    expect(topmostText).toMatch(/每次询问|Ask every time/);
 
     /*
-      The ⚠ line the ruling requires: it must NOT be sitting there by default
-      (the tier ships off), and it must appear directly under this select the
-      moment the opt-in is the selected value. Photographed for the IA record.
+      The ⚠ line the 2026-09-04 ruling requires: it must NOT be sitting there
+      by default (scripting ships as 「每次询问」), and it must appear directly
+      under this select the moment 「允许」 is the selected value.
+      Photographed for the IA record.
     */
-    const riskWarning = page.getByText(
-      /风险升高：自动任务里的脚本能读取该网站的登录态|Elevated risk: scripts in automatic tasks/,
-    );
+    const riskWarning = page.getByText(/风险升高|Elevated risk/);
     await expect(riskWarning).toHaveCount(0);
-    await optInTier.click();
+    await page.getByText(/^不再询问$|^Never asks again$/).click();
     await expect(riskWarning).toBeVisible();
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });
 
-    // Put the cell back to the shipped default so the rest of this journey
+    // Put the row back to the shipped default so the rest of this journey
     // photographs the default surface, then reopen the menu for the shot below.
-    await scriptUnattendedCell.click();
+    await scriptCell.click();
     await page.getByText(/阿布不会做这类操作|Abu will not do this kind of thing/).click();
     await expect(riskWarning).toHaveCount(0);
-    await scriptUnattendedCell.click();
-    await expect(optInTier).toBeVisible();
+    await scriptCell.click();
+    await expect(askOption).toBeVisible();
 
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
@@ -360,7 +372,7 @@ test.describe.serial('Electron capability overview', () => {
     // itself on Escape regardless of what is open inside it, so Escape here
     // would take the whole page down rather than just this menu.
     await page.getByText(ACTION_PERMISSIONS).first().click();
-    await expect(optInTier).toHaveCount(0);
+    await expect(askOption).toHaveCount(0);
 
     // ---- Site list, two levels down -------------------------------------
     // Same rule as the overview: the row drills in, no text button.

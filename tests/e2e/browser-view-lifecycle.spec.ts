@@ -988,9 +988,20 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const prompt = `abu-e2e-dialog-${randomUUID().slice(0, 8)}`;
     await sendComposerMessage(page, mock, prompt);
 
-    // navigate asks; that one approval covers the click and the answer.
+    // navigate asks, and that approval covers the click. It does NOT cover the
+    // answer: `handle_dialog` is asked separately (F2, 2026-09-06 review),
+    // because the click that raised the confirm is the same click that minted
+    // the conversation grant — so riding it meant the user was asked once,
+    // about the click, and Abu then pressed the page's own OK button. The
+    // second dialog appearing HERE, in a real Electron run against a real
+    // page, is the end-to-end witness for that.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    // get_dialog is free (reading is), so the next thing to ask is the answer.
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByText(/handle_dialog/)).toBeVisible({ timeout: READY_TIMEOUT });
     await browserAllowOnceButton(page).click();
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });

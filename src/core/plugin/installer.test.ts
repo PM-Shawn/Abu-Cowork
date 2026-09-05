@@ -951,6 +951,25 @@ describe('installing the agents payload', () => {
     });
   }
 
+  /** Seed an install record, so the plan can see what this plugin contributed before. */
+  function writeInstalledRecord(agents: string[]) {
+    const dir = join(root, '.abu', 'plugin-packages');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'installed.json'),
+      JSON.stringify([
+        {
+          key: 'weather@official',
+          marketplace: 'official',
+          name: 'weather',
+          version: '1.1.0',
+          installedAt: '2026-01-01T00:00:00.000Z',
+          contributed: { skills: [], mcpServers: [], agents },
+        },
+      ]),
+    );
+  }
+
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'abu-plugin-agents-'));
     mkt = join(root, 'mkt');
@@ -1011,9 +1030,12 @@ describe('installing the agents payload', () => {
       join(installDir, 'agents', 'reviewer'),
       join(installDir, 'agents', 'writer'),
     ]);
-    // Never overwrite: a user agent that appeared between plan and install
-    // still wins.
-    expect(vi.mocked(installAgentFromFolder).mock.calls[0][1]).toEqual({ overwrite: false });
+    // A fresh install never overwrites: a user agent that appeared between the
+    // plan and now still wins, and neither name was ever this plugin's.
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[1])).toEqual([
+      { overwrite: false },
+      { overwrite: false },
+    ]);
     expect(record.contributed.agents).toEqual(['reviewer', 'writer']);
   });
 
@@ -1043,20 +1065,92 @@ describe('installing the agents payload', () => {
     expect(record.contributed.agents).toEqual([]);
   });
 
-  it('leaves a user agent of the same name byte-identical and never hands it over', async () => {
+  it('never writes into a user agent of the same name, and never hands it over', async () => {
     const userAgent = join(root, '.abu', 'agents', 'reviewer');
     mkdirSync(userAgent, { recursive: true });
-    const mine = '---\nname: reviewer\n---\n\nMY OWN PROMPT\n';
-    writeFileSync(join(userAgent, 'AGENT.md'), mine);
+    writeFileSync(join(userAgent, 'AGENT.md'), '---\nname: reviewer\n---\n\nMY OWN PROMPT\n');
 
     const { record } = await install();
 
-    expect(readFileSync(join(userAgent, 'AGENT.md'), 'utf8')).toBe(mine);
+    // Reading the file back would assert nothing here — the agent installer is
+    // mocked, so nothing in this test could have written it. What this module
+    // must be held to is that it issued no write anywhere under ~/.abu/agents.
+    const written = [
+      ...vi.mocked(writeTextFile).mock.calls,
+      ...vi.mocked(writeFile).mock.calls,
+    ].map((c) => String(c[0]));
+    expect(written.filter((path) => path.startsWith(join(root, '.abu', 'agents')))).toEqual([]);
     expect(existsSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'))).toBe(false);
     expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0])).toEqual([
       join(installDir, 'agents', 'writer'),
     ]);
     expect(record.contributed.agents).toEqual(['writer']);
+  });
+
+  it('refreshes an agent this same plugin already contributed', async () => {
+    // A re-install without an uninstall in between: `~/.abu/agents/reviewer` is
+    // this plugin's own, so it must be refreshed and re-credited. Skipping it
+    // would leave a stale agent that the next uninstall no longer claims.
+    writeInstalledRecord(['reviewer']);
+    const ours = join(root, '.abu', 'agents', 'reviewer');
+    mkdirSync(ours, { recursive: true });
+    writeFileSync(join(ours, 'AGENT.md'), '---\nname: reviewer\n---\n\nThe previous version.\n');
+
+    const { record } = await install();
+
+    const handedOver = new Map(
+      vi.mocked(installAgentFromFolder).mock.calls.map((c) => [String(c[0]), c[1]]),
+    );
+    expect(handedOver.get(join(installDir, 'agents', 'reviewer'))).toEqual({ overwrite: true });
+    // Only the names the record already claimed: `writer` is a first install.
+    expect(handedOver.get(join(installDir, 'agents', 'writer'))).toEqual({ overwrite: false });
+    expect(record.contributed.agents).toEqual(['reviewer', 'writer']);
+  });
+
+  it('still refuses to overwrite a name this plugin never contributed', async () => {
+    // The record exists but does not claim `reviewer`, so the directory sitting
+    // there is someone else's — the disclosure marks it and the install leaves
+    // it alone, exactly as it would with no record at all.
+    writeInstalledRecord(['some-other-agent']);
+    const theirs = join(root, '.abu', 'agents', 'reviewer');
+    mkdirSync(theirs, { recursive: true });
+    writeFileSync(join(theirs, 'AGENT.md'), '---\nname: reviewer\n---\n\nHand-written.\n');
+
+    const { record } = await install();
+
+    expect(vi.mocked(installAgentFromFolder).mock.calls).toEqual([
+      [join(installDir, 'agents', 'writer'), { overwrite: false }],
+    ]);
+    expect(record.contributed.agents).toEqual(['writer']);
+  });
+
+  it('credits no agents when the installed payload cannot be read, and still records the install', async () => {
+    // The copy already succeeded and the user already approved it. Failing to
+    // enumerate `agents/` afterwards narrows the credit to nothing — it must not
+    // throw out of `installPlugin` and leave a package dir with no record.
+    writeFileSync(
+      join(pkg, '.abu-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'weather',
+        version: '1.2.0',
+        mcpServers: { weatherd: { command: 'node' } },
+      }),
+    );
+    mkdirSync(join(pkg, 'skills', 'forecast'), { recursive: true });
+    writeFileSync(join(pkg, 'skills', 'forecast', 'SKILL.md'), '# forecast\n');
+    const realReadDir = vi.mocked(readDir).getMockImplementation()!;
+    vi.mocked(readDir).mockImplementation(async (path) => {
+      if (String(path) === join(installDir, 'agents')) throw new Error('EIO: cannot list');
+      return realReadDir(path);
+    });
+
+    const { record } = await install();
+
+    expect(record.contributed.agents).toEqual([]);
+    expect(vi.mocked(installAgentFromFolder)).not.toHaveBeenCalled();
+    // The other payloads are credited exactly as before.
+    expect(record.contributed.skills).toEqual(['forecast']);
+    expect(record.contributed.mcpServers).toEqual(['weatherd']);
   });
 
   it('treats a linked agent file or a linked agent directory as absent', async () => {

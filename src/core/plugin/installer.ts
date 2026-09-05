@@ -266,16 +266,33 @@ async function discloseAgents(
  * the plugin, and nothing is rolled back. The record's `contributed.agents`
  * list IS the report — crediting a name that is not on disk would make
  * uninstall delete something this plugin never installed.
+ *
+ * `previouslyOurs` are the names the plugin's OLD install record claims (the
+ * same set the disclosure exempted from `'exists'`). Those directories are this
+ * plugin's own, so a re-install refreshes them; every other taken name was
+ * already marked a conflict above and never reaches here.
  */
 async function installPayloadAgents(
   installDir: string,
   disclosed: PluginAgentDisclosure[],
+  previouslyOurs: ReadonlySet<string>,
 ): Promise<string[]> {
   const wanted = new Set(disclosed.filter((a) => !a.conflict).map((a) => a.name));
   if (wanted.size === 0) return [];
 
+  let payload: PayloadAgent[];
+  try {
+    payload = await readPayloadAgents(scanPluginPackage(installDir), installDir);
+  } catch {
+    // The same policy one level up: the copy already succeeded and the user
+    // already approved it, so a payload that cannot be enumerated narrows the
+    // credit to nothing. Throwing here would abort `installPlugin` after the
+    // package is on disk, leaving a package directory with no install record.
+    return [];
+  }
+
   const installed: string[] = [];
-  for (const agent of await readPayloadAgents(scanPluginPackage(installDir), installDir)) {
+  for (const agent of payload) {
     if (!wanted.has(agent.name)) continue;
     // Membership in `wanted` already implies this, but the predicate is applied
     // wherever a stranger's name becomes a directory — not wherever it happens
@@ -287,7 +304,11 @@ async function installPayloadAgents(
       // Overwrites the copied AGENT.md for the folder shape on purpose: both
       // shapes hand the agent installer the same normalised file.
       await writeTextFile(joinPath(dir, 'AGENT.md'), agent.rendered);
-      const result = await installAgentFromFolder(dir, { overwrite: false });
+      // Overwrite ONLY what this plugin's record already claims. Re-installing
+      // without an uninstall in between would otherwise hit `ALREADY_EXISTS` on
+      // the plugin's own agent, refresh nothing, and drop it from
+      // `contributed.agents` — orphaning it at the next uninstall.
+      const result = await installAgentFromFolder(dir, { overwrite: previouslyOurs.has(agent.name) });
       // `ALREADY_EXISTS` here is a user agent created between the plan and now:
       // it wins, and this plugin is not credited with a directory it did not
       // write. Every other code is a failure that must not be credited either.
@@ -377,11 +398,28 @@ function remoteStagingDir(home: string, marketplace: string, name: string, sha: 
 }
 
 /**
+ * A plan, plus the one thing `installPlugin` needs that the disclosure screen
+ * does not: which agent names the plugin's OLD install record already claims.
+ *
+ * Carried out of the single plan rather than re-read, so the set the install
+ * acts on is by construction the same one the disclosure exempted from
+ * `'exists'` — two reads of `installed.json` could disagree.
+ */
+interface PlannedInstall {
+  disclosure: InstallDisclosure;
+  previouslyContributedAgents: ReadonlySet<string>;
+}
+
+/**
  * Describe what installing this entry would bring in, without writing anything.
  * This is the data behind the install disclosure screen — in particular the
  * MCP server commands, which are arbitrary executables.
  */
 export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisclosure> {
+  return (await planInstallWithHistory(opts)).disclosure;
+}
+
+async function planInstallWithHistory(opts: PlanInstallOptions): Promise<PlannedInstall> {
   const source = opts.entry.source;
   let sourceDir: string;
   if (source.kind === 'relative') {
@@ -438,18 +476,21 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   }));
 
   return {
-    key,
-    name: manifest.name,
-    marketplace: opts.marketplaceName,
-    version: manifest.version,
-    manifest,
-    sourceDir,
-    skills,
-    mcpServers,
-    agents,
-    capabilities: manifest.interface?.capabilities,
-    ignoredPayloads,
-    skippedSymlinks,
+    disclosure: {
+      key,
+      name: manifest.name,
+      marketplace: opts.marketplaceName,
+      version: manifest.version,
+      manifest,
+      sourceDir,
+      skills,
+      mcpServers,
+      agents,
+      capabilities: manifest.interface?.capabilities,
+      ignoredPayloads,
+      skippedSymlinks,
+    },
+    previouslyContributedAgents: previouslyContributed,
   };
 }
 
@@ -487,7 +528,7 @@ export interface InstallOutcome {
 }
 
 export async function installPlugin(opts: InstallPluginOptions): Promise<InstallOutcome> {
-  const disclosure = await planInstall(opts);
+  const { disclosure, previouslyContributedAgents } = await planInstallWithHistory(opts);
   const version = disclosure.version ?? UNVERSIONED;
   const targetDir = pluginInstallDir(opts.home, opts.marketplaceName, disclosure.name, version);
 
@@ -495,7 +536,7 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
 
   // After the copy: the agents are materialised from the installed tree, so
   // nothing the copy refused can reach ~/.abu/agents.
-  const agents = await installPayloadAgents(targetDir, disclosure.agents);
+  const agents = await installPayloadAgents(targetDir, disclosure.agents, previouslyContributedAgents);
 
   return {
     record: {

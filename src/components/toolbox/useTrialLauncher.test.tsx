@@ -93,6 +93,21 @@ describe('useTrialLauncher', () => {
     expect(setPendingInput).toHaveBeenCalledWith(`试试用「canva」：${emoji}`);
   });
 
+  it('truncates a long name to 60 code points plus an ellipsis', () => {
+    // Marketplace entry names are only checked non-empty at parse, and a rename
+    // target is displayed unvalidated — so a hostile or sloppy name must not be
+    // able to push the actual instruction out of the composer.
+    launch({ name: 'n'.repeat(200), description: 'ok' });
+
+    expect(setPendingInput).toHaveBeenCalledWith(`试试用「${'n'.repeat(60)}…」：ok`);
+  });
+
+  it('collapses whitespace runs in the name', () => {
+    launch({ name: '  my\n\n  great\tplugin  ', description: 'ok' });
+
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「my great plugin」：ok');
+  });
+
   it('falls back to the generic hint when the description is missing or blank', () => {
     launch({ name: 'canva' });
     expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么');

@@ -784,7 +784,8 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
       .find((content) => content.includes('"matches"'));
     expect(findResult).toBeTruthy();
     expect(findResult).toContain('"role": "button"');
-    expect(findResult).toContain('"name": "保存"');
+    // `accessibleName`, not `name`: snapshot's `name` is the HTML attribute.
+    expect(findResult).toContain('"accessibleName": "保存"');
     expect(findResult).toContain('"id": "save"');
     // Exactly one match: the decoy is a button too, but it is not called 保存.
     expect(findResult).toContain('"total": 1');

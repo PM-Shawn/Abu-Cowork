@@ -1068,7 +1068,7 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
       tag: el.tagName.toLowerCase(),
       ...(el.id ? { id: el.id } : {}),
       ...(role ? { role } : {}),
-      ...(name ? { name: name.slice(0, 120) } : {}),
+      ...(name ? { accessibleName: name.slice(0, 120) } : {}),
       ...(text && text !== name ? { text } : {}),
       // `false` means "on the page but with no layout box" — a collapsed antd
       // combobox input, say. It is still addressable; it just is not what the

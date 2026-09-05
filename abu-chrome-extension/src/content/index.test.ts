@@ -65,7 +65,7 @@ const getHtml = (payload: Record<string, unknown> = {}) =>
 const find = (query: Record<string, unknown>, limit?: number) =>
   handleAction('find', { query, limit }) as Promise<{
     matches: Array<{
-      ref: string; tag: string; id?: string; role?: string; name?: string; text?: string;
+      ref: string; tag: string; id?: string; role?: string; accessibleName?: string; text?: string;
       visible: boolean; interactive: boolean; disabled?: true;
       rect: { x: number; y: number; width: number; height: number };
     }>;
@@ -1318,7 +1318,7 @@ describe('a label written both ways is still one label', () => {
     const result = await find({ label: '姓名' });
 
     expect(result.matches.map((m) => m.id)).toEqual(['n']);
-    expect(result.matches[0].name).toBe('姓名');
+    expect(result.matches[0].accessibleName).toBe('姓名');
   });
 
   it('does not let a doubled name hand the exact tier to an unrelated field', async () => {
@@ -1422,7 +1422,7 @@ describe('find — read-only search, the cheap step before acting', () => {
 
     expect(result.total).toBe(1);
     expect(result.matches[0]).toMatchObject({
-      tag: 'button', id: 'save', role: 'button', name: '保存', visible: true, interactive: true,
+      tag: 'button', id: 'save', role: 'button', accessibleName: '保存', visible: true, interactive: true,
     });
     expect(result.matches[0].rect).toMatchObject({ width: 100, height: 20 });
     expect(result.matches[0].ref).toMatch(/^e\d+$/);
@@ -1504,6 +1504,21 @@ describe('find — read-only search, the cheap step before acting', () => {
 
     expect((await find({ role: 'button' }, 3)).matches).toHaveLength(3);
     expect((await find({ role: 'button' }, 999)).matches).toHaveLength(50);
+  });
+
+  it('calls the accessible name `accessibleName`, because snapshot\'s `name` is the attribute', async () => {
+    // Same field name, two meanings, in the two tools a model uses back to
+    // back: snapshot's `name` is the HTML attribute (`username`), find's is
+    // the accessible name (`用户名`). A caller that copied one into the other
+    // got "not found" and no way to see why.
+    document.body.innerHTML = '<label for="u">用户名</label><input id="u" name="username" />';
+
+    const snap = await snapshot();
+    const [match] = (await find({ role: 'textbox' })).matches;
+
+    expect(snap.elements.find((e) => e.id === 'u')).toMatchObject({ name: 'username' });
+    expect(match.accessibleName).toBe('用户名');
+    expect((match as unknown as { name?: string }).name).toBeUndefined();
   });
 
   it('reports a disabled control as such instead of pretending it is actionable', async () => {

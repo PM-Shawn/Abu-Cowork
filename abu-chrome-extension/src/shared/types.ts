@@ -71,9 +71,19 @@ export interface FindMatch {
   id?: string;
   /** Explicit `role=` or the native implicit role. */
   role?: string;
-  /** Accessible name, by the same six-source fallback the locator uses. */
-  name?: string;
-  /** Visible text, when it differs from the name. */
+  /**
+   * Accessible name, by the same six-source fallback the locator uses — what
+   * `{role, name}` matches against.
+   *
+   * Deliberately NOT called `name`: `ElementInfo.name` (what `snapshot`
+   * returns) is the HTML `name` ATTRIBUTE, a different thing entirely. One
+   * field name meaning two things across the pair of tools a model uses back
+   * to back is how `{role:"textbox", name:"username"}` comes to be written
+   * from a snapshot and answered with "not found" — the accessible name was
+   * "用户名", in the <label>.
+   */
+  accessibleName?: string;
+  /** Visible text, when it differs from the accessible name. */
   text?: string;
   /** Has a layout box. `false` = on the page but collapsed, still addressable. */
   visible: boolean;
@@ -98,7 +108,7 @@ export interface ElementInfo {
   ref: string;          // Short reference ID (e.g., "e1", "e2"); stable across snapshots
   tag: string;          // HTML tag name
   id?: string;          // DOM id, when present — lets a caller build a durable css locator
-  name?: string;        // name attribute, when present
+  name?: string;        // the HTML `name` ATTRIBUTE — not the accessible name (see FindMatch.accessibleName)
   type?: string;        // Input type (for input elements)
   text?: string;        // Visible text content (truncated)
   placeholder?: string;

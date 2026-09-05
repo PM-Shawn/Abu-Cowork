@@ -331,13 +331,35 @@ function ownerKeyOf(id) {
  * that neither side had produced alone.
  *
  * Attribution is a plain time window. `before-input-event` and `focus` on a
- * view are the USER only while `aiActionDepth === 0`; every automation action
- * runs with that depth raised, so `keyboardAutomation`'s own
- * `webContents.focus()` + `sendInputEvent()` are excluded without needing to
- * tag individual events. The depth is deliberately GLOBAL, not per owner:
- * during owner A's action, owner B's real input is misread as automation. That
- * error is one-directional (a missed backoff, never a new block) and the window
- * is milliseconds wide, so it is accepted rather than tracked per owner.
+ * view are the USER only while no automation action is holding THAT VIEW (see
+ * `aiOwnsGuestEvents`); an action that injects input runs with its target
+ * view's depth raised, so `keyboardAutomation`'s own `webContents.focus()` +
+ * `sendInputEvent()` are excluded without needing to tag individual events.
+ *
+ * Both halves of that sentence used to be wider, and the width was the bug
+ * (F0, 2026-09-05): the depth was ONE GLOBAL counter raised for EVERY action
+ * for its whole duration. `wait_for`'s timeout is caller-supplied and
+ * unbounded (`abu-browser-bridge`'s schema defaults it to 30s), so a single
+ * `wait_for` silently swallowed every keystroke the user made anywhere — in
+ * another task's tab AND in the waiting task's own page — for as long as it
+ * ran. The old comment here called the window "milliseconds wide"; that
+ * premise never held for the read-only long-waiters. Two rules now keep it
+ * true:
+ *
+ *  1. Only `ATTRIBUTION_SUPPRESSING_ACTIONS` raise a depth at all. A read-only
+ *     action (`wait_for`, snapshots, the extract_ pair, screenshots, get_html)
+ *     synthesizes no input and loads no page, so it has no events of its own
+ *     to exclude and must not hide the user's.
+ *  2. The depth is per VIEW, not global. Owner A's `click` cannot mask real
+ *     input landing on owner B's tab, nor on A's other tabs.
+ *
+ * A short GLOBAL phase remains, because `performBrowserAutomation` is entered
+ * before the target view is known (`get_tabs` may still have to create it).
+ * Its bound is structural rather than temporal: the scope is narrowed to a
+ * single view id in the same synchronous run as the entry — at the `match` for
+ * a tab-addressed action, and at id-mint time (before `emit`) for a
+ * provisioning `get_tabs` — so no `await` can land inside it and nothing can
+ * fire there. See `createAiActionScope`.
  *
  * State-changing actions then wait for a quiet window before running. Read-only
  * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
@@ -399,6 +421,26 @@ const TAKEOVER_GATED_ACTIONS = new Set([
   'scroll',
   'start_recording',
 ]);
+
+/**
+ * The actions whose OWN side effects can look like the user, and which
+ * therefore suppress attribution on the view they touch (F0).
+ *
+ * It is `TAKEOVER_GATED_ACTIONS` plus `get_tabs`, and the two additions to the
+ * gated list are for the same reason the gated list has them:
+ *  - every gated action either injects input (`click`/`fill`/`select`/
+ *    `keyboard`/`scroll`/`start_recording`, and `execute_js`, which can
+ *    synthesize anything) or commits a navigation, and Chromium hands the
+ *    guest frame keyboard focus on a navigation commit (F1 above);
+ *  - `get_tabs` is the one listing that can PROVISION — it creates a view and
+ *    loads `about:blank` into it, i.e. it commits a navigation too.
+ *
+ * Everything else (`wait_for`, `snapshot`, `get_html`, `extract_text`,
+ * `extract_table`, `screenshot`, `screenshot_full_page`, `stop_recording`,
+ * `get_downloads`) only reads. It produces no guest event, so suppressing
+ * during it can only ever hide the user — which is exactly what F0 was.
+ */
+const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
 
 /**
  * ## Execution-time origin pin (U5)
@@ -625,8 +667,93 @@ function takeReclaimLiftedNotice(owner) {
   return RECLAIM_LIFTED_NOTICE;
 }
 
-/** >0 while an automation action is executing — its own events are not the user. */
-let aiActionDepth = 0;
+/**
+ * >0 while an automation action is executing but has not yet been narrowed to
+ * one view. Only the entry of `performBrowserAutomation` and the code up to
+ * the scope's `bind` runs under it, and that stretch contains no `await` on
+ * any path (see `createAiActionScope`), so no guest event can be observed
+ * while it is raised.
+ */
+let globalAiActionDepth = 0;
+
+/** viewId -> >0 while an automation action is acting on THAT view. */
+const aiActionDepthByView = new Map();
+
+/** True when events on `viewId` right now are automation's own, not the user's. */
+function aiOwnsGuestEvents(viewId) {
+  if (globalAiActionDepth > 0) return true;
+  return (aiActionDepthByView.get(viewId) || 0) > 0;
+}
+
+function addViewActionDepth(viewId, delta) {
+  const next = (aiActionDepthByView.get(viewId) || 0) + delta;
+  // Deleting at zero keeps the map from growing one dead entry per view a long
+  // session ever automated (the same reason `forgetOwnerInteractionIfUnused`
+  // exists) — a view id is never reused, so there is nothing to preserve.
+  if (next > 0) aiActionDepthByView.set(viewId, next);
+  else aiActionDepthByView.delete(viewId);
+}
+
+/**
+ * One automation call's attribution suppression.
+ *
+ * Lifecycle: created at `performBrowserAutomation` entry (global phase),
+ * narrowed by `bindAiActionScope` to the single view the call turns out to
+ * touch, released in the caller's `finally`. A read-only action gets an INERT
+ * scope that never suppresses anything — that is rule 1 of the F0 fix.
+ */
+function createAiActionScope(action) {
+  if (!ATTRIBUTION_SUPPRESSING_ACTIONS.has(action)) return { global: false, viewId: null };
+  globalAiActionDepth += 1;
+  return { global: true, viewId: null };
+}
+
+/**
+ * Narrow a scope from "every view" to `viewId`. Called the moment the target
+ * is known and before anything can await, so the global phase never spans a
+ * suspension point. A second call is a no-op: one automation call suppresses
+ * one view.
+ */
+function bindAiActionScope(scope, viewId) {
+  if (!scope.global) return;
+  addViewActionDepth(viewId, 1);
+  scope.viewId = viewId;
+  scope.global = false;
+  globalAiActionDepth -= 1;
+}
+
+function endAiActionScope(scope) {
+  if (scope.global) {
+    scope.global = false;
+    globalAiActionDepth -= 1;
+    return;
+  }
+  if (scope.viewId !== null) {
+    addViewActionDepth(scope.viewId, -1);
+    scope.viewId = null;
+  }
+}
+
+/**
+ * Run `fn` with this scope's suppression lifted, then put it back — used for
+ * the takeover wait, where observing the user is the entire point.
+ */
+async function withAiAttributionLifted(scope, fn) {
+  const lifted = scope.global || scope.viewId !== null;
+  const viewId = scope.viewId;
+  if (lifted) {
+    if (scope.global) globalAiActionDepth -= 1;
+    else addViewActionDepth(viewId, -1);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (lifted) {
+      if (scope.global) globalAiActionDepth += 1;
+      else addViewActionDepth(viewId, 1);
+    }
+  }
+}
 
 /**
  * The backoff is a wall-clock wait of up to 10 seconds, which no test can sit
@@ -1206,14 +1333,14 @@ function configureBrowserView(id, view) {
   // Attribution for the takeover backoff: outside an automation action, input
   // landing here is the user working in this view's owner's tab.
   const recordUserInteraction = () => {
-    if (aiActionDepth > 0) return;
+    if (aiOwnsGuestEvents(id)) return;
     userInteractionAt.set(ownerKeyOf(id), clock.now());
   };
   // Direct input on THIS view (keyboard or pointer) is what separates the
   // user really entering the guest from a navigation-commit focus steal (F1).
   let lastDirectGuestInputAt = 0;
   const recordDirectGuestInput = () => {
-    if (aiActionDepth > 0) return;
+    if (aiOwnsGuestEvents(id)) return;
     lastDirectGuestInputAt = clock.now();
   };
   contents.on('before-input-event', () => {
@@ -1328,8 +1455,10 @@ function findViewByTabId(tabId, owner = LEGACY_OWNER) {
  *   stopped — checked on every iteration of the adoption wait below, so a
  *   stopped run neither sits out the rest of the wait nor ends up owning a
  *   hidden fallback view it can never close (N8).
+ * @param {{global: boolean, viewId: string|null}} [scope] the caller's
+ *   attribution scope, narrowed onto the id minted here — see below.
  */
-async function createAutomationView(owner = LEGACY_OWNER, signal) {
+async function createAutomationView(owner = LEGACY_OWNER, signal, scope) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -1338,6 +1467,12 @@ async function createAutomationView(owner = LEGACY_OWNER, signal) {
   // into browserCreate() synchronously on the main process, and that is where
   // the pending owner is consumed.
   pendingAutomationOwners.set(id, owner);
+  // The id is the view's identity from here on — `browserCreate` wires the
+  // adopted view to it, and the fallback below uses the same one. Narrowing
+  // the attribution scope onto it BEFORE the emit is what lets a provisioning
+  // `get_tabs` hold its own new view's navigation-commit focus (F1) without
+  // holding every other task's tab for the length of the adoption wait (F0).
+  if (scope) bindAiActionScope(scope, id);
   // Tell the renderer WHOSE view this is: it hangs the adopted tab on that
   // conversation, so a background task's tab never lands in the conversation
   // the user happens to be looking at. LEGACY_OWNER sends no ownerId at all —
@@ -1429,8 +1564,12 @@ async function createAutomationView(owner = LEGACY_OWNER, signal) {
  * @param {AbortSignal} [signal] forwarded to the adoption wait (see
  *   `createAutomationView`) — provisioning is the one listing path that can
  *   block for seconds, so a stopped run must not sit it out.
+ * @param {{global: boolean, viewId: string|null}} [scope] forwarded to
+ *   `createAutomationView` for the same reason: provisioning is the one
+ *   listing path that blocks, so it must not block under a GLOBAL attribution
+ *   hold.
  */
-async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal) {
+async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal, scope) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
@@ -1452,7 +1591,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
   // that could mint a view answers to it — including a run whose own window was
   // never opened, which is exactly how a fresh delegation used to walk around it.
   if (tabs.length === 0 && createIfEmpty && !conversationIsReclaimed(owner.conversationId)) {
-    const view = await createAutomationView(owner, signal);
+    const view = await createAutomationView(owner, signal, scope);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
@@ -1625,17 +1764,19 @@ async function screenshotAutomation(view, fullPage) {
  */
 async function performBrowserAutomation(action, payload = {}, opts) {
   const signal = opts && opts.signal;
-  // Everything this call does — including creating and loading views — is
-  // automation, so nothing it triggers may be mistaken for the user.
-  aiActionDepth += 1;
+  // What this call does to the view it ends up touching — injecting input,
+  // committing a navigation, loading a view it just created — is automation,
+  // so nothing it triggers there may be mistaken for the user. Everything
+  // OUTSIDE that one view, and every read-only action, stays the user's (F0).
+  const scope = createAiActionScope(action);
   try {
-    return await runBrowserAutomation(action, payload, signal);
+    return await runBrowserAutomation(action, payload, signal, scope);
   } finally {
-    aiActionDepth -= 1;
+    endAiActionScope(scope);
   }
 }
 
-async function runBrowserAutomation(action, payload, signal) {
+async function runBrowserAutomation(action, payload, signal, scope) {
   // Checked before EVERYTHING else — including get_tabs/get_downloads, which
   // bypass every per-tab gate below — so a stopped run cannot still provision
   // and open a brand-new tab (or leak any other side effect) after Stop.
@@ -1654,7 +1795,7 @@ async function runBrowserAutomation(action, payload, signal) {
     // may now be none, shown to every run of the conversation because none of
     // them will be getting a new tab.
     const modelFacing = payload.createIfEmpty !== false;
-    const tabs = await automationTabs(owner, modelFacing, signal);
+    const tabs = await automationTabs(owner, modelFacing, signal, scope);
     // One `note` slot, two mutually interesting facts. A window that is open
     // NOW outranks one the user already lifted, and the owed one-shot is only
     // read (and, for the main loop, spent) on a listing a model will actually
@@ -1735,6 +1876,11 @@ async function runBrowserAutomation(action, payload, signal) {
     );
   }
   const { view } = match;
+  // The target is known: narrow attribution suppression from "every view" to
+  // this one, still inside the same synchronous run as the call's entry — no
+  // `await` has happened since `performBrowserAutomation` raised the global
+  // phase, so nothing could have been swallowed by it.
+  bindAiActionScope(scope, match.id);
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
     assertNotAborted(signal);
@@ -1767,12 +1913,7 @@ async function runBrowserAutomation(action, payload, signal) {
     // Step outside the AI-attribution window for the wait itself: observing the
     // user is the entire point of it, and at depth>0 their keystrokes would be
     // filed as automation's own and the wait would end after one quiet poll.
-    aiActionDepth -= 1;
-    try {
-      await awaitUserIdle(match.id, signal);
-    } finally {
-      aiActionDepth += 1;
-    }
+    await withAiAttributionLifted(scope, () => awaitUserIdle(match.id, signal));
   }
 
   // As LATE as possible, and after `awaitUserIdle`: the whole point is to

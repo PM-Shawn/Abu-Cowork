@@ -235,6 +235,70 @@ export function deriveUnattendedRunOutcome(
   };
 }
 
+/**
+ * The key the structured ending is filed under inside `AbuMessage.metadata`.
+ *
+ * Namespaced because `metadata` is documented as platform-specific
+ * passthrough: an adapter that one day puts its own keys there must not
+ * collide with this one.
+ */
+export const RUN_OUTCOME_METADATA_KEY = 'abuRunOutcome';
+
+/**
+ * The ending as DATA, for consumers that are programs rather than people.
+ *
+ * Ruling (batch 8, F8-3): a run's ending must reach every output channel, but
+ * a webhook body and a `custom_template` payload are shapes the USER designed
+ * — prose prepended to `content` breaks a `JSON.parse(body.content)` consumer
+ * on the very first run. So the sentence goes only where a person reads it,
+ * and the fact goes everywhere, here, additively.
+ *
+ * Closed codes and local counts only, same as the sentence: nothing on this
+ * object can be written by a page (`origins` are re-normalized by
+ * `originsForExport`, `nextSteps` and `reason` are enum members, the rest are
+ * counters the aggregator incremented).
+ *
+ * `v` is present so a consumer can branch on shape rather than on the absence
+ * of a field it has never seen.
+ */
+export interface UnattendedRunOutcomeMetadata {
+  v: 1;
+  code: UnattendedOutcomeCode;
+  delivered: boolean;
+  hitTurnLimit: boolean;
+  /** The leading refusal, absent when nothing was refused. */
+  reason?: BrowserDenialReasonCode;
+  denied: number;
+  actions: number;
+  failed: number;
+  scriptRuns: number;
+  sites: string[];
+  blockedOrigins: string[];
+  nextSteps: BrowserRunReportNextStep[];
+}
+
+/** `AbuMessage.metadata` carrying this run's ending, ready to merge. */
+export function unattendedRunOutcomeMetadata(
+  outcome: UnattendedRunOutcome,
+): Record<string, UnattendedRunOutcomeMetadata> {
+  return {
+    [RUN_OUTCOME_METADATA_KEY]: {
+      v: 1,
+      code: outcome.code,
+      delivered: outcome.delivered,
+      hitTurnLimit: outcome.hitTurnLimit,
+      ...(outcome.blockedReason ? { reason: outcome.blockedReason } : {}),
+      denied: outcome.denied,
+      actions: outcome.did.actions,
+      failed: outcome.did.failed,
+      scriptRuns: outcome.did.scriptRuns,
+      sites: outcome.did.sites,
+      blockedOrigins: outcome.blockedOrigins,
+      nextSteps: outcome.nextSteps,
+    },
+  };
+}
+
 function outcomeLabel(code: UnattendedOutcomeCode, blockedByMasterSwitch: boolean, t: TranslationDict): string {
   const o = t.unattendedRun.outcome;
   switch (code) {

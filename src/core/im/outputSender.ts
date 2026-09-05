@@ -262,6 +262,10 @@ class OutputSender {
       .replace(/\$TRIGGER_NAME/g, ctx.triggerName ?? '')
       .replace(/\$EVENT_SUMMARY/g, ctx.eventSummary ?? '')
       .replace(/\$AI_RESPONSE/g, ctx.aiResponse ?? '')
+      // Batch 8 — opt-in, single-line, and empty when the caller has no
+      // outcome to report, so an unused variable never leaves a literal
+      // `$RUN_OUTCOME` in a payload.
+      .replace(/\$RUN_OUTCOME/g, ctx.runOutcome ?? '')
       .replace(/\$RUN_TIME/g, ctx.runTime ?? '')
       .replace(/\$TIMESTAMP/g, ctx.timestamp ?? '')
       .replace(/\$EVENT_DATA/g, ctx.eventData ?? '');

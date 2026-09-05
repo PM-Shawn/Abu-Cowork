@@ -71,6 +71,7 @@ vi.mock('../im/pluginRegistry', () => ({
 import { triggerEngine } from './triggerEngine';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { useIMChannelStore } from '../../stores/imChannelStore';
+import { notifyTriggerCompleted } from '../../utils/notifications';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { checkToolApproval } from '../tools/registry';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
@@ -644,6 +645,47 @@ describe('TriggerEngine', () => {
       });
     }
 
+    /** The other kind of destination: a chat a person reads. */
+    function makeChatOutputTrigger(id: string): Trigger {
+      return makeTrigger({
+        id,
+        output: {
+          enabled: true,
+          target: 'im_channel',
+          outputChannelId: 'ch-out',
+          outputChatIds: 'oc_ops',
+          extractMode: 'last_message',
+        },
+      });
+    }
+
+    function seedOutputChannel(enabled = true) {
+      useIMChannelStore.setState({
+        channels: {
+          'ch-out': {
+            id: 'ch-out',
+            platform: 'feishu',
+            name: 'Ops',
+            appId: 'a',
+            appSecret: 's',
+            capability: 'full',
+            responseMode: 'mention_only',
+            allowedUsers: [],
+            workspacePaths: [],
+            sessionTimeoutMinutes: 0,
+            maxRoundsPerSession: 0,
+            enabled,
+            status: 'connected',
+            createdAt: 1,
+          },
+        },
+      });
+    }
+
+    afterEach(() => {
+      useIMChannelStore.setState({ channels: {} });
+    });
+
     it('delivers output when the run hit the turn cap (max_turns)', async () => {
       const trigger = makeOutputTrigger('trigger-out-maxturns');
       useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
@@ -730,7 +772,21 @@ describe('TriggerEngine', () => {
       expect(sent.content).not.toContain('agent exploded');
     });
 
-    it('prefixes the delivered answer with one outcome line and changes nothing else', async () => {
+    /**
+     * F8-3 — what this test used to pin, and what the ruling changed.
+     *
+     * The half that still holds: a delivered run tells its output channel how
+     * it ended. What was wrong was the CARRIER. This trigger's output is a
+     * WEBHOOK — a body a program consumes — and the previous batch prepended
+     * the ending to `content`, which breaks a `JSON.parse(body.content)`
+     * consumer on the first run. Before that batch, a POST arriving at all
+     * meant "the run delivered"; that signal is restored as `metadata`
+     * instead, which no existing reader looks at.
+     *
+     * So: the answer is byte-identical to what shipped before F7, and the
+     * ending rides beside it.
+     */
+    it('leaves a webhook body byte-identical and puts the ending in metadata', async () => {
       const trigger = makeOutputTrigger('trigger-out-completed');
       useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
       const { runAgentLoop } = await import('../agent/agentLoop');
@@ -739,8 +795,89 @@ describe('TriggerEngine', () => {
 
       await triggerEngine.handleEvent(trigger.id, { data: { n: 5 } });
 
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as {
+        content: string;
+        metadata?: Record<string, unknown>;
+      };
+      expect(sent.content).toBe('test message');
+      expect(sent.metadata?.abuRunOutcome).toMatchObject({ v: 1, code: 'succeeded', delivered: true });
+    });
+
+    it('prefixes the delivered answer with one outcome line when a PERSON reads it', async () => {
+      seedOutputChannel();
+      const trigger = makeChatOutputTrigger('trigger-out-chat');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 7 } });
+
       const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
       expect(sent.content).toBe('Done\n\ntest message');
+    });
+
+    it('never splices the ending into a custom_template payload', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-out-template',
+        output: {
+          enabled: true,
+          target: 'im_channel',
+          outputChannelId: 'ch-out',
+          outputChatIds: 'oc_ops',
+          extractMode: 'custom_template',
+          customTemplate: '{"answer":"$AI_RESPONSE"}',
+        },
+      });
+      seedOutputChannel();
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+      vi.mocked(outputSender.send).mockClear();
+      // What `buildMessage` returns for a template is the template's own
+      // output; the engine must pass it through untouched even though this
+      // destination IS a chat.
+      vi.mocked(outputSender.buildMessage).mockReturnValueOnce(
+        { content: '{"answer":"ok"}', title: 'test' } as never,
+      );
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 8 } });
+
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toBe('{"answer":"ok"}');
+      // …and the ending was OFFERED to the template as a single-line variable.
+      const context = vi.mocked(outputSender.buildMessage).mock.calls[0]?.[2] as {
+        runOutcome?: string;
+      };
+      expect(context.runOutcome).toBe('Done');
+    });
+
+    it('says nothing on a channel the user switched off', async () => {
+      seedOutputChannel(false);
+      const trigger = makeChatOutputTrigger('trigger-out-chat-disabled');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'error', error: 'boom' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 9 } });
+
+      expect(outputSender.send).not.toHaveBeenCalled();
+    });
+
+    it('does not follow a delivered answer with a failure notice when a later step throws', async () => {
+      const trigger = makeOutputTrigger('trigger-out-double-push');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+      vi.mocked(outputSender.send).mockClear();
+      vi.mocked(notifyTriggerCompleted).mockImplementationOnce(() => {
+        throw new Error('notification subsystem exploded');
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 10 } });
+
+      expect(outputSender.send).toHaveBeenCalledTimes(1);
     });
   });
 

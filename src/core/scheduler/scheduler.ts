@@ -20,7 +20,7 @@ import {
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
-import { resolveUnattendedImTarget } from '../im/approvalTarget';
+import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
 import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
@@ -41,6 +41,7 @@ import {
 import {
   deriveUnattendedRunOutcome,
   formatUnattendedOutcomeSummary,
+  unattendedRunOutcomeMetadata,
   type UnattendedRunOutcome,
 } from '../observability/unattendedRunOutcome';
 
@@ -316,6 +317,17 @@ class SchedulerEngine {
      * differently.
      */
     let report: BrowserRunReportSnapshot | null | undefined;
+    /**
+     * One ending per run.
+     *
+     * The delivering branch pushes, and then keeps going — toasts, desktop
+     * notification, i18n lookups. Anything throwing in there lands in the
+     * outer `catch`, which would push a SECOND message saying the run failed,
+     * directly under the one that said it worked. Nothing on that stretch
+     * throws today (reviewed call by call), which is exactly why this is a
+     * one-line latch rather than a restructure.
+     */
+    let outcomePushed = false;
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
@@ -371,6 +383,7 @@ class SchedulerEngine {
         // Push results to IM channel if configured
         if (task.outputChannelId) {
           await this.pushToIMChannel(task, conversationId, runOutcome);
+          outcomePushed = true;
         }
 
         const t = getI18n();
@@ -428,6 +441,7 @@ class SchedulerEngine {
          */
         if (task.outputChannelId) {
           await this.pushOutcomeToIMChannel(task, runOutcome);
+          outcomePushed = true;
         }
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
@@ -450,7 +464,7 @@ class SchedulerEngine {
         sinceSeq: browserSignalCursor,
         outcome: reportOutcome,
       });
-      if (task.outputChannelId) {
+      if (task.outputChannelId && !outcomePushed) {
         await this.pushOutcomeToIMChannel(
           task,
           deriveUnattendedRunOutcome({
@@ -459,6 +473,7 @@ class SchedulerEngine {
             report,
           }),
         );
+        // No latch here: this IS the last statement that can push.
       }
       notifyScheduledTaskError(task.name);
       const t = getI18n();
@@ -541,6 +556,10 @@ class SchedulerEngine {
     const message: AbuMessage = {
       ...answer,
       content: `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`,
+      // The same ending as data (F8-3). A scheduled task always delivers to a
+      // chat, so the sentence above is what a person reads; this is here so
+      // every channel carries the fact in one shape.
+      metadata: { ...answer.metadata, ...unattendedRunOutcomeMetadata(outcome) },
     };
 
     await this.sendToTaskChats(task, baseOutput, message);
@@ -559,6 +578,18 @@ class SchedulerEngine {
    * block, and a notification about a failure must not become a second one.
    */
   private async pushOutcomeToIMChannel(task: ScheduledTask, outcome: UnattendedRunOutcome) {
+    /*
+      A channel the user switched OFF is not somewhere to push a failure
+      notice. `outputSender.sendViaIMChannel` has no `enabled` check
+      (`approvalTarget.ts` records the same gap on the approval side), so
+      without this the one action a user has for "stop talking to me here"
+      would be ignored by the newest, chattiest thing pushed to it — a failing
+      task now speaks on EVERY tick.
+    */
+    if (!isImOutputChannelEnabled(task.outputChannelId)) {
+      console.warn(`[Scheduler] Outcome push skipped — channel disabled: ${task.name}`);
+      return;
+    }
     try {
       const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
       const message: AbuMessage = {
@@ -566,6 +597,7 @@ class SchedulerEngine {
         title: task.name,
         color,
         footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+        metadata: unattendedRunOutcomeMetadata(outcome),
       };
       await this.sendToTaskChats(
         task,

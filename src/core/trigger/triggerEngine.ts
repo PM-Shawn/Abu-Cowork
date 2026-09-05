@@ -15,7 +15,9 @@ import {
 } from '../observability/browserRunReportEmitter';
 import {
   deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeLine,
   formatUnattendedOutcomeSummary,
+  unattendedRunOutcomeMetadata,
   type UnattendedRunOutcome,
 } from '../observability/unattendedRunOutcome';
 import {
@@ -30,7 +32,7 @@ import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { resolveTriggerCallbacks } from './triggerPermission';
-import { resolveUnattendedImTarget } from '../im/approvalTarget';
+import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
 import { createAuthorizationScope, disposeAuthorizationScope } from '../tools/pathSafety';
 import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
@@ -57,6 +59,26 @@ function simpleHash(str: string): string {
     hash |= 0;
   }
   return hash.toString(36);
+}
+
+/**
+ * May the run's ending be spliced into the message body?
+ *
+ * Batch-8 ruling (F8-3). Two payload shapes are the USER's, not ours:
+ *
+ * - a **webhook** body is consumed by a program. Before this batch, "a POST
+ *   arrived" meant "the run delivered"; prose in `content` on top of that
+ *   breaks a `JSON.parse(body.content)` reader outright.
+ * - a **`custom_template`** payload is written literally by the user
+ *   (`CustomAdapter.formatOutbound` passes `content` through untouched), so
+ *   anything we prepend lands inside a body they designed.
+ *
+ * Both still learn the ending — as `metadata`, and for templates as the
+ * opt-in `$RUN_OUTCOME` variable. Only a chat a person reads gets the
+ * sentence, because only there does the sentence help.
+ */
+function prefixesOutcomeIntoContent(output: Trigger['output']): boolean {
+  return output?.target === 'im_channel' && output.extractMode !== 'custom_template';
 }
 
 const MAX_CONCURRENT_TRIGGERS = 5;
@@ -353,6 +375,8 @@ class TriggerEngine {
     let reportOutcome = browserRunReportOutcomeFor('error', false);
     /** F7 — built once, read by the IM summary and by the card. */
     let report: BrowserRunReportSnapshot | null | undefined;
+    /** One ending per run — see the scheduler's copy for why this latch. */
+    let outcomePushed = false;
 
     try {
       /*
@@ -420,6 +444,7 @@ class TriggerEngine {
         useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
         console.log(`[Trigger] ${result.reason}: ${trigger.name}`, result.error ?? '');
         await this.pushOutcome(trigger, runOutcome, payload);
+        outcomePushed = true;
         return;
       }
       if (result.reason === 'max_turns') {
@@ -445,6 +470,7 @@ class TriggerEngine {
       if (trigger.output?.enabled) {
         const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
         await this.pushOutput(trigger, runId, conversationId, payload, runOutcome, replyContext);
+        outcomePushed = true;
       }
 
       notifyTriggerCompleted(trigger.name);
@@ -463,11 +489,14 @@ class TriggerEngine {
         sinceSeq: browserSignalCursor,
         outcome: reportOutcome,
       });
-      await this.pushOutcome(
-        trigger,
-        deriveUnattendedRunOutcome({ reason: 'error', abortedByBrowserDenials: false, report }),
-        payload,
-      );
+      if (!outcomePushed) {
+        await this.pushOutcome(
+          trigger,
+          deriveUnattendedRunOutcome({ reason: 'error', abortedByBrowserDenials: false, report }),
+          payload,
+        );
+        // No latch here: this IS the last statement that can push.
+      }
       notifyTriggerError(trigger.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -505,13 +534,34 @@ class TriggerEngine {
     payload: TriggerEventPayload,
   ) {
     if (!trigger.output?.enabled) return;
+    /*
+      A channel the user switched OFF is not somewhere to push a failure
+      notice — see `scheduler.pushOutcomeToIMChannel` for the reasoning. Only
+      an `im_channel` target has a channel to switch off; a webhook is a URL.
+    */
+    if (
+      trigger.output.target === 'im_channel'
+      && !isImOutputChannelEnabled(trigger.output.outputChannelId)
+    ) {
+      console.warn(`[Trigger] Outcome push skipped — channel disabled: ${trigger.name}`);
+      return;
+    }
     try {
       const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
+      /*
+        The non-delivering terminals: there is no answer, so nothing the user
+        designed is being disturbed and the short sentence IS the message —
+        for a webhook too. (An empty `content` was the alternative; the sender
+        would transmit it, but the chat platforms reachable through a webhook
+        URL reject an empty body, and it tells an operator watching the feed
+        nothing at all.) The structured ending rides alongside either way.
+      */
       const message: AbuMessage = {
         content: formatUnattendedOutcomeSummary(outcome, getI18n()),
         title: trigger.name,
         color,
         footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+        metadata: unattendedRunOutcomeMetadata(outcome),
       };
       const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
       const { success, error } = await outputSender.send(trigger.output, message, replyContext);
@@ -551,14 +601,26 @@ class TriggerEngine {
       runTime: runTimeStr,
       timestamp: new Date().toLocaleString('zh-CN'),
       eventData: JSON.stringify(payload.data),
+      // `$RUN_OUTCOME` — available to a template that asks for it, ignored by
+      // one that does not, so a template written before this batch renders
+      // byte-identically.
+      runOutcome: formatUnattendedOutcomeLine(outcome, getI18n()),
     };
 
     const answer = outputSender.buildMessage(conversationId, trigger.output, context);
-    // F7 — one line in front of the answer, template mode included: whoever
-    // wrote the template still wants to know whether the run finished.
+    /*
+      F7, as amended by the batch-8 ruling: the ending goes in front of the
+      answer only where a PERSON reads it. A webhook body and a
+      `custom_template` payload keep the exact `content` they had before —
+      they get the ending as `metadata` (and, for templates, wherever the user
+      put `$RUN_OUTCOME`).
+    */
     const message: AbuMessage = {
       ...answer,
-      content: `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`,
+      content: prefixesOutcomeIntoContent(trigger.output)
+        ? `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`
+        : answer.content,
+      metadata: { ...answer.metadata, ...unattendedRunOutcomeMetadata(outcome) },
     };
     const { success, error } = await outputSender.send(trigger.output, message, replyContext);
 

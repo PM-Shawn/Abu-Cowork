@@ -71,6 +71,7 @@ vi.mock('../../utils/notifications', () => ({
 // Import after mocks
 import { schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
+import { notifyScheduledTaskCompleted } from '../../utils/notifications';
 import { outputSender } from '../im/outputSender';
 import {
   buildBrowserSignalContext,
@@ -101,6 +102,38 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   };
 }
 
+/**
+ * The task's own IM channel, switched on.
+ *
+ * Explicit in every describe that pushes: the outcome push refuses a channel
+ * the user disabled (batch 8), so "there is an enabled channel here" is now a
+ * precondition of delivery rather than store state left over from whichever
+ * describe happened to run first.
+ */
+function seedOutputChannel(overrides: Partial<IMChannel> = {}) {
+  useIMChannelStore.setState({
+    channels: {
+      'channel-1': {
+        id: 'channel-1',
+        platform: 'feishu',
+        name: 'Team',
+        appId: 'a',
+        appSecret: 's',
+        capability: 'full',
+        responseMode: 'mention_only',
+        allowedUsers: [],
+        workspacePaths: [],
+        sessionTimeoutMinutes: 0,
+        maxRoundsPerSession: 0,
+        enabled: true,
+        status: 'connected',
+        createdAt: 1,
+        ...overrides,
+      },
+    },
+  });
+}
+
 function latestRunStatus(taskId: string): string | undefined {
   const runs = useScheduleStore.getState().tasks[taskId]?.runs ?? [];
   return runs[runs.length - 1]?.status;
@@ -116,7 +149,12 @@ describe('SchedulerEngine output delivery by exit reason', () => {
       pendingInput: null,
       agentStates: new Map(),
     });
+    seedOutputChannel();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    useIMChannelStore.setState({ channels: {} });
   });
 
   it('delivers output when the run hit the turn cap (max_turns)', async () => {
@@ -172,6 +210,65 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
     expect(sent.content).toContain('Stopped');
     expect(latestRunStatus(task.id)).toBe('error');
+  });
+
+  /**
+   * Batch 8 — "stop talking to me here" has to mean something.
+   *
+   * `outputSender.sendViaIMChannel` has no `enabled` check of its own, so a
+   * disabled channel still delivers. A failing task now speaks on EVERY tick,
+   * which makes the outcome push the loudest thing on a channel someone
+   * switched off precisely to stop the noise.
+   */
+  it('says nothing on a channel the user switched off', async () => {
+    seedOutputChannel({ enabled: false });
+    const task = makeTask({ id: 'task-channel-disabled' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'error', error: 'boom' });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(outputSender.send).not.toHaveBeenCalled();
+    expect(latestRunStatus(task.id)).toBe('error');
+  });
+
+  /**
+   * One ending per run. The delivering branch pushes and then keeps going
+   * (toasts, desktop notification); anything throwing after the push used to
+   * fall into the outer catch and post a second message saying the run
+   * failed, directly under the one that said it worked.
+   */
+  it('does not follow a delivered answer with a failure notice when a later step throws', async () => {
+    const task = makeTask({ id: 'task-post-delivery-throw' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+    vi.mocked(notifyScheduledTaskCompleted).mockImplementationOnce(() => {
+      throw new Error('notification subsystem exploded');
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(outputSender.send).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+    expect(sent.content).toContain('Done');
+  });
+
+  it('carries the ending as structured metadata, not only as a sentence', async () => {
+    const task = makeTask({ id: 'task-outcome-metadata' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'no_progress' });
+
+    await schedulerEngine.runNow(task.id);
+
+    const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as {
+      metadata?: Record<string, unknown>;
+    };
+    expect(sent.metadata?.abuRunOutcome).toMatchObject({
+      v: 1,
+      code: 'no-progress',
+      delivered: false,
+      hitTurnLimit: false,
+    });
   });
 
   it('stays silent when the task names no IM channel — there is nowhere to send', async () => {
@@ -508,6 +605,7 @@ describe('SchedulerEngine unattended outcome summary', () => {
       agentStates: new Map(),
     });
     clearBrowserSignals();
+    seedOutputChannel();
     vi.clearAllMocks();
     // Explicit, not inherited: this file switches locale further down.
     initLanguage('en-US');
@@ -516,6 +614,7 @@ describe('SchedulerEngine unattended outcome summary', () => {
 
   afterEach(() => {
     clearBrowserSignals();
+    useIMChannelStore.setState({ channels: {} });
   });
 
   /** End a run after recording one browser signal in its own conversation. */

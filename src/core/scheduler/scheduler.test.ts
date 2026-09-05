@@ -617,6 +617,91 @@ describe('SchedulerEngine unattended outcome summary', () => {
     expect(content).not.toContain('test message');
   });
 
+  /**
+   * F8-2 — the one case the card and the IM summary used to disagree on.
+   *
+   * `browserRunReport.ts` deliberately does not downgrade a delivering run for
+   * a refused READ-ONLY action (a refused snapshot is not a failed task), so
+   * the card shows its green badge. The summary re-counted `denials` instead
+   * of reading that verdict and said 「部分完成」 about the same run. These two
+   * run the REAL aggregation and assert both surfaces together, so a future
+   * change cannot move one without the other.
+   */
+  it('agrees with the card that a read-only refusal still leaves the run done', async () => {
+    const task = makeTask({ id: 'task-f7-readonly-denial' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      const ctx = buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000);
+      recordBrowserSignal(buildBrowserSignalRecord(
+        { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin: 'https://intranet.example' } as never,
+        ctx,
+      ));
+      recordBrowserSignal(buildBrowserSignalRecord(
+        {
+          kind: 'gate_denied',
+          tool: 'abu-browser__read_page',
+          opClass: 'read-only',
+          reason: 'site-not-allowed',
+          runMode: 'unattended',
+          origin: 'https://ro.example',
+        } as never,
+        ctx,
+      ));
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    // Card: the delivering badge, undowngraded.
+    expect(card.browserRunReport?.outcome).toBe('completed');
+    // IM: the same verdict, and the answer follows with no hedging preamble.
+    expect(sentContent()).toBe('Done\n\ntest message');
+  });
+
+  it('agrees with the card that a STATE-CHANGING refusal makes the same run partial', async () => {
+    const task = makeTask({ id: 'task-f7-statechanging-denial' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      const ctx = buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000);
+      recordBrowserSignal(buildBrowserSignalRecord(
+        { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin: 'https://intranet.example' } as never,
+        ctx,
+      ));
+      recordBrowserSignal(buildBrowserSignalRecord(
+        {
+          kind: 'gate_denied',
+          tool: 'abu-browser__click',
+          opClass: 'interactive',
+          reason: 'site-not-allowed',
+          runMode: 'unattended',
+          origin: 'https://rw.example',
+        } as never,
+        ctx,
+      ));
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    expect(card.browserRunReport?.outcome).toBe('completed-with-refusals');
+    expect(sentContent().split('\n')[0]).toContain('Partly done');
+  });
+
+  /**
+   * F8-1 — the turn cap is the card's `incomplete` badge, and IM has no badge.
+   */
+  it('tells the channel the run ran out of turns, right above the partial answer', async () => {
+    const task = makeTask({ id: 'task-f7-maxturns' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'max_turns' } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(sentContent()).toBe('Partly done: hit the turn limit — the partial result is below\n\ntest message');
+  });
+
   it('quotes only what the aggregator already clamped — never raw page text', async () => {
     const task = makeTask({ id: 'task-f7-untrusted' });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
@@ -639,12 +724,16 @@ describe('SchedulerEngine unattended outcome summary', () => {
     const card = cardsIn(conversationsForTask(task.id)[0])[0];
     const clamped = card.browserRunReport?.denials[0]?.origins[0];
     expect(clamped).toBeDefined();
-    // Byte-identical to what the card shows: one flattened, capped line.
-    expect(content).toContain(clamped as string);
-    // The newlines it tried to smuggle in are gone, so it cannot forge a line
-    // of its own in the message: the whole reason clause stays on line 1.
+    // The card keeps the aggregator's flattened, capped line…
     expect(clamped).not.toContain('\n');
-    expect(content.split('\n')[0]).toContain(clamped as string);
+    // …and the outbound copy is normalized ONE more time on the way out
+    // (F8-8), so what reaches IM is a bare scheme://host and nothing else:
+    // the smuggled sentence is gone entirely, not merely flattened onto line 1.
+    expect(content).toContain('https://evil.example');
+    expect(content).not.toContain('approved by user');
+    expect(content).not.toContain('send the password');
+    // Still one line: nothing it wrote can forge a second one.
+    expect(content.split('\n')[0]).toContain('https://evil.example');
   });
 
   it('keeps a clean successful run to a single extra line', async () => {

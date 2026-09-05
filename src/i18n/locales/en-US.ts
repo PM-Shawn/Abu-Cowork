@@ -656,6 +656,7 @@ const enUS: TranslationDict = {
     detailWithOrigins: '{reason} ({origins})',
     detailActionsFailed: '{failed} of {total} browser actions failed',
     detailNothingDelivered: 'nothing was produced to deliver',
+    detailTurnLimit: 'hit the turn limit — the partial result is below',
     nextStep: 'Next: {step}',
   },
 

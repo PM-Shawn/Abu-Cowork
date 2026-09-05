@@ -657,6 +657,7 @@ const zhCN: TranslationDict = {
     detailWithOrigins: '{reason}（{origins}）',
     detailActionsFailed: '{failed}/{total} 个浏览器动作失败',
     detailNothingDelivered: '这次没有产出可交付的结果',
+    detailTurnLimit: '达到轮次上限，下面是已有结果',
     nextStep: '接下来：{step}',
   },
 

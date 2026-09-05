@@ -530,9 +530,13 @@ class SchedulerEngine {
 
     const answer = outputSender.buildMessage(conversationId, baseOutput, context);
     /**
-     * F7 — ONE line in front of the answer, never more. A run that worked is
-     * the common case and it is being read on a phone; the ending belongs at
-     * the top, the reasoning does not belong at all.
+     * F7 — the ending goes in front of the answer, then a blank line.
+     *
+     * One line on the common path (a run that worked is just its label). A run
+     * that left the user something to do gets a second 「接下来：…」 line, which
+     * is the whole point of saying anything at all — the earlier comment here
+     * claimed "one line, never more", and the next person would have
+     * "fixed" the behavior to match it.
      */
     const message: AbuMessage = {
       ...answer,

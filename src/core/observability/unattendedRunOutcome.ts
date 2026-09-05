@@ -44,7 +44,7 @@
  *   like a feature; add it with its first producer.
  */
 import { format, type TranslationDict } from '../../i18n';
-import type { BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
+import { normalizeBrowserOrigin, type BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
 import type { BrowserRunReportNextStep, BrowserRunReportSnapshot } from './browserRunReport';
 import { reasonLabel, rawCode, stepLabel } from './browserRunReportCopy';
 
@@ -71,6 +71,20 @@ export type UnattendedOutcomeCode =
 
 export interface UnattendedRunOutcome {
   code: UnattendedOutcomeCode;
+  /**
+   * Whether this terminal handed the user an answer (`completed` /
+   * `max_turns`). The summary needs it to tell "there is nothing below this
+   * line" apart from "the answer is right below this line" — the two share
+   * the `partial` code and must not share a sentence (F8-1).
+   */
+  delivered: boolean;
+  /**
+   * The run ran out of turns. This is the card's `incomplete` badge — its ONLY
+   * carrier of the turn-cap fact (`browserRunReport.ts`) — carried into IM,
+   * where the badge is not visible. Without it the summary's fallback said
+   * "nothing was produced to deliver" two lines above the thing it produced.
+   */
+  hitTurnLimit: boolean;
   /** What the run actually got done, in local counts only. */
   did: {
     actions: number;
@@ -101,6 +115,31 @@ export interface DeriveUnattendedRunOutcomeInput {
 /** The terminals that hand the user an answer. Mirrors both engines' branch. */
 function delivered(reason: string): boolean {
   return reason === 'completed' || reason === 'max_turns';
+}
+
+/**
+ * The exit boundary's own origin check (review F8-8).
+ *
+ * Every origin reaching this module has already been through
+ * `normalizeBrowserOrigin` at the gate and `clampUntrusted` in the
+ * aggregator, so in production nothing here changes. It is done again anyway
+ * because THIS is the first channel that puts the string on the network: an
+ * invariant maintained entirely by the caller is one refactor away from being
+ * maintained by nobody, and the failure mode (a path or query smuggled into
+ * an IM message or a webhook body) is exactly what Ruling 3 forbids.
+ *
+ * A value that does not survive normalization is DROPPED rather than replaced
+ * with a placeholder sentence: the summary already names the closed refusal
+ * reason, and inventing copy for a case production cannot reach is a line
+ * nobody would ever proofread. When nothing survives, the reason stands alone.
+ */
+function originsForExport(origins: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const origin of origins) {
+    const normalized = normalizeBrowserOrigin(origin);
+    if (normalized !== null && !out.includes(normalized)) out.push(normalized);
+  }
+  return out;
 }
 
 /**
@@ -137,6 +176,25 @@ export function deriveUnattendedRunOutcome(
   const denied = denials.reduce((sum, row) => sum + row.count, 0);
   const lead = report ? leadingDenial(report) : undefined;
 
+  /**
+   * "The gate refused work this run actually needed" — the CARD's ruling, not
+   * a second count of the same denials (review F8-2).
+   *
+   * `browserRunReport.ts` deliberately does NOT downgrade a delivering run for
+   * read-only refusals: a refused SNAPSHOT is not a task that failed to do its
+   * job. Re-deriving this from `denials.length > 0` gave the card and the IM
+   * summary two answers to one question — green「已完成」badge in the app,
+   * 「部分完成」in the chat, same run. Reading `report.outcome` makes the
+   * agreement structural: there is one verdict and this reads it.
+   *
+   * `skippedByMasterSwitch` is OR'd in for the same reason, not as a second
+   * count: it is the card's own separate statement (its 「这次没有真正操作
+   * 浏览器」 banner) that the run never touched the browser, and it stays true
+   * even when the only thing the switch refused was a read-only call.
+   */
+  const refusedRealWork =
+    report?.outcome === 'completed-with-refusals' || report?.skippedByMasterSwitch === true;
+
   let code: UnattendedOutcomeCode;
   if (!delivered(reason)) {
     // A run that stopped ITSELF after consecutive refusals is blocked, not
@@ -149,12 +207,12 @@ export function deriveUnattendedRunOutcome(
         : reason === 'no_progress'
           ? 'no-progress'
           : 'failed';
-  } else if (denials.length > 0 && (report?.actions.total ?? 0) === 0) {
+  } else if (refusedRealWork && (report?.actions.total ?? 0) === 0) {
     // Delivering terminal, but the browser side got nowhere at all — the
     // "task looks green while doing nothing" case the master-switch line was
     // added for, generalized to every refusal reason.
     code = 'blocked';
-  } else if (denials.length > 0 || (report?.actions.failed ?? 0) > 0 || reason === 'max_turns') {
+  } else if (refusedRealWork || (report?.actions.failed ?? 0) > 0 || reason === 'max_turns') {
     code = 'partial';
   } else {
     code = 'succeeded';
@@ -162,15 +220,17 @@ export function deriveUnattendedRunOutcome(
 
   return {
     code,
+    delivered: delivered(reason),
+    hitTurnLimit: reason === 'max_turns',
     did: {
       actions: report?.actions.total ?? 0,
       failed: report?.actions.failed ?? 0,
       scriptRuns: report?.scriptRuns ?? 0,
-      sites: report?.sites.map((site) => site.origin) ?? [],
+      sites: originsForExport(report?.sites.map((site) => site.origin) ?? []),
     },
     denied,
     ...(lead ? { blockedReason: lead.reason } : {}),
-    blockedOrigins: lead?.origins ?? [],
+    blockedOrigins: originsForExport(lead?.origins ?? []),
     nextSteps: report?.nextSteps ?? [],
   };
 }
@@ -192,19 +252,18 @@ function outcomeLabel(code: UnattendedOutcomeCode, blockedByMasterSwitch: boolea
 }
 
 /**
- * The one-line (occasionally two-line) summary that goes out over IM.
+ * The ending as ONE line: `结局：原因（站点）`, never more.
  *
- * Shape, deliberately: `结局：原因（站点）` and, when the run left something
- * for the user to do, a second line `接下来：…` taken from the card's own
- * next-step table. A successful run gets the label alone — it is prepended to
- * an answer the user asked for, and nobody wants three lines of preamble on a
- * report that worked.
+ * Split out from the summary below because it is also the value of the
+ * `$RUN_OUTCOME` template variable, and a template is usually a JSON body — a
+ * newline inside a string literal there is a syntax error, so this function
+ * must never emit one.
  *
  * Pure function of (outcome, dict). Contains no page text: every part is a
  * closed code's translation, a local count, or an origin the aggregator
- * already clamped.
+ * clamped and this module re-normalized on the way out.
  */
-export function formatUnattendedOutcomeSummary(
+export function formatUnattendedOutcomeLine(
   outcome: UnattendedRunOutcome,
   t: TranslationDict,
 ): string {
@@ -213,7 +272,17 @@ export function formatUnattendedOutcomeSummary(
   const label = outcomeLabel(outcome.code, byMasterSwitch, t);
 
   let detail = '';
-  if (outcome.blockedReason) {
+  if (outcome.code === 'succeeded') {
+    /*
+      The label alone.
+
+      Since F8-2 a `succeeded` run can still carry a `blockedReason` — a
+      read-only refusal does not stop a run from doing its job, so the card
+      keeps its green badge and lists the refusal below it. This line is
+      prepended to the answer the user asked for; the place for "…and a
+      snapshot was refused on example.com" is the card, which shows it.
+    */
+  } else if (outcome.blockedReason) {
     const reason = reasonLabel(outcome.blockedReason, t);
     detail = outcome.blockedOrigins.length > 0
       ? format(u.detailWithOrigins, { reason, origins: outcome.blockedOrigins.join('、') })
@@ -223,11 +292,40 @@ export function formatUnattendedOutcomeSummary(
       failed: String(outcome.did.failed),
       total: String(outcome.did.actions),
     });
-  } else if (outcome.code !== 'succeeded') {
+  } else if (outcome.hitTurnLimit) {
+    /**
+     * F8-1 — the turn cap gets its own sentence, and it has to be a TRUE one.
+     *
+     * `max_turns` is the only non-`completed` terminal that still delivers, so
+     * the answer is printed directly beneath this line. The generic fallback
+     * below ("nothing was produced to deliver") is correct for every other
+     * non-succeeded code and flatly contradicted itself here.
+     */
+    detail = u.detailTurnLimit;
+  } else if (!outcome.delivered) {
+    // Every remaining code here is a non-delivering terminal (`succeeded` and
+    // the turn cap were handled above), so there is genuinely nothing below
+    // this line — which is what this sentence says.
     detail = u.detailNothingDelivered;
   }
 
-  const first = detail ? format(u.summaryWithDetail, { label, detail }) : label;
+  return detail ? format(u.summaryWithDetail, { label, detail }) : label;
+}
+
+/**
+ * The one-line (occasionally two-line) summary that goes out over IM.
+ *
+ * Shape, deliberately: the line above and, when the run left something for
+ * the user to do, a second line `接下来：…` taken from the card's own
+ * next-step table. A successful run gets the label alone — it is prepended to
+ * an answer the user asked for, and nobody wants three lines of preamble on a
+ * report that worked.
+ */
+export function formatUnattendedOutcomeSummary(
+  outcome: UnattendedRunOutcome,
+  t: TranslationDict,
+): string {
+  const first = formatUnattendedOutcomeLine(outcome, t);
   const step = outcome.code === 'succeeded' ? undefined : outcome.nextSteps[0];
-  return step ? `${first}\n${format(u.nextStep, { step: stepLabel(step, t) })}` : first;
+  return step ? `${first}\n${format(t.unattendedRun.nextStep, { step: stepLabel(step, t) })}` : first;
 }

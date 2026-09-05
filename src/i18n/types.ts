@@ -844,6 +844,13 @@ export interface TranslationDict {
     detailActionsFailed: string;
     /** Nothing was refused and nothing failed, yet there is no answer. */
     detailNothingDelivered: string;
+    /**
+     * The run ran out of turns but still delivered. The card carries this in
+     * its `incomplete` badge; IM has no badge, so it needs the sentence — and
+     * it must not be `detailNothingDelivered`, which the answer printed right
+     * below it would contradict.
+     */
+    detailTurnLimit: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
   };

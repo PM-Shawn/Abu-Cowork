@@ -57,6 +57,9 @@ describe('deriveUnattendedRunOutcome · one code per ending', () => {
 
   it('completed with something refused but something done → partial', () => {
     const outcome = derive('completed', makeReport({
+      // The card's own verdict — a refused state-changing action. Since F8-2
+      // this is the input the code reads, not `denials.length`.
+      outcome: 'completed-with-refusals',
       denials: [{ reason: 'site-not-allowed', count: 2, origins: ['https://shop.example'] }],
       nextSteps: ['allow-site'],
     }));
@@ -84,6 +87,71 @@ describe('deriveUnattendedRunOutcome · one code per ending', () => {
 
   it('max_turns → partial even when the browser side was clean', () => {
     expect(derive('max_turns', null).code).toBe('partial');
+  });
+
+  /**
+   * F8-2 — the card and the IM summary must not answer one question twice.
+   *
+   * `browserRunReport.ts` rules that a refused READ-ONLY action does not make
+   * a delivering run "not done" (a refused snapshot is not a failed task), so
+   * the card keeps its green badge. Deriving from `denials.length` gave IM the
+   * opposite answer for the same run.
+   */
+  it('a READ-ONLY refusal leaves a delivering run succeeded — the card says done, so does IM', () => {
+    const outcome = derive('completed', makeReport({
+      // What `buildBrowserRunReport` actually produces for a read-only refusal:
+      // the delivering outcome, undowngraded.
+      outcome: 'completed',
+      actions: { total: 1, failed: 0 },
+      denials: [{ reason: 'site-not-allowed', count: 1, origins: ['https://ro.example'] }],
+      nextSteps: ['allow-site'],
+    }));
+    expect(outcome.code).toBe('succeeded');
+  });
+
+  it('a STATE-CHANGING refusal downgrades the same run — again following the card', () => {
+    const outcome = derive('completed', makeReport({
+      outcome: 'completed-with-refusals',
+      actions: { total: 1, failed: 0 },
+      denials: [{ reason: 'site-not-allowed', count: 1, origins: ['https://rw.example'] }],
+      nextSteps: ['allow-site'],
+    }));
+    expect(outcome.code).toBe('partial');
+  });
+
+  it('carries the turn cap and the delivering flag, so the summary can tell the two apart', () => {
+    expect(derive('max_turns', null)).toMatchObject({ delivered: true, hitTurnLimit: true });
+    expect(derive('completed', null)).toMatchObject({ delivered: true, hitTurnLimit: false });
+    expect(derive('error', null)).toMatchObject({ delivered: false, hitTurnLimit: false });
+  });
+
+  /**
+   * F8-8 — the exit boundary proves its own invariant.
+   *
+   * Production origins are normalized at the gate, so this changes nothing
+   * there; it matters because this module is the first thing that puts the
+   * string on a network.
+   */
+  it('re-normalizes origins on the way out — path, query and userinfo cannot ride along', () => {
+    const outcome = derive('completed', makeReport({
+      outcome: 'completed-with-refusals',
+      sites: [{ origin: 'https://user:pw@Intranet.Example./admin?token=SECRET', actions: 1, failures: 0 }],
+      denials: [{
+        reason: 'site-denied',
+        count: 1,
+        origins: ['https://evil.example/admin/users?token=SECRET123'],
+      }],
+    }));
+    expect(outcome.blockedOrigins).toEqual(['https://evil.example']);
+    expect(outcome.did.sites).toEqual(['https://intranet.example']);
+  });
+
+  it('drops an origin it cannot parse rather than inventing one', () => {
+    const outcome = derive('completed', makeReport({
+      outcome: 'completed-with-refusals',
+      denials: [{ reason: 'site-denied', count: 1, origins: ['✓ approved by the user'] }],
+    }));
+    expect(outcome.blockedOrigins).toEqual([]);
   });
 
   it('aborted by a person → stopped', () => {
@@ -157,12 +225,54 @@ describe('formatUnattendedOutcomeSummary · one line a person can act on', () =>
   it('names the site the refusal happened on', () => {
     const summary = formatUnattendedOutcomeSummary(
       derive('completed', makeReport({
+        outcome: 'completed-with-refusals',
         denials: [{ reason: 'site-not-allowed', count: 1, origins: ['https://shop.example'] }],
         nextSteps: ['allow-site'],
       })),
       getI18n(),
     );
     expect(summary.split('\n')[0]).toBe('Partly done: No standing grant for this site (https://shop.example)');
+  });
+
+  /**
+   * F8-1 — the sentence the answer beneath it used to contradict.
+   *
+   * `max_turns` is the ONLY non-`completed` terminal that still delivers, so
+   * "nothing was produced to deliver" was printed two lines above the thing
+   * it produced. The pin is the SENTENCE, not the code: the old test asserted
+   * only `code === 'partial'`, which the contradiction never disturbed.
+   */
+  it('says the run ran out of turns, and never that it produced nothing', () => {
+    const summary = formatUnattendedOutcomeSummary(derive('max_turns', null), getI18n());
+    expect(summary).toBe('Partly done: hit the turn limit — the partial result is below');
+    expect(summary).not.toContain('nothing was produced to deliver');
+  });
+
+  it('keeps the turn-cap sentence when the browser side also refused something', () => {
+    // The refusal is the more actionable fact and still leads; the point is
+    // that the fallback never claims an empty delivery on this terminal.
+    const summary = formatUnattendedOutcomeSummary(
+      derive('max_turns', makeReport({
+        outcome: 'incomplete',
+        denials: [{ reason: 'site-not-allowed', count: 1, origins: ['https://shop.example'] }],
+      })),
+      getI18n(),
+    );
+    expect(summary).not.toContain('nothing was produced to deliver');
+    expect(summary.split('\n')[0]).toContain('No standing grant for this site');
+  });
+
+  it('leaves a read-only refusal off the successful line — the card carries it', () => {
+    // Same run as the card's green badge: one word, then the answer.
+    const summary = formatUnattendedOutcomeSummary(
+      derive('completed', makeReport({
+        outcome: 'completed',
+        denials: [{ reason: 'site-not-allowed', count: 1, origins: ['https://ro.example'] }],
+        nextSteps: ['allow-site'],
+      })),
+      getI18n(),
+    );
+    expect(summary).toBe('Done');
   });
 
   it('falls back to counts when nothing was refused but actions failed', () => {

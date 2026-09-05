@@ -22,6 +22,7 @@ type HandleAction = (action: string, payload: Record<string, unknown>) => Promis
 interface SnapshotElement {
   ref: string;
   tag: string;
+  id?: string;
   enabled: boolean;
   visible: boolean;
   text?: string;
@@ -46,6 +47,8 @@ interface ActionResult {
 interface WaitResult extends ActionResult {
   timedOut: boolean;
   elapsed: number;
+  /** What the page looked like when the wait gave up — candidates included. */
+  observed?: string;
 }
 
 let handleAction: HandleAction;

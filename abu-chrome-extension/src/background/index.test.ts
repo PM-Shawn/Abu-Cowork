@@ -81,8 +81,14 @@ const browserState: {
   injected: { tabId: number; files?: string[]; world?: string; args?: unknown[] }[];
   captured: number[];
   sessionStore: Record<string, number>;
+  /** What the page's MAIN world answers a dialog helper with. */
+  pageDialogState: unknown;
+  /** When true, an injection never settles — a tab frozen by a native dialog. */
+  pageIsFrozen: boolean;
 } = {
   windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
+  pageDialogState: { installed: false, armed: null, last: null },
+  pageIsFrozen: false,
 };
 
 /** Enough of the extension APIs to drive the real request path. */
@@ -144,10 +150,24 @@ function fakeChrome(): Record<string, unknown> {
     runtime: { onMessage: slot('runtime.onMessage'), lastError: undefined },
     alarms: { create: () => {}, onAlarm: slot('alarms.onAlarm') },
     scripting: {
-      executeScript: async (opts: { target: { tabId: number }; files?: string[]; world?: string; args?: unknown[] }) => {
+      executeScript: async (opts: {
+        target: { tabId: number }; files?: string[]; world?: string; args?: unknown[];
+        func?: (...a: never[]) => unknown;
+      }) => {
         browserState.injected.push({
           tabId: opts.target.tabId, files: opts.files, world: opts.world, args: opts.args,
         });
+        // A tab held by a native dialog cannot be scripted at all, and Chrome
+        // simply never settles the promise — the case `runInPageWorld`'s
+        // deadline exists for.
+        if (browserState.pageIsFrozen) return new Promise<never>(() => {});
+        // The dialog helpers are the one place the RETURNED VALUE matters
+        // here; every other injection in this suite is checked by its args.
+        // Matched on the page-world marker rather than the function name, so
+        // it cannot quietly stop matching under a bundler.
+        if (String(opts.func ?? '').includes('__ABU_PAGE_DIALOGS__')) {
+          return [{ result: browserState.pageDialogState }];
+        }
         return [{ result: 'evaluated' }];
       },
     },
@@ -198,6 +218,8 @@ function twoTabWindow(): void {
 }
 
 beforeEach(() => {
+  browserState.pageDialogState = { installed: false, armed: null, last: null };
+  browserState.pageIsFrozen = false;
   browserState.updated.length = 0;
   browserState.reloaded.length = 0;
   browserState.injected.length = 0;
@@ -355,6 +377,82 @@ describe('actions the service worker answers itself', () => {
 
     expect(response.data).toBe('evaluated');
     expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['1 + 1'] });
+  });
+
+  describe('JavaScript dialogs', () => {
+    // What this channel can honestly do is narrower than the built-in
+    // browser's, and the narrowness is the point of these tests: a native
+    // dialog freezes the whole renderer, so nothing here can read or dismiss
+    // one that is already up. `handle_dialog` therefore ARMS a one-shot answer
+    // for the next dialog; `get_dialog` reports what that armed run saw.
+    it('reads the page-world record without arming anything', async () => {
+      twoTabWindow();
+      browserState.pageDialogState = {
+        installed: false,
+        armed: null,
+        last: {
+          type: 'confirm', message: '确定要提交吗', url: 'https://b.example/',
+          openedAt: 1, disposition: 'accepted',
+        },
+      };
+
+      const response = await request('get_dialog', { tabId: 11 });
+
+      expect(response.success).toBe(true);
+      const data = response.data as { pending: boolean; last?: { type: string }; message: string };
+      expect(data.pending).toBe(false);
+      expect(data.last?.type).toBe('confirm');
+      // The channel difference is stated, never left to be inferred.
+      expect(data.message).toMatch(/cannot read or dismiss one that is already open/);
+      expect(data.message).toMatch(/beforeunload is not supported here/);
+      // Read-only: it injects a reader, and passes no arming arguments.
+      expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: [] });
+    });
+
+    it('arms a one-shot answer, and says that is what it did rather than "handled"', async () => {
+      twoTabWindow();
+
+      const response = await request('handle_dialog', {
+        tabId: 11, action: 'accept', promptText: 'EQ-001',
+      });
+
+      expect(response.success).toBe(true);
+      const data = response.data as { handled: boolean; armed?: true; action: string; message: string };
+      expect(data.handled).toBe(false);
+      expect(data.armed).toBe(true);
+      expect(data.action).toBe('accept');
+      expect(data.message).toMatch(/Armed/);
+      expect(browserState.injected.at(-1)).toMatchObject({
+        tabId: 11, world: 'MAIN', args: ['accept', 'EQ-001', 60_000],
+      });
+    });
+
+    it('refuses an answer that is neither accept nor dismiss', async () => {
+      twoTabWindow();
+
+      const response = await request('handle_dialog', { tabId: 11, action: 'maybe' });
+
+      expect(response.success).toBe(false);
+      expect(response.error).toMatch(/needs action/);
+      // And nothing was injected into the page on the way to refusing.
+      expect(browserState.injected).toEqual([]);
+    });
+
+    it('says a frozen tab is probably holding a dialog, instead of timing out with no reason', async () => {
+      twoTabWindow();
+      browserState.pageIsFrozen = true;
+      vi.useFakeTimers();
+      try {
+        const response = await request('get_dialog', { tabId: 11 }, { pumpMs: 6_000 });
+
+        expect(response.success).toBe(false);
+        expect(response.error).toMatch(/did not respond within 5s/);
+        expect(response.error).toMatch(/native JavaScript dialog/);
+        expect(response.error).toMatch(/ask the user to answer it/);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('activates a background tab before screenshotting it, so it shoots the right page', async () => {

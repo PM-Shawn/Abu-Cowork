@@ -8,8 +8,16 @@
  * 4. Handle tab-level operations (get_tabs, navigate, screenshot)
  */
 
-import type { BridgeRequest, BridgeResponse } from '../shared/types.js';
+import type { BridgeRequest, BridgeResponse, JsDialogAction } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import {
+  chromeGetDialogResult,
+  chromeHandleDialogResult,
+  JS_DIALOG_AUTO_DISMISS_MS,
+  pageWorldArmDialogAnswer,
+  pageWorldReadDialogState,
+  runInPageWorld,
+} from './pageDialogs.js';
 
 // Discovery endpoint (fixed port) and fallback WS ports
 const DISCOVERY_URL = 'http://127.0.0.1:9875/status';
@@ -478,6 +486,27 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           });
         }
         return { id, success: true, data: `Navigation: ${navAction}` };
+      }
+
+      case 'get_dialog': {
+        const tabId = payload.tabId as number;
+        const state = await runInPageWorld(tabId, pageWorldReadDialogState, []);
+        return { id, success: true, data: chromeGetDialogResult(tabId, state) };
+      }
+
+      case 'handle_dialog': {
+        const tabId = payload.tabId as number;
+        const dialogAction = payload.action as JsDialogAction;
+        if (dialogAction !== 'accept' && dialogAction !== 'dismiss') {
+          return { id, success: false, error: "handle_dialog needs action: 'accept' or 'dismiss'." };
+        }
+        const promptText = typeof payload.promptText === 'string' ? payload.promptText : null;
+        const state = await runInPageWorld(
+          tabId,
+          pageWorldArmDialogAnswer,
+          [dialogAction, promptText, JS_DIALOG_AUTO_DISMISS_MS],
+        );
+        return { id, success: true, data: chromeHandleDialogResult(tabId, dialogAction, state) };
       }
 
       case 'execute_js': {

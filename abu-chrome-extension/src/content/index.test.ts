@@ -1242,6 +1242,55 @@ describe('ambiguity is refused, not resolved by position', () => {
 
     await expect(click({ testId: 'token' })).rejects.toThrow(/Element not found/);
   });
+
+  it('leaves out a copy hidden from the accessibility tree with aria-hidden', async () => {
+    // The standard way to keep a duplicated render out of the a11y tree. A
+    // role/name locator is an accessibility-tree query, so matching the mirror
+    // is wrong on its own terms — and it made the live page permanently
+    // ambiguous on the very locator this work exists to make usable.
+    document.body.innerHTML =
+      '<button id="live">保存</button><button id="mirror" aria-hidden="true">保存</button>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('leaves out a copy under an aria-hidden ancestor', async () => {
+    // antd/element-plus hide whole subtrees, not individual controls.
+    document.body.innerHTML =
+      '<button id="live">保存</button><div aria-hidden="true"><span><button id="mirror">保存</button></span></div>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('leaves out a copy inside an inert subtree', async () => {
+    // `inert` is the platform's "this exists but nobody can reach it" — a
+    // background layer behind an open modal. It cannot receive the click we
+    // would dispatch, so counting it only blocks the reachable one.
+    document.body.innerHTML =
+      '<div inert><button id="behind">保存</button></div><button id="live">保存</button>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('leaves out a laid-out copy the page painted fully transparent', async () => {
+    document.body.innerHTML =
+      '<button id="live">保存</button><div style="opacity:0"><button id="ghost">保存</button></div>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('still reaches a collapsed combobox, which is transparent on purpose', async () => {
+    // The other side of the opacity rule, and the reason it is scoped to
+    // elements that HAVE a layout box: antd puts `role="combobox"` on a
+    // `width: 0; opacity: 0` <input> beside the span the user sees. Excluding
+    // every transparent element would make every dropdown on the page
+    // unaddressable — the exact failure `isSnapshotVisible` exists to avoid.
+    document.body.innerHTML =
+      '<div class="ant-select" style="opacity:0"><span>请选择</span>'
+      + '<input data-hidden id="type" role="combobox" readonly /></div>';
+
+    expect((await click({ role: 'combobox' })).target?.id).toBe('type');
+  });
 });
 
 describe('a label written both ways is still one label', () => {

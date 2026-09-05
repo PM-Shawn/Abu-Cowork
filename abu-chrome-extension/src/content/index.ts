@@ -617,7 +617,40 @@ function accessibleName(el: Element): string {
 function isLocatorVisible(el: Element): boolean {
   if (el.hasAttribute('hidden')) return false;
   if (el.tagName.toLowerCase() === 'input' && inputType(el) === 'hidden') return false;
+  // Out of the accessibility tree, by the page's own declaration. A role/name
+  // locator IS an accessibility-tree query, so matching a mirror the author
+  // explicitly removed from it is wrong on the locator's own terms — and it is
+  // how a duplicated render (antd's fixed table columns, a carousel, a
+  // screen-reader mirror) made a normal page permanently ambiguous.
+  if (el.closest?.('[aria-hidden="true"]')) return false;
+  // `inert` is the platform's "present but unreachable" — the layer behind an
+  // open modal. It cannot receive the click we would dispatch, so counting it
+  // only blocks the copy that can.
+  if (el.closest?.('[inert]')) return false;
+  if (isFullyTransparent(el)) return false;
   return isSnapshotVisible(el);
+}
+
+/**
+ * Painted, full-size, and invisible: a copy the user cannot see or click.
+ *
+ * Scoped to elements that HAVE a layout box on purpose. Two documented cases
+ * are transparent deliberately and are still the right target, and both have a
+ * *collapsed* box, so they never reach this test: antd's `role="combobox"`
+ * lives on a `width: 0; opacity: 0` <input> (see `isSnapshotVisible`), and a
+ * popup mid-entrance-animation sits at `opacity: 0` with a collapsed box and
+ * never leaves that state in a background tab (see `isRendered`, which turns
+ * `checkOpacity` off for exactly this reason). Widening the rule past "has a
+ * box" would make every dropdown on the page unaddressable.
+ */
+function isFullyTransparent(el: Element): boolean {
+  if (!hasBox(el)) return false;
+  // opacity does not inherit — a transparent wrapper still reports `1` on its
+  // children — so the chain has to be walked.
+  for (let node: Element | null = el; node && node !== document.documentElement; node = node.parentElement) {
+    if (getComputedStyle(node as HTMLElement).opacity === '0') return true;
+  }
+  return false;
 }
 
 /** A locator may land here — page content, visible, and not our own overlay. */

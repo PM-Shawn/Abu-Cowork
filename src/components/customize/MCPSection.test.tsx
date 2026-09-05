@@ -291,13 +291,13 @@ describe('MCPSection · prefill does not hijack the form', () => {
 });
 
 /**
- * 「市场」 unions two catalogs, and one of them — the marketplace templates —
- * carries install affordances the other has no notion of: a labeled secret
+ * Every 「市场」 row is one catalog entry, and an entry carries install
+ * affordances the plain add-server form has no notion of: a labeled secret
  * field with a hint, a configurable argument with a placeholder, a setup note,
- * a longer default timeout. Handing such an entry to the plain add-server form
- * throws all of that away: the user gets the raw arg and an env JSON blob with
- * nothing explaining either. A prefill that names its template opens the
- * template's own install flow instead — the same one 「安装」 has always used.
+ * a longer default timeout. Handing such an entry to the plain form throws all
+ * of that away — the user gets the raw arg and an env JSON blob with nothing
+ * explaining either. So every prefill names its template, and 「添加」 opens the
+ * template install flow — the same one 「安装」 has always used.
  */
 describe('MCPSection · prefill from a template', () => {
   const postgres: ConnectorPrefill = {

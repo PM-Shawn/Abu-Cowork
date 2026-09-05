@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BUILTIN_REGISTRY,
   ELECTRON_CHROME_BRIDGE_COMMAND,
@@ -6,6 +6,7 @@ import {
   getArgLabel,
   getRegistryEntry,
   getSetupHint,
+  installMCPServer,
   provisionFirstPartyMCPServers,
   resolveMCPCompanionResource,
 } from './mcpDiscovery';
@@ -177,6 +178,14 @@ describe('BUILTIN_REGISTRY data invariants', () => {
     }
   });
 
+  it('gives every env placeholder a matching required env var', () => {
+    for (const entry of BUILTIN_REGISTRY) {
+      for (const key of Object.keys(entry.envPlaceholders ?? {})) {
+        expect(Object.keys(entry.env)).toContain(key);
+      }
+    }
+  });
+
   it('points every configurable argument at a real slot', () => {
     for (const entry of BUILTIN_REGISTRY) {
       for (const slot of entry.configurableArgs ?? []) {
@@ -266,5 +275,87 @@ describe('BUILTIN_REGISTRY i18n completeness', () => {
       getI18n().toolResult.system.mcpSetupHints['abu-browser-bridge'],
     );
     expect(getSetupHint('memory')).toBeUndefined();
+  });
+});
+
+/**
+ * The agent's install path has to reach the same place the marketplace form
+ * does. 「市场」 renders a labeled field for every configurable slot, so a user
+ * installing postgres there cannot leave the connection string out. The agent
+ * has no form — it has an argument list — so an empty slot has to be refused
+ * loudly instead of persisting a server that exits the moment it starts.
+ */
+describe('installMCPServer configurable arguments', () => {
+  // The store's actions are replaced wholesale rather than spied on: zustand's
+  // immer middleware hands out a new state object per set(), so a vi.spyOn
+  // installed on one of them outlives vi.restoreAllMocks() on the next.
+  const realAddServer = useMCPStore.getState().addServer;
+  const realConnectServer = useMCPStore.getState().connectServer;
+  let addServer: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    const runtime = globalThis as typeof globalThis & {
+      __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
+    };
+    runtime.__ABU_SHELL__ = undefined;
+    addServer = vi.fn();
+    useMCPStore.setState({
+      servers: {},
+      isLoading: false,
+      addServer,
+      connectServer: vi.fn(async () => {}),
+    });
+  });
+
+  afterEach(() => {
+    useMCPStore.setState({ addServer: realAddServer, connectServer: realConnectServer });
+  });
+
+  const postgres = () => BUILTIN_REGISTRY.find((entry) => entry.name === 'postgres')!;
+
+  it('refuses an unfilled slot by its label, and writes nothing', async () => {
+    const result = await installMCPServer(postgres());
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain(getArgLabel('postgres', 2)!);
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('fills the slot from args and leaves the registry entry untouched', async () => {
+    await installMCPServer(postgres(), undefined, ['postgresql://u:p@h:5432/app']);
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'postgres',
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://u:p@h:5432/app'],
+    }));
+    // The catalog is shared, module-level state: an install must not leave the
+    // previous user's connection string in it.
+    expect(postgres().args[2]).toBe('');
+  });
+
+  it('carries the entry default timeout into the stored config', async () => {
+    const bridge = BUILTIN_REGISTRY.find((entry) => entry.name === 'abu-browser-bridge')!;
+
+    await installMCPServer(bridge);
+
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({ timeout: 120000 }));
+  });
+
+  it('omits the timeout key entirely for an entry that has no default', async () => {
+    const memory = BUILTIN_REGISTRY.find((entry) => entry.name === 'memory')!;
+
+    await installMCPServer(memory);
+
+    expect('timeout' in (addServer.mock.calls[0][0] as object)).toBe(false);
+  });
+
+  it('treats an unfilled slot as needs_config, the same as a missing env var', async () => {
+    const result = await ensureMCPServer('postgres');
+
+    expect(result.status).toBe('needs_config');
+    expect(result.message).toContain(getArgLabel('postgres', 2)!);
+    expect(addServer).not.toHaveBeenCalled();
+    expect(useMCPStore.getState().servers.postgres).toBeUndefined();
   });
 });

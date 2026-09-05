@@ -1,10 +1,9 @@
 /**
  * 「市场」 for the Connectors tab — connectors the user did not write: the
  * curated catalog Abu ships and the servers an installed plugin brought with
- * it. The catalog is the union of Abu's two pre-existing lists — the registry
- * the agent searches on a capability gap, and the marketplace templates the old
- * 示例 cards installed — deduplicated by {@link buildConnectorCatalog}. Neither
- * list alone covers the other, and 「我的」 no longer offers un-installed cards.
+ * it. The catalog is one list — the registry the agent searches on a capability
+ * gap — host-resolved by {@link buildConnectorCatalog}, so 「市场」 offers
+ * exactly what the agent can install and 「我的」 offers no un-installed cards.
  *
  * Two rules shape the panel:
  *
@@ -68,9 +67,9 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
   // server name → owning plugin. The single source of "this is not yours".
   const owners = useMemo(() => pluginServerOwners(installedPlugins), [installedPlugins]);
 
-  // The union of Abu's two connector catalogs, deduplicated by name and resolved
-  // per host. Locale is a dependency: a template's description is localized here
-  // (a registry entry's resolves its own).
+  // The connector catalog, resolved per host. Locale is a dependency because a
+  // row's description is resolved from the active locale at build time, so the
+  // memo has to recompute when the language changes.
   const catalog = useMemo(() => buildConnectorCatalog(locale), [locale]);
   const catalogNames = useMemo(() => new Set(catalog.map((e) => e.name)), [catalog]);
 

@@ -475,8 +475,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     }
     const env: Record<string, string> = {};
     for (const key of Object.keys(entry.env)) env[key] = '';
-    // The catalog unions two sources and one of them can be an HTTP endpoint;
-    // the offer says which, so the form does not open on the wrong transport.
+    // The catalog produces only stdio connectors today; the HTTP branch is
+    // reserved for the remote entries deferred until Abu can carry OAuth and
+    // request headers. The offer says which transport it wants, so a future
+    // remote row cannot open the form on the wrong one.
     const isHttp = entry.transport === 'http';
     setEditingServerName(null);
     setNewServerName(entry.name);

@@ -73,9 +73,14 @@ function fromRegistry(entry: MCPRegistryEntry): ConnectorCatalogItem {
 
 /**
  * The connector catalog 「市场」 renders: every registry entry, host-resolved.
- * `_locale` is unused — descriptions resolve the current locale themselves —
- * but callers pass it so their memo recomputes when the language changes.
+ *
+ * `locale` is deliberately unread inside this function — `getEntryDescription()`
+ * resolves the active locale itself at call time. It is the live-locale
+ * re-render key for {@link ConnectorCatalog}'s `useMemo`: without it the memo
+ * would never recompute on a language switch and the market would keep showing
+ * the previous language's descriptions. Do not delete the parameter.
  */
-export function buildConnectorCatalog(_locale: string): ConnectorCatalogItem[] {
+export function buildConnectorCatalog(locale: string): ConnectorCatalogItem[] {
+  void locale;
   return BUILTIN_REGISTRY.map(fromRegistry);
 }

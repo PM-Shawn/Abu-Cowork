@@ -3251,6 +3251,8 @@ export interface TranslationDict {
       searchNoResults: string;
       /** Env-var needed note fragment. {envList} */
       searchEnvNote: string;
+      /** Configurable-argument needed note fragment. {argList} */
+      searchArgNote: string;
       /** Search results header. {count}, {lines} */
       searchResults: string;
       /** Error: action=install requires name. */
@@ -3298,6 +3300,8 @@ export interface TranslationDict {
       mcpConnectFailed: string;
       /** Install needs env vars. {name}, {hints} */
       mcpNeedsEnvVars: string;
+      /** Install is missing a configurable positional argument. {name}, {label} */
+      mcpMissingArg: string;
       /** Installed and connected. {name}, {count} */
       mcpInstalledConnected: string;
       /** Installed but connect failed. {name}, {error} */

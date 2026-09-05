@@ -87,10 +87,21 @@ export interface ToolBatchParams {
   allowedTools?: string[];
   /** Headless IM context to pass through delegate tools into subagent runs. */
   imContext?: IMContext;
-  /** F1 — where an unattended run may ask, published on the loop context so
-   *  gates that build their own approval request (the browser gate) can reach
-   *  the automation's own chat instead of refusing with `no_binding`. */
-  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
+  /**
+   * F1 — where an unattended run may ask, published on the loop context so
+   * gates that build their own approval request (the browser gate) can reach
+   * the automation's own chat instead of refusing with `no_binding`.
+   *
+   * REQUIRED, `| undefined` rather than `?:`, and deliberately so (batch-8
+   * review F8-6). The two end-to-end pins for this field install their own
+   * `LoopContext`, so deleting the production hand-off at `agentLoop.ts`'s
+   * `executeToolBatch` call left `tsc` and all 8000+ tests green while every
+   * unattended browser 「每次询问」 in the real app fell back to `no_binding`.
+   * A caller that has no target must now say so out loud; a caller that
+   * forgets fails typecheck. Cheaper than the harness the alternative needed,
+   * and `npm run verify` covers it for free.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;

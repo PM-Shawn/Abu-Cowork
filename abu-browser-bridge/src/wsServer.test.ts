@@ -161,6 +161,56 @@ describe('sendToExtension abort handling', () => {
     }).not.toThrow();
   });
 
+  it('also releases the run\'s tab claims when an OWNED request aborts', async () => {
+    const { sendToExtension } = await import('./wsServer.js');
+    const controller = new AbortController();
+
+    const pending = sendToExtension(
+      'click',
+      { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' },
+      30_000,
+      controller.signal
+    );
+    const sent = JSON.parse(fakeExtension.send.mock.calls[0][0] as string);
+
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+    // Aborting is the run's stop signal, so the extension is told both to drop
+    // this request and to stop holding the tabs that run claimed.
+    expect(fakeExtension.send).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fakeExtension.send.mock.calls[1][0] as string))
+      .toEqual({ type: 'cancel', requestId: sent.id });
+    expect(JSON.parse(fakeExtension.send.mock.calls[2][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'sar-1' });
+  });
+
+  it('releases the whole conversation when the aborted request carried no runId', async () => {
+    const { sendToExtension } = await import('./wsServer.js');
+    const controller = new AbortController();
+
+    const pending = sendToExtension('click', { tabId: 1, ownerId: 'conversation-a' }, 30_000, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+    // No `runId` key at all — the extension reads that as every run of the
+    // conversation, matching `browser_dispose_owner {conversationId}`.
+    expect(JSON.parse(fakeExtension.send.mock.calls[2][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a' });
+  });
+
+  it('sends no release when the aborted request named no owner', async () => {
+    const { sendToExtension } = await import('./wsServer.js');
+    const controller = new AbortController();
+
+    const pending = sendToExtension('click', { tabId: 1 }, 30_000, controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+    // Legacy callers claim nothing, so there is nothing to release.
+    expect(fakeExtension.send).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects immediately without sending anything when the signal is already aborted', async () => {
     const { sendToExtension } = await import('./wsServer.js');
     const controller = new AbortController();

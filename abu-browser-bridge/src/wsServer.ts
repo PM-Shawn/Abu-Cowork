@@ -13,7 +13,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type Server as HTTPServer } from 'http';
 import { randomBytes } from 'crypto';
-import type { BridgeCancelMessage, BridgeRequest, BridgeResponse } from './types.js';
+import type {
+  BridgeCancelMessage,
+  BridgeReleaseMessage,
+  BridgeRequest,
+  BridgeResponse,
+} from './types.js';
 import { PKG_VERSION } from './version.js';
 import { linkAbortSignal } from './abortSignal.js';
 
@@ -236,6 +241,40 @@ function handleResponse(msg: BridgeResponse): void {
 }
 
 /**
+ * Tell the extension a run is done with the browser, so it drops the tab claims
+ * that run holds (`abu-chrome-extension/src/background/tabClaims.ts`). `runId`
+ * omitted ⇒ every run of the conversation, the same scope the built-in host's
+ * `browser_dispose_owner {conversationId}` has.
+ *
+ * Fire-and-forget and best-effort, like the host's own dispose calls: a lost
+ * release costs one stale claim (which the tab closing, or the socket dropping,
+ * clears anyway), and no browser action may fail over bookkeeping.
+ *
+ * KNOWN GAP: the only caller today is the abort path below, i.e. a run the user
+ * STOPPED. A run that finishes normally has no equivalent signal here — the
+ * built-in host learns about it over IPC (`browser_dispose_owner`, called from
+ * `src/core/browser/browserViewLifecycle.ts`), and this bridge is an MCP stdio
+ * server with no such channel. Closing that gap means giving the desktop app a
+ * non-model-facing way to reach the bridge, which is an interface decision, not
+ * a fix. Until then a normally-finished run's claim is cleared by the tab
+ * closing or the socket dropping.
+ */
+export function releaseExtensionTabs(ownerId: unknown, runId?: unknown): void {
+  if (typeof ownerId !== 'string' || ownerId.length === 0) return;
+  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) return;
+  const release: BridgeReleaseMessage = {
+    type: 'release',
+    ownerId,
+    ...(typeof runId === 'string' && runId.length > 0 ? { runId } : {}),
+  };
+  try {
+    extensionSocket.send(JSON.stringify(release));
+  } catch (err) {
+    console.error('[abu-bridge] Failed to send release to extension:', err);
+  }
+}
+
+/**
  * Send a request to the Chrome Extension and wait for response.
  *
  * `signal`, when given, lets the caller stop waiting before the extension
@@ -281,6 +320,14 @@ export function sendToExtension(
           console.error('[abu-bridge] Failed to send cancel to extension:', err);
         }
       }
+      // The signal that aborts a browser request IS the run's own abort signal
+      // (`src/core/mcp/client.ts` passes the conversation/run controller into
+      // `callTool`), so reaching here means that run has stopped driving the
+      // browser. Release its tab claims — the extension-channel counterpart of
+      // `disposeRunBrowserViews()` at a run's settlement seal in the built-in
+      // host. A run that ends NORMALLY reaches the bridge through no signal at
+      // all — see the note on `releaseExtensionTabs` about that remaining gap.
+      releaseExtensionTabs(payload.ownerId, payload.runId);
       reject(new DOMException('The operation was aborted.', 'AbortError'));
     });
 

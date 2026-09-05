@@ -32,6 +32,24 @@ export interface BridgeCancelMessage {
   requestId: string;
 }
 
+/**
+ * Sent Bridge → Extension when the run that was driving the browser has
+ * stopped, so the extension can drop the task-level tab claims that run holds
+ * (`abu-chrome-extension/src/background/tabClaims.ts`). Without it a finished
+ * task keeps its claim and the next task is refused a tab nobody is using any
+ * more.
+ *
+ * Scope mirrors the built-in host's `browser_dispose_owner`: with `runId`,
+ * exactly that subagent run; without it, every run of the conversation. An
+ * extension that does not recognise the message ignores it — releasing is
+ * best-effort, and a tab closing or the socket dropping clears the claim too.
+ */
+export interface BridgeReleaseMessage {
+  type: 'release';
+  ownerId: string;
+  runId?: string;
+}
+
 // --- Element Locator (multi-strategy targeting) ---
 // All fields optional — only one strategy should be specified per locator.
 

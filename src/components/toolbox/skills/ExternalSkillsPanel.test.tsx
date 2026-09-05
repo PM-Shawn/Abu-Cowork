@@ -72,12 +72,21 @@ beforeEach(() => {
 });
 
 describe('ExternalSkillsPanel', () => {
-  it('shows the hint card and sends the user to the plugins tab', () => {
+  it('shows the hint card and sends the user to the plugins MARKET', () => {
+    // Naming the tab alone is not enough: 插件 has its own 市场 | 我的 memory,
+    // so a user who last left it on 我的 would land on their own plugins —
+    // the one place the skill they are looking for provably is not.
+    const openExtensions = vi.fn(useSettingsStore.getState().openExtensions);
+    useSettingsStore.setState({ openExtensions });
+
     render(<ExternalSkillsPanel searchQuery="" />);
     expect(screen.getByText(tb().skillsMarketHintTitle)).toBeTruthy();
     expect(screen.getByText(tb().skillsMarketHintBody)).toBeTruthy();
     fireEvent.click(screen.getByTestId('skills-market-go-plugins'));
+
+    expect(openExtensions).toHaveBeenCalledWith('plugins', 'market');
     expect(useSettingsStore.getState().activeExtensionsTab).toBe('plugins');
+    expect(useSettingsStore.getState().pendingExtensionsSource).toBe('market');
   });
 
   it('keeps the hint card even with nothing installed from outside', () => {

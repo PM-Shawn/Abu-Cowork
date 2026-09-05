@@ -65,7 +65,11 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
   const { t } = useI18n();
   const tb = t.toolbox;
   const skills = useDiscoveryStore((s) => s.skills);
-  const setActiveExtensionsTab = useSettingsStore((s) => s.setActiveExtensionsTab);
+  // `openExtensions`, not `setActiveExtensionsTab`: 插件 remembers its own
+  // 市场 | 我的 choice, and 「去插件市场」 promises the market — a user who last
+  // left 插件 on 我的 would otherwise land on their own plugins, the one place
+  // the skill they came looking for is not.
+  const openExtensions = useSettingsStore((s) => s.openExtensions);
   // Same switch, same store action as a 「我的」 card (customize/SkillsSection.tsx
   // renderSkillCard) — a skill is enabled or not, and which half of the tab it
   // is looked at from must not change that. Read-only here means "you cannot
@@ -107,7 +111,7 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
             variant="outline"
             size="sm"
             data-testid="skills-market-go-plugins"
-            onClick={() => setActiveExtensionsTab('plugins')}
+            onClick={() => openExtensions('plugins', 'market')}
           >
             {tb.skillsMarketGoPlugins}
           </Button>

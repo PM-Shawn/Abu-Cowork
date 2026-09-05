@@ -141,6 +141,20 @@ async function discoverSkills(scan: PackageScan): Promise<string[]> {
     .sort();
 }
 
+/**
+ * One agent an install would add, as the disclosure screen lists it.
+ *
+ * `conflict` says why an agent shown here will NOT be installed: `'exists'`
+ * when `~/.abu/agents/<name>` is already taken by something this plugin did not
+ * put there (it is never overwritten), `'unsafe-name'` when the declared name
+ * is not a single safe directory segment. Absent means it will install.
+ */
+export interface PluginAgentDisclosure {
+  name: string;
+  description: string;
+  conflict?: 'exists' | 'unsafe-name';
+}
+
 export interface InstallDisclosure {
   key: string;
   name: string;
@@ -152,6 +166,12 @@ export interface InstallDisclosure {
   skills: string[];
   /** MCP servers it will register — the command is the part users must see. */
   mcpServers: { name: string; command?: string; args?: string[]; url?: string }[];
+  /**
+   * Agents the package ships, with the ones that will be skipped marked. Always
+   * present (empty when the package ships none) so the disclosure screen never
+   * has to tell "no agents" apart from "this surface did not look".
+   */
+  agents: PluginAgentDisclosure[];
   capabilities?: string[];
   /**
    * Top-level payload dirs Abu does NOT consume (commands / agents / hooks —
@@ -270,6 +290,9 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
     sourceDir,
     skills,
     mcpServers,
+    // Discovery lands in the next change; until then the field is honestly
+    // empty rather than absent, so every consumer can already iterate it.
+    agents: [],
     capabilities: manifest.interface?.capabilities,
     ignoredPayloads,
     skippedSymlinks,
@@ -335,6 +358,9 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       contributed: {
         skills: disclosure.skills,
         mcpServers: disclosure.mcpServers.map((s) => s.name),
+        // Only agents this install actually materialised belong here, and none
+        // are installed yet — the payload route is not wired up.
+        agents: [],
       },
     },
     mcpServers: disclosure.mcpServers,

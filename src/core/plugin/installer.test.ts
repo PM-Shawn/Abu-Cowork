@@ -246,7 +246,9 @@ describe('installPlugin', () => {
     expect(record.key).toBe('weather@official');
     // The contributed list is what makes uninstall correct — it must never be
     // re-derived by scanning directories after the fact.
-    expect(record.contributed).toEqual({ skills: ['today'], mcpServers: ['forecast'] });
+    // `agents` is empty until the payload route lands (spec §5.2) — the key
+    // is present so consumers never meet an undefined list.
+    expect(record.contributed).toEqual({ skills: ['today'], mcpServers: ['forecast'], agents: [] });
     expect(record.installedAt).toBeTruthy();
     // The outcome also carries the mcp specs (for registration) out of the one
     // planInstall, so no caller has to re-plan.

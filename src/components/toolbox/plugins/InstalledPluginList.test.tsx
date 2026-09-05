@@ -32,7 +32,7 @@ const weather: InstalledPlugin = {
   name: 'weather',
   version: '1.2.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast', 'radar'], mcpServers: ['weather-mcp'] },
+  contributed: { skills: ['forecast', 'radar'], mcpServers: ['weather-mcp'], agents: [] },
 };
 
 /** Locale-resolved toolbox strings — these tests run under either locale. */
@@ -115,7 +115,7 @@ describe('InstalledPluginList', () => {
       name: 'compliance-bot',
       version: '3.0.0',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: ['audit'], mcpServers: [] },
+      contributed: { skills: ['audit'], mcpServers: [], agents: [] },
     };
     usePluginStore.setState({ installed: [weather, orgPlugin] });
     renderList();
@@ -137,7 +137,7 @@ describe('InstalledPluginList', () => {
           name: 'compliance-bot',
           version: '3.0.0',
           installedAt: '2026-09-01T00:00:00.000Z',
-          contributed: { skills: ['audit'], mcpServers: [] },
+          contributed: { skills: ['audit'], mcpServers: [], agents: [] },
         },
       ],
     });
@@ -161,7 +161,7 @@ describe('InstalledPluginList', () => {
       sha: 'abc123',
       sourceKind: 'git-subdir',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: [], mcpServers: [] },
+      contributed: { skills: [], mcpServers: [], agents: [] },
     };
     /** Installed from a local folder in the user's own market — theirs. */
     const authored: InstalledPlugin = {
@@ -171,7 +171,7 @@ describe('InstalledPluginList', () => {
       version: '0.1.0',
       sourceKind: 'relative',
       installedAt: '2026-09-02T00:00:00.000Z',
-      contributed: { skills: ['draft'], mcpServers: [] },
+      contributed: { skills: ['draft'], mcpServers: [], agents: [] },
     };
 
     it('lists only plugins the user authored themselves', () => {

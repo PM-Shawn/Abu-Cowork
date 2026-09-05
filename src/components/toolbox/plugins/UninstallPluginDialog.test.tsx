@@ -29,7 +29,7 @@ const plugin = (key: string, name: string): InstalledPlugin => ({
   name,
   version: '1.2.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [] },
 });
 
 const weather = plugin('weather@official', 'weather');

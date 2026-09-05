@@ -23,6 +23,7 @@ const disclosure: InstallDisclosure = {
     { name: 'remote-weather', url: 'https://mcp.example.com/sse' },
   ],
   capabilities: ['network'],
+  agents: [],
   ignoredPayloads: [],
 };
 

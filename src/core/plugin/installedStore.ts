@@ -22,11 +22,16 @@ export interface InstalledPlugin {
    */
   sourceKind?: 'relative' | 'url' | 'git-subdir';
   /**
-   * What this plugin contributed to the app (skill ids, MCP server names).
-   * Uninstall correctness is derived from this record — never by rescanning
-   * directories and guessing what belonged to the plugin.
+   * What this plugin contributed to the app (skill ids, MCP server names,
+   * agent directory names). Uninstall correctness is derived from this record
+   * — never by rescanning directories and guessing what belonged to the plugin.
+   *
+   * `agents` arrived after the first records were written, so it is required
+   * here but normalised on read (see {@link withContributedAgents}): every
+   * consumer sees a list, and a record written before the field existed reads
+   * back as `[]` rather than as `undefined` for each of them to guard.
    */
-  contributed: { skills: string[]; mcpServers: string[] };
+  contributed: { skills: string[]; mcpServers: string[]; agents: string[] };
 }
 
 /**
@@ -57,7 +62,7 @@ export async function readInstalled(home: string): Promise<InstalledPlugin[]> {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isInstalledPlugin).map(withValidSourceKind);
+    return parsed.filter(isInstalledPlugin).map(withValidSourceKind).map(withContributedAgents);
   } catch {
     return [];
   }
@@ -127,6 +132,25 @@ function withValidSourceKind(p: InstalledPlugin): InstalledPlugin {
   const copy = { ...p };
   delete copy.sourceKind;
   return copy;
+}
+
+/**
+ * Give a record read from disk a `contributed.agents` list.
+ *
+ * Records written before plugins could contribute agents have no such field,
+ * and they must keep loading: an install predating the feature contributed no
+ * agents, so `[]` is not a repair but the true answer. Normalising here — the
+ * one place records enter the app — is what lets the interface declare the
+ * field required, so uninstall and the UI can iterate it without each of them
+ * inventing its own fallback. A value of the wrong shape is replaced for the
+ * same reason `isInstalledPlugin` drops a bad record: nothing downstream
+ * should have to ask whether this is really a list of strings.
+ */
+function withContributedAgents(p: InstalledPlugin): InstalledPlugin {
+  // Typed as `string[]` by the interface, but it came straight out of JSON.
+  const raw = (p.contributed as { agents?: unknown }).agents;
+  if (isStringArray(raw)) return p;
+  return { ...p, contributed: { ...p.contributed, agents: [] } };
 }
 
 async function writeInstalled(home: string, plugins: InstalledPlugin[]): Promise<void> {

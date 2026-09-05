@@ -31,7 +31,7 @@ function makePlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
     name: 'foo',
     version: '1.0.0',
     installedAt: '2026-08-31T00:00:00.000Z',
-    contributed: { skills: ['skill-a'], mcpServers: ['server-a'] },
+    contributed: { skills: ['skill-a'], mcpServers: ['server-a'], agents: ['agent-a'] },
     ...overrides,
   };
 }
@@ -69,6 +69,41 @@ describe('readInstalled', () => {
     mockExists.mockResolvedValue(true);
     mockReadTextFile.mockResolvedValue(JSON.stringify([plugin]));
     expect(await readInstalled(HOME)).toEqual([plugin]);
+  });
+
+  it('reads a record written before contributed.agents existed as an empty list', async () => {
+    const legacy = {
+      key: 'foo@mkt',
+      marketplace: 'mkt',
+      name: 'foo',
+      version: '1.0.0',
+      installedAt: '2026-08-31T00:00:00.000Z',
+      contributed: { skills: ['skill-a'], mcpServers: ['server-a'] },
+    };
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([legacy]));
+
+    const [read] = await readInstalled(HOME);
+
+    // The record still loads, and every consumer gets a list to iterate.
+    expect(read.contributed.agents).toEqual([]);
+    expect(read.contributed.skills).toEqual(['skill-a']);
+    expect(read.contributed.mcpServers).toEqual(['server-a']);
+  });
+
+  it('replaces a contributed.agents value that is not a list of strings', async () => {
+    const plugin = { ...makePlugin(), contributed: { skills: [], mcpServers: [], agents: 'nope' } };
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([plugin]));
+    const [read] = await readInstalled(HOME);
+    expect(read.contributed.agents).toEqual([]);
+  });
+
+  it('round-trips contributed.agents when the record has it', async () => {
+    const plugin = makePlugin();
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([plugin]));
+    expect((await readInstalled(HOME))[0].contributed.agents).toEqual(['agent-a']);
   });
 
   it('keeps a record written before sourceKind existed', async () => {
@@ -123,15 +158,15 @@ describe('upsertInstalled', () => {
     expect(written[0].version).toBe('2.0.0');
   });
 
-  it('round-trips the contributed skills/mcpServers lists', async () => {
+  it('round-trips the contributed skills/mcpServers/agents lists', async () => {
     mockExists.mockResolvedValue(false);
     const plugin = makePlugin({
-      contributed: { skills: ['s1', 's2'], mcpServers: ['m1'] },
+      contributed: { skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'] },
     });
     await upsertInstalled(HOME, plugin);
     const [, contentArg] = mockWriteTextFile.mock.calls[0];
     const written = JSON.parse(contentArg as string);
-    expect(written[0].contributed).toEqual({ skills: ['s1', 's2'], mcpServers: ['m1'] });
+    expect(written[0].contributed).toEqual({ skills: ['s1', 's2'], mcpServers: ['m1'], agents: ['a1'] });
   });
 
   it('writes formatted (pretty-printed, multi-line) json', async () => {

@@ -20,7 +20,8 @@ const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
 /**
  * Actions that change page state or run code in the page's origin.
  * `navigate` is included because it drives the session somewhere new (and GET
- * endpoints can act); `keyboard` because Enter submits.
+ * endpoints can act); `keyboard` because Enter submits; `handle_dialog`
+ * because accepting a page's confirm is pressing its OK button.
  */
 const STATE_CHANGING_TOOLS = new Set([
   'click',
@@ -29,6 +30,11 @@ const STATE_CHANGING_TOOLS = new Set([
   'keyboard',
   'execute_js',
   'navigate',
+  // Answering a page's own dialog MOVES THE PAGE: accepting a confirm submits
+  // the form behind it, accepting a beforeunload leaves the page and discards
+  // what is on it. `get_dialog` reads the same dialog and stays read-only —
+  // that split is the whole reason the pair is two tools.
+  'handle_dialog',
 ]);
 
 /**

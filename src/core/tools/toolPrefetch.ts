@@ -24,6 +24,8 @@ const BROWSER_TOOL_SUFFIXES = [
   'fill',
   'select',
   'wait_for',
+  'get_dialog',
+  'handle_dialog',
   'extract_text',
   'extract_table',
   'query_js',

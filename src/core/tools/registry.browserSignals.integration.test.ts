@@ -111,6 +111,66 @@ describe('registry.ts browser observability collection', () => {
     expect(typeof (signals[0] as { durationMs: number }).durationMs).toBe('number');
   });
 
+  it('records the three moments of a page dialog: it appeared, it was answered, it timed out', async () => {
+    // A dialog is invisible in this stream unless it is recorded on purpose:
+    // it shows up as a scatter of failed clicks with nothing saying they all
+    // died behind one confirm box.
+    setDefaultResponse(
+      'Error: This tab is blocked by a JavaScript dialog the page opened (confirm). '
+      + 'Call get_dialog to read it. Dialog text: "确定要提交吗"',
+    );
+    const approve = async () => true;
+    await executeAnyTool(
+      'abu-browser__click',
+      { tabId: 1, locator: makeLocator({ css: '#submit' }) },
+      approve,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    setDefaultResponse(JSON.stringify({
+      tabId: 1, action: 'accept', handled: true,
+      dialog: { type: 'confirm', message: '确定要提交吗', url: 'https://erp.example/', openedAt: 1 },
+      message: 'Accepted',
+    }));
+    await executeAnyTool(
+      'abu-browser__handle_dialog',
+      { tabId: 1, action: 'accept' },
+      approve,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    setDefaultResponse(JSON.stringify({
+      tabId: 1, pending: false,
+      last: { type: 'alert', message: '会话已过期', url: 'https://erp.example/', openedAt: 2, disposition: 'auto-dismissed' },
+      message: 'No dialog is open on this tab.',
+    }));
+    await executeAnyTool(
+      'abu-browser__get_dialog',
+      { tabId: 1 },
+      undefined,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    const dialogs = getRecentBrowserSignals().filter((s) => s.kind === 'js_dialog');
+    expect(dialogs).toMatchObject([
+      { event: 'opened', dialogType: 'confirm', tabId: 1, conversationId: 'conv-dialog' },
+      { event: 'handled', dialogType: 'confirm', action: 'accept' },
+      { event: 'timed_out', dialogType: 'alert' },
+    ]);
+    // No page text, ever — same rule the rest of this stream follows.
+    expect(JSON.stringify(dialogs)).not.toContain('确定要提交吗');
+    expect(JSON.stringify(dialogs)).not.toContain('会话已过期');
+    // And the blocked click is filed under its own error class rather than
+    // disappearing into `unknown_error`.
+    const blocked = getRecentBrowserSignals().find(
+      (s) => s.kind === 'tool_call' && s.tool === 'abu-browser__click',
+    );
+    expect(blocked).toMatchObject({ ok: false, errorClass: 'dialog_pending' });
+  });
+
   it('records ok:false and an errorClass for a failing call, without altering the returned error text', async () => {
     setDefaultResponse('Error: Browser extension is not connected.');
 

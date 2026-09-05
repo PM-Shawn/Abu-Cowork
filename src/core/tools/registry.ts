@@ -58,6 +58,7 @@ import {
   detectFrameHint,
   getCachedTabOrigin,
   isBrowserToolResultError,
+  jsDialogSignals,
   noteBrowserToolOutcome,
   noteTabOrigin,
   safeRecordBrowserSignal,
@@ -559,6 +560,16 @@ function recordBrowserToolCallSignal(
         ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
         ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
       },
+      context,
+    ));
+  }
+
+  // A dialog freezing a tab is its own failure mode: without this it shows up
+  // in the bundle only as a scatter of failed clicks and fills, with nothing
+  // saying they all died behind one confirm box.
+  for (const event of jsDialogSignals(bareToolName, resultText)) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { ...event, ...(tabId !== undefined ? { tabId } : {}) } as typeof event,
       context,
     ));
   }

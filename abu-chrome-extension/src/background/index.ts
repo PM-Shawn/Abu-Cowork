@@ -9,6 +9,7 @@
  */
 
 import type { BridgeRequest, BridgeResponse } from '../shared/types.js';
+import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
 
 // Discovery endpoint (fixed port) and fallback WS ports
 const DISCOVERY_URL = 'http://127.0.0.1:9875/status';
@@ -494,25 +495,14 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: results[0]?.result };
       }
 
-      // Every action executed by the content script. A new DOM tool that is
-      // not listed here falls through to `default:` and answers
-      // `Unknown action`, which reads to the model as "the tool is broken"
-      // rather than "this channel forgot to route it" — so
-      // `background/index.test.ts` pins this list against the tool surface
-      // `abu-browser-bridge` actually registers.
-      case 'snapshot':
-      case 'find':
-      case 'get_html':
-      case 'click':
-      case 'fill':
-      case 'select':
-      case 'wait_for':
-      case 'extract_text':
-      case 'extract_table':
-      case 'scroll':
-      case 'keyboard':
-      case 'start_recording':
-      case 'stop_recording': {
+      default: {
+        // Every action executed by the content script, read from the shared
+        // list rather than re-typed as `case` labels — an action missing from
+        // it falls through to `Unknown action`, which reads to the model as
+        // "the tool is broken" rather than "this channel forgot to route it".
+        if (!CONTENT_SCRIPT_ACTIONS.has(action)) {
+          return { id, success: false, error: `Unknown action: ${action}` };
+        }
         const tabId = (typeof payload.tabId === 'number' ? payload.tabId : lastActiveTabId) as number | null;
         if (!tabId) {
           return { id, success: false, error: 'No active browser tab is available. Call get_tabs and pass tabId.' };
@@ -520,9 +510,6 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         const result = await sendToContentScript(tabId, action, payload);
         return { id, success: true, data: result };
       }
-
-      default:
-        return { id, success: false, error: `Unknown action: ${action}` };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

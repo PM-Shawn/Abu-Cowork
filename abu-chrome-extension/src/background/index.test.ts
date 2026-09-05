@@ -23,15 +23,16 @@
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeResponse } from '../shared/types.js';
+// The list the router itself reads, not a fourth hand-typed copy of it — the
+// previous copy here was missing `get_html` entirely, so the case it was
+// supposed to guard was never exercised. Whether that list covers everything
+// the bridge registers is pinned separately, against the real registration, in
+// `src/core/tools/browserToolRouting.test.ts`.
+import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
 
 type HandleAction = (action: string, payload: Record<string, unknown>) => Promise<unknown>;
 
-/** Actions the content script executes — routed by tabId to a content script. */
-const CONTENT_SCRIPT_ACTIONS = [
-  'snapshot', 'find', 'click', 'fill', 'select', 'wait_for',
-  'extract_text', 'extract_table', 'scroll', 'keyboard',
-  'start_recording', 'stop_recording',
-];
+const ROUTED_ACTIONS = [...CONTENT_SCRIPT_ACTIONS];
 
 interface SentMessage { tabId: number; action: string; payload: Record<string, unknown> }
 
@@ -226,7 +227,7 @@ beforeAll(async () => {
 });
 
 describe('every content-script action the bridge registers is routed', () => {
-  it.each(CONTENT_SCRIPT_ACTIONS)('routes %s to the content script', async (action) => {
+  it.each(ROUTED_ACTIONS)('routes %s to the content script', async (action) => {
     sentToContent.length = 0;
 
     const response = await request(action, { tabId: 42, marker: action });
@@ -243,7 +244,7 @@ describe('every content-script action the bridge registers is routed', () => {
     // `Unknown content action` from one layer deeper. Probed against the real
     // content runtime rather than a re-typed list.
     const unimplemented: string[] = [];
-    for (const action of CONTENT_SCRIPT_ACTIONS) {
+    for (const action of ROUTED_ACTIONS) {
       if (!(await contentImplements(action))) unimplemented.push(action);
     }
     expect(unimplemented).toEqual([]);

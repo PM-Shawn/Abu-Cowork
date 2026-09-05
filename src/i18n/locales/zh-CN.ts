@@ -643,6 +643,23 @@ const zhCN: TranslationDict = {
     },
   },
 
+  unattendedRun: {
+    outcome: {
+      succeeded: '已完成',
+      partial: '部分完成',
+      blocked: '未完成',
+      notRun: '未运行',
+      failed: '任务失败',
+      stopped: '已停止',
+      noProgress: '没有进展',
+    },
+    summaryWithDetail: '{label}：{detail}',
+    detailWithOrigins: '{reason}（{origins}）',
+    detailActionsFailed: '{failed}/{total} 个浏览器动作失败',
+    detailNothingDelivered: '这次没有产出可交付的结果',
+    nextStep: '接下来：{step}',
+  },
+
   settings: {
     title: '设置',
     labs: '实验',

@@ -642,6 +642,23 @@ const enUS: TranslationDict = {
     },
   },
 
+  unattendedRun: {
+    outcome: {
+      succeeded: 'Done',
+      partial: 'Partly done',
+      blocked: 'Not finished',
+      notRun: 'Did not run',
+      failed: 'Task failed',
+      stopped: 'Stopped',
+      noProgress: 'No progress',
+    },
+    summaryWithDetail: '{label}: {detail}',
+    detailWithOrigins: '{reason} ({origins})',
+    detailActionsFailed: '{failed} of {total} browser actions failed',
+    detailNothingDelivered: 'nothing was produced to deliver',
+    nextStep: 'Next: {step}',
+  },
+
   settings: {
     title: 'Settings',
     labs: 'Labs',

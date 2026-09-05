@@ -47,7 +47,65 @@
       if (!el || !el.isConnected) elementByRef.delete(ref);
     }
   }
+  var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard"]);
+  function assertOriginPin(action, payload) {
+    if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+    const expected = typeof payload.expectedOrigin === "string" ? payload.expectedOrigin : "";
+    if (!expected) {
+      if (payload.unattended !== true) return;
+      throw new Error(
+        "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
+      );
+    }
+    const current = normalizedOrigin(location.href);
+    if (current === expected) return;
+    if (window.top !== window) {
+      throw new Error(
+        `Refused: this action targeted a frame from a different site than the one approved (approved ${expected}, this frame is ${current ?? "not an ordinary web page"}). Embedded third-party frames are not covered by that approval and a fresh snapshot will not change it \u2014 act on the main page, or ask for this site to be authorized separately.`
+      );
+    }
+    throw new Error(
+      `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
+    );
+  }
+  function assertFrameAbstains(payload) {
+    if (payload.locator !== void 0) return;
+    throw new Error(
+      "Nothing is focused in this frame, so there is nowhere to send the key press. Click the field you want to type into first, then send the key."
+    );
+  }
+  function normalizedOrigin(href) {
+    try {
+      const parsed = new URL(href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
+      if (!hostname) return null;
+      return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+    } catch {
+      return null;
+    }
+  }
+  function frameServicesAction(action, payload) {
+    const locator = payload.locator;
+    if (locator !== void 0) {
+      try {
+        return findElement(locator) !== null;
+      } catch {
+        return false;
+      }
+    }
+    const focused = document.activeElement;
+    const hasRealFocus = focused !== null && focused !== document.body && focused !== document.documentElement;
+    return hasRealFocus || window.top === window;
+  }
   async function handleAction(action, payload) {
+    if (ORIGIN_PINNED_ACTIONS.has(action)) {
+      if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+      else assertFrameAbstains(payload);
+    }
+    return annotateAdvisory(action, await dispatchAction(action, payload));
+  }
+  async function dispatchAction(action, payload) {
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -85,6 +143,207 @@
       default:
         throw new Error(`Unknown content action: ${action}`);
     }
+  }
+  var REDACTED_VALUE = "[value redacted]";
+  function isSensitiveAutocompleteToken(token) {
+    return token === "one-time-code" || token === "current-password" || token === "new-password" || token.startsWith("cc-");
+  }
+  function hasSensitiveValue(el) {
+    const type = el.type;
+    if (typeof type === "string" && type.toLowerCase() === "password") return true;
+    const autocomplete = el.getAttribute("autocomplete");
+    if (!autocomplete) return false;
+    return autocomplete.toLowerCase().split(/\s+/).some((token) => isSensitiveAutocompleteToken(token));
+  }
+  function fieldLabel(el) {
+    const placeholder = el.placeholder;
+    return placeholder || el.getAttribute("aria-label") || el.getAttribute("name") || (el.id ? `#${el.id}` : "") || `<${el.tagName.toLowerCase()}>`;
+  }
+  function reportableValue(el, value, maxChars) {
+    if (!value) return void 0;
+    return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+  }
+  var MAX_DETECTION_TEXT = 2e4;
+  function detectionText() {
+    const body = document.body;
+    if (!body) return "";
+    let text = (body.innerText ?? body.textContent ?? "").slice(0, MAX_DETECTION_TEXT);
+    for (const secret of sensitiveValuesIn(body)) {
+      text = text.split(secret).join(REDACTED_VALUE);
+    }
+    return text;
+  }
+  function visibleMatch(selector) {
+    for (const el of document.querySelectorAll(selector)) {
+      if (hasBox(el)) return el;
+    }
+    return null;
+  }
+  var CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
+  var CAPTCHA_SELECTOR = '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+  var CAPTCHA_INTERACTIVE_SELECTOR = 'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],[tabindex]:not([tabindex^="-"]),img[src^="data:"]';
+  function containerIsOperable(el) {
+    if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
+    for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
+      if (hasBox(child)) return true;
+    }
+    return false;
+  }
+  function hasCaptcha() {
+    for (const frame of document.querySelectorAll("iframe")) {
+      const surface = `${frame.getAttribute("src") ?? ""} ${frame.getAttribute("title") ?? ""}`;
+      if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
+    }
+    for (const el of document.querySelectorAll(CAPTCHA_SELECTOR)) {
+      if (hasBox(el) && containerIsOperable(el)) return true;
+    }
+    return false;
+  }
+  var QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
+  var QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
+  function hasQrLogin(text) {
+    if (visibleMatch(QR_SELECTOR) !== null) return true;
+    return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
+  }
+  var OTP_TEXT_PATTERN = /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+  var NUMERIC_CODE_INPUT_SELECTOR = 'input[inputmode="numeric"],input[pattern*="0-9"],input[pattern*="d"]';
+  var OTP_GRID_MIN_BOXES = 4;
+  function hasShortCodeInput() {
+    if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+    let singleCharBoxes = 0;
+    for (const el of document.querySelectorAll("input[maxlength]")) {
+      const max = Number(el.getAttribute("maxlength"));
+      if (!Number.isFinite(max) || !hasBox(el)) continue;
+      if (max >= 4 && max <= 8) return true;
+      if (max === 1 && ++singleCharBoxes >= OTP_GRID_MIN_BOXES) return true;
+    }
+    return false;
+  }
+  function hasOneTimeCodeEntry(text) {
+    if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
+    return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
+  }
+  var MFA_PUSH_PATTERN = /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+  var PENDING_WIDGET_SELECTOR = '[role="progressbar"],[aria-busy="true"],[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+  var TERSE_AUTH_SURFACE_CHARS = 400;
+  var AUTH_SURFACE_SEGMENTS = /* @__PURE__ */ new Set([
+    "sign-in",
+    "signin",
+    "login",
+    "sso",
+    "auth",
+    "oauth",
+    "oauth2",
+    "mfa",
+    "2fa",
+    "duo",
+    "verify",
+    "challenge"
+  ]);
+  function isAuthSurfacePath(pathname) {
+    let decoded = pathname;
+    try {
+      decoded = decodeURIComponent(pathname);
+    } catch {
+    }
+    return decoded.split("/").some((segment) => AUTH_SURFACE_SEGMENTS.has(segment.toLowerCase()));
+  }
+  function hasMfaPush(text) {
+    if (!MFA_PUSH_PATTERN.test(text)) return false;
+    if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
+    return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && isAuthSurfacePath(location.pathname);
+  }
+  var WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
+  function isWeChatInterstitial(text) {
+    const host = location.hostname.toLowerCase();
+    const wechatHost = host === "weixin.qq.com" || host.endsWith(".weixin.qq.com");
+    return wechatHost || WECHAT_PATTERN.test(text);
+  }
+  var OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+  var blankOauthObservation = null;
+  function isStrandedOauthPage(text) {
+    const blankNow = document.readyState !== "loading" && OAUTH_URL_PATTERN.test(location.pathname) && text.trim().length <= 40 && visibleMatch("input,button,a[href],form") === null;
+    if (!blankNow) {
+      blankOauthObservation = null;
+      return false;
+    }
+    const href = location.href;
+    blankOauthObservation = blankOauthObservation?.href === href ? { href, passes: blankOauthObservation.passes + 1 } : { href, passes: 1 };
+    return blankOauthObservation.passes > 1;
+  }
+  var HANDOFF_HINTS = {
+    captcha: "This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the action and do not try to solve it. Stop, tell the user which page is asking, and ask them to complete the challenge themselves before you continue.",
+    qr_login: "This page signs in by QR code, which only a person holding the phone can scan. Do not retry. Stop and ask the user to scan the code shown on this page, then continue once they say they are signed in.",
+    sms_code: "This page is asking for a one-time code sent to the user by SMS, email, or an authenticator. You cannot read it. Do not retry or guess. Stop and ask the user for the code, or ask them to enter it themselves.",
+    mfa_push: "This page is waiting for the user to approve a push prompt in their authenticator app. NEVER retry or re-trigger it: repeated push prompts are how push-bombing attacks work, and the provider may lock or flag the account. Stop and ask the user to approve the prompt once on their device.",
+    wechat_external_link: "WeChat has intercepted this link and is asking for it to be opened in a browser. Retrying inside WeChat will keep landing here. Stop and ask the user to open the link in a browser.",
+    oauth_popup: "The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do not retry the popup. Ask for the provider's redirect flow instead (navigate to the authorization URL in this tab), or ask the user to complete the sign-in themselves."
+  };
+  function detectHandoff(text) {
+    const kind = isWeChatInterstitial(text) ? "wechat_external_link" : hasCaptcha() ? "captcha" : hasQrLogin(text) ? "qr_login" : hasMfaPush(text) ? "mfa_push" : hasOneTimeCodeEntry(text) ? "sms_code" : isStrandedOauthPage(text) ? "oauth_popup" : null;
+    return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
+  }
+  var AUTH_WALL_TEXT_PATTERN = /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+  var NOT_A_SIGN_IN_PATTERN = /(create[ \t]+(?:[a-z]+[ \t]+){0,2}account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+  var IDENTIFIER_INPUT_SELECTOR = 'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],[id*="user" i],[id*="email" i]';
+  var NAVIGATION_LABEL_SELECTOR = 'a,[role="link"],button,[role="button"],input[type="button"],input[type="submit"]';
+  function signInScopeText(passwordBox) {
+    const scope = passwordBox.closest('form,[role="form"]') ?? passwordBox.closest("section,article,main") ?? passwordBox.parentElement ?? passwordBox;
+    const clone = scope.cloneNode(true);
+    for (const label of clone.querySelectorAll(NAVIGATION_LABEL_SELECTOR)) label.remove();
+    return `${nearestHeadingText(scope)} ${clone.textContent ?? ""}`;
+  }
+  function nearestHeadingText(scope) {
+    const own = scope.querySelector('h1,h2,h3,legend,[role="heading"]');
+    if (own && hasBox(own)) return own.textContent ?? "";
+    for (let node = scope.parentElement; node; node = node.parentElement) {
+      for (const child of node.children) {
+        if (!child.matches('h1,h2,h3,legend,[role="heading"]')) continue;
+        if (hasBox(child)) return child.textContent ?? "";
+      }
+      if (node.tagName === "BODY") break;
+    }
+    return "";
+  }
+  function looksLikeSignInForm() {
+    const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
+    if (passwords.length !== 1) return false;
+    const autocomplete = (passwords[0].getAttribute("autocomplete") ?? "").toLowerCase();
+    if (autocomplete.includes("new-password")) return false;
+    if (visibleMatch(IDENTIFIER_INPUT_SELECTOR) === null) return false;
+    return !NOT_A_SIGN_IN_PATTERN.test(signInScopeText(passwords[0]));
+  }
+  function detectAuthWall(text) {
+    if (looksLikeSignInForm()) return true;
+    return AUTH_WALL_TEXT_PATTERN.test(text);
+  }
+  var ADVISORY_ANNOTATED_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_table"
+  ]);
+  function annotateAdvisory(action, result) {
+    if (!ADVISORY_ANNOTATED_ACTIONS.has(action)) return result;
+    if (result === null || typeof result !== "object" || Array.isArray(result)) return result;
+    const existing = result;
+    if ("authState" in existing || "handoff" in existing) return result;
+    let text;
+    try {
+      text = detectionText();
+    } catch {
+      return result;
+    }
+    const handoff = detectHandoff(text);
+    const loginRequired = detectAuthWall(text);
+    if (!handoff && !loginRequired) return result;
+    return {
+      ...existing,
+      ...loginRequired ? { authState: "login_required" } : {},
+      ...handoff ? { handoff } : {}
+    };
   }
   function takeSnapshot(scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
     const roots = scopeSelector ? [...document.querySelectorAll(scopeSelector)] : document.body ? [document.body] : [];
@@ -154,7 +413,8 @@
             const input = el;
             info.type = input.type;
             if (input.placeholder) info.placeholder = input.placeholder;
-            if (input.value) info.value = input.value.slice(0, 100);
+            const value = reportableValue(input, input.value, 100);
+            if (value !== void 0) info.value = value;
             if (input.type === "checkbox" || input.type === "radio") {
               info.checked = input.checked;
             }
@@ -162,12 +422,14 @@
           if (tag === "textarea") {
             const ta = el;
             if (ta.placeholder) info.placeholder = ta.placeholder;
-            if (ta.value) info.value = ta.value.slice(0, 200);
+            const value = reportableValue(ta, ta.value, 200);
+            if (value !== void 0) info.value = value;
           }
           if (tag === "select") {
             const select = el;
             info.options = [...select.options].map((o) => ({ value: o.value, text: o.text }));
-            info.value = select.value;
+            const value = reportableValue(select, select.value, 100);
+            if (value !== void 0) info.value = value;
           }
           if (tag === "a") {
             info.href = el.href;
@@ -349,9 +611,9 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   }
   function fillElement(locator, value) {
     const el = findElementOrThrow(locator);
-    const previousValue = el.value;
+    const previousValue = reportableValue(el, el.value, 100);
     highlightElement(el);
-    showStatus(`Fill: "${value.slice(0, 30)}"`, "info");
+    showStatus(`Fill: ${fieldLabel(el)}`, "info");
     const nativeSetter = Object.getOwnPropertyDescriptor(
       el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       "value"
@@ -367,7 +629,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     return {
       success: true,
       message: `Filled field with "${value.slice(0, 50)}"`,
-      previousValue: previousValue || void 0
+      previousValue
     };
   }
   var DROPDOWN_OPEN_TIMEOUT_MS = 1500;
@@ -526,7 +788,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
         `${describeElement(el)} is not a dropdown: it is not a <select>, has no combobox/listbox role, and owns no options. If this is a text field use fill; if the control opens a menu, click it and take a snapshot to see what appeared.`
       );
     }
-    showStatus(`Select: "${value}"`, "info");
+    showStatus(`Select: ${fieldLabel(el)}`, "info");
     el.scrollIntoView({ behavior: "instant", block: "center" });
     if (el.getAttribute("aria-expanded") !== "true" && optionsFor(el).length === 0) {
       dispatchClickSequence(el);
@@ -684,11 +946,38 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     inline.innerHTML = sameOriginFrameHtml(frame);
     return inline;
   }
+  function redactSensitiveValueAttributes(root) {
+    const candidates = root.tagName === "INPUT" || root.tagName === "TEXTAREA" || root.tagName === "SELECT" ? [root, ...root.querySelectorAll("input, textarea, select")] : [...root.querySelectorAll("input, textarea, select")];
+    for (const el of candidates) {
+      if (!hasSensitiveValue(el)) continue;
+      if (el.tagName === "TEXTAREA" && el.textContent) {
+        el.textContent = REDACTED_VALUE;
+      }
+      if (!el.getAttribute("value")) continue;
+      el.setAttribute("value", REDACTED_VALUE);
+    }
+  }
+  function sensitiveValuesIn(scope) {
+    const root = scope ?? document.body;
+    if (!root) return [];
+    const fields = [
+      ...root.matches?.("input, textarea, select") ? [root] : [],
+      ...root.querySelectorAll("input, textarea, select")
+    ];
+    const values = [];
+    for (const el of fields) {
+      if (!hasSensitiveValue(el)) continue;
+      const value = el.value || el.textContent || "";
+      if (value.length > 2) values.push(value);
+    }
+    return values;
+  }
   function serializeElementWithFrames(element) {
     if (element.tagName === "IFRAME") {
       return inlineFrameElement(element, element.ownerDocument).outerHTML;
     }
     const clone = element.cloneNode(true);
+    redactSensitiveValueAttributes(clone);
     const liveFrames = [...element.querySelectorAll("iframe")];
     const clonedFrames = [...clone.querySelectorAll("iframe")];
     for (let i = 0; i < liveFrames.length; i += 1) {
@@ -711,12 +1000,18 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   }
   function extractText(selector) {
     let text;
+    let scope;
     if (selector) {
       const el = document.querySelector(selector);
       if (!el) throw new Error(`Element not found: ${selector}`);
+      scope = el;
       text = el.innerText ?? el.textContent ?? "";
     } else {
+      scope = document.body;
       text = document.body.innerText ?? "";
+    }
+    for (const secret of sensitiveValuesIn(scope)) {
+      text = text.split(secret).join(REDACTED_VALUE);
     }
     if (text.length > MAX_EXTRACT_TEXT_SIZE) {
       return text.slice(0, MAX_EXTRACT_TEXT_SIZE) + `
@@ -751,7 +1046,13 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
       if (headers.length > 0 && row.join("") === headers.join("")) continue;
       rows.push(row);
     }
-    return { headers, rows, rowCount: rows.length };
+    const secrets = sensitiveValuesIn(table);
+    const scrub = (cell) => secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), cell);
+    return {
+      headers: headers.map(scrub),
+      rows: rows.map((row) => row.map(scrub)),
+      rowCount: rows.length
+    };
   }
   function scrollPage(payload) {
     const direction = payload.direction;
@@ -1022,10 +1323,16 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
   function getVisibleText(el) {
     if (el.tagName === "INPUT") {
       const input = el;
+      if (hasSensitiveValue(input)) {
+        return input.placeholder || input.getAttribute("aria-label") || (input.value ? REDACTED_VALUE : null);
+      }
       return input.value || input.placeholder || input.getAttribute("aria-label") || null;
     }
     if (el.tagName === "TEXTAREA") {
       const ta = el;
+      if (hasSensitiveValue(ta)) {
+        return ta.placeholder || ta.getAttribute("aria-label") || (ta.value ? REDACTED_VALUE : null);
+      }
       return ta.value || ta.placeholder || null;
     }
     const text = el.innerText?.trim();

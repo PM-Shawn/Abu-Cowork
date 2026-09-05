@@ -442,6 +442,36 @@ const TAKEOVER_GATED_ACTIONS = new Set([
  */
 const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
 
+/**
+ * ## Execution-time origin pin (U5)
+ *
+ * Abu's approval gate resolves WHICH PAGE an action targets, decides, and then
+ * the call travels here. In between, the page can move — a server redirect, a
+ * `window.location`, a meta refresh — and until this check existed nothing
+ * rechecked: a click approved for `https://shop.example.com` executed on
+ * whatever the tab had drifted to. That is a TOCTOU gap, and an unattended run
+ * is exactly where nobody notices it.
+ *
+ * The gate stamps the approved origin into `_meta['abu/expectedOrigin']`
+ * (never the tool's input schema, so the model can neither read nor forge it);
+ * this set names the actions that must match it before executing.
+ *
+ * Two deliberate exemptions:
+ * - READ-ONLY actions (snapshot/screenshot/extract/scroll/…): they change
+ *   nothing, and the run's site verdict already gated whether it may read at
+ *   all. A drifted read returns a page the model can see is different.
+ * - `navigate` ITSELF: its target IS the thing the gate approved, and the tab's
+ *   current origin is by definition the page it is leaving. Pinning it would
+ *   refuse every navigation away from anywhere.
+ */
+const ORIGIN_PINNED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'execute_js',
+]);
+
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
 const userInteractionAt = new Map();
 
@@ -807,12 +837,233 @@ function backoffDelayForLevel(level) {
   return Math.min(BACKOFF_BASE_MS * 2 ** (level - 1), BACKOFF_CAP_MS);
 }
 
-function originOf(urlString) {
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * produces, so the pin compares like with like: http(s) only, host lowercased
+ * by URL, default ports dropped by URL, and a trailing FQDN dot stripped —
+ * `evil.com.` and `evil.com` resolve to one host over DNS and must not be two
+ * different origins here either.
+ *
+ * Returns null for anything unparseable or non-http(s) (`about:blank`,
+ * `chrome-error://…`), which the pin treats as a mismatch. That is deliberate:
+ * a tab that crashed onto an error page is not the page the user approved.
+ *
+ * ## The ONLY origin spelling in this file (M2)
+ *
+ * There used to be a second one — a bare `new URL(u).origin` used by the 429
+ * backoff — and the two disagreed on exactly the inputs that matter: a
+ * trailing-FQDN-dot host got one key for the backoff and a different key for
+ * the login flag, and a non-http URL got the literal string `'null'` as a
+ * backoff key shared by every such page. Both maps in this file are keyed
+ * through here now, so "same site" means one thing.
+ */
+function normalizedOriginOf(urlString) {
   try {
-    return new URL(String(urlString || '')).origin;
+    const parsed = new URL(String(urlString || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
   } catch {
     return null;
   }
+}
+
+/**
+ * Enforce the U5 origin pin for one action. Throws (which the transport turns
+ * into a tool error the model reads) when the tab is no longer on the page the
+ * approval was given for.
+ *
+ * ## Both run modes COMPARE (review ruling I3)
+ *
+ * The first round scoped the comparison to unattended runs, on the theory that
+ * a watching human is their own control. They are not: the refusal only ever
+ * fires when the page genuinely drifted CROSS-ORIGIN between approval and
+ * execution, which is a bug in every run mode, and nobody perceives a
+ * sub-second redirect landing before their approved click. So a carried pin is
+ * checked whatever the mode.
+ *
+ * Only the MISSING-value rule stays unattended-only. An unattended pinned
+ * action with no `expectedOrigin` is refused — the gate never approves one (an
+ * unattended state-changing call requires a resolved, explicitly-allowed
+ * origin), so a missing pin means the chain broke, and absence must never be
+ * the permissive branch. An ATTENDED call that carried no pin keeps its exact
+ * pre-U5 path instead, which is what preserves attended byte-compat for every
+ * call shape that existed before this field.
+ *
+ * `payload.unattended` / `payload.expectedOrigin` are stamped by Abu's own
+ * approval gate over `_meta`, never the model-visible tool schema.
+ */
+function assertOriginPin(action, payload, view) {
+  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    if (payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
+        'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'
+    );
+  }
+  const current = normalizedOriginOf(view.webContents.getURL());
+  if (current === expected) return;
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, ` +
+      `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a ` +
+      'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier ' +
+      'approval does not carry over to a different site.'
+  );
+}
+
+/**
+ * ## Login-expiry detection (U6 / PRD F2.4)
+ *
+ * An unattended run that walks into an expired session does the worst possible
+ * thing today: it keeps clicking. Every click lands on a login wall, the run
+ * burns its turns, and nobody is told the one thing that would fix it — "log
+ * in again". So the main process records, per ORIGIN, that the site is asking
+ * for a login, and `get_tabs` reports it as `authState: 'login_required'`.
+ *
+ * ## Two signals, both main-process-derived
+ *
+ * 1. **An HTTP auth challenge on a MAIN-FRAME response.** A 401 always; a 403
+ *    only when it carries `WWW-Authenticate`. A bare 403 is "you may not have
+ *    this", which logging in again does not fix, and flagging it would send
+ *    the model to ask the user for a login they already have. Sub-resources are
+ *    excluded (the filter already narrows to `mainFrame`): an XHR 401 from a
+ *    background poller says nothing about whether the PAGE is usable.
+ * 2. **A navigation committing on a login-shaped URL** (`did-navigate`). This
+ *    is the redirect-to-login case, which returns 200 and therefore has no
+ *    HTTP signal at all.
+ *
+ * Both are ADVISORY inputs — they can make the gate refuse or make the model
+ * hand back, and they can never widen authorization (see the shell gate in
+ * `registry.ts`, where the flag is only ever read on the deny side).
+ *
+ * ## What a page CAN do to this flag (M1 — stated honestly)
+ *
+ * Not "beyond page influence". A page can clear its OWN origin's flag by
+ * navigating itself somewhere that answers 2xx (`location.href = '/anything'`),
+ * and an SPA can clear a `login-page`-sourced flag by routing away from the
+ * login URL. Both are acceptable because clearing only restores the PRE-U6
+ * baseline — the run goes back to acting under the master switch, the site
+ * verdict, the operation policy and the execution-time origin pin, none of
+ * which this flag touches. It can never widen past that baseline. Setting is
+ * the direction that is kept out of a page's reach: `did-navigate-in-page`
+ * (a `pushState`, which a page fires at will) may CLEAR but never SET.
+ *
+ * ## Three exits, because one was not enough (I1)
+ *
+ * 1. **A 2xx main-frame response on the same origin.** "The user logged in and
+ *    the page came back", as seen from HTTP.
+ *    Ordering works out because Chromium delivers headers BEFORE
+ *    `did-navigate`, so a 200 on `/login` clears and is then immediately
+ *    re-flagged by the URL shape, while a 200 on `/dashboard` clears and stays
+ *    clear.
+ * 2. **Routing off the login page**, for a `login-page`-sourced flag only. The
+ *    SPA case has no exit otherwise: `POST /api/login` is an XHR (excluded by
+ *    `types: ['mainFrame']`) and the redirect to `/dashboard` is a
+ *    `history.replaceState` (a `did-navigate-in-page`), so NO main-frame 2xx
+ *    ever happens and rule 1 never fires. Without this, an unattended run kept
+ *    refusing "the session has expired" after the user had signed in exactly
+ *    as asked. Scoped to `login-page` on purpose: an `auth-challenge` flag must
+ *    NOT be cleared by the very navigation that carried the 401 (the error page
+ *    commits a `did-navigate` on a non-login URL microseconds later).
+ * 3. **Staleness.** `at` is read, not just stored: a flag older than
+ *    `LOGIN_REQUIRED_TTL_MS` is not evidence about now. Expired entries are
+ *    pruned on read and on write, so the map cannot grow across origins that
+ *    logged out once and were never visited again — the same discipline
+ *    `originBackoff` above already applies, which this map was missing.
+ */
+const LOGIN_REQUIRED_TTL_MS = 10 * 60 * 1000;
+const LOGIN_PAGE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|oauth2|oauth|login|sso|auth)(?:[/_.-]|$)/i;
+
+/** origin -> { at: ts, source: 'auth-challenge' | 'login-page' }. */
+const loginRequiredOrigins = new Map();
+
+/**
+ * A deliberately small, segment-anchored list (`/authors`, `/authentic-brands`
+ * and `/ssometimes` must not match). Misses are preferred to false positives:
+ * a miss leaves today's behavior, a false positive tells the user their
+ * session expired when it did not.
+ */
+function isLoginPageUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(String(urlString || ''));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  let pathname = parsed.pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return LOGIN_PAGE_PATH_PATTERN.test(pathname);
+}
+
+/** 401 always; 403 only with an auth challenge header (see the module note). */
+function isAuthChallengeResponse(details) {
+  if (details.statusCode === 401) return true;
+  if (details.statusCode !== 403) return false;
+  const headers = details.responseHeaders;
+  if (!headers || typeof headers !== 'object') return false;
+  return Object.keys(headers).some((name) => name.toLowerCase() === 'www-authenticate');
+}
+
+/** Drop every entry past its TTL. Cheap: this map holds one key per origin. */
+function pruneLoginRequired() {
+  const now = clock.now();
+  for (const [origin, entry] of loginRequiredOrigins) {
+    if (now - entry.at >= LOGIN_REQUIRED_TTL_MS) loginRequiredOrigins.delete(origin);
+  }
+}
+
+function noteLoginRequired(urlString, source) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  pruneLoginRequired();
+  loginRequiredOrigins.set(origin, { at: clock.now(), source });
+}
+
+function clearLoginRequired(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (origin) loginRequiredOrigins.delete(origin);
+}
+
+/**
+ * Exit 2 (see the module note): the tab routed off the login page. Only a
+ * `login-page`-sourced flag may be cleared this way — an `auth-challenge` flag
+ * would otherwise be erased by the `did-navigate` that carries the 401 itself.
+ */
+function clearLoginPageFlagOnNavigation(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  const entry = loginRequiredOrigins.get(origin);
+  if (entry && entry.source === 'login-page') loginRequiredOrigins.delete(origin);
+}
+
+/**
+ * `'login_required'` or null. Null (rather than a `'ok'` sentinel) so callers
+ * can spread the key in only when there is something to say — a listing for a
+ * healthy tab keeps byte-for-byte the shape it had before this existed.
+ *
+ * Prunes on read, like `backoffRemainingMs`: a stale flag must not answer a
+ * question about now, and a listing is the one path guaranteed to run.
+ */
+function authStateForUrl(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return null;
+  const entry = loginRequiredOrigins.get(origin);
+  if (!entry) return null;
+  if (clock.now() - entry.at >= LOGIN_REQUIRED_TTL_MS) {
+    loginRequiredOrigins.delete(origin);
+    return null;
+  }
+  return 'login_required';
 }
 
 function registerRateLimitHit(origin) {
@@ -980,11 +1231,22 @@ function browserSessionForViews() {
   // would silently REPLACE this one (last registration wins), not add to it.
   browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['mainFrame'] }, (details, callback) => {
     if (details.resourceType === 'mainFrame') {
-      const origin = originOf(details.url);
+      // ONE origin spelling for both halves of this listener (M2) — see
+      // `normalizedOriginOf`.
+      const origin = normalizedOriginOf(details.url);
       if (details.statusCode === 429) {
         registerRateLimitHit(origin);
       } else if (details.statusCode >= 200 && details.statusCode < 300) {
         clearRateLimit(origin);
+      }
+      // U6 / F2.4 — the login-expiry half of the same listener. It must live in
+      // THIS callback body, not a second registration: Electron keeps only the
+      // last `onHeadersReceived` listener per session, so registering another
+      // one would silently delete the backoff above.
+      if (isAuthChallengeResponse(details)) {
+        noteLoginRequired(details.url, 'auth-challenge');
+      } else if (details.statusCode >= 200 && details.statusCode < 300) {
+        clearLoginRequired(details.url);
       }
     }
     callback({ cancel: false });
@@ -1109,6 +1371,22 @@ function configureBrowserView(id, view) {
   });
   contents.on('did-navigate', onNav);
   contents.on('did-navigate-in-page', onNav);
+  // U6 / F2.4 — the redirect-to-login case, which answers 200 and so leaves no
+  // HTTP signal.
+  //
+  // SETTING is restricted to real navigations: `did-navigate-in-page` is a
+  // `pushState`, i.e. something a page can fire at will, and a page must not be
+  // able to author this flag for itself. CLEARING listens to both, because
+  // clearing only ever restores the pre-U6 baseline (module note, M1) and the
+  // SPA sign-in that this fixes IS a `replaceState` (I1).
+  const onLoginShapeNavigation = (_event, navUrl) => {
+    if (isLoginPageUrl(navUrl)) noteLoginRequired(navUrl, 'login-page');
+    else clearLoginPageFlagOnNavigation(navUrl);
+  };
+  contents.on('did-navigate', onLoginShapeNavigation);
+  contents.on('did-navigate-in-page', (_event, navUrl) => {
+    if (!isLoginPageUrl(navUrl)) clearLoginPageFlagOnNavigation(navUrl);
+  });
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
     for (const [ownerKey, tabId] of activeTabIdByOwner) {
@@ -1306,6 +1584,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: contents.getURL(),
       title: contents.getTitle(),
       legacy: isLegacyOwner(tabOwner),
+      authState: authStateForUrl(contents.getURL()),
     });
   }
   // The reclaim block lives HERE rather than at the call site so every path
@@ -1320,6 +1599,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: view.webContents.getURL(),
       title: view.webContents.getTitle(),
       legacy: isLegacyOwner(owner),
+      authState: authStateForUrl(view.webContents.getURL()),
     });
   }
   if (tabs.length > 0) {
@@ -1526,6 +1806,9 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
+    // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
+    // for healthy tabs is byte-for-byte what it was before this existed.
+    const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
     return {
       summary: {
         totalWindows: 1,
@@ -1535,6 +1818,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
+        ...(currentAuthState ? { authState: currentAuthState } : {}),
         ...(note ? { note } : {}),
       },
       windows: [{
@@ -1546,6 +1830,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
           title: tab.title,
           active: tab.tabId === currentTabId,
           isCurrentTab: tab.tabId === currentTabId,
+          ...(tab.authState ? { authState: tab.authState } : {}),
         })),
       }],
     };
@@ -1615,8 +1900,8 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // `navigateAutomationTab()`, which is the right place to report it.
     const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
     const backoffOrigin = isGotoNavigate
-      ? originOf(payload.url)
-      : originOf(view.webContents.getURL());
+      ? normalizedOriginOf(payload.url)
+      : normalizedOriginOf(view.webContents.getURL());
     const remainingMs = backoffRemainingMs(backoffOrigin);
     if (remainingMs > 0) {
       throw new Error(
@@ -1630,6 +1915,12 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // filed as automation's own and the wait would end after one quiet poll.
     await withAiAttributionLifted(scope, () => awaitUserIdle(match.id, signal));
   }
+
+  // As LATE as possible, and after `awaitUserIdle`: the whole point is to
+  // compare against where the tab is at the moment of acting, and the idle wait
+  // above can last long enough for the page to move under it. Nothing
+  // side-effecting has happened yet at this line.
+  assertOriginPin(action, payload, view);
 
   // Same rule as the listing's promotion: a read-only look at the user's pane
   // tab mid-window must not leave that tab as this owner's current one, or the

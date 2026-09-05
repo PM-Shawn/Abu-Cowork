@@ -43,6 +43,26 @@ const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
 const ABU_RUN_META_KEY = 'abu/runKey';
 
 /**
+ * MCP request `_meta` key carrying the ORIGIN the approval gate decided on for
+ * this exact call (U5). The host compares it against the tab's actual URL
+ * immediately before executing a state-changing action, closing the window
+ * between "approved for shop.example.com" and "the page redirected somewhere
+ * else". Rides `_meta`, never the tool's input schema — the model must be able
+ * to neither read nor forge it. Mirrors `ABU_EXPECTED_ORIGIN_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
+
+/**
+ * MCP request `_meta` key marking a call that came from an UNATTENDED run.
+ * Present only when true. It is what makes the origin pin fail-closed: without
+ * it the host cannot tell "attended, no pin needed" from "unattended and the
+ * pin went missing", and would have to choose one of the two wrong answers.
+ * Mirrors `ABU_UNATTENDED_META_KEY` in `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_UNATTENDED_META_KEY = 'abu/unattended';
+
+/**
  * The Chrome-extension bridge. Named here because it is the one MCP server
  * whose tab bookkeeping outlives a single tool call, so the app has to tell it
  * when a run is over. (`abu-browser` — the built-in Electron host — is told the
@@ -855,6 +875,13 @@ export class MCPClientManager {
        * (create), so every existing caller is unchanged.
        */
       createBrowserTabIfEmpty?: boolean;
+      /**
+       * Browser servers only: the origin the approval gate decided on for this
+       * call, and whether the run is unattended. Together they are the
+       * execution-time origin pin — see `ABU_EXPECTED_ORIGIN_META_KEY`.
+       */
+      expectedOrigin?: string;
+      unattended?: boolean;
     }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
@@ -908,6 +935,14 @@ export class MCPClientManager {
       }
       if (opts?.createBrowserTabIfEmpty === false) {
         meta[ABU_CREATE_IF_EMPTY_META_KEY] = false;
+      }
+      if (opts?.expectedOrigin) {
+        meta[ABU_EXPECTED_ORIGIN_META_KEY] = opts.expectedOrigin;
+      }
+      // Only when true: an attended call keeps its exact pre-U5 `_meta` shape,
+      // and the host reads "absent ⇒ attended ⇒ no pin enforcement".
+      if (opts?.unattended === true) {
+        meta[ABU_UNATTENDED_META_KEY] = true;
       }
       if (Object.keys(meta).length > 0) {
         params._meta = meta;

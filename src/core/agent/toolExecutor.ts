@@ -180,6 +180,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     imContext: params.imContext,
     authorizationScopeId: params.toolContext.authorizationScopeId,
     runPermissionCeiling: params.toolContext.runPermissionCeiling,
+    initiatedBy: params.toolContext.initiatedBy,
+    reportBrowserDenial: params.toolContext.reportBrowserDenial,
+    reportBrowserAllow: params.toolContext.reportBrowserAllow,
     imReplyTarget: params.toolContext.imReplyTarget,
   });
 

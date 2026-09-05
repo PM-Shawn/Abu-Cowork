@@ -549,6 +549,74 @@ describe('settingsStore labs flags', () => {
     });
   });
 
+  describe('v46 migration (operation-class browser policy + unattended master switch)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+      });
+    });
+
+    it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+
+    it('preserves an already-customized policy rather than overwriting it', () => {
+      const customPolicy = {
+        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+      };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        45,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does NOT re-run for users already at v46', () => {
+      const customPolicy = {
+        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    // I3 (runtime shape validation): a PRESENT-but-malformed policy — e.g.
+    // from hand-edited localStorage, or a future bug that wrote a partial
+    // object — must be clamped to the strictest state per cell, not passed
+    // through as-is (which is exactly what the "preserves an already-
+    // customized policy" test above verifies for a WELL-FORMED policy).
+    it('normalizes a present-but-malformed pre-v46 policy to the strictest cell instead of passing it through', () => {
+      const malformed = {
+        attended: { readOnly: 'allow' /* interactive, scripting missing */ },
+        unattended: { readOnly: 'allow', interactive: 'not-a-real-state', scripting: 'deny' },
+      };
+      const migrated = getMigrate()({ browserOperationPolicy: malformed }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+      });
+    });
+
+    it('coerces a non-boolean allowUnattendedBrowser to false — fail-safe, never silently truthy', () => {
+      const migrated = getMigrate()({ allowUnattendedBrowser: 'true' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+  });
+
   describe('v39 migration', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {

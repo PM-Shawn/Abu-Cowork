@@ -460,6 +460,36 @@
       return false;
     }
   }
+  function normalizedOrigin(href) {
+    try {
+      const parsed = new URL(String(href ?? ""));
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
+      if (!hostname) return null;
+      return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+    } catch {
+      return null;
+    }
+  }
+  async function assertTabOriginPin(tabId2, payload2, getTab = (id2) => chrome.tabs.get(id2)) {
+    const expected = typeof payload2.expectedOrigin === "string" ? payload2.expectedOrigin : "";
+    if (!expected) {
+      if (payload2.unattended !== true) return;
+      throw new Error(
+        "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
+      );
+    }
+    let current;
+    try {
+      current = normalizedOrigin((await getTab(tabId2))?.url);
+    } catch {
+      current = null;
+    }
+    if (current === expected) return;
+    throw new Error(
+      `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
+    );
+  }
   async function handleRequest(request) {
     const { id, action, payload } = request;
     try {
@@ -624,6 +654,7 @@
         }
         case "execute_js": {
           const code = payload.code;
+          await assertTabOriginPin(execTabId, payload);
           const results = await chrome.scripting.executeScript({
             target: { tabId },
             func: (jsCode) => {

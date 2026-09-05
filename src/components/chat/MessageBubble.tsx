@@ -497,7 +497,10 @@ export default function MessageBubble({
       // falls back to the default `general` route and the expert is lost.
       const routedContent = reattachRoutingPrefix(newContent, message);
       announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
-      await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+      await runAgentLoopDispatched(convId, routedContent, {
+        initiatedBy: 'user',
+        ...(imageAttachments ? { images: imageAttachments } : {}),
+      });
     };
 
     // `message` is a user message and, per the invariant documented on
@@ -534,7 +537,7 @@ export default function MessageBubble({
       await runAgentLoopDispatched(
         convId,
         routedContent,
-        imageAttachments ? { images: imageAttachments } : undefined,
+        { initiatedBy: 'user', ...(imageAttachments ? { images: imageAttachments } : {}) },
       );
     };
 
@@ -589,7 +592,10 @@ export default function MessageBubble({
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
         announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
-        await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+        await runAgentLoopDispatched(convId, routedContent, {
+          initiatedBy: 'user',
+          ...(imageAttachments ? { images: imageAttachments } : {}),
+        });
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);

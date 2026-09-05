@@ -103,6 +103,8 @@ export interface AgentRunParams {
     runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
     workspacePathSnapshot?: string | null;
     imContext?: IMContext;
+    /** Who started the run (`'user'` | `'automation'`); see RunInitiator. */
+    initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
     prePersistedUserMessageId?: string;
   };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
@@ -168,6 +170,9 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
     throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
   }
+  if (options.initiatedBy !== undefined && options.initiatedBy !== 'user' && options.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: options.initiatedBy must be 'user' or 'automation'");
+  }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
   }
@@ -222,11 +227,22 @@ function assertAgentRunDigest(params: AgentRunParams): void {
   }
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire.
+ *
+ * Named explicitly rather than left to `JSON.stringify` dropping functions
+ * incidentally: the two browser-denial reporters are a shell-owned
+ * authorization seam (`ToolExecutionContext.reportBrowserDenial`), and "it
+ * happens to serialize away" is not a boundary — the moment one of them became
+ * a serializable value it would silently start travelling. R2, U4 re-review.
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
     reportMetadata: _reportMetadata,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
     ...wireContext
   } = context;
   return wireContext;
@@ -965,6 +981,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       authorizationScopeId: params.options.authorizationScopeId,
       runPermissionCeiling: params.options.runPermissionCeiling,
       imContext: params.options.imContext,
+      initiatedBy: params.options.initiatedBy,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,

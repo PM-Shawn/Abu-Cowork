@@ -532,7 +532,19 @@ class IMChannelRouter {
           capability === 'read_tools' ? ['read'] : ['read', 'write'],
         );
       }
-      const baseCallbacks = getCallbacksForLevel(capability);
+      const baseCallbacks = getCallbacksForLevel(capability, {
+        conversationId: session.conversationId,
+        // Where an approval request would be delivered once the unattended
+        // confirmation seam has a real channel behind it.
+        imTarget: {
+          platform: message.platform,
+          channelId: channel.id,
+          chatId: message.replyContext.chatId,
+          // Only the person whose message started this run may answer an
+          // approval it raises — in a group chat everyone else is a bystander.
+          senderId: message.senderId,
+        },
+      });
       const filePermissionCallback = async (...args: Parameters<typeof baseCallbacks.filePermissionCallback>) => {
         const [request] = args;
         const granted = await baseCallbacks.filePermissionCallback(...args);
@@ -565,6 +577,9 @@ class IMChannelRouter {
             ownedAbortController = controller;
           },
           runPermissionCeiling: buildIMRunPermissionCeiling(capability),
+          // An inbound chat message is automation from the desktop's point of
+          // view: nobody is at the screen to answer a dialog.
+          initiatedBy: 'automation',
           imContext: {
             platform: message.platform,
             workspacePath,

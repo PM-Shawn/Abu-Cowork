@@ -155,6 +155,27 @@ export interface TabInfo {
   windowFocused: boolean;
 }
 
+// --- Login walls and dead ends (U6 / PRD F2.4 + F2.5) ---
+
+/**
+ * A step no automation can complete, only a person can. Detected from PAGE
+ * FEATURES only — never from model text, and never as an authorization input
+ * (see the detection module's doc in `content/index.ts`).
+ */
+export type PageHandoffKind =
+  | 'captcha'
+  | 'qr_login'
+  | 'sms_code'
+  | 'mfa_push'
+  | 'wechat_external_link'
+  | 'oauth_popup';
+
+export interface PageHandoff {
+  kind: PageHandoffKind;
+  /** LLM-facing English: what the human has to do, and why not to retry. */
+  hint: string;
+}
+
 // --- Action Results ---
 
 /** What an action actually acted on — lets a caller spot a wrong target. */

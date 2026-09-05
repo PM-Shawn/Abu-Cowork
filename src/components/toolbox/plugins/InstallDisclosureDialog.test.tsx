@@ -170,7 +170,10 @@ describe('InstallDisclosureDialog', () => {
     });
 
     const notice = screen.getByTestId('plugin-disclosure-ignored');
-    expect(notice.textContent).not.toContain('agents');
+    // The LIST the sentence interpolates is what must never name agents. The
+    // sentence itself now does name them — as a payload that still installs.
+    expect(notice.textContent).toContain('commands、hooks');
+    expect(notice.textContent).not.toMatch(/agents、|、agents/);
   });
 
   it('flags payload types Abu does not consume so nothing silently disappears', () => {

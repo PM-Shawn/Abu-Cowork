@@ -1273,7 +1273,7 @@ const zhCN: TranslationDict = {
     pluginsDisclosureAgentEmptyPrompt: '没有提示词，已跳过',
     pluginsDisclosureCapabilities: '声明的能力',
     pluginsDisclosureIgnoredTitle: '阿布暂不支持的内容',
-    pluginsDisclosureIgnoredHint: '这个插件还带了 {payloads}，阿布暂不使用这些（技能和连接器会正常装）。',
+    pluginsDisclosureIgnoredHint: '这个插件还带了 {payloads}，阿布暂不使用这些（技能、连接器和代理会正常装）。',
     pluginsDisclosureSymlinkTitle: '不会安装的链接',
     pluginsDisclosureSymlinkHint: '这个插件包里有阿布不会复制的链接（{paths}）。链接可能指向插件包之外，顺着它读下去会把插件本不该拥有的文件也一起装进来。其余内容会正常安装。',
     pluginsDisclosureSymlinkSeparator: '、',

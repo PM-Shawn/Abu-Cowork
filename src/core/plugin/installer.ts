@@ -40,6 +40,7 @@ import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fs
 import { findInstalled, type InstalledPlugin } from './installedStore';
 import { convertSingleFileAgent, renderAgentMd } from './agentPayload';
 import { installAgentFromFolder } from '../agent/installer';
+import { agentRegistry, getBuiltinAgentNames } from '../agent/registry';
 import { isSafeSkillDirName } from '../skill/skillDirName';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
@@ -221,12 +222,43 @@ async function readPayloadAgents(scan: PackageScan, packageDir: string): Promise
 }
 
 /**
+ * Every agent name this machine already answers to.
+ *
+ * The registry's own scan, not a second one: it keys agents by the frontmatter
+ * `name`, which is the only thing that decides who wins — a directory named
+ * `my-reviewer` whose AGENT.md declares `name: reviewer` owns `reviewer`.
+ * Re-running it is how the app itself refreshes; it rebuilds from disk and
+ * registers nothing new.
+ *
+ * A scan that cannot run narrows this to nothing rather than throwing: the
+ * built-in set and the directory test below still stand, and a disclosure that
+ * crashed would block an install over a check that is one of three.
+ */
+async function takenAgentNames(): Promise<ReadonlySet<string>> {
+  try {
+    return new Set((await agentRegistry.discoverAgents()).map((agent) => agent.name));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+/**
  * Mark the agents that will be skipped, in the order the screen lists them.
+ *
+ * A conflict is judged by NAME, not by directory. Agent identity is the
+ * frontmatter `name`: the registry registers built-ins in code (no directory at
+ * all) and then scans, keying everything on that name, last writer wins. So a
+ * package shipping `agents/helper.md` with `name: abu` would replace the
+ * default assistant, and one declaring `name: reviewer` would shadow a user's
+ * `~/.abu/agents/my-reviewer`, in both cases without any same-named directory
+ * for a path test to find. The directory test stays too — it is what
+ * `installAgentFromFolder` will actually hit.
  *
  * `previouslyContributed` are the names THIS plugin's install record already
  * claims: an update is planned while the old version is still installed, so its
- * own agent directories are sitting there and reading them as "already taken"
- * would tell the user their update drops every agent it ships.
+ * own agents are on disk and in the registry, and reading them as "already
+ * taken" would tell the user their update drops every agent it ships. A
+ * built-in name is exempt from that exemption — no plugin can ever own one.
  */
 async function discloseAgents(
   agents: PayloadAgent[],
@@ -236,6 +268,8 @@ async function discloseAgents(
   // The expression `installAgentFromFolder` builds its target with, so the
   // conflict this reports is the one that install would actually hit.
   const agentsRoot = joinPath(await homeDir(), '.abu', 'agents');
+  const builtinNames = getBuiltinAgentNames();
+  const taken = await takenAgentNames();
 
   const out: PluginAgentDisclosure[] = [];
   for (const agent of agents) {
@@ -245,7 +279,12 @@ async function discloseAgents(
       disclosure.conflict = 'unsafe-name';
     } else if (agent.emptyPrompt) {
       disclosure.conflict = 'empty-prompt';
-    } else if (!previouslyContributed.has(agent.name) && (await exists(joinPath(agentsRoot, agent.name)))) {
+    } else if (builtinNames.has(agent.name)) {
+      disclosure.conflict = 'exists';
+    } else if (
+      !previouslyContributed.has(agent.name) &&
+      (taken.has(agent.name) || (await exists(joinPath(agentsRoot, agent.name))))
+    ) {
       disclosure.conflict = 'exists';
     }
     out.push(disclosure);

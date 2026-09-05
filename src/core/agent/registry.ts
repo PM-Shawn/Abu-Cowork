@@ -8,6 +8,33 @@ import { normalizeDeclaredSkills } from './prompts/preloadedSkills';
 const BROWSER_AGENT_TOOL_PATTERNS = ['abu-browser__*', 'abu-browser-bridge__*'];
 
 /**
+ * The agents `AgentRegistry.registerBuiltins` registers in code — the ones that
+ * exist without any file on disk.
+ *
+ * Exported as a plain set because a caller that only needs to know whether a
+ * name is already spoken for (the plugin installer's conflict check: a package
+ * shipping `name: abu` must not be able to replace the default assistant)
+ * should not have to construct a registry or rescan the disk. Pure: reads
+ * nothing, registers nothing.
+ *
+ * `registry.managed.test.ts` pins this set against what `registerBuiltins`
+ * actually registers, so a new built-in cannot drift out of it.
+ */
+const BUILTIN_AGENT_NAMES: ReadonlySet<string> = new Set([
+  'abu',
+  '高级开发工程师',
+  '产品经理',
+  '数据分析师',
+  '公众号编辑',
+  'HR 招聘官',
+]);
+
+/** @see BUILTIN_AGENT_NAMES */
+export function getBuiltinAgentNames(): ReadonlySet<string> {
+  return BUILTIN_AGENT_NAMES;
+}
+
+/**
  * Parse an AGENT.md file: YAML frontmatter + system prompt body
  */
 export function parseAgentFile(raw: string, filePath: string): SubagentDefinition | null {

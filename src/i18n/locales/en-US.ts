@@ -1271,7 +1271,7 @@ const enUS: TranslationDict = {
     pluginsDisclosureAgentEmptyPrompt: 'No prompt, skipped',
     pluginsDisclosureCapabilities: 'Declared capabilities',
     pluginsDisclosureIgnoredTitle: "Not used by Abu",
-    pluginsDisclosureIgnoredHint: 'This plugin also ships {payloads}, which Abu does not use (skills and connectors still install).',
+    pluginsDisclosureIgnoredHint: 'This plugin also ships {payloads}, which Abu does not use (skills, connectors and agents still install).',
     pluginsDisclosureSymlinkTitle: 'Links that will not be installed',
     pluginsDisclosureSymlinkHint: 'This package contains links Abu will not copy ({paths}). A link can point outside the package, and following one could pull in a file the plugin does not own. Everything else installs normally.',
     pluginsDisclosureSymlinkSeparator: ', ',

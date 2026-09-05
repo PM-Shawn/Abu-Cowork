@@ -94,8 +94,18 @@ function skipReason(
       return tb.pluginsDisclosureAgentUnsafeName;
     case 'empty-prompt':
       return tb.pluginsDisclosureAgentEmptyPrompt;
-    default:
+    case undefined:
+      // No conflict: the agent installs, so no tag and no grey.
       return undefined;
+    default: {
+      // Exhaustiveness guard — a new `conflict` kind must bring its own copy
+      // here. Falling through to `undefined` would render an agent that will be
+      // SKIPPED as one that installs, which is the one thing this dialog exists
+      // to prevent. The assignment makes that a compile error first; at runtime
+      // the raw kind still greys the row rather than hiding the skip.
+      const _exhaustive: never = conflict;
+      return _exhaustive;
+    }
   }
 }
 

@@ -368,6 +368,14 @@ class TriggerEngine {
         allowedTools: callbacks.allowedTools,
         authorizationScopeId,
         runPermissionCeiling: buildTriggerRunPermissionCeiling(actionWithWorkspace),
+        // F1 — the same target `resolveTriggerCallbacks` closes over, also
+        // published as run context: the browser gate builds its own seam
+        // request and never calls that callback, so without this a triggered
+        // browser 「每次询问」 refused itself as `no_binding`.
+        unattendedApproval: {
+          ...(approvalTarget !== null ? { imTarget: approvalTarget } : {}),
+          runLabel: trigger.name,
+        },
         initiatedBy: 'automation',
       });
 

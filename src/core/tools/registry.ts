@@ -1317,6 +1317,30 @@ export async function checkToolApproval(
         // round-trip), never a dialog. Route 'ask' through the single seam
         // that owns that question instead of the per-entry-point callback.
         if (policyVerdict === 'ask') {
+          /**
+           * F1 (2026-09-05 review) — WHERE to ask, and what to call the run.
+           *
+           * The scheduler and the trigger engine compute both from the
+           * automation's own IM output binding, but until now they could only
+           * hand them to `createUnattendedConfirmation`, whose closure this
+           * branch deliberately does not go through (it needs `audit.fresh`
+           * and `userFacingReason`; a boolean callback carries neither). The
+           * seam then fell back to "the IM session bound to this
+           * conversation", and an automatic run mints a fresh conversation
+           * every time — so every browser 「每次询问」 in a scheduled or
+           * triggered run refused itself as `no_binding`, with nobody ever
+           * asked.
+           *
+           * Read off the RUN, through the same loop-context channel this file
+           * already uses for the run's abort signal: shell-owned, never
+           * serialized, and impossible for a tool input or a sidecar-supplied
+           * context to forge. Absent (an interactive run, or an IM-inbound one
+           * that already has a session binding) keeps the previous fallback
+           * exactly as it was.
+           */
+          const unattendedApproval = toolContext?.loopId !== undefined
+            ? getLoopContext(toolContext.loopId)?.unattendedApproval
+            : undefined;
           const approval = await resolveUnattendedConfirmation({
             info: {
               command: browserActionLabel,
@@ -1350,6 +1374,15 @@ export async function checkToolApproval(
             // that no longer exists.
             ...(toolContext?.abortSignal !== undefined
               ? { abortSignal: toolContext.abortSignal }
+              : {}),
+            // See the `unattendedApproval` doc above. Spread field-by-field so
+            // an absent target stays absent rather than becoming an explicit
+            // `undefined` the seam would have to special-case.
+            ...(unattendedApproval?.imTarget !== undefined
+              ? { imTarget: unattendedApproval.imTarget }
+              : {}),
+            ...(unattendedApproval?.runLabel !== undefined
+              ? { runLabel: unattendedApproval.runLabel }
               : {}),
           });
           /**

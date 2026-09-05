@@ -87,6 +87,10 @@ export interface ToolBatchParams {
   allowedTools?: string[];
   /** Headless IM context to pass through delegate tools into subagent runs. */
   imContext?: IMContext;
+  /** F1 — where an unattended run may ask, published on the loop context so
+   *  gates that build their own approval request (the browser gate) can reach
+   *  the automation's own chat instead of refusing with `no_binding`. */
+  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -178,6 +182,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
     imContext: params.imContext,
+    unattendedApproval: params.unattendedApproval,
     authorizationScopeId: params.toolContext.authorizationScopeId,
     runPermissionCeiling: params.toolContext.runPermissionCeiling,
     initiatedBy: params.toolContext.initiatedBy,

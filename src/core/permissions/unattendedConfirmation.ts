@@ -120,6 +120,31 @@ export interface UnattendedConfirmationRequest {
   abortSignal?: AbortSignal;
 }
 
+/**
+ * Where an unattended run may ask, and what to call it — carried on the RUN
+ * rather than inside one callback's closure.
+ *
+ * F1 (2026-09-05 review) — `createUnattendedConfirmation` used to be the only
+ * carrier of these two values, and it has no side effects: nothing registers
+ * them anywhere, so the ONLY way to see them was to call that callback. The
+ * browser gate does not (by design: it needs `audit.fresh` and
+ * `userFacingReason`, which a boolean callback cannot return, so it builds its
+ * own seam request — see `registry.ts`). Result: every 「每次询问」 browser
+ * action in a scheduled or triggered run refused itself with `no_binding`,
+ * because a fresh automation conversation has no IM session to fall back to,
+ * while five files' worth of unit tests stayed green on the callback path.
+ *
+ * So the target now travels as trusted RUN CONTEXT — `AgentLoopOptions` →
+ * `LoopContext` → the gate — the same channel the gate already uses to reach
+ * the run's abort signal. Shell-owned like `initiatedBy` and `imReplyTarget`:
+ * never read from model input, never taken from a sidecar's copy of a tool
+ * context.
+ */
+export interface UnattendedApprovalContext {
+  imTarget?: UnattendedImTarget;
+  runLabel?: string;
+}
+
 export interface UnattendedConfirmationResult {
   approved: boolean;
   /** Why — recorded in the run's denial log and surfaced to the user. Always

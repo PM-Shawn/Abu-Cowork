@@ -89,6 +89,13 @@ function resolveScheduledRunPermissions(
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
+  /**
+   * F1 — the same approval destination the callback closure carries, returned
+   * so the run can also publish it as trusted run context. Gates that build
+   * their own seam request (the browser gate) never call the callback, so the
+   * closure alone left them with nowhere to ask.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   getDenials: () => string[];
 } {
   // The workspace gets the same rights an interactive chat conversation would
@@ -157,6 +164,11 @@ function resolveScheduledRunPermissions(
     },
     // request_workspace pops a UI dialog a scheduled run can never answer.
     blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+    // Same two values the callback above closes over — see the return type.
+    unattendedApproval: {
+      ...(imTarget !== null ? { imTarget } : {}),
+      runLabel: task.name,
+    },
     getDenials: () => Array.from(denials),
   };
 }
@@ -306,6 +318,11 @@ class SchedulerEngine {
         allowedTools,
         authorizationScopeId,
         runPermissionCeiling,
+        // F1 — published on the run so the browser gate can ask the task's own
+        // chat. The callback above carries the identical values for the gates
+        // that DO go through it; this is the same fact, on the channel the
+        // browser gate can actually read.
+        unattendedApproval: permissions.unattendedApproval,
         // The tick started this run, not a person — unattended even if the
         // user later types into the same conversation (that send is theirs).
         initiatedBy: 'automation',

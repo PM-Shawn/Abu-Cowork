@@ -272,6 +272,12 @@ export interface AgentLoopRunOptions {
   workspacePathSnapshot?: string | null;
   /** Shell-owned outbound identity for IM tools; never accepted from sidecar context. */
   imReplyTarget?: { platform: string; chatId: string };
+  /**
+   * F1 — shell-owned approval destination for this unattended run. Like
+   * `imReplyTarget` it is authority-bearing outbound identity, so it is kept
+   * on the shell session and never accepted from a sidecar-supplied context.
+   */
+  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
@@ -2087,6 +2093,9 @@ export function installShellLoopContext(runId: string, session: RunSession): voi
     imReplyTarget: session.options.imReplyTarget
       ? { ...session.options.imReplyTarget }
       : undefined,
+    // F1 — the browser gate reads this off the loop context; without it a
+    // sidecar-hosted scheduled run asks nobody and refuses with `no_binding`.
+    unattendedApproval: session.options.unattendedApproval,
   });
 }
 
@@ -2959,6 +2968,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             chatId: options.imContext.replyChatId,
           }
         : undefined,
+      unattendedApproval: options?.unattendedApproval,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
     },
     shellAbortController,

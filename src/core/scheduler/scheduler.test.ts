@@ -23,8 +23,11 @@ import type { IMChannel } from '../../types/imChannel';
 import {
   __resetUnattendedConfirmationForTests,
   setUnattendedConfirmationResolver,
+  type UnattendedApprovalContext,
   type UnattendedConfirmationRequest,
 } from '../permissions/unattendedConfirmation';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 
 const getSchedulerToolsMock = vi.fn(() => [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
@@ -1072,5 +1075,184 @@ describe('scheduled runs carry an approval target built from the task', () => {
     }));
 
     expect(captured.current?.imTarget).toBeUndefined();
+  });
+});
+
+/**
+ * F1 (2026-09-05 review) — the approval target has to reach the BROWSER GATE,
+ * not just the confirmation callback.
+ *
+ * The block above pins what the scheduler hands `commandConfirmCallback`. That
+ * was never the whole path: the browser gate in `registry.ts` deliberately
+ * does not go through that callback (it needs the seam's `audit.fresh` and
+ * `userFacingReason`, which a boolean callback cannot return) and builds its
+ * own seam request instead. The target lived only inside
+ * `createUnattendedConfirmation`'s closure, so the gate had none — and every
+ * 「每次询问」 browser action in a scheduled run refused itself as
+ * `no_binding`, while five files of callback-level tests stayed green.
+ *
+ * These drive the REAL gate: real `schedulerEngine.runNow`, real
+ * `resolveUnattendedImTarget`, real `checkToolApproval`, real browser `ask`
+ * branch. Nothing here calls `commandConfirmCallback` — a test that does
+ * cannot see this defect at all.
+ */
+describe('the approval target reaches the browser gate, not just the callback (F1)', () => {
+  function captureSeamRequest(): { current: UnattendedConfirmationRequest | null } {
+    const captured: { current: UnattendedConfirmationRequest | null } = { current: null };
+    setUnattendedConfirmationResolver(async (request) => {
+      captured.current = request;
+      // What a real channel with no binding answers. The assertions are about
+      // what the gate HANDED OVER, so the answer only has to be well-formed.
+      return {
+        approved: false,
+        reason: 'captured',
+        audit: { outcome: 'no-channel', fresh: true },
+      };
+    });
+    return captured;
+  }
+
+  function seedChannel() {
+    useIMChannelStore.setState({
+      channels: {
+        'channel-1': {
+          id: 'channel-1',
+          platform: 'feishu',
+          name: 'Team',
+          appId: 'a',
+          appSecret: 's',
+          capability: 'full',
+          responseMode: 'mention_only',
+          allowedUsers: [],
+          workspacePaths: [],
+          sessionTimeoutMinutes: 0,
+          maxRoundsPerSession: 0,
+          enabled: true,
+          status: 'connected',
+          createdAt: 1,
+        } as IMChannel,
+      },
+    });
+  }
+
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useIMChannelStore.setState({ channels: {} });
+    useSettingsStore.setState({
+      allowUnattendedBrowser: true,
+      browserSitePermissions: { 'https://allowed.example': 'allowed' },
+      browserOperationPolicy: {
+        ...DEFAULT_BROWSER_OPERATION_POLICY,
+        interactive: 'ask',
+      },
+    });
+  });
+
+  afterEach(() => {
+    __resetUnattendedConfirmationForTests();
+    useIMChannelStore.setState({ channels: {} });
+    useSettingsStore.setState({
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+      browserSitePermissions: {},
+    });
+  });
+
+  /**
+   * Drive one real browser tool call out of a real scheduled run.
+   *
+   * The stand-in stops exactly where the verification record allows it to: the
+   * model produced one browser tool call. Everything after that is production
+   * code — including the loop-context install, which is what the runtime does
+   * for real in `executeToolBatch` (in-process) and `installShellLoopContext`
+   * (sidecar-hosted); both copy `options.unattendedApproval` verbatim, and so
+   * does this line, from the same options object the scheduler built.
+   */
+  async function runBrowserAskThroughRealGate(task: ScheduledTask): Promise<void> {
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    getSchedulerToolsMock.mockReturnValueOnce([
+      { name: 'abu-browser__navigate', description: 'browser', inputSchema: { type: 'object', properties: {} } },
+    ] as never);
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId, _msg, options) => {
+      const opts = options as {
+        commandConfirmCallback: never;
+        runPermissionCeiling?: unknown;
+        unattendedApproval?: UnattendedApprovalContext;
+      };
+      const loopId = 'loop-f1-scheduler';
+      const abortController = new AbortController();
+      setLoopContext(loopId, {
+        loopId,
+        conversationId,
+        unattendedApproval: opts.unattendedApproval,
+      } as never);
+      try {
+        await checkToolApproval(
+          'abu-browser__navigate',
+          { tabId: 1, url: 'https://allowed.example/report' },
+          {
+            conversationId,
+            loopId,
+            interactionMode: 'background',
+            initiatedBy: 'automation',
+            abortSignal: abortController.signal,
+            runPermissionCeiling: opts.runPermissionCeiling,
+          } as never,
+          opts.commandConfirmCallback,
+        );
+      } finally {
+        clearLoopContext(loopId);
+      }
+      return { reason: 'error', error: 'boom' } as never;
+    });
+    await schedulerEngine.runNow(task.id);
+  }
+
+  it('asks in the chat the task named, and says which task is asking', async () => {
+    seedChannel();
+    const captured = captureSeamRequest();
+
+    await runBrowserAskThroughRealGate(makeTask({
+      id: 'task-gate-target',
+      name: '每日销售简报',
+      outputChannelId: 'channel-1',
+      outputChatIds: 'oc_team',
+      outputUserIds: 'ou_li',
+    }));
+
+    // THE assertion this test exists for: the browser gate's own seam request
+    // carries the automation's binding. Before F1 both were undefined here.
+    expect(captured.current?.imTarget).toEqual({
+      platform: 'feishu',
+      channelId: 'channel-1',
+      chatId: 'oc_team',
+      chatIdType: 'chat_id',
+      senderId: 'ou_li',
+    });
+    expect(captured.current?.runLabel).toBe('每日销售简报');
+    expect(captured.current?.source).toBe('scheduler');
+    // The fields the fix must not trade away: run-scoped coalescing and Stop.
+    expect(captured.current?.runKey).toBe('loop-f1-scheduler');
+    expect(captured.current?.abortSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('still hands the gate no target when the task named no channel', async () => {
+    const captured = captureSeamRequest();
+
+    await runBrowserAskThroughRealGate(makeTask({
+      id: 'task-gate-no-channel',
+      name: '无频道任务',
+      outputChannelId: undefined,
+      outputChatIds: undefined,
+      outputUserIds: undefined,
+    }));
+
+    // Reached the seam (so the ask really happened), with nowhere to ask —
+    // the refusal stays a refusal rather than being guessed into some chat.
+    expect(captured.current).not.toBeNull();
+    expect(captured.current?.imTarget).toBeUndefined();
+    // The label is still worth carrying: it is what an operator reads in the
+    // console trail even when no prompt can be delivered.
+    expect(captured.current?.runLabel).toBe('无频道任务');
   });
 });

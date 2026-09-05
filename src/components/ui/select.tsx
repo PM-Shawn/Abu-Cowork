@@ -80,9 +80,29 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
   const hasDescriptions = allOptions.some((opt) => opt.description);
   const isInline = variant === 'inline';
   const isGhost = variant === 'ghost';
-  /** Inline and ghost triggers are settings-row sized; their menu is wider
-   *  than the trigger and hangs off its right edge. */
-  const menuHugsTrigger = !isInline && !isGhost;
+  /** Only the form-field variant stretches to its wrapper; a settings row
+   *  sizes itself, and a caller that wants a specific width says so with a
+   *  width class. */
+  const stretchesToWrapper = !isInline && !isGhost;
+  /**
+   * The menu is exactly as wide as the trigger.
+   *
+   * It used to be shrink-to-fit for `inline`/`ghost`, anchored by its RIGHT
+   * edge with only a `min-width` floor. A fixed-position box with no `width`
+   * takes its max-content width, and an option's `description` is one long
+   * unbroken line — so the floor never decided anything and the longest
+   * description did: a 185px trigger opened a ~560px menu that hung most of
+   * the way across the pane. `min-w-[240px]` looked like the cause and was
+   * only the lower bound.
+   *
+   * Hugging makes the description WRAP inside the menu instead of setting its
+   * width, which is what every native select does and what the settings pane
+   * needs to look like one control repeated, not one per length of text.
+   *
+   * `ghost` is the exception: a borderless value + chevron is sized by the
+   * value it currently shows, which is far too narrow to host its own menu.
+   */
+  const menuHugsTrigger = !isGhost;
 
   React.useEffect(() => {
     if (disabled && open) setOpen(false);
@@ -277,7 +297,7 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
   );
 
   return (
-    <div ref={containerRef} className={cn('relative', menuHugsTrigger && 'w-full', className)}>
+    <div ref={containerRef} className={cn('relative', stretchesToWrapper && 'w-full', className)}>
       {/* Trigger */}
       <button
         ref={triggerRef}
@@ -334,10 +354,11 @@ export function Select({ value, onChange, options, placeholder, ariaLabel, varia
         the call site cannot fix it, because z-index only orders siblings
         within the same stacking context. Only leaving the context does.
 
-        Width: an inline/ghost menu is shrink-to-fit, so its min-width is what
-        actually decides how wide it lands. Options that carry a description
-        need more room than any settings-row trigger is ever going to be, so
-        they raise that floor.
+        Width: every menu but `ghost`'s is pinned to its trigger's measured
+        width (see `menuHugsTrigger`). Only the ghost row is still
+        shrink-to-fit, and only there does the min-width floor decide
+        anything — an option with a description needs more room than a
+        borderless value is ever going to be.
       */}
       {open && createPortal(
         <div

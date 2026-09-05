@@ -549,7 +549,7 @@ describe('settingsStore labs flags', () => {
     });
   });
 
-  describe('v46 migration (operation-class browser policy + unattended master switch)', () => {
+  describe('v46/v47 migration (operation-class browser policy + unattended master switch)', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {
         persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
@@ -558,8 +558,7 @@ describe('settingsStore labs flags', () => {
     it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
       const migrated = getMigrate()({ theme: 'light' }, 45);
       expect(migrated.browserOperationPolicy).toEqual({
-        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+        readOnly: 'allow', interactive: 'allow', scripting: 'ask',
       });
     });
 
@@ -568,11 +567,47 @@ describe('settingsStore labs flags', () => {
       expect(migrated.allowUnattendedBrowser).toBe(false);
     });
 
-    it('preserves an already-customized policy rather than overwriting it', () => {
-      const customPolicy = {
-        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
-        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
-      };
+    /**
+     * V47, the 2026-09-04 column collapse. Every installed copy carries the
+     * two-column shape, and the surviving values are the ATTENDED column's:
+     * that is where the user said what Abu may do. Taking the other column
+     * instead would be a silent, invisible change to a permission — which is
+     * why this is pinned in BOTH directions below.
+     */
+    it('collapses a v46 two-column policy onto its attended column', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+            unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+          },
+          allowUnattendedBrowser: true,
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      });
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does not let an unattended-only value survive the collapse', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'ask', interactive: 'deny', scripting: 'deny' },
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+          },
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'ask', interactive: 'deny', scripting: 'deny',
+      });
+    });
+
+    it('preserves an already-collapsed policy rather than overwriting it', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'ask', scripting: 'ask' };
       const migrated = getMigrate()(
         { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
         45,
@@ -581,14 +616,11 @@ describe('settingsStore labs flags', () => {
       expect(migrated.allowUnattendedBrowser).toBe(true);
     });
 
-    it('does NOT re-run for users already at v46', () => {
-      const customPolicy = {
-        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
-      };
+    it('does NOT re-run for users already at v47', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'deny', scripting: 'deny' };
       const migrated = getMigrate()(
         { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
-        46,
+        47,
       );
       expect(migrated.browserOperationPolicy).toEqual(customPolicy);
       expect(migrated.allowUnattendedBrowser).toBe(true);
@@ -596,18 +628,18 @@ describe('settingsStore labs flags', () => {
 
     // I3 (runtime shape validation): a PRESENT-but-malformed policy — e.g.
     // from hand-edited localStorage, or a future bug that wrote a partial
-    // object — must be clamped to the strictest state per cell, not passed
+    // object — must be clamped to the strictest state per row, not passed
     // through as-is (which is exactly what the "preserves an already-
-    // customized policy" test above verifies for a WELL-FORMED policy).
-    it('normalizes a present-but-malformed pre-v46 policy to the strictest cell instead of passing it through', () => {
-      const malformed = {
-        attended: { readOnly: 'allow' /* interactive, scripting missing */ },
-        unattended: { readOnly: 'allow', interactive: 'not-a-real-state', scripting: 'deny' },
-      };
-      const migrated = getMigrate()({ browserOperationPolicy: malformed }, 45);
+    // collapsed policy" test above verifies for a WELL-FORMED policy).
+    it('normalizes a present-but-malformed policy to the strictest row instead of passing it through', () => {
+      const migrated = getMigrate()({
+        browserOperationPolicy: {
+          attended: { readOnly: 'allow' /* interactive, scripting missing */ },
+          unattended: { readOnly: 'allow', interactive: 'not-a-real-state', scripting: 'deny' },
+        },
+      }, 45);
       expect(migrated.browserOperationPolicy).toEqual({
-        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
-        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
       });
     });
 

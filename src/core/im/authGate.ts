@@ -93,8 +93,9 @@ export function getCallbacksForLevel(
         // confirmation, `execute_js` included: arbitrary code inside the
         // user's logged-in sessions, approved by nobody. The browser
         // operation-class policy is therefore evaluated here independently of
-        // the tier, so `full` can never be looser than the unattended column
-        // says. (`registry.ts` also decides this before any callback runs;
+        // the tier, so `full` can never be looser than that policy, read for
+        // an unattended run, says. (`registry.ts` also decides this before any
+        // callback runs;
         // this is the second lock, so a future gate refactor or a new caller
         // of `getCallbacksForLevel` cannot reopen the hole.)
         commandConfirmCallback: async (info) => {

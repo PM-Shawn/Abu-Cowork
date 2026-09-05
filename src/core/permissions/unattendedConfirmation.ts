@@ -56,6 +56,19 @@ export interface UnattendedImTarget {
    *  a reason an approval can never be delivered. */
   chatId?: string;
   /**
+   * How `chatId` addresses its recipient. `'chat_id'` (the default) is a
+   * conversation; `'open_id'` is a PERSON, and the adapter opens or reuses a
+   * 1:1 chat to reach them.
+   *
+   * 🔴 The distinction is load-bearing for matching the answer, not just for
+   * sending it. A reply to a DM comes back from the p2p conversation, whose
+   * id is NOT the user id we addressed — so an `'open_id'` prompt can never
+   * be matched by chat identity and is matched by its bound owner in a
+   * private chat instead (`tryConsumeApprovalReply`). Absent means
+   * `'chat_id'`, which keeps every pre-existing caller on the old rule.
+   */
+  chatIdType?: 'chat_id' | 'open_id';
+  /**
    * The person this run belongs to. When set, only their reply counts as an
    * answer: a group chat is not a voting booth, and a bystander must not be
    * able to approve automation running inside someone else's logged-in
@@ -86,6 +99,17 @@ export interface UnattendedConfirmationRequest {
   runKey?: string;
   imTarget?: UnattendedImTarget;
   /**
+   * Human-readable name of the automation this run belongs to — the scheduled
+   * task's or the trigger's own name.
+   *
+   * An approval that arrives in a group chat at 03:00 saying only "Abu wants
+   * to click a button" is unanswerable in practice: the reader cannot tell
+   * WHICH of their automations is asking, and approving the wrong one is the
+   * failure this whole gate exists to prevent. Untrusted for prompt purposes
+   * (a task can be created by the model) and sanitized like any other field.
+   */
+  runLabel?: string;
+  /**
    * The run's cancellation signal. An approval channel that waits minutes for
    * a human MUST honor it: without this, pressing Stop leaves a prompt sitting
    * in a chat, and a `同意` typed afterwards would be swallowed as the answer
@@ -94,6 +118,31 @@ export interface UnattendedConfirmationRequest {
    * `ToolExecutionContext.abortSignal`).
    */
   abortSignal?: AbortSignal;
+}
+
+/**
+ * Where an unattended run may ask, and what to call it — carried on the RUN
+ * rather than inside one callback's closure.
+ *
+ * F1 (2026-09-05 review) — `createUnattendedConfirmation` used to be the only
+ * carrier of these two values, and it has no side effects: nothing registers
+ * them anywhere, so the ONLY way to see them was to call that callback. The
+ * browser gate does not (by design: it needs `audit.fresh` and
+ * `userFacingReason`, which a boolean callback cannot return, so it builds its
+ * own seam request — see `registry.ts`). Result: every 「每次询问」 browser
+ * action in a scheduled or triggered run refused itself with `no_binding`,
+ * because a fresh automation conversation has no IM session to fall back to,
+ * while five files' worth of unit tests stayed green on the callback path.
+ *
+ * So the target now travels as trusted RUN CONTEXT — `AgentLoopOptions` →
+ * `LoopContext` → the gate — the same channel the gate already uses to reach
+ * the run's abort signal. Shell-owned like `initiatedBy` and `imReplyTarget`:
+ * never read from model input, never taken from a sidecar's copy of a tool
+ * context.
+ */
+export interface UnattendedApprovalContext {
+  imTarget?: UnattendedImTarget;
+  runLabel?: string;
 }
 
 export interface UnattendedConfirmationResult {
@@ -305,7 +354,18 @@ export async function resolveUnattendedConfirmation(
 export interface CreateUnattendedConfirmationOptions {
   source: UnattendedRunSource;
   conversationId?: string;
+  /**
+   * Where this run may ask. The scheduler and the trigger engine build it
+   * from the automation's own IM output binding — the channel the user
+   * already chose for results — so "每次询问" in the automatic-tasks column
+   * has somewhere to go. Absent (no channel configured) keeps the original
+   * behavior: the seam falls back to the conversation's IM session binding,
+   * and failing that refuses with `no_binding`.
+   */
   imTarget?: UnattendedImTarget;
+  /** The automation's name, carried into the prompt. See `runLabel` on
+   *  {@link UnattendedConfirmationRequest}. */
+  runLabel?: string;
   /** Called with the refusal reason whenever the request is not approved —
    *  the hook the scheduler uses to build its user-visible denial summary and
    *  the trigger/IM tiers use for their console trail. */
@@ -344,6 +404,7 @@ export function createUnattendedConfirmation(
       ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
       ...(loopId !== undefined ? { runKey: loopId } : {}),
       ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+      ...(options.runLabel !== undefined ? { runLabel: options.runLabel } : {}),
       ...(abortSignal !== undefined ? { abortSignal } : {}),
     });
     if (!result.approved) options.onDenied?.(result.reason, info);
@@ -393,17 +454,33 @@ export async function notifyUnattendedDenial(
  * tier, so a future gate refactor (or a new caller of `getCallbacksForLevel`)
  * cannot reopen it.
  *
- * Returns true only when the unattended column of the operation policy says
- * `allow` for this operation class on this site. `ask` is NOT approval — the
- * tier is not an approval channel, `resolveUnattendedConfirmation` is.
- * A browser confirmation that arrives without an operation class is treated as
- * `scripting`, the strictest class.
+ * Returns true only when the operation policy, read for an UNATTENDED run,
+ * says `allow` for this operation class on this site. (There is one row per
+ * class since the 2026-09-04 collapse; the run mode is an argument to
+ * `decideBrowserOperation`, not a column of the stored value.) `ask` is NOT
+ * approval — the tier is not an approval channel,
+ * `resolveUnattendedConfirmation` is.
+ *
+ * Scripting is NOT hard-coded here, and deliberately so: since the 2026-09-04
+ * ruling the user may opt automatic-task scripting into `allow`, and this
+ * function's whole job is to report what the policy says, not to re-litigate
+ * it. The opt-in's own scoping (master switch + standing site grant + not
+ * high-risk) is inside `decideBrowserOperation`, which is the single place
+ * that rule lives.
+ *
+ * A browser confirmation that arrives with NO operation class is refused
+ * outright. Until the ruling, defaulting it to `'scripting'` WAS that
+ * refusal, because that cell had no allow tier; it no longer is, so the
+ * fallback has to refuse on its own or an unclassified call would quietly
+ * inherit the opt-in.
  */
 export function mayUnattendedTierApproveBrowser(info: ConfirmationInfo): boolean {
+  const opClass = info.browserOperationClass;
+  if (opClass === undefined) return false;
   const settings = getSettingsReader().getSnapshot();
   return (
     decideBrowserOperation({
-      opClass: info.browserOperationClass ?? 'scripting',
+      opClass,
       runMode: 'unattended',
       policy: settings.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
       masterSwitchUnattended: settings.allowUnattendedBrowser === true,

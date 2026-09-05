@@ -745,6 +745,13 @@ export interface TranslationDict {
     actionsSummaryClean: string;
     /** No action got through at all. */
     noActions: string;
+    /**
+     * "运行了 {count} 次脚本" — how many of the actions were page SCRIPTS.
+     * Shown only when > 0; automatic-task scripting is off unless the user
+     * opted in (2026-09-04 ruling), so this line is the run saying out loud
+     * that code executed inside a logged-in session.
+     */
+    scriptRuns: string;
     sitesTitle: string;
     /** "{actions} 次动作 · {failures} 次失败" */
     siteCounts: string;
@@ -996,6 +1003,26 @@ export interface TranslationDict {
     browserSitePermsAllowedDesc: string;
     browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** F1 (2026-09-04) — the list is also an ENTRY point, not only a record of
+     *  dialogs already answered. Without it, the ONLY way to reach 「始终允许」
+     *  was to run the thing attended, be refused, and click the dialog — so
+     *  setting up a scheduled task meant deliberately failing once first.
+     *  `browserSitePermsAddInvalid` is the one rejection this row can produce
+     *  on its own; a high-risk origin reuses `browserHighRiskReason`, the same
+     *  sentence the confirmation dialog gives for the same refusal. */
+    browserSitePermsAddLabel: string;
+    browserSitePermsAddPlaceholder: string;
+    browserSitePermsAddVerdictLabel: string;
+    browserSitePermsAddButton: string;
+    browserSitePermsAddInvalid: string;
+    /** The one refusal here that is a SECURITY property, not input validation:
+     *  `highRiskSites.ts` withholds a standing grant for money-movement and
+     *  government origins, and the confirmation dialog already declines to
+     *  offer one (`allowPersistentGrant: false`). Same reason as
+     *  `commandConfirm.browserHighRiskReason`, minus its "check the page
+     *  before you confirm" tail — there is nothing to confirm on this page —
+     *  plus the thing the user CAN still do here. */
+    browserSitePermsAddHighRisk: string;
     /** Card summary on a capability detail page: counts + the fact that the
      *  verdicts are one shared list across both browser channels. */
     browserSitePermsSummary: string;
@@ -1011,32 +1038,48 @@ export interface TranslationDict {
     browserUnattendedReachNone: string;
     browserUnattendedReachOff: string;
     // Operation-class three-state policy + unattended master switch (batch-二
-    // 「无人值守授权闭环」T1). No UI consumes these yet — added ahead of the
-    // settings-page task (U2) so that task only has to build the view.
+    // 「无人值守授权闭环」T1). ONE row per class since the 2026-09-04 ruling
+    // collapsed the attended/automatic columns — the two column headings that
+    // used to live here have no surface left to name.
     browserOpPolicyTitle: string;
     browserOpPolicyDesc: string;
-    browserOpPolicyColumnAttended: string;
-    browserOpPolicyColumnUnattended: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
-    /** Scripting is split out of the 2x2 matrix into its own card: under
-     *  "automatic tasks" it is a degenerate cell (no allow), and it is the one
-     *  row an ordinary user should not skim past. The class name is that
-     *  card's title, so it carries a description of its own. */
+    /** Scripting is split out into its own card: it is the one row an ordinary
+     *  user should not skim past, and the only one that carries a risk
+     *  warning. The class name is that card's title, so it carries a
+     *  description of its own. */
     browserOpClassScripting: string;
     browserOpClassScriptingDesc: string;
     browserOpStateAllow: string;
     browserOpStateDeny: string;
     browserOpStateAsk: string;
+    /** 「允许」 on the READ-ONLY row, where it is unconditional. */
     browserOpStateAllowDesc: string;
+    /**
+     * 「允许」 on the two rows that ACT (click/fill, run scripts), where it is
+     * scoped to the sites carrying a standing 「始终允许」 verdict — a
+     * 'default' site still opens a confirmation. Split from the read-only
+     * wording by F8 (2026-09-05): one shared sentence 「不再询问」 was true for
+     * exactly one of the three rows.
+     */
+    browserOpStateAllowDescSiteScoped: string;
     browserOpStateDenyDesc: string;
+    /**
+     * One line covering BOTH execution contexts, because one setting now
+     * governs both: a dialog while the user is here, and an IM approval at
+     * the channel the automation itself names when a task is running alone
+     * (`core/im/approvalTarget.ts` → `askOverIm`). With no channel bound
+     * there is nobody to ask and the action is refused (`no_binding`) with a
+     * desktop notice — the reason the task editor's field is called
+     * 结果与审批推送频道.
+     */
     browserOpStateAskDesc: string;
-    /** Why "allow" is listed but not choosable for scripting under automatic
-     *  tasks (batch-二 security ruling: a site grant is consent collected under
-     *  "click" semantics and never buys silent code execution). Dropping the
-     *  option silently would leave the column looking broken next to the other
-     *  rows; offering it live would promise what the gate refuses to honor. */
-    browserOpStateAllowUnavailableDesc: string;
+    /** ⚠ line under the scripting select while `allow` is selected AND the
+     *  automatic-tasks master switch is on — i.e. only while the risk is
+     *  live. An attended script is asked about every time whatever this row
+     *  says, so the switch is what makes an `allow` here mean anything. */
+    browserUnattendedScriptRiskWarning: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;
@@ -2268,6 +2311,14 @@ export interface TranslationDict {
     // Output
     outputChannel: string;
     outputChannelNone: string;
+    /**
+     * F2 (2026-09-04) — answers the question this field always invited and
+     * never answered: "does the run ask ME here?" It does now. The scheduler
+     * builds its approval target from these same fields
+     * (`core/im/approvalTarget.ts`), so a prompt lands exactly where the
+     * results land, and 「不推送」 means an ask has nowhere to go and is
+     * refused. The label says 结果与审批 for the same reason.
+     */
     outputChannelHint: string;
     outputToGroup: string;
     outputToDM: string;
@@ -2467,6 +2518,10 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
+    /** F2 — the trigger editor's output channel is the trigger's approval
+     *  channel too (`triggerEngine.ts` builds the target from it), and says
+     *  so here for the same reason the scheduler's hint does. */
+    outputChannelApprovalHint: string;
     outputToGroup: string;
     outputToDM: string;
     outputChatIdPlaceholder: string;
@@ -2549,8 +2604,17 @@ export interface TranslationDict {
      *  🔴 {action} and {reason} are MODEL-AUTHORED and sanitized+fenced by
      *  `sanitizeUntrustedPromptField`; the reply instruction and the deadline
      *  MUST stay AFTER the fenced region in every translation, or a crafted
-     *  action string can forge them. */
+     *  action string can forge them.
+     *  {context} is the pre-composed, already-sanitized task/origin block (or
+     *  empty). It must stay INSIDE the fenced region, before {action}. */
     approvalPrompt: string;
+    /** One line of {@link approvalPrompt}'s {context}: which automation is
+     *  asking. Without it a user with several scheduled tasks cannot tell what
+     *  they are approving, and the only safe answer is always 拒绝. {task} */
+    approvalPromptTask: string;
+    /** One line of {@link approvalPrompt}'s {context}: the site the action
+     *  targets. {origin} */
+    approvalPromptOrigin: string;
     /** Receipt after the user replied 拒绝. */
     approvalReceiptDenied: string;
     /** Receipt after nobody answered in time. {minutes} */

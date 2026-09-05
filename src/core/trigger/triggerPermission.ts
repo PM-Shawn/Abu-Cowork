@@ -21,6 +21,7 @@ import { scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import {
   createUnattendedConfirmation,
   mayUnattendedTierApproveBrowser,
+  type UnattendedImTarget,
 } from '../permissions/unattendedConfirmation';
 import { TOOL_NAMES } from '../tools/toolNames';
 
@@ -48,6 +49,18 @@ export interface TriggerCallbackOptions {
    * up and every confirmation fails closed with nothing but a log line.
    */
   conversationId?: string;
+  /**
+   * Where this run may ask, built by the engine from the trigger's own IM
+   * output binding (`core/im/approvalTarget.ts`).
+   *
+   * A trigger run binds no IM session to its conversation, so without this the
+   * seam's fallback finds nothing and every「每次询问」refuses itself with
+   * `no_binding` — the same gap the scheduler had. Absent (no output channel
+   * configured) keeps exactly that old behavior rather than guessing a chat.
+   */
+  imTarget?: UnattendedImTarget;
+  /** The trigger's name, so the IM prompt says which automation is asking. */
+  runLabel?: string;
 }
 
 type RuntimeTriggerPermissions = Omit<TriggerPermissions, 'allowedCommands' | 'allowedPaths' | 'allowedTools'> & {
@@ -115,6 +128,8 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           ...(options.conversationId !== undefined
             ? { conversationId: options.conversationId }
             : {}),
+          ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+          ...(options.runLabel !== undefined ? { runLabel: options.runLabel } : {}),
           onDenied: (reason, info) => {
             console.log(`[Trigger] read_tools: denied "${info.command}" (${reason})`);
           },
@@ -137,6 +152,8 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
           ...(options.conversationId !== undefined
             ? { conversationId: options.conversationId }
             : {}),
+          ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+          ...(options.runLabel !== undefined ? { runLabel: options.runLabel } : {}),
           onDenied: (reason, info) => {
             console.log(`[Trigger] safe_tools: denied "${info.command}" (${reason})`);
           },

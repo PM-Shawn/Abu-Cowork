@@ -1181,6 +1181,33 @@ export async function checkToolApproval(
         // page" is actionable, "your policy says deny" points at a setting the
         // user never changed.
         if (highRisk) return 'high-risk-site';
+        /**
+         * The refusal came from the MISSING STANDING GRANT, not from the
+         * policy cell — the same question re-asked with an allowed site comes
+         * back 'allow'. Today the only cell that can be in this state is the
+         * automatic-task scripting opt-in (2026-09-04 ruling), which is
+         * honoured only on sites the user set to 始终允许.
+         *
+         * Written as "would it have passed on a granted site?" rather than as
+         * a second copy of that conjunction, so the gate cannot drift from
+         * `decideBrowserOperation`'s own rule. Reporting `policy-denied` here
+         * would tell the user to go change a setting they had ALREADY set to
+         * allow; `site-not-allowed` sends them where the fix is.
+         */
+        if (
+          policyVerdict === 'deny'
+          && siteVerdict !== 'allowed'
+          && decideBrowserOperation({
+            opClass,
+            runMode,
+            policy: settingsSnapshot.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
+            masterSwitchUnattended,
+            siteVerdict: 'allowed',
+            ...(origin !== null ? { targetOrigin: origin } : {}),
+          }) === 'allow'
+        ) {
+          return 'site-not-allowed';
+        }
         if (policyVerdict === 'deny') return 'policy-denied';
         // The ceiling refused for a reason the operation policy did not: this
         // run's capability tier carries no browser access at all.
@@ -1290,6 +1317,30 @@ export async function checkToolApproval(
         // round-trip), never a dialog. Route 'ask' through the single seam
         // that owns that question instead of the per-entry-point callback.
         if (policyVerdict === 'ask') {
+          /**
+           * F1 (2026-09-05 review) — WHERE to ask, and what to call the run.
+           *
+           * The scheduler and the trigger engine compute both from the
+           * automation's own IM output binding, but until now they could only
+           * hand them to `createUnattendedConfirmation`, whose closure this
+           * branch deliberately does not go through (it needs `audit.fresh`
+           * and `userFacingReason`; a boolean callback carries neither). The
+           * seam then fell back to "the IM session bound to this
+           * conversation", and an automatic run mints a fresh conversation
+           * every time — so every browser 「每次询问」 in a scheduled or
+           * triggered run refused itself as `no_binding`, with nobody ever
+           * asked.
+           *
+           * Read off the RUN, through the same loop-context channel this file
+           * already uses for the run's abort signal: shell-owned, never
+           * serialized, and impossible for a tool input or a sidecar-supplied
+           * context to forge. Absent (an interactive run, or an IM-inbound one
+           * that already has a session binding) keeps the previous fallback
+           * exactly as it was.
+           */
+          const unattendedApproval = toolContext?.loopId !== undefined
+            ? getLoopContext(toolContext.loopId)?.unattendedApproval
+            : undefined;
           const approval = await resolveUnattendedConfirmation({
             info: {
               command: browserActionLabel,
@@ -1323,6 +1374,15 @@ export async function checkToolApproval(
             // that no longer exists.
             ...(toolContext?.abortSignal !== undefined
               ? { abortSignal: toolContext.abortSignal }
+              : {}),
+            // See the `unattendedApproval` doc above. Spread field-by-field so
+            // an absent target stays absent rather than becoming an explicit
+            // `undefined` the seam would have to special-case.
+            ...(unattendedApproval?.imTarget !== undefined
+              ? { imTarget: unattendedApproval.imTarget }
+              : {}),
+            ...(unattendedApproval?.runLabel !== undefined
+              ? { runLabel: unattendedApproval.runLabel }
               : {}),
           });
           /**
@@ -1390,26 +1450,84 @@ export async function checkToolApproval(
           // answer for execute_js, so it must not clear a scripting refusal.
           // An unattended 'ask' that a human just approved above already set
           // 'dialog'; do not weaken it back down to 'grant'.
-          consented = consented ?? 'grant';
+          //
+          // EXCEPT for a script the policy auto-allowed (the 2026-09-04 opt-in
+          // tier): nobody answered anything for THIS call, so it is not
+          // consent of any grade and must not touch U4's denial streak. If it
+          // did, the guard would be dodged by alternating a refused action
+          // with an opt-in script that sails through. The scripting 'ask'
+          // path is unaffected — a human really did answer there, and
+          // `consented` is already 'dialog' by the time we get here.
+          if (opClass !== 'scripting') consented = consented ?? 'grant';
         }
         // Approved by policy (+ site grant) — an unattended run has no
         // conversation-grant/dialog concept, so nothing further to do.
       } else if (consequence === 'state-changing') {
-        // ── Attended, state-changing: unchanged from before the policy layer.
-        // In this column the policy is a RESTRICTION layer only — 'deny' short
-        // circuits above, and both 'allow' and 'ask' fall through to the
-        // shipped per-site + permission-mode gate. Making 'allow' skip that
-        // gate would silently drop the confirmation dialog for click/fill,
-        // which the default attended column marks 'allow'.
+        // ── Attended, state-changing: the shipped per-site + permission-mode
+        // gate. For click/fill the policy is a RESTRICTION layer only —
+        // 'deny' short circuits above, and both 'allow' and 'ask' fall through
+        // to this gate, because the interactive row ships 'allow' and letting
+        // that skip the gate would silently drop the confirmation dialog for
+        // every click on every site.
         //
-        // Two grant scopes: a persistent per-site verdict (settingsStore,
-        // written from the dialog's "always allow this site" / revocable in
-        // Settings) and the per-conversation TTL grant ("just this once").
-        // Precedence: denied site > allowed site > conversation grant > ask.
-        // Scripting (execute_js) is a stronger capability than clicking: the
-        // dialog promises "each run asks separately", so it must neither ride
-        // the conversation grant nor a persistent site grant.
+        // SCRIPTING is the one exception (2026-09-04 ruling R1, 「只要得到了
+        // 用户允许，都能做」). Until this branch honoured it, a 「运行脚本」 row
+        // set to 「允许」 was byte-for-byte identical to 「每次询问」 whenever a
+        // human was watching: a three-way control with two indistinguishable
+        // options, under a label that says "never asks again". It now stops
+        // asking — but only where an AUTOMATIC run would also act, i.e. on a
+        // site carrying the user's standing 'allowed' verdict. The site gate
+        // itself is untouched: a 'default' site still opens the dialog (and
+        // the script runs only if the user says yes there), a 'denied' one
+        // never reaches this line, and a high-risk page is excluded three
+        // times over — `decideBrowserOperation` downgrades its 'allow' to
+        // 'ask', `siteVerdict` reads 'high-risk' instead of 'allowed' there,
+        // and the `!highRisk` conjunct below says so out loud.
+        //
+        // Two grant scopes for the other classes: a persistent per-site
+        // verdict (settingsStore, written from the dialog's "always allow this
+        // site" / revocable in Settings) and the per-conversation TTL grant
+        // ("just this once"). Precedence: denied site > allowed site >
+        // conversation grant > ask. Scripting rides NEITHER: the conversation
+        // grant was minted from a dialog about a click, and the dialog that
+        // minted a site verdict promised "each run asks separately" — only
+        // the scripting ROW's own 'allow' speaks for scripting.
         const scripting = isScriptingBrowserTool(name);
+        // The scripting row's own 'allow', scoped exactly as the automatic-run
+        // opt-in is (`decideBrowserOperation`): the standing site verdict is
+        // what says WHERE. `policyVerdict` is this call's own row, so an 'ask'
+        // row can never reach this constant.
+        const scriptAllowedByPolicy =
+          scripting && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
+        /**
+         * F8 (2026-09-05 review) — 「每次询问」 on the click/fill row means
+         * EVERY time, the way it already does on the read-only row.
+         *
+         * Until this line existed, `policyVerdict` was read only when
+         * `scripting` was true (the constant above, R1's fix). The interactive
+         * row's own value was therefore never consulted at all: 'deny' was
+         * consumed further up, and 'allow' and 'ask' were byte-for-byte
+         * identical from here down — same decision AND same dialog count in
+         * all four site states. On an 「始终允许」 site both were silent; on a
+         * 'default' site both asked once and then the conversation grant that
+         * dialog minted swallowed every click for the next 30 minutes. A user
+         * who explicitly chose 「每次询问」 got one dialog per half hour, under
+         * a description saying they would be asked each time.
+         *
+         * So 'ask' now short-circuits `granted`: it honours neither the
+         * standing site verdict nor the conversation grant, and (below) mints
+         * no new grant and offers no "always allow this site". That is exactly
+         * what the read-only row does one branch further down, so this is the
+         * same semantics in a second place, not a new concept.
+         *
+         * 'allow' is untouched and keeps riding the site gate — and 'allow' is
+         * the SHIPPED default for this row, so the default path does not
+         * change at all. High-risk pages are unaffected either way:
+         * `decideBrowserOperation` already downgrades their 'allow' to 'ask',
+         * which lands here as "ask every time" — which is what `!highRisk`
+         * was already forcing.
+         */
+        const asksEveryTime = !scripting && policyVerdict === 'ask';
         // A high-risk page is excluded from BOTH grant scopes, for the same
         // reason scripting is: the conversation grant was minted from a dialog
         // about some ordinary page, and the per-site verdict cannot even be
@@ -1417,8 +1535,9 @@ export async function checkToolApproval(
         // explicit `!highRisk` the conversation grant would still wave a
         // transfer page through on the strength of an unrelated click.
         const granted =
-          !scripting && !highRisk &&
-          (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
+          scriptAllowedByPolicy
+          || (!scripting && !highRisk && !asksEveryTime
+            && (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed'));
         const decision = strategy.decideOtherTool(consequence, granted);
         if (decision !== 'allow') {
           if (!onRequireConfirmation) {
@@ -1453,7 +1572,10 @@ export async function checkToolApproval(
             browserOrigin: origin ?? undefined,
             // No "always allow this site" for a bank or a checkout page — the
             // standing grant is the artifact this control exists to prevent.
-            allowPersistentGrant: !scripting && !highRisk && origin !== null,
+            // Nor under 「每次询问」 (F8): the grant it would mint is one this
+            // row now ignores, so offering it would promise silence the next
+            // call does not deliver.
+            allowPersistentGrant: !scripting && !highRisk && !asksEveryTime && origin !== null,
           }, toolContext?.loopId);
           if (!confirmed) {
             recordGateDenial('user-cancelled');
@@ -1464,14 +1586,26 @@ export async function checkToolApproval(
           // conversation grant from it would silently unlock 30 minutes of
           // click/fill/navigate the user never approved. Same for a high-risk
           // page: confirming one transfer must not buy 30 minutes of silent
-          // clicking everywhere else in the conversation.
-          if (!scripting && !highRisk) grantBrowserAutomation(toolContext?.conversationId);
-        } else if (granted) {
+          // clicking everywhere else in the conversation. Same for a row set
+          // to 「每次询问」 (F8): a grant this row will ignore on the next call
+          // is dead weight, and one that leaked to another row would be a
+          // silent widening of a setting the user tightened on purpose.
+          if (!scripting && !highRisk && !asksEveryTime) {
+            grantBrowserAutomation(toolContext?.conversationId);
+          }
+        } else if (granted && !scriptAllowedByPolicy) {
           // No dialog because the user already granted this — a standing site
           // verdict, or the conversation grant minted from an earlier dialog.
           // Both are consent, unlike an unconditional permission-mode allow —
           // but GRANT-grade consent (R1), which cannot clear a scripting
           // refusal.
+          //
+          // A script the POLICY allowed is excluded for the same reason its
+          // unattended twin is: nobody answered anything for this call, so it
+          // is not consent of any grade and must not touch U4's denial streak.
+          // Counting it would hand the model the dodge the streak exists to
+          // stop — alternate a refused action with an opt-in script and the
+          // guard never fires.
           consented = 'grant';
         }
       } else if (policyVerdict === 'ask') {

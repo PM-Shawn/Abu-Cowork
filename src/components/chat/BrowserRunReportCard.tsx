@@ -197,6 +197,21 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
                 failed: String(report.actions.failed),
               })
             : format(tr.actionsSummaryClean, { total: String(report.actions.total) })}
+        {/*
+          Automatic-task scripting is an OPT-IN (2026-09-04 ruling), off by
+          default. When it is on, "code ran inside my logged-in session while I
+          was asleep" is the fact this card most owes the reader — and it is
+          the one thing every other line here would hide, since a script
+          otherwise counts anonymously in `actions.total` next to a click.
+
+          `?? 0` because the field is newer than the snapshots on disk: a card
+          written before it existed must render as "no scripts", not as NaN.
+        */}
+        {(report.scriptRuns ?? 0) > 0 && (
+          <div className="text-minor text-[var(--abu-text-secondary)] mt-0.5">
+            {format(tr.scriptRuns, { count: String(report.scriptRuns) })}
+          </div>
+        )}
         {report.blockedPages > 0 && (
           <div className="text-minor text-[var(--abu-text-tertiary)] mt-0.5">
             {format(tr.blockedPages, { count: String(report.blockedPages) })}

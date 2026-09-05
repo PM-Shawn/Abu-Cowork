@@ -287,15 +287,47 @@ describe('mayUnattendedTierApproveBrowser', () => {
     ...overrides,
   });
 
-  it('refuses scripting — the strongest class is denied in the unattended column', () => {
+  it('refuses scripting under the default policy — that row ships as ask, and ask is not approval', () => {
     expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' }))).toBe(false);
   });
 
-  it('refuses an unclassified browser confirmation (treated as scripting)', () => {
+  /**
+   * A browser confirmation that names no operation class refuses on its own.
+   * It used to be enough to default the missing class to `'scripting'`,
+   * because that cell had no allow tier at all; since the 2026-09-04 ruling a
+   * user may set scripting to `allow`, so an unclassified call would
+   * otherwise inherit it.
+   */
+  it('refuses an unclassified browser confirmation even when scripting is allowed', () => {
     expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
+
+    useSettingsStore.setState({
+      browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+    });
+    expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
+    // ...while the class the user actually allowed IS approved by the tier.
+    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' })))
+      .toBe(true);
   });
 
-  it('allows an interactive action the unattended column allows', () => {
+  // The tier reports what the policy says; scripting's site scoping lives in
+  // `decideBrowserOperation` and must show through here unchanged.
+  it('refuses an allowed script on a site with no standing grant', () => {
+    useSettingsStore.setState({
+      browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+    });
+
+    expect(mayUnattendedTierApproveBrowser(browserInfo({
+      browserOperationClass: 'scripting',
+      browserOrigin: 'https://never-granted.example',
+    }))).toBe(false);
+    expect(mayUnattendedTierApproveBrowser(browserInfo({
+      browserOperationClass: 'scripting',
+      browserOrigin: 'https://evil.com',
+    }))).toBe(false);
+  });
+
+  it('allows an interactive action the policy allows', () => {
     expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'interactive' }))).toBe(true);
   });
 
@@ -311,12 +343,9 @@ describe('mayUnattendedTierApproveBrowser', () => {
     }))).toBe(false);
   });
 
-  it('refuses an "ask" cell — the tier is not an approval channel', () => {
+  it('refuses an "ask" row — the tier is not an approval channel', () => {
     useSettingsStore.setState({
-      browserOperationPolicy: {
-        ...DEFAULT_BROWSER_OPERATION_POLICY,
-        unattended: { ...DEFAULT_BROWSER_OPERATION_POLICY.unattended, interactive: 'ask' },
-      },
+      browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
     });
     expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'interactive' }))).toBe(false);
   });

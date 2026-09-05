@@ -373,86 +373,108 @@ describe('browser tool policy', () => {
 
   describe('normalizeBrowserOperationPolicy', () => {
     const VALID_POLICY: BrowserOperationPolicy = {
-      attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
-      unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+      readOnly: 'allow', interactive: 'ask', scripting: 'ask',
     };
 
     it('passes a fully well-formed policy through unchanged', () => {
       expect(normalizeBrowserOperationPolicy(VALID_POLICY)).toEqual(VALID_POLICY);
     });
 
-    // A site grant is minted from a human approving a CLICK. Letting
-    // unattended scripting be 'allow' would turn that consent into standing
-    // permission to run arbitrary code in the logged-in session.
-    it('clamps unattended scripting "allow" to "ask" — that cell has no allow', () => {
-      const withAllow: BrowserOperationPolicy = {
-        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-      };
-      const normalized = normalizeBrowserOperationPolicy(withAllow);
+    /**
+     * The 2026-09-04 column collapse: every installed copy of the app has the
+     * two-column shape in localStorage, and the ruling kept the ATTENDED
+     * column — that is where the user said what Abu may do, and it is what
+     * the merged defaults reproduce. Reading such a store as the new shape
+     * instead would find no top-level rows, clamp all three to the strictest
+     * state and silently reset a policy the user had configured.
+     */
+    describe('legacy two-column shape (settingsStore <= v46)', () => {
+      it('keeps the attended column and drops the unattended one', () => {
+        expect(normalizeBrowserOperationPolicy({
+          attended: { readOnly: 'allow', interactive: 'ask', scripting: 'deny' },
+          unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+        })).toEqual({ readOnly: 'allow', interactive: 'ask', scripting: 'deny' });
+      });
 
-      expect(normalized.unattended.scripting).toBe('ask');
-      // Only that one cell — attended scripting and the unattended siblings
-      // keep what they were given.
-      expect(normalized.attended.scripting).toBe('allow');
-      expect(normalized.unattended.interactive).toBe('allow');
-      expect(normalized.unattended.readOnly).toBe('allow');
+      it('reads the attended column even when the unattended one is the permissive side', () => {
+        // The direction that would matter if the wrong column were taken: an
+        // 'allow' visible ONLY in the unattended column must not survive.
+        expect(normalizeBrowserOperationPolicy({
+          attended: { readOnly: 'ask', interactive: 'deny', scripting: 'deny' },
+          unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+        })).toEqual({ readOnly: 'ask', interactive: 'deny', scripting: 'deny' });
+      });
+
+      it('clamps a malformed leaf inside the legacy column like any other', () => {
+        expect(normalizeBrowserOperationPolicy({
+          attended: { readOnly: 'maybe', interactive: 'allow' /* scripting missing */ },
+          unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+        })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask' });
+      });
+
+      it('ignores a non-object attended key and reads the top level instead', () => {
+        // Not the legacy shape, just a store with junk under that name — the
+        // real rows are where the new shape says they are.
+        expect(normalizeBrowserOperationPolicy({
+          attended: null,
+          readOnly: 'deny', interactive: 'deny', scripting: 'deny',
+        })).toEqual({ readOnly: 'deny', interactive: 'deny', scripting: 'deny' });
+      });
     });
 
-    it('leaves an explicit unattended scripting deny/ask alone', () => {
-      for (const state of ['deny', 'ask'] as const) {
+    /**
+     * A well-formed 'allow' for scripting must survive normalization: what it
+     * buys an automatic run is decided at the gate (master switch + standing
+     * site grant + not high-risk), not here. Clamping it would make the
+     * setting silently un-saveable.
+     */
+    it('preserves an explicit scripting "allow"', () => {
+      const withAllow: BrowserOperationPolicy = {
+        readOnly: 'allow', interactive: 'allow', scripting: 'allow',
+      };
+      expect(normalizeBrowserOperationPolicy(withAllow)).toEqual(withAllow);
+    });
+
+    // A present-but-broken row is a signal that something went wrong, and
+    // still clamps — the fail-safe posture is unchanged.
+    it('clamps a MALFORMED scripting value to ask', () => {
+      for (const bad of ['allowed', 'ALLOW', 1, true, null, {}]) {
         expect(normalizeBrowserOperationPolicy({
-          ...VALID_POLICY,
-          unattended: { ...VALID_POLICY.unattended, scripting: state },
-        }).unattended.scripting).toBe(state);
+          ...VALID_POLICY, scripting: bad,
+        }).scripting, JSON.stringify(bad)).toBe('ask');
       }
     });
 
-    it('clamps a completely missing input to strictest-everywhere (attended=ask, unattended=deny)', () => {
+    it('leaves an explicit scripting deny/ask alone', () => {
+      for (const state of ['deny', 'ask'] as const) {
+        expect(normalizeBrowserOperationPolicy({ ...VALID_POLICY, scripting: state }).scripting)
+          .toBe(state);
+      }
+    });
+
+    it('clamps a completely missing input to strictest-everywhere (ask)', () => {
       expect(normalizeBrowserOperationPolicy(undefined)).toEqual({
-        attended: { readOnly: 'ask', interactive: 'ask', scripting: 'ask' },
-        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
+        readOnly: 'ask', interactive: 'ask', scripting: 'ask',
       });
     });
 
     it('clamps non-object input (string/number/null/array) to strictest-everywhere', () => {
-      const strictest = {
-        attended: { readOnly: 'ask', interactive: 'ask', scripting: 'ask' },
-        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
-      };
+      const strictest = { readOnly: 'ask', interactive: 'ask', scripting: 'ask' };
       for (const bad of ['nope', 42, null, [1, 2, 3]]) {
         expect(normalizeBrowserOperationPolicy(bad)).toEqual(strictest);
       }
     });
 
-    it('clamps a missing run-mode key to strictest for that entire column, keeping the other column', () => {
-      const attendedOnly = { attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' } };
-      expect(normalizeBrowserOperationPolicy(attendedOnly)).toEqual({
-        attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-        unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
-      });
-    });
-
     it('clamps one missing leaf to strictest while preserving valid sibling leaves', () => {
-      const partial = {
-        attended: { readOnly: 'allow' /* interactive, scripting missing */ },
-        unattended: { readOnly: 'allow', interactive: 'allow' /* scripting missing */ },
-      };
-      expect(normalizeBrowserOperationPolicy(partial)).toEqual({
-        attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
-        unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+      expect(normalizeBrowserOperationPolicy({ readOnly: 'allow' })).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
       });
     });
 
     it('clamps a leaf holding a value outside allow|deny|ask to strictest', () => {
-      const malformed = {
-        attended: { readOnly: 'maybe', interactive: 'allow', scripting: true },
-        unattended: { readOnly: 'allow', interactive: 42, scripting: 'deny' },
-      };
-      expect(normalizeBrowserOperationPolicy(malformed)).toEqual({
-        attended: { readOnly: 'ask', interactive: 'allow', scripting: 'ask' },
-        unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
-      });
+      expect(normalizeBrowserOperationPolicy({
+        readOnly: 'maybe', interactive: 'allow', scripting: true,
+      })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask' });
     });
   });
 
@@ -460,20 +482,14 @@ describe('browser tool policy', () => {
     const OP_CLASSES: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting'];
     const STATES: BrowserOperationState[] = ['allow', 'deny', 'ask'];
 
-    /** A policy where every cell is forced to `filler`, except the one cell
+    /** A policy where every row is forced to `filler`, except the one row
      *  under test — isolates the matrix test from DEFAULT_BROWSER_OPERATION_POLICY. */
     function policyWith(
-      runMode: 'attended' | 'unattended',
       key: 'readOnly' | 'interactive' | 'scripting',
       state: BrowserOperationState,
       filler: BrowserOperationState = 'allow',
     ): BrowserOperationPolicy {
-      const row = { readOnly: filler, interactive: filler, scripting: filler };
-      return {
-        attended: { ...row },
-        unattended: { ...row },
-        [runMode]: { ...row, [key]: state },
-      } as BrowserOperationPolicy;
+      return { readOnly: filler, interactive: filler, scripting: filler, [key]: state };
     }
 
     const POLICY_KEY: Record<BrowserOperationClass, 'readOnly' | 'interactive' | 'scripting'> = {
@@ -486,20 +502,19 @@ describe('browser tool policy', () => {
       for (const runMode of ['attended', 'unattended'] as const) {
         for (const opClass of OP_CLASSES) {
           for (const state of STATES) {
-            // The one cell that cannot say what it was configured to say:
-            // unattended scripting has no 'allow' (see
-            // `browserOperationStatesFor`), so a configured 'allow' resolves
-            // to 'ask' — a site grant minted from a click must never buy
-            // silent page scripting in a run nobody is watching.
-            const expected = runMode === 'unattended' && opClass === 'scripting' && state === 'allow'
-              ? 'ask'
-              : state;
+            // ONE configured value, read identically by both execution
+            // contexts (2026-09-04 ruling) — on a site the user granted, with
+            // the master switch on, every row resolves to exactly what it was
+            // set to. The conditions that make that safe for an automatic run
+            // are the site verdict and the master switch this matrix holds
+            // fixed; each is pinned on its own below.
+            const expected = state;
             it(`${runMode}/${opClass} configured '${state}' → '${expected}'`, () => {
               expect(
                 decideBrowserOperation({
                   opClass,
                   runMode,
-                  policy: policyWith(runMode, POLICY_KEY[opClass], state),
+                  policy: policyWith(POLICY_KEY[opClass], state),
                   masterSwitchUnattended: true,
                   siteVerdict: 'allowed',
                 }),
@@ -510,47 +525,95 @@ describe('browser tool policy', () => {
       }
     });
 
-    describe('unattended scripting has no allow', () => {
-      it('never returns allow, even for a policy object that says allow', () => {
-        expect(
-          decideBrowserOperation({
-            opClass: 'scripting',
-            runMode: 'unattended',
-            policy: {
-              attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-              unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-            },
-            masterSwitchUnattended: true,
-            siteVerdict: 'allowed',
-          }),
-        ).toBe('ask');
+    /**
+     * Scripting is the one row whose configured `allow` is not taken at face
+     * value for an automatic run. The conjunction pinned below is the same
+     * one the 2026-09-04 opt-in ruling specified, and the column collapse did
+     * not relax it:
+     *   1. the unattended master switch is on,
+     *   2. the site carries a standing 'allowed' verdict,
+     *   3. the site is not high-risk.
+     * Anything else is `deny`, never `ask`: `registry.ts` refuses a
+     * state-changing action on an ungranted site anyway, so an approval
+     * round-trip would wake a human to approve something already refused.
+     */
+    describe('unattended scripting: allow is site-scoped', () => {
+      const OPTED_IN: BrowserOperationPolicy = {
+        readOnly: 'allow', interactive: 'allow', scripting: 'allow',
+      };
+      const scripted = (
+        overrides: Partial<Parameters<typeof decideBrowserOperation>[0]>,
+      ) => decideBrowserOperation({
+        opClass: 'scripting',
+        runMode: 'unattended',
+        policy: OPTED_IN,
+        masterSwitchUnattended: true,
+        siteVerdict: 'allowed',
+        ...overrides,
       });
 
-      it('still lets ATTENDED scripting be allowed — the restriction is unattended-only', () => {
+      it('condition 1+2+3 all hold → allow (the user allowed it, on a granted site)', () => {
+        expect(scripted({})).toBe('allow');
+      });
+
+      it('condition 1 fails (master switch off) → deny', () => {
+        expect(scripted({ masterSwitchUnattended: false })).toBe('deny');
+      });
+
+      it('condition 2 fails (no standing grant) → deny, not ask', () => {
+        expect(scripted({ siteVerdict: 'default' })).toBe('deny');
+        expect(scripted({ siteVerdict: 'denied' })).toBe('deny');
+      });
+
+      it('condition 3 fails (money movement / government URL) → deny', () => {
+        expect(scripted({ siteVerdict: 'high-risk' })).toBe('deny');
+      });
+
+      it('an unknown site is a default-verdict site — deny, never a shrug', () => {
+        // `getSiteVerdict` collapses "no entry" and "origin could not be
+        // determined" into 'default'; both must land on the same refusal.
+        expect(scripted({ siteVerdict: getSiteVerdict(null, {}) })).toBe('deny');
+        expect(scripted({ siteVerdict: getSiteVerdict('https://never-granted.example', {}) }))
+          .toBe('deny');
+      });
+
+      it('does not leak into the neighbouring rows or the default policy', () => {
+        // Same granted site, DEFAULT policy: scripting asks rather than runs.
+        expect(decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'unattended',
+          policy: DEFAULT_BROWSER_OPERATION_POLICY,
+          masterSwitchUnattended: true,
+          siteVerdict: 'allowed',
+        })).toBe('ask');
+        // And a scripting 'ask' still routes to the approval round-trip on a
+        // site with no grant — the IM path is untouched by the site-scoping.
+        expect(decideBrowserOperation({
+          opClass: 'scripting',
+          runMode: 'unattended',
+          policy: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
+          masterSwitchUnattended: true,
+          siteVerdict: 'default',
+        })).toBe('ask');
+      });
+
+      it('leaves the ATTENDED reading of the same row alone — the scoping is unattended-only', () => {
         expect(
           decideBrowserOperation({
             opClass: 'scripting',
             runMode: 'attended',
-            policy: {
-              attended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-              unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-            },
+            policy: OPTED_IN,
             masterSwitchUnattended: true,
-            siteVerdict: 'allowed',
+            // No standing grant, and the attended reading still says allow:
+            // the site-scoping belongs to the automatic context alone.
+            siteVerdict: 'default',
           }),
         ).toBe('allow');
       });
 
-      it('offers only ask/deny for that cell, all three everywhere else', () => {
-        expect(browserOperationStatesFor('unattended', 'scripting')).toEqual(['ask', 'deny']);
-        for (const [runMode, opClass] of [
-          ['attended', 'scripting'],
-          ['attended', 'interactive'],
-          ['attended', 'read-only'],
-          ['unattended', 'interactive'],
-          ['unattended', 'read-only'],
-        ] as const) {
-          expect(browserOperationStatesFor(runMode, opClass), `${runMode}/${opClass}`)
+      it('offers all three states for every row', () => {
+        for (const opClass of OP_CLASSES) {
+          expect(browserOperationStatesFor(opClass), opClass)
             .toEqual(['allow', 'ask', 'deny']);
         }
       });
@@ -574,7 +637,7 @@ describe('browser tool policy', () => {
           decideBrowserOperation({
             opClass: 'interactive',
             runMode: 'unattended',
-            policy: policyWith('unattended', 'interactive', 'allow'),
+            policy: policyWith('interactive', 'allow'),
             masterSwitchUnattended: true,
             siteVerdict: 'denied',
           }),
@@ -631,7 +694,16 @@ describe('browser tool policy', () => {
         expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('ask');
       });
 
-      it('unattended with the master switch on: read-only and interactive allow, scripting is denied', () => {
+      /**
+       * The one default that MOVED in the 2026-09-04 collapse: the unattended
+       * column shipped scripting as `'deny'`, and the surviving column ships
+       * it as `'ask'`. An automatic run therefore routes a default-policy
+       * script to the IM approval seam instead of refusing it outright — and
+       * with nobody bound to answer, `askOverIm` refuses it anyway
+       * (`no_binding`). Nothing runs on the strength of the default; a human
+       * answers, or it is refused.
+       */
+      it('unattended with the master switch on: read-only and interactive allow, scripting asks', () => {
         const base = {
           policy: DEFAULT_BROWSER_OPERATION_POLICY,
           masterSwitchUnattended: true,
@@ -640,7 +712,7 @@ describe('browser tool policy', () => {
         };
         expect(decideBrowserOperation({ ...base, opClass: 'read-only' })).toBe('allow');
         expect(decideBrowserOperation({ ...base, opClass: 'interactive' })).toBe('allow');
-        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('deny');
+        expect(decideBrowserOperation({ ...base, opClass: 'scripting' })).toBe('ask');
       });
 
       it('unattended with the master switch off (the shipped default): everything denies', () => {
@@ -666,10 +738,10 @@ describe('browser tool policy', () => {
       it('unattended: denies EVERY class, even under a permissive policy and an allowed site', () => {
         const base = {
           runMode: 'unattended' as const,
-          policy: {
-            attended: DEFAULT_BROWSER_OPERATION_POLICY.attended,
-            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-          } as BrowserOperationPolicy,
+          // High-risk outranks an explicit scripting 'allow' — "always allow
+          // this bank" plus "let scripts run" is exactly the combination this
+          // control exists to prevent.
+          policy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
           masterSwitchUnattended: true,
           siteVerdict: 'high-risk' as const,
         };
@@ -701,10 +773,7 @@ describe('browser tool policy', () => {
         expect(decideBrowserOperation({
           opClass: 'interactive',
           runMode: 'attended',
-          policy: {
-            attended: { readOnly: 'allow', interactive: 'deny', scripting: 'ask' },
-            unattended: DEFAULT_BROWSER_OPERATION_POLICY.unattended,
-          },
+          policy: { readOnly: 'allow', interactive: 'deny', scripting: 'ask' },
           masterSwitchUnattended: true,
           siteVerdict: 'high-risk',
         })).toBe('deny');
@@ -743,8 +812,29 @@ describe('browser tool policy', () => {
     });
 
     describe('runtime defense against a malformed policy (I3)', () => {
-      it('a policy missing the unattended column still denies unattended scripting (strictest fallback)', () => {
-        const malformed = { attended: DEFAULT_BROWSER_OPERATION_POLICY.attended } as unknown as BrowserOperationPolicy;
+      it('a policy with no rows at all still asks rather than allowing', () => {
+        const malformed = {} as unknown as BrowserOperationPolicy;
+        for (const runMode of ['attended', 'unattended'] as const) {
+          expect(
+            decideBrowserOperation({
+              opClass: 'interactive',
+              runMode,
+              policy: malformed,
+              masterSwitchUnattended: true,
+              siteVerdict: 'allowed',
+            }),
+            runMode,
+          ).toBe('ask');
+        }
+      });
+
+      it('a scripting row that arrives malformed never resolves to allow', () => {
+        const malformed = {
+          readOnly: 'allow', interactive: 'allow', scripting: 'ALLOW',
+        } as unknown as BrowserOperationPolicy;
+        // Unattended, on a granted site with the switch on — every
+        // precedence step passes, so only the clamp stands between a
+        // corrupted value and a script running unwatched.
         expect(
           decideBrowserOperation({
             opClass: 'scripting',
@@ -753,13 +843,12 @@ describe('browser tool policy', () => {
             masterSwitchUnattended: true,
             siteVerdict: 'allowed',
           }),
-        ).toBe('deny');
+        ).toBe('ask');
       });
 
       it('a policy with an invalid leaf value still returns a valid state (ask), not the garbage value', () => {
         const malformed = {
-          attended: { readOnly: 'allow', interactive: 'yolo', scripting: 'ask' },
-          unattended: DEFAULT_BROWSER_OPERATION_POLICY.unattended,
+          readOnly: 'allow', interactive: 'yolo', scripting: 'ask',
         } as unknown as BrowserOperationPolicy;
         expect(
           decideBrowserOperation({

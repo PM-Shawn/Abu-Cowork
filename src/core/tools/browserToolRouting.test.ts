@@ -46,6 +46,33 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
  */
 const ANY_ARG = '{"css":"body","role":"button","type":"appear","locator":{"css":"body"}}';
 
+/** The tab the recording transport reports, so `batch` can pin an origin. */
+const PROBE_TAB = 1;
+
+/**
+ * Arguments for tools that `ANY_ARG` cannot satisfy.
+ *
+ * `batch` needs a real step list, and it needs ONE OF EVERY STEP TYPE: what
+ * this file pins for `batch` is that each step type's wire action is routed on
+ * both channels. A step type nobody routed answers `Unknown action` halfway
+ * through a run the user already approved — worse than a tool that never
+ * worked, because half the form is already filled in.
+ */
+const TOOL_ARGS: Record<string, Record<string, unknown>> = {
+  batch: {
+    tabId: PROBE_TAB,
+    steps: JSON.stringify([
+      { action: 'fill', locator: { css: 'body' }, value: 'x' },
+      { action: 'select', locator: { css: 'body' }, value: 'x' },
+      { action: 'click', locator: { css: 'body' } },
+      { action: 'keyboard', key: 'Enter' },
+      { action: 'wait_for', condition: { type: 'appear', locator: { css: 'body' } } },
+      { action: 'find', query: { role: 'button' } },
+      { action: 'read', selector: 'body' },
+    ]),
+  },
+};
+
 interface RegisteredTool {
   name: string;
   schema: Record<string, { safeParse(value: unknown): { success: boolean } }> | null;
@@ -72,10 +99,21 @@ async function wireActionsByTool(): Promise<Map<string, string[]>> {
   let sent: string[] = [];
   const transport = {
     isConnected: async () => true,
-    // Failing the response on purpose: every handler records its action first
-    // and then gives up, so nothing downstream (a query_js worker, a base64
-    // screenshot decode) has to run just to learn what was sent.
-    send: async (action: string) => { sent.push(action); return { success: false, error: 'recorded' }; },
+    // Answers are deliberately empty: a handler records its action and then
+    // has nothing downstream to do (a query_js worker, a base64 screenshot
+    // decode) just to reveal what it sent. `get_tabs` is the one exception —
+    // `batch` checks the page it is on before every step, so a tab list it can
+    // read is what lets its own steps reach the wire at all.
+    send: async (action: string) => {
+      sent.push(action);
+      if (action === 'get_tabs') {
+        return {
+          success: true,
+          data: { windows: [{ tabs: [{ tabId: PROBE_TAB, url: 'https://example.com/' }] }] },
+        };
+      }
+      return { success: true, data: {} };
+    },
     getConnectionError: () => 'not connected',
     getStatusMessage: () => 'ok',
   };
@@ -89,8 +127,9 @@ async function wireActionsByTool(): Promise<Map<string, string[]>> {
   const byTool = new Map<string, string[]>();
   for (const tool of registered) {
     sent = [];
-    const args: Record<string, unknown> = {};
+    const args: Record<string, unknown> = { ...TOOL_ARGS[tool.name] };
     for (const [key, zodType] of Object.entries(tool.schema ?? {})) {
+      if (key in args) continue;
       args[key] = zodType.safeParse(ANY_ARG).success ? ANY_ARG
         : zodType.safeParse(1).success ? 1
           : ANY_ARG;
@@ -138,6 +177,17 @@ describe('every registered browser tool reaches a runtime on both channels', () 
     // A new tool that reaches no channel is either bridge-local (say so here,
     // deliberately) or broken — either way it must not pass unnoticed.
     expect(silent.sort()).toEqual([...BRIDGE_LOCAL_TOOLS].sort());
+  });
+
+  it('derives the batch step actions from the run itself, one per step type', async () => {
+    // Not a re-typed list: this is what the seven-step batch in `TOOL_ARGS`
+    // actually put on the wire, minus its own page-identity probes.
+    const actions = (await wireActionsByTool()).get('batch') ?? [];
+    expect(actions.filter((a) => a !== 'get_tabs')).toEqual([
+      'fill', 'select', 'click', 'keyboard', 'wait_for', 'find', 'extract_text',
+    ]);
+    // And it really did check the page between steps rather than once.
+    expect(actions.filter((a) => a === 'get_tabs').length).toBeGreaterThan(1);
   });
 
   it('routes every wire action through the Chrome extension', async () => {

@@ -19,6 +19,7 @@ const BROWSER_TOOL_SUFFIXES = [
   'get_tabs',
   'snapshot',
   'find',
+  'batch',
   'click',
   'fill',
   'select',

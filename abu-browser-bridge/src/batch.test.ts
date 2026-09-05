@@ -233,6 +233,35 @@ describe('runBatch — page identity between steps', () => {
     expect(result.stopped).toBeUndefined();
   });
 
+  it('runs nothing at all when the page moved between the approval and the start', async () => {
+    // The gate approved `erp.example.com`; by the time the run began the tab
+    // was somewhere else (a meta refresh, a login bounce, a JS timer firing
+    // while the confirmation dialog was on screen). Before the approved origin
+    // was threaded in, the run simply pinned wherever it landed and executed
+    // every step there, self-consistently — on a site nobody approved.
+    const h = harness({ urls: ['https://login.evil.example/oauth'] });
+
+    const result = await runBatch(
+      h.deps, TAB, steps('fill', 'click'), 'https://erp.example.com',
+    );
+
+    expect(h.actions).toEqual([]);
+    expect(result.stopped).toBe('origin-changed');
+    expect(result.remainingSteps).toBe(2);
+    // The pin reported is the one that was APPROVED, not the one it found.
+    expect(result.origin).toBe('https://erp.example.com');
+  });
+
+  it('starts normally when the page is still where it was approved', async () => {
+    const h = harness();
+    const result = await runBatch(
+      h.deps, TAB, steps('fill', 'click'), 'https://erp.example.com',
+    );
+
+    expect(h.actions).toEqual(['fill', 'click']);
+    expect(result.stopped).toBeUndefined();
+  });
+
   it('stops the moment the tab leaves the origin the batch was approved for', async () => {
     const h = harness({
       urls: [

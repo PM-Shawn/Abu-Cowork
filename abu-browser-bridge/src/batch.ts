@@ -403,13 +403,35 @@ export async function runBatch(
   deps: BatchDeps,
   tabId: number,
   steps: BatchStep[],
+  /**
+   * The origin the GATE approved this batch for (`expectedOrigin`, U5's pin).
+   *
+   * Without it the run pinned whatever the tab happened to show when it
+   * started, which is not the same instant the user approved: a meta refresh,
+   * a login bounce or a JS timer firing while the confirmation dialog was on
+   * screen would leave the batch pinning the NEW origin and running all 25
+   * steps there, self-consistently. Each step's own `expectedOrigin` still
+   * reached the host and would have been refused there, so the outcome was
+   * fail-closed — but reported as "step 1 failed", not as "the page moved
+   * between approving this and running it", which is the thing that happened.
+   *
+   * Given, it is the pin, and a mismatch at the start stops the run before
+   * step 0. Optional so the pre-U5 shape (and the bridge's own tests) still
+   * work: absent, the run re-reads as before.
+   */
+  approvedOrigin?: string,
 ): Promise<BatchResult> {
   const startedAt = deps.now();
   const completedSteps: BatchStepOutcome[] = [];
   let failedStep: BatchStepOutcome | undefined;
   let stopped: BatchStopReason | undefined;
 
-  const pinned = await currentOrigin(deps, tabId);
+  const observed = await currentOrigin(deps, tabId);
+  // The gate's origin wins as the pin — never the observed one — so a run that
+  // drifted before it began stops rather than re-pinning onto where it landed.
+  const pinned = approvedOrigin ?? observed;
+  const driftedBeforeStart =
+    approvedOrigin !== undefined && observed !== null && observed !== approvedOrigin;
   let index = 0;
 
   const finish = (): BatchResult => {
@@ -427,6 +449,13 @@ export async function runBatch(
         : `All ${steps.length} steps ran on ${pinned ?? 'this page'}.`,
     });
   };
+
+  if (driftedBeforeStart) {
+    // Zero steps run, and the report names the drift rather than blaming the
+    // first step for a refusal it never earned.
+    stopped = 'origin-changed';
+    return finish();
+  }
 
   if (pinned === null) {
     stopped = 'origin-unverifiable';

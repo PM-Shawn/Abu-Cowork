@@ -374,7 +374,13 @@ A step's locator is exactly the one click/fill/select take: ref, css, text, role
         send: (action, payload, timeoutMs) =>
           sendWithSignal(transport, action, { ...payload, ...owner }, extra, timeoutMs),
       };
-      const result = await runBatch(deps, tabId, parsed);
+      // The gate's own approved origin (U5's pin) is the batch's pin too —
+      // the run must not re-derive one from wherever the tab is by the time it
+      // starts. See `runBatch`'s `approvedOrigin`.
+      const approvedOrigin = typeof owner.expectedOrigin === 'string'
+        ? owner.expectedOrigin
+        : undefined;
+      const result = await runBatch(deps, tabId, parsed, approvedOrigin);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     }
   );

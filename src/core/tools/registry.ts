@@ -23,6 +23,8 @@ import {
   getSiteVerdict,
   isScriptingBrowserTool,
   normalizeBrowserOrigin,
+  refuseBrowserBatch,
+  summarizeBrowserBatch,
 } from '../permissions/browserToolPolicy';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import {
@@ -452,6 +454,52 @@ async function resolveBrowserActionOrigin(
  * footer) without any of that meaning the page blocked the agent — see
  * `browserSignals.ts`'s `classifyBlockedPage`/`detectFrameHint` docs.
  */
+/**
+ * One `tool_call` event per step a batch actually ran, from the batch's own
+ * result envelope. Returns null when the result is not a readable batch
+ * envelope (an approval refusal, a transport error, a future shape change), so
+ * the caller can fall back to recording the call itself rather than recording
+ * nothing.
+ *
+ * The step's own name is used as the tool suffix, so a `click` inside a batch
+ * is comparable with a standalone `click`.
+ */
+function batchStepSignals(
+  namespacedName: string,
+  resultText: string,
+): Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> | null {
+  const separator = namespacedName.indexOf('__');
+  const serverName = separator === -1 ? namespacedName : namespacedName.slice(0, separator);
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { completedSteps, failedStep } = (envelope ?? {}) as {
+    completedSteps?: unknown;
+    failedStep?: unknown;
+  };
+  if (!Array.isArray(completedSteps)) return null;
+  const steps = [...completedSteps, ...(failedStep ? [failedStep] : [])];
+  const events: Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> = [];
+  for (const raw of steps) {
+    const step = raw as { action?: unknown; ok?: unknown; durationMs?: unknown; error?: unknown };
+    if (typeof step?.action !== 'string') return null;
+    const stepOk = step.ok === true;
+    events.push({
+      kind: 'tool_call',
+      tool: `${serverName}__${step.action}`,
+      ok: stepOk,
+      durationMs: typeof step.durationMs === 'number' ? step.durationMs : 0,
+      ...(stepOk
+        ? {}
+        : { errorClass: classifyBrowserToolError(typeof step.error === 'string' ? step.error : '') ?? 'unknown_error' }),
+    });
+  }
+  return events.length > 0 ? events : null;
+}
+
 function recordBrowserToolCallSignal(
   namespacedName: string,
   toolContext: ToolExecutionContext | undefined,
@@ -483,19 +531,37 @@ function recordBrowserToolCallSignal(
   }
 
   const context = buildBrowserSignalContext(browserChannelForTool(namespacedName) ?? 'builtin', conversationId);
-  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-    {
-      kind: 'tool_call',
-      tool: namespacedName,
-      ok,
-      durationMs,
-      ...(tabId !== undefined ? { tabId } : {}),
-      ...(origin ? { origin } : {}),
-      ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
-      ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
-    },
-    context,
-  ));
+  // A `batch` is one TOOL CALL but N page ACTIONS. Recording it as a single
+  // opaque `batch` event would blind this stream to exactly what batching
+  // exists to do — an eight-field form would read as one browser interaction —
+  // so a batch emits one event PER STEP instead of one for itself. (The "one
+  // tool call" accounting lives in the conversation transcript, which is
+  // unchanged.) A result that cannot be read falls back to the single event.
+  const stepEvents = bareToolName === 'batch'
+    ? batchStepSignals(namespacedName, resultText)
+    : null;
+  if (stepEvents !== null) {
+    for (const event of stepEvents) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { ...event, ...(tabId !== undefined ? { tabId } : {}), ...(origin ? { origin } : {}) },
+        context,
+      ));
+    }
+  } else {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      {
+        kind: 'tool_call',
+        tool: namespacedName,
+        ok,
+        durationMs,
+        ...(tabId !== undefined ? { tabId } : {}),
+        ...(origin ? { origin } : {}),
+        ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+        ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
+      },
+      context,
+    ));
+  }
 
   if (fallback) {
     safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
@@ -827,7 +893,21 @@ export async function checkToolApproval(
   // denied site > allowed site > conversation grant > ask. Scripting tools
   // (execute_js) never ride a site grant — each use is its own ask.
   {
-    const consequence = classifyBrowserTool(name);
+    // A `batch` carrying a page-script step (or one the gate cannot read as an
+    // ordered list of allowed steps) is refused whole, BEFORE any classifying:
+    // an all-reads batch never reaches the state-changing branch below, so a
+    // script hidden among reads would otherwise sail straight past the gate.
+    const batchRefusal = refuseBrowserBatch(name, input);
+    if (batchRefusal !== null) {
+      const reason = batchRefusal === 'scripting-step'
+        ? t.commandConfirm.browserBatchScriptStep
+        : batchRefusal === 'too-many-steps'
+          ? t.commandConfirm.browserBatchTooManySteps
+          : t.commandConfirm.browserBatchMalformed;
+      return { decision: 'deny', reason: `Error: ${reason}` };
+    }
+    // `input` is read here because a batch's consequence IS its heaviest step.
+    const consequence = classifyBrowserTool(name, input);
     if (consequence === 'state-changing') {
       const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
         runPermissionCeiling,
@@ -869,10 +949,15 @@ export async function checkToolApproval(
           { kind: 'confirm_prompt', origin: origin ?? undefined },
           buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', toolContext?.conversationId),
         ));
+        // For a batch, the user is approving N actions at once, so the dialog
+        // has to say which ones. Step KINDS and counts only — no locator, no
+        // value, no page text (same rule `deriveTargetKey` follows).
+        const batchSummary = summarizeBrowserBatch(name, input);
+        const target = origin
+          ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+          : `${t.commandConfirm.browserAction}: ${name}`;
         const confirmed = await onRequireConfirmation({
-          command: origin
-            ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
-            : `${t.commandConfirm.browserAction}: ${name}`,
+          command: batchSummary ? `${target} — ${batchSummary}` : target,
           level: 'warn',
           reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
           kind: 'browser',

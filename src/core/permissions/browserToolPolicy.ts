@@ -122,17 +122,149 @@ export function getSiteVerdict(
   return 'default';
 }
 
+// ── `batch`: one call, several actions, still one authority ────────────────
+//
+// `batch` is not a new permission surface. It carries N ordinary steps, so it
+// is classified by its HEAVIEST step: any click/fill/select/keyboard makes the
+// whole call state-changing (one ask, covering the run at the pinned origin);
+// a batch of nothing but page reads stays read-only, exactly as those reads
+// would be on their own. Everything else about the gate — blocked sites, site
+// grants, the conversation grant, the run ceiling — is unchanged.
+//
+// The one thing a batch may NOT contain is page scripting. `execute_js` is
+// deliberately approved run by run and never rides a site grant; a scripting
+// step would let a single "allow" buy an unbounded number of script runs. The
+// bridge refuses such a batch too (`abu-browser-bridge/src/batch.ts`), but the
+// gate must not depend on that: this module is what stands between the model's
+// arguments and the user's logged-in session.
+
+/** Mirrors `MAX_BATCH_STEPS` in `abu-browser-bridge/src/batch.ts`. */
+export const MAX_BROWSER_BATCH_STEPS = 25;
+
+const BATCH_STEP_CONSEQUENCE: Record<string, BrowserToolConsequence> = {
+  fill: 'state-changing',
+  select: 'state-changing',
+  click: 'state-changing',
+  keyboard: 'state-changing',
+  wait_for: 'read-only',
+  find: 'read-only',
+  read: 'read-only',
+};
+
+/** Step `action` values that mean "run code in the page", however spelled. */
+const BATCH_SCRIPTING_STEPS = new Set(['execute_js', 'query_js', 'script', 'eval']);
+
+export type BrowserBatchRefusalCode = 'scripting-step' | 'too-many-steps' | 'malformed';
+
+function batchToolName(namespacedName: string): boolean {
+  const separator = namespacedName.indexOf('__');
+  if (separator === -1) return false;
+  if (!BROWSER_SERVER_NAMES.has(namespacedName.slice(0, separator))) return false;
+  return namespacedName.slice(separator + 2) === 'batch';
+}
+
+/**
+ * Decode `input.steps`, which the tool schema carries as a JSON string but
+ * which a caller may already have decoded. Returns null when it cannot be read
+ * as a list — which the gate treats as a refusal, never as an empty batch.
+ */
+function decodeBatchSteps(input: unknown): unknown[] | null {
+  const raw = (input as { steps?: unknown } | undefined)?.steps;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stepAction(step: unknown): string | null {
+  if (typeof step !== 'object' || step === null || Array.isArray(step)) return null;
+  const action = (step as { action?: unknown }).action;
+  return typeof action === 'string' ? action : null;
+}
+
+/**
+ * Why this `batch` must be refused outright, or null when it is acceptable
+ * (or when the tool is not a browser `batch` at all).
+ *
+ * Refusing is separate from classifying on purpose: a batch whose only steps
+ * are reads still has to be refused if one of them is a script, and the
+ * read-only path never reaches the state-changing branch of the gate.
+ */
+export function refuseBrowserBatch(
+  namespacedName: string,
+  input: unknown,
+): BrowserBatchRefusalCode | null {
+  if (!batchToolName(namespacedName)) return null;
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return 'malformed';
+  if (steps.length > MAX_BROWSER_BATCH_STEPS) return 'too-many-steps';
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action !== null && BATCH_SCRIPTING_STEPS.has(action)) return 'scripting-step';
+  }
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action === null || !(action in BATCH_STEP_CONSEQUENCE)) return 'malformed';
+  }
+  return null;
+}
+
+/**
+ * A one-line "what this batch will do" for the confirmation dialog: step kinds
+ * and counts, in order, and nothing else. Deliberately carries no locator, no
+ * value and no page text — the same rule `deriveTargetKey` follows in the
+ * signal collector, for the same reason.
+ */
+export function summarizeBrowserBatch(namespacedName: string, input: unknown): string | null {
+  if (!batchToolName(namespacedName)) return null;
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return null;
+  const counts: Array<[string, number]> = [];
+  for (const step of steps) {
+    const action = stepAction(step) ?? '?';
+    const last = counts[counts.length - 1];
+    if (last && last[0] === action) last[1] += 1;
+    else counts.push([action, 1]);
+  }
+  return counts.map(([action, n]) => (n > 1 ? `${action} ×${n}` : action)).join(' → ');
+}
+
 /**
  * Classify a namespaced MCP tool name (`server__tool`).
  * Returns null when the tool is not a browser-automation tool.
+ *
+ * `input` matters only for `batch`, which is classified by its heaviest step.
+ * Anything unreadable there classifies as state-changing: a call the gate
+ * cannot understand must not be the one that skips the ask. (It is refused
+ * outright by `refuseBrowserBatch` anyway — this is the second lock.)
  */
-export function classifyBrowserTool(namespacedName: string): BrowserToolConsequence | null {
+export function classifyBrowserTool(
+  namespacedName: string,
+  input?: unknown,
+): BrowserToolConsequence | null {
   const separator = namespacedName.indexOf('__');
   if (separator === -1) return null;
   const serverName = namespacedName.slice(0, separator);
   if (!BROWSER_SERVER_NAMES.has(serverName)) return null;
   const toolName = namespacedName.slice(separator + 2);
+  if (toolName === 'batch') return classifyBrowserBatch(input);
   return STATE_CHANGING_TOOLS.has(toolName) ? 'state-changing' : 'read-only';
+}
+
+function classifyBrowserBatch(input: unknown): BrowserToolConsequence {
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return 'state-changing';
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action === null) return 'state-changing';
+    const consequence = BATCH_STEP_CONSEQUENCE[action];
+    if (consequence === undefined || consequence === 'state-changing') return 'state-changing';
+  }
+  return 'read-only';
 }
 
 /**

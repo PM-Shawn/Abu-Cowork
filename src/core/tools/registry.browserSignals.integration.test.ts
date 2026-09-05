@@ -359,6 +359,67 @@ describe('registry.ts browser observability collection', () => {
     });
   });
 
+
+  // ── batch: one tool call, N page actions ─────────────────────────────────
+  describe('a batch is recorded as the actions it ran, not as one opaque call', () => {
+    const envelope = JSON.stringify({
+      tabId: 1,
+      origin: 'https://erp.example.com',
+      completedSteps: [
+        { index: 0, action: 'fill', ok: true, durationMs: 12 },
+        { index: 1, action: 'fill', ok: true, durationMs: 9 },
+      ],
+      failedStep: { index: 2, action: 'click', ok: false, durationMs: 4, error: 'Element not found: #submit' },
+      remainingSteps: 1,
+      stopped: 'step-failed',
+      message: 'Batch stopped',
+    });
+
+    /** A batch touches the page, so it asks — approve it and get on with it. */
+    const approveOnce = (async () => true) as never;
+
+    it('emits one tool_call per step it ran, with each step named as itself', async () => {
+      // Recording it as a single `batch` event would make an eight-field form
+      // read as one browser interaction — blind to exactly what batching does.
+      setDefaultResponse(envelope);
+
+      await executeAnyTool(
+        'abu-browser__batch',
+        { tabId: 1, steps: '[{"action":"fill","locator":{"css":"#a"},"value":"1"}]' },
+        approveOnce,
+        undefined,
+        { conversationId: 'conv-batch' },
+      );
+
+      const signals = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signals.map((s) => (s as { tool: string }).tool)).toEqual([
+        'abu-browser__fill', 'abu-browser__fill', 'abu-browser__click',
+      ]);
+      expect(signals.map((s) => (s as { ok: boolean }).ok)).toEqual([true, true, false]);
+      expect(signals[2]).toMatchObject({ errorClass: 'unknown_error', durationMs: 4 });
+      // And no leftover `batch` event double-counting the same work.
+      expect(signals.some((s) => (s as { tool: string }).tool.endsWith('__batch'))).toBe(false);
+    });
+
+    it('falls back to recording the call itself when the result is not a batch envelope', async () => {
+      // A refusal, a transport error, or a future shape change must not make
+      // the run invisible to the signal stream.
+      setDefaultResponse('Error: Browser extension is not connected.');
+
+      await executeAnyTool(
+        'abu-browser__batch',
+        { tabId: 1, steps: '[{"action":"fill","locator":{"css":"#a"},"value":"1"}]' },
+        approveOnce,
+        undefined,
+        { conversationId: 'conv-batch' },
+      );
+
+      const signals = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signals).toHaveLength(1);
+      expect(signals[0]).toMatchObject({ tool: 'abu-browser__batch', ok: false });
+    });
+  });
+
   // ── Fix-wave minor: callTool throwing must propagate untouched + still record ──
   describe('mcpManager.callTool throwing (fix-wave minor, registry.ts callTool-throw branch)', () => {
     it('propagates the original error object unchanged and still records ok:false', async () => {

@@ -9,7 +9,9 @@ import {
   isScriptingBrowserTool,
   listAllBrowserToolPatterns,
   normalizeBrowserOrigin,
+  refuseBrowserBatch,
   revokeBrowserGrant,
+  summarizeBrowserBatch,
 } from './browserToolPolicy';
 import { matchesToolName } from '../skill/toolFilter';
 
@@ -40,6 +42,58 @@ describe('browser tool policy', () => {
 
     it('does not let a server name ending in the browser name slip through', () => {
       expect(classifyBrowserTool('evil-abu-browser__click')).toBeNull();
+    });
+  });
+
+  describe('batch', () => {
+    const clickStep = { action: 'click', locator: { css: '#a' } };
+
+    it('is classified by its heaviest step, on both server namespaces', () => {
+      for (const server of ['abu-browser', 'abu-browser-bridge']) {
+        expect(classifyBrowserTool(`${server}__batch`, {
+          steps: [{ action: 'find', query: { role: 'button' } }, clickStep],
+        })).toBe('state-changing');
+        expect(classifyBrowserTool(`${server}__batch`, {
+          steps: [{ action: 'find', query: { role: 'button' } }, { action: 'read' }],
+        })).toBe('read-only');
+      }
+    });
+
+    it('refuses a scripting step wherever it sits in the run', () => {
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [clickStep, { action: 'execute_js', code: '1' }, clickStep],
+      })).toBe('scripting-step');
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [{ action: 'query_js', code: '1' }],
+      })).toBe('scripting-step');
+    });
+
+    it('reports a scripting step as scripting even when the run is also malformed', () => {
+      // Order matters: "there was a script in it" is the answer the user needs,
+      // not "one of these steps was misspelled".
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [{ action: 'hover' }, { action: 'execute_js', code: '1' }],
+      })).toBe('scripting-step');
+    });
+
+    it('says nothing about any other tool', () => {
+      expect(refuseBrowserBatch('abu-browser__click', { steps: '[{"action":"execute_js"}]' })).toBeNull();
+      expect(refuseBrowserBatch('other-server__batch', { steps: '[{"action":"execute_js"}]' })).toBeNull();
+      expect(summarizeBrowserBatch('abu-browser__click', { steps: '[]' })).toBeNull();
+    });
+
+    it('summarizes a run as step kinds and counts, and nothing the page could have written', () => {
+      const summary = summarizeBrowserBatch('abu-browser__batch', {
+        steps: [
+          { action: 'fill', locator: { css: '#user' }, value: 'zhangsan@example.com' },
+          { action: 'fill', locator: { css: '#pw' }, value: 'hunter2' },
+          { action: 'click', locator: { role: 'button', name: 'Transfer 5000' } },
+        ],
+      });
+      expect(summary).toBe('fill ×2 → click');
+      expect(summary).not.toContain('hunter2');
+      expect(summary).not.toContain('example.com');
+      expect(summary).not.toContain('Transfer');
     });
   });
 

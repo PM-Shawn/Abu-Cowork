@@ -2494,6 +2494,10 @@ export interface TranslationDict {
     browserDescription: string;
     browserSiteDenied: string;
     browserScriptReason: string;
+    /** A `batch` carrying a page-script step — refused whole, never partly run. */
+    browserBatchScriptStep: string;
+    browserBatchTooManySteps: string;
+    browserBatchMalformed: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */

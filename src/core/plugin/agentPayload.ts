@@ -12,9 +12,11 @@
  *   - **allowlist**, not denylist: only the keys `parseAgentFile` actually
  *     reads survive, so ecosystem-only keys (`color`, `permissionMode`, …)
  *     cannot smuggle behaviour into a file Abu will later parse;
- *   - **`memory: none`**, always. A third-party agent must not default to
- *     reading or writing the user's own memory — the single place a plugin
- *     agent is held stricter than one the user wrote themselves.
+ *   - **`memory` is dropped**, declared or not. `memory` has no runtime
+ *     consumer today (it is pure metadata), so a package's `memory: user`
+ *     would only colour a detail panel; a converted agent is written without
+ *     the key and is treated exactly like an agent that never declared one
+ *     (spec §4, Ruling 2026-09-06).
  * `tools` / `disallowed-tools` pass through: every tool call still goes through
  * Abu's permission gate and approvals, so declaring them only narrows the
  * default set (spec §4).
@@ -57,12 +59,23 @@ export const AGENT_FRONTMATTER_ALLOWLIST = [
 /** Allowlisted keys whose value is a list, however the author spelled it. */
 const LIST_KEYS = ['tools', 'disallowed-tools', 'skills', 'tags'] as const;
 
+/**
+ * Allowlisted (i.e. `parseAgentFile` reads them) but never emitted.
+ *
+ * `memory` stays in the allowlist because that constant documents the parser's
+ * key set, but no converted agent carries it: writing a package's own
+ * `memory: user` back out would hand a stranger's agent a claim over the user's
+ * memory, and writing anything else would state a restriction nothing enforces.
+ * Absent, the agent reads exactly like one whose author never declared it.
+ */
+const DROPPED_KEYS = ['memory'] as const;
+
 export interface ConvertedAgent {
   /** Frontmatter `name`, or the caller's fallback (the file/directory name). */
   name: string;
   /** Frontmatter `description`, or `''` — a missing one is not a rejection. */
   description: string;
-  /** Allowlisted frontmatter, list fields normalised, `memory` forced to none. */
+  /** Allowlisted frontmatter, list fields normalised, `memory` dropped. */
   frontmatter: Record<string, unknown>;
   /** The system prompt: everything after the closing fence, verbatim. */
   body: string;
@@ -115,6 +128,7 @@ export function convertSingleFileAgent(raw: string, fallbackName: string): Conve
   const frontmatter: Record<string, unknown> = {};
   for (const key of AGENT_FRONTMATTER_ALLOWLIST) {
     if (!(key in meta)) continue;
+    if ((DROPPED_KEYS as readonly string[]).includes(key)) continue;
     const value = meta[key];
     if (value === undefined || value === null) continue;
     if ((LIST_KEYS as readonly string[]).includes(key)) {
@@ -136,11 +150,6 @@ export function convertSingleFileAgent(raw: string, fallbackName: string): Conve
   } else {
     frontmatter.description = description;
   }
-  // Whatever the package asked for. Set even when the package declared
-  // nothing, so the written AGENT.md states the restriction rather than
-  // relying on a default that could change.
-  frontmatter.memory = 'none';
-
   return { name, description, frontmatter, body };
 }
 
@@ -197,13 +206,9 @@ export function renderAgentMd(agent: ConvertedAgent): string {
     category: asString(fm.category),
     tags: asStringArray(fm.tags),
   };
-  // `SubagentMetadata['memory']` does not spell 'none' — no Abu-authored agent
-  // can be created with it — but the ruling (spec §4) is that a plugin agent
-  // reads and writes no memory at all, and both the serializer and
-  // `parseAgentFile` round-trip the value as written. Widening the union is a
-  // product decision beyond this converter, so the value is stated here and the
-  // shared type is left alone.
-  (metadata as Record<string, unknown>).memory = 'none';
+  // No `memory`: `serializeAgentMd` omits an undefined one, so the AGENT.md
+  // simply has no such key and `parseAgentFile` applies its own default on read
+  // (spec §4).
   return serializeAgentMd(metadata, agent.body.trim());
 }
 

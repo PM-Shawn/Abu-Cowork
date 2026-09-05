@@ -101,12 +101,22 @@ describe('convertSingleFileAgent', () => {
     expect(fm.tags).toEqual(['one']);
   });
 
-  it('forces memory to none whatever the package declared', () => {
+  it('drops memory whether or not the package declared one', () => {
     const declared = convertSingleFileAgent('---\nname: a\nmemory: user\n---\n\nbody', 'fallback');
-    expect(declared.frontmatter.memory).toBe('none');
+    expect(declared.frontmatter.memory).toBeUndefined();
+    expect('memory' in declared.frontmatter).toBe(false);
 
     const absent = convertSingleFileAgent('---\nname: a\n---\n\nbody', 'fallback');
-    expect(absent.frontmatter.memory).toBe('none');
+    expect(absent.frontmatter.memory).toBeUndefined();
+  });
+
+  it('emits no memory key for a package that declared memory: user', () => {
+    const converted = convertSingleFileAgent('---\nname: a\nmemory: user\n---\n\nbody', 'fallback');
+    const rendered = renderAgentMd(converted);
+    expect(rendered).not.toContain('memory:');
+    // The written file reads exactly like an agent whose author never declared
+    // one, so the parser applies its own default rather than a plugin's claim.
+    expect(parseAgentFile(rendered, '/Users/testuser/.abu/agents/a/AGENT.md')?.memory).toBe('session');
   });
 
   it('falls back to the file name when name is missing, blank or not a string', () => {
@@ -147,7 +157,7 @@ describe('convertSingleFileAgent', () => {
     expect(converted.name).toBe('from-file');
     expect(converted.description).toBe('');
     expect(converted.body).toBe(raw);
-    expect(converted.frontmatter.memory).toBe('none');
+    expect(converted.frontmatter.memory).toBeUndefined();
   });
 
   it('treats unparseable frontmatter as none, keeping the body after the fence', () => {
@@ -184,7 +194,9 @@ describe('renderAgentMd', () => {
     expect(parsed?.name).toBe('reviewer');
     expect(parsed?.description).toBe('reviews code');
     expect(parsed?.tools).toEqual(['Read', 'Grep']);
-    expect(parsed?.memory).toBe('none');
+    // Dropped on conversion, so the parser's own default for an absent key.
+    expect(parsed?.memory).toBe('session');
+    expect(rendered).not.toContain('memory:');
     expect(parsed?.systemPrompt).toContain('You review code.');
     expect(parsed?.systemPrompt).toContain('Rules follow.');
   });
@@ -194,6 +206,7 @@ describe('renderAgentMd', () => {
     const rendered = renderAgentMd(converted);
     expect(rendered).not.toContain('description:');
     expect(rendered).not.toContain('tools:');
+    expect(rendered).not.toContain('memory:');
     expect(rendered.startsWith('---\n')).toBe(true);
   });
 

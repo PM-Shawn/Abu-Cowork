@@ -228,3 +228,161 @@ describe('abort signal propagation into MCP callTool', () => {
     await expect(manager.callTool('abu-browser', 'click', {}, {})).rejects.toThrow(/boom/);
   });
 });
+
+/**
+ * The run-settlement notification: how the Chrome bridge learns a run is over
+ * and releases the browser tabs that run claimed.
+ *
+ * It exists because the bridge's only other signal is a per-REQUEST abort, and
+ * the MCP SDK raises that for its own request timeouts — so acting on it hands
+ * a still-running task's page to another conversation. The scope rule matters
+ * as much as the delivery: the notification always names ONE run, because the
+ * release protocol reads a missing run key as "every run of this conversation".
+ */
+describe('browser bridge run-settled notification', () => {
+  let manager: MCPClientManager;
+  let mockCallTool: ReturnType<typeof vi.fn>;
+  let mockNotification: ReturnType<typeof vi.fn>;
+
+  function setFakeServer(name: string): void {
+    const fakeServer = {
+      config: { name },
+      client: { callTool: mockCallTool, notification: mockNotification, close: vi.fn() },
+      transport: {},
+      tools: new Map(),
+    };
+    (manager as unknown as { servers: Map<string, unknown> }).servers.set(name, fakeServer);
+  }
+
+  /** One settlement's worth of arguments, for readable assertions. */
+  function settledParams() {
+    return mockNotification.mock.calls.map((call) => call[0]);
+  }
+
+  beforeEach(() => {
+    manager = new MCPClientManager();
+    mockCallTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
+    mockNotification = vi.fn().mockResolvedValue(undefined);
+    setFakeServer('abu-browser-bridge');
+  });
+
+  it("names the conversation's own loop as `main`, never as the bare conversation", async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(settledParams()).toEqual([
+      {
+        method: 'notifications/abu/runSettled',
+        params: { ownerId: 'conv-1', runId: 'main' },
+      },
+    ]);
+  });
+
+  it('names the subagent run that settled', async () => {
+    await manager.callTool(
+      'abu-browser-bridge',
+      'click',
+      {},
+      { conversationId: 'conv-1', agentRunId: 'sar-9' },
+    );
+
+    manager.notifyBrowserBridgeRunSettled('conv-1', 'sar-9');
+
+    expect(settledParams()).toEqual([
+      {
+        method: 'notifications/abu/runSettled',
+        params: { ownerId: 'conv-1', runId: 'sar-9' },
+      },
+    ]);
+  });
+
+  it('says nothing for a run that never touched the bridge', () => {
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+    manager.notifyBrowserBridgeRunSettled('conv-1', 'sar-9');
+
+    // Most runs never open a browser; waking the bridge for each of them would
+    // be pure noise, and there is no claim to release anyway.
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not let one run\'s settlement speak for a sibling run', async () => {
+    await manager.callTool(
+      'abu-browser-bridge',
+      'click',
+      {},
+      { conversationId: 'conv-1', agentRunId: 'sar-9' },
+    );
+
+    // The main loop settles first; only the delegation drove the browser.
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+
+  it('is not armed by a call to a different MCP server', async () => {
+    setFakeServer('some-other-server');
+
+    await manager.callTool('some-other-server', 'click', {}, { conversationId: 'conv-1' });
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+
+  it('arms on a bridge call that failed, since the tab was already claimed', async () => {
+    mockCallTool.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' }),
+    ).rejects.toThrow(/boom/);
+
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(mockNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends one notification per run, however often the seal is reached', async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(mockNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw when the bridge is not connected', async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+    (manager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser-bridge');
+
+    // Releasing is best-effort: the seal fires without first asking whether
+    // the bridge process is still there.
+    expect(() => manager.notifyBrowserBridgeRunSettled('conv-1')).not.toThrow();
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the notification itself fails', async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+    mockNotification.mockRejectedValueOnce(new Error('transport gone'));
+
+    expect(() => manager.notifyBrowserBridgeRunSettled('conv-1')).not.toThrow();
+    await Promise.resolve();
+  });
+
+  it('forgets armed runs once the bridge disconnects, claims and all', async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+
+    await manager.disconnectServer('abu-browser-bridge');
+    // A reconnected bridge is a new process whose extension socket dropped
+    // every claim; telling it about runs from the old one is meaningless.
+    setFakeServer('abu-browser-bridge');
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+
+  it('says nothing without a conversation to name', () => {
+    manager.notifyBrowserBridgeRunSettled(undefined);
+    manager.notifyBrowserBridgeRunSettled('');
+
+    expect(mockNotification).not.toHaveBeenCalled();
+  });
+});

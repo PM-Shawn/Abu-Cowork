@@ -63,6 +63,43 @@ const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
 const ABU_UNATTENDED_META_KEY = 'abu/unattended';
 
 /**
+ * The Chrome-extension bridge. Named here because it is the one MCP server
+ * whose tab bookkeeping outlives a single tool call, so the app has to tell it
+ * when a run is over. (`abu-browser` — the built-in Electron host — is told the
+ * same thing over IPC instead; see `browserViewLifecycle.ts`.)
+ */
+const CHROME_BRIDGE_SERVER_NAME = 'abu-browser-bridge';
+
+/**
+ * MCP notification method the bridge answers by dropping one run's tab claims.
+ * Mirrors `ABU_RUN_SETTLED_NOTIFICATION` in `abu-browser-shared/types.ts`
+ * (duplicated, same rationale as the `_meta` keys above).
+ *
+ * A notification, not a tool call: tools are listed to the model, and a
+ * model-callable "release" would invite one task to free a tab another task is
+ * driving.
+ */
+const ABU_RUN_SETTLED_NOTIFICATION = 'notifications/abu/runSettled';
+
+/**
+ * Run key for a conversation's own loop — the other half of the browser tab
+ * owner pair when there is no subagent run. Sent EXPLICITLY at a settlement:
+ * the bridge's release protocol reads an absent run key as "every run of the
+ * conversation", which is conversation-delete scope and would strip sibling
+ * delegations of tabs they are still driving.
+ */
+const MAIN_RUN_KEY = 'main';
+
+/**
+ * The `{conversationId, runKey}` pair as one map key. NUL-separated, like the
+ * host's own composite owner key: neither id can contain it, so two different
+ * pairs can never collide into one.
+ */
+function browserRunOwnerKey(conversationId: string, agentRunId?: string): string {
+  return `${conversationId}\u0000${agentRunId || MAIN_RUN_KEY}`;
+}
+
+/**
  * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
  * of the execute() closure built during tool discovery so the mapping is
  * directly unit-testable — the discovery flow itself depends on the MCP SDK,
@@ -368,6 +405,16 @@ export class MCPClientManager {
   private reconnectAttempts: Map<string, number> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private serverLogs: Map<string, MCPLogEntry[]> = new Map();
+  /**
+   * `{conversationId, runKey}` pairs that have called a Chrome-bridge tool and
+   * have not been told they are over yet.
+   *
+   * Only these get a settlement notification. Every run would otherwise wake
+   * the bridge process at its seal, including the overwhelming majority that
+   * never opened a browser — and the release itself is a no-op for them, since
+   * a run that never drove a tab holds no claim.
+   */
+  private browserBridgeRunOwners: Set<string> = new Set();
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -585,6 +632,7 @@ export class MCPClientManager {
     }
 
     this.servers.delete(name);
+    this.forgetBrowserBridgeRunOwners(name);
     this.notifyListeners();
 
     // No auto-reconnect — user can manually reconnect from the Toolbox
@@ -705,7 +753,19 @@ export class MCPClientManager {
       console.error(`[MCP] Error disconnecting from ${name}:`, err);
     }
     this.servers.delete(name);
+    this.forgetBrowserBridgeRunOwners(name);
     this.notifyListeners();
+  }
+
+  /**
+   * The bridge process is gone, so every claim it was holding is gone with it
+   * — the extension drops the lot when its socket closes. Keeping the owners
+   * would only send a release to whichever bridge connects next, about runs it
+   * never heard of.
+   */
+  private forgetBrowserBridgeRunOwners(name: string): void {
+    if (name !== CHROME_BRIDGE_SERVER_NAME) return;
+    this.browserBridgeRunOwners.clear();
   }
 
   async disconnectAll(): Promise<void> {
@@ -887,6 +947,14 @@ export class MCPClientManager {
       if (Object.keys(meta).length > 0) {
         params._meta = meta;
       }
+      if (serverName === CHROME_BRIDGE_SERVER_NAME && opts?.conversationId) {
+        // Recorded BEFORE the call, not after it succeeds: the extension
+        // claims its target tab while resolving the request, so a call that
+        // then times out or is cancelled has still left a claim behind.
+        this.browserBridgeRunOwners.add(
+          browserRunOwnerKey(opts.conversationId, opts.agentRunId)
+        );
+      }
       // Always pass `timeout` (not only when a signal is given): the SDK's
       // own request/response cycle has an internal default request timeout
       // (60s) that fires independently of the manual `Promise.race` above.
@@ -951,6 +1019,66 @@ export class MCPClientManager {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });
+    }
+  }
+
+  /**
+   * Tell the Chrome bridge that one agent run is over, so it releases the
+   * browser tabs that run claimed.
+   *
+   * Called at a run's settlement seal — the point after which the run can no
+   * longer start another tool — for BOTH ways a run ends: it finished, or the
+   * user stopped it. Deliberately not derived from the per-request abort the
+   * bridge already sees: the MCP SDK aborts a tool handler for its own request
+   * timeouts too, so acting on that would hand a still-running task's page to
+   * another conversation (`abu-browser-bridge/src/wsServer.ts` has the full
+   * note). This is the app saying it outright, once, at the one moment it is
+   * certain.
+   *
+   * `agentRunId` omitted ⇒ the conversation's own loop, sent as the explicit
+   * run key `main`. The notification never carries "every run of this
+   * conversation": that is conversation-delete scope, and a settling
+   * delegation must not strip its siblings — or the main loop — of tabs they
+   * are still driving.
+   *
+   * Consequence worth stating: unlike the built-in host, whose `main` pool
+   * survives between turns, a conversation's Chrome tab claim ends with the
+   * run. The next turn re-claims on its first explicit `tabId` (and `get_tabs`
+   * still lists the page, since the extension's listing is never filtered) —
+   * one extra call, in exchange for not holding one of the USER's real tabs
+   * hostage while nothing is running.
+   *
+   * Fire-and-forget and best-effort, like the built-in host's own dispose
+   * calls: a failed release costs one stale claim, which the tab closing or
+   * the socket dropping clears anyway, and a run must never fail or be held
+   * open by its own bookkeeping.
+   */
+  notifyBrowserBridgeRunSettled(conversationId?: string, agentRunId?: string): void {
+    if (!conversationId) return;
+    const ownerKey = browserRunOwnerKey(conversationId, agentRunId);
+    if (!this.browserBridgeRunOwners.delete(ownerKey)) return;
+
+    const server = this.servers.get(CHROME_BRIDGE_SERVER_NAME);
+    if (!server) return;
+    const client = server.client as {
+      notification?: (notification: { method: string; params?: unknown }) => Promise<void>;
+    };
+    if (typeof client.notification !== 'function') return;
+    try {
+      void Promise.resolve(
+        client.notification({
+          method: ABU_RUN_SETTLED_NOTIFICATION,
+          params: { ownerId: conversationId, runId: agentRunId || MAIN_RUN_KEY },
+        })
+      ).catch((err) => {
+        mcpLogger.debug('browser bridge run-settled notification failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch (err) {
+      mcpLogger.debug('browser bridge run-settled notification threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

@@ -177,6 +177,15 @@ vi.mock('../../utils/aiEditSnapshots', () => ({
   snapshotBeforeAiEdit: (...a: unknown[]) => snapshotBeforeAiEditMock(...a),
 }));
 
+// The Chrome-extension channel's run-settlement seal. Mocked so the "fired
+// once, and only where a run really ended" assertions below read the seal
+// itself rather than the MCP client's delivery mechanics (those are pinned in
+// mcp/client.test.ts).
+const releaseRunBrowserTabClaimsMock = vi.fn();
+vi.mock('../browser/bridgeTabClaims', () => ({
+  releaseRunBrowserTabClaims: (...a: unknown[]) => releaseRunBrowserTabClaimsMock(...a),
+}));
+
 /** Fuller settings snapshot — only used by runAgentLoopDispatched tests (resolveEntryModel/creds resolution need `providers`/`activeModel`); every OTHER pre-existing test relies on the plain `{agentMaxTurns:200}` default below and asserts against it exactly. */
 function dispatchSettingsSnapshot() {
   return {
@@ -643,6 +652,7 @@ describe('agentLoopRunner', () => {
     clearAbortControllerMock.mockReset();
     runAgentLoopMock.mockReset();
     runAgentLoopMock.mockResolvedValue({ reason: 'completed' });
+    releaseRunBrowserTabClaimsMock.mockReset();
     isInteractiveDesktopMock.mockReset();
     isInteractiveDesktopMock.mockReturnValue(true);
     precomputeOrchestrationMock.mockReset();
@@ -3085,6 +3095,141 @@ describe('agentLoopRunner', () => {
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result).toEqual({ reason: 'completed' });
+    });
+
+    // ── Chrome-extension tab claims: the run-settlement seal ──────────────
+    //
+    // A run's browser tab claims outlive the run unless the app says the run
+    // is over, and the bridge cannot work that out for itself (its only other
+    // signal is a per-request abort, which the MCP SDK also raises for its own
+    // request timeouts). So the seal has to fire on BOTH endings — finished
+    // and stopped — exactly once per run, and NOT on a path where no run ran:
+    // a message merely staged into a busy conversation's queue must not free
+    // the tabs of the run that is still driving them.
+    describe('browser tab claim release at the settlement seal', () => {
+      it('fires once when an in-process run finishes', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('fires once when the user stops an in-process run', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        const controller = new AbortController();
+        getAbortControllerMock.mockReturnValue(controller);
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          // What Stop does: abort the conversation's controller, which ends
+          // the loop and returns `aborted`.
+          controller.abort(new Error('user stopped'));
+          return { reason: 'aborted' };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('fires once when an in-process run throws', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        runAgentLoopMock.mockRejectedValueOnce(new Error('exploded before ownership'));
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).rejects.toThrow(/exploded/);
+
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('fires once when a sidecar-hosted run settles', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        // No run key: `contextForSession` folds every tool call on this
+        // session — nested subagents included — into the conversation's own
+        // pool, which the bridge reads as `main`.
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('fires once when a sidecar-hosted run ends aborted', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockResolvedValue({ reason: 'aborted' });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('fires once per run, not once per dispatch call', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        dequeueNextUserInputMock
+          .mockReturnValueOnce({ id: 'q1', text: 'first follow-up', timestamp: 1 })
+          .mockReturnValue(undefined);
+
+        await runAgentLoopDispatched('conv-1', 'original task');
+
+        // Two real runs (the turn plus its queued follow-up), two seals.
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1'], ['conv-1']]);
+      });
+
+      it('fires once for a run that fell back in-process after a params-build failure', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        // Dispatch prep blows up before anything is sent to the sidecar, so
+        // the whole loop runs in-process and returns without ever reaching
+        // the sidecar branch's own seal.
+        precomputeOrchestrationMock.mockRejectedValueOnce(new Error('prompt build failed'));
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('stays silent when the run was interrupted before it ever started', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const controller = new AbortController();
+        getAbortControllerMock.mockReturnValue(controller);
+        precomputeOrchestrationMock.mockImplementationOnce(async () => {
+          controller.abort(new Error('user stopped'));
+          throw new Error('params build aborted');
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        // No loop ran, so no tab was ever claimed under this run.
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
+      });
+
+      it('stays silent when the message is only staged into a running conversation', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+
+        const result = await runAgentLoopDispatched('conv-1', 'more instructions');
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        // The run holding those tabs is still going. Releasing here would hand
+        // its page to another conversation mid-task.
+        expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
+      });
+
+      it('stays silent when a concurrent send is refused outright', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        getSidecarStatusMock.mockReturnValue('stopped');
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'running' });
+        hasAbortControllerMock.mockReturnValue(true);
+        isInteractiveDesktopMock.mockReturnValue(false);
+
+        await runAgentLoopDispatched('conv-1', 'headless overlap');
+
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
+      });
     });
 
     it('persists structured failure details for the startup in-process path', async () => {

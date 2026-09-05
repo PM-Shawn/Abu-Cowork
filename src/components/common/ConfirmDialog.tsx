@@ -11,6 +11,9 @@ interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
   variant?: 'danger' | 'normal';
+  /** Blocks the confirm button while the action it triggers is already running.
+   *  Cancel and Escape stay live — the dialog must always be dismissable. */
+  confirmDisabled?: boolean;
 }
 
 export default function ConfirmDialog({
@@ -22,6 +25,7 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
   variant = 'normal',
+  confirmDisabled = false,
 }: ConfirmDialogProps) {
   useEffect(() => {
     if (!open) return;
@@ -65,11 +69,13 @@ export default function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
+            disabled={confirmDisabled}
             className={cn(
               'px-4 py-2 rounded-lg text-body font-medium text-white transition-colors',
               variant === 'danger'
                 ? 'bg-[var(--abu-danger-solid)] hover:opacity-90'
-                : 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)]'
+                : 'bg-[var(--abu-clay)] hover:bg-[var(--abu-clay-hover)]',
+              confirmDisabled && 'opacity-50 cursor-not-allowed hover:opacity-50'
             )}
           >
             {confirmText}

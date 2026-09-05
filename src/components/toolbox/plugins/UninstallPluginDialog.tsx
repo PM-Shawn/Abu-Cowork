@@ -9,9 +9,11 @@
  * the toast, or the confirmation itself.
  *
  * So this component owns the whole step: the second confirmation, the store
- * call, and the failure toast. Callers only say *which* install is pending.
+ * call, the failure toast, and the in-flight guard. Callers only say *which*
+ * install is pending.
  */
 
+import { useRef, useState } from 'react';
 import { useI18n, format } from '@/i18n';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
@@ -35,19 +37,40 @@ export default function UninstallPluginDialog({
   const uninstall = usePluginStore((s) => s.uninstall);
   const addToast = useToastStore((s) => s.addToast);
 
+  // Uninstall is not idempotent — the second call for a key finds the package
+  // directory already deleted and rejects, so a succeeded uninstall would end
+  // in an error toast. The dialog closes on confirm while the row survives
+  // until the store updates, which leaves exactly enough time for a fast
+  // `···` → 卸载 → 确认 on the same plugin again.
+  //
+  // The ref is the authority: a second confirm can land before React has
+  // re-rendered with the new state. The state copy exists only to grey out the
+  // confirm button, so the block is visible rather than a silent no-op.
+  const inFlight = useRef<Set<string>>(new Set());
+  const [inFlightKeys, setInFlightKeys] = useState<readonly string[]>([]);
+  const syncInFlight = () => setInFlightKeys([...inFlight.current]);
+
   const handleConfirm = async () => {
-    if (!target) return;
+    if (!target || inFlight.current.has(target.key)) return;
+    const { key } = target;
+    inFlight.current.add(key);
+    syncInFlight();
     // Close first: the row that opened this dialog disappears on success, and
     // an open dialog anchored to a removed record has nothing left to name.
     onClose();
     try {
-      await uninstall(home, target.key);
+      await uninstall(home, key);
     } catch (err) {
       addToast({
         type: 'error',
         title: tb.pluginsUninstallFailed,
         message: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      // Released either way: a failed uninstall is exactly the case where the
+      // user should be able to try again.
+      inFlight.current.delete(key);
+      syncInFlight();
     }
   };
 
@@ -63,6 +86,7 @@ export default function UninstallPluginDialog({
       confirmText={tb.pluginsUninstall}
       cancelText={t.common.cancel}
       variant="danger"
+      confirmDisabled={target !== null && inFlightKeys.includes(target.key)}
       onConfirm={() => void handleConfirm()}
       onCancel={onClose}
     />

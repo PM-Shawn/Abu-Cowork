@@ -15,7 +15,7 @@ import { useState } from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-import { getI18n } from '@/i18n';
+import { getI18n, format } from '@/i18n';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -119,6 +119,24 @@ describe('UninstallPluginDialog', () => {
 
     openAndConfirm();
     expect(uninstall).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts the agents it will delete alongside the skills and connectors', () => {
+    // Uninstall now also removes ~/.abu/agents/<name>, which lives outside the
+    // package directory; the confirmation names every kind of collateral.
+    const withAgents: InstalledPlugin = {
+      ...weather,
+      contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: ['reviewer', 'planner'] },
+    };
+    render(
+      <UninstallPluginDialog home="/Users/tester" target={withAgents} onClose={() => {}} />,
+    );
+
+    expect(
+      screen.getByText(
+        format(tb().pluginsUninstallMessage, { name: 'weather', skills: 1, servers: 1, agents: 2 }),
+      ),
+    ).toBeInTheDocument();
   });
 
   it('releases the key on failure too, and reports the failure once', async () => {

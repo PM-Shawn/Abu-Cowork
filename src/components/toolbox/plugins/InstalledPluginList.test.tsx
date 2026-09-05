@@ -75,8 +75,11 @@ describe('InstalledPluginList', () => {
     fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
     // Confirmation is up; nothing removed yet.
     expect(uninstallPlugin).not.toHaveBeenCalled();
-    // The dialog names the collateral (2 skills, 1 connector), not just the plugin.
-    expect(document.body.textContent).toMatch(/2 skills and 1 connectors|2 个技能和 1 个连接器/);
+    // The dialog names the collateral (2 skills, 1 connector, 0 agents), not
+    // just the plugin — uninstall withdraws all three.
+    expect(document.body.textContent).toMatch(
+      /2 skills, 1 connectors and 0 agents|2 个技能、1 个连接器和 0 个代理/,
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /^(Uninstall|卸载)$/ }));
     await waitFor(() => expect(uninstallPlugin).toHaveBeenCalledTimes(1));

@@ -386,7 +386,16 @@ describe('MarketplaceBrowser', () => {
   });
 
   it('opens the installed record in a manage dialog', async () => {
-    usePluginStore.setState({ installed: [installedWeather] });
+    // Every kind of contribution the uninstaller withdraws is named here —
+    // agents included, since removal deletes them from ~/.abu/agents.
+    usePluginStore.setState({
+      installed: [
+        {
+          ...installedWeather,
+          contributed: { ...installedWeather.contributed, agents: ['reviewer'] },
+        },
+      ],
+    });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
@@ -398,6 +407,8 @@ describe('MarketplaceBrowser', () => {
     expect(detail).toHaveTextContent('official');
     expect(detail).toHaveTextContent('forecast');
     expect(detail).toHaveTextContent('weather-mcp');
+    expect(detail).toHaveTextContent(tb().pluginsDisclosureAgents);
+    expect(detail).toHaveTextContent('reviewer');
   });
 
   it('lists installs whose marketplace is gone under their own group', async () => {

@@ -73,6 +73,106 @@ describe('InstallDisclosureDialog', () => {
   });
 
 
+  it('lists the agents the install will add, with what each one is for', () => {
+    // A plugin that ships a team is worth installing for the team; a count
+    // would not tell the user who is joining.
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: {
+          ...disclosure,
+          agents: [
+            { name: 'reviewer', description: 'Reviews a diff' },
+            { name: 'planner', description: 'Breaks work into steps' },
+          ],
+        },
+      } as const,
+    });
+
+    const rows = screen.getAllByTestId('plugin-disclosure-agent');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('reviewer');
+    expect(rows[0]).toHaveTextContent('Reviews a diff');
+    expect(rows[1]).toHaveTextContent('planner');
+    expect(rows[1]).toHaveTextContent('Breaks work into steps');
+  });
+
+  it('says nothing about agents when the package ships none', () => {
+    // Most plugins ship no agents; an empty 代理 group would be noise on every
+    // other install screen.
+    renderDialog();
+    expect(screen.queryByTestId('plugin-disclosure-agent')).toBeNull();
+    expect(screen.queryByText(getI18n().toolbox.pluginsDisclosureAgents)).toBeNull();
+  });
+
+  it('greys out a skipped agent and says why, one short reason per row', () => {
+    // The install proceeds without these three; the screen has to be honest
+    // that they will not arrive rather than listing them as incoming.
+    const tb = getI18n().toolbox;
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: {
+          ...disclosure,
+          agents: [
+            { name: 'reviewer', description: 'Reviews a diff' },
+            { name: 'planner', description: 'Plans', conflict: 'exists' },
+            { name: '../evil', description: 'Escapes', conflict: 'unsafe-name' },
+            { name: 'hollow', description: 'Empty', conflict: 'empty-prompt' },
+          ],
+        },
+      } as const,
+    });
+
+    const rows = screen.getAllByTestId('plugin-disclosure-agent');
+    expect(rows).toHaveLength(4);
+
+    // The one that actually installs is not marked as skipped.
+    expect(rows[0].getAttribute('aria-disabled')).toBeNull();
+
+    expect(rows[1].getAttribute('aria-disabled')).toBe('true');
+    expect(rows[1]).toHaveTextContent(tb.pluginsDisclosureAgentExists);
+    expect(rows[2].getAttribute('aria-disabled')).toBe('true');
+    expect(rows[2]).toHaveTextContent(tb.pluginsDisclosureAgentUnsafeName);
+    expect(rows[3].getAttribute('aria-disabled')).toBe('true');
+    expect(rows[3]).toHaveTextContent(tb.pluginsDisclosureAgentEmptyPrompt);
+  });
+
+  it('still offers the install when every agent is skipped', () => {
+    // A conflict skips one agent; it does not block the package, whose skills
+    // and connectors install exactly as disclosed.
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: {
+          ...disclosure,
+          agents: [{ name: 'planner', description: 'Plans', conflict: 'exists' }],
+        },
+      } as const,
+    });
+
+    const confirm = screen.getByTestId('plugin-install-confirm') as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+  });
+
+  it('never files agents under the payloads Abu ignores', () => {
+    // `agents` left IGNORED_PAYLOAD_DIRS when the installer learned to install
+    // them; a stale "not used by Abu" line would contradict the group above it.
+    renderDialog({
+      state: {
+        kind: 'ready',
+        disclosure: {
+          ...disclosure,
+          agents: [{ name: 'reviewer', description: 'Reviews a diff' }],
+          ignoredPayloads: ['commands', 'hooks'],
+        },
+      } as const,
+    });
+
+    const notice = screen.getByTestId('plugin-disclosure-ignored');
+    expect(notice.textContent).not.toContain('agents');
+  });
+
   it('flags payload types Abu does not consume so nothing silently disappears', () => {
     renderDialog({
       state: { kind: 'ready', disclosure: { ...disclosure, ignoredPayloads: ['commands', 'hooks'] } } as const,

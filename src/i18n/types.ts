@@ -1456,6 +1456,12 @@ export interface TranslationDict {
     pluginsDisclosureSkills: string;
     pluginsDisclosureServers: string;
     pluginsDisclosureServersHint: string;
+    /** Heading of the agents group — also reused by the manage dialog. */
+    pluginsDisclosureAgents: string;
+    /** Why one agent in the group will be skipped; one short tag per row. */
+    pluginsDisclosureAgentExists: string;
+    pluginsDisclosureAgentUnsafeName: string;
+    pluginsDisclosureAgentEmptyPrompt: string;
     pluginsDisclosureCapabilities: string;
     pluginsDisclosureIgnoredTitle: string;
     pluginsDisclosureIgnoredHint: string;

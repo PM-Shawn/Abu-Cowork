@@ -16,10 +16,11 @@
 
 import { useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Loader2, Sparkles, Server, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
-import type { InstallDisclosure } from '@/core/plugin/installer';
+import { cn } from '@/lib/utils';
+import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/installer';
 import type { PluginSource } from '@/core/plugin/marketplace';
 import { formatServerCommand } from './serverCommand';
 
@@ -76,6 +77,26 @@ function Section({
       {children}
     </section>
   );
+}
+
+/**
+ * The one short tag a skipped agent carries. `undefined` means the agent
+ * installs — no tag, no grey.
+ */
+function skipReason(
+  conflict: PluginAgentDisclosure['conflict'],
+  tb: { pluginsDisclosureAgentExists: string; pluginsDisclosureAgentUnsafeName: string; pluginsDisclosureAgentEmptyPrompt: string },
+): string | undefined {
+  switch (conflict) {
+    case 'exists':
+      return tb.pluginsDisclosureAgentExists;
+    case 'unsafe-name':
+      return tb.pluginsDisclosureAgentUnsafeName;
+    case 'empty-prompt':
+      return tb.pluginsDisclosureAgentEmptyPrompt;
+    default:
+      return undefined;
+  }
 }
 
 export default function InstallDisclosureDialog({
@@ -221,6 +242,47 @@ export default function InstallDisclosureDialog({
                 </>
               )}
             </Section>
+
+            {d.agents.length > 0 && (
+              <Section icon={Bot} title={tb.pluginsDisclosureAgents}>
+                <ul className="space-y-1">
+                  {d.agents.map((agent) => {
+                    // A conflicting entry is disclosed, not installed: it is
+                    // greyed and carries the one-line reason, so the user reads
+                    // "this one will not arrive" before confirming rather than
+                    // wondering afterwards where it went.
+                    const reason = skipReason(agent.conflict, tb);
+                    return (
+                      <li
+                        key={`${agent.name}:${agent.conflict ?? ''}`}
+                        data-testid="plugin-disclosure-agent"
+                        aria-disabled={reason ? true : undefined}
+                        className={cn(
+                          'rounded bg-[var(--abu-bg-muted)] px-2 py-1',
+                          reason
+                            ? 'text-[var(--abu-text-muted)]'
+                            : 'text-[var(--abu-text-secondary)]',
+                        )}
+                      >
+                        <p className="text-body">
+                          <span className="font-medium">{agent.name}</span>
+                          {reason && (
+                            <span className="ml-1.5 text-minor text-[var(--abu-text-muted)]">
+                              {reason}
+                            </span>
+                          )}
+                        </p>
+                        {agent.description && (
+                          <p className="mt-0.5 text-minor text-[var(--abu-text-muted)]">
+                            {agent.description}
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </Section>
+            )}
 
             {d.capabilities && d.capabilities.length > 0 && (
               <Section icon={ShieldCheck} title={tb.pluginsDisclosureCapabilities}>

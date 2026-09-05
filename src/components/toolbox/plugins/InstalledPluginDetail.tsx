@@ -18,7 +18,7 @@
 
 import { createPortal } from 'react-dom';
 import { useEffect } from 'react';
-import { Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
+import { Bot, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -145,6 +145,14 @@ export default function InstalledPluginDetail({
             icon={Server}
             title={tb.pluginsDisclosureServers}
             items={plugin.contributed.mcpServers}
+            emptyLabel={tb.pluginsDisclosureNone}
+          />
+          {/* Named for the same reason as the other two: uninstall withdraws
+              these, and they live outside the package directory. */}
+          <Section
+            icon={Bot}
+            title={tb.pluginsDisclosureAgents}
+            items={plugin.contributed.agents}
             emptyLabel={tb.pluginsDisclosureNone}
           />
 

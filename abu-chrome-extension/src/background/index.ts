@@ -652,7 +652,16 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         // content script, so the content script's own pin cannot cover it —
         // and the strongest capability of the set (arbitrary code with the
         // page's full authority). Pinned here against the tab's live URL.
-        await assertTabOriginPin(execTabId, payload);
+        //
+        // The tab pinned is the OWNER-RESOLVED one — the same `tabId` the
+        // script is about to run in. It used to be a local `execTabId` read
+        // straight from the payload; the tab-claims change (632d40cc) removed
+        // that local and rewrote the `executeScript` target, but left this
+        // call referring to the now-undefined name, so every `execute_js` on
+        // this channel died with a ReferenceError before the pin ever ran.
+        // Nothing caught it: this channel had no test for `execute_js` until
+        // this branch added one.
+        await assertTabOriginPin(tabId, payload);
         const results = await chrome.scripting.executeScript({
           target: { tabId },
           func: (jsCode: string) => {

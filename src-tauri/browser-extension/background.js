@@ -654,7 +654,7 @@
         }
         case "execute_js": {
           const code = payload.code;
-          await assertTabOriginPin(execTabId, payload);
+          await assertTabOriginPin(tabId, payload);
           const results = await chrome.scripting.executeScript({
             target: { tabId },
             func: (jsCode) => {

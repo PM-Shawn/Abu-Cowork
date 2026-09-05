@@ -9,6 +9,13 @@
  */
 
 import type { BridgeRequest, BridgeResponse } from '../shared/types.js';
+import {
+  classifyInbound,
+  createTabClaimStore,
+  resolveTargetTab,
+  type BridgeInbound,
+  type TabResolutionDeps,
+} from './tabClaims.js';
 
 // Discovery endpoint (fixed port) and fallback WS ports
 const DISCOVERY_URL = 'http://127.0.0.1:9875/status';
@@ -73,6 +80,31 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
     });
   }
 });
+
+// --- Task-level tab claims ---
+//
+// `lastActiveTabId` above is the USER's tab, and until now it was also what a
+// request without an explicit `tabId` acted on — so two tasks could drive the
+// same signed-in page and a tabId-less `query_js` followed the user around.
+// Requests carry `ownerId`/`runId`; `tabClaims` turns those into per-task tab
+// ownership, mirroring `electron/browserHost.cjs` (see tabClaims.ts).
+const tabClaims = createTabClaimStore();
+
+const tabResolution: TabResolutionDeps = {
+  tabExists: async (tabId) => {
+    try {
+      await chrome.tabs.get(tabId);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  // Read on the legacy (no `ownerId`) path only — an owned request never falls
+  // back to the user's active tab.
+  lastActiveTabId: () => lastActiveTabId,
+  now: () => Date.now(),
+  log: (message) => console.log(`[abu-ext] ${message}`),
+};
 
 // --- Connection State ---
 
@@ -232,7 +264,13 @@ function tryConnectPort(port: number): Promise<boolean> {
 function setupSocketHandlers(socket: WebSocket): void {
   socket.onmessage = async (event) => {
     try {
-      const request: BridgeRequest = JSON.parse(event.data as string);
+      const parsed: unknown = JSON.parse(event.data as string);
+      const inbound = classifyInbound(parsed);
+      if (inbound.kind !== 'request') {
+        handleControlMessage(inbound);
+        return;
+      }
+      const request = parsed as BridgeRequest;
       const response = await handleRequest(request);
       logOp(request.action, response.success);
       socket.send(JSON.stringify(response));
@@ -253,12 +291,44 @@ function setupSocketHandlers(socket: WebSocket): void {
     console.log(`[abu-ext] Disconnected (code: ${event.code})`);
     state.connected = false;
     ws = null;
+    // Claims only mean something for the bridge connection that minted their
+    // owner ids: on close that bridge rejects every pending request of its own
+    // (`wsServer.ts`'s `ws.on('close')`), so holding their tabs would only
+    // refuse whoever reconnects next.
+    tabClaims.releaseAll();
     scheduleReconnect();
   };
 
   socket.onerror = (err) => {
     console.error('[abu-ext] WebSocket error:', err);
   };
+}
+
+/**
+ * Bridge → extension control messages. They carry a `type` instead of an
+ * `action`, and there is no request id to answer.
+ *
+ * `release` drops the tab claims a finished run holds. `cancel` is now
+ * recognised rather than parsed as a request and answered with
+ * `Unknown action: undefined` — actually stopping in-flight content-script work
+ * is a separate, already-scheduled item ("have the extension channel abort
+ * in-flight work on cancel", tracked under R5 in
+ * docs/abu-browser-remaining-requirements-2026-09.md) and is deliberately not
+ * attempted here.
+ */
+function handleControlMessage(inbound: Exclude<BridgeInbound, { kind: 'request' }>): void {
+  if (inbound.kind === 'release') {
+    const dropped = tabClaims.releaseOwner(inbound.ownerId, inbound.runId);
+    if (dropped > 0) {
+      console.log(`[abu-ext] Released ${dropped} tab claim(s) for ${inbound.ownerId}`);
+    }
+    return;
+  }
+  if (inbound.kind === 'cancel') {
+    console.log(`[abu-ext] Cancel received for ${inbound.requestId} (in-flight work is not stopped)`);
+    return;
+  }
+  console.log(`[abu-ext] Ignoring unrecognized control message: ${inbound.type}`);
 }
 
 function scheduleReconnect(): void {
@@ -311,10 +381,41 @@ function isAllowedUrl(url: string): boolean {
 
 // --- Request Handler ---
 
+/**
+ * Actions that act on exactly ONE tab, and so must resolve an owner-scoped
+ * target first. `get_tabs` / `get_downloads` name no tab and are excluded; an
+ * unknown action resolves nothing and still falls through to `default:`.
+ */
+const TAB_TARGETED_ACTIONS = new Set([
+  'screenshot',
+  'screenshot_full_page',
+  'navigate',
+  'execute_js',
+  'snapshot',
+  'get_html',
+  'click',
+  'fill',
+  'select',
+  'wait_for',
+  'extract_text',
+  'extract_table',
+  'scroll',
+  'keyboard',
+  'start_recording',
+  'stop_recording',
+]);
+
 async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
   const { id, action, payload } = request;
 
   try {
+    // Resolve (and, on first use, claim) the target BEFORE any handler runs, so
+    // a refusal costs nothing: no tab activated, no content script injected, no
+    // page driven. A refusal throws and is reported by the catch below.
+    const tabId = TAB_TARGETED_ACTIONS.has(action)
+      ? await resolveTargetTab(tabClaims, action, payload, tabResolution)
+      : -1;
+
     switch (action) {
       case 'get_tabs': {
         const [allWindows, tabs, lastFocusedWindow] = await Promise.all([
@@ -432,7 +533,6 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'screenshot': {
-        const tabId = payload.tabId as number;
         const tab = await chrome.tabs.get(tabId);
         // Activate the target tab first to ensure we capture the right one
         if (!tab.active) {
@@ -445,7 +545,6 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'screenshot_full_page': {
-        const tabId = payload.tabId as number;
         const tab = await chrome.tabs.get(tabId);
         if (!tab.active) {
           await chrome.tabs.update(tabId, { active: true });
@@ -456,7 +555,6 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'navigate': {
-        const tabId = payload.tabId as number;
         const navAction = (payload.action as string) ?? 'goto';
         if (navAction === 'goto' && payload.url) {
           const url = payload.url as string;
@@ -481,10 +579,9 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
 
       case 'execute_js': {
         // Execute JS via chrome.scripting.executeScript to bypass CSP restrictions
-        const execTabId = payload.tabId as number;
         const code = payload.code as string;
         const results = await chrome.scripting.executeScript({
-          target: { tabId: execTabId },
+          target: { tabId },
           func: (jsCode: string) => {
             return eval(jsCode);
           },
@@ -506,10 +603,6 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'keyboard':
       case 'start_recording':
       case 'stop_recording': {
-        const tabId = (typeof payload.tabId === 'number' ? payload.tabId : lastActiveTabId) as number | null;
-        if (!tabId) {
-          return { id, success: false, error: 'No active browser tab is available. Call get_tabs and pass tabId.' };
-        }
         const result = await sendToContentScript(tabId, action, payload);
         return { id, success: true, data: result };
       }
@@ -527,7 +620,12 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
 
 const injectedTabs = new Set<number>();
 
-chrome.tabs.onRemoved.addListener((tabId) => injectedTabs.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  injectedTabs.delete(tabId);
+  // A closed tab belongs to nobody. Without this the claim outlives the page and
+  // refuses the next task Chrome hands the same id to.
+  tabClaims.releaseTab(tabId);
+});
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') injectedTabs.delete(tabId);
 });

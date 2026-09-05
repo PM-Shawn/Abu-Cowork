@@ -89,6 +89,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('3. Never do a member\'s work yourself and never invent a member\'s output. Only the names listed above can be delegated to; any other agent or preset type is refused.');
   lines.push('4. Review every result against what its step was supposed to produce; send it back with concrete feedback if it falls short.');
   lines.push('5. Finish with one consolidated report to the user.');
+  lines.push('6. When the user asks to redo one step or to have one member revise its output, re-dispatch ONLY that step/member with the user\'s feedback quoted verbatim, keep every other result as it is, and report only what changed.');
   return lines.join('\n');
 }
 

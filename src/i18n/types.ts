@@ -1434,6 +1434,10 @@ export interface TranslationDict {
     goCreateTeam: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
+    /** Follow-up chips under a finished team turn. */
+    followUpRedoStep: string;
+    followUpMemberRevise: string;
+    followUpHint: string;
     itemDependsOn: string;
     viewRun: string;
     retryItemAction: string;
@@ -2966,6 +2970,12 @@ export interface TranslationDict {
       planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
+      /** Strict-team variants of the approval card (先确认分工). */
+      planApprovalHeaderTeam: string;
+      planApprovalQuestionTeam: string;
+      planApproveLabelTeam: string;
+      planRejectLabelTeam: string;
+      planApprovedTeam: string;
       /** Plan-approval card question (rendered after step list). */
       planApprovalQuestion: string;
       /** Approve option label. */

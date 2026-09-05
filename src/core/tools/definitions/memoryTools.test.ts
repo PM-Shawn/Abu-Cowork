@@ -247,6 +247,16 @@ describe('updateMemoryTool — clear', () => {
 
 describe('reportPlanTool — plan-mode approval (B1)', () => {
   describe('buildPlanApprovalPayload', () => {
+    it('uses the 分工确认 wording for strict teams', () => {
+      const t = getI18n().toolResult.memory;
+      const payload = buildPlanApprovalPayload(['整理数据 @zz取数员', '成文 @zz撰写员'], { team: true });
+      const q = payload.questions[0];
+      expect(q.header).toBe(t.planApprovalHeaderTeam);
+      expect(q.question).toContain(t.planApprovalQuestionTeam);
+      expect(q.question).toContain('@zz取数员');
+      expect(q.options.map((o) => o.label)).toEqual([t.planApproveLabelTeam, t.planRejectLabelTeam]);
+    });
+
     it('builds a single approve/reject question listing the steps', () => {
       const t = getI18n().toolResult.memory;
       const payload = buildPlanApprovalPayload(['扫描文件', '移动发票']);
@@ -368,7 +378,8 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
     it('strict team (先确认分工): a SAFE plan still goes through the approval card', async () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
+      // The strict-team card carries its own option labels; the answer echoes them back.
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeaderTeam, question: 'q', selected: [t.planApproveLabelTeam] }] });
       const result = await reportPlanTool.execute(input, { ...ctx, teamRequirePlanApproval: true });
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
       expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
@@ -380,7 +391,7 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');
       seedExecution();
-      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] });
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeaderTeam, question: 'q', selected: [t.planRejectLabelTeam] }] });
       await reportPlanTool.execute({ ...input }, { ...ctx, loopId: 'loop-1', teamRequirePlanApproval: true });
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
       expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');

@@ -58,6 +58,7 @@ describe('roster guard + prompt blocks', () => {
     expect(strict).toContain('先看数据');
     expect(strict).toContain('approve your plan before anything is dispatched');
     expect(strict).toContain('run_agent_batch');
+    expect(strict).toContain('re-dispatch ONLY that step/member');
     expect(strict).toContain('set `owner` on every step');
     const loose = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [] });
     expect(loose).toContain('start dispatching right away');

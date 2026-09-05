@@ -724,7 +724,7 @@ function uniqueOrAmbiguous(matches: Element[], what: string): Element | null {
 }
 
 /**
- * Find an element by its text.
+ * Every element a text locator matches, narrowed by the rules below.
  *
  * The rule that matters here is "deepest wins". Matching the first element in
  * document order whose subtree text merely *contains* the string always
@@ -732,11 +732,10 @@ function uniqueOrAmbiguous(matches: Element[], what: string): Element | null {
  * which was then clicked and reported as a success. An ancestor is only the
  * answer when nothing inside it is.
  *
- * Ambiguity is reported, not resolved by guessing: two equally-deep matches
- * mean the caller's locator does not identify one element, and picking either
- * is a coin flip performed on the user's live session.
+ * Returning the set rather than "the one" is what lets `wait_for` ask a
+ * different question of the same locator — see `matchElements`.
  */
-function findByText(text: string, tag?: string): Element | null {
+function textMatches(text: string, tag?: string): Element[] {
   const scope = tag ?? '*';
   const wanted = text.trim();
   // antd inserts a space between the two characters of a two-character Chinese
@@ -753,7 +752,7 @@ function findByText(text: string, tag?: string): Element | null {
   // one and the relaxed set is all there is.
   const laidOut = candidates.filter(hasBox);
   const matches = laidOut.length > 0 ? laidOut : candidates;
-  if (matches.length === 0) return null;
+  if (matches.length === 0) return [];
 
   // Keep only the innermost matches: drop any candidate that contains another.
   let deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
@@ -768,20 +767,36 @@ function findByText(text: string, tag?: string): Element | null {
   const clickable = deepest.filter(isClickable);
   if (clickable.length > 0) deepest = clickable;
 
-  if (deepest.length === 1) return deepest[0];
-
-  throw new Error(
-    `Text "${text}" matches ${deepest.length} different elements, so it does not identify one. ` +
-    `Pick one by ref:\n${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join('\n')}` +
-    (deepest.length > 8 ? `\n  ...and ${deepest.length - 8} more` : '')
-  );
+  return deepest;
 }
 
-function findElement(locator: ElementLocator): Element | null {
+/** Which strategy read the locator, and everything that locator matches. */
+interface LocatorMatches {
+  elements: Element[];
+  /** How to name the locator in an error message. */
+  what: string;
+  strategy: 'ref' | 'css' | 'text' | 'role' | 'testId' | 'xpath';
+}
+
+/**
+ * Everything a locator matches, with no opinion about whether that is enough.
+ *
+ * Two callers ask different questions of the same locator, and collapsing them
+ * into one was a regression. An ACTION must identify a single element, so
+ * `findElement` refuses anything else — clicking the first of two `.primary`
+ * buttons is a wrong, irreversible act reported as a success. `wait_for` only
+ * asks whether the page has reached a state: `{appear, css:'.ant-table-row'}`
+ * matching twelve rows, or `{disappear, css:'.ant-spin'}` with three spinners,
+ * is the normal shape of that question rather than a mistake. Worse, refusing
+ * it left `appear` with no way out at all — "pick one by ref" needs a ref, and
+ * the caller is waiting for something that does not exist yet.
+ */
+function matchElements(locator: ElementLocator): LocatorMatches {
   // ref — from snapshot
   if (locator.ref) {
     const el = resolveRef(locator.ref);
-    if (el) return el;
+    const what = `Ref ${JSON.stringify(locator.ref)}`;
+    if (el) return { elements: [el], what, strategy: 'ref' };
     // Naming a ref that no longer resolves is not the same as naming nothing.
     // Falling through to another strategy here would act on a *different*
     // element than the caller asked for, and report success.
@@ -798,39 +813,75 @@ function findElement(locator: ElementLocator): Element | null {
 
   // CSS selector — every match, not the first one
   if (locator.css) {
-    const matches = [...document.querySelectorAll(locator.css)].filter(isLocatorTarget);
-    return uniqueOrAmbiguous(matches, `CSS selector ${JSON.stringify(locator.css)}`);
+    return {
+      elements: [...document.querySelectorAll(locator.css)].filter(isLocatorTarget),
+      what: `CSS selector ${JSON.stringify(locator.css)}`,
+      strategy: 'css',
+    };
   }
 
   // Text content
   if (locator.text) {
-    return findByText(locator.text, locator.tag);
+    return {
+      elements: textMatches(locator.text, locator.tag),
+      what: `Text ${JSON.stringify(locator.text)}`,
+      strategy: 'text',
+    };
   }
 
   // ARIA role + name — explicit `role=` and native roles both count
   if (locator.role) {
     const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
-    const matches = locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole;
-    const what = locator.name
-      ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}`
-      : `role ${JSON.stringify(locator.role)}`;
-    return uniqueOrAmbiguous(matches, what);
+    return {
+      elements: locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole,
+      what: locator.name
+        ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}`
+        : `role ${JSON.stringify(locator.role)}`,
+      strategy: 'role',
+    };
   }
 
   // data-testid — escape to prevent injection
   if (locator.testId) {
-    const matches = [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)]
-      .filter(isLocatorTarget);
-    return uniqueOrAmbiguous(matches, `testId ${JSON.stringify(locator.testId)}`);
+    return {
+      elements: [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)]
+        .filter(isLocatorTarget),
+      what: `testId ${JSON.stringify(locator.testId)}`,
+      strategy: 'testId',
+    };
   }
 
   // XPath
   if (locator.xpath) {
     const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    return result.singleNodeValue as Element | null;
+    const el = result.singleNodeValue as Element | null;
+    return {
+      elements: el ? [el] : [],
+      what: `XPath ${JSON.stringify(locator.xpath)}`,
+      strategy: 'xpath',
+    };
   }
 
   throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
+}
+
+/**
+ * The one element a locator identifies, or `null` — the entry point for every
+ * caller that is about to DO something. More than one match throws.
+ */
+function findElement(locator: ElementLocator): Element | null {
+  const { elements, what, strategy } = matchElements(locator);
+  if (elements.length <= 1) return elements[0] ?? null;
+  if (strategy === 'text') {
+    // The text path keeps its own wording, which existing callers and tests
+    // read; the message is the same promise either way.
+    throw new Error(
+      `Text "${locator.text}" matches ${elements.length} different elements, so it does not identify one. ` +
+      `Pick one by ref:\n${elements.slice(0, 8).map((el) => `  ${describeElement(el)}`).join('\n')}` +
+      (elements.length > 8 ? `\n  ...and ${elements.length - 8} more` : '')
+    );
+  }
+  return uniqueOrAmbiguous(elements, what);
 }
 
 /**
@@ -961,7 +1012,7 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
     candidates = narrowByName(candidates, query.placeholder, (el) => el.getAttribute('placeholder') ?? '');
   }
   if (query.text) {
-    // Deepest wins, exactly as in `findByText`: an ancestor is only the answer
+    // Deepest wins, exactly as in `textMatches`: an ancestor is only the answer
     // when nothing inside it is, or every text query returns the page shell.
     candidates = candidates.filter((el) => !candidates.some((other) => other !== el && el.contains(other)));
   }
@@ -1499,13 +1550,29 @@ async function waitFor(
    */
   const describeCurrentState = (): string => {
     if (condType === 'urlContains') return `current url is ${location.href}`;
-    let el: Element | null;
+    let found: LocatorMatches;
     try {
-      el = findElement(condition.locator as ElementLocator);
-    } catch {
-      return 'the locator no longer resolves (its ref is stale) — take a fresh snapshot';
+      found = matchElements(condition.locator as ElementLocator);
+    } catch (err) {
+      // Only a stale ref is "the locator no longer resolves". Reporting every
+      // other failure that way sent the caller off to re-snapshot for reasons
+      // that had nothing to do with refs.
+      if (err instanceof Error && err.name === 'StaleRefError') {
+        return 'the locator no longer resolves (its ref is stale) — take a fresh snapshot';
+      }
+      return `the locator could not be evaluated: ${err instanceof Error ? err.message : String(err)}`;
     }
-    if (!el) return 'no element matches that locator';
+    const { elements } = found;
+    if (elements.length === 0) return 'no element matches that locator';
+    if (elements.length > 1) {
+      // Not an error here — several matches is a legitimate way to ask "is the
+      // table populated" — but on a timeout the caller needs to know that the
+      // thing it waited for is a set, and which set.
+      return `the locator matches ${elements.length} elements, none of which satisfy "${condType}":\n`
+        + elements.slice(0, 5).map((el) => `  ${describeCandidate(el)}`).join('\n')
+        + (elements.length > 5 ? `\n  ...and ${elements.length - 5} more` : '');
+    }
+    const el = elements[0];
     if (!isVisible(el)) return `matched <${el.tagName.toLowerCase()}> but it has no layout box (hidden or zero-sized)`;
     if (condType === 'enabled' && (el as HTMLButtonElement).disabled) {
       return `matched <${el.tagName.toLowerCase()}> but it is still disabled`;
@@ -1516,16 +1583,23 @@ async function waitFor(
     return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
   };
 
+  /**
+   * Existence, not uniqueness: `appear` is satisfied by ANY match, `disappear`
+   * only when EVERY match is gone. That is what `wait_for` did before the
+   * locator rework, and what the question means — the alternative fails a
+   * perfectly ordinary `{css:'.toast'}` on a page that shows two toasts.
+   */
+  const matched = (): Element[] => matchElements(condition.locator as ElementLocator).elements;
+
   const check = (): boolean => {
     switch (condType) {
       case 'appear': {
-        const el = findElement(condition.locator as ElementLocator);
-        return el !== null && isVisible(el);
+        return matched().some(isVisible);
       }
       case 'disappear': {
-        let el: Element | null;
+        let elements: Element[];
         try {
-          el = findElement(condition.locator as ElementLocator);
+          elements = matched();
         } catch (err) {
           // A ref that no longer resolves IS the disappearance being waited
           // on — the node was removed. Before this branch, the throw was
@@ -1533,17 +1607,14 @@ async function waitFor(
           if (err instanceof Error && err.name === 'StaleRefError') return true;
           throw err;
         }
-        return el === null || !isVisible(el);
+        return elements.every((el) => !isVisible(el));
       }
       case 'enabled': {
-        const el = findElement(condition.locator as ElementLocator);
-        return el !== null && isVisible(el) && !(el as HTMLButtonElement).disabled;
+        return matched().some((el) => isVisible(el) && !(el as HTMLButtonElement).disabled);
       }
       case 'textContains': {
-        const el = findElement(condition.locator as ElementLocator);
-        if (!el) return false;
-        const text = getVisibleText(el) ?? '';
-        return text.includes(condition.text as string);
+        const wanted = condition.text as string;
+        return matched().some((el) => (getVisibleText(el) ?? '').includes(wanted));
       }
       case 'urlContains': {
         return location.href.includes(condition.pattern as string);

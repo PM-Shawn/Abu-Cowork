@@ -62,6 +62,17 @@ const select = (locator: Record<string, unknown>, value: string) =>
   handleAction('select', { locator, value }) as Promise<ActionResult>;
 const getHtml = (payload: Record<string, unknown> = {}) =>
   handleAction('get_html', payload) as Promise<string>;
+const find = (query: Record<string, unknown>, limit?: number) =>
+  handleAction('find', { query, limit }) as Promise<{
+    matches: Array<{
+      ref: string; tag: string; id?: string; role?: string; name?: string; text?: string;
+      visible: boolean; interactive: boolean; disabled?: true;
+      rect: { x: number; y: number; width: number; height: number };
+    }>;
+    total: number;
+    truncated?: boolean;
+    message?: string;
+  }>;
 
 /** Size used for every "laid out" element — see the stub below. */
 const LAID_OUT = { width: 100, height: 20 };
@@ -1233,6 +1244,64 @@ describe('ambiguity is refused, not resolved by position', () => {
   });
 });
 
+describe('wait_for asks what the page looks like, not whether a locator is unique', () => {
+  it('sees a toast appear on a page that shows two of them', async () => {
+    // `{appear, css:'.toast'}` — or `.ant-table-row`, or `.ant-spin` — matching
+    // several elements IS the normal shape of the question. Refusing it left
+    // the caller with no way out: `appear` waits for something that does not
+    // exist yet, so "pick one by ref" has no ref to offer.
+    document.body.innerHTML = '<div class="toast">已保存</div><div class="toast">已同步</div>';
+
+    const result = await waitFor({ type: 'appear', locator: { css: '.toast' } }, 60);
+
+    expect(result.success).toBe(true);
+    expect(result.timedOut).toBe(false);
+  });
+
+  it('keeps waiting while any of several spinners is still up', async () => {
+    document.body.innerHTML = '<div class="spin"></div><div class="spin"></div>';
+    setTimeout(() => document.querySelector('.spin')?.remove(), 10);
+
+    const result = await waitFor({ type: 'disappear', locator: { css: '.spin' } }, 80);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.message).toMatch(/Timed out/);
+  });
+
+  it('finishes as soon as the last of several spinners goes away', async () => {
+    document.body.innerHTML = '<div class="spin"></div><div class="spin"></div>';
+    setTimeout(() => { for (const el of document.querySelectorAll('.spin')) el.remove(); }, 10);
+
+    const result = await waitFor({ type: 'disappear', locator: { css: '.spin' } }, 2000);
+
+    expect(result.success).toBe(true);
+    expect(result.timedOut).toBe(false);
+  });
+
+  it('names the candidates when an ambiguous locator never comes true', async () => {
+    document.body.innerHTML =
+      '<button class="b" id="one" disabled>一</button><button class="b" id="two" disabled>二</button>';
+
+    const result = await waitFor({ type: 'enabled', locator: { css: '.b' } }, 60);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.observed).toMatch(/2 elements/);
+    expect(result.observed).toMatch(/\[e\d+\] <button#one>/);
+  });
+
+  it('still fails fast when a ref went stale, instead of burning the timeout', async () => {
+    document.body.innerHTML = '<div id="gone">x</div>';
+    const snap = await snapshot({ selector: '#gone' });
+    void snap;
+    // A ref that resolves to nothing is a different answer from "no match":
+    // pinned here so the multi-match rewrite cannot swallow it.
+    const result = await waitFor({ type: 'appear', locator: { ref: 'e9999' } }, 5000);
+
+    expect(result.success).toBe(false);
+    expect(result.elapsed).toBeLessThan(3000);
+  });
+});
+
 describe('a miss names the near misses instead of stopping at "not found"', () => {
   it('lists the buttons that ARE on the page when the named one is not', async () => {
     document.body.innerHTML = '<button id="submit">提交</button><button id="cancel">取消</button>';
@@ -1253,18 +1322,6 @@ describe('a miss names the near misses instead of stopping at "not found"', () =
 });
 
 describe('find — read-only search, the cheap step before acting', () => {
-  const find = (query: Record<string, unknown>, limit?: number) =>
-    handleAction('find', { query, limit }) as Promise<{
-      matches: Array<{
-        ref: string; tag: string; id?: string; role?: string; name?: string; text?: string;
-        visible: boolean; interactive: boolean; disabled?: true;
-        rect: { x: number; y: number; width: number; height: number };
-      }>;
-      total: number;
-      truncated?: boolean;
-      message?: string;
-    }>;
-
   it('returns candidates with ref, role, name, visibility and box — and changes nothing', async () => {
     document.body.innerHTML = '<button id="save" class="primary">保存</button>';
     let clicks = 0;

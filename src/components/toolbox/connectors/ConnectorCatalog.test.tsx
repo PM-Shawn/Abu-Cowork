@@ -72,44 +72,14 @@ describe('ConnectorCatalog · 精选连接器', () => {
   it('lists every catalog entry under its heading, with the localized description', () => {
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
     expect(screen.getByText(tb().connectorsMarketTitle)).toBeTruthy();
-    expect(screen.getAllByTestId('connector-row')).toHaveLength(buildConnectorCatalog('zh-CN').length);
+    expect(screen.getAllByTestId('connector-row')).toHaveLength(BUILTIN_REGISTRY.length);
+    expect(buildConnectorCatalog('zh-CN')).toHaveLength(BUILTIN_REGISTRY.length);
     for (const entry of BUILTIN_REGISTRY) {
       expect(within(rowFor(entry.name)).getByText(getEntryDescription(entry.name))).toBeTruthy();
     }
   });
 
-  /**
-   * `BUILTIN_REGISTRY` and `mcpTemplates` are two catalogs that disagree.
-   * 「我的」 no longer renders the un-installed template cards, so a
-   * template-only connector that 「市场」 does not list has no surface anywhere
-   * in the app.
-   */
-  it('lists the template-only connectors, which 我的 no longer offers', () => {
-    render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
-    for (const name of ['playwright', 'chrome-devtools']) {
-      expect(within(rowFor(name)).getByTestId('connector-add-button')).toBeTruthy();
-    }
-  });
-
-  /**
-   * A template-only row is the *only* way to add that connector, and 「添加」 on
-   * it runs `npx -y <package>`. Two of `mcpTemplates`' template-only entries
-   * name a package npm does not have — `@anthropic/mcp-server-docker` and
-   * `@anthropic/mcp-server-linear` both 404 as of 2026-09-05 — so the row
-   * promises an install that cannot succeed. (`sentry` left this set when the
-   * registry took it over under its published `@sentry/mcp-server`.) Until the
-   * template data is fixed, 「市场」 withholds them rather than offering a dead
-   * button.
-   */
-  it('hides a template connector whose npm package does not exist', () => {
-    render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
-    const rows = screen.getAllByTestId('connector-row');
-    for (const name of ['docker', 'linear']) {
-      expect(rows.find((el) => within(el).queryByText(name))).toBeUndefined();
-    }
-  });
-
-  it('lists a name both catalogs carry once, and prefills the registry version', () => {
+  it('lists every connector once, prefilled with what this host would run', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
     const githubRows = screen.getAllByTestId('connector-row')
@@ -123,56 +93,41 @@ describe('ConnectorCatalog · 精选连接器', () => {
     });
   });
 
-  it('prefills a template-only connector from its template', () => {
-    const onPrefillAdd = vi.fn();
-    render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
-    fireEvent.click(within(rowFor('playwright')).getByTestId('connector-add-button'));
-    expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
-      name: 'playwright',
-      command: 'npx',
-      args: ['-y', '@playwright/mcp@latest'],
-      transport: 'stdio',
-    });
-  });
-
   /**
-   * A template carries install affordances a registry entry has no notion of —
-   * a labeled secret field with a hint, a configurable argument, a setup note.
-   * The prefill therefore names the template it came from, so 「我的」 can open
-   * that install flow instead of a bare form. A connector only the registry
-   * knows names none: there is no such flow to open.
+   * There is one catalog now, and every row in it has a template view — so
+   * every 「添加」 opens the template install flow, which is the only surface
+   * with somewhere to put a labeled secret, a positional argument, a setup note
+   * or a longer timeout. No row falls back to the bare add-server form.
    */
-  it('names the template a template-sourced entry came from, and none for a registry-only one', () => {
+  it('routes every row through its template install flow', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
-    fireEvent.click(within(rowFor('sqlite')).getByTestId('connector-add-button'));
-    expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('sqlite');
+    for (const item of buildConnectorCatalog('zh-CN')) {
+      expect(item.templateId).toBe(item.name);
+    }
     fireEvent.click(within(rowFor('memory')).getByTestId('connector-add-button'));
-    expect(onPrefillAdd.mock.calls[1][0].templateId).toBeUndefined();
+    expect(onPrefillAdd.mock.calls[0][0].templateId).toBe('memory');
   });
 
-  /**
-   * A name both catalogs carry belongs to the registry outright: its entry is
-   * the host-resolved one, and the two catalogs disagree about the npm package
-   * for most of the collision names (the registry's packages are the published
-   * ones; the templates' `@anthropic/mcp-server-*` ones are
-   * not). Naming the colliding template would route 「添加」 into the template
-   * install flow, which runs the template's command — the unpublished one. So a
-   * collision carries no `templateId` at all.
-   */
-  it('carries no template id for a connector both catalogs carry — the registry entry wins', () => {
+  it('offers a positional argument and a secret slot through that same flow', () => {
     const onPrefillAdd = vi.fn();
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={onPrefillAdd} onManage={noop} />);
-    fireEvent.click(within(rowFor('brave-search')).getByTestId('connector-add-button'));
+    fireEvent.click(within(rowFor('postgres')).getByTestId('connector-add-button'));
     expect(onPrefillAdd.mock.calls[0][0]).toMatchObject({
-      name: 'brave-search',
-      command: getRegistryEntry('brave-search')!.command,
-      args: getRegistryEntry('brave-search')!.args,
+      name: 'postgres',
+      templateId: 'postgres',
+      // The connection-string slot travels empty; the install form fills it.
+      args: getRegistryEntry('postgres')!.args,
     });
-    expect(onPrefillAdd.mock.calls[0][0].templateId).toBeUndefined();
+    fireEvent.click(within(rowFor('brave-search')).getByTestId('connector-add-button'));
+    expect(onPrefillAdd.mock.calls[1][0]).toMatchObject({
+      name: 'brave-search',
+      templateId: 'brave-search',
+      env: { BRAVE_API_KEY: '' },
+    });
   });
 
-  it('searches a template-only connector by its localized description', () => {
+  it('searches a connector by its localized description', () => {
     render(<ConnectorCatalog searchQuery="Chrome DevTools" onPrefillAdd={noop} onManage={noop} />);
     expect(rowFor('chrome-devtools')).toBeTruthy();
   });
@@ -249,7 +204,7 @@ describe('ConnectorCatalog · 精选连接器', () => {
   });
 
   /**
-   * Thirteen buttons all named 「添加」 are indistinguishable to a screen reader
+   * Every button being named 「添加」 makes them indistinguishable to a screen reader
    * (and to any name-based query): the row's name is visible text, not part of
    * the control. Each button carries the connector it adds.
    */

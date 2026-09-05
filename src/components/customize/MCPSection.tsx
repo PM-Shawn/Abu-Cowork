@@ -6,10 +6,11 @@ import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useI18n, format } from '@/i18n';
-import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
+import { getMCPTemplates, getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
+import type { MCPTemplate } from '@/types/marketplace';
 import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
@@ -186,7 +187,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   // Categorize: "我的" = custom (not from templates), "示例" = template-based (installed + uninstalled)
   const searchLower = extensionsSearchQuery.toLowerCase();
-  const templateNames = useMemo(() => new Set(mcpTemplates.map((t) => t.name)), []);
+  const templateNames = useMemo(() => new Set(getMCPTemplates().map((t) => t.name)), []);
   const editingNameLocked = !!editingServerName && templateNames.has(editingServerName);
 
   const validateServerName = (requestedName: string, oldName?: string): string | null => {
@@ -276,7 +277,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   }, [mcpServers, templateNames, searchLower]);
 
   // "示例": all templates — installed ones first, then uninstalled
-  type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: typeof mcpTemplates[0] };
+  type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
     for (const tmpl of availableTemplates) {
@@ -509,7 +510,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   }, [focusServer]);
 
   // Install from template
-  const handleInstallTemplate = async (template: typeof mcpTemplates[0]) => {
+  const handleInstallTemplate = async (template: MCPTemplate) => {
     setInstallingTemplate(template.id);
     try {
       let config: MCPServerConfig;
@@ -649,7 +650,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     );
   };
 
-  const renderTemplateCard = (tmpl: typeof mcpTemplates[0]) => (
+  const renderTemplateCard = (tmpl: MCPTemplate) => (
     <ToolCard
       key={tmpl.id}
       item={{
@@ -1040,7 +1041,7 @@ function ServerDetail({
 function TemplateDetail({
   template, templateArgs, setTemplateArgs,
 }: {
-  template: typeof mcpTemplates[0];
+  template: MCPTemplate;
   templateArgs: Record<string, string>;
   setTemplateArgs: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 }) {

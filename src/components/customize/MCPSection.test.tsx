@@ -128,6 +128,21 @@ describe('MCPSection · sourceFilter="mine"', () => {
     expect(screen.queryByText(tb().exampleServers)).toBeNull();
   });
 
+  /**
+   * Every catalog name is now a template name, so a server installed from
+   * 「市场」 is filed under 「市场」 in the unfiltered view. It used to leak into
+   * 「我的」 whenever the registry knew a name the hand-kept template array did
+   * not — `sequential-thinking` was one such name, and a user who installed it
+   * from 「市场」 found it filed as their own hand-rolled server.
+   */
+  it('files a catalog-installed server under 市场, never under 我的', () => {
+    useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
+    render(<MCPSection />);
+    expect(screen.queryByText(tb().myServers)).toBeNull();
+    expect(screen.getByText(tb().exampleServers)).toBeTruthy();
+    expect(screen.getByText('sequential-thinking')).toBeTruthy();
+  });
+
   it('still shows every source when no filter is given', () => {
     useMCPStore.setState({
       servers: {
@@ -285,13 +300,13 @@ describe('MCPSection · prefill does not hijack the form', () => {
  * template's own install flow instead — the same one 「安装」 has always used.
  */
 describe('MCPSection · prefill from a template', () => {
-  const sqlite: ConnectorPrefill = {
-    name: 'sqlite',
+  const postgres: ConnectorPrefill = {
+    name: 'postgres',
     command: 'npx',
-    args: ['-y', '@anthropic/mcp-server-sqlite', '/path/to/database.db'],
+    args: ['-y', '@modelcontextprotocol/server-postgres', ''],
     env: {},
     transport: 'stdio',
-    templateId: 'sqlite',
+    templateId: 'postgres',
   };
 
   /** A host that owns `showAddForm` and withdraws the offer on close, as Task 7 will. */
@@ -314,9 +329,9 @@ describe('MCPSection · prefill from a template', () => {
   }
 
   it('opens the template install UI, not the plain form', async () => {
-    render(<Host initial={sqlite} />);
+    render(<Host initial={postgres} />);
     // Only the template path renders a configurable argument's placeholder.
-    await waitFor(() => expect(screen.getByPlaceholderText('/path/to/your/database.db')).toBeTruthy());
+    await waitFor(() => expect(screen.getByPlaceholderText('postgresql://user:pass@localhost:5432/db')).toBeTruthy());
     expect(screen.getByText(tb().serverArgs)).toBeTruthy();
     expect(screen.queryByPlaceholderText(tb().serverName)).toBeNull();
   });
@@ -324,26 +339,27 @@ describe('MCPSection · prefill from a template', () => {
   it('installs through the template path, carrying the value the user typed', async () => {
     const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
     vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
-    render(<Host initial={sqlite} />);
+    render(<Host initial={postgres} />);
 
-    const arg = await screen.findByPlaceholderText('/path/to/your/database.db');
-    fireEvent.change(arg, { target: { value: '/tmp/mine.db' } });
+    const arg = await screen.findByPlaceholderText('postgresql://user:pass@localhost:5432/db');
+    fireEvent.change(arg, { target: { value: 'postgresql://me@localhost:5432/mine' } });
     fireEvent.click(screen.getByText(tb().install));
 
     await waitFor(() => expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'sqlite',
+      name: 'postgres',
       command: 'npx',
-      args: ['-y', '@anthropic/mcp-server-sqlite', '/tmp/mine.db'],
+      args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://me@localhost:5432/mine'],
     })));
   });
 
   it('keeps a template secret’s label and placeholder, which the form has nowhere to put', async () => {
-    render(<Host initial={{ name: 'sentry', command: 'npx', args: [], env: { SENTRY_AUTH_TOKEN: '' }, transport: 'stdio', templateId: 'sentry' }} />);
-    await waitFor(() => expect(screen.getByText('Sentry Auth Token')).toBeTruthy());
+    render(<Host initial={{ name: 'sentry', command: 'npx', args: [], env: { SENTRY_ACCESS_TOKEN: '' }, transport: 'stdio', templateId: 'sentry' }} />);
+    await waitFor(() => expect(screen.getByText('SENTRY_ACCESS_TOKEN')).toBeTruthy());
     expect(screen.getByPlaceholderText('sntrys_...')).toBeTruthy();
   });
 
-  it('keeps the plain form for a registry-sourced prefill, which names no template', async () => {
+  /** A prefill that names no template at all still opens the plain form. */
+  it('keeps the plain form for a prefill that names no template', async () => {
     render(<Host initial={{ name: 'github', command: 'npx', args: ['-y', 'server-github'], env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' }, transport: 'stdio' }} />);
     await waitFor(() => {
       expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('github');
@@ -352,23 +368,23 @@ describe('MCPSection · prefill from a template', () => {
 
   /** A template id nothing resolves (a host filtered it out) must still add the connector. */
   it('falls back to the plain form when the named template is not available here', async () => {
-    render(<Host initial={{ ...sqlite, templateId: 'no-such-template' }} />);
+    render(<Host initial={{ ...postgres, templateId: 'no-such-template' }} />);
     await waitFor(() => {
-      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('sqlite');
+      expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('postgres');
     });
   });
 
   /**
-   * `abu-browser-bridge` is in both catalogs, and a collision belongs to the
-   * registry outright — the Electron build resolves that command itself, so the
-   * offer names no template and opens the plain form on the host-resolved
-   * command, not the template's npx one.
+   * Electron provisions `abu-browser-bridge` itself and drops it from the
+   * host's template list, so its 「市场」 row — which names a template like
+   * every other row — resolves to nothing here and falls back to the plain
+   * form, opened on the host-resolved command rather than the npx one.
    */
-  it('opens the plain form on the registry command for a name both catalogs carry', async () => {
+  it('opens the plain form when this host filtered the named template out', async () => {
     process.env.ABU_ELECTRON_COMMAND_HOST = '1';
     try {
       const bridge = buildConnectorCatalog('zh-CN').find((item) => item.name === 'abu-browser-bridge');
-      expect(bridge?.templateId).toBeUndefined();
+      expect(bridge?.templateId).toBe('abu-browser-bridge');
       render(<Host initial={bridge ?? null} />);
       await waitFor(() => {
         expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('abu-browser-bridge');

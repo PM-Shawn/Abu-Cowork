@@ -102,7 +102,6 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
 import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
-import DesktopLoginConfirm from '@/components/enterprise/DesktopLoginConfirm';
 import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 import {
   consumeComputerUseResumeToken,
@@ -279,7 +278,7 @@ function App() {
   const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
-  const { pendingEnroll, dismissEnroll, pendingLogin, dismissLogin } = useDeepLinkEnroll();
+  const { pendingEnroll, dismissEnroll, pendingOpen, dismissOpen } = useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -971,11 +970,11 @@ function App() {
             onCancel={dismissEnroll}
           />
         )}
-        {pendingLogin && (
-          <DesktopLoginConfirm
-            pending={pendingLogin}
-            onDone={dismissLogin}
-            onCancel={dismissLogin}
+        {pendingOpen && (
+          <BindToEnterpriseFlow
+            initialServerUrl={pendingOpen.serverUrl}
+            onDone={dismissOpen}
+            onCancel={dismissOpen}
           />
         )}
       </div>

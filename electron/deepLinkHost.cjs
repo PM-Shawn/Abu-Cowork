@@ -3,9 +3,9 @@
  *
  * Abu deep links today:
  *   - `abu://enroll?server=<url>&token=<token>` — pre-fill enterprise bind
- *   - `abu://login?code=<once>&server=<url>` — Web → desktop one-time login
- * used to pre-fill the enterprise-binding form (an admin sends the user a link;
- * clicking it launches/focuses Abu with the server address filled in). The
+ *   - `abu://open?server=<url>` — browser asks the client to start OAuth
+ *   - `abu://login?code=<once>&state=<csrf>` — OAuth redirect callback
+ * Enrollment links pre-fill the enterprise-binding form. The
  * frontend consumes it unchanged via `@tauri-apps/plugin-deep-link`:
  *   - getCurrent()  → invoke('plugin:deep-link|get_current')  → string[] | null
  *   - onOpenUrl(cb) → listen('deep-link://new-url')           → payload string[]
@@ -42,7 +42,7 @@ const NEW_URL_EVENT = 'deep-link://new-url';
 
 // Known deep-link actions. New hosts must be added here so the whitelist
 // keeps rejecting everything else.
-const KNOWN_HOSTS = new Set(['enroll', 'login']);
+const KNOWN_HOSTS = new Set(['enroll', 'login', 'open']);
 
 let activeScheme = PROD_SCHEME;
 let coldStartUrls = []; // URLs that cold-launched the app (get_current path)
@@ -59,9 +59,10 @@ function log(msg, extra) {
  * if it is not one of our schemes / not a known action. This is the ONE parser
  * all three arrival sources funnel through (competitor convention #2/#3).
  * @param {unknown} raw
+ * @param {boolean} [allowDevScheme] testable form of the packaged-app gate
  * @returns {string | null}
  */
-function normalizeDeepLinkUrl(raw) {
+function normalizeDeepLinkUrl(raw, allowDevScheme = activeScheme === DEV_SCHEME) {
   if (typeof raw !== 'string') return null;
   let s = raw.trim();
   // Windows may hand us "abu://…" or (rarely) "abu:…"; accept both forms.
@@ -70,6 +71,7 @@ function normalizeDeepLinkUrl(raw) {
   const scheme = m[1].toLowerCase();
   if (scheme !== PROD_SCHEME && scheme !== DEV_SCHEME) return null;
   if (scheme === DEV_SCHEME) {
+    if (!allowDevScheme) return null;
     // abu-dev://…  →  abu://…  (rewrite the dev scheme to the canonical one)
     s = PROD_SCHEME + s.slice(m[1].length);
   }

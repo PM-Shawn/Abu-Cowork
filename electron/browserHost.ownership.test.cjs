@@ -155,7 +155,7 @@ function fakeSession(capture) {
  * calling `browser_create` with the same id, which is exactly what
  * `App.tsx` → `previewStore.openBrowser()` does in production.
  */
-function loadHost({ adopt = true } = {}) {
+function loadHost({ adopt = true, onAdopt = null } = {}) {
   const prevElectron = require.cache[electronId];
   const prevTauri = require.cache[tauriHostId];
   delete require.cache[browserHostId];
@@ -213,6 +213,10 @@ function loadHost({ adopt = true } = {}) {
             width: 800,
             height: 600,
           });
+          // Runs at the instant production's renderer finishes adopting — the
+          // only moment a test can act while an automation call is still in
+          // its provisioning phase (see the F0 provisioning test).
+          if (onAdopt) onAdopt(payload);
         }
       },
       getMainWindow: () => mainWindow,
@@ -2753,16 +2757,24 @@ test('F1: a steal does not promote the stolen-onto tab to the owner current tab'
 });
 
 /**
- * ## F0 — attribution suppression must not cover read-only actions
+ * ## F0 — attribution suppression must be scoped, not global-and-forever
  *
  * The R4 backoff decides "is this event the user or our own automation?" by a
- * depth counter raised while an action runs, and it used to be raised for
- * EVERY action. `wait_for`'s timeout is caller-supplied and unbounded (30s by
- * default in `abu-browser-bridge/src/tools.ts`), so one `wait_for` blinded the
- * takeover detector for as long as it ran — while injecting nothing whose
- * events would have needed excluding. The user took over, the host recorded
- * nothing, and the next click/navigate went in under their hands with no 3s
- * quiet wait (external review 2026-09-05, independently confirmed).
+ * depth counter raised while an action runs. Two things about that counter were
+ * wrong (external review 2026-09-05, independently confirmed):
+ *
+ *  - it was raised for EVERY action, including read-only ones. `wait_for`'s
+ *    timeout is caller-supplied and unbounded (30s by default in
+ *    `abu-browser-bridge/src/tools.ts`), so one `wait_for` blinded the takeover
+ *    detector for as long as it ran — while injecting nothing whose events
+ *    would need excluding;
+ *  - it was ONE GLOBAL counter, so task A's action masked real input landing on
+ *    task B's tab, and on A's own page too.
+ *
+ * Together: user takes over mid-task, host records nothing, and the next
+ * click/navigate goes in under their hands with no 3s quiet wait. These tests
+ * pin both halves of the fix, plus the two things that must NOT change —
+ * injected input and navigation-commit focus are still automation's own.
  */
 
 /**
@@ -2770,8 +2782,8 @@ test('F1: a steal does not promote the stolen-onto tab to the owner current tab'
  * the built browser-extension runtime on disk: the FIRST isolated-world call a
  * DOM action makes is `installAutomationRuntime`'s bootstrap, so holding it
  * suspends the action before `loadAutomationRuntime()` ever reads a file.
- * Where inside the action it parks is irrelevant to attribution — the
- * suppression is held for the whole call either way.
+ * Where inside the action it parks is irrelevant to attribution — the scope is
+ * held for the whole call either way.
  */
 function holdIsolatedWorld(tabId) {
   const contents = contentsFor(tabId);
@@ -2788,6 +2800,32 @@ function holdIsolatedWorld(tabId) {
     return held;
   };
   return { entered, release: () => releaseHeld(true) };
+}
+
+/** Same idea for a navigating action: hold the `loadURL` a `navigate` awaits. */
+function holdNextLoad(tabId) {
+  const contents = contentsFor(tabId);
+  const original = contents.loadURL.bind(contents);
+  let markEntered;
+  const entered = new Promise((resolve) => { markEntered = resolve; });
+  let releaseHeld;
+  const held = new Promise((resolve) => { releaseHeld = resolve; });
+  contents.loadURL = (url) => {
+    contents.loadURL = original; // one-shot: later navigations behave normally
+    markEntered();
+    return held.then(() => original(url));
+  };
+  return { entered, release: () => releaseHeld(true) };
+}
+
+/** The most recently constructed fake webContents — i.e. the view just minted. */
+function newestContents() {
+  let newest = null;
+  for (const contents of contentsRegistry.values()) {
+    if (!newest || contents.id > newest.id) newest = contents;
+  }
+  assert.ok(newest, 'no fake webContents has been created yet');
+  return newest;
 }
 
 /** A tab parked on an http(s) document, which every DOM action requires. */
@@ -2860,6 +2898,101 @@ test('F0: a long read-only action does not swallow input on its OWN page', async
     state.sleeps.length = 0;
     await navigate(host, OWNER_A, aTab, 'https://a.example/next');
     assert.equal(state.sleeps.length, 6, 'A must yield to the user on its own tab');
+  } finally {
+    restore();
+  }
+});
+
+test('F0: an injecting action still owns the input events it synthesizes', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    // Real Electron delivers an injected key back as `before-input-event` on
+    // the guest — the exact event shape a human keystroke produces. Without
+    // suppression on the target view, automation would back off from itself.
+    contentsFor(aTab).sendInputEvent = function sendInputEvent(event) {
+      this.fire('before-input-event', {}, event);
+    };
+
+    await host.performBrowserAutomation('keyboard', { ownerId: OWNER_A, tabId: aTab, key: 'a' });
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://example.com/');
+    assert.deepEqual(state.sleeps, [], 'injected keys are not a user takeover');
+  } finally {
+    restore();
+  }
+});
+
+test('F0: a navigate keeps suppressing its own commit focus, but only on its own view', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const bTab = tabIds(await getTabs(host, OWNER_B))[0];
+
+    const parked = holdNextLoad(aTab);
+    const aNav = host.performBrowserAutomation('navigate', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+      action: 'goto',
+      url: 'https://a.example/',
+    });
+    await parked.entered;
+
+    // Chromium hands the guest frame focus when the navigation commits (F1).
+    contentsFor(aTab).fire('focus');
+    // At the same moment the user is really typing in task B's page.
+    typeInto(bTab);
+
+    parked.release();
+    await aNav;
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://a.example/next');
+    assert.deepEqual(state.sleeps, [], 'the commit focus A caused is still A\'s own');
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_B, bTab, 'https://b.example/');
+    assert.equal(state.sleeps.length, 6, 'B\'s input during A\'s navigate is still the user');
+  } finally {
+    restore();
+  }
+});
+
+test('F0: provisioning suppresses only the view it is minting', async () => {
+  let onAdopt = null;
+  const { host, restore } = loadHost({ onAdopt: (payload) => { if (onAdopt) onAdopt(payload); } });
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const bTab = tabIds(await getTabs(host, OWNER_B))[0];
+
+    // A's `get_tabs` has no tab to aim at when it starts, so it runs its
+    // provisioning phase before any view id exists. Both events below land
+    // inside that phase.
+    onAdopt = () => {
+      newestContents().fire('focus'); // the fresh view's own about:blank commit
+      typeInto(bTab); // the user, typing in task B's page, at the same instant
+    };
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    onAdopt = null;
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://a.example/');
+    assert.deepEqual(state.sleeps, [], 'a freshly minted view focusing itself is not the user');
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_B, bTab, 'https://b.example/');
+    assert.equal(
+      state.sleeps.length,
+      6,
+      'provisioning for A must not swallow input landing on B'
+    );
   } finally {
     restore();
   }

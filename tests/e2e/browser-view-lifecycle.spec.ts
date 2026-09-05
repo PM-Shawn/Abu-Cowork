@@ -904,6 +904,124 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     expect(envelope.origin).toBe(new URL(fixture.url).origin);
   });
 
+  test('reads and answers the confirm() a real page put in front of the submit', async () => {
+    // T3 end to end in the real Electron browser: the click reaches the page,
+    // the page opens a confirm, and the tab is suspended inside it. The click
+    // must come back saying so (not sit out its transport timeout), the model
+    // must be able to READ the dialog, and accepting it must let the page's own
+    // submit handler finish.
+    const responseA = `abu-e2e-dialog-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const clickCallId = `call-click-${randomUUID()}`;
+    const readCallId = `call-get-dialog-${randomUUID()}`;
+    const handleCallId = `call-handle-dialog-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-dialog-${randomUUID()}`,
+      '<form id="f"><input id="no" value="EQ-001">'
+      + '<button type="submit">提交</button></form><div id="done"></div>'
+      + '<script>document.getElementById("f").addEventListener("submit", function (e) {'
+      + ' e.preventDefault();'
+      + ' if (!confirm("确定要提交吗")) {'
+      + '  document.getElementById("done").textContent = "已取消";'
+      + '  window.__abuE2eLivePageMarker = "cancelled";'
+      + '  return;'
+      + ' }'
+      + ' window.__abuE2eLivePageMarker = "submitted:" + document.getElementById("no").value;'
+      + ' document.getElementById("done").textContent = "保存成功";'
+      + '});</script>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          locator: JSON.stringify({ role: 'button', name: '提交' }),
+        },
+        toolCallId: clickCallId,
+        toolName: 'abu-browser__click',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body) },
+        toolCallId: readCallId,
+        toolName: 'abu-browser__get_dialog',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), action: 'accept' },
+        toolCallId: handleCallId,
+        toolName: 'abu-browser__handle_dialog',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    // Playwright DISMISSES every JavaScript dialog on a page it controls unless
+    // that page has a `dialog` listener, and its Electron connection attaches
+    // to the automation WebContentsView too. Without these no-op listeners the
+    // confirm under test is cancelled by the test harness ~300ms after it
+    // opens, and this file would be asserting Playwright's behavior, not Abu's.
+    const keepDialogsOpen = (target: Page) => target.on('dialog', () => {});
+    app.on('window', keepDialogsOpen);
+    for (const known of app.windows()) keepDialogsOpen(known);
+
+    const prompt = `abu-e2e-dialog-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate asks; that one approval covers the click and the answer.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
+
+    const toolResults = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .filter((message) => message.role === 'tool')
+      .map((message) => String(message.content ?? ''));
+
+    // 1. The click did not hang and did not lie: it named the dialog.
+    const clickResult = toolResults.find((text) => text.includes('blocked by a JavaScript dialog'));
+    expect(clickResult).toBeTruthy();
+    expect(clickResult).toContain('(confirm)');
+    expect(clickResult).toContain('确定要提交吗');
+
+    // 2. get_dialog read it, and labelled the page's words as the page's.
+    const readResult = toolResults.find((text) => text.includes('"pending": true'));
+    expect(readResult).toBeTruthy();
+    expect(readResult).toContain('"type": "confirm"');
+    expect(readResult).toContain('确定要提交吗');
+    expect(readResult).toContain('written by the web page, not by the user');
+
+    // 3. Accepting it let the page's own submit handler run to the end.
+    const handledResult = toolResults.find((text) => text.includes('"handled": true'));
+    expect(handledResult).toBeTruthy();
+    await expect
+      .poll(() => readLivePageMarker(app!, fixture!.url), { timeout: READY_TIMEOUT })
+      .toBe('submitted:EQ-001');
+  });
+
   test('keeps the same browser tab and page alive across collapsing and expanding the right panel', async () => {
     const responseA = `abu-e2e-lifecycle-collapse-complete-${randomUUID()}`;
     const getTabsCallId = `call-get-tabs-${randomUUID()}`;

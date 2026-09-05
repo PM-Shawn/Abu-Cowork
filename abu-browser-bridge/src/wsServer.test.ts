@@ -161,54 +161,36 @@ describe('sendToExtension abort handling', () => {
     }).not.toThrow();
   });
 
-  it('also releases the run\'s tab claims when an OWNED request aborts', async () => {
+  /**
+   * An abort is NOT proof the run stopped: the MCP SDK cancels a request when
+   * its own timeout fires, and that cancellation reaches this bridge as the
+   * same handler abort. Releasing here would hand a still-running task's tab to
+   * another conversation — silently, and only on the slow calls. So the abort
+   * path cancels the request and releases nothing, whatever the abort meant.
+   */
+  it.each([
+    ['the user stopped the run', { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' }, new Error('run stopped')],
+    ['the request carried no runId', { tabId: 1, ownerId: 'conversation-a' }, new Error('run stopped')],
+    ['the caller named no owner at all', { tabId: 1 }, new Error('run stopped')],
+    [
+      'the MCP request timed out while the run kept going',
+      { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' },
+      new Error('MCP error -32001: Request timed out'),
+    ],
+  ])('cancels but never releases tab claims when %s', async (_case, payload, reason) => {
     const { sendToExtension } = await import('./wsServer.js');
     const controller = new AbortController();
 
-    const pending = sendToExtension(
-      'click',
-      { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' },
-      30_000,
-      controller.signal
-    );
+    const pending = sendToExtension('click', payload, 30_000, controller.signal);
     const sent = JSON.parse(fakeExtension.send.mock.calls[0][0] as string);
 
-    controller.abort();
+    controller.abort(reason);
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
 
-    // Aborting is the run's stop signal, so the extension is told both to drop
-    // this request and to stop holding the tabs that run claimed.
-    expect(fakeExtension.send).toHaveBeenCalledTimes(3);
+    // Exactly two messages: the request, then the cancel. No release.
+    expect(fakeExtension.send).toHaveBeenCalledTimes(2);
     expect(JSON.parse(fakeExtension.send.mock.calls[1][0] as string))
       .toEqual({ type: 'cancel', requestId: sent.id });
-    expect(JSON.parse(fakeExtension.send.mock.calls[2][0] as string))
-      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'sar-1' });
-  });
-
-  it('releases the whole conversation when the aborted request carried no runId', async () => {
-    const { sendToExtension } = await import('./wsServer.js');
-    const controller = new AbortController();
-
-    const pending = sendToExtension('click', { tabId: 1, ownerId: 'conversation-a' }, 30_000, controller.signal);
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-
-    // No `runId` key at all — the extension reads that as every run of the
-    // conversation, matching `browser_dispose_owner {conversationId}`.
-    expect(JSON.parse(fakeExtension.send.mock.calls[2][0] as string))
-      .toEqual({ type: 'release', ownerId: 'conversation-a' });
-  });
-
-  it('sends no release when the aborted request named no owner', async () => {
-    const { sendToExtension } = await import('./wsServer.js');
-    const controller = new AbortController();
-
-    const pending = sendToExtension('click', { tabId: 1 }, 30_000, controller.signal);
-    controller.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-
-    // Legacy callers claim nothing, so there is nothing to release.
-    expect(fakeExtension.send).toHaveBeenCalledTimes(2);
   });
 
   it('rejects immediately without sending anything when the signal is already aborted', async () => {
@@ -219,6 +201,68 @@ describe('sendToExtension abort handling', () => {
     await expect(
       sendToExtension('click', { tabId: 1 }, 5000, controller.signal)
     ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fakeExtension.send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The release seam itself. Nothing calls it yet — a run ending reaches this
+ * bridge through no signal it can trust (see the abort note in `wsServer.ts`)
+ * — so these pin the wire shape and, above all, the SCOPE rule the future
+ * caller has to honour: a run's settlement releases that run, never the whole
+ * conversation.
+ */
+describe('releaseExtensionTabs', () => {
+  let fakeExtension: ReturnType<typeof makeFakeSocket>;
+
+  beforeEach(async () => {
+    capturedWsServers.length = 0;
+    capturedHttpServers.length = 0;
+    vi.resetModules();
+
+    const { startWSServer } = await import('./wsServer.js');
+    await startWSServer(9876);
+
+    const wss = capturedWsServers[0];
+    fakeExtension = makeFakeSocket();
+    wss.emit('connection', fakeExtension, { headers: { origin: 'chrome-extension://fake' } });
+  });
+
+  afterEach(async () => {
+    const { stopWSServer } = await import('./wsServer.js');
+    stopWSServer();
+  });
+
+  it('releases one run when given its run key', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs('conversation-a', 'sar-1');
+
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'sar-1' });
+  });
+
+  it('releases every run of the conversation when no run key is given', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs('conversation-a');
+
+    // The conversation-wide scope, reserved for a conversation-level dispose —
+    // the same scope `browser_dispose_owner {conversationId}` has in the host.
+    // A run-settlement caller must pass `runId ?? 'main'` instead.
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a' });
+  });
+
+  it('says nothing when there is no owner to release', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs(undefined, 'sar-1');
+    releaseExtensionTabs('', 'sar-1');
+    releaseExtensionTabs(42, 'sar-1');
+
+    // A legacy caller claims nothing, so there is nothing to release — and a
+    // release with no owner would be unbounded.
     expect(fakeExtension.send).not.toHaveBeenCalled();
   });
 });

@@ -250,14 +250,22 @@ function handleResponse(msg: BridgeResponse): void {
  * release costs one stale claim (which the tab closing, or the socket dropping,
  * clears anyway), and no browser action may fail over bookkeeping.
  *
- * KNOWN GAP: the only caller today is the abort path below, i.e. a run the user
- * STOPPED. A run that finishes normally has no equivalent signal here — the
- * built-in host learns about it over IPC (`browser_dispose_owner`, called from
- * `src/core/browser/browserViewLifecycle.ts`), and this bridge is an MCP stdio
- * server with no such channel. Closing that gap means giving the desktop app a
- * non-model-facing way to reach the bridge, which is an interface decision, not
- * a fix. Until then a normally-finished run's claim is cleared by the tab
- * closing or the socket dropping.
+ * KNOWN GAP: nothing calls this yet. A run ending — normally or because the
+ * user stopped it — reaches this bridge through no signal it can trust: the
+ * only event it sees is a per-REQUEST abort, and the MCP SDK raises that for
+ * its own request timeouts too (see the long note at the abort path below).
+ * The built-in host has a real channel for this (`browser_dispose_owner` over
+ * IPC, called from `src/core/browser/browserViewLifecycle.ts` at a run's
+ * settlement seal); this bridge is an MCP stdio server and has none. Giving it
+ * one — an MCP notification, not a model-visible tool — is an interface
+ * decision, not a fix, and is accounted for separately. Until then a finished
+ * run's claim is cleared by the tab closing or the socket dropping.
+ *
+ * WHEN that caller arrives, it must pass the run key (`runId ?? 'main'`) at a
+ * run's settlement: omitting it releases EVERY run of the conversation, which
+ * the host never does there — `disposeRunBrowserViews` returns early without a
+ * runKey, and the conversation-wide scope belongs to conversation deletion
+ * alone. That is what the omitted-`runId` shape is reserved for.
  */
 export function releaseExtensionTabs(ownerId: unknown, runId?: unknown): void {
   if (typeof ownerId !== 'string' || ownerId.length === 0) return;
@@ -320,14 +328,29 @@ export function sendToExtension(
           console.error('[abu-bridge] Failed to send cancel to extension:', err);
         }
       }
-      // The signal that aborts a browser request IS the run's own abort signal
-      // (`src/core/mcp/client.ts` passes the conversation/run controller into
-      // `callTool`), so reaching here means that run has stopped driving the
-      // browser. Release its tab claims — the extension-channel counterpart of
-      // `disposeRunBrowserViews()` at a run's settlement seal in the built-in
-      // host. A run that ends NORMALLY reaches the bridge through no signal at
-      // all — see the note on `releaseExtensionTabs` about that remaining gap.
-      releaseExtensionTabs(payload.ownerId, payload.runId);
+      // Deliberately NOT a tab-claim release point, tempting as it looks.
+      //
+      // An abort here does NOT mean "this run stopped". The MCP SDK cancels a
+      // request when its OWN timeout fires: the timeout handler calls
+      // `cancel()` (`@modelcontextprotocol/sdk` `shared/protocol.js`), which
+      // sends `notifications/cancelled`, which the server side answers by
+      // aborting exactly the handler signal that reaches us here. And
+      // `src/core/mcp/client.ts` passes a `timeout` on every `callTool` (120s
+      // for the browser servers, less if the user configured it), so a slow
+      // `screenshot_full_page` on a live run lands on this line.
+      //
+      // The bridge cannot tell the two apart: all it receives is an abort
+      // whose `reason` is a string produced by whoever cancelled, so
+      // positively recognising "the run stopped" would mean matching on
+      // SDK-formatted text. Getting that wrong is SILENT and it fails open —
+      // it hands a still-running task's tab to another conversation, the exact
+      // thing the claims exist to prevent. An unreleased claim, by contrast,
+      // costs another conversation one refusal that names its next step, and
+      // costs the user nothing at all (their own use of the tab is unaffected).
+      //
+      // Claims are therefore dropped by the extension itself — the tab closing
+      // and the socket dropping — plus the explicit `{type:'release'}`, which
+      // still has no sender here; see `releaseExtensionTabs`.
       reject(new DOMException('The operation was aborted.', 'AbortError'));
     });
 

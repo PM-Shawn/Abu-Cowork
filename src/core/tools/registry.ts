@@ -1720,7 +1720,16 @@ export async function checkToolApproval(
                   // is the attack this branch's own summary rule already bans
                   // (TESTING §13, "审批弹窗里回显页面内容"). The user reads the
                   // real dialog from the page, not a copy Abu vouches for.
-                  ? t.commandConfirm.browserDialogAnswerReason
+                  //
+                  // The two channels are not doing the same thing, so they do
+                  // not get the same sentence. The built-in browser ANSWERS a
+                  // dialog that is on screen now; the Chrome extension cannot
+                  // see a native dialog at all, so it ARMS the next one —
+                  // a blind signature on a question nobody has read yet. Same
+                  // tool name, materially different consent.
+                  ? (browserChannelForTool(name) === 'chrome'
+                    ? t.commandConfirm.browserDialogArmReason
+                    : t.commandConfirm.browserDialogAnswerReason)
                   : t.commandConfirm.browserReason,
             kind: 'browser',
             browserOperationClass: opClass,

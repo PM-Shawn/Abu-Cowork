@@ -349,6 +349,24 @@ describe('runBatch — what may run beside what', () => {
 });
 
 describe('runBatch — bounds', () => {
+  it('counts a parallel read that SUCCEEDED beside a failing sibling', async () => {
+    // Consecutive reads go out together. When one of them fails, the ones that
+    // completed in the same instant are still done — dropping them made
+    // `remainingSteps` over-count, and a caller acting on that re-sends a step
+    // it already has the answer to.
+    // find / read / find go out as ONE group; the click waits its turn.
+    const h = harness({ failAt: 1 });
+    const result = await runBatch(h.deps, TAB, steps('find', 'read', 'find', 'click'));
+
+    expect(result.failedStep?.index).toBe(1);
+    // BOTH finds went out in the same instant and came back fine. The old
+    // `break` recorded only the one before the failure, so `remainingSteps`
+    // said 2 when only the click was left.
+    expect(result.completedSteps.map((step) => step.index)).toEqual([0, 2]);
+    expect(result.remainingSteps).toBe(1);
+    expect(result.stopped).toBe('step-failed');
+  });
+
   it('stops when the run has been going longer than one approval should cover', async () => {
     // Clock advances a quarter of the budget per read, so the first step runs
     // and the check before the second one trips.

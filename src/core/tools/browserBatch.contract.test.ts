@@ -18,6 +18,9 @@
  * the one the gate approved would be checking the wrong page.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseBatchSteps, batchOrigin, MAX_BATCH_STEPS } from '../../../abu-browser-bridge/src/batch.js';
 import {
@@ -126,6 +129,39 @@ describe('the gate classifies what the runner will actually do', () => {
     }
     // …including a caller with no arguments at all.
     expect(classifyBrowserTool(BATCH)).toBe('interactive');
+  });
+});
+
+/**
+ * `find`'s query keys exist in two places that cannot import from each other:
+ * `abu-browser-bridge/src/locators.ts` (the bridge validates what the model
+ * sent) and `abu-chrome-extension/src/content/index.ts` (the content script
+ * decides what a key MEANS in the DOM). They are bundled separately, so
+ * nothing links them and nothing would notice a drift — a key added to one
+ * side only would validate and then be silently ignored, or be rejected for a
+ * query the DOM actually understands.
+ *
+ * Compared as text, the same way `tabClaims.test.ts` re-derives its action set
+ * from the bridge's tool definitions: a file read, no network, no clock.
+ */
+describe('the find query keys are one list, not two', () => {
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+  function keysDeclaredIn(file: string, constName: string): string[] {
+    const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const at = source.indexOf(`${constName} = [`);
+    expect(at, `${constName} not found in ${file}`).toBeGreaterThan(-1);
+    const list = source.slice(at + `${constName} = [`.length, source.indexOf(']', at));
+    return [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  }
+
+  it('the extension content script understands exactly what the bridge accepts', () => {
+    const fromBridge = keysDeclaredIn('abu-browser-bridge/src/locators.ts', 'FIND_QUERY_KEYS');
+    const fromContent = keysDeclaredIn('abu-chrome-extension/src/content/index.ts', 'FIND_QUERY_KEYS');
+
+    // A silent zero on either side would make the comparison vacuous.
+    expect(fromBridge.length).toBeGreaterThan(3);
+    expect([...fromContent].sort()).toEqual([...fromBridge].sort());
   });
 });
 

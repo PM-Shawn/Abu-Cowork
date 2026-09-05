@@ -280,6 +280,32 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     expect(asked.every((a) => a.allowPersistentGrant === false)).toBe(true);
   });
 
+  it('says the Chrome channel is PRE-ARMING the next dialog, not answering this one', async () => {
+    // The extension cannot see a native dialog at all, so `handle_dialog`
+    // there is a blind signature on a question nobody has read yet. Same tool
+    // name, materially different consent — so a different sentence.
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set(
+      'abu-browser-bridge',
+      (mcpManager as unknown as { servers: Map<string, unknown> }).servers.get('abu-browser')!,
+    );
+    try {
+      await checkToolApproval(
+        'abu-browser-bridge__handle_dialog',
+        { tabId: TAB, action: 'accept' },
+        { conversationId: OWNER } as never,
+        confirm as never,
+      );
+      await answerDialog('accept');
+
+      expect(asked).toHaveLength(2);
+      const [viaExtension, viaBuiltin] = asked;
+      expect(viaExtension.reason).not.toBe(viaBuiltin.reason);
+      expect(viaExtension.reason).toMatch(/60|next/i);
+    } finally {
+      (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser-bridge');
+    }
+  });
+
   it('keeps a blocked site blocked, dialog or no dialog', async () => {
     useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'denied' } });
 

@@ -2419,6 +2419,15 @@ describe('ambiguity is refused, not resolved by position', () => {
     // this would refuse as ambiguous rather than resolve.
     expect((await click({ text: '保存' })).target?.id).toBe('hint');
     await expect(click({ css: '#abu-status' })).rejects.toThrow(/Element not found/);
+
+    // A child of the bubble is just as much ours. If the caption ever grows a
+    // wrapper or an icon, that child carries no id and would rejoin the
+    // candidate set — the same bug, one nesting level down.
+    const bubble = document.getElementById('abu-status')!;
+    const inner = document.createElement('span');
+    inner.textContent = '保存';
+    bubble.appendChild(inner);
+    expect((await click({ text: '保存' })).target?.id).toBe('hint');
   });
 
   it('never writes the filled VALUE into the page, only which field it was', async () => {

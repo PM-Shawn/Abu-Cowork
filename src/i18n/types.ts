@@ -2788,6 +2788,10 @@ export interface TranslationDict {
      *  consent from clicking a button the user named, so it is asked for
      *  separately and never rides the conversation grant. */
     browserDialogAnswerReason: string;
+    /** Chrome-extension channel only: that channel cannot see a native dialog,
+     *  so `handle_dialog` PRE-ARMS the answer to the next one — a blind
+     *  signature, and a different thing to consent to. */
+    browserDialogArmReason: string;
     /** A `batch` carrying a page-script step — refused whole, never partly run. */
     browserBatchScriptStep: string;
     browserBatchTooManySteps: string;

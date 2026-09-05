@@ -83,10 +83,15 @@ export const MAX_BATCH_CHARS = 32_000;
 export const MAX_BATCH_STEP_RESULT_CHARS = 4_000;
 
 /**
- * Step type → the wire action it dispatches. Exported because
- * `src/core/tools/browserToolRouting.test.ts` checks every one of these is
- * routed on BOTH channels: an unrouted step type answers `Unknown action`
- * halfway through a run the user already approved.
+ * Step type → the wire action it dispatches.
+ *
+ * `src/core/tools/browserToolRouting.test.ts` checks that every step action is
+ * routed on BOTH channels — an unrouted step type answers `Unknown action`
+ * halfway through a run the user already approved — but it does NOT read this
+ * table: it derives the list from a real `runBatch`, which is stronger,
+ * because a table that drifted from what the runner dispatches would still
+ * agree with itself. Exported for readers and for a caller that wants the
+ * mapping; nothing outside this module depends on it.
  */
 export const BATCH_STEP_ACTIONS: Readonly<Record<BatchStepType, string>> = {
   fill: 'fill',
@@ -498,10 +503,16 @@ export async function runBatch(
     const outcomes = await Promise.all(
       group.map((step, offset) => runStep(deps, tabId, step, index + offset, budgetLeftMs)),
     );
+    // Every outcome is accounted for, not just those before the first failure.
+    // `outcomes` is in step order, so the FIRST failure is the one reported —
+    // but its successful siblings were dispatched in the same instant and did
+    // complete, and dropping them made `remainingSteps` over-count the work
+    // still to do. Reads have no side effects, so this is report fidelity
+    // rather than safety; a caller told "3 steps remain" when 2 do re-sends
+    // one it already got.
     for (const outcome of outcomes) {
-      if (failedStep) break; // a parallel sibling already failed — report the first
       if (outcome.ok) completedSteps.push(capStepResult(outcome));
-      else failedStep = capStepResult(outcome);
+      else if (!failedStep) failedStep = capStepResult(outcome);
     }
     if (failedStep) {
       stopped = 'step-failed';

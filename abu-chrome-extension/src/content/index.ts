@@ -1116,8 +1116,16 @@ const NEVER_A_TARGET = new Set(['html', 'body', 'head', 'script', 'style', 'nosc
  */
 const ABU_OVERLAY_IDS = new Set(['abu-status', 'abu-highlight']);
 
+/**
+ * `closest`, not `el.id`: the overlays are single elements today, but the
+ * moment either grows a child (a button, an icon, a wrapper span) that child
+ * carries no id of its own and would rejoin the candidate set — which is the
+ * whole bug this guard exists to stop, one nesting level down and just as
+ * silent. Matching an ancestor costs nothing and cannot go stale.
+ */
 function isAbuOverlay(el: Element): boolean {
-  return ABU_OVERLAY_IDS.has(el.id);
+  const selector = [...ABU_OVERLAY_IDS].map((id) => `#${id}`).join(',');
+  return el.closest(selector) !== null;
 }
 
 /** Short, human-readable handle for an element, used in error messages. */

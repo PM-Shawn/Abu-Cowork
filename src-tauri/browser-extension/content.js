@@ -499,7 +499,8 @@
   var NEVER_A_TARGET = /* @__PURE__ */ new Set(["html", "body", "head", "script", "style", "noscript", "title"]);
   var ABU_OVERLAY_IDS = /* @__PURE__ */ new Set(["abu-status", "abu-highlight"]);
   function isAbuOverlay(el) {
-    return ABU_OVERLAY_IDS.has(el.id);
+    const selector = [...ABU_OVERLAY_IDS].map((id) => `#${id}`).join(",");
+    return el.closest(selector) !== null;
   }
   function describeElement(el) {
     const tag = el.tagName.toLowerCase();

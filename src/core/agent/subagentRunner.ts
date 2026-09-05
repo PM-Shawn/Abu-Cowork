@@ -157,6 +157,7 @@ import {
   scopeSubagentProgressEvent,
 } from './subagentProgressIdentity';
 import { disposeRunBrowserViews } from '../browser/browserViewLifecycle';
+import { releaseRunBrowserTabClaims } from '../browser/bridgeTabClaims';
 import {
   materializeSidecarMediaRefsForShell,
   prepareToolResultForSidecarWire,
@@ -796,6 +797,9 @@ async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<Subag
     return await runSubagentLoop(options);
   } finally {
     disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
+    // Same seal, the other browser channel: the extension drives the user's
+    // own Chrome, so this run's claim on a real page has to end here too.
+    releaseRunBrowserTabClaims(options.parentConversationId, options.agentRunId);
   }
 }
 
@@ -950,6 +954,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     // nobody's any more. Its browser tabs are invisible to every other run, so
     // nothing else could ever list or close them.
     disposeRunBrowserViews(options.parentConversationId, runId);
+    releaseRunBrowserTabClaims(options.parentConversationId, runId);
     if (options.authorizationScopeId !== undefined) {
       await session.resourceSettlement.settlement;
     }

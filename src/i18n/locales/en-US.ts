@@ -1212,7 +1212,6 @@ const enUS: TranslationDict = {
     pluginsEmptyState: 'No plugins installed yet',
     connectors: 'Connectors',
     // Plugins tab (Task 10 UI)
-    pluginsInstalledTab: 'Installed',
     pluginsMarketplaceTab: 'Marketplace',
     // Extensions source sub-nav + installed-item menu
     sourceMarket: 'Market',
@@ -1244,7 +1243,6 @@ const enUS: TranslationDict = {
     pluginsNoMatches: 'No plugins match',
     pluginsEntryCount: '{count} plugins',
     pluginsInstall: 'Install',
-    pluginsAlreadyInstalled: 'Installed',
     pluginsUpdate: 'Update',
     pluginsUpdateSucceeded: 'Updated “{name}”',
     pluginsUpdateReloadHint: 'Start a new conversation to pick up the new version.',

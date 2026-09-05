@@ -1214,7 +1214,6 @@ const zhCN: TranslationDict = {
     pluginsEmptyState: '还没有安装任何插件',
     connectors: '连接器',
     // Plugins tab (Task 10 UI)
-    pluginsInstalledTab: '已安装',
     pluginsMarketplaceTab: '插件市场',
     // Extensions source sub-nav + installed-item menu
     sourceMarket: '市场',
@@ -1246,7 +1245,6 @@ const zhCN: TranslationDict = {
     pluginsNoMatches: '没有匹配的插件',
     pluginsEntryCount: '共 {count} 个插件',
     pluginsInstall: '安装',
-    pluginsAlreadyInstalled: '已安装',
     pluginsUpdate: '更新',
     pluginsUpdateSucceeded: '已更新「{name}」',
     pluginsUpdateReloadHint: '开个新会话即可用上新版本。',

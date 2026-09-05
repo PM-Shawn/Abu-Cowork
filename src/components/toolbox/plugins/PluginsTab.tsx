@@ -21,7 +21,7 @@ import { useEffect, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import { usePluginStore } from '@/stores/pluginStore';
-import type { ExtensionSource } from '@/components/toolbox/SourceSubNav';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
@@ -30,9 +30,10 @@ interface PluginsTabProps {
   /** Shared toolbox header search box. */
   searchQuery: string;
   /**
-   * Which source to show. Optional (defaulting to 市场) because the sub-nav
-   * that supplies it is wired in a separate change — until then the tab must
-   * still render its main surface rather than a blank panel.
+   * Which source to show. The sub-nav above this component supplies it; the
+   * default keeps 市场 as the surface for any caller that renders the tab
+   * without a sub-nav (a test harness, a deep link that names no source),
+   * rather than leaving them a blank panel.
    */
   source?: ExtensionSource;
 }

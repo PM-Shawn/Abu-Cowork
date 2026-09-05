@@ -1395,7 +1395,6 @@ export interface TranslationDict {
      *  literally "MCP", not a Connectors-flavored label. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
-    pluginsInstalledTab: string;
     pluginsMarketplaceTab: string;
     // Extensions 「市场 | 我的」 source sub-nav + the `···` menu on an installed item
     sourceMarket: string;
@@ -1430,7 +1429,6 @@ export interface TranslationDict {
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
-    pluginsAlreadyInstalled: string;
     pluginsUpdate: string;
     pluginsUpdateSucceeded: string;
     pluginsUpdateReloadHint: string;

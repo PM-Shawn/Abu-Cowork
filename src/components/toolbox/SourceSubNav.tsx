@@ -1,7 +1,9 @@
 import { cn } from '@/lib/utils';
 import { DEFAULT_SOURCE_ID_PREFIX, sourceTabId, type ExtensionSource } from './extensionSource';
 
-export type { ExtensionSource };
+// No `export type { ExtensionSource }` here on purpose: the type has exactly one
+// home, `./extensionSource`, and a second import path is how half the callers
+// end up naming a component module for a type it does not own.
 
 interface SourceSubNavProps {
   value: ExtensionSource;

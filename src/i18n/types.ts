@@ -3284,6 +3284,10 @@ export interface TranslationDict {
       mcpCatalog: Record<string, string>;
       /** MCP env-var config hints keyed by env-var name. */
       mcpEnvHints: Record<string, string>;
+      /** Labels for configurable positional args, keyed by `${serverName}.${argIndex}`. */
+      mcpArgLabels: Record<string, string>;
+      /** Out-of-app setup notes keyed by server name (e.g. install a Chrome extension). */
+      mcpSetupHints: Record<string, string>;
       /** Generic unknown-error fallback for MCP connect failures. */
       mcpUnknownError: string;
       /** Server connected. {name}, {count} */

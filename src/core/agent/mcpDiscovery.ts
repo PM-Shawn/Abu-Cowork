@@ -22,16 +22,33 @@ export interface MCPRegistryEntry {
   env: Record<string, string>;
   /** Path to a bundled resource directory associated with this server */
   bundledResourceDir?: string;
+  /**
+   * Positional arguments the user must supply before the server can start —
+   * a connection string, a database path. `index` points into `args`, whose
+   * slot holds an empty string until it is filled. The label is localized:
+   * `mcpArgLabels[`${name}.${index}`]` (see getArgLabel()).
+   */
+  configurableArgs?: { index: number; placeholder: string }[];
+  /**
+   * Example shape of a secret, shown as the field's placeholder (`ghp_...`).
+   * These are token formats, not prose, so they are not localized. A key with
+   * no entry shows an empty placeholder.
+   */
+  envPlaceholders?: Record<string, string>;
+  /** Tool-call timeout in ms for this server. Omitted means the store default. */
+  defaultTimeout?: number;
 }
 
 /**
  * Built-in MCP server registry.
  * Covers common use cases. Agent can fall back to web_search for unlisted servers.
  *
- * User-visible descriptions and env-var hints are NOT stored here — they are
- * localized and resolved on demand from the `toolResult.system` i18n namespace
- * (`mcpCatalog` keyed by server name, `mcpEnvHints` keyed by env-var name). See
- * getEntryDescription() / getEnvHint() below.
+ * User-visible prose is NOT stored here — it is localized and resolved on
+ * demand from the `toolResult.system` i18n namespace: `mcpCatalog` keyed by
+ * server name, `mcpEnvHints` keyed by env-var name, `mcpArgLabels` keyed by
+ * `${name}.${argIndex}`, `mcpSetupHints` keyed by server name. See
+ * getEntryDescription() / getEnvHint() / getArgLabel() / getSetupHint() below.
+ * Token-shape placeholders (`ghp_...`) are not prose and stay in the data.
  *
  * Exported so the Connectors 「市场」 can list the same catalog the agent
  * searches — one registry, not a second hand-kept copy that drifts from it.
@@ -45,13 +62,7 @@ export const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
     command: 'npx',
     args: ['-y', '@modelcontextprotocol/server-github'],
     env: { GITHUB_PERSONAL_ACCESS_TOKEN: '' },
-  },
-  {
-    name: 'filesystem',
-    keywords: ['file', 'filesystem', 'directory', 'folder', 'read', 'write'],
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-filesystem'],
-    env: {},
+    envPlaceholders: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_...' },
   },
   {
     name: 'slack',
@@ -65,42 +76,28 @@ export const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
     keywords: ['notion', 'page', 'database', 'wiki', 'document', 'note'],
     command: 'npx',
     args: ['-y', '@notionhq/notion-mcp-server'],
-    env: { OPENAPI_MCP_HEADERS: '' },
+    // The package's own README configures it with NOTION_TOKEN; the older
+    // OPENAPI_MCP_HEADERS JSON blob is a second, undocumented path.
+    env: { NOTION_TOKEN: '' },
+    envPlaceholders: { NOTION_TOKEN: 'ntn_...' },
   },
   {
     name: 'postgres',
     keywords: ['postgres', 'postgresql', 'database', 'sql', 'db', 'query'],
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-postgres'],
-    env: { DATABASE_URL: '' },
-  },
-  {
-    name: 'sqlite',
-    keywords: ['sqlite', 'database', 'sql', 'db', 'query'],
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sqlite'],
+    // The server reads its connection string from argv, not from the
+    // environment — DATABASE_URL is silently ignored and it exits.
+    args: ['-y', '@modelcontextprotocol/server-postgres', ''],
     env: {},
-  },
-  {
-    name: 'google-maps',
-    keywords: ['map', 'maps', 'google maps', 'location', 'route', 'geocode', 'place'],
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-google-maps'],
-    env: { GOOGLE_MAPS_API_KEY: '' },
+    configurableArgs: [{ index: 2, placeholder: 'postgresql://user:pass@localhost:5432/db' }],
   },
   {
     name: 'brave-search',
     keywords: ['search', 'web', 'internet', 'browse', 'brave'],
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-brave-search'],
+    args: ['-y', '@brave/brave-search-mcp-server'],
     env: { BRAVE_API_KEY: '' },
-  },
-  {
-    name: 'puppeteer',
-    keywords: ['browser', 'puppeteer', 'screenshot', 'scrape', 'web', 'crawl', 'automation'],
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-puppeteer'],
-    env: {},
+    envPlaceholders: { BRAVE_API_KEY: 'BSA...' },
   },
   {
     name: 'memory',
@@ -117,11 +114,28 @@ export const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
     env: {},
   },
   {
-    name: 'fetch',
-    keywords: ['fetch', 'http', 'url', 'webpage', 'download', 'markdown'],
+    name: 'playwright',
+    keywords: ['browser', 'playwright', 'screenshot', 'automation', 'scrape', 'web', 'e2e'],
     command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-fetch'],
+    args: ['-y', '@playwright/mcp@latest'],
     env: {},
+  },
+  {
+    name: 'chrome-devtools',
+    keywords: ['devtools', 'chrome', 'performance', 'debug', 'console', 'network', 'lighthouse'],
+    command: 'npx',
+    args: ['-y', 'chrome-devtools-mcp@latest'],
+    env: {},
+  },
+  {
+    name: 'sentry',
+    keywords: ['sentry', 'error', 'issue', 'exception', 'crash', 'monitoring', 'debug'],
+    command: 'npx',
+    args: ['-y', '@sentry/mcp-server'],
+    // Self-hosted Sentry additionally accepts SENTRY_HOST; it is optional, so
+    // it is not a required slot here.
+    env: { SENTRY_ACCESS_TOKEN: '' },
+    envPlaceholders: { SENTRY_ACCESS_TOKEN: 'sntrys_...' },
   },
   {
     name: 'abu-browser-bridge',
@@ -130,6 +144,9 @@ export const BUILTIN_REGISTRY: MCPRegistryEntry[] = [
     args: ['-y', 'abu-browser-bridge@latest'],
     env: {},
     bundledResourceDir: 'browser-extension',
+    // Browser automation waits on real pages (popups, navigations), so it
+    // needs a longer tool timeout than the store default.
+    defaultTimeout: 120000,
   },
 ];
 
@@ -147,6 +164,24 @@ export function getEntryDescription(name: string): string {
  */
 export function getEnvHint(envKey: string): string | undefined {
   return getI18n().toolResult.system.mcpEnvHints[envKey];
+}
+
+/**
+ * Localized label for a configurable positional argument (e.g. 「数据库连接串」),
+ * resolved from the current UI locale. Returns undefined when that slot has no
+ * label — which, per the catalog's data invariants, means it is not one.
+ */
+export function getArgLabel(name: string, index: number): string | undefined {
+  return getI18n().toolResult.system.mcpArgLabels[`${name}.${index}`];
+}
+
+/**
+ * Localized setup note for a server that needs a step outside Abu before it
+ * works (installing a Chrome extension, say). Returns undefined when there is
+ * nothing extra to do.
+ */
+export function getSetupHint(name: string): string | undefined {
+  return getI18n().toolResult.system.mcpSetupHints[name];
 }
 
 /**

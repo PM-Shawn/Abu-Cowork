@@ -18,7 +18,7 @@ const cleanTitle = (title: string): string => title.replace(ATTACH_RE, '').trim(
 // Only flat conversations belong in the palette — scheduled/trigger/team/project
 // conversations live in their own sections and are hidden from the sidebar
 // recents, so the search must not surface them either.
-const isFlat = (c: ConversationMeta): boolean => !c.scheduledTaskId && !c.triggerId && !c.projectId && !c.teamTaskId;
+const isFlat = (c: ConversationMeta): boolean => !c.scheduledTaskId && !c.triggerId && !c.projectId;
 
 /**
  * Centered command-palette-style conversation search. Opened from the title-bar

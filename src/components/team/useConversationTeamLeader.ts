@@ -3,15 +3,13 @@ import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { resolveRoleId } from '@/core/team/roleIdentity';
 import type { SubagentDefinition } from '@/types';
-import { userAgentAvatar } from '@/components/common/AgentAvatar';
 
 /** Who answers in a team-pinned conversation (design §2.3: the leader is the root agent). */
 export interface ConversationTeamLeader {
   teamId: string;
   teamName: string;
   leaderName: string;
-  /** The user's emoji for their own leader agent; null = the default mark. */
-  leaderAvatar: string | null;
+  /** Render with <AgentAvatar agent={leader}/> — the one avatar rule. */
   leader: SubagentDefinition;
   teamAvatar: string | null;
 }
@@ -24,7 +22,6 @@ export function teamLeaderFromTeam(team: Team | null | undefined): ConversationT
     teamId: team.id,
     teamName: team.name,
     leaderName: leader.name,
-    leaderAvatar: userAgentAvatar(leader),
     leader,
     teamAvatar: team.avatar?.trim() || null,
   };

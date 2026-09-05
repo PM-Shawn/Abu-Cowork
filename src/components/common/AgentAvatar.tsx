@@ -5,9 +5,15 @@ import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
 
-const BOX: Record<AvatarSize, string> = { xs: 'h-4 w-4', sm: 'h-5 w-5', md: 'h-7 w-7', lg: 'h-8 w-8' };
-const ICON: Record<AvatarSize, string> = { xs: 'h-3 w-3', sm: 'h-3.5 w-3.5', md: 'h-4 w-4', lg: 'h-[18px] w-[18px]' };
-const EMOJI: Record<AvatarSize, string> = { xs: 'text-caption', sm: 'text-minor', md: 'text-body', lg: 'text-body' };
+// eslint-disable-next-line react-refresh/only-export-components
+export const AVATAR_SIZE = {
+  box: { xs: 'h-4 w-4', sm: 'h-5 w-5', md: 'h-7 w-7', lg: 'h-8 w-8' },
+  icon: { xs: 'h-3 w-3', sm: 'h-3.5 w-3.5', md: 'h-4 w-4', lg: 'h-[18px] w-[18px]' },
+  emoji: { xs: 'text-caption', sm: 'text-minor', md: 'text-body', lg: 'text-body' },
+} as const satisfies Record<'box' | 'icon' | 'emoji', Record<AvatarSize, string>>;
+const BOX = AVATAR_SIZE.box;
+const ICON = AVATAR_SIZE.icon;
+const EMOJI = AVATAR_SIZE.emoji;
 
 /** Only an avatar the user set on their own agent counts; builtin / marketplace
  *  presets keep the uniform robot mark (user decision 2026-09-05: "都先保持系统默认"). */

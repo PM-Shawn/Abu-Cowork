@@ -50,6 +50,8 @@ describe('TeamFollowUpChips', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '重做第 2 步' }));
     expect(readComposerDraft(getComposerDraftKey('c1')).text).toBe('重做第 2 步：');
+    fireEvent.click(screen.getByRole('button', { name: '让 zz取数员 再改一版' }));
+    expect(readComposerDraft(getComposerDraftKey('c1')).text).toBe('重做第 2 步：\n让 zz取数员 再改一版：');
   });
 
   it('stays hidden while the leader is still running', () => {

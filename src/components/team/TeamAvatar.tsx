@@ -1,10 +1,10 @@
 import { UsersRound } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AvatarSize } from '@/components/common/AgentAvatar';
+import { AVATAR_SIZE, type AvatarSize } from '@/components/common/AgentAvatar';
 
-const BOX: Record<AvatarSize, string> = { xs: 'h-4 w-4', sm: 'h-5 w-5', md: 'h-7 w-7', lg: 'h-8 w-8' };
-const ICON: Record<AvatarSize, string> = { xs: 'h-3 w-3', sm: 'h-3.5 w-3.5', md: 'h-4 w-4', lg: 'h-[18px] w-[18px]' };
-const EMOJI: Record<AvatarSize, string> = { xs: 'text-caption', sm: 'text-minor', md: 'text-body', lg: 'text-body' };
+const BOX = AVATAR_SIZE.box;
+const ICON = AVATAR_SIZE.icon;
+const EMOJI = AVATAR_SIZE.emoji;
 
 /** One avatar for a team everywhere: the user's emoji when set, else the group mark. */
 export default function TeamAvatar({ avatar, size = 'md', round = false, className }: {

@@ -486,7 +486,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
-  const activeTeams = useTeamStore((store) => store.teams).filter((team) => !team.archivedAt);
+  const allTeams = useTeamStore((store) => store.teams);
+  const activeTeams = useMemo(() => allTeams.filter((team) => !team.archivedAt), [allTeams]);
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);

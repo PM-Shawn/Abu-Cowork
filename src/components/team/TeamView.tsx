@@ -275,6 +275,27 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
 
 // ---------------------------------------------------------------- Task dialog
 
+function ArchivedTeams({ teams, open = false, className }: { teams: Team[]; open?: boolean; className?: string }) {
+  const { t } = useI18n();
+  if (teams.length === 0) return null;
+  return (
+    <details open={open} className={className}>
+      <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
+        {format(t.team.archivedSection, { count: String(teams.length) })}
+      </summary>
+      <div className="mt-2 space-y-2">
+        {teams.map((team) => (
+          <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
+            <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
+            <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
+            <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 export default function TeamView() {
   const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
   // A stale persisted value (e.g. the removed 'pipelines' tab) falls back to
@@ -363,24 +384,7 @@ export default function TeamView() {
               </div>
               {/* Archived teams must stay reachable even with zero active ones
                   (real-machine bug 2026-08-31: the section vanished). */}
-              {archivedTeams.length > 0 && (
-                <div className="p-4 pt-0">
-                  <details open>
-                    <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
-                      {format(t.team.archivedSection, { count: String(archivedTeams.length) })}
-                    </summary>
-                    <div className="mt-2 space-y-2">
-                      {archivedTeams.map((team) => (
-                        <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-                          <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
-                          <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
-                          <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                </div>
-              )}
+              <ArchivedTeams teams={archivedTeams} open className="p-4 pt-0" />
             </div>
           );
         }
@@ -427,22 +431,7 @@ export default function TeamView() {
                 </div>
               </div>
             ))}
-            {archivedTeams.length > 0 && (
-              <details className="pt-2">
-                <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
-                  {format(t.team.archivedSection, { count: String(archivedTeams.length) })}
-                </summary>
-                <div className="mt-2 space-y-2">
-                  {archivedTeams.map((team) => (
-                    <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-                      <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
-                      <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
-                      <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
+            <ArchivedTeams teams={archivedTeams} className="pt-2" />
           </div>
         );
       }

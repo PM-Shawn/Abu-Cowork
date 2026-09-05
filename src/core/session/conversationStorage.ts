@@ -67,7 +67,6 @@ export interface ConversationMeta {
   imPlatform?: string;
   scheduledTaskId?: string;
   triggerId?: string;
-  teamTaskId?: string;
   teamId?: string;
   projectId?: string;
   totalCost?: number;
@@ -1937,7 +1936,6 @@ export function buildMeta(conv: {
   imPlatform?: string;
   scheduledTaskId?: string;
   triggerId?: string;
-  teamTaskId?: string;
   teamId?: string;
   projectId?: string;
   readOnly?: boolean;
@@ -1955,7 +1953,6 @@ export function buildMeta(conv: {
     imPlatform: conv.imPlatform,
     scheduledTaskId: conv.scheduledTaskId,
     triggerId: conv.triggerId,
-    teamTaskId: conv.teamTaskId,
     teamId: conv.teamId,
     projectId: conv.projectId,
     readOnly: conv.readOnly,

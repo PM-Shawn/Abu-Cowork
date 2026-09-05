@@ -136,6 +136,12 @@ function findPersistedBatchTask(
 
 function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict; dispatchKey?: string }) {
   const { steps, row, liveStatus } = persisted;
+  // One backward pass instead of a slice+some per row.
+  const laterTool: boolean[] = new Array(steps.length).fill(false);
+  for (let i = steps.length - 2, seen = false; i >= 0; i--) {
+    seen = seen || steps[i + 1].type !== 'thinking';
+    laterTool[i] = seen;
+  }
   const rowStatus = row?.status ?? (liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined);
   const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
   // Persisted rows are terminal; a stale live status maps to the warning icon.
@@ -184,7 +190,7 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
                 key={step.id}
                 step={step}
                 showConnector={index < steps.length - 1}
-                hasLaterToolStep={steps.slice(index + 1).some((s) => s.type !== 'thinking')}
+                hasLaterToolStep={laterTool[index]}
                 locale={locale}
                 t={t}
               />

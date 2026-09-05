@@ -1,18 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Check, ChevronRight, Loader2, XCircle, CircleDashed, Square, MessageSquarePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
-import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
-import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import { collectMemberDispatches, summarizeByMember, type DispatchStatus, type MemberSummary } from '@/components/team/teamDispatches';
+import type { DispatchStatus } from '@/components/team/teamDispatches';
+import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, updateComposerDraft } from '@/stores/composerDraftStore';
+import { appendToComposerDraft, getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
 
 /** Minutes without a new step before a running hand-off is called out as stalled. */
 export const STALL_MINUTES = 5;
@@ -42,26 +41,21 @@ function statusLabel(status: DispatchStatus | 'idle', t: ReturnType<typeof useI1
  */
 export default function TeamTab({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
-  const teamId = useChatStore((s) => s.conversations[conversationId]?.teamId);
-  const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const teams = useTeamStore((s) => s.teams);
-  const executions = useTaskExecutionStore((s) => s.executions);
+  const leaderRunning = useTaskExecutionStore((s) => {
+    for (const exec of Object.values(s.executions)) {
+      if (exec.conversationId === conversationId && exec.status === 'running') return true;
+    }
+    return false;
+  });
   const openSubagent = usePreviewStore((s) => s.openSubagent);
+  const { team, dispatches, members } = useTeamDispatches(conversationId);
   const draftScope = useEnterpriseStore((state) => getComposerDraftScopeForEnterpriseMode(state.mode));
   const appendInstruction = (member: string) => {
     const text = format(t.team.followUpMemberAppend, { member });
-    updateComposerDraft(getComposerDraftKey(conversationId, draftScope), (draft) => ({ ...draft, text: draft.text.trim() ? `${draft.text.trimEnd()} ${text}` : text }));
+    appendToComposerDraft(getComposerDraftKey(conversationId, draftScope), text);
   };
 
-  const team = useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams]); // eslint-disable-line react-hooks/exhaustive-deps
-  const dispatches = useMemo(
-    () => collectMemberDispatches({ conversationId, executions: Object.values(executions), messages: messages ?? [] }),
-    [conversationId, executions, messages],
-  );
-  const members: MemberSummary[] = useMemo(
-    () => summarizeByMember(team?.members.map((m) => m.name) ?? [], dispatches),
-    [team, dispatches],
-  );
   // Stall hint: a running hand-off with no new step for a while.
   const anyRunning = dispatches.some((d) => d.live && d.status === 'running');
   const [now, setNow] = useState(() => Date.now());
@@ -85,8 +79,7 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
     );
   }
 
-  const leaderRunning = Object.values(executions).some((exec) => exec.conversationId === conversationId && exec.status === 'running');
-  const defOf = (name: string) => (name === team.leader.name ? team.leader : team.members.find((m) => m.name === name)) ?? { name, description: '' };
+  const defOf = (name: string) => memberDefByName(team, name);
   const teamAvatar = teams.find((entry) => entry.id === team.teamId)?.avatar;
 
   return (

@@ -17,12 +17,10 @@ const team = (over: Partial<Team> = {}): Team => ({
 } as Team);
 
 describe('teamLeaderFromTeam', () => {
-  it('resolves the leader name and the user-set emoji avatar', () => {
-    expect(teamLeaderFromTeam(team())).toMatchObject({ teamId: 't1', teamName: 'zz数据小队', leaderName: 'zz数据分析师', leaderAvatar: '📊', teamAvatar: null });
+  it('resolves the leader definition and the team avatar', () => {
+    expect(teamLeaderFromTeam(team())).toMatchObject({ teamId: 't1', teamName: 'zz数据小队', leaderName: 'zz数据分析师', teamAvatar: null });
+    expect(teamLeaderFromTeam(team())?.leader.avatar).toBe('📊');
     expect(teamLeaderFromTeam(team({ avatar: '🚀' }))?.teamAvatar).toBe('🚀');
-  });
-  it('uses the default mark (null) when the leader has no avatar of its own', () => {
-    expect(teamLeaderFromTeam(team({ leaderRoleId: 'r-plain' }))?.leaderAvatar).toBeNull();
   });
   it('is null for archived teams, missing leaders, or no team', () => {
     expect(teamLeaderFromTeam(team({ archivedAt: 5 }))).toBeNull();

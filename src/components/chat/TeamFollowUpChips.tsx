@@ -1,12 +1,9 @@
 import { useMemo } from 'react';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { useTeamStore } from '@/stores/teamStore';
-import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, updateComposerDraft } from '@/stores/composerDraftStore';
-import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
-import { collectMemberDispatches } from '@/components/team/teamDispatches';
+import { appendToComposerDraft, getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
+import { useTeamDispatches } from '@/components/team/useTeamDispatches';
 
 const MAX_STEP_CHIPS = 5;
 
@@ -17,21 +14,21 @@ const MAX_STEP_CHIPS = 5;
  */
 export default function TeamFollowUpChips({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
-  const conversation = useChatStore((s) => s.conversations[conversationId]);
-  const teams = useTeamStore((s) => s.teams);
-  const executions = useTaskExecutionStore((s) => s.executions);
+  const status = useChatStore((s) => s.conversations[conversationId]?.status);
+  const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const draftScope = useEnterpriseStore((state) => getComposerDraftScopeForEnterpriseMode(state.mode));
+  const { team, dispatches } = useTeamDispatches(conversationId);
 
-  const team = useMemo(() => resolveTeamRouteContext(conversation?.teamId), [conversation?.teamId, teams]); // eslint-disable-line react-hooks/exhaustive-deps
   const chips = useMemo(() => {
-    if (!team || !conversation || conversation.status === 'running') return [];
-    const messages = conversation.messages;
+    if (!team || !messages || status === 'running') return [];
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'assistant' || last.isStreaming) return [];
-    const lastPlan = [...messages].reverse().find((m) => m.role === 'assistant' && (m.plannedSteps?.length ?? 0) > 0)?.plannedSteps ?? [];
-    const dispatched = new Set(
-      collectMemberDispatches({ conversationId, executions: Object.values(executions), messages }).map((d) => d.agent),
-    );
+    let lastPlan: NonNullable<typeof last.plannedSteps> = [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === 'assistant' && (m.plannedSteps?.length ?? 0) > 0) { lastPlan = m.plannedSteps ?? []; break; }
+    }
+    const dispatched = new Set(dispatches.map((d) => d.agent));
     const stepChips = lastPlan.slice(0, MAX_STEP_CHIPS).map((step) => ({
       key: `step-${step.index}`,
       label: format(t.team.followUpRedoStep, { n: step.index }),
@@ -47,7 +44,7 @@ export default function TeamFollowUpChips({ conversationId }: { conversationId: 
         title: m.description,
       }));
     return [...stepChips, ...memberChips];
-  }, [team, conversation, conversationId, executions, t]);
+  }, [team, messages, status, dispatches, t]);
 
   if (chips.length === 0) return null;
   const draftKey = getComposerDraftKey(conversationId, draftScope);
@@ -59,7 +56,7 @@ export default function TeamFollowUpChips({ conversationId }: { conversationId: 
           key={chip.key}
           type="button"
           title={chip.title}
-          onClick={() => updateComposerDraft(draftKey, (draft) => ({ ...draft, text: draft.text.trim() ? `${draft.text.trimEnd()} ${chip.text}` : chip.text }))}
+          onClick={() => appendToComposerDraft(draftKey, chip.text)}
           className="rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
         >
           {chip.label}

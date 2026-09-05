@@ -37,7 +37,9 @@ export interface Team {
 
 interface TeamState {
   teams: Team[];
+}
 
+interface TeamActions {
   createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string }) => Team;
   updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar'>>) => void;
   archiveTeam: (id: string) => void;
@@ -45,11 +47,13 @@ interface TeamState {
 
 }
 
+type TeamStore = TeamState & TeamActions;
+
 function genId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export const useTeamStore = create<TeamState>()(
+export const useTeamStore = create<TeamStore>()(
   persist(
     (set, get) => ({
       teams: [],

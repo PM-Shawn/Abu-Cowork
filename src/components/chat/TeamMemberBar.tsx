@@ -1,13 +1,8 @@
-import { useMemo } from 'react';
 import { Check, Loader2, XCircle, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
-import { useChatStore } from '@/stores/chatStore';
-import { useTeamStore } from '@/stores/teamStore';
-import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
-import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
-import { collectMemberDispatches, summarizeByMember } from '@/components/team/teamDispatches';
+import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import AgentAvatar from '@/components/common/AgentAvatar';
 
@@ -18,22 +13,12 @@ import AgentAvatar from '@/components/common/AgentAvatar';
  */
 export default function TeamMemberBar({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
-  const teamId = useChatStore((s) => s.conversations[conversationId]?.teamId);
-  const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
-  const teams = useTeamStore((s) => s.teams);
-  const executions = useTaskExecutionStore((s) => s.executions);
   const openSubagent = usePreviewStore((s) => s.openSubagent);
   const openTeam = usePreviewStore((s) => s.openTeam);
-
-  const team = useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams]); // eslint-disable-line react-hooks/exhaustive-deps
-  const members = useMemo(() => {
-    if (!team) return [];
-    const dispatches = collectMemberDispatches({ conversationId, executions: Object.values(executions), messages: messages ?? [] });
-    return summarizeByMember(team.members.map((m) => m.name), dispatches);
-  }, [team, conversationId, executions, messages]);
+  const { team, members } = useTeamDispatches(conversationId);
 
   if (!team) return null;
-  const defOf = (name: string) => (name === team.leader.name ? team.leader : team.members.find((m) => m.name === name)) ?? { name, description: '' };
+  const defOf = (name: string) => memberDefByName(team, name);
   const chip = 'inline-flex max-w-[180px] items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors';
 
   return (

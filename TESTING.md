@@ -404,3 +404,24 @@ Full documentation is in `docs/TAURI-SMOKE.md`. Summary:
 ### V2 activation
 
 See `docs/TAURI-SMOKE.md § V2 Activation Checklist` for the complete list of pre-conditions before setting `continue-on-error: false`.
+
+---
+
+## 13. 浏览器域对抗清单（Browser adversarial checklist）
+
+浏览器自动化在**用户已登录的真实会话里**动手，是本仓风险最高的一面。这一节不是散文，是一张**活清单**：每一行 = 一类攻击 → 期望行为 → **钉住它的测试**（`文件:测试名`）。
+
+规则三条，别破：
+
+1. **没有钉测的行不许写「已覆盖」**——要么补测试，要么把这行标成 ⚠️ 缺口。
+2. 加一类新攻击面（新工具、新通道、新策略档位）**必须同时加一行**并给出钉测。
+3. 引用必须是**真实存在**的测试名。改测试名时同步改这里（`grep` 一下即可验证整张表）。
+
+### 13.1 清单
+
+| 攻击 | 期望行为 | 钉测（file:test） |
+|---|---|---|
+| **拿 `batch` 绕过单动作授权**（一次批准换 N 个动作：批里混脚本步骤、按第一步伪装成只读、塞超长步骤表） | 按**最重的步骤**归类（含 click/fill/select/keyboard → 一次询问覆盖整批，只读批不提权）；脚本步骤（`execute_js` / `query_js`）与 `navigate` 步骤**整批拒绝、零执行、零弹窗**，站点「始终允许」也不例外；读不懂的批次一律拒，不当空批放行；步数上界与运行时长上界各一 | `src/core/tools/registry.browserBatchGate.test.ts:asks ONCE for a batch that touches the page, and the ask covers the whole run`<br>`src/core/tools/registry.browserBatchGate.test.ts:does not let a read-only-looking batch smuggle a state-changing step past the gate`<br>`src/core/tools/registry.browserBatchGate.test.ts:refuses it even when every OTHER step is read-only — the read path is not a way in`<br>`src/core/tools/registry.browserBatchGate.test.ts:refuses it on a site the user ALWAYS allows — a site grant never buys a script run`<br>`src/core/tools/registry.browserBatchGate.test.ts:refuses more steps than one approval may cover`<br>`src/core/tools/registry.browserBatchGate.test.ts:refuses an over-long batch of nothing but reads too — the bounds are not gated behind the ask`<br>`abu-browser-bridge/src/batch.test.ts:stops when the run has been going longer than one approval should cover`<br>`src/core/tools/browserBatch.contract.test.ts:the gate and the runner read a batch the same way` |
+| **`batch` 带着授权跨 origin 跳转**（批内某步把页面带去别的站点，其余步骤在新站点上继续跑） | 每步执行前重读该 tab 的 origin 并与批次开始时 pin 的比对；不一致 → **立即停止**，剩余步骤零发出，回报已完成/失败/未跑；同 origin 内跳转（表单提交到自家结果页）允许继续；origin 读不到也算停 | `abu-browser-bridge/src/batch.test.ts:stops the moment the tab leaves the origin the batch was approved for`<br>`abu-browser-bridge/src/batch.test.ts:keeps going when the page navigates WITHIN the same origin`<br>`abu-browser-bridge/src/batch.test.ts:treats an origin it cannot read as a stop, not as "carry on"`<br>`abu-browser-bridge/src/batch.test.ts:re-reads the origin before every step instead of trusting the pin`<br>`src/core/tools/browserBatch.contract.test.ts:both halves pin the same origin` |
+| **借 `batch` 绕开每个动作自己的守卫**（用户接管 / 429 退避 / 用户已收回标签页，都是按「一个 wire action」判一次的） | 每步作为**普通单动作**下发，两条通道各自既有的守卫逐步生效；守卫抛出即当作该步失败并停批 | `src/core/tools/browserToolRouting.test.ts:derives the batch step actions from the run itself, one per step type`<br>`abu-browser-bridge/src/batch.test.ts:reports a transport that throws as that step failing, not as the tool crashing`<br>`abu-browser-bridge/src/batch.test.ts:never lets an action share the page with anything else` |
+| **审批弹窗里回显页面内容 / 用户输入**（批次摘要把密码、金额、页面文案带进确认框） | 摘要只含**步骤种类与计数**，不含定位器、值与任何页面文本 | `src/core/permissions/browserToolPolicy.test.ts:summarizes a run as step kinds and counts, and nothing the page could have written`<br>`src/core/tools/registry.browserBatchGate.test.ts:asks ONCE for a batch that touches the page, and the ask covers the whole run` |

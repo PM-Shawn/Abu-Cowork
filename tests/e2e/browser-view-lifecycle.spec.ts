@@ -791,6 +791,119 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     expect(findResult).toContain('"total": 1');
   });
 
+  test('fills a whole form and submits it in ONE batch call, on the ref find handed back', async () => {
+    // The T2 journey end to end, in the real Electron browser against a real
+    // page: find the first field, then one `batch` that fills two fields,
+    // clicks submit and waits for the page's own confirmation — four page
+    // actions, one tool call, and one approval covering the run.
+    const responseA = `abu-e2e-batch-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const findCallId = `call-find-${randomUUID()}`;
+    const batchCallId = `call-batch-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-batch-${randomUUID()}`,
+      // An ordinary office form: labels, no ARIA, and a submit handler that
+      // records what it actually received.
+      '<form id="f">'
+      + '<label for="no">设备编号</label><input id="no">'
+      + '<label for="owner">负责人</label><input id="owner">'
+      + '<button type="submit">提交</button>'
+      + '</form><div id="done"></div>'
+      + '<script>document.getElementById("f").addEventListener("submit", function (e) {'
+      + ' e.preventDefault();'
+      + ' window.__abuE2eLivePageMarker = document.getElementById("no").value + "|" + document.getElementById("owner").value;'
+      + ' document.getElementById("done").textContent = "保存成功";'
+      + '});</script>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          query: JSON.stringify({ label: '设备编号' }),
+        },
+        toolCallId: findCallId,
+        toolName: 'abu-browser__find',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          steps: JSON.stringify([
+            // The ref `find` just reported — the find→batch handoff.
+            { action: 'fill', locator: { ref: extractFoundRef(body) }, value: 'EQ-001' },
+            { action: 'fill', locator: { css: '#owner' }, value: '张三' },
+            { action: 'click', locator: { role: 'button', name: '提交' } },
+            {
+              action: 'wait_for',
+              condition: { type: 'textContains', locator: { css: '#done' }, text: '保存成功' },
+              timeout: 5000,
+            },
+          ]),
+        },
+        toolCallId: batchCallId,
+        toolName: 'abu-browser__batch',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    const prompt = `abu-e2e-batch-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate asks; that one approval covers the rest of the turn, so the
+    // four page actions inside the batch must not add a second dialog.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+    await expect(browserConfirmHeading(page)).toBeHidden();
+
+    // The form was really submitted, with the values the batch typed — the
+    // page's own submit handler is what wrote this.
+    expect(await readLivePageMarker(app!, fixture.url)).toBe('EQ-001|张三');
+
+    // And the envelope the model saw says all four steps ran, in order.
+    const batchResult = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .map((message) => String(message.content ?? ''))
+      .find((content) => content.includes('"completedSteps"'));
+    expect(batchResult).toBeTruthy();
+    const envelope = JSON.parse(batchResult!) as {
+      completedSteps: Array<{ action: string; ok: boolean }>;
+      remainingSteps: number;
+      origin: string;
+      stopped?: string;
+    };
+    expect(envelope.completedSteps.map((s) => s.action)).toEqual(['fill', 'fill', 'click', 'wait_for']);
+    expect(envelope.completedSteps.every((s) => s.ok)).toBe(true);
+    expect(envelope.remainingSteps).toBe(0);
+    expect(envelope.stopped).toBeUndefined();
+    expect(envelope.origin).toBe(new URL(fixture.url).origin);
+  });
+
   test('keeps the same browser tab and page alive across collapsing and expanding the right panel', async () => {
     const responseA = `abu-e2e-lifecycle-collapse-complete-${randomUUID()}`;
     const getTabsCallId = `call-get-tabs-${randomUUID()}`;

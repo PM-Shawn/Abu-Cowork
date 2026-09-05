@@ -2836,13 +2836,22 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       durationMs: Date.now() - runtimeStartedAt,
     });
     finishRuntimeRun(runId);
-    return runInProcessWithPersistedMessage(
-      conversationId,
-      userMessage,
-      runId,
-      clientMessageId,
-      options,
-    );
+    try {
+      return await runInProcessWithPersistedMessage(
+        conversationId,
+        userMessage,
+        runId,
+        clientMessageId,
+        options,
+      );
+    } finally {
+      // Third settlement seal, and the only one outside the two `finally`s
+      // above: a params-build failure runs the WHOLE loop in-process and
+      // returns from here, never reaching the sidecar `try`. The other
+      // pre-dispatch exits (`finalizePreDispatchInterruptedRun`) started no
+      // run at all and must stay silent.
+      releaseRunBrowserTabClaims(conversationId);
+    }
   }
   if (shellAbortController.signal.aborted) {
     return finalizePreDispatchInterruptedRun(

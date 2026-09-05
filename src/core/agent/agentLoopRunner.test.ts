@@ -3007,6 +3007,35 @@ describe('agentLoopRunner', () => {
         expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1'], ['conv-1']]);
       });
 
+      it('fires once for a run that fell back in-process after a params-build failure', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        // Dispatch prep blows up before anything is sent to the sidecar, so
+        // the whole loop runs in-process and returns without ever reaching
+        // the sidecar branch's own seal.
+        precomputeOrchestrationMock.mockRejectedValueOnce(new Error('prompt build failed'));
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+      });
+
+      it('stays silent when the run was interrupted before it ever started', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const controller = new AbortController();
+        getAbortControllerMock.mockReturnValue(controller);
+        precomputeOrchestrationMock.mockImplementationOnce(async () => {
+          controller.abort(new Error('user stopped'));
+          throw new Error('params build aborted');
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        // No loop ran, so no tab was ever claimed under this run.
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
+      });
+
       it('stays silent when the message is only staged into a running conversation', async () => {
         const { runAgentLoopDispatched, registerRunSession } = await importFresh();
         registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));

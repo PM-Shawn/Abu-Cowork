@@ -407,6 +407,8 @@ export interface TranslationDict {
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
     messageSaveFailed: string;
+    /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
+    browserDeniedAbort: string;
     attachmentDuringRun: string;
     conversationBusy: string;
     /** Model likely doesn't support image/vision input. */
@@ -707,6 +709,152 @@ export interface TranslationDict {
     tokenCount: string;
   };
 
+  /**
+   * The unattended browser run report card (U7).
+   *
+   * Rendered from a FROZEN snapshot stored on the message, but localized at
+   * render time from the machine codes in it — so a report written while the
+   * app was in Chinese reads correctly after the user switches to English.
+   *
+   * `reason.*` and `step.*` are two renderings of ONE taxonomy
+   * (`BrowserDenialReasonCode`): a short label for the blocked-actions list,
+   * and the actionable instruction for the "what to do now" list. They are not
+   * a second vocabulary — a code with no entry in both is a compile error.
+   */
+  browserRunReport: {
+    /** Card title. */
+    title: string;
+    /** Outcome badge. */
+    outcome: {
+      completed: string;
+      /** Delivered, but the gate refused at least one state-changing action. */
+      completedWithRefusals: string;
+      /** Hit the turn cap — possibly incomplete. */
+      incomplete: string;
+      /** Stopped itself after repeated refusals (U4). */
+      abortedDenials: string;
+      aborted: string;
+      error: string;
+      noProgress: string;
+    };
+    /** Prominent line when the master switch blocked everything. */
+    masterSwitchOff: string;
+    /** "完成 {total} 个浏览器动作，{failed} 个失败" */
+    actionsSummary: string;
+    /** "完成 {total} 个浏览器动作" */
+    actionsSummaryClean: string;
+    /** No action got through at all. */
+    noActions: string;
+    /**
+     * "运行了 {count} 次脚本" — how many of the actions were page SCRIPTS.
+     * Shown only when > 0; automatic-task scripting is off unless the user
+     * opted in (2026-09-04 ruling), so this line is the run saying out loud
+     * that code executed inside a logged-in session.
+     */
+    scriptRuns: string;
+    sitesTitle: string;
+    /** "{actions} 次动作 · {failures} 次失败" */
+    siteCounts: string;
+    /** "{actions} 次动作" */
+    siteCountsClean: string;
+    /** "另有 {count} 个站点" */
+    moreSites: string;
+    deniedTitle: string;
+    /** "{count} 次" */
+    occurrenceCount: string;
+    problemsTitle: string;
+    /** "另有 {count} 类问题" */
+    moreProblems: string;
+    approvalsTitle: string;
+    /** "批准 {approved} 次 · 拒绝 {declined} 次" */
+    approvalsSummary: string;
+    /** "{count} 次没人回复" */
+    approvalsTimeout: string;
+    /** "{count} 次没能送达" */
+    approvalsUnreachable: string;
+    /** "最后一次决定 {time}" */
+    approvalsLastDecision: string;
+    /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
+    blockedPages: string;
+    nextStepsTitle: string;
+    /** Short label per denial reason code. */
+    reason: {
+      masterSwitchOff: string;
+      siteDenied: string;
+      highRiskSite: string;
+      policyDenied: string;
+      enterprisePolicyDenied: string;
+      capabilityDenied: string;
+      originUnverified: string;
+      loginRequired: string;
+      siteNotAllowed: string;
+      approvalRefused: string;
+      userCancelled: string;
+    };
+    /** The actionable instruction per next-step code. */
+    step: {
+      enableMasterSwitch: string;
+      allowSite: string;
+      unblockSite: string;
+      doHighRiskYourself: string;
+      signInThenRerun: string;
+      relaxPolicy: string;
+      raiseCapability: string;
+      answerApproval: string;
+      runWhileWatching: string;
+    };
+    /** Human wording for `classifyBrowserToolError`'s closed class set. */
+    errorClass: {
+      timeout: string;
+      notConnected: string;
+      notFound: string;
+      locatorAmbiguous: string;
+      aborted: string;
+      unknownError: string;
+    };
+  };
+
+  /**
+   * The one-line summary an unattended run sends to its OWN IM channel,
+   * whatever way it ended (F7). Codes → sentences; the codes themselves are
+   * what the run records, so a language switch re-words history instead of
+   * freezing one locale into it.
+   *
+   * The denial reasons and next steps it quotes come from `browserRunReport`
+   * above — one table, both surfaces.
+   */
+  unattendedRun: {
+    outcome: {
+      succeeded: string;
+      /** Delivered, but something was refused / failed / ran out of turns. */
+      partial: string;
+      /** Nothing got through the gate. */
+      blocked: string;
+      /** Nothing was even attempted — the master switch is off. */
+      notRun: string;
+      failed: string;
+      stopped: string;
+      noProgress: string;
+    };
+    /** "{label}：{detail}" */
+    summaryWithDetail: string;
+    /** "{reason}（{origins}）" */
+    detailWithOrigins: string;
+    /** "{failed}/{total} 个浏览器动作失败" */
+    detailActionsFailed: string;
+    /** Nothing was refused and nothing failed, yet there is no answer. */
+    detailNothingDelivered: string;
+    /**
+     * The run ran out of turns but still delivered. The card carries this in
+     * its `incomplete` badge; IM has no badge, so it needs the sentence — and
+     * it must not be `detailNothingDelivered`, which the answer printed right
+     * below it would contradict.
+     */
+    detailTurnLimit: string;
+    /** "接下来：{step}" — second line, only when there is something to do. */
+    nextStep: string;
+  };
+
   // Settings Modal
   settings: {
     title: string;
@@ -874,17 +1022,114 @@ export interface TranslationDict {
     capabilitiesDescription: string;
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
-    capabilityBuiltinBrowserDesc: string;
-    capabilityBuiltinBrowserScope: string;
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
+    /** The one consent clause the My Chrome page keeps: it sits on the status
+     *  row while the channel is connected, in place of the footer paragraph
+     *  that used to say the same thing at four times the length. */
     capabilityMyChromeScope: string;
+    /** Level-1 channel cards AND the one-line subtitle under each detail
+     *  page's title — the same sentence in both places, because a detail page
+     *  is the card opened up. Anything longer belongs in a card below. */
+    capabilityBuiltinBrowserSubtitle: string;
+    capabilityMyChromeSubtitle: string;
+    capabilityComputerSubtitle: string;
     browserSitePermsTitle: string;
     browserSitePermsDesc: string;
     browserSitePermsEmpty: string;
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
+    /** Option descriptions: the explanation lives where the choice is made,
+     *  not behind a hover affordance. */
+    browserSitePermsAllowedDesc: string;
+    browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** F1 (2026-09-04) — the list is also an ENTRY point, not only a record of
+     *  dialogs already answered. Without it, the ONLY way to reach 「始终允许」
+     *  was to run the thing attended, be refused, and click the dialog — so
+     *  setting up a scheduled task meant deliberately failing once first.
+     *  `browserSitePermsAddInvalid` is the one rejection this row can produce
+     *  on its own; a high-risk origin reuses `browserHighRiskReason`, the same
+     *  sentence the confirmation dialog gives for the same refusal. */
+    browserSitePermsAddLabel: string;
+    browserSitePermsAddPlaceholder: string;
+    browserSitePermsAddVerdictLabel: string;
+    browserSitePermsAddButton: string;
+    browserSitePermsAddInvalid: string;
+    /** The one refusal here that is a SECURITY property, not input validation:
+     *  `highRiskSites.ts` withholds a standing grant for money-movement and
+     *  government origins, and the confirmation dialog already declines to
+     *  offer one (`allowPersistentGrant: false`). Same reason as
+     *  `commandConfirm.browserHighRiskReason`, minus its "check the page
+     *  before you confirm" tail — there is nothing to confirm on this page —
+     *  plus the thing the user CAN still do here. */
+    browserSitePermsAddHighRisk: string;
+    /** Card summary on a capability detail page: counts + the fact that the
+     *  verdicts are one shared list across both browser channels. */
+    browserSitePermsSummary: string;
+    /** U5 authorization visibility — which sites an unattended run reaches.
+     *  ORIGIN-level: a site being listed does not mean every page on it is
+     *  reachable, since the high-risk classifier still refuses per call.
+     *  The per-row "reachable / attended-only" pair was dropped: allowed means
+     *  allowed, and the per-page refusal now lives in the option description.
+     *  The high-risk tag stays — it reports the one thing the row cannot
+     *  imply, that an explicitly allowed site will still ask. */
+    browserHighRiskTag: string;
+    browserUnattendedReachSummary: string;
+    browserUnattendedReachNone: string;
+    browserUnattendedReachOff: string;
+    // Operation-class three-state policy + unattended master switch (batch-二
+    // 「无人值守授权闭环」T1). ONE row per class since the 2026-09-04 ruling
+    // collapsed the attended/automatic columns — the two column headings that
+    // used to live here have no surface left to name.
+    browserOpPolicyTitle: string;
+    browserOpPolicyDesc: string;
+    browserOpClassReadOnly: string;
+    browserOpClassInteractive: string;
+    /** Scripting is split out into its own card: it is the one row an ordinary
+     *  user should not skim past, and the only one that carries a risk
+     *  warning. The class name is that card's title, so it carries a
+     *  description of its own. */
+    browserOpClassScripting: string;
+    browserOpClassScriptingDesc: string;
+    browserOpStateAllow: string;
+    browserOpStateDeny: string;
+    browserOpStateAsk: string;
+    /** 「允许」 on the READ-ONLY row, where it is unconditional. */
+    browserOpStateAllowDesc: string;
+    /**
+     * 「允许」 on the two rows that ACT (click/fill, run scripts), where it is
+     * scoped to the sites carrying a standing 「始终允许」 verdict — a
+     * 'default' site still opens a confirmation. Split from the read-only
+     * wording by F8 (2026-09-05): one shared sentence 「不再询问」 was true for
+     * exactly one of the three rows.
+     */
+    browserOpStateAllowDescSiteScoped: string;
+    browserOpStateDenyDesc: string;
+    /**
+     * One line covering BOTH execution contexts, because one setting now
+     * governs both: a dialog while the user is here, and an IM approval at
+     * the channel the automation itself names when a task is running alone
+     * (`core/im/approvalTarget.ts` → `askOverIm`). With no channel bound
+     * there is nobody to ask and the action is refused (`no_binding`) with a
+     * desktop notice — the reason the task editor's field is called
+     * 结果与审批推送频道.
+     */
+    browserOpStateAskDesc: string;
+    /** ⚠ line under the scripting select while `allow` is selected AND the
+     *  automatic-tasks master switch is on — i.e. only while the risk is
+     *  live. An attended script is asked about every time whatever this row
+     *  says, so the switch is what makes an `allow` here mean anything. */
+    browserUnattendedScriptRiskWarning: string;
+    browserAutomaticTasksTitle: string;
+    browserUnattendedMasterSwitchLabel: string;
+    browserUnattendedMasterSwitchDesc: string;
+    /** U6 — the built-in browser can refuse an automatic action on an expired
+     *  session before it happens; the Chrome-extension channel can only report
+     *  it after the fact. One sentence, shown at the top of the permission card
+     *  on the My Chrome page ONLY — it is advice about that channel, and the
+     *  people it cannot apply to should not have to read past it. */
+    browserUnattendedChannelCaveat: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
     capabilityExtensionsTitle: string;
@@ -899,9 +1144,10 @@ export interface TranslationDict {
     capabilityStatusReady: string;
     capabilityStatusSetupRequired: string;
     capabilityStatusNotConnected: string;
+    /** My Chrome's detail page reports the channel, not the app's readiness:
+     *  what the user did was connect a browser, so that is the word. */
+    capabilityStatusConnected: string;
     capabilityStatusOff: string;
-    capabilityStatusPermissionRequired: string;
-    capabilityStatusConnectionLost: string;
     capabilityStatusUnavailable: string;
     capabilityStatusChecking: string;
     capabilityStatusNextStep: string;
@@ -912,11 +1158,9 @@ export interface TranslationDict {
     capabilityPermissionUnknown: string;
     capabilityBuiltinBrowserDisconnected: string;
     capabilityBuiltinBrowserUnavailable: string;
-    capabilityChromeSetupRequired: string;
     capabilityChromeOptional: string;
     capabilityChromeDisconnected: string;
     capabilityChromeProbeUnavailable: string;
-    capabilityComputerDisabled: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
     capabilityComputerModel: string;
@@ -929,22 +1173,21 @@ export interface TranslationDict {
     capabilityComputerModelUnsupportedNote: string;
     capabilityComputerModelUnknownNote: string;
     capabilityBackToOverview: string;
-    capabilityDone: string;
     capabilityCheckConnection: string;
     capabilityChromeConnect: string;
-    capabilityChromeManage: string;
+    /** Accessible name of the disconnect action. The button SHOWS the short
+     *  form (`capabilityChromeDisconnectShort`) because the page it sits on is
+     *  already titled "My Chrome"; the long form stays as the accessible name
+     *  so a screen reader still hears what is being disconnected, and it
+     *  contains the visible text, as WCAG "label in name" requires. */
     capabilityChromeDisconnect: string;
+    capabilityChromeDisconnectShort: string;
     capabilityChromeSetupTitle: string;
-    capabilityChromeSetupDesc: string;
     capabilityChromeTaskNeedsSetup: string;
-    capabilityChromeConfirmEnable: string;
-    capabilityChromeConsent: string;
     capabilityChromeExperimental: string;
     capabilityChromePermissionScope: string;
     capabilityChromeServiceUnavailable: string;
-    capabilityChromeExtensionTitle: string;
     capabilityChromeExtensionDesc: string;
-    capabilityChromeExtensionConnected: string;
     capabilityChromeOpenInstaller: string;
     capabilityChromeManualTitle: string;
     capabilityChromeManualStep1: string;
@@ -952,17 +1195,20 @@ export interface TranslationDict {
     capabilityChromeManualStep3: string;
     capabilityChromeResourceMissing: string;
     capabilityChromeOpenFailed: string;
-    capabilityChromePrivacy: string;
     capabilityComputerEnable: string;
-    capabilityComputerStartSetup: string;
-    capabilityComputerContinue: string;
-    capabilityComputerManage: string;
     capabilityComputerSetupTitle: string;
+    /** Still the description the floating permission guide window shows; the
+     *  settings page itself uses the one-line `capabilityComputerSubtitle`. */
     capabilityComputerSetupDesc: string;
     capabilityComputerTaskNeedsSetup: string;
     capabilityComputerConfirmEnable: string;
-    capabilityComputerConsent: string;
+    /** The one consent clause kept on the Computer Use status row, in place of
+     *  the footer paragraph. `capabilityComputerPrivacy` still carries the
+     *  full statement inside the permission guide. */
+    capabilityComputerReadyNote: string;
+    /** See `capabilityChromeDisconnect` for why there are two of these. */
     capabilityComputerDisable: string;
+    capabilityComputerDisableShort: string;
     capabilityScreenReadDesc: string;
     capabilityUIControlDesc: string;
     capabilityComputerStepScreen: string;
@@ -985,10 +1231,10 @@ export interface TranslationDict {
     capabilityPermissionGuideRestart: string;
     capabilityPermissionGuideRestartTitle: string;
     capabilityPermissionGuideRestartDesc: string;
-    capabilityComputerReadyTitle: string;
-    capabilityComputerReadyDesc: string;
     capabilityReturnToTask: string;
     capabilityComputerPlatformHint: string;
+    /** Guide-window only. The settings page says the same thing in one clause
+     *  on its status row (`capabilityComputerReadyNote`). */
     capabilityComputerPrivacy: string;
     closeWindowBehavior: string;
     composerEnterBehavior: string;
@@ -2106,6 +2352,14 @@ export interface TranslationDict {
     // Output
     outputChannel: string;
     outputChannelNone: string;
+    /**
+     * F2 (2026-09-04) — answers the question this field always invited and
+     * never answered: "does the run ask ME here?" It does now. The scheduler
+     * builds its approval target from these same fields
+     * (`core/im/approvalTarget.ts`), so a prompt lands exactly where the
+     * results land, and 「不推送」 means an ask has nowhere to go and is
+     * refused. The label says 结果与审批 for the same reason.
+     */
     outputChannelHint: string;
     outputToGroup: string;
     outputToDM: string;
@@ -2127,6 +2381,15 @@ export interface TranslationDict {
     denialMore: string;
     /** {mode} {list} — appended to a failed run's result text */
     denialSummary: string;
+    /** The run stopped itself after consecutive browser-authorization refusals. */
+    abortedBrowserDenials: string;
+    /** U5 authorization visibility on the task detail page. */
+    browserAuthTitle: string;
+    browserAuthDesc: string;
+    browserAuthOff: string;
+    browserAuthNone: string;
+    browserAuthMore: string;
+    browserAuthManage: string;
   };
 
   // Triggers
@@ -2296,6 +2559,10 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
+    /** F2 — the trigger editor's output channel is the trigger's approval
+     *  channel too (`triggerEngine.ts` builds the target from it), and says
+     *  so here for the same reason the scheduler's hint does. */
+    outputChannelApprovalHint: string;
     outputToGroup: string;
     outputToDM: string;
     outputChatIdPlaceholder: string;
@@ -2373,6 +2640,29 @@ export interface TranslationDict {
     wechatRebind: string;
     wechatAccount: string;
     wechatSessionExpired: string;
+    /** Unattended approval request pushed into the IM chat. The user answers
+     *  by replying with a bare 同意 / 拒绝. {action} {reason} {minutes}
+     *  🔴 {action} and {reason} are MODEL-AUTHORED and sanitized+fenced by
+     *  `sanitizeUntrustedPromptField`; the reply instruction and the deadline
+     *  MUST stay AFTER the fenced region in every translation, or a crafted
+     *  action string can forge them.
+     *  {context} is the pre-composed, already-sanitized task/origin block (or
+     *  empty). It must stay INSIDE the fenced region, before {action}. */
+    approvalPrompt: string;
+    /** One line of {@link approvalPrompt}'s {context}: which automation is
+     *  asking. Without it a user with several scheduled tasks cannot tell what
+     *  they are approving, and the only safe answer is always 拒绝. {task} */
+    approvalPromptTask: string;
+    /** One line of {@link approvalPrompt}'s {context}: the site the action
+     *  targets. {origin} */
+    approvalPromptOrigin: string;
+    /** Receipt after the user replied 拒绝. */
+    approvalReceiptDenied: string;
+    /** Receipt after nobody answered in time. {minutes} */
+    approvalReceiptTimeout: string;
+    /** Receipt after a request was refused for exceeding the outstanding
+     *  approval cap. {max} */
+    approvalReceiptTooMany: string;
   };
 
   // Window Close Dialog
@@ -2498,6 +2788,55 @@ export interface TranslationDict {
     browserBatchScriptStep: string;
     browserBatchTooManySteps: string;
     browserBatchMalformed: string;
+    /** Unattended run, master switch off — the whole browser surface is
+     *  unavailable regardless of the per-class policy. */
+    browserUnattendedDisabled: string;
+    /** Unattended or attended run whose operation-class policy is set to
+     *  'deny' for this kind of browser action. */
+    browserPolicyDenied: string;
+    browserEnterprisePolicyDenied: string;
+    /** Unattended run on a site that carries no standing "allowed" verdict —
+     *  the cross-origin fail-closed baseline. */
+    browserUnattendedSiteNotAllowed: string;
+    /** Unattended run whose policy says "ask", with no approval channel able
+     *  to answer. */
+    browserUnattendedConfirmUnavailable: string;
+    /** Unattended run whose capability tier carries no browser access at all —
+     *  a tier decision, not an operation-policy one. */
+    browserUnattendedCapabilityDenied: string;
+    /** Unattended run whose target site could not be determined (the browser
+     *  host did not answer, or the action names no resolvable page). */
+    browserUnattendedOriginUnverified: string;
+    /** Unattended run on a URL `highRiskSites.ts` classified as money
+     *  movement / government. Denied outright — nobody can answer for a wire
+     *  transfer. */
+    browserUnattendedHighRiskSite: string;
+    /** Strengthened confirmation copy shown when an ATTENDED run wants to act
+     *  on a high-risk URL. Replaces `browserReason`, and the dialog offers no
+     *  "always allow this site". */
+    browserHighRiskReason: string;
+    /** U6 / F2.4 — unattended run whose target site is asking for a login. The
+     *  run cannot sign in, and retrying would just keep hitting the wall. */
+    browserUnattendedLoginRequired: string;
+    /** U6 / F2.4 — appended to an ATTENDED browser tool result when the target
+     *  site is asking for a login. Not a refusal: the action still ran, and
+     *  this tells the model (and the user reading the tool panel) what has to
+     *  happen before the next step can work. */
+    browserLoginRequiredHint: string;
+    /** The user answered the IM approval prompt with "拒绝". */
+    browserUnattendedImDenied: string;
+    /** Nobody answered the IM approval prompt before it expired. {minutes} */
+    browserUnattendedImTimeout: string;
+    /** The run needed approval, but its conversation is bound to no IM chat —
+     *  a system notification was raised instead. */
+    browserUnattendedImNoBinding: string;
+    /** Too many approval prompts are already outstanding for this
+     *  conversation. {max} */
+    browserUnattendedImTooMany: string;
+    /** The approval prompt could not be delivered to the IM chat. */
+    browserUnattendedImUndeliverable: string;
+    /** The run was stopped while its approval prompt was still outstanding. */
+    browserUnattendedImAborted: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */
@@ -2506,6 +2845,13 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** Same button, worn while the scripting row is set to 'allow'. The
+     *  verdict this click writes is the same one either way; what changes is
+     *  what it unlocks — with that row on 'allow', a standing 'allowed' site
+     *  is the whole remaining precondition for running scripts on it without
+     *  a dialog (and for an automatic run to script there at all), so the
+     *  label has to name that second door. */
+    browserAlwaysAllowSiteWithScripts: string;
     /** "Block this site" button — writes a persistent 'denied' verdict and
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */

@@ -7,6 +7,11 @@ import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, Image
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
+import {
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  normalizeBrowserOperationPolicy,
+  type BrowserOperationPolicy,
+} from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
@@ -260,6 +265,25 @@ export interface SettingsState {
    * action; revocable from Settings › Capabilities.
    */
   browserSitePermissions: Record<string, 'allowed' | 'denied'>;
+  /**
+   * Operation-class three-state policy: one allow/deny/ask row per operation
+   * class (read-only / interactive / scripting). Consumed by
+   * `decideBrowserOperation` in `browserToolPolicy.ts`.
+   *
+   * ONE row per class, not one per run mode: the 2026-09-04 ruling
+   * («不应该分在不在场，只要得到了用户允许，都能做») collapsed the original
+   * attended/unattended columns into a single setting that both execution
+   * contexts read. The v47 migration keeps the attended column's values —
+   * see `normalizeBrowserOperationPolicy`, which accepts either shape.
+   */
+  browserOperationPolicy: BrowserOperationPolicy;
+  /**
+   * Global master switch: unattended runs (scheduled tasks, triggers, IM)
+   * may use the browser at all only when this is true. Defaults to false —
+   * fail-safe: adding this field must not silently grant scheduled tasks
+   * browser access they did not have before this batch shipped.
+   */
+  allowUnattendedBrowser: boolean;
   preventSleep: boolean;
   allowSkillCommands: boolean;
   soulInitialized: boolean;
@@ -427,6 +451,12 @@ interface SettingsActions {
   setComputerUseEnabled: (enabled: boolean) => void;
   setBrowserSitePermission: (origin: string, verdict: 'allowed' | 'denied') => void;
   removeBrowserSitePermission: (origin: string) => void;
+  /** Set one operation-class row of `browserOperationPolicy`. */
+  setBrowserOperationState: (
+    opClass: keyof BrowserOperationPolicy,
+    verdict: BrowserOperationPolicy['readOnly'],
+  ) => void;
+  setAllowUnattendedBrowser: (allow: boolean) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
@@ -669,6 +699,8 @@ export const useSettingsStore = create<SettingsStore>()(
       telemetryOptOut: false,
       computerUseEnabled: false,
       browserSitePermissions: {},
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
       preventSleep: false,
       allowSkillCommands: true,
       soulInitialized: false,
@@ -1025,6 +1057,22 @@ export const useSettingsStore = create<SettingsStore>()(
         delete next[origin];
         return { browserSitePermissions: next };
       }),
+      // Normalized on write, not just on read: the persisted policy must never
+      // say something the gate will not honor — a setting that lies about what
+      // it does. What the normalizer enforces is SHAPE, not product policy: a
+      // malformed row clamps to the strictest state.
+      //
+      // `scripting: 'allow'` IS storable and passes through untouched. What it
+      // buys an automatic run is decided at the gate, not here: the master
+      // switch must be on, the site must carry a standing 'allowed' verdict,
+      // and the page must not be high-risk (`decideBrowserOperation`).
+      setBrowserOperationState: (opClass, verdict) => set((state) => ({
+        browserOperationPolicy: normalizeBrowserOperationPolicy({
+          ...state.browserOperationPolicy,
+          [opClass]: verdict,
+        }),
+      })),
+      setAllowUnattendedBrowser: (allowUnattendedBrowser) => set({ allowUnattendedBrowser }),
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1084,9 +1132,46 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 45,
+      version: 47,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V47: `browserOperationPolicy` collapses its two run-mode columns
+        // into ONE row per operation class (2026-09-04 product ruling —
+        // «不应该分在不在场，只要得到了用户允许，都能做»). The surviving values
+        // are the ATTENDED column's: that is where the user said what Abu may
+        // do, and what an automatic run may additionally do is decided by the
+        // master switch, the standing site grant and the high-risk rule —
+        // none of which moved. `normalizeBrowserOperationPolicy` reads either
+        // shape, so this branch is the same one-liner for a v46 store
+        // carrying the old shape and for anything older.
+        //
+        // No released build ever persisted 46 (`dev`, `main` and v0.42.0 all
+        // write 45), so the two-column shape exists only on this branch's
+        // development machines and in its e2e stores — a real install steps
+        // 45 → 47 and the legacy sniff never fires for it.
+        // ════════════════════════════════════════════════
+        if (version < 47) {
+          state.browserOperationPolicy = state.browserOperationPolicy === undefined
+            ? DEFAULT_BROWSER_OPERATION_POLICY
+            : normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        }
+
+        // ════════════════════════════════════════════════
+        // V46: unattended browser master switch (batch-二「无人值守授权闭环」
+        // T1). Fail-safe by construction: it defaults to false, so no existing
+        // scheduled task / trigger / IM run gains browser access it didn't
+        // already have.
+        //
+        // Its `browserOperationPolicy` line is gone: V47 above rewrites that
+        // field for every store older than 47 — which is every store this
+        // branch can see — using the same absent/normalize rule, so a second
+        // copy here could only drift from it.
+        // ════════════════════════════════════════════════
+        if (version < 46) {
+          state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
+        }
 
         if (version < 44) {
           // Browser site permissions start empty: every site keeps asking until
@@ -1928,6 +2013,8 @@ export const useSettingsStore = create<SettingsStore>()(
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
         browserSitePermissions: state.browserSitePermissions,
+        browserOperationPolicy: state.browserOperationPolicy,
+        allowUnattendedBrowser: state.allowUnattendedBrowser,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,
         allowSkillCommands: state.allowSkillCommands,
@@ -1951,6 +2038,17 @@ export const useSettingsStore = create<SettingsStore>()(
         }
         // Validate active model points to a usable provider
         reconcileActiveProvider(state);
+        // Defense in depth against a malformed browserOperationPolicy that
+        // reached storage without going through `migrate` (hand-edited
+        // localStorage, a future bug writing a partial object, ...) — the
+        // `migrate` branch above only runs when crossing the v47 boundary,
+        // so an already-v47 store with a corrupted policy would otherwise
+        // never get fixed up. Clamps any missing/invalid row to the
+        // strictest state, and reads the pre-v47 two-column shape as well
+        // (see `normalizeBrowserOperationPolicy`'s doc comment); a
+        // well-formed policy passes through unchanged.
+        state.browserOperationPolicy = normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
         // Force reset ephemeral UI state
         state.showSettings = false;
         state.activeSystemTab = 'usage';

@@ -295,13 +295,11 @@ describe('find', () => {
     });
   });
 
-  it('refuses without a tab rather than guessing one, when nothing is tracked', async () => {
-    // `lastActiveTabId` is null in this fixture (no real browsing happened), so
-    // a tabId-less request has nothing legitimate to fall back to.
+  it('refuses without a tab rather than guessing one', async () => {
     const response = await request('find', { query: { role: 'button' } });
 
     expect(response.success).toBe(false);
-    expect(response.error).toMatch(/No active browser tab/);
+    expect(response.error).toMatch(/Missing tabId for browser action "find"/);
   });
 });
 
@@ -337,13 +335,23 @@ describe('actions the service worker answers itself', () => {
     expect(browserState.sessionStore.lastActiveTabId).toBe(11);
   });
 
-  it('sends a tabId-less action to the tab the user last used', async () => {
+  it('does NOT send a tabId-less action to the tab the user last used', async () => {
+    // The pre-claims behaviour — a request with no `tabId` followed whatever
+    // tab the user had most recently looked at — was deliberately retired for
+    // every action added after task-level claims existed
+    // (`tabClaims.ts`'s frozen `LEGACY_LAST_ACTIVE_ACTIONS`). `find` is one of
+    // those, so it refuses instead of guessing: an automation that drifts onto
+    // the page the user just opened is the failure claims exist to stop.
     twoTabWindow();
     fire('tabs.onActivated', { tabId: 12, windowId: 1 });
+    sentToContent.length = 0;
 
-    await request('find', { query: { role: 'button' } });
+    const response = await request('find', { query: { role: 'button' } });
 
-    expect(sentToContent[0].tabId).toBe(12);
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/Missing tabId for browser action "find"/);
+    // The refusal cost the page nothing.
+    expect(sentToContent).toHaveLength(0);
   });
 
   it('navigates, reloads, and walks history', async () => {

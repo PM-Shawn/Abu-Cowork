@@ -32,6 +32,64 @@ export interface BridgeCancelMessage {
   requestId: string;
 }
 
+/**
+ * Sent Bridge → Extension when the run that was driving the browser has
+ * stopped, so the extension can drop the task-level tab claims that run holds
+ * (`abu-chrome-extension/src/background/tabClaims.ts`). Without it a finished
+ * task keeps its claim and the next task is refused a tab nobody is using any
+ * more.
+ *
+ * Scope mirrors the built-in host's `browser_dispose_owner`: with `runId`,
+ * exactly that subagent run; without it, every run of the conversation. An
+ * extension that does not recognise the message ignores it — releasing is
+ * best-effort, and a tab closing or the socket dropping clears the claim too.
+ */
+export interface BridgeReleaseMessage {
+  type: 'release';
+  ownerId: string;
+  runId?: string;
+}
+
+// --- MCP notification (Abu client → Bridge) ---
+
+/**
+ * MCP notification method the Abu desktop client sends to the BRIDGE when one
+ * agent run settles — whether it finished on its own or the user stopped it.
+ * The bridge answers it by releasing that run's tab claims, i.e. by sending
+ * the `BridgeReleaseMessage` above on to the extension.
+ *
+ * Why a notification and not a tool: every tool is listed to the model, and a
+ * model-callable "release" would invite one task to free a tab another task is
+ * driving. Nothing about this method reaches the model. It is also not a
+ * per-request signal — the bridge deliberately does NOT treat a request abort
+ * as a run ending, because the MCP SDK aborts handlers for its own request
+ * timeouts too (see the long note in `abu-browser-bridge/src/wsServer.ts`).
+ *
+ * The built-in browser host has the equivalent channel already, over Electron
+ * IPC (`browser_dispose_owner`); this bridge is a separate stdio MCP process
+ * with no IPC to the app, so the MCP connection it already has is the channel.
+ */
+export const ABU_RUN_SETTLED_NOTIFICATION = 'notifications/abu/runSettled';
+
+/**
+ * Params of `ABU_RUN_SETTLED_NOTIFICATION`.
+ *
+ * `runId` is REQUIRED on the wire, unlike `BridgeReleaseMessage.runId`. Tab
+ * ownership is the pair `{ownerId, runId}` and a run's settlement releases
+ * that run only — the conversation-wide scope (the release message's omitted
+ * `runId`) belongs to conversation deletion, and a run settling must never
+ * reach for it, or one delegation ending would strip its siblings and the
+ * conversation's own loop of tabs they are still driving. A receiver that gets
+ * this notification without a usable `runId` therefore reads it as the run key
+ * `main` — the same "absent ⇒ the conversation's own loop" convention
+ * `abu/runKey` uses everywhere else in this protocol — and never as
+ * "every run".
+ */
+export interface RunSettledNotificationParams {
+  ownerId: string;
+  runId: string;
+}
+
 // --- Element Locator (multi-strategy targeting) ---
 // All fields optional — only one strategy should be specified per locator.
 
@@ -151,6 +209,27 @@ export interface TabInfo {
   focused: boolean;
   windowId: number;
   windowFocused: boolean;
+}
+
+// --- Login walls and dead ends (U6 / PRD F2.4 + F2.5) ---
+
+/**
+ * A step no automation can complete, only a person can. Detected from PAGE
+ * FEATURES only — never from model text, and never as an authorization input
+ * (see the detection module's doc in `content/index.ts`).
+ */
+export type PageHandoffKind =
+  | 'captcha'
+  | 'qr_login'
+  | 'sms_code'
+  | 'mfa_push'
+  | 'wechat_external_link'
+  | 'oauth_popup';
+
+export interface PageHandoff {
+  kind: PageHandoffKind;
+  /** LLM-facing English: what the human has to do, and why not to retry. */
+  hint: string;
 }
 
 // --- Action Results ---

@@ -549,6 +549,106 @@ describe('settingsStore labs flags', () => {
     });
   });
 
+  describe('v46/v47 migration (operation-class browser policy + unattended master switch)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'allow', scripting: 'ask',
+      });
+    });
+
+    it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+
+    /**
+     * V47, the 2026-09-04 column collapse. Every installed copy carries the
+     * two-column shape, and the surviving values are the ATTENDED column's:
+     * that is where the user said what Abu may do. Taking the other column
+     * instead would be a silent, invisible change to a permission — which is
+     * why this is pinned in BOTH directions below.
+     */
+    it('collapses a v46 two-column policy onto its attended column', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+            unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+          },
+          allowUnattendedBrowser: true,
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      });
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does not let an unattended-only value survive the collapse', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'ask', interactive: 'deny', scripting: 'deny' },
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+          },
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'ask', interactive: 'deny', scripting: 'deny',
+      });
+    });
+
+    it('preserves an already-collapsed policy rather than overwriting it', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'ask', scripting: 'ask' };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        45,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does NOT re-run for users already at v47', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'deny', scripting: 'deny' };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        47,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    // I3 (runtime shape validation): a PRESENT-but-malformed policy — e.g.
+    // from hand-edited localStorage, or a future bug that wrote a partial
+    // object — must be clamped to the strictest state per row, not passed
+    // through as-is (which is exactly what the "preserves an already-
+    // collapsed policy" test above verifies for a WELL-FORMED policy).
+    it('normalizes a present-but-malformed policy to the strictest row instead of passing it through', () => {
+      const migrated = getMigrate()({
+        browserOperationPolicy: {
+          attended: { readOnly: 'allow' /* interactive, scripting missing */ },
+          unattended: { readOnly: 'allow', interactive: 'not-a-real-state', scripting: 'deny' },
+        },
+      }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      });
+    });
+
+    it('coerces a non-boolean allowUnattendedBrowser to false — fail-safe, never silently truthy', () => {
+      const migrated = getMigrate()({ allowUnattendedBrowser: 'true' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+  });
+
   describe('v39 migration', () => {
     const getMigrate = () =>
       (useSettingsStore as unknown as {

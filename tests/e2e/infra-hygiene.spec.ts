@@ -19,6 +19,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { persistedStoreVersion } from './storeVersions';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -242,27 +243,35 @@ async function seedAutomation(page: Page, seed: {
   schedules?: Record<string, unknown>;
   triggers?: Record<string, unknown>;
 }): Promise<void> {
-  await page.evaluate(({ activeTab, schedules, triggers }) => {
+  // `abu-schedule` / `abu-triggers` are written from scratch here, so they need
+  // their store's CURRENT version — derived, never a literal (see
+  // tests/e2e/storeVersions.ts for why a stale one is a silent trap).
+  await page.evaluate(({ activeTab, schedules, scheduleVersion, triggers, triggerVersion }) => {
     const settingsRaw = window.localStorage.getItem('abu-settings');
     if (!settingsRaw) throw new Error('abu-settings was not initialized before seeding automation');
     const settings = JSON.parse(settingsRaw) as { state: Record<string, unknown>; version: number };
     settings.state.activeAutomationTab = activeTab;
     settings.state.viewMode = 'automation';
+    // Merged into what the app wrote, version and all — no literal to go stale.
     window.localStorage.setItem('abu-settings', JSON.stringify(settings));
 
     if (schedules) {
       window.localStorage.setItem('abu-schedule', JSON.stringify({
         state: { tasks: schedules },
-        version: 5,
+        version: scheduleVersion,
       }));
     }
     if (triggers) {
       window.localStorage.setItem('abu-triggers', JSON.stringify({
         state: { triggers },
-        version: 4,
+        version: triggerVersion,
       }));
     }
-  }, seed);
+  }, {
+    ...seed,
+    scheduleVersion: persistedStoreVersion('abu-schedule'),
+    triggerVersion: persistedStoreVersion('abu-triggers'),
+  });
   await page.reload();
   await waitForApp(page);
 }

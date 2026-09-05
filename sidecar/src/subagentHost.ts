@@ -53,9 +53,20 @@ interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire. The two
+ * browser-denial reporters are named for the same reason `agentLoopHost.ts`'s
+ * copy names them: they are a shell-owned authorization seam, and relying on
+ * `JSON.stringify` to drop functions is an incident, not a boundary (R2).
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 
@@ -81,6 +92,7 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -237,6 +249,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
     throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
+  }
+  if (params.initiatedBy !== undefined && params.initiatedBy !== 'user' && params.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: initiatedBy must be 'user' or 'automation'");
   }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
@@ -451,6 +466,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    initiatedBy: params.initiatedBy,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 

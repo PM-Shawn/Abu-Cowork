@@ -11,6 +11,8 @@ import type {
   FindMatch,
   FindQuery,
   FindResult,
+  PageHandoff,
+  PageHandoffKind,
   PageSnapshot,
 } from '../shared/types.js';
 
@@ -109,7 +111,177 @@ function sweepRefs(): void {
   }
 }
 
+/**
+ * Actions that change page state and must land on the page the approval gate
+ * decided on. Mirrors `ORIGIN_PINNED_ACTIONS` in `electron/browserHost.cjs`;
+ * `execute_js` is absent here only because the extension channel runs it in
+ * the background worker (`chrome.scripting.executeScript`), which pins it
+ * itself — the Electron channel's `execute_js` never reaches this file either.
+ * `navigate` is exempt in both places: its target IS what was approved.
+ */
+const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
+
+/**
+ * ## Execution-time origin pin, content-script half (U5, review round 1)
+ *
+ * The first round pinned only the built-in Electron browser. The extension
+ * channel drives the user's REAL logged-in Chrome — the more dangerous of the
+ * two — and dropped `expectedOrigin` on the floor, leaving the TOCTOU window
+ * wide open exactly where it matters most.
+ *
+ * `location.origin` here is the TRUE execution point on this channel: whatever
+ * the background worker believed about the tab, this is the document the click
+ * is about to land in. `payload.expectedOrigin` / `payload.unattended` are
+ * stamped by Abu's approval gate into MCP `_meta` and are unreachable from the
+ * tool's input schema, so a page cannot forge either.
+ *
+ * The message is deliberately WORD-FOR-WORD the host's (`assertOriginPin` in
+ * `electron/browserHost.cjs`) — the model must not have to learn two dialects
+ * of the same refusal. `contentOriginPinMessage.test` pins that they match.
+ *
+ * Both run modes compare (review ruling I3): a sub-second redirect landing
+ * between approval and execution is invisible to a watching human too. Only
+ * the MISSING-value rule is unattended-only, so an attended call that carried
+ * no pin keeps its exact pre-U5 path.
+ */
+function assertOriginPin(action: string, payload: Record<string, unknown>): void {
+  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    if (payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be '
+      + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
+    );
+  }
+  const current = normalizedOrigin(location.href);
+  if (current === expected) return;
+  // A SUBFRAME that fails the pin is a different situation from a top frame
+  // that drifted, and the drift wording is advice that can never work there:
+  // this frame is permanently a different site from the approved one, so "take
+  // a fresh snapshot" would send the model round a loop it cannot exit. Same
+  // refusal, honest attribution.
+  if (window.top !== window) {
+    throw new Error(
+      `Refused: this action targeted a frame from a different site than the one approved (approved `
+      + `${expected}, this frame is ${current ?? 'not an ordinary web page'}). Embedded third-party `
+      + 'frames are not covered by that approval and a fresh snapshot will not change it — act on the '
+      + 'main page, or ask for this site to be authorized separately.',
+    );
+  }
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, `
+    + `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a `
+    + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
+    + 'approval does not carry over to a different site.',
+  );
+}
+
+/**
+ * A frame that does not service the action must not ACT either (N1).
+ *
+ * Locator actions already stop on their own: `frameServicesAction` and
+ * `findElementOrThrow` call the same `findElement` against the same document,
+ * so a frame that answered "not mine" is structurally guaranteed to throw
+ * "Element not found" moments later — that is a second guard, not a
+ * coincidence. `keyboard` has no such guard: it dispatches at
+ * `document.activeElement`, which every document has. So it needs an explicit
+ * abstention, or a subframe would skip the pin AND press the key — exactly
+ * what the pin exists to prevent.
+ */
+function assertFrameAbstains(payload: Record<string, unknown>): void {
+  if (payload.locator !== undefined) return;
+  throw new Error(
+    'Nothing is focused in this frame, so there is nowhere to send the key press. '
+    + 'Click the field you want to type into first, then send the key.',
+  );
+}
+
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * and `normalizedOriginOf` (browserHost.cjs) produce, so all three ends of the
+ * pin compare like with like: http(s) only, default ports dropped by URL, and
+ * a trailing FQDN dot stripped (`evil.com.` and `evil.com` are one host over
+ * DNS and must not be two origins here). Null for anything else, which the pin
+ * treats as a mismatch — a document that is not an ordinary web page is not
+ * the page the user approved.
+ */
+function normalizedOrigin(href: string): string | null {
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Will THIS frame actually service this action?
+ *
+ * `ensureContentScript` injects with `allFrames: true` and
+ * `chrome.tabs.sendMessage` broadcasts without a frameId, so every frame in
+ * the tab answers and the FIRST response wins. Without this check a benign
+ * `about:blank` / `srcdoc` / cross-origin subframe — which has nothing to do
+ * with the action — would answer the pin refusal ("the page moved, take a
+ * fresh snapshot") for a top frame that never moved: a false, unactionable
+ * refusal that loops the model back into the same race.
+ *
+ * So the pin is DEFERRED until the frame knows it is the one acting. Two
+ * shapes:
+ *
+ * - **locator actions** (click/fill/select): the frame that resolves the
+ *   target is the acting frame. A frame that cannot resolve it falls through
+ *   to its ordinary "Element not found", exactly as it did before the pin
+ *   existed. This is what keeps iframe-targeted actions working: an action
+ *   aimed into a SAME-ORIGIN iframe is still pinned, by that iframe, and
+ *   passes. An action aimed into a CROSS-ORIGIN iframe is not "pinned" so much
+ *   as permanently refused — that frame can never match the approved origin —
+ *   which is fail-closed and correct, but is a refusal, not support.
+ * - **`keyboard`** (no locator — it dispatches at `document.activeElement`):
+ *   the frame holding a real focused element is acting, and the TOP frame
+ *   always checks. The top frame checking is not a false refusal: it refuses
+ *   only when its own origin genuinely drifted, which is the true answer.
+ *   A subframe with nothing focused stays silent.
+ */
+function frameServicesAction(action: string, payload: Record<string, unknown>): boolean {
+  const locator = payload.locator as ElementLocator | undefined;
+  if (locator !== undefined) {
+    try {
+      return findElement(locator) !== null;
+    } catch {
+      // A malformed locator resolves nowhere in any frame; let the ordinary
+      // handler report it rather than turning it into a pin refusal.
+      return false;
+    }
+  }
+  const focused = document.activeElement;
+  const hasRealFocus = focused !== null
+    && focused !== document.body
+    && focused !== document.documentElement;
+  return hasRealFocus || window.top === window;
+}
+
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+  // Before the switch, so no action can be added that forgets it — but only in
+  // the frame that is going to act (see `frameServicesAction`). A frame that
+  // is NOT acting abstains rather than falling through to do the work
+  // unchecked (see `assertFrameAbstains`).
+  if (ORIGIN_PINNED_ACTIONS.has(action)) {
+    if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+    else assertFrameAbstains(payload);
+  }
+  // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
+  // page-derived detection can never reorder, skip, or excuse the pin. See
+  // `annotateAdvisory`'s "advisory only" note.
+  return annotateAdvisory(action, await dispatchAction(action, payload));
+}
+
+async function dispatchAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
   switch (action) {
     case 'snapshot': return takeSnapshot(
       payload.selector as string | undefined,
@@ -132,6 +304,570 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
     case 'fullpage_restore': return fullpageRestore(payload.scrollX as number, payload.scrollY as number);
     default: throw new Error(`Unknown content action: ${action}`);
   }
+}
+
+// =============================================================================
+// 0. SENSITIVE VALUE REDACTION (U5)
+// =============================================================================
+
+/**
+ * What a redacted field's value reads as. A marker, not an omission: an absent
+ * `value` means "this field is empty", and the agent would then try to fill a
+ * password box it should be leaving alone (or report the form as blank).
+ */
+const REDACTED_VALUE = '[value redacted]';
+
+/**
+ * `autocomplete` tokens whose value must never leave the page.
+ *
+ * `cc-*` covers the whole payment-card family the HTML spec defines
+ * (`cc-number`, `cc-csc`, `cc-exp`, `cc-name`, …) with one rule, so a token
+ * added to the spec later is covered without touching this file.
+ */
+function isSensitiveAutocompleteToken(token: string): boolean {
+  return token === 'one-time-code'
+    || token === 'current-password'
+    || token === 'new-password'
+    || token.startsWith('cc-');
+}
+
+/**
+ * Should this control's CURRENT value be withheld?
+ *
+ * Two signals, both read off the element itself — never off page text:
+ *  - `type="password"`;
+ *  - a sensitive `autocomplete` token. The attribute is space-separated and
+ *    may carry section/billing prefixes (`section-blue billing cc-number`), so
+ *    every token is checked, case-insensitively (authors shout it).
+ *
+ * NOTE what this does NOT cover, deliberately: a site that puts a card number
+ * in a `type="text"` box with no `autocomplete` is indistinguishable from an
+ * order-number box at this layer. This is a leak-reducer on the fields that
+ * declare themselves, not a classifier.
+ */
+function hasSensitiveValue(el: Element): boolean {
+  const type = (el as HTMLInputElement).type;
+  if (typeof type === 'string' && type.toLowerCase() === 'password') return true;
+  const autocomplete = el.getAttribute('autocomplete');
+  if (!autocomplete) return false;
+  return autocomplete
+    .toLowerCase()
+    .split(/\s+/)
+    .some((token) => isSensitiveAutocompleteToken(token));
+}
+
+/**
+ * How to NAME a field in the on-page status bubble.
+ *
+ * The bubble lives in `document.documentElement`, so whatever goes into it is
+ * readable by every script on the page, outlives the tool call, and comes back
+ * out through `get_html`. `fill` and `select` used to put the value being
+ * written there verbatim — the last plaintext channel on this surface, and one
+ * that leaked values every other path redacts. The status now names the FIELD
+ * (which the page already knows about itself) and never the value.
+ */
+function fieldLabel(el: Element): string {
+  const placeholder = (el as HTMLInputElement).placeholder;
+  return placeholder
+    || el.getAttribute('aria-label')
+    || el.getAttribute('name')
+    || (el.id ? `#${el.id}` : '')
+    || `<${el.tagName.toLowerCase()}>`;
+}
+
+/**
+ * The value to report for a control: the real one, the redaction marker, or
+ * `undefined` when the field is genuinely empty (an empty password box has
+ * nothing to hide, and marking it would misreport the form's state).
+ */
+function reportableValue(el: Element, value: string, maxChars: number): string | undefined {
+  if (!value) return undefined;
+  return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+}
+
+// =============================================================================
+// 0.5 LOGIN WALLS AND DEAD ENDS (U6 / PRD F2.4 + F2.5)
+// =============================================================================
+
+/**
+ * ## What this is
+ *
+ * Two page-feature detectors that give the agent something to say instead of
+ * something to retry:
+ *
+ * - **`authState: 'login_required'`** — the page is a login wall. On the
+ *   built-in Electron browser the main process detects this at the HTTP layer
+ *   too (`browserHost.cjs`, 401/403-challenge + login-shaped navigation); the
+ *   extension channel has no `webRequest`, so this is the ONLY detector there,
+ *   and it reports under the same key so both channels read alike. Known
+ *   asymmetry: the shell gate learns `authState` from the HOST's `get_tabs`,
+ *   which the extension channel does not carry, so there an unattended run is
+ *   not pre-refused — it acts, reads this annotation, and hands back per the
+ *   narration rules. Reporting rather than refusing is deliberate for a
+ *   page-feature signal: a false positive would otherwise silently break a
+ *   working unattended run, with nobody watching to notice.
+ * - **`handoff: { kind, hint }`** — a step no automation can finish: a CAPTCHA,
+ *   a QR sign-in, a one-time code, an MFA push, WeChat's external-link
+ *   interstitial, a blanked OAuth popup. The hint tells the model to stop and
+ *   name the manual step.
+ *
+ * ## 🔴 Advisory only — never an authorization input
+ *
+ * These read PAGE CONTENT, which is attacker-controlled. They therefore feed
+ * only hints and REFUSALS: a page claiming "login required" or showing a fake
+ * CAPTCHA can make the agent stop, and can never make anything be allowed.
+ * Structurally: the values travel in the tool RESULT (which no gate reads
+ * back), the origin pin runs BEFORE any of this (see `handleAction`), and the
+ * shell gate reads `authState` only on its deny side
+ * (`registry.ts`). `contentDeadEnd.test.ts` pins that a page asserting
+ * authorization changes nothing.
+ *
+ * ## 🔴 Never retry an MFA push
+ *
+ * Re-triggering a push approval is how push-bombing works, and providers treat
+ * a burst of prompts as an attack: the user's account gets rate-limited,
+ * locked, or flagged for compromise. The `mfa_push` hint says so in as many
+ * words because the model's default instinct on a pending state is to retry.
+ *
+ * ## Deliberately incomplete, and why misses beat false positives
+ *
+ * Like `highRiskSites.ts`'s domain table, the patterns below are a short list
+ * of unambiguous cases, not a classifier. Everything they miss simply behaves
+ * as it did before this existed — the agent gets no hint, which is today's
+ * status quo, not a new hole.
+ *
+ * A FALSE POSITIVE is the expensive direction, and the asymmetry is worth
+ * spelling out because it drove every co-signal below. The narration rules
+ * tell the model to STOP acting on the site and tell the user what to do by
+ * hand. So a wrong detection does not merely add noise: it halts a working run
+ * and reports something untrue. That is why every text pattern here is paired
+ * with a STRUCTURAL co-signal — a CAPTCHA must be operable, an MFA push must
+ * be polling, a one-time code must have a box short enough to hold one, a
+ * login wall must be a sign-in-shaped form rather than any password box (a
+ * signup page and a change-password page both have one of those). Text alone
+ * matched a help article, a docs page, a blog post and a news story in review.
+ */
+
+/** Cap on the page text scanned per detection pass. */
+const MAX_DETECTION_TEXT = 20_000;
+
+/**
+ * Page text for MATCHING only — never echoed into a result. Scrubbed with the
+ * same `sensitiveValuesIn` net `extract_text` uses, so a detector can never
+ * become a side channel for a value every other surface redacts.
+ */
+function detectionText(): string {
+  const body = document.body;
+  if (!body) return '';
+  let text = ((body as HTMLElement).innerText ?? body.textContent ?? '').slice(0, MAX_DETECTION_TEXT);
+  for (const secret of sensitiveValuesIn(body)) {
+    text = text.split(secret).join(REDACTED_VALUE);
+  }
+  return text;
+}
+
+/** First laid-out match, or null. Off-screen scaffolding must not count. */
+function visibleMatch(selector: string): Element | null {
+  for (const el of document.querySelectorAll(selector)) {
+    if (hasBox(el)) return el;
+  }
+  return null;
+}
+
+const CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
+const CAPTCHA_SELECTOR =
+  '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],'
+  + '[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+
+/**
+ * A CAPTCHA is something you OPERATE. Naming alone is not enough — a blog's
+ * `<div class="post-captcha-explainer">` is an article about CAPTCHAs, and
+ * announcing one there stops a working run on a page that has no challenge.
+ */
+// `[tabindex]:not([tabindex^="-"])` — NOT bare `[tabindex]` (N2). `tabindex="-1"`
+// means "focusable by script, not reachable by the user", and it is the standard
+// docs anchor-heading attribute, so accepting it let a text-only explainer
+// satisfy the very co-signal added to reject text-only explainers.
+const CAPTCHA_INTERACTIVE_SELECTOR =
+  'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],'
+  + '[tabindex]:not([tabindex^="-"]),img[src^="data:"]';
+
+function containerIsOperable(el: Element): boolean {
+  if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
+  for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
+    if (hasBox(child)) return true;
+  }
+  return false;
+}
+
+/** Slider puzzles included: they are a CAPTCHA wearing a different coat. */
+function hasCaptcha(): boolean {
+  for (const frame of document.querySelectorAll('iframe')) {
+    const surface = `${frame.getAttribute('src') ?? ''} ${frame.getAttribute('title') ?? ''}`;
+    if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
+  }
+  for (const el of document.querySelectorAll(CAPTCHA_SELECTOR)) {
+    if (hasBox(el) && containerIsOperable(el)) return true;
+  }
+  return false;
+}
+
+const QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
+const QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
+
+function hasQrLogin(text: string): boolean {
+  if (visibleMatch(QR_SELECTOR) !== null) return true;
+  // Text alone is not enough — an article ABOUT QR codes is not a QR login —
+  // so it must sit next to something that could actually render one.
+  return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
+}
+
+const OTP_TEXT_PATTERN =
+  /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+
+/**
+ * A box that could actually hold a 6-digit code. `visibleMatch('input')` was
+ * no co-signal at all — nearly every page has an input, so a docs page with a
+ * search box and the phrase "verification code flow" was classified as a code
+ * prompt.
+ */
+// `input[type="tel"]` is deliberately ABSENT: a support form's phone field is a
+// `tel` input, and pairing it with prose about codes was enough to report a
+// dead end on a contact page. A numeric INPUTMODE or an explicit digit pattern
+// is authored for a code; a phone number is not a code.
+const NUMERIC_CODE_INPUT_SELECTOR =
+  'input[inputmode="numeric"],input[pattern*="0-9"],input[pattern*="d"]';
+
+/** The six-box OTP grid: several single-character boxes side by side. */
+const OTP_GRID_MIN_BOXES = 4;
+
+function hasShortCodeInput(): boolean {
+  if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+  let singleCharBoxes = 0;
+  for (const el of document.querySelectorAll('input[maxlength]')) {
+    const max = Number(el.getAttribute('maxlength'));
+    if (!Number.isFinite(max) || !hasBox(el)) continue;
+    // One box holding the whole code...
+    if (max >= 4 && max <= 8) return true;
+    // ...or the split grid, which is a code only in the plural.
+    if (max === 1 && ++singleCharBoxes >= OTP_GRID_MIN_BOXES) return true;
+  }
+  return false;
+}
+
+function hasOneTimeCodeEntry(text: string): boolean {
+  if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
+  return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
+}
+
+const MFA_PUSH_PATTERN =
+  /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+
+/**
+ * What a page WAITING on a push looks like structurally: it is polling, or it
+ * is a dedicated push/2FA surface. Without this the sentence alone matched any
+ * help article that describes the flow — and rule ④ then tells the model to
+ * stop working on a documentation site.
+ */
+// `role="status"` and `aria-live="polite"` are deliberately ABSENT: every docs
+// site puts a "Was this page helpful?" live region on the page, which made any
+// help article describing push approval look like one.
+const PENDING_WIDGET_SELECTOR =
+  '[role="progressbar"],[aria-busy="true"],'
+  + '[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],'
+  + '[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+
+/**
+ * The fallback for a push screen that carries no widget class at all (Duo is
+ * the common one). Length ALONE cannot carry this — a short help-doc paragraph
+ * describing push approval is just as terse — so it is paired with the page
+ * being an auth surface by address. Both together: a page that is at an auth
+ * URL and says one thing and stops is a prompt, not documentation.
+ */
+const TERSE_AUTH_SURFACE_CHARS = 400;
+
+/**
+ * WHOLE path segments, not a `[/_.-]` boundary. The boundary form made every
+ * hyphenated doc slug qualify — `/blog/2fa-explained`, `/help/verify-email`,
+ * `/docs/auth-tokens` — which handed a short help page the same standing as
+ * `/auth/duo`, the one thing this gate exists to distinguish.
+ */
+const AUTH_SURFACE_SEGMENTS: ReadonlySet<string> = new Set([
+  'sign-in', 'signin', 'login', 'sso', 'auth', 'oauth', 'oauth2',
+  'mfa', '2fa', 'duo', 'verify', 'challenge',
+]);
+
+function isAuthSurfacePath(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return decoded.split('/').some((segment) => AUTH_SURFACE_SEGMENTS.has(segment.toLowerCase()));
+}
+
+function hasMfaPush(text: string): boolean {
+  if (!MFA_PUSH_PATTERN.test(text)) return false;
+  if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
+  return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && isAuthSurfacePath(location.pathname);
+}
+
+const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
+
+function isWeChatInterstitial(text: string): boolean {
+  const host = location.hostname.toLowerCase();
+  const wechatHost = host === 'weixin.qq.com' || host.endsWith('.weixin.qq.com');
+  return wechatHost || WECHAT_PATTERN.test(text);
+}
+
+const OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+
+/**
+ * The OAuth popup that never came back. Abu's built-in browser DENIES
+ * `window.open` and loads the target in the SAME tab, and a real Chrome popup
+ * can be closed by the user or severed from its opener by COOP — either way
+ * the flow strands on a blank provider page that no click can advance.
+ *
+ * ## Why it has to SETTLE first (I3)
+ *
+ * A perfectly healthy `/auth/callback` is blank and `readyState === 'complete'`
+ * for as long as its JS takes to exchange the code — the single commonest
+ * shape in OAuth. Calling that a dead end tells the model to abandon a sign-in
+ * that was about to succeed. So "blank" must hold across MORE THAN ONE
+ * detection pass, i.e. two separate tool calls against the same URL, which is
+ * long enough that a real exchange has either rendered or redirected.
+ *
+ * The counter is keyed on the URL, so any navigation restarts the observation
+ * rather than inheriting the previous page's evidence.
+ */
+let blankOauthObservation: { href: string; passes: number } | null = null;
+
+function isStrandedOauthPage(text: string): boolean {
+  const blankNow = document.readyState !== 'loading'
+    && OAUTH_URL_PATTERN.test(location.pathname)
+    && text.trim().length <= 40
+    && visibleMatch('input,button,a[href],form') === null;
+  if (!blankNow) {
+    blankOauthObservation = null;
+    return false;
+  }
+  const href = location.href;
+  blankOauthObservation = blankOauthObservation?.href === href
+    ? { href, passes: blankOauthObservation.passes + 1 }
+    : { href, passes: 1 };
+  return blankOauthObservation.passes > 1;
+}
+
+const HANDOFF_HINTS: Record<PageHandoffKind, string> = {
+  captcha:
+    'This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the '
+    + 'action and do not try to solve it. Stop, tell the user which page is asking, and ask them to '
+    + 'complete the challenge themselves before you continue.',
+  qr_login:
+    'This page signs in by QR code, which only a person holding the phone can scan. Do not retry. '
+    + 'Stop and ask the user to scan the code shown on this page, then continue once they say they '
+    + 'are signed in.',
+  sms_code:
+    'This page is asking for a one-time code sent to the user by SMS, email, or an authenticator. '
+    + 'You cannot read it. Do not retry or guess. Stop and ask the user for the code, or ask them to '
+    + 'enter it themselves.',
+  mfa_push:
+    'This page is waiting for the user to approve a push prompt in their authenticator app. NEVER '
+    + 'retry or re-trigger it: repeated push prompts are how push-bombing attacks work, and the '
+    + 'provider may lock or flag the account. Stop and ask the user to approve the prompt once on '
+    + 'their device.',
+  wechat_external_link:
+    'WeChat has intercepted this link and is asking for it to be opened in a browser. Retrying '
+    + 'inside WeChat will keep landing here. Stop and ask the user to open the link in a browser.',
+  oauth_popup:
+    'The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do '
+    + 'not retry the popup. Ask for the provider\'s redirect flow instead (navigate to the '
+    + 'authorization URL in this tab), or ask the user to complete the sign-in themselves.',
+};
+
+/**
+ * First match wins, most specific first. Order matters only for which hint the
+ * model reads: every kind says the same thing about retrying.
+ */
+function detectHandoff(text: string): PageHandoff | null {
+  const kind: PageHandoffKind | null =
+    isWeChatInterstitial(text) ? 'wechat_external_link'
+      : hasCaptcha() ? 'captcha'
+        : hasQrLogin(text) ? 'qr_login'
+          : hasMfaPush(text) ? 'mfa_push'
+            : hasOneTimeCodeEntry(text) ? 'sms_code'
+              : isStrandedOauthPage(text) ? 'oauth_popup'
+                : null;
+  return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
+}
+
+// `401 Unauthorized`, `login required` and `authentication required` are all
+// deliberately ABSENT, for one reason: they are what DOCUMENTATION about
+// authentication says, not what an auth wall says to a person. The built-in
+// browser already detects the real condition at the HTTP layer
+// (`browserHost.cjs`), earlier and unforgeably. What is left are sentences
+// addressed to a reader, which prose about auth does not contain.
+const AUTH_WALL_TEXT_PATTERN =
+  /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+
+/**
+ * Pages that HAVE a password box and are NOT asking you to sign in. Signing up
+ * and changing a password are things an agent legitimately does while fully
+ * authenticated; reporting "your session expired" there stops a working run and
+ * tells the user something false.
+ */
+// `create[ ]<up to two words>[ ]account` rather than a fixed article list: the
+// governing-heading test caught `create (an? )?account` missing "Create YOUR
+// account" and "Create your free account", which is how most signup panels
+// actually word it.
+const NOT_A_SIGN_IN_PATTERN =
+  /(create[ \t]+(?:[a-z]+[ \t]+){0,2}account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+
+/** A field that names WHO is signing in — a login form has one, a password-change form does not. */
+const IDENTIFIER_INPUT_SELECTOR =
+  'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],'
+  + '[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],'
+  + '[id*="user" i],[id*="email" i]';
+
+/**
+ * The form the password box lives in, plus the nearest heading that describes
+ * it — and NOTHING else on the page (N1).
+ *
+ * The first attempt tested `NOT_A_SIGN_IN_PATTERN` against the whole
+ * `body.innerText`, which is not a co-signal at all: nearly every real login
+ * page links to "Create an account" or "Reset your password", so the veto fired
+ * on precisely the pages this feature exists for. A co-signal has to be
+ * structurally LOCAL to the thing being detected; a page-wide text veto is an
+ * off switch any page can trip.
+ *
+ * NAVIGATION LABELS are stripped before matching, and that is the crux:
+ * "Create an account" as a link or a secondary button is a way OFF this page,
+ * while the same words as a heading are the page describing ITSELF. That one
+ * distinction separates a login page from a signup page more reliably than any
+ * wording list. Buttons count as navigation too — the second round stripped
+ * only links, and a login form with a "Create an account" button silently
+ * stopped being detected.
+ */
+const NAVIGATION_LABEL_SELECTOR =
+  'a,[role="link"],button,[role="button"],input[type="button"],input[type="submit"]';
+
+function signInScopeText(passwordBox: Element): string {
+  const scope = passwordBox.closest('form,[role="form"]')
+    ?? passwordBox.closest('section,article,main')
+    ?? passwordBox.parentElement
+    ?? passwordBox;
+  const clone = scope.cloneNode(true) as Element;
+  for (const label of clone.querySelectorAll(NAVIGATION_LABEL_SELECTOR)) label.remove();
+  return `${nearestHeadingText(scope)} ${clone.textContent ?? ''}`;
+}
+
+/**
+ * The closest heading that GOVERNS `scope` — and never one that merely shares
+ * an ancestor with it.
+ *
+ * The ancestor walk is the last place the "structurally local" rule was not
+ * applied, and it failed in the single commonest SaaS login layout: a promo
+ * `<aside>` beside the sign-in `<form>` inside one wrapper. A `querySelector`
+ * on that wrapper returns the FIRST heading in document order, which is the
+ * marketing one — and marketing copy on a login page is exactly where signup
+ * wording lives. So the widened lookup did not pick an arbitrary heading, it
+ * reliably picked the worst possible one, and the miss was silent: no
+ * annotation, no refusal, nothing a gate could see.
+ *
+ * The bound: inside `scope` any descendant heading counts (scope contains the
+ * password box). Above it, only a heading that is a DIRECT CHILD of an ancestor
+ * on the box's own path — which is what "governs" means structurally. A heading
+ * nested inside a SIBLING subtree describes that sibling, not us.
+ */
+function nearestHeadingText(scope: Element): string {
+  const own = scope.querySelector('h1,h2,h3,legend,[role="heading"]');
+  if (own && hasBox(own)) return own.textContent ?? '';
+  for (let node = scope.parentElement; node; node = node.parentElement) {
+    for (const child of node.children) {
+      if (!child.matches('h1,h2,h3,legend,[role="heading"]')) continue;
+      if (hasBox(child)) return child.textContent ?? '';
+    }
+    if (node.tagName === 'BODY') break;
+  }
+  return '';
+}
+
+/**
+ * Exactly ONE on-screen password box, not a new-password one, next to a field
+ * naming the account, on a form that does not describe itself as signup or
+ * password-change. Signup and password-change forms fail on the count, on
+ * `new-password`, or on their own heading; a re-auth prompt with no identifier
+ * field is a deliberate miss (misses are preferred — see the module note).
+ */
+function looksLikeSignInForm(): boolean {
+  const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
+  if (passwords.length !== 1) return false;
+  const autocomplete = (passwords[0].getAttribute('autocomplete') ?? '').toLowerCase();
+  if (autocomplete.includes('new-password')) return false;
+  if (visibleMatch(IDENTIFIER_INPUT_SELECTOR) === null) return false;
+  return !NOT_A_SIGN_IN_PATTERN.test(signInScopeText(passwords[0]));
+}
+
+/**
+ * A login wall, from page features: a sign-in-shaped form, or one of a short
+ * list of auth-wall sentences.
+ *
+ * The sentence path carries NO veto (N1). "Your session has expired" is the
+ * page telling us the answer directly; a signup link somewhere else on it
+ * cannot make that untrue, and letting one do so silenced the single clearest
+ * signal this detector has.
+ */
+function detectAuthWall(text: string): boolean {
+  if (looksLikeSignInForm()) return true;
+  return AUTH_WALL_TEXT_PATTERN.test(text);
+}
+
+/**
+ * Actions whose result the model reads to decide what to do next. Deliberately
+ * NOT every action:
+ *
+ *  - detection reads `body.innerText`, which forces a layout flush, so the
+ *    mechanical actions (`scroll`, the `fullpage_*` screenshot steps, the
+ *    recorder) must not pay for it on every call;
+ *  - a `fullpage_*` result is screenshot plumbing, and a stray advisory key on
+ *    one is noise in a place nothing reads prose.
+ *
+ * String-returning actions (`get_html`, `extract_text`) are absent for a
+ * different reason — see `annotateAdvisory`.
+ */
+const ADVISORY_ANNOTATED_ACTIONS = new Set([
+  'snapshot', 'click', 'fill', 'select', 'wait_for', 'extract_table',
+]);
+
+/**
+ * The one place a result grows advisory fields. Only plain objects are
+ * annotated: string results (`get_html`, `extract_text`) are page content the
+ * caller slices and searches, and splicing a sentence into one would corrupt
+ * exactly the thing it was asked for.
+ */
+function annotateAdvisory(action: string, result: unknown): unknown {
+  if (!ADVISORY_ANNOTATED_ACTIONS.has(action)) return result;
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const existing = result as Record<string, unknown>;
+  if ('authState' in existing || 'handoff' in existing) return result;
+
+  let text: string;
+  try {
+    text = detectionText();
+  } catch {
+    // Detection is advisory: a page that breaks it must not break the action
+    // whose result this is.
+    return result;
+  }
+  const handoff = detectHandoff(text);
+  const loginRequired = detectAuthWall(text);
+  if (!handoff && !loginRequired) return result;
+  return {
+    ...existing,
+    ...(loginRequired ? { authState: 'login_required' as const } : {}),
+    ...(handoff ? { handoff } : {}),
+  };
 }
 
 // =============================================================================
@@ -237,7 +973,10 @@ function takeSnapshot(
         const input = el as HTMLInputElement;
         info.type = input.type;
         if (input.placeholder) info.placeholder = input.placeholder;
-        if (input.value) info.value = input.value.slice(0, 100);
+        // Everything else about the field still ships — a redacted value must
+        // not cost the agent the ability to find and fill it.
+        const value = reportableValue(input, input.value, 100);
+        if (value !== undefined) info.value = value;
         if (input.type === 'checkbox' || input.type === 'radio') {
           info.checked = input.checked;
         }
@@ -246,13 +985,20 @@ function takeSnapshot(
       if (tag === 'textarea') {
         const ta = el as HTMLTextAreaElement;
         if (ta.placeholder) info.placeholder = ta.placeholder;
-        if (ta.value) info.value = ta.value.slice(0, 200);
+        const value = reportableValue(ta, ta.value, 200);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'select') {
         const select = el as HTMLSelectElement;
+        // The OPTION LIST stays: it is the page's own static set of choices
+        // (`01`…`12` on a card-expiry select), it is identical for every
+        // visitor, and without it the agent cannot pick a value at all — the
+        // same "must not break filling" rule the input branch follows.
+        // What is redacted is the SELECTION, which is the user's own datum.
         info.options = [...select.options].map(o => ({ value: o.value, text: o.text }));
-        info.value = select.value;
+        const value = reportableValue(select, select.value, 100);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'a') {
@@ -1231,10 +1977,16 @@ function clickElement(locator: ElementLocator): {
 
 function fillElement(locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
   const el = findElementOrThrow(locator) as HTMLInputElement | HTMLTextAreaElement;
-  const previousValue = el.value;
+  // Same rule as the snapshot: what was ALREADY in the field is the user's
+  // secret (a browser-autofilled password, a saved card), and handing it back
+  // in the result would put it in the model's context, the logs, and any
+  // approval message quoting the result. The value being written is the
+  // caller's own and is echoed in `message` unchanged.
+  const previousValue = reportableValue(el, el.value, 100);
 
   highlightElement(el);
-  showStatus(`Fill: "${value.slice(0, 30)}"`, 'info');
+  // NEVER the value: this string is written into the page (see `fieldLabel`).
+  showStatus(`Fill: ${fieldLabel(el)}`, 'info');
 
   // Use native setter to bypass React's synthetic event system
   const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -1256,7 +2008,7 @@ function fillElement(locator: ElementLocator, value: string): { success: boolean
   return {
     success: true,
     message: `Filled field with "${value.slice(0, 50)}"`,
-    previousValue: previousValue || undefined,
+    previousValue,
   };
 }
 
@@ -1576,7 +2328,8 @@ async function selectOption(
     );
   }
 
-  showStatus(`Select: "${value}"`, 'info');
+  // NEVER the value: same reason as fill (see `fieldLabel`).
+  showStatus(`Select: ${fieldLabel(el)}`, 'info');
   el.scrollIntoView({ behavior: 'instant', block: 'center' });
 
   // Open it if it is not already open. `aria-expanded` is the library's own
@@ -1818,12 +2571,103 @@ function inlineFrameElement(frame: HTMLIFrameElement, ownerDocument: Document): 
   return inline;
 }
 
+/**
+ * Redact sensitive `value` ATTRIBUTES in a detached clone before it is
+ * serialized for `get_html` / `query_js` (M6).
+ *
+ * The attribute and the property are different things: typing into a field
+ * does not touch the attribute, so most live secrets never appear here. A
+ * SERVER-RENDERED `<input type="password" value="…">` does carry one, though,
+ * and `cloneNode(true)` copies attributes verbatim — so the one path that
+ * hands the model raw page source was still emitting it after the snapshot
+ * stopped.
+ *
+ * The attribute is replaced rather than removed: `value=""` would read as "the
+ * field is empty", and a query_js reading `.value` should see the same marker
+ * every other surface shows.
+ */
+function redactSensitiveValueAttributes(root: Element): void {
+  const candidates = root.tagName === 'INPUT' || root.tagName === 'TEXTAREA' || root.tagName === 'SELECT'
+    ? [root, ...root.querySelectorAll('input, textarea, select')]
+    : [...root.querySelectorAll('input, textarea, select')];
+  for (const el of candidates) {
+    if (!hasSensitiveValue(el)) continue;
+    // A TEXTAREA has no `value` attribute at all — its default value IS the
+    // child text node, so rewriting attributes left it verbatim while the
+    // snapshot of the same field said `[value redacted]`. Exactly the
+    // "redacted on one surface, plaintext on the next" shape this pass exists
+    // to close, and `queryJsWorker` reading `.value` off the parsed html gets
+    // its value from precisely this text.
+    if (el.tagName === 'TEXTAREA' && el.textContent) {
+      el.textContent = REDACTED_VALUE;
+      // FALLS THROUGH to the attribute rewrite on purpose. A `value` attribute
+      // on a textarea is invalid HTML and inert in the DOM, but hand-written
+      // SSR templates do emit it, and it is raw plaintext in the serialized
+      // source either way. An earlier revision returned here and silently
+      // stopped redacting exactly that case.
+    }
+    if (!el.getAttribute('value')) continue;
+    el.setAttribute('value', REDACTED_VALUE);
+  }
+}
+
+/**
+ * Sensitive field values currently present in `scope`, for the one extraction
+ * path that cannot work on a redacted clone.
+ *
+ * `extract_text` reads `innerText` off the LIVE DOM, and it has to: `innerText`
+ * is layout-dependent, so a detached clone would return nothing at all. Rather
+ * than edit the page the user is looking at, the extracted STRING is scrubbed
+ * of any sensitive value the scope actually holds.
+ *
+ * ## A best-effort net, NOT a guarantee
+ *
+ * This is string matching, so it catches the common case (the value appears
+ * verbatim) and misses three known ones. Named rather than implied, because an
+ * over-stated guarantee here is worse than a modest one:
+ *
+ * - **Renders differently than it is stored.** A value containing whitespace
+ *   is compared against text the engine normalized, so `"pass\\nphrase"` will
+ *   not match `"pass phrase here"`.
+ * - **Echoed from outside the scope.** Only fields INSIDE the extract scope
+ *   contribute secrets; a page that copies a password into a `<div>` inside
+ *   the scope while the field itself sits outside it is not caught.
+ * - **Over-scrubs a short common value.** A password of `"admin"` turns "the
+ *   admin panel for admin users" into markers. That is the fail-safe
+ *   direction, and the 1-2 character floor below only blunts the worst of it.
+ *
+ * It does at least not depend on whether a given engine renders a textarea's
+ * content into `innerText` (Chrome does not; other DOM implementations do) —
+ * whatever the engine included, a verbatim occurrence is removed.
+ */
+function sensitiveValuesIn(scope: Element | null): string[] {
+  const root = scope ?? document.body;
+  if (!root) return [];
+  const fields = [
+    ...(root.matches?.('input, textarea, select') ? [root] : []),
+    ...root.querySelectorAll('input, textarea, select'),
+  ];
+  const values: string[] = [];
+  for (const el of fields) {
+    if (!hasSensitiveValue(el)) continue;
+    const value = (el as HTMLInputElement).value || el.textContent || '';
+    // One-and-two-character values are skipped: scrubbing them would mangle
+    // unrelated page text far more than it would protect anything.
+    if (value.length > 2) values.push(value);
+  }
+  return values;
+}
+
 function serializeElementWithFrames(element: Element): string {
   if (element.tagName === 'IFRAME') {
     return inlineFrameElement(element as HTMLIFrameElement, element.ownerDocument).outerHTML;
   }
 
   const clone = element.cloneNode(true) as Element;
+  // On the CLONE, never the live DOM: this must not edit the page the user is
+  // looking at. Runs before the frame inlining below so an inlined frame's own
+  // html — which came back through this same function — is already clean.
+  redactSensitiveValueAttributes(clone);
   const liveFrames = [...element.querySelectorAll('iframe')];
   const clonedFrames = [...clone.querySelectorAll('iframe')];
 
@@ -1855,12 +2699,20 @@ function getHtml(selector?: string): string {
 
 function extractText(selector?: string): string {
   let text: string;
+  let scope: Element | null;
   if (selector) {
     const el = document.querySelector(selector);
     if (!el) throw new Error(`Element not found: ${selector}`);
+    scope = el;
     text = (el as HTMLElement).innerText ?? el.textContent ?? '';
   } else {
+    scope = document.body;
     text = document.body.innerText ?? '';
+  }
+  // See `sensitiveValuesIn`: this path reads the live DOM (innerText needs
+  // layout), so the scrubbing happens on the extracted string.
+  for (const secret of sensitiveValuesIn(scope)) {
+    text = text.split(secret).join(REDACTED_VALUE);
   }
 
   // Truncate to prevent sending megabytes through the message channel
@@ -1908,7 +2760,20 @@ function extractTable(selector?: string): { headers: string[]; rows: string[][];
     rows.push(row);
   }
 
-  return { headers, rows, rowCount: rows.length };
+  // The same best-effort scrub `extract_text` applies, for the same reason and
+  // with the same limits. Inert in Chrome today (neither input values nor
+  // textarea content reach `innerText` there), but this was the one reporting
+  // path that never got the U5 treatment, and "inert on one engine" is not a
+  // property worth relying on.
+  const secrets = sensitiveValuesIn(table);
+  const scrub = (cell: string): string =>
+    secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), cell);
+
+  return {
+    headers: headers.map(scrub),
+    rows: rows.map((row) => row.map(scrub)),
+    rowCount: rows.length,
+  };
 }
 
 // =============================================================================
@@ -2281,13 +3146,39 @@ function isVisible(el: Element): boolean {
   return rect.width > 0 && rect.height > 0;
 }
 
+/**
+ * The element's text as a caller should see it.
+ *
+ * ⚠️ For INPUT/TEXTAREA this returns the field's VALUE, which makes it a
+ * redaction path — and the one that was missed in the first U5 round. It feeds
+ * `info.text` in the snapshot (on the very object whose `.value` is redacted),
+ * `targetInfo` (→ click's `elementText`, `target.text`, the on-page status
+ * toast), `describeElement` (→ click's `message`, error text, and whatever an
+ * IM approval prompt quotes), and `wait_for`'s "whose text is …" explanation.
+ * Redacting here covers all of them at once; anything that reaches for
+ * `el.value` directly instead has to re-do this.
+ *
+ * A sensitive field falls through to placeholder / aria-label first, so the
+ * caller can still tell WHICH field it is, and only shows the marker when the
+ * page gave it nothing else to be called.
+ */
 function getVisibleText(el: Element): string | null {
   if (el.tagName === 'INPUT') {
     const input = el as HTMLInputElement;
+    if (hasSensitiveValue(input)) {
+      return input.placeholder
+        || input.getAttribute('aria-label')
+        || (input.value ? REDACTED_VALUE : null);
+    }
     return input.value || input.placeholder || input.getAttribute('aria-label') || null;
   }
   if (el.tagName === 'TEXTAREA') {
     const ta = el as HTMLTextAreaElement;
+    if (hasSensitiveValue(ta)) {
+      return ta.placeholder
+        || ta.getAttribute('aria-label')
+        || (ta.value ? REDACTED_VALUE : null);
+    }
     return ta.value || ta.placeholder || null;
   }
 

@@ -75,6 +75,17 @@ export interface CapabilityRuntimeSnapshot {
     enabled: boolean;
     status?: MCPConnectionStatus;
     extensionConnected?: boolean;
+    /**
+     * Whether the extension has EVER completed a handshake in this session.
+     *
+     * Without it, "the bridge process has not finished starting" is
+     * indistinguishable from "this connection broke", and a machine that
+     * never installed the extension reports a lost connection — then flips to
+     * not-connected once the probe answers. The flag is monotonic, so the
+     * classification does not depend on which of two concurrent probes lands
+     * last.
+     */
+    extensionEverConnected?: boolean;
   };
   computerUse: {
     enabled: boolean;

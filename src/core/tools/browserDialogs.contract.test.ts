@@ -32,7 +32,10 @@ import {
   classifyBrowserToolError,
   jsDialogSignals,
 } from '../observability/browserSignals';
-import { classifyBrowserTool } from '../permissions/browserToolPolicy';
+import {
+  classifyBrowserTool,
+  toLegacyBrowserToolConsequence,
+} from '../permissions/browserToolPolicy';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const HOST = fs.readFileSync(path.join(ROOT, 'electron/browserHost.cjs'), 'utf8');
@@ -99,10 +102,21 @@ describe('a dialog-blocked failure is legible end to end', () => {
 
 describe('the gate and the tools agree on which half of the pair changes the page', () => {
   it('reads for free and answers under approval', () => {
-    expect(classifyBrowserTool('abu-browser__get_dialog')).toBe('read-only');
-    expect(classifyBrowserTool('abu-browser__handle_dialog')).toBe('state-changing');
     // Both channels expose the same pair, so both must classify the same.
-    expect(classifyBrowserTool('abu-browser-bridge__get_dialog')).toBe('read-only');
-    expect(classifyBrowserTool('abu-browser-bridge__handle_dialog')).toBe('state-changing');
+    for (const server of ['abu-browser', 'abu-browser-bridge']) {
+      expect(classifyBrowserTool(`${server}__get_dialog`)).toBe('read-only');
+      expect(classifyBrowserTool(`${server}__handle_dialog`)).toBe('interactive');
+      // Both halves are DECLARED, not left to the `'interactive'` fallback:
+      // a `get_dialog` that only *happened* to be read-only would be one
+      // rename away from asking for approval on every read, and a
+      // `handle_dialog` that only *happened* to be gated would be one
+      // rename away from pressing the page's OK button for free.
+      expect(toLegacyBrowserToolConsequence(classifyBrowserTool(`${server}__get_dialog`)!)).toBe(
+        'read-only',
+      );
+      expect(toLegacyBrowserToolConsequence(classifyBrowserTool(`${server}__handle_dialog`)!)).toBe(
+        'state-changing',
+      );
+    }
   });
 });

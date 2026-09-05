@@ -13,7 +13,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer, type Server as HTTPServer } from 'http';
 import { randomBytes } from 'crypto';
-import type { BridgeCancelMessage, BridgeRequest, BridgeResponse } from './types.js';
+import type {
+  BridgeCancelMessage,
+  BridgeReleaseMessage,
+  BridgeRequest,
+  BridgeResponse,
+} from './types.js';
 import { PKG_VERSION } from './version.js';
 import { linkAbortSignal } from './abortSignal.js';
 
@@ -236,6 +241,42 @@ function handleResponse(msg: BridgeResponse): void {
 }
 
 /**
+ * Tell the extension a run is done with the browser, so it drops the tab claims
+ * that run holds (`abu-chrome-extension/src/background/tabClaims.ts`). `runId`
+ * omitted ⇒ every run of the conversation, the same scope the built-in host's
+ * `browser_dispose_owner {conversationId}` has.
+ *
+ * Fire-and-forget and best-effort, like the host's own dispose calls: a lost
+ * release costs one stale claim (which the tab closing, or the socket dropping,
+ * clears anyway), and no browser action may fail over bookkeeping.
+ *
+ * The ONLY caller is `runSettled.ts`, the handler for the app's run-settlement
+ * MCP notification. Deliberately not the per-request abort path: the MCP SDK
+ * aborts a handler for its own request timeouts too, so a still-running task
+ * would lose its tabs (see the long note at the abort path below).
+ *
+ * A run's settlement always passes the run key (`runId ?? 'main'`): omitting it
+ * releases EVERY run of the conversation, which the host never does there —
+ * `disposeRunBrowserViews` returns early without a runKey, and the
+ * conversation-wide scope belongs to conversation deletion alone. That is what
+ * the omitted-`runId` shape is reserved for.
+ */
+export function releaseExtensionTabs(ownerId: unknown, runId?: unknown): void {
+  if (typeof ownerId !== 'string' || ownerId.length === 0) return;
+  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) return;
+  const release: BridgeReleaseMessage = {
+    type: 'release',
+    ownerId,
+    ...(typeof runId === 'string' && runId.length > 0 ? { runId } : {}),
+  };
+  try {
+    extensionSocket.send(JSON.stringify(release));
+  } catch (err) {
+    console.error('[abu-bridge] Failed to send release to extension:', err);
+  }
+}
+
+/**
  * Send a request to the Chrome Extension and wait for response.
  *
  * `signal`, when given, lets the caller stop waiting before the extension
@@ -281,6 +322,30 @@ export function sendToExtension(
           console.error('[abu-bridge] Failed to send cancel to extension:', err);
         }
       }
+      // Deliberately NOT a tab-claim release point, tempting as it looks.
+      //
+      // An abort here does NOT mean "this run stopped". The MCP SDK cancels a
+      // request when its OWN timeout fires: the timeout handler calls
+      // `cancel()` (`@modelcontextprotocol/sdk` `shared/protocol.js`), which
+      // sends `notifications/cancelled`, which the server side answers by
+      // aborting exactly the handler signal that reaches us here. And
+      // `src/core/mcp/client.ts` passes a `timeout` on every `callTool` (120s
+      // for the browser servers, less if the user configured it), so a slow
+      // `screenshot_full_page` on a live run lands on this line.
+      //
+      // The bridge cannot tell the two apart: all it receives is an abort
+      // whose `reason` is a string produced by whoever cancelled, so
+      // positively recognising "the run stopped" would mean matching on
+      // SDK-formatted text. Getting that wrong is SILENT and it fails open —
+      // it hands a still-running task's tab to another conversation, the exact
+      // thing the claims exist to prevent. An unreleased claim, by contrast,
+      // costs another conversation one refusal that names its next step, and
+      // costs the user nothing at all (their own use of the tab is unaffected).
+      //
+      // Claims are therefore dropped by the extension itself — the tab closing
+      // and the socket dropping — plus the explicit `{type:'release'}`, which
+      // the app sends once per run at its settlement seal over a notification
+      // that says so unambiguously; see `runSettled.ts`.
       reject(new DOMException('The operation was aborted.', 'AbortError'));
     });
 

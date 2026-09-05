@@ -192,6 +192,82 @@ describe('OutputSender.buildMessage', () => {
     const msg = outputSender.buildMessage('conv-1', output, context);
     expect(msg.content).toBe('T|E|ok|5s|TS|{"k":"v"}');
   });
+
+  /**
+   * Batch-8 ruling — a `custom_template` payload is the user's, so the run's
+   * ending is offered, never spliced in.
+   *
+   * The pin that matters is the first one: a template written before this
+   * batch has to render byte-identically, because the usual template is a
+   * JSON body somebody's script parses.
+   */
+  it('leaves a template that never asked for $RUN_OUTCOME byte-identical', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '{"answer":"$AI_RESPONSE"}',
+    };
+    const context: OutputContext = {
+      triggerName: 'T',
+      aiResponse: '',
+      timestamp: 'TS',
+      runOutcome: 'Partly done: 1 of 2 browser actions failed',
+    };
+
+    const msg = outputSender.buildMessage('conv-1', output, context);
+    expect(msg.content).toBe('{"answer":"ok"}');
+    expect(JSON.parse(msg.content)).toEqual({ answer: 'ok' });
+  });
+
+  it('substitutes $RUN_OUTCOME where the template puts it, on one line', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '{"outcome":"$RUN_OUTCOME","answer":"$AI_RESPONSE"}',
+    };
+    const context: OutputContext = {
+      triggerName: 'T',
+      aiResponse: '',
+      timestamp: 'TS',
+      runOutcome: 'Partly done: 1 of 2 browser actions failed',
+    };
+
+    const msg = outputSender.buildMessage('conv-1', output, context);
+    // Still valid JSON: the variable is a single line by construction, so it
+    // cannot break a string literal in the body the user wrote.
+    expect(JSON.parse(msg.content)).toEqual({
+      outcome: 'Partly done: 1 of 2 browser actions failed',
+      answer: 'ok',
+    });
+  });
+
+  it('renders an empty string when the caller reports no outcome at all', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '[$RUN_OUTCOME]',
+    };
+    const context: OutputContext = { triggerName: 'T', aiResponse: '', timestamp: 'TS' };
+
+    // Never the literal token: an unresolved `$RUN_OUTCOME` in a payload is
+    // worse than nothing.
+    expect(outputSender.buildMessage('conv-1', output, context).content).toBe('[]');
+  });
 });
 
 describe('OutputSender.send', () => {

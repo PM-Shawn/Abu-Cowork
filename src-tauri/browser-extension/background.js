@@ -105,20 +105,20 @@
       last: value.last ?? null
     };
   }
-  function chromeGetDialogResult(tabId, raw) {
+  function chromeGetDialogResult(tabId2, raw) {
     const state2 = asState(raw);
     const message = state2.last ? `No dialog can be open here for Abu to read. The last one this channel answered (${state2.last.type}) was ${state2.last.disposition}.` : state2.armed ? "No dialog has been raised since handle_dialog armed this page. Nothing to read yet." : "This channel is not armed for dialogs on this page, so it has seen none.";
     return {
-      tabId,
+      tabId: tabId2,
       pending: false,
       ...state2.last ? { last: state2.last, untrustedContentNotice: JS_DIALOG_UNTRUSTED_NOTICE } : {},
       message: `${message} ${CHROME_DIALOG_CHANNEL_NOTE}`
     };
   }
-  function chromeHandleDialogResult(tabId, action2, raw) {
+  function chromeHandleDialogResult(tabId2, action2, raw) {
     const state2 = asState(raw);
     return {
-      tabId,
+      tabId: tabId2,
       action: action2,
       handled: false,
       armed: true,
@@ -133,9 +133,9 @@
   }
   var PAGE_WORLD_TIMEOUT_MS = 5e3;
   var PAGE_WORLD_FROZEN_HINT = "It is most likely frozen by a native JavaScript dialog (alert/confirm/prompt), which this channel cannot read or dismiss \u2014 ask the user to answer it, or use Abu's built-in browser, which can.";
-  async function runInPageWorld(tabId, func, args) {
+  async function runInPageWorld(tabId2, func, args) {
     const injection = scriptingApi().executeScript({
-      target: { tabId },
+      target: { tabId: tabId2 },
       world: "MAIN",
       func,
       args
@@ -144,7 +144,7 @@
     const deadline = new Promise((_resolve, reject) => {
       timer = setTimeout(
         () => reject(new Error(
-          `Tab ${tabId} did not respond within ${PAGE_WORLD_TIMEOUT_MS / 1e3}s. ${PAGE_WORLD_FROZEN_HINT}`
+          `Tab ${tabId2} did not respond within ${PAGE_WORLD_TIMEOUT_MS / 1e3}s. ${PAGE_WORLD_FROZEN_HINT}`
         )),
         PAGE_WORLD_TIMEOUT_MS
       );
@@ -155,6 +155,216 @@
     } finally {
       if (timer !== void 0) clearTimeout(timer);
     }
+  }
+
+  // src/background/tabClaims.ts
+  var LEGACY_CONVERSATION = "legacy";
+  var MAIN_RUN_KEY = "main";
+  var OWNER_KEY_SEPARATOR = String.fromCharCode(0);
+  var LEGACY_OWNER = Object.freeze({
+    conversationId: LEGACY_CONVERSATION,
+    runKey: MAIN_RUN_KEY,
+    key: `${LEGACY_CONVERSATION}${OWNER_KEY_SEPARATOR}${MAIN_RUN_KEY}`
+  });
+  function sanitizeOwnerPart(value) {
+    return typeof value === "string" ? value.split(OWNER_KEY_SEPARATOR).join("").trim() : "";
+  }
+  function makeOwner(conversationId, runKey) {
+    const conversation = sanitizeOwnerPart(conversationId);
+    if (!conversation || conversation === LEGACY_CONVERSATION) return LEGACY_OWNER;
+    const run = sanitizeOwnerPart(runKey) || MAIN_RUN_KEY;
+    return Object.freeze({
+      conversationId: conversation,
+      runKey: run,
+      key: `${conversation}${OWNER_KEY_SEPARATOR}${run}`
+    });
+  }
+  function isLegacyOwner(owner) {
+    return owner.conversationId === LEGACY_CONVERSATION;
+  }
+  function ownerFromPayload(payload2) {
+    return makeOwner(payload2.ownerId, payload2.runId);
+  }
+  function createTabClaimStore() {
+    const claims = /* @__PURE__ */ new Map();
+    const currentTabByOwner = /* @__PURE__ */ new Map();
+    function inScope(owner, conversationId, runKey) {
+      if (owner.conversationId !== conversationId) return false;
+      return runKey === void 0 || owner.runKey === runKey;
+    }
+    return {
+      holderOf(tabId2) {
+        return claims.get(tabId2)?.owner ?? null;
+      },
+      currentTabOf(owner) {
+        return currentTabByOwner.get(owner.key) ?? null;
+      },
+      claim(tabId2, owner, claimedAt) {
+        if (isLegacyOwner(owner)) return;
+        if (!claims.has(tabId2)) claims.set(tabId2, { tabId: tabId2, owner, claimedAt });
+      },
+      touch(tabId2, owner) {
+        if (isLegacyOwner(owner)) return;
+        currentTabByOwner.set(owner.key, tabId2);
+      },
+      releaseTab(tabId2) {
+        claims.delete(tabId2);
+        for (const [ownerKey, current] of currentTabByOwner) {
+          if (current === tabId2) currentTabByOwner.delete(ownerKey);
+        }
+      },
+      releaseOwner(conversationId, runKey) {
+        let dropped = 0;
+        for (const [tabId2, record] of claims) {
+          if (inScope(record.owner, conversationId, runKey)) {
+            claims.delete(tabId2);
+            dropped += 1;
+          }
+        }
+        for (const ownerKey of Array.from(currentTabByOwner.keys())) {
+          if (inScope(parseOwnerKey(ownerKey), conversationId, runKey)) {
+            currentTabByOwner.delete(ownerKey);
+          }
+        }
+        return dropped;
+      },
+      releaseAll() {
+        claims.clear();
+        currentTabByOwner.clear();
+      },
+      entries() {
+        return Array.from(claims.values());
+      }
+    };
+  }
+  function parseOwnerKey(key) {
+    const at = key.indexOf(OWNER_KEY_SEPARATOR);
+    if (at < 0) return makeOwner(key, MAIN_RUN_KEY);
+    return makeOwner(key.slice(0, at), key.slice(at + 1));
+  }
+  var LEGACY_LAST_ACTIVE_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "start_recording",
+    "stop_recording"
+  ]);
+  var OWNER_CURRENT_TAB_ACTIONS = /* @__PURE__ */ new Set(["get_html"]);
+  var TAB_TARGETED_ACTIONS = /* @__PURE__ */ new Set([
+    "screenshot",
+    "screenshot_full_page",
+    "navigate",
+    "execute_js",
+    "snapshot",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "find",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "get_dialog",
+    "handle_dialog",
+    "start_recording",
+    "stop_recording"
+  ]);
+  var NO_ACTIVE_TAB_MESSAGE = "No active browser tab is available. Call get_tabs and pass tabId.";
+  function staleTabMessage(tabId2) {
+    return `Browser tab ${tabId2} is no longer open \u2014 it was closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.`;
+  }
+  function crossConversationMessage(tabId2, holder) {
+    return `Browser tab ${tabId2} belongs to another conversation's task (${holder.conversationId}). Call get_tabs to see the tabs you have now, and act on one this task already uses.`;
+  }
+  var NO_CLAIMED_TAB_MESSAGE = "This task has not acted on any browser tab yet, so there is no tab to fall back on. Call get_tabs and pass an explicit tabId.";
+  function missingTabIdMessage(action2) {
+    return `Missing tabId for browser action "${action2}". Call get_tabs and pass the target tabId.`;
+  }
+  function explicitTabId(payload2) {
+    const raw = payload2.tabId;
+    if (raw === void 0 || raw === null || raw === "") return void 0;
+    const numeric = Number(raw);
+    return Number.isInteger(numeric) ? numeric : void 0;
+  }
+  async function resolveTargetTab(store, action2, payload2, deps) {
+    const owner = ownerFromPayload(payload2);
+    const explicit = explicitTabId(payload2);
+    if (isLegacyOwner(owner)) {
+      if (explicit !== void 0) return explicit;
+      if (!LEGACY_LAST_ACTIVE_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
+      const fallback = deps.lastActiveTabId();
+      if (fallback === null) throw new Error(NO_ACTIVE_TAB_MESSAGE);
+      return fallback;
+    }
+    if (explicit !== void 0) {
+      if (!await deps.tabExists(explicit)) {
+        store.releaseTab(explicit);
+        throw new Error(staleTabMessage(explicit));
+      }
+      const holder = store.holderOf(explicit);
+      if (!holder) {
+        store.claim(explicit, owner, deps.now());
+      } else if (holder.key !== owner.key) {
+        if (holder.conversationId !== owner.conversationId) {
+          throw new Error(crossConversationMessage(explicit, holder));
+        }
+        deps.log?.(
+          `cross-run tab access: run ${owner.runKey} acting on tab ${explicit} owned by run ${holder.runKey} of the same conversation (explicit tabId hand-over)`
+        );
+      }
+      store.touch(explicit, owner);
+      return explicit;
+    }
+    if (!OWNER_CURRENT_TAB_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
+    const current = store.currentTabOf(owner);
+    if (current === null) throw new Error(NO_CLAIMED_TAB_MESSAGE);
+    if (!await deps.tabExists(current)) {
+      store.releaseTab(current);
+      throw new Error(staleTabMessage(current));
+    }
+    return current;
+  }
+  var NO_OWNERSHIP = /* @__PURE__ */ new Map();
+  function tabListingFor(store, owner, liveTabIds, legacyCurrentTab) {
+    if (isLegacyOwner(owner)) {
+      return { currentTabId: legacyCurrentTab(), ownership: NO_OWNERSHIP };
+    }
+    const live = new Set(liveTabIds);
+    const ownership = /* @__PURE__ */ new Map();
+    for (const tabId2 of live) {
+      const holder = store.holderOf(tabId2);
+      if (!holder) continue;
+      ownership.set(tabId2, holder.key === owner.key ? "you" : "other");
+    }
+    const current = store.currentTabOf(owner);
+    return {
+      currentTabId: current !== null && live.has(current) ? current : null,
+      ownership
+    };
+  }
+  function classifyInbound(raw) {
+    const message = raw ?? {};
+    if (typeof message.type !== "string") return { kind: "request" };
+    if (message.type === "cancel") {
+      return { kind: "cancel", requestId: String(message.requestId ?? "") };
+    }
+    if (message.type === "release" && typeof message.ownerId === "string") {
+      return {
+        kind: "release",
+        ownerId: message.ownerId,
+        runId: typeof message.runId === "string" ? message.runId : void 0
+      };
+    }
+    return { kind: "unknown", type: message.type };
   }
 
   // src/background/index.ts
@@ -190,10 +400,10 @@
       });
     }
   });
-  function saveTracking(tabId, windowId) {
-    lastActiveTabId = tabId;
+  function saveTracking(tabId2, windowId) {
+    lastActiveTabId = tabId2;
     lastActiveWindowId = windowId;
-    chrome.storage.session.set({ lastActiveTabId: tabId, lastActiveWindowId: windowId });
+    chrome.storage.session.set({ lastActiveTabId: tabId2, lastActiveWindowId: windowId });
   }
   chrome.tabs.onActivated.addListener((activeInfo) => {
     saveTracking(activeInfo.tabId, activeInfo.windowId);
@@ -207,6 +417,22 @@
       });
     }
   });
+  var tabClaims = createTabClaimStore();
+  var tabResolution = {
+    tabExists: async (tabId2) => {
+      try {
+        await chrome.tabs.get(tabId2);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    // Read on the legacy (no `ownerId`) path only — an owned request never falls
+    // back to the user's active tab.
+    lastActiveTabId: () => lastActiveTabId,
+    now: () => Date.now(),
+    log: (message) => console.log(`[abu-ext] ${message}`)
+  };
   var state = {
     connected: false,
     lastConnected: null,
@@ -309,7 +535,13 @@
   function setupSocketHandlers(socket) {
     socket.onmessage = async (event) => {
       try {
-        const request2 = JSON.parse(event.data);
+        const parsed = JSON.parse(event.data);
+        const inbound = classifyInbound(parsed);
+        if (inbound.kind !== "request") {
+          handleControlMessage(inbound);
+          return;
+        }
+        const request2 = parsed;
         const response = await handleRequest(request2);
         logOp(request2.action, response.success);
         socket.send(JSON.stringify(response));
@@ -328,11 +560,26 @@
       console.log(`[abu-ext] Disconnected (code: ${event.code})`);
       state.connected = false;
       ws = null;
+      tabClaims.releaseAll();
       scheduleReconnect();
     };
     socket.onerror = (err) => {
       console.error("[abu-ext] WebSocket error:", err);
     };
+  }
+  function handleControlMessage(inbound) {
+    if (inbound.kind === "release") {
+      const dropped = tabClaims.releaseOwner(inbound.ownerId, inbound.runId);
+      if (dropped > 0) {
+        console.log(`[abu-ext] Released ${dropped} tab claim(s) for ${inbound.ownerId}`);
+      }
+      return;
+    }
+    if (inbound.kind === "cancel") {
+      console.log(`[abu-ext] Cancel received for ${inbound.requestId} (in-flight work is not stopped)`);
+      return;
+    }
+    console.log(`[abu-ext] Ignoring unrecognized control message: ${inbound.type}`);
   }
   function scheduleReconnect() {
     if (reconnectTimer) return;
@@ -373,9 +620,40 @@
       return false;
     }
   }
+  function normalizedOrigin(href) {
+    try {
+      const parsed = new URL(String(href ?? ""));
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      const hostname = parsed.hostname.endsWith(".") ? parsed.hostname.slice(0, -1) : parsed.hostname;
+      if (!hostname) return null;
+      return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ""}`;
+    } catch {
+      return null;
+    }
+  }
+  async function assertTabOriginPin(tabId2, payload2, getTab = (id2) => chrome.tabs.get(id2)) {
+    const expected = typeof payload2.expectedOrigin === "string" ? payload2.expectedOrigin : "";
+    if (!expected) {
+      if (payload2.unattended !== true) return;
+      throw new Error(
+        "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
+      );
+    }
+    let current;
+    try {
+      current = normalizedOrigin((await getTab(tabId2))?.url);
+    } catch {
+      current = null;
+    }
+    if (current === expected) return;
+    throw new Error(
+      `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
+    );
+  }
   async function handleRequest(request) {
     const { id, action, payload } = request;
     try {
+      const tabId = TAB_TARGETED_ACTIONS.has(action) ? await resolveTargetTab(tabClaims, action, payload, tabResolution) : -1;
       switch (action) {
         case "get_tabs": {
           const [allWindows, tabs, lastFocusedWindow] = await Promise.all([
@@ -420,17 +698,26 @@
             }
           }
           console.log(`[abu-ext] get_tabs result: strategy=${strategy}, targetWindowId=${targetWindowId}`);
-          let focusedTabId;
-          if (lastActiveTabId) {
-            const trackedTab = tabs.find((t) => t.id === lastActiveTabId);
-            if (trackedTab) {
-              focusedTabId = lastActiveTabId;
+          const listing = tabListingFor(
+            tabClaims,
+            ownerFromPayload(payload),
+            tabs.flatMap((t) => t.id === void 0 ? [] : [t.id]),
+            () => {
+              let legacyFocused;
+              if (lastActiveTabId) {
+                const trackedTab = tabs.find((t) => t.id === lastActiveTabId);
+                if (trackedTab) {
+                  legacyFocused = lastActiveTabId;
+                }
+              }
+              if (!legacyFocused && targetWindowId) {
+                const activeInTarget = tabs.find((t) => t.active && t.windowId === targetWindowId);
+                legacyFocused = activeInTarget?.id ?? void 0;
+              }
+              return legacyFocused ?? null;
             }
-          }
-          if (!focusedTabId && targetWindowId) {
-            const activeInTarget = tabs.find((t) => t.active && t.windowId === targetWindowId);
-            focusedTabId = activeInTarget?.id ?? void 0;
-          }
+          );
+          const focusedTabId = listing.currentTabId ?? void 0;
           const normalTabs = tabs.filter((t) => normalWindowIds.has(t.windowId));
           const windowGroups = {};
           for (const t of normalTabs) {
@@ -443,13 +730,23 @@
             return {
               windowId,
               isCurrentWindow: isCurrent,
-              tabs: wTabs.map((t) => ({
-                tabId: t.id,
-                url: t.url ?? "",
-                title: t.title ?? "",
-                active: t.active,
-                isCurrentTab: t.id === focusedTabId
-              }))
+              // `active` stays Chrome's own truth (which tab the user is looking
+              // at in that window); `isCurrentTab` is the owner-scoped one. The
+              // ownership marks tell a task which tabs are already being driven,
+              // so it does not pick one that would only be refused — and are
+              // simply absent for the tabs nobody holds, and for legacy callers.
+              tabs: wTabs.map((t) => {
+                const held = t.id === void 0 ? void 0 : listing.ownership.get(t.id);
+                return {
+                  tabId: t.id,
+                  url: t.url ?? "",
+                  title: t.title ?? "",
+                  active: t.active,
+                  isCurrentTab: t.id === focusedTabId,
+                  ...held === "you" ? { ownedByYou: true } : {},
+                  ...held === "other" ? { ownedByOther: true } : {}
+                };
+              })
             };
           });
           windows.sort((a, b) => (b.isCurrentWindow ? 1 : 0) - (a.isCurrentWindow ? 1 : 0));
@@ -472,7 +769,6 @@
           return { id, success: true, data: recentDownloads };
         }
         case "screenshot": {
-          const tabId = payload.tabId;
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
             await chrome.tabs.update(tabId, { active: true });
@@ -482,7 +778,6 @@
           return { id, success: true, data: dataUrl };
         }
         case "screenshot_full_page": {
-          const tabId = payload.tabId;
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
             await chrome.tabs.update(tabId, { active: true });
@@ -492,7 +787,6 @@
           return { id, success: true, data: result };
         }
         case "navigate": {
-          const tabId = payload.tabId;
           const navAction = payload.action ?? "goto";
           if (navAction === "goto" && payload.url) {
             const url = payload.url;
@@ -518,13 +812,16 @@
           }
           return { id, success: true, data: `Navigation: ${navAction}` };
         }
+        // Both dialog cases consume the OWNER-RESOLVED `tabId` from the top of
+        // this function (they are in `TAB_TARGETED_ACTIONS`), never
+        // `payload.tabId`: reading the payload raw here would let one task read
+        // and answer dialogs on a tab another task has claimed — the exact
+        // isolation `resolveTargetTab` exists to enforce.
         case "get_dialog": {
-          const tabId = payload.tabId;
           const state2 = await runInPageWorld(tabId, pageWorldReadDialogState, []);
           return { id, success: true, data: chromeGetDialogResult(tabId, state2) };
         }
         case "handle_dialog": {
-          const tabId = payload.tabId;
           const dialogAction = payload.action;
           if (dialogAction !== "accept" && dialogAction !== "dismiss") {
             return { id, success: false, error: "handle_dialog needs action: 'accept' or 'dismiss'." };
@@ -538,10 +835,10 @@
           return { id, success: true, data: chromeHandleDialogResult(tabId, dialogAction, state2) };
         }
         case "execute_js": {
-          const execTabId = payload.tabId;
           const code = payload.code;
+          await assertTabOriginPin(tabId, payload);
           const results = await chrome.scripting.executeScript({
-            target: { tabId: execTabId },
+            target: { tabId },
             func: (jsCode) => {
               return eval(jsCode);
             },
@@ -554,10 +851,6 @@
           if (!CONTENT_SCRIPT_ACTIONS.has(action)) {
             return { id, success: false, error: `Unknown action: ${action}` };
           }
-          const tabId = typeof payload.tabId === "number" ? payload.tabId : lastActiveTabId;
-          if (!tabId) {
-            return { id, success: false, error: "No active browser tab is available. Call get_tabs and pass tabId." };
-          }
           const result = await sendToContentScript(tabId, action, payload);
           return { id, success: true, data: result };
         }
@@ -568,29 +861,32 @@
     }
   }
   var injectedTabs = /* @__PURE__ */ new Set();
-  chrome.tabs.onRemoved.addListener((tabId) => injectedTabs.delete(tabId));
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (changeInfo.status === "loading") injectedTabs.delete(tabId);
+  chrome.tabs.onRemoved.addListener((tabId2) => {
+    injectedTabs.delete(tabId2);
+    tabClaims.releaseTab(tabId2);
   });
-  async function ensureContentScript(tabId) {
-    if (injectedTabs.has(tabId)) return;
+  chrome.tabs.onUpdated.addListener((tabId2, changeInfo) => {
+    if (changeInfo.status === "loading") injectedTabs.delete(tabId2);
+  });
+  async function ensureContentScript(tabId2) {
+    if (injectedTabs.has(tabId2)) return;
     try {
       await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
+        target: { tabId: tabId2, allFrames: true },
         files: ["content.js"]
       });
-      injectedTabs.add(tabId);
+      injectedTabs.add(tabId2);
     } catch {
-      injectedTabs.add(tabId);
+      injectedTabs.add(tabId2);
     }
   }
-  async function sendToContentScript(tabId, action2, payload2) {
-    await ensureContentScript(tabId);
+  async function sendToContentScript(tabId2, action2, payload2) {
+    await ensureContentScript(tabId2);
     const doSend = () => new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`Content script did not respond within ${CONTENT_SCRIPT_TIMEOUT / 1e3}s (action: ${action2})`));
       }, CONTENT_SCRIPT_TIMEOUT);
-      chrome.tabs.sendMessage(tabId, { action: action2, payload: payload2 }, (response) => {
+      chrome.tabs.sendMessage(tabId2, { action: action2, payload: payload2 }, (response) => {
         clearTimeout(timer);
         if (chrome.runtime.lastError) {
           reject(new Error(chrome.runtime.lastError.message));
@@ -606,9 +902,9 @@
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       if (msg.includes("context invalidated") || msg.includes("Receiving end does not exist")) {
-        console.log(`[abu-ext] Content script stale for tab ${tabId}, re-injecting...`);
-        injectedTabs.delete(tabId);
-        await ensureContentScript(tabId);
+        console.log(`[abu-ext] Content script stale for tab ${tabId2}, re-injecting...`);
+        injectedTabs.delete(tabId2);
+        await ensureContentScript(tabId2);
         return doSend();
       }
       throw err;
@@ -669,21 +965,21 @@
     });
     offscreenCreated = true;
   }
-  async function captureFullPage(tabId, windowId) {
-    const dims = await sendToContentScript(tabId, "fullpage_prepare", {});
+  async function captureFullPage(tabId2, windowId) {
+    const dims = await sendToContentScript(tabId2, "fullpage_prepare", {});
     const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
     const sliceCount = Math.ceil(scrollHeight / viewportHeight);
     const slices = [];
     try {
       for (let i = 0; i < sliceCount; i++) {
         const scrollTop = i * viewportHeight;
-        await sendToContentScript(tabId, "fullpage_scroll", { scrollTop });
+        await sendToContentScript(tabId2, "fullpage_scroll", { scrollTop });
         await new Promise((r) => setTimeout(r, 600));
         const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
         slices.push(dataUrl);
       }
     } finally {
-      await sendToContentScript(tabId, "fullpage_restore", { scrollX, scrollY }).catch(() => {
+      await sendToContentScript(tabId2, "fullpage_restore", { scrollX, scrollY }).catch(() => {
       });
     }
     const lastSliceHeight = scrollHeight - (sliceCount - 1) * viewportHeight;

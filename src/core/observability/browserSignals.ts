@@ -26,6 +26,11 @@
  */
 import { getPlatform } from '../../utils/platform';
 import { APP_VERSION } from '../../utils/version';
+// Type-only: erased at build time, so this module stays runtime-dependency-free
+// (see the module doc). Importing the union instead of re-declaring it is
+// deliberate — a hand-copied second definition is how the operation-class
+// vocabulary drifts between the gate and the report that describes the gate.
+import type { BrowserOperationClass, BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
 
 // ── Event shapes ──────────────────────────────────────────────────────────
 
@@ -42,7 +47,59 @@ export type BrowserSignalEvent =
    *  module never records any (see the module header). */
   | { kind: 'js_dialog'; event: 'opened' | 'handled' | 'timed_out'; dialogType: string; action?: 'accept' | 'dismiss' }
   | { kind: 'tab_lifetime'; event: 'created' | 'closed'; aliveMs?: number }
-  | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean };
+  | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean }
+  /**
+   * U7 / G1 — the authorization gate refused a browser action.
+   *
+   * Until this event existed, a refusal left NO trace here at all: the run
+   * result carried a sentence and the tool result carried a diagnostic, but
+   * the signal buffer (and therefore the unattended task report) saw an
+   * action that simply never happened. A report whose "blocked actions"
+   * section is structurally always empty is worse than no report.
+   *
+   * `reason` is the SAME closed taxonomy the gate uses to pick the sentence
+   * it shows the user (`browserToolPolicy.BrowserDenialReasonCode`), not a
+   * parallel string set — one vocabulary, two renderings.
+   */
+  | {
+      kind: 'gate_denied';
+      tool: string;
+      opClass: BrowserOperationClass;
+      origin?: string;
+      reason: BrowserDenialReasonCode;
+      runMode: 'attended' | 'unattended';
+    }
+  /**
+   * U7 / G2 — a human answered (or failed to answer) an unattended approval
+   * over IM. This is the ONLY human decision in the whole unattended path,
+   * and it used to land without a trace.
+   *
+   * Recorded once per real round-trip: a coalesced follower or a cached
+   * answer must NOT emit another one, or "you approved 1 time" becomes "you
+   * approved 14 times" for a chatty tool.
+   */
+  | {
+      kind: 'approval';
+      via: 'im';
+      outcome: BrowserApprovalOutcome;
+      opClass: BrowserOperationClass;
+      origin?: string;
+    };
+
+/**
+ * What became of one approval round-trip. Mirrors `ImApprovalResult.cause`
+ * (`core/im/pendingApprovals.ts`) rather than re-bucketing it: "nobody
+ * answered" and "there was nobody to ask" are different things to tell a user
+ * at 8am, and collapsing them here would make the report unable to say which.
+ */
+export type BrowserApprovalOutcome =
+  | 'approved'
+  | 'declined'
+  | 'timeout'
+  | 'no-channel'
+  | 'too-many'
+  | 'undeliverable'
+  | 'aborted';
 
 /** Fields the collection layer (registry.ts et al.) attaches uniformly to every event. */
 export interface BrowserSignalContext {
@@ -50,10 +107,29 @@ export interface BrowserSignalContext {
   appVersion: string;
   channel: 'builtin' | 'chrome';
   conversationId?: string;
+  /**
+   * The agent loop this signal was produced by (`ToolExecutionContext.loopId`).
+   * Absent for collection points that have no loop in hand (the workspace-tab
+   * lifecycle in `previewStore.ts`). Carried so a run's signals can be
+   * correlated in a diagnostic bundle; the run report slices with the
+   * sequence cursor below, which does not depend on it being present.
+   */
+  loopId?: string;
   ts: number;
 }
 
 export type BrowserSignalRecord = BrowserSignalEvent & BrowserSignalContext;
+
+/**
+ * A record as it sits in the buffer: stamped with a process-monotonic sequence
+ * number by `recordBrowserSignal`.
+ *
+ * This is what makes "the signals THIS run produced" answerable without a
+ * clock. A consumer captures `getBrowserSignalCursor()` before the run and
+ * keeps records whose `seq` is greater — immune to clock skew, DST, an NTP
+ * step, and to two runs of the same scheduled task sharing a conversation.
+ */
+export type StoredBrowserSignalRecord = BrowserSignalRecord & { seq: number };
 
 export function buildBrowserSignalRecord(
   event: BrowserSignalEvent,
@@ -129,12 +205,14 @@ export function buildBrowserSignalContext(
   channel: 'builtin' | 'chrome',
   conversationId?: string,
   now: number = Date.now(),
+  loopId?: string,
 ): BrowserSignalContext {
   return {
     platform: resolvedPlatform(),
     appVersion: APP_VERSION,
     channel,
     ...(conversationId ? { conversationId } : {}),
+    ...(loopId ? { loopId } : {}),
     ts: now,
   };
 }
@@ -448,20 +526,40 @@ export function deriveTargetKey(toolName: string, input: Record<string, unknown>
 // (only logger.ts's warn/error path persists eagerly), and adding one here
 // would be new always-on disk I/O this batch does not ask for.
 const MAX_BROWSER_SIGNAL_ENTRIES = 5000;
-let browserSignalBuffer: BrowserSignalRecord[] = [];
+let browserSignalBuffer: StoredBrowserSignalRecord[] = [];
 let browserSignalWriteIndex = 0;
 let browserSignalCount = 0;
+/**
+ * Process-monotonic signal counter — the "which run produced this" key.
+ *
+ * Deliberately NOT reset by `clearBrowserSignals()`: a cursor captured before
+ * a clear must stay a lower bound afterwards. Resetting would make every
+ * surviving record look newer than that cursor and pull a previous run's
+ * actions into the next run's report — the exact cross-run bleed the cursor
+ * exists to prevent.
+ */
+let browserSignalSeq = 0;
+
+/**
+ * A lower bound on the signals that come next. Capture before a run, pass to
+ * `buildBrowserRunReport` as `sinceSeq` after it.
+ */
+export function getBrowserSignalCursor(): number {
+  return browserSignalSeq;
+}
 
 /** Never throws — a bad/malformed record is silently dropped. Observability
  *  must never become a reason the app misbehaves. */
 export function recordBrowserSignal(record: BrowserSignalRecord): void {
   try {
     if (!record || typeof record !== 'object') return;
+    browserSignalSeq++;
+    const stored: StoredBrowserSignalRecord = { ...record, seq: browserSignalSeq };
     if (browserSignalCount < MAX_BROWSER_SIGNAL_ENTRIES) {
-      browserSignalBuffer.push(record);
+      browserSignalBuffer.push(stored);
       browserSignalCount++;
     } else {
-      browserSignalBuffer[browserSignalWriteIndex] = record;
+      browserSignalBuffer[browserSignalWriteIndex] = stored;
     }
     browserSignalWriteIndex = (browserSignalWriteIndex + 1) % MAX_BROWSER_SIGNAL_ENTRIES;
   } catch {
@@ -469,10 +567,10 @@ export function recordBrowserSignal(record: BrowserSignalRecord): void {
   }
 }
 
-export function getRecentBrowserSignals(): BrowserSignalRecord[] {
+export function getRecentBrowserSignals(): StoredBrowserSignalRecord[] {
   const total = Math.min(browserSignalCount, MAX_BROWSER_SIGNAL_ENTRIES);
   const start = browserSignalCount < MAX_BROWSER_SIGNAL_ENTRIES ? 0 : browserSignalWriteIndex;
-  const result: BrowserSignalRecord[] = [];
+  const result: StoredBrowserSignalRecord[] = [];
   for (let i = 0; i < total; i++) result.push(browserSignalBuffer[(start + i) % MAX_BROWSER_SIGNAL_ENTRIES]);
   return result;
 }

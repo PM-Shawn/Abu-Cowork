@@ -2474,7 +2474,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 7,
+      version: 8,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2491,6 +2491,13 @@ export const useChatStore = create<ChatStore>()(
         // payload — persisted state (conversationIndex) is unchanged, so this is a
         // no-op bump that just guards against older builds mis-reading the schema.
         if (version < 7) { /* no transform needed */ }
+        // v7 → v8: added the unattended browser run report card (U7) — an
+        // append-only Message (id prefix `browser-run-report-`) carrying an
+        // optional `browserRunReport` snapshot. Same shape of change as v6→v7:
+        // messages live in JSONL, not in the persisted `conversationIndex`, so
+        // there is nothing to transform. The bump exists so an older build
+        // cannot silently mis-read a newer store.
+        if (version < 8) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

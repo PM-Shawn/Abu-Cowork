@@ -331,13 +331,35 @@ function ownerKeyOf(id) {
  * that neither side had produced alone.
  *
  * Attribution is a plain time window. `before-input-event` and `focus` on a
- * view are the USER only while `aiActionDepth === 0`; every automation action
- * runs with that depth raised, so `keyboardAutomation`'s own
- * `webContents.focus()` + `sendInputEvent()` are excluded without needing to
- * tag individual events. The depth is deliberately GLOBAL, not per owner:
- * during owner A's action, owner B's real input is misread as automation. That
- * error is one-directional (a missed backoff, never a new block) and the window
- * is milliseconds wide, so it is accepted rather than tracked per owner.
+ * view are the USER only while no automation action is holding THAT VIEW (see
+ * `aiOwnsGuestEvents`); an action that injects input runs with its target
+ * view's depth raised, so `keyboardAutomation`'s own `webContents.focus()` +
+ * `sendInputEvent()` are excluded without needing to tag individual events.
+ *
+ * Both halves of that sentence used to be wider, and the width was the bug
+ * (F0, 2026-09-05): the depth was ONE GLOBAL counter raised for EVERY action
+ * for its whole duration. `wait_for`'s timeout is caller-supplied and
+ * unbounded (`abu-browser-bridge`'s schema defaults it to 30s), so a single
+ * `wait_for` silently swallowed every keystroke the user made anywhere — in
+ * another task's tab AND in the waiting task's own page — for as long as it
+ * ran. The old comment here called the window "milliseconds wide"; that
+ * premise never held for the read-only long-waiters. Two rules now keep it
+ * true:
+ *
+ *  1. Only `ATTRIBUTION_SUPPRESSING_ACTIONS` raise a depth at all. A read-only
+ *     action (`wait_for`, snapshots, the extract_ pair, screenshots, get_html)
+ *     synthesizes no input and loads no page, so it has no events of its own
+ *     to exclude and must not hide the user's.
+ *  2. The depth is per VIEW, not global. Owner A's `click` cannot mask real
+ *     input landing on owner B's tab, nor on A's other tabs.
+ *
+ * A short GLOBAL phase remains, because `performBrowserAutomation` is entered
+ * before the target view is known (`get_tabs` may still have to create it).
+ * Its bound is structural rather than temporal: the scope is narrowed to a
+ * single view id in the same synchronous run as the entry — at the `match` for
+ * a tab-addressed action, and at id-mint time (before `emit`) for a
+ * provisioning `get_tabs` — so no `await` can land inside it and nothing can
+ * fire there. See `createAiActionScope`.
  *
  * State-changing actions then wait for a quiet window before running. Read-only
  * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
@@ -398,6 +420,56 @@ const TAKEOVER_GATED_ACTIONS = new Set([
   'execute_js',
   'scroll',
   'start_recording',
+]);
+
+/**
+ * The actions whose OWN side effects can look like the user, and which
+ * therefore suppress attribution on the view they touch (F0).
+ *
+ * It is `TAKEOVER_GATED_ACTIONS` plus `get_tabs`, and the two additions to the
+ * gated list are for the same reason the gated list has them:
+ *  - every gated action either injects input (`click`/`fill`/`select`/
+ *    `keyboard`/`scroll`/`start_recording`, and `execute_js`, which can
+ *    synthesize anything) or commits a navigation, and Chromium hands the
+ *    guest frame keyboard focus on a navigation commit (F1 above);
+ *  - `get_tabs` is the one listing that can PROVISION — it creates a view and
+ *    loads `about:blank` into it, i.e. it commits a navigation too.
+ *
+ * Everything else (`wait_for`, `snapshot`, `get_html`, `extract_text`,
+ * `extract_table`, `screenshot`, `screenshot_full_page`, `stop_recording`,
+ * `get_downloads`) only reads. It produces no guest event, so suppressing
+ * during it can only ever hide the user — which is exactly what F0 was.
+ */
+const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
+
+/**
+ * ## Execution-time origin pin (U5)
+ *
+ * Abu's approval gate resolves WHICH PAGE an action targets, decides, and then
+ * the call travels here. In between, the page can move — a server redirect, a
+ * `window.location`, a meta refresh — and until this check existed nothing
+ * rechecked: a click approved for `https://shop.example.com` executed on
+ * whatever the tab had drifted to. That is a TOCTOU gap, and an unattended run
+ * is exactly where nobody notices it.
+ *
+ * The gate stamps the approved origin into `_meta['abu/expectedOrigin']`
+ * (never the tool's input schema, so the model can neither read nor forge it);
+ * this set names the actions that must match it before executing.
+ *
+ * Two deliberate exemptions:
+ * - READ-ONLY actions (snapshot/screenshot/extract/scroll/…): they change
+ *   nothing, and the run's site verdict already gated whether it may read at
+ *   all. A drifted read returns a page the model can see is different.
+ * - `navigate` ITSELF: its target IS the thing the gate approved, and the tab's
+ *   current origin is by definition the page it is leaving. Pinning it would
+ *   refuse every navigation away from anywhere.
+ */
+const ORIGIN_PINNED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'execute_js',
 ]);
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
@@ -595,8 +667,93 @@ function takeReclaimLiftedNotice(owner) {
   return RECLAIM_LIFTED_NOTICE;
 }
 
-/** >0 while an automation action is executing — its own events are not the user. */
-let aiActionDepth = 0;
+/**
+ * >0 while an automation action is executing but has not yet been narrowed to
+ * one view. Only the entry of `performBrowserAutomation` and the code up to
+ * the scope's `bind` runs under it, and that stretch contains no `await` on
+ * any path (see `createAiActionScope`), so no guest event can be observed
+ * while it is raised.
+ */
+let globalAiActionDepth = 0;
+
+/** viewId -> >0 while an automation action is acting on THAT view. */
+const aiActionDepthByView = new Map();
+
+/** True when events on `viewId` right now are automation's own, not the user's. */
+function aiOwnsGuestEvents(viewId) {
+  if (globalAiActionDepth > 0) return true;
+  return (aiActionDepthByView.get(viewId) || 0) > 0;
+}
+
+function addViewActionDepth(viewId, delta) {
+  const next = (aiActionDepthByView.get(viewId) || 0) + delta;
+  // Deleting at zero keeps the map from growing one dead entry per view a long
+  // session ever automated (the same reason `forgetOwnerInteractionIfUnused`
+  // exists) — a view id is never reused, so there is nothing to preserve.
+  if (next > 0) aiActionDepthByView.set(viewId, next);
+  else aiActionDepthByView.delete(viewId);
+}
+
+/**
+ * One automation call's attribution suppression.
+ *
+ * Lifecycle: created at `performBrowserAutomation` entry (global phase),
+ * narrowed by `bindAiActionScope` to the single view the call turns out to
+ * touch, released in the caller's `finally`. A read-only action gets an INERT
+ * scope that never suppresses anything — that is rule 1 of the F0 fix.
+ */
+function createAiActionScope(action) {
+  if (!ATTRIBUTION_SUPPRESSING_ACTIONS.has(action)) return { global: false, viewId: null };
+  globalAiActionDepth += 1;
+  return { global: true, viewId: null };
+}
+
+/**
+ * Narrow a scope from "every view" to `viewId`. Called the moment the target
+ * is known and before anything can await, so the global phase never spans a
+ * suspension point. A second call is a no-op: one automation call suppresses
+ * one view.
+ */
+function bindAiActionScope(scope, viewId) {
+  if (!scope.global) return;
+  addViewActionDepth(viewId, 1);
+  scope.viewId = viewId;
+  scope.global = false;
+  globalAiActionDepth -= 1;
+}
+
+function endAiActionScope(scope) {
+  if (scope.global) {
+    scope.global = false;
+    globalAiActionDepth -= 1;
+    return;
+  }
+  if (scope.viewId !== null) {
+    addViewActionDepth(scope.viewId, -1);
+    scope.viewId = null;
+  }
+}
+
+/**
+ * Run `fn` with this scope's suppression lifted, then put it back — used for
+ * the takeover wait, where observing the user is the entire point.
+ */
+async function withAiAttributionLifted(scope, fn) {
+  const lifted = scope.global || scope.viewId !== null;
+  const viewId = scope.viewId;
+  if (lifted) {
+    if (scope.global) globalAiActionDepth -= 1;
+    else addViewActionDepth(viewId, -1);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (lifted) {
+      if (scope.global) globalAiActionDepth += 1;
+      else addViewActionDepth(viewId, 1);
+    }
+  }
+}
 
 /**
  * The backoff is a wall-clock wait of up to 10 seconds, which no test can sit
@@ -695,12 +852,233 @@ function backoffDelayForLevel(level) {
   return Math.min(BACKOFF_BASE_MS * 2 ** (level - 1), BACKOFF_CAP_MS);
 }
 
-function originOf(urlString) {
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * produces, so the pin compares like with like: http(s) only, host lowercased
+ * by URL, default ports dropped by URL, and a trailing FQDN dot stripped —
+ * `evil.com.` and `evil.com` resolve to one host over DNS and must not be two
+ * different origins here either.
+ *
+ * Returns null for anything unparseable or non-http(s) (`about:blank`,
+ * `chrome-error://…`), which the pin treats as a mismatch. That is deliberate:
+ * a tab that crashed onto an error page is not the page the user approved.
+ *
+ * ## The ONLY origin spelling in this file (M2)
+ *
+ * There used to be a second one — a bare `new URL(u).origin` used by the 429
+ * backoff — and the two disagreed on exactly the inputs that matter: a
+ * trailing-FQDN-dot host got one key for the backoff and a different key for
+ * the login flag, and a non-http URL got the literal string `'null'` as a
+ * backoff key shared by every such page. Both maps in this file are keyed
+ * through here now, so "same site" means one thing.
+ */
+function normalizedOriginOf(urlString) {
   try {
-    return new URL(String(urlString || '')).origin;
+    const parsed = new URL(String(urlString || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
   } catch {
     return null;
   }
+}
+
+/**
+ * Enforce the U5 origin pin for one action. Throws (which the transport turns
+ * into a tool error the model reads) when the tab is no longer on the page the
+ * approval was given for.
+ *
+ * ## Both run modes COMPARE (review ruling I3)
+ *
+ * The first round scoped the comparison to unattended runs, on the theory that
+ * a watching human is their own control. They are not: the refusal only ever
+ * fires when the page genuinely drifted CROSS-ORIGIN between approval and
+ * execution, which is a bug in every run mode, and nobody perceives a
+ * sub-second redirect landing before their approved click. So a carried pin is
+ * checked whatever the mode.
+ *
+ * Only the MISSING-value rule stays unattended-only. An unattended pinned
+ * action with no `expectedOrigin` is refused — the gate never approves one (an
+ * unattended state-changing call requires a resolved, explicitly-allowed
+ * origin), so a missing pin means the chain broke, and absence must never be
+ * the permissive branch. An ATTENDED call that carried no pin keeps its exact
+ * pre-U5 path instead, which is what preserves attended byte-compat for every
+ * call shape that existed before this field.
+ *
+ * `payload.unattended` / `payload.expectedOrigin` are stamped by Abu's own
+ * approval gate over `_meta`, never the model-visible tool schema.
+ */
+function assertOriginPin(action, payload, view) {
+  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    if (payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
+        'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'
+    );
+  }
+  const current = normalizedOriginOf(view.webContents.getURL());
+  if (current === expected) return;
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, ` +
+      `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a ` +
+      'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier ' +
+      'approval does not carry over to a different site.'
+  );
+}
+
+/**
+ * ## Login-expiry detection (U6 / PRD F2.4)
+ *
+ * An unattended run that walks into an expired session does the worst possible
+ * thing today: it keeps clicking. Every click lands on a login wall, the run
+ * burns its turns, and nobody is told the one thing that would fix it — "log
+ * in again". So the main process records, per ORIGIN, that the site is asking
+ * for a login, and `get_tabs` reports it as `authState: 'login_required'`.
+ *
+ * ## Two signals, both main-process-derived
+ *
+ * 1. **An HTTP auth challenge on a MAIN-FRAME response.** A 401 always; a 403
+ *    only when it carries `WWW-Authenticate`. A bare 403 is "you may not have
+ *    this", which logging in again does not fix, and flagging it would send
+ *    the model to ask the user for a login they already have. Sub-resources are
+ *    excluded (the filter already narrows to `mainFrame`): an XHR 401 from a
+ *    background poller says nothing about whether the PAGE is usable.
+ * 2. **A navigation committing on a login-shaped URL** (`did-navigate`). This
+ *    is the redirect-to-login case, which returns 200 and therefore has no
+ *    HTTP signal at all.
+ *
+ * Both are ADVISORY inputs — they can make the gate refuse or make the model
+ * hand back, and they can never widen authorization (see the shell gate in
+ * `registry.ts`, where the flag is only ever read on the deny side).
+ *
+ * ## What a page CAN do to this flag (M1 — stated honestly)
+ *
+ * Not "beyond page influence". A page can clear its OWN origin's flag by
+ * navigating itself somewhere that answers 2xx (`location.href = '/anything'`),
+ * and an SPA can clear a `login-page`-sourced flag by routing away from the
+ * login URL. Both are acceptable because clearing only restores the PRE-U6
+ * baseline — the run goes back to acting under the master switch, the site
+ * verdict, the operation policy and the execution-time origin pin, none of
+ * which this flag touches. It can never widen past that baseline. Setting is
+ * the direction that is kept out of a page's reach: `did-navigate-in-page`
+ * (a `pushState`, which a page fires at will) may CLEAR but never SET.
+ *
+ * ## Three exits, because one was not enough (I1)
+ *
+ * 1. **A 2xx main-frame response on the same origin.** "The user logged in and
+ *    the page came back", as seen from HTTP.
+ *    Ordering works out because Chromium delivers headers BEFORE
+ *    `did-navigate`, so a 200 on `/login` clears and is then immediately
+ *    re-flagged by the URL shape, while a 200 on `/dashboard` clears and stays
+ *    clear.
+ * 2. **Routing off the login page**, for a `login-page`-sourced flag only. The
+ *    SPA case has no exit otherwise: `POST /api/login` is an XHR (excluded by
+ *    `types: ['mainFrame']`) and the redirect to `/dashboard` is a
+ *    `history.replaceState` (a `did-navigate-in-page`), so NO main-frame 2xx
+ *    ever happens and rule 1 never fires. Without this, an unattended run kept
+ *    refusing "the session has expired" after the user had signed in exactly
+ *    as asked. Scoped to `login-page` on purpose: an `auth-challenge` flag must
+ *    NOT be cleared by the very navigation that carried the 401 (the error page
+ *    commits a `did-navigate` on a non-login URL microseconds later).
+ * 3. **Staleness.** `at` is read, not just stored: a flag older than
+ *    `LOGIN_REQUIRED_TTL_MS` is not evidence about now. Expired entries are
+ *    pruned on read and on write, so the map cannot grow across origins that
+ *    logged out once and were never visited again — the same discipline
+ *    `originBackoff` above already applies, which this map was missing.
+ */
+const LOGIN_REQUIRED_TTL_MS = 10 * 60 * 1000;
+const LOGIN_PAGE_PATH_PATTERN = /(?:^|[/_.-])(sign-in|signin|oauth2|oauth|login|sso|auth)(?:[/_.-]|$)/i;
+
+/** origin -> { at: ts, source: 'auth-challenge' | 'login-page' }. */
+const loginRequiredOrigins = new Map();
+
+/**
+ * A deliberately small, segment-anchored list (`/authors`, `/authentic-brands`
+ * and `/ssometimes` must not match). Misses are preferred to false positives:
+ * a miss leaves today's behavior, a false positive tells the user their
+ * session expired when it did not.
+ */
+function isLoginPageUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(String(urlString || ''));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  let pathname = parsed.pathname;
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return LOGIN_PAGE_PATH_PATTERN.test(pathname);
+}
+
+/** 401 always; 403 only with an auth challenge header (see the module note). */
+function isAuthChallengeResponse(details) {
+  if (details.statusCode === 401) return true;
+  if (details.statusCode !== 403) return false;
+  const headers = details.responseHeaders;
+  if (!headers || typeof headers !== 'object') return false;
+  return Object.keys(headers).some((name) => name.toLowerCase() === 'www-authenticate');
+}
+
+/** Drop every entry past its TTL. Cheap: this map holds one key per origin. */
+function pruneLoginRequired() {
+  const now = clock.now();
+  for (const [origin, entry] of loginRequiredOrigins) {
+    if (now - entry.at >= LOGIN_REQUIRED_TTL_MS) loginRequiredOrigins.delete(origin);
+  }
+}
+
+function noteLoginRequired(urlString, source) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  pruneLoginRequired();
+  loginRequiredOrigins.set(origin, { at: clock.now(), source });
+}
+
+function clearLoginRequired(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (origin) loginRequiredOrigins.delete(origin);
+}
+
+/**
+ * Exit 2 (see the module note): the tab routed off the login page. Only a
+ * `login-page`-sourced flag may be cleared this way — an `auth-challenge` flag
+ * would otherwise be erased by the `did-navigate` that carries the 401 itself.
+ */
+function clearLoginPageFlagOnNavigation(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return;
+  const entry = loginRequiredOrigins.get(origin);
+  if (entry && entry.source === 'login-page') loginRequiredOrigins.delete(origin);
+}
+
+/**
+ * `'login_required'` or null. Null (rather than a `'ok'` sentinel) so callers
+ * can spread the key in only when there is something to say — a listing for a
+ * healthy tab keeps byte-for-byte the shape it had before this existed.
+ *
+ * Prunes on read, like `backoffRemainingMs`: a stale flag must not answer a
+ * question about now, and a listing is the one path guaranteed to run.
+ */
+function authStateForUrl(urlString) {
+  const origin = normalizedOriginOf(urlString);
+  if (!origin) return null;
+  const entry = loginRequiredOrigins.get(origin);
+  if (!entry) return null;
+  if (clock.now() - entry.at >= LOGIN_REQUIRED_TTL_MS) {
+    loginRequiredOrigins.delete(origin);
+    return null;
+  }
+  return 'login_required';
 }
 
 function registerRateLimitHit(origin) {
@@ -868,11 +1246,22 @@ function browserSessionForViews() {
   // would silently REPLACE this one (last registration wins), not add to it.
   browserSession.webRequest.onHeadersReceived({ urls: ['<all_urls>'], types: ['mainFrame'] }, (details, callback) => {
     if (details.resourceType === 'mainFrame') {
-      const origin = originOf(details.url);
+      // ONE origin spelling for both halves of this listener (M2) — see
+      // `normalizedOriginOf`.
+      const origin = normalizedOriginOf(details.url);
       if (details.statusCode === 429) {
         registerRateLimitHit(origin);
       } else if (details.statusCode >= 200 && details.statusCode < 300) {
         clearRateLimit(origin);
+      }
+      // U6 / F2.4 — the login-expiry half of the same listener. It must live in
+      // THIS callback body, not a second registration: Electron keeps only the
+      // last `onHeadersReceived` listener per session, so registering another
+      // one would silently delete the backoff above.
+      if (isAuthChallengeResponse(details)) {
+        noteLoginRequired(details.url, 'auth-challenge');
+      } else if (details.statusCode >= 200 && details.statusCode < 300) {
+        clearLoginRequired(details.url);
       }
     }
     callback({ cancel: false });
@@ -963,14 +1352,14 @@ function configureBrowserView(id, view) {
   // Attribution for the takeover backoff: outside an automation action, input
   // landing here is the user working in this view's owner's tab.
   const recordUserInteraction = () => {
-    if (aiActionDepth > 0) return;
+    if (aiOwnsGuestEvents(id)) return;
     userInteractionAt.set(ownerKeyOf(id), clock.now());
   };
   // Direct input on THIS view (keyboard or pointer) is what separates the
   // user really entering the guest from a navigation-commit focus steal (F1).
   let lastDirectGuestInputAt = 0;
   const recordDirectGuestInput = () => {
-    if (aiActionDepth > 0) return;
+    if (aiOwnsGuestEvents(id)) return;
     lastDirectGuestInputAt = clock.now();
   };
   contents.on('before-input-event', () => {
@@ -1001,6 +1390,22 @@ function configureBrowserView(id, view) {
   });
   contents.on('did-navigate', onNav);
   contents.on('did-navigate-in-page', onNav);
+  // U6 / F2.4 — the redirect-to-login case, which answers 200 and so leaves no
+  // HTTP signal.
+  //
+  // SETTING is restricted to real navigations: `did-navigate-in-page` is a
+  // `pushState`, i.e. something a page can fire at will, and a page must not be
+  // able to author this flag for itself. CLEARING listens to both, because
+  // clearing only ever restores the pre-U6 baseline (module note, M1) and the
+  // SPA sign-in that this fixes IS a `replaceState` (I1).
+  const onLoginShapeNavigation = (_event, navUrl) => {
+    if (isLoginPageUrl(navUrl)) noteLoginRequired(navUrl, 'login-page');
+    else clearLoginPageFlagOnNavigation(navUrl);
+  };
+  contents.on('did-navigate', onLoginShapeNavigation);
+  contents.on('did-navigate-in-page', (_event, navUrl) => {
+    if (!isLoginPageUrl(navUrl)) clearLoginPageFlagOnNavigation(navUrl);
+  });
   contents.once('destroyed', () => {
     automationRuntimeReady.delete(contents);
     // The auto-dismiss timer would otherwise hold this view id (and keep the
@@ -1072,8 +1477,10 @@ function findViewByTabId(tabId, owner = LEGACY_OWNER) {
  *   stopped — checked on every iteration of the adoption wait below, so a
  *   stopped run neither sits out the rest of the wait nor ends up owning a
  *   hidden fallback view it can never close (N8).
+ * @param {{global: boolean, viewId: string|null}} [scope] the caller's
+ *   attribution scope, narrowed onto the id minted here — see below.
  */
-async function createAutomationView(owner = LEGACY_OWNER, signal) {
+async function createAutomationView(owner = LEGACY_OWNER, signal, scope) {
   const win = mainWindow();
   if (!win || win.isDestroyed()) throw new Error('main window not found');
 
@@ -1082,6 +1489,12 @@ async function createAutomationView(owner = LEGACY_OWNER, signal) {
   // into browserCreate() synchronously on the main process, and that is where
   // the pending owner is consumed.
   pendingAutomationOwners.set(id, owner);
+  // The id is the view's identity from here on — `browserCreate` wires the
+  // adopted view to it, and the fallback below uses the same one. Narrowing
+  // the attribution scope onto it BEFORE the emit is what lets a provisioning
+  // `get_tabs` hold its own new view's navigation-commit focus (F1) without
+  // holding every other task's tab for the length of the adoption wait (F0).
+  if (scope) bindAiActionScope(scope, id);
   // Tell the renderer WHOSE view this is: it hangs the adopted tab on that
   // conversation, so a background task's tab never lands in the conversation
   // the user happens to be looking at. LEGACY_OWNER sends no ownerId at all —
@@ -1173,8 +1586,12 @@ async function createAutomationView(owner = LEGACY_OWNER, signal) {
  * @param {AbortSignal} [signal] forwarded to the adoption wait (see
  *   `createAutomationView`) — provisioning is the one listing path that can
  *   block for seconds, so a stopped run must not sit it out.
+ * @param {{global: boolean, viewId: string|null}} [scope] forwarded to
+ *   `createAutomationView` for the same reason: provisioning is the one
+ *   listing path that blocks, so it must not block under a GLOBAL attribution
+ *   hold.
  */
-async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal) {
+async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal, scope) {
   const tabs = [];
   for (const [id, view] of views) {
     const contents = view.webContents;
@@ -1189,13 +1606,14 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: contents.getURL(),
       title: contents.getTitle(),
       legacy: isLegacyOwner(tabOwner),
+      authState: authStateForUrl(contents.getURL()),
     });
   }
   // The reclaim block lives HERE rather than at the call site so every path
   // that could mint a view answers to it — including a run whose own window was
   // never opened, which is exactly how a fresh delegation used to walk around it.
   if (tabs.length === 0 && createIfEmpty && !conversationIsReclaimed(owner.conversationId)) {
-    const view = await createAutomationView(owner, signal);
+    const view = await createAutomationView(owner, signal, scope);
     tabs.push({
       id: Array.from(views.entries()).find(([, candidate]) => candidate === view)[0],
       view,
@@ -1203,6 +1621,7 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
       url: view.webContents.getURL(),
       title: view.webContents.getTitle(),
       legacy: isLegacyOwner(owner),
+      authState: authStateForUrl(view.webContents.getURL()),
     });
   }
   if (tabs.length > 0) {
@@ -1713,17 +2132,19 @@ async function handleDialogAction(tabId, id, payload) {
  */
 async function performBrowserAutomation(action, payload = {}, opts) {
   const signal = opts && opts.signal;
-  // Everything this call does — including creating and loading views — is
-  // automation, so nothing it triggers may be mistaken for the user.
-  aiActionDepth += 1;
+  // What this call does to the view it ends up touching — injecting input,
+  // committing a navigation, loading a view it just created — is automation,
+  // so nothing it triggers there may be mistaken for the user. Everything
+  // OUTSIDE that one view, and every read-only action, stays the user's (F0).
+  const scope = createAiActionScope(action);
   try {
-    return await runBrowserAutomation(action, payload, signal);
+    return await runBrowserAutomation(action, payload, signal, scope);
   } finally {
-    aiActionDepth -= 1;
+    endAiActionScope(scope);
   }
 }
 
-async function runBrowserAutomation(action, payload, signal) {
+async function runBrowserAutomation(action, payload, signal, scope) {
   // Checked before EVERYTHING else — including get_tabs/get_downloads, which
   // bypass every per-tab gate below — so a stopped run cannot still provision
   // and open a brand-new tab (or leak any other side effect) after Stop.
@@ -1742,7 +2163,7 @@ async function runBrowserAutomation(action, payload, signal) {
     // may now be none, shown to every run of the conversation because none of
     // them will be getting a new tab.
     const modelFacing = payload.createIfEmpty !== false;
-    const tabs = await automationTabs(owner, modelFacing, signal);
+    const tabs = await automationTabs(owner, modelFacing, signal, scope);
     // One `note` slot, two mutually interesting facts. A window that is open
     // NOW outranks one the user already lifted, and the owed one-shot is only
     // read (and, for the main loop, spent) on a listing a model will actually
@@ -1753,6 +2174,9 @@ async function runBrowserAutomation(action, payload, signal) {
     const win = mainWindow();
     const windowId = win && !win.isDestroyed() ? win.webContents.id : 1;
     const currentTabId = activeTabIdByOwner.get(ownerKey) ?? null;
+    // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
+    // for healthy tabs is byte-for-byte what it was before this existed.
+    const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
     return {
       summary: {
         totalWindows: 1,
@@ -1762,6 +2186,7 @@ async function runBrowserAutomation(action, payload, signal) {
         currentTabUrl: tabs.find((tab) => tab.tabId === currentTabId)?.url || '',
         currentTabTitle: tabs.find((tab) => tab.tabId === currentTabId)?.title || '',
         detectionStrategy: 'electron-in-app-browser',
+        ...(currentAuthState ? { authState: currentAuthState } : {}),
         ...(note ? { note } : {}),
       },
       windows: [{
@@ -1779,6 +2204,7 @@ async function runBrowserAutomation(action, payload, signal) {
           ...(pendingDialogs.has(tab.id)
             ? { dialogPending: pendingDialogs.get(tab.id).info.type }
             : {}),
+          ...(tab.authState ? { authState: tab.authState } : {}),
         })),
       }],
     };
@@ -1824,6 +2250,11 @@ async function runBrowserAutomation(action, payload, signal) {
     );
   }
   const { view } = match;
+  // The target is known: narrow attribution suppression from "every view" to
+  // this one, still inside the same synchronous run as the call's entry — no
+  // `await` has happened since `performBrowserAutomation` raised the global
+  // phase, so nothing could have been swallowed by it.
+  bindAiActionScope(scope, match.id);
 
   // Arm dialog interception on the tab this call is about to touch (see the
   // "Scope" note above `DIALOG_AUTO_DISMISS_MS`), before anything else: a
@@ -1865,8 +2296,8 @@ async function runBrowserAutomation(action, payload, signal) {
     // `navigateAutomationTab()`, which is the right place to report it.
     const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
     const backoffOrigin = isGotoNavigate
-      ? originOf(payload.url)
-      : originOf(view.webContents.getURL());
+      ? normalizedOriginOf(payload.url)
+      : normalizedOriginOf(view.webContents.getURL());
     const remainingMs = backoffRemainingMs(backoffOrigin);
     if (remainingMs > 0) {
       throw new Error(
@@ -1878,13 +2309,14 @@ async function runBrowserAutomation(action, payload, signal) {
     // Step outside the AI-attribution window for the wait itself: observing the
     // user is the entire point of it, and at depth>0 their keystrokes would be
     // filed as automation's own and the wait would end after one quiet poll.
-    aiActionDepth -= 1;
-    try {
-      await awaitUserIdle(match.id, signal);
-    } finally {
-      aiActionDepth += 1;
-    }
+    await withAiAttributionLifted(scope, () => awaitUserIdle(match.id, signal));
   }
+
+  // As LATE as possible, and after `awaitUserIdle`: the whole point is to
+  // compare against where the tab is at the moment of acting, and the idle wait
+  // above can last long enough for the page to move under it. Nothing
+  // side-effecting has happened yet at this line.
+  assertOriginPin(action, payload, view);
 
   // Same rule as the listing's promotion: a read-only look at the user's pane
   // tab mid-window must not leave that tab as this owner's current one, or the

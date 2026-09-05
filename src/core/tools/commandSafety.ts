@@ -6,6 +6,7 @@
 import { getI18n } from '../../i18n';
 import { isWindows } from '../../utils/platform';
 import { isReadOnlyCommand } from './readOnlyDetector';
+import type { BrowserOperationClass } from '../permissions/browserToolPolicy';
 
 export type DangerLevel = 'safe' | 'warn' | 'danger' | 'block';
 
@@ -43,6 +44,28 @@ export interface ConfirmationInfo {
    * guess.
    */
   allowPersistentGrant?: boolean;
+  /**
+   * Browser confirmations only: which operation class the action belongs to.
+   * Carried so a callback that is NOT the desktop dialog — an unattended
+   * tier's auto-approve callback, a future IM approval round-trip — can apply
+   * the operation-class policy itself instead of trusting that whoever built
+   * the request already did. Absent means "unclassified", and every consumer
+   * treats that as the strictest class.
+   */
+  browserOperationClass?: BrowserOperationClass;
+  /**
+   * Set when the requester has ALREADY refused this action and is calling the
+   * callback only so the run can ACCOUNT for the refusal — the scheduler turns
+   * these into its "blocked acting on example.com" run-result line, which is
+   * the only way a 3am task explains itself.
+   *
+   * It is a notification, not a request. The return value is not consulted,
+   * and a callback that sees this field must not treat it as an approval
+   * prompt — in particular it must never forward it to a human approval
+   * channel, since the decision is already made and asking would be a lie.
+   * Holds the user-facing reason for the refusal.
+   */
+  deniedNotice?: string;
 }
 
 /**

@@ -2,6 +2,7 @@ import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
 import { isIncompleteReason } from '../agent/agentLoop';
+import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyScheduledTaskCompleted,
@@ -19,13 +20,30 @@ import {
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
-import type { OutputContext } from '../im/adapters/types';
+import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
+import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { createUnattendedConfirmation } from '../permissions/unattendedConfirmation';
 import {
   buildSchedulerDriftSignal,
+  getBrowserSignalCursor,
   safeRecordSchedulerDriftSignal,
 } from '../observability/browserSignals';
+import {
+  browserRunReportOutcomeFor,
+  type BrowserRunReportSnapshot,
+} from '../observability/browserRunReport';
+import {
+  appendBrowserRunReportMessage,
+  buildUnattendedBrowserReport,
+} from '../observability/browserRunReportEmitter';
+import {
+  deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeSummary,
+  unattendedRunOutcomeMetadata,
+  type UnattendedRunOutcome,
+} from '../observability/unattendedRunOutcome';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
@@ -75,10 +93,21 @@ function permissionModeLabel(mode: PermissionMode): string {
  * "blocked on example.com, authorize it in Settings" message possible without
  * a separate accounting layer.
  */
-function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeId: string): {
+function resolveScheduledRunPermissions(
+  task: ScheduledTask,
+  authorizationScopeId: string,
+  conversationId?: string,
+): {
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
+  /**
+   * F1 — the same approval destination the callback closure carries, returned
+   * so the run can also publish it as trusted run context. Gates that build
+   * their own seam request (the browser gate) never call the callback, so the
+   * closure alone left them with nowhere to ask.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   getDenials: () => string[];
 } {
   // The workspace gets the same rights an interactive chat conversation would
@@ -95,16 +124,51 @@ function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeI
   // produce one line, not ten.
   const denials = new Set<string>();
 
+  /*
+    Where this run may ask, when its policy says「每次询问」.
+
+    A scheduled run mints a fresh conversation every time, so the seam's
+    fallback — the IM session bound to the conversation — never finds
+    anything, and until this was passed, every ask in an automatic task
+    refused itself with `no_binding`. The task already names a channel: the
+    one its RESULTS go to. Approvals now go to the same place, addressed the
+    same way (`resolveUnattendedImTarget` mirrors `pushToIMChannel`).
+
+    Null when the task nominates no channel — the old behavior, deliberately:
+    guessing a channel would route a 3am approval for someone's signed-in
+    banking session into a chat they never chose.
+  */
+  const imTarget = resolveUnattendedImTarget(task);
+
   return {
-    commandConfirmCallback: async (info) => {
-      const t = getI18n();
-      denials.add(
-        info.kind === 'browser' && info.browserOrigin
-          ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
-          : format(t.schedule.denialCommand, { command: info.command }),
-      );
-      return false;
-    },
+    // One seam for "an unattended run needs approval" (see
+    // `unattendedConfirmation.ts`) instead of a hand-rolled always-false
+    // closure per entry point. The recorder below turns a refusal into a
+    // user-readable line; the IM round-trip is what can now turn it into an
+    // approval instead.
+    commandConfirmCallback: createUnattendedConfirmation({
+      source: 'scheduler',
+      ...(conversationId !== undefined ? { conversationId } : {}),
+      ...(imTarget !== null ? { imTarget } : {}),
+      // Names the automation in the IM prompt: a user with several tasks
+      // cannot otherwise tell which one is asking.
+      runLabel: task.name,
+      onDenied: (reason, info) => {
+        const t = getI18n();
+        denials.add(
+          // A refusal the gate already explained (`deniedNotice`) carries the
+          // precise cause — master switch off, policy, blocked site — which is
+          // strictly better than re-deriving "site not authorized" from the
+          // origin alone. Name the site too when there is one, so the user
+          // knows WHERE it happened as well as why.
+          info.deniedNotice !== undefined
+            ? (info.browserOrigin ? `${reason} (${info.browserOrigin})` : reason)
+            : info.kind === 'browser' && info.browserOrigin
+              ? format(t.schedule.denialBrowserSite, { origin: info.browserOrigin })
+              : format(t.schedule.denialCommand, { command: info.command }),
+        );
+      },
+    }),
     filePermissionCallback: async (request) => {
       const t = getI18n();
       denials.add(format(t.schedule.denialFile, { path: request.path }));
@@ -112,6 +176,11 @@ function resolveScheduledRunPermissions(task: ScheduledTask, authorizationScopeI
     },
     // request_workspace pops a UI dialog a scheduled run can never answer.
     blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+    // Same two values the callback above closes over — see the return type.
+    unattendedApproval: {
+      ...(imTarget !== null ? { imTarget } : {}),
+      runLabel: task.name,
+    },
     getDenials: () => Array.from(denials),
   };
 }
@@ -224,11 +293,46 @@ class SchedulerEngine {
         ? { shell: 'full' }
         : undefined,
     );
+
+    /**
+     * U7 — the run report's window boundary (Ruling 2).
+     *
+     * Captured HERE, before a single tool can fire, and never from a clock:
+     * `getBrowserSignalCursor()` is a process-monotonic counter, so the
+     * boundary holds across an NTP step, a DST change, and a second run of the
+     * same task landing in the same conversation. Slicing by conversation
+     * alone would let last night's actions into tonight's report.
+     */
+    const browserSignalCursor = getBrowserSignalCursor();
+    /**
+     * What the card will say the run's ending was. Starts at 'error' so an
+     * exception thrown anywhere below still produces an honest card rather
+     * than none — a run that blew up is exactly the one worth reporting.
+     */
+    let reportOutcome = browserRunReportOutcomeFor('error', false);
+    /**
+     * Built ONCE per run, read twice: by the IM summary below (which must go
+     * out before the card is appended — see the `finally`) and by the card
+     * itself. One aggregation, so the two can never describe the same run
+     * differently.
+     */
+    let report: BrowserRunReportSnapshot | null | undefined;
+    /**
+     * One ending per run.
+     *
+     * The delivering branch pushes, and then keeps going — toasts, desktop
+     * notification, i18n lookups. Anything throwing in there lands in the
+     * outer `catch`, which would push a SECOND message saying the run failed,
+     * directly under the one that said it worked. Nothing on that stretch
+     * throws today (reviewed call by call), which is exactly why this is a
+     * one-line latch rather than a restructure.
+     */
+    let outcomePushed = false;
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
       // the finally below must still dispose the scope and release runningTasks.
-      const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
+      const permissions = resolveScheduledRunPermissions(task, authorizationScopeId, conversationId);
       const runPermissionCeiling = buildScheduledRunPermissionCeiling(
         getToolInvoker().getAllTools().map((tool) => tool.name),
       );
@@ -244,19 +348,42 @@ class SchedulerEngine {
         allowedTools,
         authorizationScopeId,
         runPermissionCeiling,
+        // F1 — published on the run so the browser gate can ask the task's own
+        // chat. The callback above carries the identical values for the gates
+        // that DO go through it; this is the same fact, on the channel the
+        // browser gate can actually read.
+        unattendedApproval: permissions.unattendedApproval,
+        // The tick started this run, not a person — unattended even if the
+        // user later types into the same conversation (that send is theirs).
+        initiatedBy: 'automation',
+      });
+
+      const abortedByBrowserDenials =
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE;
+      reportOutcome = browserRunReportOutcomeFor(result.reason, abortedByBrowserDenials);
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      const runOutcome = deriveUnattendedRunOutcome({
+        reason: result.reason,
+        abortedByBrowserDenials,
+        report,
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
       // it like a completion, just flagged as possibly incomplete, rather than
       // silently dropping the output. (no_progress / error / aborted have no usable
-      // output, so they skip delivery below.)
+      // output, so they skip the ANSWER below — but not the summary: F7.)
       if (result.reason === 'completed' || result.reason === 'max_turns') {
         const incomplete = result.reason === 'max_turns';
         useScheduleStore.getState().completeRun(task.id, runId);
 
         // Push results to IM channel if configured
         if (task.outputChannelId) {
-          await this.pushToIMChannel(task, conversationId);
+          await this.pushToIMChannel(task, conversationId, runOutcome);
+          outcomePushed = true;
         }
 
         const t = getI18n();
@@ -279,8 +406,16 @@ class SchedulerEngine {
       } else {
         // aborted, error, or no_progress (degenerate output) — no delivery; mark the
         // run with a reason-specific message instead of "Unknown error".
+        // An abort the RUN issued is not the same event as a user pressing
+        // Stop, and the run history has to say which: a task that stopped
+        // itself after consecutive browser refusals reads as a bare
+        // "cancelled" otherwise, and the one fact that explains it — the
+        // abort cause — has no reader anywhere.
         const baseError = result.error ?? (
-          result.reason === 'aborted' ? 'Task was cancelled'
+          result.reason === 'aborted'
+            ? (result.abortCause === BROWSER_DENIAL_ABORT_CAUSE
+              ? getI18n().schedule.abortedBrowserDenials
+              : 'Task was cancelled')
           : result.reason === 'no_progress' ? 'Stopped: the model produced no usable tool calls'
           : 'Unknown error'
         );
@@ -292,6 +427,22 @@ class SchedulerEngine {
           resolveEffectivePermissionMode(task),
         );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
+        /**
+         * F7 — the ending reaches the user WHERE THEY ARE.
+         *
+         * There is no answer to deliver on this branch (that is why it does
+         * not extract the conversation's last message), but "no usable
+         * output" and "say nothing" were wrongly the same decision: a task
+         * bound to an IM channel used to go completely silent on every
+         * failing terminal, which in IM is indistinguishable from never
+         * having run. The desktop notification below is not a substitute —
+         * 9am unattended runs exist precisely because nobody is at the
+         * machine.
+         */
+        if (task.outputChannelId) {
+          await this.pushOutcomeToIMChannel(task, runOutcome);
+          outcomePushed = true;
+        }
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
         }
@@ -306,6 +457,24 @@ class SchedulerEngine {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
+      // Same F7 reasoning as the else branch above. `reportOutcome` is still
+      // the 'error' it was initialized to, which is exactly what this is.
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      if (task.outputChannelId && !outcomePushed) {
+        await this.pushOutcomeToIMChannel(
+          task,
+          deriveUnattendedRunOutcome({
+            reason: 'error',
+            abortedByBrowserDenials: false,
+            report,
+          }),
+        );
+        // No latch here: this IS the last statement that can push.
+      }
       notifyScheduledTaskError(task.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -315,6 +484,24 @@ class SchedulerEngine {
       });
       console.error(`[Scheduler] Task error: ${task.name}`, err);
     } finally {
+      /**
+       * U7 — the morning report.
+       *
+       * In `finally` on purpose, for two reasons. It runs for EVERY terminal:
+       * a run that failed, was stopped, or aborted itself after repeated
+       * refusals is precisely the run the user needs an explanation for, and
+       * only the success branch used to write anything into the conversation
+       * at all. And it runs AFTER `pushToIMChannel`, whose `last_message`
+       * extraction would otherwise pick up this (deliberately text-less) card
+       * instead of the answer the task produced.
+       *
+       * Emits nothing when the run never touched the browser.
+       *
+       * F7 — the snapshot itself was built earlier (in `try`, or in `catch`),
+       * because the IM summary is derived from it and has to go out before
+       * this line appends the card. Same object, both surfaces.
+       */
+      appendBrowserRunReportMessage({ conversationId, report: report ?? null });
       disposeAuthorizationScope(authorizationScopeId);
       this.runningTasks.delete(task.id);
     }
@@ -338,7 +525,11 @@ class SchedulerEngine {
     return this.runningTasks.has(taskId);
   }
 
-  private async pushToIMChannel(task: ScheduledTask, conversationId: string) {
+  private async pushToIMChannel(
+    task: ScheduledTask,
+    conversationId: string,
+    outcome: UnattendedRunOutcome,
+  ) {
     const context: OutputContext = {
       triggerName: task.name,
       aiResponse: '',
@@ -352,8 +543,90 @@ class SchedulerEngine {
       extractMode: 'last_message' as const,
     };
 
-    const message = outputSender.buildMessage(conversationId, baseOutput, context);
+    const answer = outputSender.buildMessage(conversationId, baseOutput, context);
+    /**
+     * F7 — the ending goes in front of the answer, then a blank line.
+     *
+     * One line on the common path (a run that worked is just its label). A run
+     * that left the user something to do gets a second 「接下来：…」 line, which
+     * is the whole point of saying anything at all — the earlier comment here
+     * claimed "one line, never more", and the next person would have
+     * "fixed" the behavior to match it.
+     */
+    const message: AbuMessage = {
+      ...answer,
+      content: `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`,
+      // The same ending as data (F8-3). A scheduled task always delivers to a
+      // chat, so the sentence above is what a person reads; this is here so
+      // every channel carries the fact in one shape.
+      metadata: { ...answer.metadata, ...unattendedRunOutcomeMetadata(outcome) },
+    };
 
+    await this.sendToTaskChats(task, baseOutput, message);
+  }
+
+  /**
+   * F7 — the ending, with no answer attached.
+   *
+   * Used by every terminal that produces nothing to deliver (error, stopped,
+   * no progress, and the outer catch). It deliberately does NOT read the
+   * conversation: `last_message` on a failed run pulls whatever half-thought
+   * the model stopped on, which reads like an answer and is not one. The
+   * summary is built from closed codes and local counts only.
+   *
+   * Never throws: it is called from the failure paths, including the catch
+   * block, and a notification about a failure must not become a second one.
+   */
+  private async pushOutcomeToIMChannel(task: ScheduledTask, outcome: UnattendedRunOutcome) {
+    /*
+      A channel the user switched OFF is not somewhere to push a failure
+      notice. `outputSender.sendViaIMChannel` has no `enabled` check
+      (`approvalTarget.ts` records the same gap on the approval side), so
+      without this the one action a user has for "stop talking to me here"
+      would be ignored by the newest, chattiest thing pushed to it — a failing
+      task now speaks on EVERY tick.
+    */
+    if (!isImOutputChannelEnabled(task.outputChannelId)) {
+      console.warn(`[Scheduler] Outcome push skipped — channel disabled: ${task.name}`);
+      return;
+    }
+    try {
+      const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
+      const message: AbuMessage = {
+        content: formatUnattendedOutcomeSummary(outcome, getI18n()),
+        title: task.name,
+        color,
+        footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+        metadata: unattendedRunOutcomeMetadata(outcome),
+      };
+      await this.sendToTaskChats(
+        task,
+        {
+          enabled: true as const,
+          target: 'im_channel' as const,
+          outputChannelId: task.outputChannelId,
+          extractMode: 'last_message' as const,
+        },
+        message,
+        { quiet: true },
+      );
+    } catch (err) {
+      console.warn(`[Scheduler] Outcome push failed for ${task.name}`, err);
+    }
+  }
+
+  /** Send one built message to every chat / user the task names. */
+  private async sendToTaskChats(
+    task: ScheduledTask,
+    baseOutput: {
+      enabled: true;
+      target: 'im_channel';
+      outputChannelId: string | undefined;
+      extractMode: 'last_message';
+    },
+    message: AbuMessage,
+    options: { quiet?: boolean } = {},
+  ) {
     // Collect all targets: group chats + DM users
     const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
 
@@ -393,12 +666,17 @@ class SchedulerEngine {
       console.log(`[Scheduler] Result pushed to ${targets.length} target(s): ${task.name}`);
     } else {
       console.warn(`[Scheduler] IM push: ${targets.length - failures.length}/${targets.length} succeeded for ${task.name}`);
-      const t = getI18n();
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: format(t.schedule.taskCompleted, { name: task.name }),
-        message: t.schedule.outputPushFailed,
-      });
+      // `quiet` for the outcome-only push: the run already raised its own
+      // failure toast and desktop notification, and a second red toast saying
+      // the failure NOTICE failed is noise stacked on noise.
+      if (!options.quiet) {
+        const t = getI18n();
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: format(t.schedule.taskCompleted, { name: task.name }),
+          message: t.schedule.outputPushFailed,
+        });
+      }
     }
   }
 }

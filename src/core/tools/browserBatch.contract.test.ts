@@ -25,6 +25,7 @@ import {
   classifyBrowserTool,
   normalizeBrowserOrigin,
   refuseBrowserBatch,
+  toLegacyBrowserToolConsequence,
 } from '../permissions/browserToolPolicy';
 
 const BATCH = 'abu-browser__batch';
@@ -91,13 +92,17 @@ describe('the gate and the runner read a batch the same way', () => {
 });
 
 describe('the gate classifies what the runner will actually do', () => {
-  it('calls a batch state-changing exactly when the runner would touch the page', () => {
+  it('calls a batch interactive exactly when the runner would touch the page', () => {
     const pageTouching = ['fill', 'select', 'click', 'keyboard'];
     const looking = ['find', 'read', 'wait_for'];
 
     for (const action of pageTouching) {
       const steps = [{ action, locator: { css: '#a' }, value: 'v', key: 'Enter', query: { role: 'button' } }];
-      expect(classifyBrowserTool(BATCH, { steps })).toBe('state-changing');
+      expect(classifyBrowserTool(BATCH, { steps })).toBe('interactive');
+      // …and still gated by the legacy two-state gate registry.ts reads.
+      expect(toLegacyBrowserToolConsequence(classifyBrowserTool(BATCH, { steps })!)).toBe(
+        'state-changing',
+      );
       expect(runnerAccepts(steps)).toBe(true);
     }
     for (const action of looking) {
@@ -112,10 +117,15 @@ describe('the gate classifies what the runner will actually do', () => {
     }
   });
 
-  it('treats a batch it cannot read as state-changing, never as a free read', () => {
+  it('treats a batch it cannot read as gated, never as a free read', () => {
     for (const steps of [undefined, '[', '{}', [], [{ action: 'hover' }], [{}]]) {
-      expect(classifyBrowserTool(BATCH, { steps })).toBe('state-changing');
+      expect(classifyBrowserTool(BATCH, { steps })).toBe('interactive');
+      expect(toLegacyBrowserToolConsequence(classifyBrowserTool(BATCH, { steps })!)).toBe(
+        'state-changing',
+      );
     }
+    // …including a caller with no arguments at all.
+    expect(classifyBrowserTool(BATCH)).toBe('interactive');
   });
 });
 

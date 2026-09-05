@@ -57,6 +57,32 @@ export interface LoopContext {
   /** Unattended provenance inherited by delegated work. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /**
+   * F1 — where THIS unattended run may ask when a policy row says 「每次询问」,
+   * and what to call it in the prompt. Built by the scheduler / trigger engine
+   * from the automation's own IM output binding and handed down as
+   * `AgentLoopOptions.unattendedApproval`.
+   *
+   * It lives here, on run context, because the browser gate does not go
+   * through `commandConfirmCallback` (it needs the seam's audit fields, which
+   * a boolean callback cannot carry) and therefore cannot see the closure that
+   * used to be the target's only home. Shell-owned: written only by the
+   * trusted runtime, never from model input or a sidecar-supplied tool
+   * context.
+   */
+  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
+  /** Who started the parent run — inherited by delegated work, so a subagent
+   * spawned from a human-typed turn keeps the human's dialogs. */
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /**
+   * The parent run's consecutive-browser-denial seam, inherited by delegated
+   * work for the same reason `initiatedBy` is: a guard that stops at the
+   * delegation boundary is not a guard. Without it a run that delegates its
+   * browser work could be refused forever and never trip, because the
+   * subagent's refusals landed in nobody's counter.
+   */
+  reportBrowserDenial?: (kind?: import('./browserDenialTracker').BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: import('./browserDenialTracker').BrowserAllowConsent) => void;
   /** Shell-owned IM recipient inherited by delegated work. Never read from model input. */
   imReplyTarget?: { platform: string; chatId: string };
   /** Agent name for UI display (e.g. permission dialog badge) */
@@ -163,6 +189,20 @@ export function drainConfirmationQueue() {
  *                 Falls back to getCurrentLoopContext() compat shim if omitted.
  */
 export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?: string): Promise<boolean> {
+  // A refusal NOTICE is not a request (see `ConfirmationInfo.deniedNotice`):
+  // the decision is already made and the caller discards the answer. It must
+  // never become a dialog — command approvals queue with no timeout, so the
+  // turn would block on a dialog asking about something already refused, and
+  // navigating away would hang it outright.
+  //
+  // This is reachable even though notices are only sent for UNATTENDED runs:
+  // the run mode is derived from the conversation record, and a conversation
+  // created by a scheduled task or trigger stays unattended-shaped forever —
+  // including after a human opens it from the run history and sends a message,
+  // at which point the chat dispatches with no confirm callback and the loop
+  // falls back to this function. Guarding here closes the whole class in one
+  // place, whatever future caller sends a notice.
+  if (info.deniedNotice !== undefined) return false;
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;

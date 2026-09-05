@@ -54,6 +54,8 @@
           payload.selector,
           typeof payload.maxChars === "number" ? payload.maxChars : void 0
         );
+      case "find":
+        return findElements(payload.query, payload.limit);
       case "click":
         return clickElement(payload.locator);
       case "fill":
@@ -233,6 +235,10 @@
     return value.replace(/([!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
   }
   var NEVER_A_TARGET = /* @__PURE__ */ new Set(["html", "body", "head", "script", "style", "noscript", "title"]);
+  var ABU_OVERLAY_IDS = /* @__PURE__ */ new Set(["abu-status", "abu-highlight"]);
+  function isAbuOverlay(el) {
+    return ABU_OVERLAY_IDS.has(el.id);
+  }
   function describeElement(el) {
     const tag = el.tagName.toLowerCase();
     const id = el.id ? `#${el.id}` : "";
@@ -247,13 +253,181 @@
     const role = el.getAttribute("role");
     return role !== null && ["button", "link", "option", "menuitem", "tab", "checkbox", "radio", "switch"].includes(role);
   }
+  var BUTTON_INPUT_TYPES = /* @__PURE__ */ new Set(["submit", "button", "reset", "image"]);
+  var TEXTBOX_INPUT_TYPES = /* @__PURE__ */ new Set(["", "text", "email", "password", "search", "tel", "url", "number"]);
+  var IMPLICIT_ROLE_BY_TAG = {
+    button: "button",
+    textarea: "textbox",
+    select: "combobox",
+    h1: "heading",
+    h2: "heading",
+    h3: "heading",
+    h4: "heading",
+    h5: "heading",
+    h6: "heading",
+    summary: "button"
+  };
+  var IMPLICIT_ROLE_SELECTORS = {
+    button: "button, input, summary",
+    link: "a[href]",
+    textbox: "input, textarea",
+    checkbox: "input",
+    radio: "input",
+    combobox: "select",
+    heading: "h1, h2, h3, h4, h5, h6",
+    img: "img"
+  };
+  function inputType(el) {
+    return (el.getAttribute("type") ?? "").trim().toLowerCase();
+  }
+  function implicitRole(el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input") {
+      const type = inputType(el);
+      if (BUTTON_INPUT_TYPES.has(type)) return "button";
+      if (type === "checkbox") return "checkbox";
+      if (type === "radio") return "radio";
+      if (TEXTBOX_INPUT_TYPES.has(type)) return "textbox";
+      return null;
+    }
+    if (tag === "a") return el.hasAttribute("href") ? "link" : null;
+    if (tag === "img") return el.getAttribute("alt") === "" ? null : "img";
+    return IMPLICIT_ROLE_BY_TAG[tag] ?? null;
+  }
+  function effectiveRole(el) {
+    const explicit = (el.getAttribute("role") ?? "").trim().split(/\s+/)[0];
+    if (explicit) return explicit.toLowerCase();
+    return implicitRole(el);
+  }
+  var NAME_FROM_CONTENT_ROLES = /* @__PURE__ */ new Set([
+    "button",
+    "link",
+    "heading",
+    "option",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "tab",
+    "checkbox",
+    "radio",
+    "switch",
+    "treeitem",
+    "cell",
+    "gridcell",
+    "columnheader",
+    "rowheader",
+    "row",
+    "tooltip"
+  ]);
+  var LABELABLE_TAGS = /* @__PURE__ */ new Set(["button", "input", "meter", "output", "progress", "select", "textarea"]);
+  function normalizeWhitespace(value) {
+    return value.replace(/\s+/g, " ").trim();
+  }
+  function squashWhitespace(value) {
+    return value.replace(/\s+/g, "");
+  }
+  function nativeLabelText(el) {
+    const tag = el.tagName.toLowerCase();
+    if (!LABELABLE_TAGS.has(tag)) return "";
+    if (tag === "input" && inputType(el) === "hidden") return "";
+    const parts = [];
+    if (el.id) {
+      for (const label of document.querySelectorAll("label[for]")) {
+        if (label.getAttribute("for") === el.id) {
+          parts.push(normalizeWhitespace(label.textContent ?? ""));
+        }
+      }
+    }
+    const wrapping = el.closest?.("label");
+    if (wrapping) parts.push(normalizeWhitespace(wrapping.textContent ?? ""));
+    return normalizeWhitespace(parts.filter(Boolean).join(" "));
+  }
+  function accessibleName(el) {
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const joined = labelledBy.split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter((node) => node !== null).map((node) => normalizeWhitespace(node.textContent ?? "")).filter(Boolean).join(" ");
+      if (joined) return joined;
+    }
+    const ariaLabel = normalizeWhitespace(el.getAttribute("aria-label") ?? "");
+    if (ariaLabel) return ariaLabel;
+    const label = nativeLabelText(el);
+    if (label) return label;
+    const alt = normalizeWhitespace(el.getAttribute("alt") ?? "");
+    if (alt) return alt;
+    if (el.tagName.toLowerCase() === "input" && BUTTON_INPUT_TYPES.has(inputType(el))) {
+      const value = normalizeWhitespace(el.value ?? "");
+      if (value) return value;
+    }
+    const title = normalizeWhitespace(el.getAttribute("title") ?? "");
+    if (title) return title;
+    const role = effectiveRole(el);
+    if (role !== null && NAME_FROM_CONTENT_ROLES.has(role)) {
+      const text = normalizeWhitespace(el.textContent ?? "");
+      if (text) return text;
+    }
+    return normalizeWhitespace(el.getAttribute("placeholder") ?? "");
+  }
+  function isLocatorVisible(el) {
+    if (el.hasAttribute("hidden")) return false;
+    if (el.tagName.toLowerCase() === "input" && inputType(el) === "hidden") return false;
+    return isSnapshotVisible(el);
+  }
+  function isLocatorTarget(el) {
+    if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
+    if (isAbuOverlay(el)) return false;
+    return isLocatorVisible(el);
+  }
+  function elementsWithRole(role) {
+    const wanted = role.trim().toLowerCase();
+    const selectors = ["[role]"];
+    const implicit = IMPLICIT_ROLE_SELECTORS[wanted];
+    if (implicit) selectors.push(implicit);
+    return [...document.querySelectorAll(selectors.join(", "))].filter(
+      (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && effectiveRole(el) === wanted
+    );
+  }
+  function looselyNamed(name, wanted) {
+    const normWanted = normalizeWhitespace(wanted).toLowerCase();
+    if (normWanted === "") return true;
+    if (normalizeWhitespace(name).toLowerCase().includes(normWanted)) return true;
+    const squashedWanted = squashWhitespace(wanted).toLowerCase();
+    return squashedWanted !== "" && squashWhitespace(name).toLowerCase().includes(squashedWanted);
+  }
+  function narrowByName(candidates, wanted, nameOf) {
+    const exact = candidates.filter((el) => nameOf(el) === wanted);
+    if (exact.length > 0) return exact;
+    const normWanted = normalizeWhitespace(wanted).toLowerCase();
+    const squashedWanted = squashWhitespace(wanted).toLowerCase();
+    const normalized = candidates.filter((el) => {
+      const name = nameOf(el);
+      return normalizeWhitespace(name).toLowerCase() === normWanted || squashedWanted !== "" && squashWhitespace(name).toLowerCase() === squashedWanted;
+    });
+    if (normalized.length > 0) return normalized;
+    return candidates.filter((el) => looselyNamed(nameOf(el), wanted));
+  }
+  function describeCandidate(el) {
+    const tag = el.tagName.toLowerCase();
+    const id = el.id ? `#${el.id}` : "";
+    const role = effectiveRole(el);
+    const name = accessibleName(el);
+    const text = normalizeWhitespace(getVisibleText(el) ?? "").slice(0, 40);
+    return `[${refFor(el)}] <${tag}${id}>` + (role ? ` role=${role}` : "") + (name ? ` name=${JSON.stringify(name.slice(0, 40))}` : "") + (text && text !== name ? ` text=${JSON.stringify(text)}` : "") + (isVisible(el) ? "" : " (no layout box)");
+  }
+  function uniqueOrAmbiguous(matches, what) {
+    if (matches.length === 0) return null;
+    if (matches.length === 1) return matches[0];
+    throw new Error(
+      `${what} matches ${matches.length} elements, so it does not identify one. Nothing on the page was clicked or changed. Pick one by ref:
+` + matches.slice(0, 8).map((el) => `  ${describeCandidate(el)}`).join("\n") + (matches.length > 8 ? `
+  ...and ${matches.length - 8} more` : "")
+    );
+  }
   function findByText(text, tag) {
     const scope = tag ?? "*";
     const wanted = text.trim();
     const squashed = wanted.replace(/\s+/g, "");
     const candidates = [...document.querySelectorAll(scope)].filter((el) => {
-      if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
-      if (!isSnapshotVisible(el)) return false;
+      if (!isLocatorTarget(el)) return false;
       const own = normalizedText(el);
       return own.includes(wanted) || squashed !== "" && own.replace(/\s+/g, "").includes(squashed);
     });
@@ -285,18 +459,21 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
       throw err;
     }
     if (locator.css) {
-      return document.querySelector(locator.css);
+      const matches = [...document.querySelectorAll(locator.css)].filter(isLocatorTarget);
+      return uniqueOrAmbiguous(matches, `CSS selector ${JSON.stringify(locator.css)}`);
     }
     if (locator.text) {
       return findByText(locator.text, locator.tag);
     }
     if (locator.role) {
-      const escapedRole = escapeCSS(locator.role);
-      const selector = locator.name ? `[role="${escapedRole}"][aria-label="${escapeCSS(locator.name)}"]` : `[role="${escapedRole}"]`;
-      return document.querySelector(selector);
+      const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
+      const matches = locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole;
+      const what = locator.name ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}` : `role ${JSON.stringify(locator.role)}`;
+      return uniqueOrAmbiguous(matches, what);
     }
     if (locator.testId) {
-      return document.querySelector(`[data-testid="${escapeCSS(locator.testId)}"]`);
+      const matches = [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)].filter(isLocatorTarget);
+      return uniqueOrAmbiguous(matches, `testId ${JSON.stringify(locator.testId)}`);
     }
     if (locator.xpath) {
       const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
@@ -304,10 +481,128 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     }
     throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
   }
+  function nearbyCandidates(locator, cap = 5) {
+    if (locator.role) {
+      return elementsWithRole(locator.role).filter(isLocatorTarget).slice(0, cap);
+    }
+    const wanted = normalizeWhitespace(locator.text ?? locator.name ?? "");
+    if (!wanted) return [];
+    const needle = wanted.length > 2 ? wanted.slice(0, Math.ceil(wanted.length / 2)) : wanted;
+    return [...document.querySelectorAll("a, button, input, textarea, select, summary, [role], [onclick], [tabindex]")].filter(isLocatorTarget).filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? "")}`, needle)).slice(0, cap);
+  }
   function findElementOrThrow(locator) {
     const el = findElement(locator);
-    if (!el) throw new Error(`Element not found: ${JSON.stringify(locator)}`);
-    return el;
+    if (el) return el;
+    const near = nearbyCandidates(locator);
+    throw new Error(
+      `Element not found: ${JSON.stringify(locator)}.` + (near.length > 0 ? ` The closest things on the page right now:
+${near.map((c) => `  ${describeCandidate(c)}`).join("\n")}
+Pick one by ref, or call find to search by text.` : ` Call find to search the page by text/role, or snapshot to list what is there.`)
+    );
+  }
+  var FIND_DEFAULT_LIMIT = 20;
+  var FIND_MAX_LIMIT = 50;
+  var FIND_QUERY_KEYS = ["role", "name", "text", "css", "testId", "label", "placeholder"];
+  function findElements(rawQuery, rawLimit) {
+    const query = rawQuery ?? {};
+    if (typeof query !== "object" || Array.isArray(query)) {
+      throw new Error(`find: query must be an object with at least one of: ${FIND_QUERY_KEYS.join(", ")}`);
+    }
+    const used = FIND_QUERY_KEYS.filter((key) => {
+      const value = query[key];
+      return typeof value === "string" && value !== "";
+    });
+    if (used.length === 0) {
+      throw new Error(`find: query must contain at least one of: ${FIND_QUERY_KEYS.join(", ")}`);
+    }
+    const limit = Math.max(1, Math.min(FIND_MAX_LIMIT, Math.trunc(Number(rawLimit) || FIND_DEFAULT_LIMIT)));
+    let candidates;
+    if (query.css) {
+      candidates = [...document.querySelectorAll(query.css)];
+    } else if (query.testId) {
+      candidates = [...document.querySelectorAll(`[data-testid="${escapeCSS(query.testId)}"]`)];
+    } else if (query.role) {
+      candidates = elementsWithRole(query.role);
+    } else {
+      candidates = [...document.querySelectorAll("*")];
+    }
+    candidates = candidates.filter(
+      (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && !isAbuOverlay(el)
+    );
+    if (query.role && (query.css || query.testId)) {
+      const wantedRole = query.role.trim().toLowerCase();
+      candidates = candidates.filter((el) => effectiveRole(el) === wantedRole);
+    }
+    if (query.testId && query.css) {
+      candidates = candidates.filter((el) => el.getAttribute("data-testid") === query.testId);
+    }
+    if (query.name) {
+      candidates = candidates.filter((el) => looselyNamed(accessibleName(el), query.name));
+    }
+    if (query.label) {
+      candidates = candidates.filter((el) => looselyNamed(nativeLabelText(el), query.label));
+    }
+    if (query.placeholder) {
+      candidates = candidates.filter(
+        (el) => looselyNamed(el.getAttribute("placeholder") ?? "", query.placeholder)
+      );
+    }
+    if (query.text) {
+      candidates = candidates.filter(
+        (el) => looselyNamed(normalizeWhitespace(el.textContent ?? ""), query.text)
+      );
+    }
+    candidates = candidates.filter(isLocatorVisible);
+    if (query.name) candidates = narrowByName(candidates, query.name, accessibleName);
+    if (query.label) candidates = narrowByName(candidates, query.label, nativeLabelText);
+    if (query.placeholder) {
+      candidates = narrowByName(candidates, query.placeholder, (el) => el.getAttribute("placeholder") ?? "");
+    }
+    if (query.text) {
+      candidates = candidates.filter((el) => !candidates.some((other) => other !== el && el.contains(other)));
+    }
+    const total = candidates.length;
+    const matches = candidates.slice(0, limit).map((el) => {
+      const rect = el.getBoundingClientRect();
+      const role = effectiveRole(el);
+      const name = accessibleName(el);
+      const text = normalizeWhitespace(el.textContent ?? "").slice(0, 80);
+      const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
+      return {
+        ref: refFor(el),
+        tag: el.tagName.toLowerCase(),
+        ...el.id ? { id: el.id } : {},
+        ...role ? { role } : {},
+        ...name ? { name: name.slice(0, 120) } : {},
+        ...text && text !== name ? { text } : {},
+        // `false` means "on the page but with no layout box" — a collapsed antd
+        // combobox input, say. It is still addressable; it just is not what the
+        // user is looking at. Genuinely hidden elements never reach this list.
+        visible: isVisible(el),
+        interactive: isClickable(el),
+        ...disabled ? { disabled: true } : {},
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        }
+      };
+    });
+    const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(" ");
+    return {
+      url: location.href,
+      title: document.title,
+      matches,
+      total,
+      ...total === 0 ? {
+        message: `Nothing on this page matches ${describeQuery}. Hidden elements are excluded. Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`
+      } : {},
+      ...total > matches.length ? {
+        truncated: true,
+        message: `Showing ${matches.length} of ${total} matches. Narrow the query (add \`role\`, or a longer \`text\`/\`name\`) rather than raising \`limit\` \u2014 a locator that matches ${total} elements will be refused as ambiguous by click/fill/select.`
+      } : {}
+    };
   }
   function targetInfo(el) {
     const text = getVisibleText(el)?.replace(/\s+/g, " ").trim().slice(0, 50);
@@ -848,7 +1143,7 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
     recordedSteps.length = 0;
     recordClickHandler = (e) => {
       const el = e.target;
-      if (!el || el.id === "abu-status" || el.id === "abu-highlight") return;
+      if (!el || isAbuOverlay(el)) return;
       recordedSteps.push({
         action: "click",
         locator: getBestSelector(el),

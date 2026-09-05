@@ -607,6 +607,38 @@ test('read-only actions are never held back by user interaction', async () => {
   }
 });
 
+test('find is routed to the DOM runtime and never waits on the user', async () => {
+  // A new browser tool has THREE hand-written lists to get past before a model
+  // can call it: the bridge's tool registration, each channel's action switch,
+  // and the prefetch list. This one covers the built-in browser's switch —
+  // `find` missing from `domActions` answers "Unknown browser action: find",
+  // which reads as a broken tool rather than an unrouted one.
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    const contents = contentsRegistry.get(aTab);
+
+    typeInto(aTab); // the user is mid-keystroke right now
+
+    await host.performBrowserAutomation('find', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+      query: { role: 'button', name: '保存' },
+    });
+
+    const injected = contents.isolatedScripts.at(-1)[0].code;
+    assert.match(injected, /handleAction\(\s*"find"/);
+    assert.match(injected, /"role":\s*"button"/);
+    // Read-only: searching the page changes nothing, so making it sit out a
+    // 3s quiet window would only delay the step that PREVENTS a wrong click.
+    assert.deepEqual(state.sleeps, [], 'find must not be gated on user idle');
+  } finally {
+    restore();
+  }
+});
+
 test('automation\'s own focus and input do not count as user interaction', async () => {
   const { host, restore } = loadHost();
   try {

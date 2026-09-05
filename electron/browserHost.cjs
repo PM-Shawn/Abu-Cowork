@@ -1508,6 +1508,10 @@ async function runBrowserAutomation(action, payload, signal) {
 
   const domActions = new Set([
     'snapshot',
+    // Read-only, and deliberately NOT in TAKEOVER_GATED_ACTIONS: `find`
+    // changes nothing, so making it wait out a quiet window would only slow
+    // down the step a model takes to avoid clicking the wrong thing.
+    'find',
     'get_html',
     'click',
     'fill',

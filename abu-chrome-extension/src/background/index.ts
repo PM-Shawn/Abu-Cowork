@@ -494,7 +494,14 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: results[0]?.result };
       }
 
+      // Every action executed by the content script. A new DOM tool that is
+      // not listed here falls through to `default:` and answers
+      // `Unknown action`, which reads to the model as "the tool is broken"
+      // rather than "this channel forgot to route it" — so
+      // `background/index.test.ts` pins this list against the tool surface
+      // `abu-browser-bridge` actually registers.
       case 'snapshot':
+      case 'find':
       case 'get_html':
       case 'click':
       case 'fill':

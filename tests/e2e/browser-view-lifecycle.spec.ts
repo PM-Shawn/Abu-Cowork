@@ -290,6 +290,29 @@ function extractCurrentTabId(body: unknown): number {
   return Number(match[1]);
 }
 
+/**
+ * Pull a `ref` out of the preceding `abu-browser__find` tool result, so the
+ * next `click` can target the element `find` actually reported. Same regex
+ * approach (and same reason) as `extractCurrentTabId` above: the ref is a
+ * runtime id from the live page's element registry.
+ */
+function extractFoundRef(body: unknown): string {
+  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
+  const toolMessage = messages.find((message) =>
+    message.role === 'tool'
+    && typeof message.content === 'string'
+    && message.content.includes('"matches"')
+  );
+  if (!toolMessage) {
+    throw new Error('Expected an abu-browser__find tool result in the request body');
+  }
+  const match = /"ref":\s*"(e\d+)"/.exec(String(toolMessage.content));
+  if (!match) {
+    throw new Error(`find returned no ref to click: ${String(toolMessage.content).slice(0, 400)}`);
+  }
+  return match[1];
+}
+
 /** A tiny loopback HTTP fixture the agent can navigate the real browser view to. */
 interface FixturePage {
   url: string;
@@ -297,10 +320,11 @@ interface FixturePage {
   close: () => Promise<void>;
 }
 
-async function startFixturePage(marker: string): Promise<FixturePage> {
+async function startFixturePage(marker: string, bodyHtml?: string): Promise<FixturePage> {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(`<!doctype html><html><head><title>${marker}</title></head><body><h1>${marker}</h1></body></html>`);
+    res.end(`<!doctype html><html><head><title>${marker}</title></head><body>`
+      + `<h1>${marker}</h1>${bodyHtml ?? ''}</body></html>`);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -673,6 +697,97 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
     // ...and it is the SAME DOCUMENT: a silent reload would have wiped this.
     expect(await readLivePageMarker(app!, fixture.url)).toBe(liveMarker);
+  });
+
+  test('finds a plain HTML button by role and name, then clicks the ref it handed back', async () => {
+    // The T1 journey end to end, in the real Electron browser against a real
+    // page: `{role:"button", name:"保存"}` on a page whose button carries no
+    // ARIA attributes at all — the exact locator that used to come back
+    // "Element not found" and send the model off to execute_js — then a click
+    // on the ref `find` reported, verified by the page's own click handler.
+    const responseA = `abu-e2e-find-click-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const findCallId = `call-find-${randomUUID()}`;
+    const clickCallId = `call-click-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-find-click-${randomUUID()}`,
+      // No role=, no aria-label, no data-testid: ordinary office-form HTML.
+      // The decoy shares a class with the target, so a css locator would be
+      // ambiguous and only the accessible name separates them.
+      '<button class="btn" id="cancel">取消</button>'
+      + '<button class="btn" id="save" onclick="window.__abuE2eLivePageMarker = \'saved\'">保存</button>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          query: JSON.stringify({ role: 'button', name: '保存' }),
+        },
+        toolCallId: findCallId,
+        toolName: 'abu-browser__find',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          locator: JSON.stringify({ ref: extractFoundRef(body) }),
+        },
+        toolCallId: clickCallId,
+        toolName: 'abu-browser__click',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    const prompt = `abu-e2e-find-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate is state-changing, so it asks. One approval covers the rest of
+    // the turn (BROWSER_GRANT_TTL_MS), and `find` — being read-only — must not
+    // add an ask of its own.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+
+    // The click landed on 保存 — the page's own handler says so. A wrong
+    // target (取消, the decoy sharing its class) leaves this unset.
+    expect(await readLivePageMarker(app!, fixture.url)).toBe('saved');
+
+    // And the find result the model saw actually described that button.
+    const findResult = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .map((message) => String(message.content ?? ''))
+      .find((content) => content.includes('"matches"'));
+    expect(findResult).toBeTruthy();
+    expect(findResult).toContain('"role": "button"');
+    expect(findResult).toContain('"name": "保存"');
+    expect(findResult).toContain('"id": "save"');
+    // Exactly one match: the decoy is a button too, but it is not called 保存.
+    expect(findResult).toContain('"total": 1');
   });
 
   test('keeps the same browser tab and page alive across collapsing and expanding the right panel', async () => {

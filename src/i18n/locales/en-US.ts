@@ -2408,6 +2408,7 @@ const enUS: TranslationDict = {
     browserDescription: 'Abu wants to run this action inside your logged-in browser:',
     browserSiteDenied: 'You have blocked automation on this site (change it in Settings → Capabilities)',
     browserScriptReason: 'This runs a script inside the page. Scripts act with the page\'s full authority (reading content, acting as you), so each run asks separately — there is no "always allow".',
+    browserDialogAnswerReason: 'The page put up its own dialog, and this presses one of its buttons for you — accepting a confirm submits whatever is behind it. The question in that dialog was written by the web page, not by Abu, so read it on the page before you answer. This is asked separately from the click that may have raised it.',
     browserBatchScriptStep: 'A batch of browser actions may not contain a page script. Scripts are approved one run at a time, so a script inside a batch would let a single approval buy many runs. The whole batch was refused — run the script on its own instead.',
     browserBatchTooManySteps: 'This batch of browser actions has too many steps for one approval. Split it into several batches.',
     browserBatchMalformed: 'This batch of browser actions could not be read as an ordered list of allowed steps (fill / select / click / keyboard / wait_for / find / read), so it was refused.',

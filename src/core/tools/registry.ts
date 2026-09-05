@@ -18,6 +18,7 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
+  answersPageDialog,
   browserToolTargetsPage,
   classifyBrowserTool,
   decideBrowserOperation,
@@ -1600,12 +1601,38 @@ export async function checkToolApproval(
         // minted a site verdict promised "each run asks separately" — only
         // the scripting ROW's own 'allow' speaks for scripting.
         const scripting = isScriptingBrowserTool(name);
+        /**
+         * F2 (2026-09-06 review) — `handle_dialog` used to ride the
+         * conversation grant, and the link it rode was a causal one: the
+         * click that raised the dialog is what minted the grant, seconds
+         * earlier. So the single most common sequence in this whole feature —
+         * click 提交 → page raises confirm → accept it — asked the user
+         * exactly once, about the click, and then pressed the page's own OK
+         * button on the strength of that. `beforeunload` too, which the task
+         * brief explicitly said must ask an attended user.
+         *
+         * See `answersPageDialog` for why that is the wrong shape. Gated like
+         * scripting from here: NEITHER grant scope, and the only silent path
+         * is the one the user configured in so many words.
+         */
+        const answeringDialog = answersPageDialog(name);
         // The scripting row's own 'allow', scoped exactly as the automatic-run
         // opt-in is (`decideBrowserOperation`): the standing site verdict is
         // what says WHERE. `policyVerdict` is this call's own row, so an 'ask'
         // row can never reach this constant.
         const scriptAllowedByPolicy =
           scripting && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
+        /**
+         * The dialog half of the same rule (2026-09-06 ruling). `policyVerdict`
+         * here is the INTERACTIVE row — `handle_dialog`'s own class — so a user
+         * who left that row at 「每次询问」 is asked for every dialog, and one
+         * who set it to 「允许」 is asked only until they mark the site 始终允许.
+         * High-risk is excluded the same way it is everywhere else: on a
+         * payment page, "press the page's OK" is the single most consequential
+         * thing in this file.
+         */
+        const dialogAnswerAllowedByPolicy =
+          answeringDialog && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
         /**
          * F8 (2026-09-05 review) — 「每次询问」 on the click/fill row means
          * EVERY time, the way it already does on the read-only row.
@@ -1643,7 +1670,8 @@ export async function checkToolApproval(
         // transfer page through on the strength of an unrelated click.
         const granted =
           scriptAllowedByPolicy
-          || (!scripting && !highRisk && !asksEveryTime
+          || dialogAnswerAllowedByPolicy
+          || (!scripting && !answeringDialog && !highRisk && !asksEveryTime
             && (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed'));
         const decision = strategy.decideOtherTool(consequence, granted);
         if (decision !== 'allow') {
@@ -1673,7 +1701,16 @@ export async function checkToolApproval(
               ? t.commandConfirm.browserScriptReason
               : highRisk
                 ? t.commandConfirm.browserHighRiskReason
-                : t.commandConfirm.browserReason,
+                : answeringDialog
+                  // Named, because "browser action: …__handle_dialog" tells a
+                  // user nothing about what they are agreeing to. The question
+                  // the dialog asks was written by the PAGE, so the box says
+                  // so — but does not QUOTE it: page text in an approval box
+                  // is the attack this branch's own summary rule already bans
+                  // (TESTING §13, "审批弹窗里回显页面内容"). The user reads the
+                  // real dialog from the page, not a copy Abu vouches for.
+                  ? t.commandConfirm.browserDialogAnswerReason
+                  : t.commandConfirm.browserReason,
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,
@@ -1697,10 +1734,14 @@ export async function checkToolApproval(
           // to 「每次询问」 (F8): a grant this row will ignore on the next call
           // is dead weight, and one that leaked to another row would be a
           // silent widening of a setting the user tightened on purpose.
-          if (!scripting && !highRisk && !asksEveryTime) {
+          // Answering a dialog mints nothing either — in the other direction
+          // this time. "Yes, press OK on this confirm" must not silently buy
+          // the next half hour of clicking, any more than a click buys the
+          // next dialog.
+          if (!scripting && !answeringDialog && !highRisk && !asksEveryTime) {
             grantBrowserAutomation(toolContext?.conversationId);
           }
-        } else if (granted && !scriptAllowedByPolicy) {
+        } else if (granted && !scriptAllowedByPolicy && !dialogAnswerAllowedByPolicy) {
           // No dialog because the user already granted this — a standing site
           // verdict, or the conversation grant minted from an earlier dialog.
           // Both are consent, unlike an unconditional permission-mode allow —

@@ -182,6 +182,37 @@ export function isScriptingBrowserTool(namespacedName: string): boolean {
 }
 
 /**
+ * Does this tool press a button on a dialog the PAGE put up?
+ *
+ * Its own predicate, alongside `isScriptingBrowserTool`, because it is gated
+ * the same way and for a related reason (F2, 2026-09-06 review).
+ *
+ * `handle_dialog` is `'interactive'` — it moves the page, so the class is
+ * right — but it must not ride the two grant scopes an ordinary click does:
+ *
+ * - The CONVERSATION grant is the wrong shape for it. That grant is minted by
+ *   approving a click, and the most common dialog in existence is the one that
+ *   click just raised. So the click's own approval, seconds earlier, silently
+ *   bought "press OK on this page's confirm" — the two decisions the split
+ *   into `get_dialog` / `handle_dialog` exists to keep apart. A click is
+ *   "do this thing I named"; answering the page's confirm is "agree to
+ *   whatever the page then asked", and the page wrote the question.
+ * - What it agrees to is text the PAGE authored, which is exactly why
+ *   `JS_DIALOG_UNTRUSTED_NOTICE` exists. The model's judgment about whether to
+ *   accept is driven by an untrusted string.
+ *
+ * What it DOES ride, per the 2026-09-06 product ruling, is the same lever
+ * scripting rides: the operation-class row set to `'allow'` on a site the user
+ * set to 始终允许, and not high-risk. That is a permission the user granted in
+ * so many words, and honouring it keeps this consistent with R1 rather than
+ * inventing a third grant model. Everything short of that asks — at most once
+ * per dialog, since a dialog is answered once.
+ */
+export function answersPageDialog(namespacedName: string): boolean {
+  return browserToolNameOf(namespacedName) === 'handle_dialog';
+}
+
+/**
  * Normalize a URL to its origin (scheme://host[:port]). Exact-match keys, no
  * wildcards — `sub.example.com` and `example.com` are distinct entries, the
  * same rule competitors apply. Returns null for unparseable or non-http(s)

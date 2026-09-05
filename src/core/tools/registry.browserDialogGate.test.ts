@@ -25,6 +25,9 @@ import type { ToolDefinition } from '../../types';
 const OWNER = 'conv-dialog';
 const TAB = 41;
 const SITE = 'https://erp.example.com';
+/** Money movement (`highRiskSites.ts`) — the page where "press OK for me" is
+ *  the most consequential thing this file can authorize. */
+const BANK_SITE = 'https://chase.com';
 
 interface FakeConnectedServer {
   config: { name: string };
@@ -43,11 +46,32 @@ interface ConfirmInfo {
 describe('browser permission gate — get_dialog / handle_dialog', () => {
   let asked: ConfirmInfo[];
   let confirm: (info: ConfirmInfo) => Promise<boolean>;
+  /** What the fake browser host reports the tab is showing. */
+  let pageUrl: string;
+
+  /** The click that raises the dialog, approved by the user. */
+  const approveAClick = async (): Promise<void> => {
+    const click = await checkToolApproval(
+      'abu-browser__click',
+      { tabId: TAB, locator: '{"css":"#submit"}' },
+      { conversationId: OWNER } as never,
+      confirm as never,
+    );
+    expect(click.decision).toBe('allow');
+  };
+
+  const answerDialog = (action: 'accept' | 'dismiss' = 'accept') => checkToolApproval(
+    'abu-browser__handle_dialog',
+    { tabId: TAB, action },
+    { conversationId: OWNER } as never,
+    confirm as never,
+  );
 
   beforeEach(() => {
     asked = [];
     confirm = async (info) => { asked.push(info); return true; };
 
+    pageUrl = `${SITE}/form`;
     const callTool = vi.fn((params: { _meta?: Record<string, unknown> }) => {
       if (params._meta?.['abu/conversationId'] !== OWNER) {
         return Promise.resolve({ content: [{ type: 'text', text: '{"windows":[]}' }] });
@@ -55,7 +79,7 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
       return Promise.resolve({
         content: [{
           type: 'text',
-          text: JSON.stringify({ windows: [{ windowId: 1, tabs: [{ tabId: TAB, url: `${SITE}/form` }] }] }),
+          text: JSON.stringify({ windows: [{ windowId: 1, tabs: [{ tabId: TAB, url: pageUrl }] }] }),
         }],
       });
     });
@@ -156,6 +180,100 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     );
 
     expect(decision.decision).toBe('allow');
+  });
+
+  // ── F2 (2026-09-06 review): answering a dialog is its own consent ────────
+  //
+  // The sequence this whole feature exists for is: the model clicks 提交, the
+  // page raises a confirm, the model answers it. Before this, that click's own
+  // approval minted a 30-minute conversation grant, and the `handle_dialog`
+  // seconds later rode it — so the user was asked once, about the click, and
+  // Abu then pressed the page's own OK button on the strength of that answer.
+  // The question on that button was written by the page.
+
+  it('still asks before answering the dialog the approved click raised', async () => {
+    await approveAClick();
+    expect(asked).toHaveLength(1);
+
+    const decision = await answerDialog('accept');
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(2);
+    expect(asked[1].command).toContain('handle_dialog');
+    // …and the box says what is actually being agreed to, and who wrote the
+    // question. Not a bare tool name.
+    expect(asked[1].reason).toBeTruthy();
+    expect(asked[1].reason).not.toBe(asked[0].reason);
+  });
+
+  it('asks before a beforeunload answer too — leaving the page discards what is on it', async () => {
+    await approveAClick();
+
+    expect((await answerDialog('dismiss')).decision).toBe('allow');
+    expect(asked).toHaveLength(2);
+    expect(asked[1].command).toContain('handle_dialog');
+  });
+
+  it('asks again for the NEXT dialog — one answer covers one dialog', async () => {
+    await approveAClick();
+    await answerDialog('accept');
+    await answerDialog('accept');
+
+    expect(asked).toHaveLength(3);
+  });
+
+  it('answers silently where the user said so: 「允许」 on a site they always allow', async () => {
+    // The 2026-09-04 ruling's lever, the same one scripting rides (R1): a
+    // permission the user granted in so many words is granted. The interactive
+    // row ships 'allow', so marking the site 始终允许 is the whole opt-in.
+    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+
+    const decision = await answerDialog('accept');
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toEqual([]);
+  });
+
+  it('mints no conversation grant of its own — one dialog answered is not half an hour of clicking', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+    await answerDialog('accept');
+    useSettingsStore.setState({ browserSitePermissions: {} });
+
+    const click = await checkToolApproval(
+      'abu-browser__click',
+      { tabId: TAB, locator: '{"css":"#next"}' },
+      { conversationId: OWNER } as never,
+      confirm as never,
+    );
+
+    expect(click.decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+    expect(asked[0].command).toContain('click');
+  });
+
+  it('asks on a money-movement page even on a site the user always allows', async () => {
+    pageUrl = `${BANK_SITE}/transfer`;
+    useSettingsStore.setState({ browserSitePermissions: { [BANK_SITE]: 'allowed' } });
+
+    const decision = await answerDialog('accept');
+
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+    // …and no standing grant is offered for a bank's confirm boxes.
+    expect(asked[0].allowPersistentGrant).toBe(false);
+  });
+
+  it('asks every single time under 「每次询问」, allowed site or not', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [SITE]: 'allowed' },
+      browserOperationPolicy: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+    });
+
+    await answerDialog('accept');
+    await answerDialog('accept');
+
+    expect(asked).toHaveLength(2);
+    expect(asked.every((a) => a.allowPersistentGrant === false)).toBe(true);
   });
 
   it('keeps a blocked site blocked, dialog or no dialog', async () => {

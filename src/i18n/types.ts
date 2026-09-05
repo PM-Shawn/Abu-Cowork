@@ -2784,6 +2784,10 @@ export interface TranslationDict {
     browserDescription: string;
     browserSiteDenied: string;
     browserScriptReason: string;
+    /** Answering a dialog the PAGE put up (`handle_dialog`) — a different
+     *  consent from clicking a button the user named, so it is asked for
+     *  separately and never rides the conversation grant. */
+    browserDialogAnswerReason: string;
     /** A `batch` carrying a page-script step — refused whole, never partly run. */
     browserBatchScriptStep: string;
     browserBatchTooManySteps: string;

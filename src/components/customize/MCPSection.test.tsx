@@ -16,7 +16,7 @@ import { useState } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-import { getI18n } from '@/i18n';
+import { getI18n, setLanguage } from '@/i18n';
 import type { MCPServerEntry } from '@/stores/mcpStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
@@ -405,5 +405,99 @@ describe('MCPSection · prefill from a template', () => {
     await waitFor(() => {
       expect((screen.getByPlaceholderText(tb().serverName) as HTMLInputElement).value).toBe('slack');
     });
+  });
+});
+
+/**
+ * The template form is the only place a configurable slot or a required secret
+ * gets filled in, and the agent-side install (`installMCPServer`) already
+ * refuses to write a config with an empty slot. The UI must not be laxer: a
+ * blank 「数据库连接串」 would write `args: [..., '']` — a server that cannot
+ * start — and a blank key would be dropped by the `Object.keys(env).length > 0`
+ * guard, so the later editor would show no env field at all to fix it. The
+ * disabled 「安装」 button is the whole signal; no new prose.
+ */
+describe('MCPSection · template install requires its fields', () => {
+  const templatePrefill = (name: string, args: string[]): ConnectorPrefill => ({
+    name, command: 'npx', args, env: {}, transport: 'stdio', templateId: name,
+  });
+
+  const postgres = templatePrefill('postgres', ['-y', '@modelcontextprotocol/server-postgres', '']);
+  const brave = templatePrefill('brave-search', ['-y', '@brave/brave-search-mcp-server']);
+  const memory = templatePrefill('memory', ['-y', '@modelcontextprotocol/server-memory']);
+
+  function Host({ initial }: { initial: ConnectorPrefill }) {
+    const [open, setOpen] = useState(true);
+    return (
+      <MCPSection
+        sourceFilter="mine"
+        showAddForm={open}
+        onAddFormChange={setOpen}
+        prefill={initial}
+      />
+    );
+  }
+
+  const installButton = () => screen.getByRole('button', { name: tb().install }) as HTMLButtonElement;
+
+  it('keeps 安装 disabled until the configurable arg is typed, then writes what was typed', async () => {
+    const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
+    vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+    render(<Host initial={postgres} />);
+
+    const arg = await screen.findByPlaceholderText('postgresql://user:pass@localhost:5432/db');
+    expect(installButton().disabled).toBe(true);
+
+    // Even a click that got through must not write an unstartable config.
+    fireEvent.click(installButton());
+    expect(addServer).not.toHaveBeenCalled();
+    expect(useMCPStore.getState().servers.postgres).toBeUndefined();
+
+    fireEvent.change(arg, { target: { value: 'postgresql://me@localhost:5432/mine' } });
+    expect(installButton().disabled).toBe(false);
+    fireEvent.click(installButton());
+    await waitFor(() => expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://me@localhost:5432/mine'],
+    })));
+  });
+
+  it('treats a whitespace-only secret as empty, and carries a real one into env', async () => {
+    const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
+    vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+    render(<Host initial={brave} />);
+
+    const key = await screen.findByPlaceholderText('BSA...');
+    expect(installButton().disabled).toBe(true);
+
+    fireEvent.change(key, { target: { value: '   ' } });
+    expect(installButton().disabled).toBe(true);
+
+    fireEvent.change(key, { target: { value: 'BSA-real-key' } });
+    expect(installButton().disabled).toBe(false);
+    fireEvent.click(installButton());
+    await waitFor(() => expect(addServer).toHaveBeenCalledWith(expect.objectContaining({
+      env: { BRAVE_API_KEY: 'BSA-real-key' },
+    })));
+  });
+
+  it('leaves 安装 enabled for a template that asks for nothing', async () => {
+    render(<Host initial={memory} />);
+    await waitFor(() => expect(installButton().disabled).toBe(false));
+  });
+
+  /**
+   * The env branch has always had a label; the configurable-arg branch had only
+   * a placeholder, which disappears the moment the user types — leaving a bare
+   * box. The registry already derives the label, so render it.
+   */
+  it('labels the configurable arg, not just placeholders it', async () => {
+    setLanguage('zh-CN');
+    try {
+      render(<Host initial={postgres} />);
+      const labelled = await screen.findByLabelText('数据库连接串');
+      expect((labelled as HTMLInputElement).placeholder).toBe('postgresql://user:pass@localhost:5432/db');
+    } finally {
+      setLanguage('system');
+    }
   });
 });

@@ -43,6 +43,26 @@ function pickLocale(locale: string, zh: string, en?: string): string {
   return locale.startsWith('zh') ? zh : (en ?? zh);
 }
 
+/** The form key a template's configurable slot / secret is typed under. */
+const templateArgKey = (template: MCPTemplate, index: number) => `${template.id}-${index}`;
+const templateEnvKey = (template: MCPTemplate, name: string) => `${template.id}-env-${name}`;
+
+/**
+ * Whether every field the template asks for has been typed. A template's
+ * configurable slots and required env vars are not optional: the agent-side
+ * install (`installMCPServer`) refuses to write a config with an empty slot,
+ * and the UI must not be laxer. A blank slot would be written as `args: […, '']`
+ * — a server that cannot start — and a blank secret would be dropped by the
+ * `Object.keys(env).length > 0` guard, so even the editor would show no field
+ * left to fix it in. Whitespace counts as blank: it is what a stray space in a
+ * pasted key looks like, and neither the args array nor the env map wants it.
+ */
+function templateRequiredFilled(template: MCPTemplate, templateArgs: Record<string, string>): boolean {
+  const filled = (key: string) => (templateArgs[key] ?? '').trim().length > 0;
+  return (template.configurableArgs ?? []).every((arg) => filled(templateArgKey(template, arg.index)))
+    && (template.requiredEnvVars ?? []).every((envVar) => filled(templateEnvKey(template, envVar.name)));
+}
+
 /** Shared tool details list */
 function ToolDetailsList({ tools }: { tools: { name: string; description?: string }[] }) {
   return (
@@ -513,6 +533,9 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   // Install from template
   const handleInstallTemplate = async (template: MCPTemplate) => {
+    // The button is disabled in this state; this guards the paths that never
+    // consult it (Enter on the form, a keyboard activation racing a change).
+    if (!templateRequiredFilled(template, templateArgs)) return;
     setInstallingTemplate(template.id);
     try {
       let config: MCPServerConfig;
@@ -522,14 +545,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         const args = [...(template.defaultArgs ?? [])];
         if (template.configurableArgs) {
           for (const configArg of template.configurableArgs) {
-            const value = templateArgs[`${template.id}-${configArg.index}`];
+            const value = templateArgs[templateArgKey(template, configArg.index)];
             if (value) args[configArg.index] = value;
           }
         }
         const env: Record<string, string> = {};
         if (template.requiredEnvVars) {
           for (const envVar of template.requiredEnvVars) {
-            const value = templateArgs[`${template.id}-env-${envVar.name}`];
+            const value = templateArgs[templateEnvKey(template, envVar.name)];
             if (value) env[envVar.name] = value;
           }
         }
@@ -744,7 +767,8 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
               onEdit={() => handleEditServer(selectedServer)}
             />
           ) : selectedTemplate ? (
-            <button onClick={() => handleInstallTemplate(selectedTemplate)} disabled={installingTemplate === selectedTemplate.id}
+            <button onClick={() => handleInstallTemplate(selectedTemplate)}
+              disabled={installingTemplate === selectedTemplate.id || !templateRequiredFilled(selectedTemplate, templateArgs)}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors">
               {installingTemplate === selectedTemplate.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
               {t.toolbox.install}
@@ -1074,10 +1098,16 @@ function TemplateDetail({
         <div className="space-y-3">
           <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.serverArgs}</span>
           {template.configurableArgs?.map((arg) => (
-            <input key={arg.index} type="text" placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
-              value={templateArgs[`${template.id}-${arg.index}`] || ''}
-              onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
+            // Labeled like the secret below it: the placeholder is the only
+            // thing naming this field, and it vanishes the moment the user
+            // types — leaving a bare box next to a labeled one.
+            <div key={arg.index}>
+              <label htmlFor={`${template.id}-arg-${arg.index}`} className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{pickLocale(locale, arg.label, arg.labelEn)}</label>
+              <input id={`${template.id}-arg-${arg.index}`} type="text" placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
+                value={templateArgs[`${template.id}-${arg.index}`] || ''}
+                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
+            </div>
           ))}
           {template.requiredEnvVars?.map((envVar) => (
             <div key={envVar.name}>

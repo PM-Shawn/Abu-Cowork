@@ -55,6 +55,11 @@ const SITE_PERMISSIONS = /^(网站授权|Site permissions)$/;
 const VIEW_PAGES = /^(只看页面|View pages)$/;
 const CLICK_AND_FILL = /^(点击和填写|Click and fill in)$/;
 const CHROME_CAVEAT = /(登录失效|expired sign-in)/;
+const ADD_SITE_LABEL = /^(网站地址|Site address)$/;
+const ADD_SITE_BUTTON = /^(添加|Add)$/;
+const AUTOMATION_NAV = /^(自动化|Automation)$/;
+const SCHEDULED_TASKS_TAB = /^(定时任务|Scheduled Tasks)$/;
+const NEW_TASK = /^(新建任务|New Task)$/;
 
 /** Seeded site verdicts, so the list page has something to show. */
 const SEEDED_SITES = {
@@ -234,8 +239,8 @@ test.describe.serial('Electron capability overview', () => {
 
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForWelcomeScreen(page);
-    // The master switch is seeded on because the automatic-tasks column is
-    // inert without it, and that column is what screenshot 07 is about.
+    // The master switch is seeded on because the scripting risk warning only
+    // fires while it is, and that warning is what screenshot 08 is about.
     await seedSettings(page, {
       browserSitePermissions: SEEDED_SITES,
       allowUnattendedBrowser: true,
@@ -280,39 +285,88 @@ test.describe.serial('Electron capability overview', () => {
       What each option MEANS lives inside the option — the reason there is no
       ⓘ anywhere on this page — and that is only visible with a menu open.
 
-      The scripting card's automatic column is the one worth photographing: it
-      is the cell with no "allow" to give, so it carries the WITHHELD tier
-      listed and disabled with its reason attached. It is also the menu that
-      used to be painted over by the site-permissions card directly below it.
+      The scripting card is the one worth photographing: it is the menu that
+      used to be painted over by the site-permissions card directly below it,
+      and since the 2026-09-04 column collapse there is exactly ONE dropdown
+      on it, not one per run mode.
     */
     const scriptCard = page
       .locator('div.rounded-lg.border')
       .filter({ has: page.getByText(RUN_SCRIPTS, { exact: true }) })
       .first();
-    const scriptUnattendedCell = scriptCard.locator('button[aria-expanded]').nth(1);
-    await scriptUnattendedCell.scrollIntoViewIfNeeded();
-    await scriptUnattendedCell.click();
-
-    const withheldTier = page.getByText(/自动任务里的脚本必须逐次确认|approved one at a time/);
-    await expect(withheldTier).toBeVisible();
-    await expect(page.getByText(/每次操作前弹窗确认|Confirms with a dialog/)).toBeVisible();
+    const scriptCell = scriptCard.locator('button[aria-expanded]');
+    await expect(scriptCell).toHaveCount(1);
+    await scriptCell.scrollIntoViewIfNeeded();
+    await scriptCell.click();
 
     /*
-      Unclipped is the whole point of the fix, and "visible" does not prove it
-      — the card below used to paint straight over this menu while every
-      element in it stayed "visible" to the DOM. So ask the document what is
-      actually on top at the withheld option's own centre.
+      One setting, two execution contexts — so 「每次询问」 has to say both, on
+      one line: a dialog while the user is here, and the IM channel the task
+      itself named when it is running alone (`core/im/approvalTarget.ts`),
+      refused when none is bound. The two withdrawn per-column strings must
+      not survive anywhere on this surface.
     */
-    const withheldBox = await withheldTier.boundingBox();
-    expect(withheldBox).not.toBeNull();
+    const askOption = page.getByText(
+      /你在场时弹窗确认，自动任务发到 IM 审批|Asks you here, and over IM in automatic tasks/,
+    );
+    await expect(askOption).toBeVisible();
+    await expect(page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/))
+      .toHaveCount(0);
+    await expect(page.getByText(/发到任务绑定的 IM 频道确认|Asks in the task's IM channel/))
+      .toHaveCount(0);
+
+    /*
+      The menu is exactly as wide as the trigger that opened it. It used to be
+      shrink-to-fit with a min-width floor, so this description — one unbroken
+      line — set the width and the menu spilled ~560px across a 185px control.
+    */
+    const [menuBox, triggerBox] = await Promise.all([
+      page.locator(`#${await scriptCell.getAttribute('aria-controls')}`).boundingBox(),
+      scriptCell.boundingBox(),
+    ]);
+    expect(menuBox).not.toBeNull();
+    expect(Math.abs(menuBox!.width - triggerBox!.width)).toBeLessThanOrEqual(1);
+
+    /*
+      Unclipped is the whole point of the portal fix, and "visible" does not
+      prove it — the card below used to paint straight over this menu while
+      every element in it stayed "visible" to the DOM. So ask the document
+      what is actually on top at the option's own centre.
+    */
+    const askBox = await askOption.boundingBox();
+    expect(askBox).not.toBeNull();
     const topmostText = await page.evaluate(({ x, y }) => {
       const el = document.elementFromPoint(x, y);
       return el?.closest('button')?.textContent?.trim() ?? el?.textContent?.trim() ?? '';
     }, {
-      x: withheldBox!.x + withheldBox!.width / 2,
-      y: withheldBox!.y + withheldBox!.height / 2,
+      x: askBox!.x + askBox!.width / 2,
+      y: askBox!.y + askBox!.height / 2,
     });
-    expect(topmostText).toMatch(/允许|Allow/);
+    expect(topmostText).toMatch(/每次询问|Ask every time/);
+
+    /*
+      The ⚠ line the 2026-09-04 ruling requires: it must NOT be sitting there
+      by default (scripting ships as 「每次询问」), and it must appear directly
+      under this select the moment 「允许」 is the selected value.
+      Photographed for the IA record.
+    */
+    const riskWarning = page.getByText(/风险升高|Elevated risk/);
+    await expect(riskWarning).toHaveCount(0);
+    await page.getByText(/^在允许的网站上不再询问$|^Never asks again on allowed sites$/).click();
+    await expect(riskWarning).toBeVisible();
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });
+
+    // Put the row back to the SHIPPED DEFAULT — 「每次询问」, not 「拒绝」 —
+    // so the shot below photographs the surface a new install actually shows.
+    // (It used to click 「拒绝」, which was the default only until the ruling
+    // moved the automatic-task scripting cell to 「每次询问」.)
+    await scriptCell.click();
+    await askOption.click();
+    await expect(scriptCell).toContainText(/每次询问|Ask every time/);
+    await expect(riskWarning).toHaveCount(0);
+    await scriptCell.click();
+    await expect(askOption).toBeVisible();
 
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('07-select-open-zh') });
@@ -321,7 +375,7 @@ test.describe.serial('Electron capability overview', () => {
     // itself on Escape regardless of what is open inside it, so Escape here
     // would take the whole page down rather than just this menu.
     await page.getByText(ACTION_PERMISSIONS).first().click();
-    await expect(withheldTier).toHaveCount(0);
+    await expect(askOption).toHaveCount(0);
 
     // ---- Site list, two levels down -------------------------------------
     // Same rule as the overview: the row drills in, no text button.
@@ -331,6 +385,35 @@ test.describe.serial('Electron capability overview', () => {
     await expect(page.getByTitle('https://reports.example.com')).toBeVisible();
     await expect(page.getByTitle('https://example.com')).toBeVisible();
     await page.screenshot({ path: iaScreenshot('03-site-permissions-list-zh') });
+
+    /*
+      F1 — the list is also where a verdict is CREATED. Until this row existed
+      the only road to 「始终允许」 ran through the confirmation dialog, so
+      preparing a scheduled task meant running it attended, being refused,
+      clicking allow, and re-running. Driven here through the real keyboard,
+      because "Enter submits" is the interaction a user actually performs and
+      no unit test exercises the real shell's key handling.
+    */
+    const addField = page.getByLabel(ADD_SITE_LABEL);
+    await expect(addField).toBeVisible();
+    await addField.fill('https://Added.Example.com/reports?q=1');
+    await addField.press('Enter');
+
+    // Normalized the same way the gate resolves a live tab: lowercased host,
+    // no path, no query.
+    await expect(page.getByTitle('https://added.example.com')).toBeVisible();
+    await expect(addField).toHaveValue('');
+    await page.screenshot({ path: iaScreenshot('09-site-list-add-zh') });
+
+    // A bank cannot be given a standing grant by typing its address, the same
+    // way the confirmation dialog withholds one there.
+    await addField.fill('https://www.paypal.com');
+    await page.getByRole('button', { name: ADD_SITE_BUTTON }).click();
+    await expect(
+      page.getByText(/不能设为「始终允许」|cannot be set to Always allow/),
+    ).toBeVisible();
+    await expect(page.getByTitle('https://www.paypal.com')).toHaveCount(0);
+    await addField.fill('');
 
     // One step up lands on the page we came from, not the overview.
     await page.getByRole('button', { name: BUILTIN_BROWSER }).click();
@@ -395,6 +478,56 @@ test.describe.serial('Electron capability overview', () => {
     ).toBeVisible({ timeout: READY_TIMEOUT });
     await page.waitForTimeout(250);
     await page.screenshot({ path: iaScreenshot('06-capabilities-overview-en') });
+  });
+
+  /**
+   * F2 — the other half of the approval story, on the screen where a user
+   * actually sets an automatic task up.
+   *
+   * The field is the only IM-channel-shaped control on that page, and it
+   * invites exactly one question: "is this where the task asks me?" It now
+   * is. The scheduler builds its approval target from these same fields
+   * (`core/im/approvalTarget.ts`), so a confirmation lands where the results
+   * land — and 「不推送」 means an ask has nowhere to go and is refused. The
+   * label and the hint have to say both halves, or the user learns the second
+   * one as a nightly task that quietly achieved nothing.
+   */
+  test('names the task editor channel as the approvals channel too', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForWelcomeScreen(page);
+
+    await page
+      .getByRole('navigation', { name: /^(Main navigation|主导航)$/ })
+      .getByRole('button', { name: AUTOMATION_NAV })
+      .evaluate((element: HTMLElement) => element.click());
+    const tab = page.getByRole('button', { name: SCHEDULED_TASKS_TAB });
+    await expect(tab).toBeVisible({ timeout: READY_TIMEOUT });
+    await tab.click();
+    // Scoped to the content area: the sidebar carries a "new task" of its own
+    // (it starts a chat), and only the header one opens this editor.
+    await page.getByRole('main').getByRole('button', { name: NEW_TASK }).click();
+
+    const hint = page.getByText(
+      /运行中需要你确认的操作也会发到这里|actions that need your confirmation during the run are sent here too/,
+    );
+    await hint.scrollIntoViewIfNeeded();
+    await expect(hint).toBeVisible();
+    // ...and the other half: choosing 不推送 is choosing to have those asks
+    // refused, which is the fact a user setting up a task must not learn later.
+    await expect(
+      page.getByText(/需要确认的操作会被自动拒绝|refused automatically/),
+    ).toBeVisible();
+    // The label carries both jobs now, because the field does both.
+    await expect(
+      page.getByText(/^(结果与审批推送频道|Results & approvals channel)$/),
+    ).toBeVisible();
+
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: iaScreenshot('10-schedule-editor-channel-zh') });
   });
 
   test('rejects a direct privileged Computer Use IPC call without a task token', async () => {

@@ -51,6 +51,7 @@
  * ordinary truncated text row and changes nothing.
  */
 import type { Message } from '../../types';
+import { isScriptingBrowserTool } from '../permissions/browserToolPolicy';
 import type { BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
 import type { StoredBrowserSignalRecord } from './browserSignals';
 
@@ -164,6 +165,21 @@ export interface BrowserRunReportSnapshot {
   v: typeof BROWSER_RUN_REPORT_SNAPSHOT_VERSION;
   outcome: BrowserRunReportOutcome;
   actions: { total: number; failed: number };
+  /**
+   * How many of `actions.total` were page SCRIPTS (`execute_js`).
+   *
+   * Added with the 2026-09-04 opt-in tier: automatic-task scripting can now be
+   * turned on, and "code ran inside my logged-in session at 3am" is the single
+   * fact a person most needs the morning card to state out loud. Every other
+   * count on this card is about what was refused or what failed; this one is
+   * about something that SUCCEEDED, and would otherwise be invisible — folded
+   * anonymously into `actions.total` next to clicks and navigations.
+   *
+   * Derived from the same `tool_call` signals as `actions.total`, classified
+   * with `isScriptingBrowserTool` — no new signal type, and no page-derived
+   * input (the tool name is ours, not the page's).
+   */
+  scriptRuns: number;
   sites: BrowserRunReportSite[];
   denials: BrowserRunReportDenial[];
   problems: BrowserRunReportProblem[];
@@ -324,6 +340,7 @@ export function buildBrowserRunReport(
   };
   let total = 0;
   let failed = 0;
+  let scriptRuns = 0;
   let blockedPages = 0;
   /** Feeds `outcomeWithRefusals`. Counted off the gate's own signals only. */
   let refusedStateChangingActions = false;
@@ -333,6 +350,10 @@ export function buildBrowserRunReport(
       case 'tool_call': {
         total++;
         if (!signal.ok) failed++;
+        // Counted whether or not the call reported ok: a script that threw
+        // halfway still ran in the page, and the card's claim is "code ran
+        // here", not "code succeeded here".
+        if (isScriptingBrowserTool(signal.tool)) scriptRuns++;
         if (signal.origin) {
           const origin = clampUntrusted(signal.origin, MAX_REPORT_ORIGIN_LENGTH);
           const row = sites.get(origin) ?? { origin, actions: 0, failures: 0 };
@@ -456,6 +477,7 @@ export function buildBrowserRunReport(
     v: BROWSER_RUN_REPORT_SNAPSHOT_VERSION,
     outcome: outcomeWithRefusals(outcome, refusedStateChangingActions),
     actions: { total, failed },
+    scriptRuns,
     sites: allSites.slice(0, MAX_REPORT_SITES),
     denials: denialRows,
     problems: allProblems.slice(0, MAX_REPORT_PROBLEMS),

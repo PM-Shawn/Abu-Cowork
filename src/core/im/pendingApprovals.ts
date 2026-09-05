@@ -45,6 +45,7 @@ import {
   type UnattendedImTarget,
 } from '../permissions/unattendedConfirmation';
 import type { NormalizedIMMessage } from './inboundRouter';
+import type { IMPlatform } from '../../types/im';
 import { createLogger } from '../logging/logger';
 
 const log = createLogger('im-approval');
@@ -73,11 +74,17 @@ export function setImApprovalTimeoutMs(ms: number): void {
 }
 
 /**
- * Most approval prompts one conversation may have outstanding at once.
+ * Most approval prompts that may be outstanding at once — counted BOTH per
+ * conversation and per destination chat, with the tighter one binding (R4).
  *
  * The cap is a spam bound AND an ambiguity bound: a bare `同意` answers the
  * OLDEST outstanding prompt (the one the user saw first), so the fewer that
  * can be in flight, the smaller the chance an answer lands on the wrong ask.
+ *
+ * Both scopes are needed because an automation defeats the conversation one by
+ * construction: every scheduled run gets a brand-new conversation, so N runs
+ * of one task could pile 3N prompts into a single chat while no conversation
+ * ever exceeded three.
  */
 export const MAX_PENDING_APPROVALS_PER_CONVERSATION = 3;
 
@@ -166,6 +173,19 @@ export function classifyApprovalReply(text: string): 'approve' | 'deny' | null {
 interface PendingApproval {
   conversationId: string;
   platform: string;
+  /**
+   * The channel this prompt was sent THROUGH.
+   *
+   * Only the DM branch reads it, and it has to: that branch matches on owner +
+   * privacy rather than chat identity, so without the channel a prompt armed
+   * via one channel is answerable from a different channel on the same
+   * platform (two Feishu apps in one workspace — an entirely ordinary setup,
+   * and one of them may be a bot the approver does not control). The chat
+   * branch is already pinned by `chatId`, which is channel-specific in
+   * practice, but the field is set for every entry so the rule cannot silently
+   * become "sometimes checked".
+   */
+  channelId?: string;
   chatId: string;
   /** When the binding names the person who owns this conversation, only they
    *  may answer — a bystander in a group chat must not be able to approve
@@ -178,6 +198,9 @@ interface PendingApproval {
    * is no message on screen for anyone to be answering.
    */
   armed: boolean;
+  /** How `chatId` addressed its recipient — decides which matching rule the
+   *  inbound hook applies to this entry. See `tryConsumeApprovalReply`. */
+  chatIdType?: 'chat_id' | 'open_id';
   timer?: ReturnType<typeof setTimeout>;
   detachAbort?: () => void;
   settle?: (outcome: ImApprovalOutcome) => void;
@@ -271,6 +294,27 @@ export function __resetPendingApprovalsForTests(): void {
  * everything else, including a LATE answer to a prompt that already timed out
  * — that is an ordinary message and belongs to the conversation.
  */
+/**
+ * R3 — can a DM reply be attributed to this entry's channel at all?
+ *
+ * The DM branch trades chat identity for owner + privacy, which also drops the
+ * only thing that tied an entry to the channel it was sent through. Inbound
+ * messages carry no channel id (see the matcher's note), so provenance is only
+ * unambiguous while the entry's platform has exactly ONE enabled channel.
+ *
+ * Re-checked at ANSWER time, not just at send time: a second channel enabled
+ * while a prompt is outstanding makes that outstanding prompt ambiguous too,
+ * and the safe reading of an ambiguous answer is "not an answer".
+ */
+function dmReplyProvenanceIsUnambiguous(entry: PendingApproval): boolean {
+  if (entry.channelId === undefined) return false;
+  const enabled = useIMChannelStore
+    .getState()
+    .getChannelsByPlatform(entry.platform as IMPlatform)
+    .filter((c) => c.enabled);
+  return enabled.length === 1 && enabled[0]?.id === entry.channelId;
+}
+
 export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
   const messageId = message.replyContext.messageId;
   const idKey = messageId ? `${message.platform}:${messageId}` : null;
@@ -300,14 +344,44 @@ export function tryConsumeApprovalReply(message: NormalizedIMMessage): boolean {
     (entry) =>
       entry.armed &&
       entry.platform === message.platform &&
-      entry.chatId === message.chatId &&
-      // No bound owner means we do not know whose approval this is. In a 1:1
-      // chat there is only one candidate, so the reply is unambiguous; in a
-      // group it is not, and "anyone in the group may approve" is not a
-      // default anybody chose. Such a prompt simply expires.
-      (entry.senderId !== undefined
-        ? entry.senderId === message.senderId
-        : message.isDirect === true),
+      (entry.chatIdType === 'open_id'
+        /*
+          Addressed to a PERSON, not a conversation. The adapter opened (or
+          reused) a 1:1 chat to deliver it, and the answer comes back carrying
+          THAT chat's id — never the user id we addressed — so chat identity
+          cannot be the check here.
+
+          What replaces it is strictly tighter than the chat rule, not looser:
+          the owner is known exactly (we chose whom to message), the reply must
+          come from that exact person, it must be private, AND it must arrive
+          through the same channel the prompt went out on. That last clause is
+          R3 from the security review: dropping chat identity also dropped the
+          only thing tying the entry to its channel, so one workspace running
+          two apps on the same platform could answer either app's prompt from
+          the other.
+
+          🔴 Abu cannot TELL those two apart today: an inbound message arrives
+          as `{ platform, payload }` and carries no channel identity at all
+          (`inboundDispatcher.dispatch`), which is also why the router picks a
+          channel by platform rather than by provenance. So the check that can
+          be enforced is the one below — a DM prompt is answerable only while
+          its channel is the ONLY enabled one on its platform, i.e. only while
+          "a feishu DM from this person" can mean exactly one thing. With two
+          enabled channels the prompt becomes unanswerable rather than
+          cross-answerable: fail-closed, in the direction that matters.
+        */
+        ? entry.senderId !== undefined
+          && entry.senderId === message.senderId
+          && message.isDirect === true
+          && dmReplyProvenanceIsUnambiguous(entry)
+        : entry.chatId === message.chatId
+          // No bound owner means we do not know whose approval this is. In a
+          // 1:1 chat there is only one candidate, so the reply is unambiguous;
+          // in a group it is not, and "anyone in the group may approve" is not
+          // a default anybody chose. Such a prompt simply expires.
+          && (entry.senderId !== undefined
+            ? entry.senderId === message.senderId
+            : message.isDirect === true)),
   );
   if (index === -1) return false;
   if (verdict === null) return false;
@@ -388,11 +462,19 @@ function publishApprovalNotice(conversationId: string | null, prompt: string): v
   }
 }
 
-/** Push one line into an IM chat. Returns delivery success. */
+/**
+ * Push one line into an IM chat. Returns delivery success.
+ *
+ * `chatIdType` is forwarded to `outputSender` because a DM is addressed by a
+ * USER id, and the adapter has to be told that — `sendViaIMChannel` otherwise
+ * defaults a bare `outputChatId` to `'chat_id'` and the send fails or lands
+ * nowhere. Same argument `pushToIMChannel` already passes for results.
+ */
 async function sendToChat(
   channelId: string,
   chatId: string,
   content: string,
+  chatIdType?: 'chat_id' | 'open_id',
 ): Promise<{ success: boolean; error?: string }> {
   return await outputSender
     .send(
@@ -404,6 +486,8 @@ async function sendToChat(
         extractMode: 'last_message',
       },
       { content },
+      undefined,
+      chatIdType ?? 'chat_id',
     )
     .catch((error: unknown) => ({
       success: false,
@@ -451,7 +535,7 @@ async function sendOutcomeReceipt(
         : format(t.imChannel.approvalReceiptTooMany, {
             max: String(MAX_PENDING_APPROVALS_PER_CONVERSATION),
           });
-  const sent = await sendToChat(target.channelId, target.chatId, text);
+  const sent = await sendToChat(target.channelId, target.chatId, text, target.chatIdType);
   if (!sent.success) log.warn(`approval receipt undelivered: ${sent.error ?? 'unknown error'}`);
 }
 
@@ -502,8 +586,33 @@ export async function requestImApprovalDetailed(
   if (!channelId || !chatId) return { outcome: 'denied', cause: 'no_binding' };
   if (options.abortSignal?.aborted) return { outcome: 'denied', cause: 'aborted' };
 
-  const outstanding = pending.filter((e) => e.conversationId === conversationId).length;
-  if (outstanding >= MAX_PENDING_APPROVALS_PER_CONVERSATION) {
+  /*
+    R4 — the cap is per CONVERSATION and per DESTINATION, and the tighter of
+    the two wins.
+
+    Per-conversation alone was a spam bound that automations walked straight
+    through: a scheduled run mints a fresh conversation every time, so three
+    runs of one nightly task put nine prompts into one chat, each with its own
+    "answer within 5 minutes" deadline. The destination is what a human
+    actually experiences, so it has to carry a bound of its own.
+
+    It is also the ambiguity bound the per-conversation cap was reaching for:
+    a bare 同意 answers the OLDEST armed prompt in that chat, and the fewer
+    that can be waiting there, the smaller the chance an answer lands on the
+    wrong one — which is a property of the CHAT, not of the conversation.
+
+    Keyed by platform + chatId, which for a DM entry is the owner's id, so one
+    person's inbox is bounded whether they are addressed as a chat or by name.
+  */
+  const outstandingInConversation =
+    pending.filter((e) => e.conversationId === conversationId).length;
+  const outstandingAtDestination = pending.filter(
+    (e) => e.platform === imTarget.platform && e.chatId === chatId,
+  ).length;
+  if (
+    Math.max(outstandingInConversation, outstandingAtDestination)
+    >= MAX_PENDING_APPROVALS_PER_CONVERSATION
+  ) {
     publishApprovalNotice(conversationId, prompt);
     return { outcome: 'denied', cause: 'too_many' };
   }
@@ -511,7 +620,9 @@ export async function requestImApprovalDetailed(
   const entry: PendingApproval = {
     conversationId,
     platform: imTarget.platform,
+    channelId,
     chatId,
+    ...(imTarget.chatIdType !== undefined ? { chatIdType: imTarget.chatIdType } : {}),
     ...(senderId !== undefined ? { senderId } : {}),
     armed: false,
   };
@@ -542,7 +653,7 @@ export async function requestImApprovalDetailed(
       entry.detachAbort = () => signal.removeEventListener('abort', onAbort);
     }
 
-    void sendToChat(channelId, chatId, prompt).then((sent) => {
+    void sendToChat(channelId, chatId, prompt, imTarget.chatIdType).then((sent) => {
       clearTimeout(sendTimer);
       // Aborted or timed out while the message was in flight: the ask is
       // already over, whatever the adapter now says.
@@ -658,7 +769,37 @@ export function sanitizeUntrustedPromptField(
  */
 function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number): string {
   const t = getI18n();
+  /*
+    WHICH automation is asking, and WHERE it is acting.
+
+    A prompt that arrives in a chat at 03:00 saying only "Abu wants to click a
+    button" cannot be answered responsibly: the reader has several automations
+    and no way to tell them apart, so the safe reply is always 拒绝 — which
+    turns the whole channel into noise. The task name and the target origin are
+    what make the ask decidable.
+
+    Both go through `sanitizeUntrustedPromptField` like the other two: a task
+    can be created by the model, and an origin comes from a page. And both sit
+    INSIDE the fenced region — `approvalPrompt` keeps the reply instruction and
+    the deadline after it, so nothing here can forge them.
+  */
+  const context: string[] = [];
+  if (request.runLabel !== undefined && request.runLabel.trim() !== '') {
+    context.push(
+      format(t.imChannel.approvalPromptTask, {
+        task: sanitizeUntrustedPromptField(request.runLabel),
+      }),
+    );
+  }
+  if (request.info.browserOrigin !== undefined && request.info.browserOrigin !== '') {
+    context.push(
+      format(t.imChannel.approvalPromptOrigin, {
+        origin: sanitizeUntrustedPromptField(request.info.browserOrigin),
+      }),
+    );
+  }
   return format(t.imChannel.approvalPrompt, {
+    context: context.length > 0 ? `${context.join('\n')}\n` : '',
     action: sanitizeUntrustedPromptField(request.info.command),
     reason: sanitizeUntrustedPromptField(request.info.reason),
     minutes: String(Math.round(timeoutMs / 60_000)),
@@ -701,9 +842,18 @@ async function askOverIm(
   conversationId: string,
   prompt: string,
 ): Promise<ImApprovalResult> {
-  // A caller that already knows where it is answering (the IM channel router
-  // builds its callbacks with the live reply target) beats the store lookup,
-  // which can only find the session mapper's record.
+  /*
+    A caller that already knows where it is answering beats the store lookup,
+    which can only find the session mapper's record.
+
+    Two kinds of caller supply one now: the IM channel router (the live reply
+    target of the message that started the run) and — since approvals were
+    wired to automations — the scheduler and the trigger engine, which build
+    it from the automation's own IM output binding
+    (`core/im/approvalTarget.ts`). Without that second kind, an automatic
+    run's conversation is bound to no session and every「每次询问」refused
+    itself with `no_binding`.
+  */
   const supplied = request.imTarget;
   const target: DeliverableImTarget | null =
     supplied?.channelId && supplied.chatId
@@ -711,6 +861,7 @@ async function askOverIm(
           platform: supplied.platform,
           channelId: supplied.channelId,
           chatId: supplied.chatId,
+          ...(supplied.chatIdType !== undefined ? { chatIdType: supplied.chatIdType } : {}),
           ...(supplied.senderId !== undefined ? { senderId: supplied.senderId } : {}),
         }
       : resolveImTargetForConversation(conversationId);

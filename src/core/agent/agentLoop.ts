@@ -546,6 +546,15 @@ export interface AgentLoopOptions {
   onMessageTaken?: (messageId?: string) => void;
   /** Host-owned, immutable authority ceiling for unattended/background runs. */
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
+  /**
+   * F1 — where this unattended run may ask when a policy row says 「每次询问」.
+   * The scheduler and the trigger engine already build this for their
+   * `commandConfirmCallback`; passing it here as well is what lets the gates
+   * that DON'T go through that callback (the browser gate) reach the same
+   * chat. Absent for interactive desktop runs and for IM-inbound runs, which
+   * already have an IM session bound to their conversation.
+   */
+  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   /** Shell-only factory; deliberately omitted from every sidecar wire shape. */
   skillCommandApprovalFactory?: (
     context: ToolExecutionContext,
@@ -2568,6 +2577,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           blockedTools: effectiveBlockedTools,
           allowedTools: options?.allowedTools,
           imContext: options?.imContext,
+          unattendedApproval: options?.unattendedApproval,
           confirmCb,
           filePermCb,
           toolContext,

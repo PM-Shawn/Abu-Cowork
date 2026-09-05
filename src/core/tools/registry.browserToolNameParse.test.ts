@@ -79,15 +79,13 @@ function dispatchedToolNames(): string[] {
 const attendedOwner = { conversationId: OWNER } as never;
 const unattendedOwner = { conversationId: OWNER, interactionMode: 'background' } as never;
 
+/** The default policy with ONE row overridden. There is no column argument
+ *  since the 2026-09-04 collapse: both execution contexts read this value. */
 function policyWith(
-  column: 'attended' | 'unattended',
-  cell: keyof BrowserOperationPolicy['attended'],
+  cell: keyof BrowserOperationPolicy,
   state: 'allow' | 'deny' | 'ask',
 ): BrowserOperationPolicy {
-  return {
-    ...DEFAULT_BROWSER_OPERATION_POLICY,
-    [column]: { ...DEFAULT_BROWSER_OPERATION_POLICY[column], [cell]: state },
-  };
+  return { ...DEFAULT_BROWSER_OPERATION_POLICY, [cell]: state };
 }
 
 describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => {
@@ -225,7 +223,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
   describe('unattended at the full tier', () => {
     it('does not run suffixed execute_js through the interactive cell', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'allow'),
+        browserOperationPolicy: policyWith('interactive', 'allow'),
       });
 
       const result = await executeAnyTool(
@@ -244,7 +242,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
   describe('secondary effect 1 — the denial taxonomy', () => {
     it('never reports a suffixed execute_js refusal as the weaker "other" kind', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'ask'),
+        browserOperationPolicy: policyWith('interactive', 'ask'),
       });
       setUnattendedConfirmationResolver(async () => ({
         approved: false,
@@ -266,7 +264,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
 
     it('control: the well-formed execute_js refusal is filed as scripting', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('unattended', 'scripting', 'ask'),
+        browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       setUnattendedConfirmationResolver(async () => ({
         approved: false,
@@ -288,7 +286,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
   describe('secondary effect 2 — a click-grade grant clearing a scripting streak', () => {
     it('a suffixed execute_js never reports a grant-consented allow', async () => {
       useSettingsStore.setState({
-        browserOperationPolicy: policyWith('unattended', 'interactive', 'allow'),
+        browserOperationPolicy: policyWith('interactive', 'allow'),
       });
       const reportBrowserAllow = vi.fn();
 

@@ -20,6 +20,7 @@ import {
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
+import { resolveUnattendedImTarget } from '../im/approvalTarget';
 import type { OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
@@ -88,6 +89,13 @@ function resolveScheduledRunPermissions(
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
   blockedTools: string[];
+  /**
+   * F1 — the same approval destination the callback closure carries, returned
+   * so the run can also publish it as trusted run context. Gates that build
+   * their own seam request (the browser gate) never call the callback, so the
+   * closure alone left them with nowhere to ask.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   getDenials: () => string[];
 } {
   // The workspace gets the same rights an interactive chat conversation would
@@ -104,15 +112,35 @@ function resolveScheduledRunPermissions(
   // produce one line, not ten.
   const denials = new Set<string>();
 
+  /*
+    Where this run may ask, when its policy says「每次询问」.
+
+    A scheduled run mints a fresh conversation every time, so the seam's
+    fallback — the IM session bound to the conversation — never finds
+    anything, and until this was passed, every ask in an automatic task
+    refused itself with `no_binding`. The task already names a channel: the
+    one its RESULTS go to. Approvals now go to the same place, addressed the
+    same way (`resolveUnattendedImTarget` mirrors `pushToIMChannel`).
+
+    Null when the task nominates no channel — the old behavior, deliberately:
+    guessing a channel would route a 3am approval for someone's signed-in
+    banking session into a chat they never chose.
+  */
+  const imTarget = resolveUnattendedImTarget(task);
+
   return {
     // One seam for "an unattended run needs approval" (see
     // `unattendedConfirmation.ts`) instead of a hand-rolled always-false
-    // closure per entry point. Today it still resolves false — the recorder
-    // below is what turns that into a user-readable line — but when an IM
-    // approval round-trip lands, all three entry points gain it at once.
+    // closure per entry point. The recorder below turns a refusal into a
+    // user-readable line; the IM round-trip is what can now turn it into an
+    // approval instead.
     commandConfirmCallback: createUnattendedConfirmation({
       source: 'scheduler',
       ...(conversationId !== undefined ? { conversationId } : {}),
+      ...(imTarget !== null ? { imTarget } : {}),
+      // Names the automation in the IM prompt: a user with several tasks
+      // cannot otherwise tell which one is asking.
+      runLabel: task.name,
       onDenied: (reason, info) => {
         const t = getI18n();
         denials.add(
@@ -136,6 +164,11 @@ function resolveScheduledRunPermissions(
     },
     // request_workspace pops a UI dialog a scheduled run can never answer.
     blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
+    // Same two values the callback above closes over — see the return type.
+    unattendedApproval: {
+      ...(imTarget !== null ? { imTarget } : {}),
+      runLabel: task.name,
+    },
     getDenials: () => Array.from(denials),
   };
 }
@@ -285,6 +318,11 @@ class SchedulerEngine {
         allowedTools,
         authorizationScopeId,
         runPermissionCeiling,
+        // F1 — published on the run so the browser gate can ask the task's own
+        // chat. The callback above carries the identical values for the gates
+        // that DO go through it; this is the same fact, on the channel the
+        // browser gate can actually read.
+        unattendedApproval: permissions.unattendedApproval,
         // The tick started this run, not a person — unattended even if the
         // user later types into the same conversation (that send is theirs).
         initiatedBy: 'automation',

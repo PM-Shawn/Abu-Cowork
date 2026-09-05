@@ -57,6 +57,20 @@ export interface LoopContext {
   /** Unattended provenance inherited by delegated work. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /**
+   * F1 — where THIS unattended run may ask when a policy row says 「每次询问」,
+   * and what to call it in the prompt. Built by the scheduler / trigger engine
+   * from the automation's own IM output binding and handed down as
+   * `AgentLoopOptions.unattendedApproval`.
+   *
+   * It lives here, on run context, because the browser gate does not go
+   * through `commandConfirmCallback` (it needs the seam's audit fields, which
+   * a boolean callback cannot carry) and therefore cannot see the closure that
+   * used to be the target's only home. Shell-owned: written only by the
+   * trusted runtime, never from model input or a sidecar-supplied tool
+   * context.
+   */
+  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
   /** Who started the parent run — inherited by delegated work, so a subagent
    * spawned from a human-typed turn keeps the human's dialogs. */
   initiatedBy?: import('./runInteractionMode').RunInitiator;

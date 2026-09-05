@@ -1,13 +1,17 @@
+import { useState } from 'react';
 import { ChevronRight, CircleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Select, type SelectOption } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
+import { isHighRiskUrl } from '@/core/permissions/highRiskSites';
 import {
   browserOperationStatesFor,
+  normalizeBrowserOrigin,
   type BrowserOperationClass,
   type BrowserOperationState,
 } from '@/core/permissions/browserToolPolicy';
@@ -17,9 +21,17 @@ import { CapabilityBreadcrumb, settingsCardClass } from './CapabilitySetupView';
  *  are shared: the verdicts and the policy grid are one setting for both. */
 export type BrowserBackend = 'builtin' | 'chrome';
 
-/** Every policy select on this surface shares one width, so the two columns
- *  line up across the matrix card and the split-out scripting card. */
-const policySelectWidthClass = 'w-28 shrink-0 justify-center';
+/**
+ * Every dropdown on the capability pages is this wide — the policy rows, the
+ * scripting card, the site list's verdicts and its add row — so the pane
+ * reads as one control repeated rather than one per length of its own label.
+ *
+ * 13rem is picked to hold the longest option label with its description on
+ * two lines in both locales; the menu is exactly this wide too (the `Select`
+ * menu hugs its trigger), so a description wraps inside the menu instead of
+ * setting its width.
+ */
+const policySelectWidthClass = 'w-52 shrink-0';
 
 /**
  * Persistent per-site browser-automation verdicts, written from the
@@ -29,6 +41,13 @@ const policySelectWidthClass = 'w-28 shrink-0 justify-center';
  *
  * Every standing verdict is visible, switchable between allow and block, and
  * removable — removing restores ask-every-time for that site.
+ *
+ * It is also where a verdict can be CREATED (F1, 2026-09-04). Until then the
+ * only road to 「始终允许」 ran through the confirmation dialog, so a user
+ * preparing a scheduled task had to run it attended, be refused, open the
+ * conversation, click allow, and re-run — a deliberate failure as a setup
+ * step. Codex's site-permissions page has the same add field, for the same
+ * reason.
  */
 export function BrowserSitePermissionsPage({
   trail,
@@ -71,6 +90,47 @@ export function BrowserSitePermissionsPage({
         count: authorization.reachableUnattended.length,
       });
 
+  const [draftUrl, setDraftUrl] = useState('');
+  const [draftVerdict, setDraftVerdict] = useState<'allowed' | 'denied'>('allowed');
+  const [addError, setAddError] = useState<string | null>(null);
+
+  const submitDraft = () => {
+    /*
+      ONE normalizer for the whole app. The gate resolves a live tab's URL
+      through `normalizeBrowserOrigin`, so a key typed here has to come out of
+      the same function or the two spellings would never meet — a verdict
+      stored under `https://Example.com./` would sit in the list looking
+      authoritative while every call checked `https://example.com`. It also
+      carries the rejections: non-http(s) and unparseable input come back null.
+    */
+    const origin = normalizeBrowserOrigin(draftUrl.trim());
+    if (origin === null) {
+      setAddError(t.settings.browserSitePermsAddInvalid);
+      return;
+    }
+    /*
+      A standing "always allow" for a bank is the exact artifact the high-risk
+      classifier exists to prevent — the confirmation dialog already refuses to
+      offer one there (`allowPersistentGrant: false`), and typing the address
+      by hand must not be the way around that. BLOCKING one stays available:
+      this rule only ever tightens. The reason shown is the dialog's reason
+      minus its "check the page before you confirm" tail, which names an
+      action this page does not offer.
+    */
+    if (draftVerdict === 'allowed' && isHighRiskUrl(origin)) {
+      setAddError(t.settings.browserSitePermsAddHighRisk);
+      return;
+    }
+    /*
+      The SAME setter the rows use. The store is keyed by origin, so adding an
+      origin that is already listed updates its verdict instead of minting a
+      duplicate — which is also why this needs no "already exists" branch.
+    */
+    setBrowserSitePermission(origin, draftVerdict);
+    setDraftUrl('');
+    setAddError(null);
+  };
+
   return (
     <div className="space-y-5">
       <CapabilityBreadcrumb trail={trail} onNavigate={onNavigate} />
@@ -85,51 +145,104 @@ export function BrowserSitePermissionsPage({
           {reachSummary}
         </p>
       </div>
-      {origins.length === 0 ? (
-        <p className="border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
-          {t.settings.browserSitePermsEmpty}
-        </p>
-      ) : (
-        <ul className="divide-y divide-[var(--abu-border)] border-t border-[var(--abu-border)]">
-          {origins.map((origin) => (
-            <li key={origin} className="flex items-center gap-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
-                {origin}
-              </span>
-              {/*
-                The one thing the row cannot imply: a site the user explicitly
-                allowed will STILL be asked about, because the page looks like
-                money movement. Kept as a tag; the plain "an allowed site is
-                allowed" tags were dropped as restatement.
-              */}
-              {sitePermissions[origin] === 'allowed' && highRisk.has(origin) && (
-                <span className="shrink-0 rounded-md bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]">
-                  {t.settings.browserHighRiskTag}
+      <div>
+        {/*
+          Same row rhythm as a verdict below it — address, verdict select of
+          the same width, trailing control — so the list reads as one thing
+          the user can both review and extend, not a record with a form bolted
+          on top of it.
+        */}
+        <div className="flex items-center gap-3 border-t border-[var(--abu-border)] py-2">
+          <Input
+            value={draftUrl}
+            onChange={(e) => {
+              setDraftUrl(e.target.value);
+              // A refusal about what was typed a moment ago is noise while the
+              // user is typing the correction.
+              if (addError !== null) setAddError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              submitDraft();
+            }}
+            placeholder={t.settings.browserSitePermsAddPlaceholder}
+            aria-label={t.settings.browserSitePermsAddLabel}
+            className="h-8 min-w-0 flex-1"
+          />
+          <Select
+            variant="inline"
+            value={draftVerdict}
+            options={verdictOptions}
+            onChange={(v) => {
+              setDraftVerdict(v as 'allowed' | 'denied');
+              if (addError !== null) setAddError(null);
+            }}
+            ariaLabel={t.settings.browserSitePermsAddVerdictLabel}
+            className={policySelectWidthClass}
+          />
+          {/* Same surface as the rows' 「移除」 so the column of trailing
+              controls reads as one, rather than this row shouting. */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={submitDraft}
+            className="shrink-0 border-[var(--abu-border)] bg-[var(--abu-bg-base)] font-medium"
+          >
+            {t.settings.browserSitePermsAddButton}
+          </Button>
+        </div>
+        {addError !== null && (
+          <p className="pb-2 text-minor leading-relaxed text-[var(--abu-danger)]">
+            {addError}
+          </p>
+        )}
+        {origins.length === 0 ? (
+          <p className="border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
+            {t.settings.browserSitePermsEmpty}
+          </p>
+        ) : (
+          <ul className="divide-y divide-[var(--abu-border)] border-t border-[var(--abu-border)]">
+            {origins.map((origin) => (
+              <li key={origin} className="flex items-center gap-3 py-2">
+                <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
+                  {origin}
                 </span>
-              )}
-              <Select
-                variant="inline"
-                value={sitePermissions[origin]}
-                options={verdictOptions}
-                onChange={(v) => setBrowserSitePermission(origin, v as 'allowed' | 'denied')}
-                className={cn(
-                  policySelectWidthClass,
-                  sitePermissions[origin] === 'allowed'
-                    ? 'text-[var(--abu-success)]'
-                    : 'text-[var(--abu-danger)]',
+                {/*
+                  The one thing the row cannot imply: a site the user explicitly
+                  allowed will STILL be asked about, because the page looks like
+                  money movement. Kept as a tag; the plain "an allowed site is
+                  allowed" tags were dropped as restatement.
+                */}
+                {sitePermissions[origin] === 'allowed' && highRisk.has(origin) && (
+                  <span className="shrink-0 rounded-md bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]">
+                    {t.settings.browserHighRiskTag}
+                  </span>
                 )}
-              />
-              <button
-                type="button"
-                onClick={() => removeBrowserSitePermission(origin)}
-                className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                {t.settings.browserSitePermsRevoke}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+                <Select
+                  variant="inline"
+                  value={sitePermissions[origin]}
+                  options={verdictOptions}
+                  onChange={(v) => setBrowserSitePermission(origin, v as 'allowed' | 'denied')}
+                  className={cn(
+                    policySelectWidthClass,
+                    sitePermissions[origin] === 'allowed'
+                      ? 'text-[var(--abu-success)]'
+                      : 'text-[var(--abu-danger)]',
+                  )}
+                />
+                <button
+                  type="button"
+                  onClick={() => removeBrowserSitePermission(origin)}
+                  className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
+                >
+                  {t.settings.browserSitePermsRevoke}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
@@ -143,13 +256,16 @@ export function BrowserSitePermissionsPage({
  * Chrome channel's weaker safety net gets called out.
  *
  * Layout follows the shape of the decision:
- *  - the master switch is FIRST because it overrides everything under it (with
- *    it off, no automatic-task cell can allow anything, and that column is
- *    disabled to say so rather than showing settings that do nothing);
- *  - the two ordinary operation classes form a 2x2 grid;
- *  - scripting gets its own card. Under "automatic tasks" it is a degenerate
- *    cell (`browserOperationStatesFor` offers no "allow" there), and it is the
- *    one row a user should not skim past inside a grid.
+ *  - the master switch is FIRST because it overrides everything under it: with
+ *    it off, nothing an automatic task asks for is allowed, whatever the rows
+ *    below say;
+ *  - the two ordinary operation classes are one row each, one dropdown each.
+ *    They used to be a 2x2 grid — one column for «while you are here», one for
+ *    «automatic tasks» — until the 2026-09-04 ruling («不应该分在不在场，只要
+ *    得到了用户允许，都能做») made the permission one value that both contexts
+ *    read;
+ *  - scripting gets its own card: it is the one row a user should not skim
+ *    past inside a grid, and the only one carrying a risk warning.
  */
 export function BrowserPermissionCards({
   backend,
@@ -170,67 +286,64 @@ export function BrowserPermissionCards({
     ask: t.settings.browserOpStateAsk,
     deny: t.settings.browserOpStateDeny,
   };
-  const stateDescriptions: Record<BrowserOperationState, string> = {
-    allow: t.settings.browserOpStateAllowDesc,
-    ask: t.settings.browserOpStateAskDesc,
-    deny: t.settings.browserOpStateDenyDesc,
+  /*
+    F8 (2026-09-05) — 「允许」 does not mean the same thing on all three rows,
+    so it no longer says the same thing either.
+
+    Reading a page under 「允许」 really is unconditional: that row consults no
+    site verdict at all. The two rows that ACT are scoped to the sites the user
+    set to 「始终允许」 — a site with no standing verdict still opens a
+    confirmation — so 「不再询问」 was simply false there. 「每次询问」 and
+    「拒绝」 are true for every row and are shared as before.
+  */
+  const stateDescription = (
+    opClass: BrowserOperationClass,
+    state: BrowserOperationState,
+  ): string => {
+    switch (state) {
+      case 'allow':
+        return opClass === 'read-only'
+          ? t.settings.browserOpStateAllowDesc
+          : t.settings.browserOpStateAllowDescSiteScoped;
+      case 'ask':
+        return t.settings.browserOpStateAskDesc;
+      case 'deny':
+        return t.settings.browserOpStateDenyDesc;
+    }
   };
   /*
-    The option list is asked for per cell, not shared: unattended scripting
-    offers no "allow" (see `browserOperationStatesFor`) — a site grant is
-    consent the user gave to a CLICK, and it never buys the right to run code
-    in that page unwatched.
+    The option list is asked for per row, not shared — `browserOperationStatesFor`
+    is the single seam that says which tiers a row may hold.
 
-    That tier is still LISTED, disabled, with the reason attached. Silently
-    dropping it left one cell in a grid of identical dropdowns quietly missing
-    its top option, which reads as a bug; offering it live would promise
-    something the gate refuses to honor. The withheld tier is derived from
-    `browserOperationStatesFor` rather than hardcoded, so if the policy ever
-    offers it the explanation disappears by itself.
+    Each description now covers BOTH execution contexts in one line, because
+    the setting does: «ask every time» is a dialog while the user is here and
+    an IM approval when a task is running alone. Before the 2026-09-04 ruling
+    there were two columns and two descriptions per state; keeping the second
+    sentence out of a paragraph above the control and inside the option is the
+    part that did not change.
   */
-  const optionsFor = (
-    runMode: 'attended' | 'unattended',
-    opClass: BrowserOperationClass,
-  ): SelectOption[] => {
-    const offered = browserOperationStatesFor(runMode, opClass);
-    const options: SelectOption[] = offered.map((state) => ({
+  const optionsFor = (opClass: BrowserOperationClass): SelectOption[] =>
+    browserOperationStatesFor(opClass).map((state) => ({
       value: state,
       label: stateLabels[state],
-      description: stateDescriptions[state],
+      description: stateDescription(opClass, state),
     }));
-    if (!offered.includes('allow')) {
-      options.unshift({
-        value: 'allow',
-        label: stateLabels.allow,
-        description: t.settings.browserOpStateAllowUnavailableDesc,
-        disabled: true,
-      });
-    }
-    return options;
-  };
 
-  const attendedColumn = t.settings.browserOpPolicyColumnAttended;
-  const unattendedColumn = t.settings.browserOpPolicyColumnUnattended;
-
-  /** Both cards render their cells through here, so the matrix and the
-   *  split-out scripting card write to the store through the same call. */
-  const policyCell = (
-    runMode: 'attended' | 'unattended',
+  /** Both cards render their rows through here, so the two ordinary classes
+   *  and the split-out scripting card write to the store through the same
+   *  call. */
+  const policyRow = (
     key: 'readOnly' | 'interactive' | 'scripting',
     opClass: BrowserOperationClass,
     rowLabel: string,
   ) => (
     <Select
       variant="inline"
-      value={policy[runMode][key]}
-      options={optionsFor(runMode, opClass)}
-      onChange={(v) => setBrowserOperationState(runMode, key, v as BrowserOperationState)}
-      disabled={runMode === 'unattended' && !allowUnattended}
-      ariaLabel={`${rowLabel} · ${runMode === 'attended' ? attendedColumn : unattendedColumn}`}
-      className={cn(
-        policySelectWidthClass,
-        runMode === 'unattended' && !allowUnattended && 'opacity-50',
-      )}
+      value={policy[key]}
+      options={optionsFor(opClass)}
+      onChange={(v) => setBrowserOperationState(key, v as BrowserOperationState)}
+      ariaLabel={rowLabel}
+      className={policySelectWidthClass}
     />
   );
 
@@ -245,18 +358,6 @@ export function BrowserPermissionCards({
 
   const allowedCount = Object.values(sitePermissions).filter((v) => v === 'allowed').length;
   const deniedCount = Object.values(sitePermissions).filter((v) => v === 'denied').length;
-
-  const columnHeader = (
-    <div className="flex items-center gap-3 pb-1">
-      <span className="min-w-0 flex-1" />
-      <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-        {attendedColumn}
-      </span>
-      <span className="w-28 shrink-0 text-center text-minor text-[var(--abu-text-muted)]">
-        {unattendedColumn}
-      </span>
-    </div>
-  );
 
   return (
     <div className="space-y-3">
@@ -304,15 +405,13 @@ export function BrowserPermissionCards({
         )}
 
         <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
-          {columnHeader}
           <ul className="divide-y divide-[var(--abu-border)]">
             {matrixRows.map((row) => (
               <li key={row.key} className="flex items-center gap-3 py-2">
                 <span className="min-w-0 flex-1 text-body text-[var(--abu-text-secondary)]">
                   {row.label}
                 </span>
-                {policyCell('attended', row.key, row.opClass, row.label)}
-                {policyCell('unattended', row.key, row.opClass, row.label)}
+                {policyRow(row.key, row.opClass, row.label)}
               </li>
             ))}
           </ul>
@@ -327,12 +426,32 @@ export function BrowserPermissionCards({
           {t.settings.browserOpClassScriptingDesc}
         </p>
         <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
-          {columnHeader}
           <div className="flex items-center gap-3 py-2">
             <span className="min-w-0 flex-1" />
-            {policyCell('attended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
-            {policyCell('unattended', 'scripting', 'scripting', t.settings.browserOpClassScripting)}
+            {policyRow('scripting', 'scripting', t.settings.browserOpClassScripting)}
           </div>
+          {/*
+            The warning that comes WITH the choice, not before it: one line,
+            directly under the select that produced it. This is the shape Codex
+            gives its own high-risk switch — the risk is stated where the
+            decision is made, not hidden behind an ⓘ or a dialog.
+
+            It used to be gated on the automatic-tasks master switch, on the
+            reasoning that an attended script was asked about every time
+            whatever this row said, so an 'allow' stored with the switch off
+            was an intention rather than a live risk. The 2026-09-04 R1 fix
+            ended that: 「允许」 now really stops asking on 「始终允许」 sites
+            while the user is watching, master switch or not. So the moment
+            this row reads 'allow' something can happen without a prompt, and
+            the line has to be there — the copy names both contexts because
+            the setting does.
+          */}
+          {policy.scripting === 'allow' && (
+            <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-warning)]">
+              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {t.settings.browserUnattendedScriptRiskWarning}
+            </p>
+          )}
         </div>
       </div>
 

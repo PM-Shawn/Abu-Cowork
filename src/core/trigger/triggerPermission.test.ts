@@ -53,6 +53,84 @@ describe('resolveTriggerCallbacks', () => {
     }
   });
 
+  /*
+    A trigger run binds no IM session to its conversation, so until the engine
+    started building one from the trigger's own output config, 「每次询问」 in
+    the automatic-tasks column refused itself with `no_binding` — the same gap
+    the scheduler had. Both tiers that reach the seam (`read_tools` and
+    `safe_tools`; `full` and `custom` answer inline and never get here) must
+    forward it, or the tier a user picked would silently decide whether they
+    can be asked at all.
+  */
+  it.each(['read_tools', 'safe_tools'] as const)(
+    'threads the approval target and the trigger name into the seam (%s)',
+    async (capability) => {
+      const seen: { imTarget?: unknown; runLabel?: string }[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        seen.push({ imTarget: request.imTarget, runLabel: request.runLabel });
+        return { approved: false, reason: 'no', audit: {} };
+      });
+      const scopeId = createAuthorizationScope();
+      try {
+        const callbacks = resolveTriggerCallbacks(
+          { prompt: 'x', capability },
+          {
+            authorizationScopeId: scopeId,
+            conversationId: 'conv-trigger-2',
+            imTarget: {
+              platform: 'feishu',
+              channelId: 'ch-trigger',
+              chatId: 'oc_ops',
+              chatIdType: 'chat_id',
+              senderId: 'ou_li',
+            },
+            runLabel: '磁盘告警',
+          },
+        );
+        await callbacks.commandConfirmCallback({
+          command: 'ls', level: 'warn', reason: 'because',
+        });
+        expect(seen).toEqual([{
+          imTarget: {
+            platform: 'feishu',
+            channelId: 'ch-trigger',
+            chatId: 'oc_ops',
+            chatIdType: 'chat_id',
+            senderId: 'ou_li',
+          },
+          runLabel: '磁盘告警',
+        }]);
+      } finally {
+        __resetUnattendedConfirmationForTests();
+        disposeAuthorizationScope(scopeId);
+      }
+    },
+  );
+
+  // No output channel on the trigger → nothing handed over, and the seam keeps
+  // its old fallback-then-refuse behavior rather than a guessed chat.
+  it('hands over no target when the caller supplies none', async () => {
+    const seen: (unknown)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.imTarget);
+      return { approved: false, reason: 'no', audit: {} };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-3' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual([undefined]);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
   it('carries a custom trigger tool whitelist to the agent run', () => {
     const { callbacks, dispose } = resolveForTest({
         prompt: 'read only',

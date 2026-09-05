@@ -100,11 +100,13 @@ export type BrowserToolConsequence = 'read-only' | 'state-changing';
  * unattended policy actually gates on:
  * - `read-only`: observation — never gated, allowed in every run mode.
  * - `interactive`: drives the UI (click/fill/navigate/…) — gated by the
- *   existing per-site verdict today; the unattended column additionally
+ *   existing per-site verdict today; an automatic run additionally
  *   fail-closes navigation outside the allowed-site set (see product spec).
  * - `scripting`: runs arbitrary code in the page's origin — the strongest
- *   capability, never covered by a site grant, asked every time when
- *   attended and denied by default when unattended.
+ *   capability. A site grant alone never authorizes it: it asks every time by
+ *   default, and a user who sets it to `allow` still buys nothing for an
+ *   automatic run beyond what the master switch and the standing site grant
+ *   already permit (`decideBrowserOperation`).
  */
 export type BrowserOperationClass = 'read-only' | 'interactive' | 'scripting';
 
@@ -119,9 +121,14 @@ export function toLegacyBrowserToolConsequence(
 /**
  * Running page code is a different decision from clicking a button: it can
  * read cookies, exfiltrate the DOM, and act with the page's full authority.
- * Tools in this set never get a persistent per-site grant — each use is its
- * own ask (mirrors how competitors put "full page control" behind a separate,
- * stricter axis than ordinary browsing).
+ * A per-site grant never authorizes a tool in this set on its own — it is its
+ * own row in the operation policy, defaulting to «ask every time», and an
+ * automatic run may use it only where the master switch is on AND the site
+ * carries a standing 'allowed' verdict AND the page is not high-risk
+ * (`decideBrowserOperation`). This mirrors how competitors put "full page
+ * control" behind a separate, stricter axis than ordinary browsing — Codex
+ * ships CDP as its own high-risk switch, off by default and scoped per site,
+ * rather than forbidding it.
  */
 const SCRIPTING_TOOLS = new Set(['execute_js']);
 
@@ -314,68 +321,88 @@ export function __resetBrowserGrantsForTests(): void {
  *  module only classifies the *policy*, not the channel). */
 export type BrowserOperationState = 'allow' | 'deny' | 'ask';
 
-/** One run mode's three-row policy, keyed by operation class (camelCase to
- *  match the settingsStore field naming convention — `BrowserOperationClass`
- *  itself stays kebab-case because it is also a tool-classification value). */
-export interface BrowserOperationClassPolicy {
+/**
+ * The policy persisted in settingsStore: one allow/deny/ask row per operation
+ * class, keyed camelCase to match the settingsStore field naming convention
+ * (`BrowserOperationClass` itself stays kebab-case because it is also a
+ * tool-classification value).
+ *
+ * ## 2026-09-04 product ruling: ONE setting, two execution contexts
+ *
+ * This used to be two columns — `attended` and `unattended` — and the user set
+ * every row twice. The ruling («不应该分在不在场，只要得到了用户允许，都能做»)
+ * collapsed them: a permission the user granted is granted, and the run mode
+ * decides only HOW it is carried out, not WHETHER.
+ *
+ *   allow → attended: proceed (the per-site gate still applies);
+ *           automatic: proceed, once the master switch is on, the site carries
+ *           a standing 'allowed' verdict and the page is not high-risk.
+ *   ask   → attended: the in-app dialog;
+ *           automatic: an IM approval round-trip, or an immediate `no_binding`
+ *           refusal when the automation named nobody who could answer.
+ *   deny  → refused in both.
+ *
+ * The automatic-run prerequisites (master switch, standing site grant,
+ * not high-risk) did not move: they live where they always did —
+ * `decideBrowserOperation`'s precedence steps and `registry.ts`'s
+ * cross-origin fail-closed check — and they are what makes one shared value
+ * safe to read from an unattended run.
+ */
+export interface BrowserOperationPolicy {
   readOnly: BrowserOperationState;
   interactive: BrowserOperationState;
   scripting: BrowserOperationState;
 }
 
-/** The full two-column policy persisted in settingsStore. */
-export interface BrowserOperationPolicy {
-  attended: BrowserOperationClassPolicy;
-  unattended: BrowserOperationClassPolicy;
-}
-
 /**
- * The states one policy cell may hold. Every cell offers all three EXCEPT
- * unattended scripting, which offers `ask | deny` only.
+ * The states one policy row may hold — all three, for every row.
  *
- * Why that cell is special: a site grant is minted from a human approving a
- * CLICK ("always allow this site"), and page scripting is a categorically
- * stronger capability — it reads cookies and the whole DOM and acts with the
- * page's full authority. Letting `unattended.scripting` be `allow` would mean
- * consent given for clicking silently authorizes arbitrary code execution in
- * that logged-in session, forever, with nobody watching. `ask` is the
- * strongest thing this cell may express: it routes to an approval round-trip
- * where a human answers THIS request. This is enforced in three places —
- * here (the option list the UI renders), `normalizeBrowserOperationPolicy`
- * (which clamps a stored 'allow'), and `decideBrowserOperation` (which never
- * returns 'allow' for the pair) — because a value that reaches any one of
- * them can bypass the other two.
+ * Scripting used to be the one restricted cell: under batch-二 the
+ * automatic-task column offered it no `allow`, and the 2026-09-04 opt-in
+ * ruling then reopened that tier as an explicit, warned, site-scoped choice.
+ * With the columns collapsed into one setting (see `BrowserOperationPolicy`)
+ * there is no cell left to restrict — a script the user allowed still needs
+ * the master switch, a standing site grant and a non-high-risk page before an
+ * automatic run may use it, and those conditions are enforced where they can
+ * actually be evaluated (`decideBrowserOperation`, `registry.ts`), not by
+ * withholding an option in the settings pane.
+ *
+ * The function is kept (rather than inlined) because it is the single seam
+ * the settings UI reads its option list from, and the place a future
+ * restricted row would be expressed.
  */
 export function browserOperationStatesFor(
-  runMode: 'attended' | 'unattended',
-  opClass: BrowserOperationClass,
+  _opClass: BrowserOperationClass,
 ): readonly BrowserOperationState[] {
-  return runMode === 'unattended' && opClass === 'scripting'
-    ? (['ask', 'deny'] as const)
-    : (['allow', 'ask', 'deny'] as const);
+  return ['allow', 'ask', 'deny'] as const;
 }
 
 /**
- * Product-spec defaults (§二 table). Attended equals today's shipped
- * semantics exactly — read-only and interactive already run unconfirmed
- * (interactive still passes through the existing per-site gate elsewhere;
- * this policy layer does not relax that), scripting still asks every time.
- * Unattended is fail-safe: read-only runs free EXCEPT on a site the user
- * blocked, interactive still needs its per-site allow (site verdict is a
- * separate input to `decideBrowserOperation`, not encoded here), and scripting
- * is denied outright — the one cell that cannot be set to 'allow' at all
- * (`browserOperationStatesFor`).
- * Exported so settingsStore's default state and v45→v46 migration share the
- * exact same object instead of two hand-copied literals drifting apart.
+ * Product-spec defaults. These are exactly the values the two-column policy
+ * shipped in its ATTENDED column, kept unchanged by the 2026-09-04 collapse:
+ * read-only and interactive run unconfirmed (interactive still passes through
+ * the existing per-site gate elsewhere; this policy layer does not relax
+ * that), and scripting asks every time.
+ *
+ * What that means for an automatic run is decided by the conditions around
+ * the value, not by a second copy of it: with the master switch off — its own
+ * default — no automatic browser action happens at all, and with it on a
+ * default-policy script `ask`s, which unattended means an IM approval
+ * round-trip and, with nobody bound to answer, an immediate refusal. Nobody
+ * acquires an unattended capability by upgrading.
+ *
+ * Exported so settingsStore's default state and its migration share the exact
+ * same object instead of two hand-copied literals drifting apart.
  */
 export const DEFAULT_BROWSER_OPERATION_POLICY: BrowserOperationPolicy = {
-  attended: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
-  unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'deny' },
+  readOnly: 'allow',
+  interactive: 'allow',
+  scripting: 'ask',
 };
 
 const OPERATION_CLASS_TO_POLICY_KEY: Record<
   BrowserOperationClass,
-  keyof BrowserOperationClassPolicy
+  keyof BrowserOperationPolicy
 > = {
   'read-only': 'readOnly',
   interactive: 'interactive',
@@ -447,6 +474,9 @@ export type BrowserDenialReasonCode =
 
 export interface DecideBrowserOperationInput {
   opClass: BrowserOperationClass;
+  /** The EXECUTION CONTEXT, not a second policy axis: since the 2026-09-04
+   *  ruling both modes read the same configured row, and this only says which
+   *  prerequisites and which confirmation channel apply. */
   runMode: 'attended' | 'unattended';
   policy: BrowserOperationPolicy;
   /** The global "allow unattended tasks to use the browser at all" switch —
@@ -474,15 +504,28 @@ function normalizeStateLeaf(
     : strictest;
 }
 
-function normalizeClassPolicy(
-  raw: unknown,
-  strictest: BrowserOperationState,
-): BrowserOperationClassPolicy {
+/**
+ * The state a missing or unrecognized cell falls back to.
+ *
+ * `'ask'`, not `'deny'`. A malformed value means we cannot vouch for what the
+ * user intended, and the honest response to that is to ask them — in the
+ * dialog when they are here, over IM when a task is running and, with nobody
+ * bound to answer, an immediate refusal. `'deny'` would be marginally
+ * stricter and would silently take away a permission the user may well have
+ * granted, with no prompt to reveal that anything was lost.
+ *
+ * It is also what the two-column policy clamped its ATTENDED column to, for
+ * that same reason; the unattended column's stricter `'deny'` had no column
+ * left to live in once the two collapsed into one value.
+ */
+const STRICTEST_OPERATION_STATE: BrowserOperationState = 'ask';
+
+function normalizeClassPolicy(raw: unknown): BrowserOperationPolicy {
   const row = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   return {
-    readOnly: normalizeStateLeaf(row.readOnly, strictest),
-    interactive: normalizeStateLeaf(row.interactive, strictest),
-    scripting: normalizeStateLeaf(row.scripting, strictest),
+    readOnly: normalizeStateLeaf(row.readOnly, STRICTEST_OPERATION_STATE),
+    interactive: normalizeStateLeaf(row.interactive, STRICTEST_OPERATION_STATE),
+    scripting: normalizeStateLeaf(row.scripting, STRICTEST_OPERATION_STATE),
   };
 }
 
@@ -492,40 +535,48 @@ function normalizeClassPolicy(
  * to the compile-time type, since persisted localStorage and any future
  * IPC/IM-delivered policy payload are not type-checked at the boundary.
  *
- * Any missing run-mode key, missing operation-class key, or leaf value
- * outside `'allow' | 'deny' | 'ask'` is clamped to the STRICTEST state for
- * that cell rather than to the friendly product-spec default — a malformed
- * value is a signal something went wrong (corruption, a bug, manual
- * tampering), and this module's fail-safe posture (see
- * `docs/abu-browser-batch2-brief-2026-09.md`'s global constraint "任何新字段
- * 缺省=最严格档") treats "we don't know what this cell should be" the same
- * way in both columns: attended clamps to `'ask'` (never silently allow or
- * deny without asking), unattended clamps to `'deny'` (never silently allow
- * an unattended run). This is intentionally stricter than
- * `DEFAULT_BROWSER_OPERATION_POLICY`'s attended read-only/interactive
- * `'allow'` — that default is a deliberate, reviewed product choice for a
- * KNOWN-absent field (pre-v46 migration), whereas this function handles the
- * different case of a PRESENT-but-broken value, where the safer assumption
- * is that we cannot vouch for what was intended.
+ * Any missing operation-class key, or leaf value outside
+ * `'allow' | 'deny' | 'ask'`, is clamped to `STRICTEST_OPERATION_STATE`
+ * rather than to the friendly product-spec default — a malformed value is a
+ * signal something went wrong (corruption, a bug, manual tampering), and this
+ * module's fail-safe posture (see `docs/abu-browser-batch2-brief-2026-09.md`'s
+ * global constraint "任何新字段缺省=最严格档") treats "we don't know what this
+ * row should be" as a question to put to the user rather than a permission to
+ * assume. This is intentionally stricter than
+ * `DEFAULT_BROWSER_OPERATION_POLICY`'s read-only/interactive `'allow'` — that
+ * default is a deliberate, reviewed product choice for a KNOWN-absent field
+ * (a pre-migration store), whereas this function handles the different case
+ * of a PRESENT-but-broken value.
+ *
+ * It also accepts the LEGACY two-column shape (`{attended, unattended}`,
+ * settingsStore v46). That shape sits in NO released copy of the app: v46 was
+ * never published — `dev`, `main` and v0.42.0 all persist version 45 — so the
+ * only stores carrying it are the ones this branch's own development machines
+ * and e2e runs wrote. The compatibility is for those, and a released install
+ * migrates 45 → 47 without ever seeing two columns.
+ *
+ * The 2026-09-04 ruling collapsed the columns by keeping the ATTENDED one —
+ * that is where the user expressed what Abu may do, and the defaults the
+ * merged policy ships are that column's values — so the unattended column is
+ * read once, at migration time, only to be dropped. A dev store that had
+ * tightened `attended` keeps that tightening; one that had tightened only
+ * `unattended` loses a restriction whose column no longer exists, and the
+ * automatic-run prerequisites (master switch, standing site grant, high-risk
+ * exclusion) are what still stand behind it.
  *
  * A fully well-formed input passes through with the same values (not
  * necessarily the same object identity).
  */
 export function normalizeBrowserOperationPolicy(input: unknown): BrowserOperationPolicy {
   const raw = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-  const unattended = normalizeClassPolicy(raw.unattended, 'deny');
-  return {
-    attended: normalizeClassPolicy(raw.attended, 'ask'),
-    unattended: {
-      ...unattended,
-      // `unattended.scripting` has no 'allow' value — see
-      // `browserOperationStatesFor`. A stored/hand-edited 'allow' is clamped
-      // to 'ask' (the strongest thing the cell may express) rather than to
-      // 'deny', so a user who deliberately opted into unattended scripting
-      // still gets the approval round-trip instead of a silent hard block.
-      scripting: unattended.scripting === 'allow' ? 'ask' : unattended.scripting,
-    },
-  };
+  const legacyAttended = raw.attended;
+  // Checked FIRST: a store still carrying the two-column shape has no
+  // top-level rows at all, so reading it as the new shape would clamp every
+  // row to `STRICTEST_OPERATION_STATE` and quietly reset a policy the user
+  // had configured.
+  return normalizeClassPolicy(
+    legacyAttended !== null && typeof legacyAttended === 'object' ? legacyAttended : raw,
+  );
 }
 
 /**
@@ -545,12 +596,16 @@ export function normalizeBrowserOperationPolicy(input: unknown): BrowserOperatio
  *    EVERY class including read-only. Nobody is there to answer for a wire
  *    transfer, and quietly reading a bank page into an LLM context is the
  *    exfiltration half of the same problem.
- * 4. Otherwise, the configured three-state policy for
- *    `policy[runMode][opClass]` decides — except that an ATTENDED `'allow'`
- *    on a high-risk site is upgraded to `'ask'` for the two acting classes.
- *    Read-only stays exactly as it was attended: a screenshot of a bank page
- *    is not a transfer, and asking on every observation is how a control
- *    trains users to click through it.
+ * 4. Otherwise, the configured three-state policy row for `opClass` decides,
+ *    with two exceptions:
+ *    - an UNATTENDED scripting `'allow'` is honoured only on a site carrying
+ *      a standing `'allowed'` verdict (master switch and high-risk are
+ *      already handled by 2 and 3). On any other site it is `'deny'`, not
+ *      `'ask'`;
+ *    - an ATTENDED `'allow'` on a high-risk site is upgraded to `'ask'` for
+ *      the two acting classes. Read-only stays exactly as it was attended: a
+ *      screenshot of a bank page is not a transfer, and asking on every
+ *      observation is how a control trains users to click through it.
  *
  * `input.policy` is run through `normalizeBrowserOperationPolicy` before use
  * — defense in depth against a malformed value reaching this function
@@ -569,10 +624,53 @@ export function decideBrowserOperation(
   // automated run can give to "confirm this transfer", so it does not get to
   // act OR to read there. See `highRiskSites.ts`.
   if (siteVerdict === 'high-risk' && runMode === 'unattended') return 'deny';
-  const state = policy[runMode][OPERATION_CLASS_TO_POLICY_KEY[opClass]];
-  // Belt and braces on top of the normalizer: this function must never hand
-  // back 'allow' for unattended scripting, whatever the policy object said.
-  if (runMode === 'unattended' && opClass === 'scripting' && state === 'allow') return 'ask';
+  const state = policy[OPERATION_CLASS_TO_POLICY_KEY[opClass]];
+  /**
+   * Automatic-task scripting — the one row whose configured `'allow'` is not
+   * taken at face value here.
+   *
+   * `allow` here requires ALL THREE of:
+   *   1. the unattended master switch is on — the user turned the whole
+   *      surface on, not just this cell;
+   *   2. the site carries a STANDING `'allowed'` verdict — the ruling's
+   *      "effective only on sites the user set to 始终允许";
+   *   3. the site is not high-risk — money movement and government pages are
+   *      excluded from the opt-in the same way they are from everything else.
+   *
+   * Anything short of that is `deny`, deliberately NOT `ask`: `registry.ts`
+   * refuses a state-changing action on a site with no standing grant anyway,
+   * so routing it to an approval round-trip would wake a human at 3am to
+   * approve something that is going to be refused either way.
+   *
+   * This is ALSO the load-bearing half of `mayUnattendedTierApproveBrowser`,
+   * which asks this function whether an unattended capability tier may
+   * approve a browser confirmation on its own. Without this clause an
+   * `allow`ed scripting row would answer yes for any site, and that check
+   * — which exists so a future gate refactor cannot reopen the "a chat
+   * message got arbitrary code run" hole — would stop protecting anything.
+   *
+   * Only (2) is load-bearing HERE. (1) and (3) are already enforced by
+   * precedence steps 2 and 3 above, and (3) is additionally SUBSUMED by (2):
+   * `siteVerdict` is a single value, so `'high-risk'` REPLACES `'allowed'`
+   * rather than accompanying it (see `DecideBrowserOperationSiteVerdict` and
+   * `registry.ts`'s `const siteVerdict = highRisk ? 'high-risk' : stored`), and
+   * a high-risk page therefore fails the standing-grant test on its own. So a
+   * mutation that drops (1) or (3) from THIS line alone turns no test red —
+   * the mutations that do are the ones removing the precedence steps, and
+   * those are the ones the suite pins.
+   *
+   * The redundant conjuncts are written out anyway, deliberately: this is the
+   * one place a reader sees the whole condition the ruling specified, and the
+   * redundancy is what makes a later edit to the precedence order — or a
+   * widening of the verdict union so 'allowed' and 'high-risk' can co-occur —
+   * fail safe instead of silently widening this tier.
+   */
+  if (runMode === 'unattended' && opClass === 'scripting' && state === 'allow') {
+    const optedIn = masterSwitchUnattended === true;
+    const standingGrant = siteVerdict === 'allowed';
+    const notHighRisk = siteVerdict !== 'high-risk';
+    return optedIn && standingGrant && notHighRisk ? 'allow' : 'deny';
+  }
   // Attended on a high-risk URL: a human is watching, so this asks rather than
   // denies — but it never runs silently. Read-only is exempt (see the
   // precedence doc above); a configured 'deny' is left alone, since upgrading

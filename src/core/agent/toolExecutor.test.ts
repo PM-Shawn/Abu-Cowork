@@ -303,6 +303,40 @@ describe('executeToolBatch · hard run restrictions', () => {
     );
   });
 
+  /**
+   * F-A — the in-process half of「production really publishes the approval
+   * target」. The end-to-end pins (scheduler.test.ts / triggerEngine.test.ts)
+   * stand in for this line with a `setLoopContext` of their own, so without
+   * this assertion the whole `options → LoopContext` hop could be deleted and
+   * every gate would go back to refusing with `no_binding`, silently and
+   * greenly. The browser gate reads it off the loop context, never off the
+   * confirmation callback.
+   */
+  it('publishes the unattended approval target on the loop context for gates that build their own request', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('ok');
+    const unattendedApproval = {
+      imTarget: {
+        platform: 'feishu' as const,
+        channelId: 'channel-1',
+        chatId: 'oc_team',
+        chatIdType: 'chat_id' as const,
+        senderId: 'ou_li',
+      },
+      runLabel: '每日销售简报',
+    };
+    const params = {
+      ...makeParams(makeToolCall('abu-browser__navigate'), makeInvoker(executeAnyTool)),
+      unattendedApproval,
+    };
+
+    await executeToolBatch(params);
+
+    expect(mocks.setLoopContext).toHaveBeenCalledWith(
+      'loop-1',
+      expect.objectContaining({ unattendedApproval }),
+    );
+  });
+
   it('fails closed before invoking a tool outside the per-run whitelist', async () => {
     const executeAnyTool = vi.fn();
     const toolCall = makeToolCall('write_file');

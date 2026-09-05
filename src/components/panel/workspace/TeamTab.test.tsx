@@ -21,7 +21,7 @@ vi.mock('@/core/team/roleIdentity', () => ({
 describe('TeamTab', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
-    useTeamStore.setState({ teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'], createdAt: 1 }], tasks: [] });
+    useTeamStore.setState({ teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'], createdAt: 1 }]});
     const conversation: Conversation = {
       id: 'c1', title: '出周报', teamId: 't1', createdAt: 1, updatedAt: 2, status: 'idle',
       messages: [{
@@ -33,7 +33,7 @@ describe('TeamTab', () => {
     useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation }, agentStates: new Map() });
     usePreviewStore.getState().closeAllTabs();
   });
-  afterEach(() => { cleanup(); useTeamStore.setState({ teams: [], tasks: [] }); });
+  afterEach(() => { cleanup(); useTeamStore.setState({ teams: []}); });
 
   it('lists the leader and members with hand-off status, and opens the member tab from a hand-off', () => {
     render(<TeamTab conversationId="c1" />);

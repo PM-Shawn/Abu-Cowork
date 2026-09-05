@@ -19,7 +19,6 @@ export {
 
 // --- Automation tools ---
 import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from './definitions/automationTools';
-import { proposeTeamPlanTool } from './definitions/teamTools';
 
 // --- Media tools ---
 import { generateImageTool } from './definitions/mediaTools';
@@ -87,7 +86,6 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(recallTool);
   toolRegistry.register(readMemoryTool);
   toolRegistry.register(manageScheduledTaskTool);
-  toolRegistry.register(proposeTeamPlanTool);
   toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveAgentTool);
   toolRegistry.register(logTaskCompletionTool);

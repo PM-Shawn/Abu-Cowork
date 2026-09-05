@@ -21,15 +21,14 @@ function seed(teamId?: string) {
   };
   useChatStore.setState({ activeConversationId: conversation.id, conversations: { [conversation.id]: conversation }, agentStates: new Map() });
   useTeamStore.setState({
-    teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }],
-    tasks: [],
+    teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }]
   });
   return { conversation, assistant };
 }
 
 describe('MessageGroup in a team-pinned conversation', () => {
   beforeEach(() => { initLanguage('zh-CN'); });
-  afterEach(() => { cleanup(); useTeamStore.setState({ teams: [], tasks: [] }); });
+  afterEach(() => { cleanup(); useTeamStore.setState({ teams: []}); });
 
   it('shows the leader avatar and a "leader · team" caption', () => {
     const { conversation, assistant } = seed('t1');

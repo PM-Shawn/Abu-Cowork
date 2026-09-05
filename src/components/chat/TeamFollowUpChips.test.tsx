@@ -18,7 +18,7 @@ vi.mock('@/core/team/roleIdentity', () => ({
 }));
 
 function seed(status: Conversation['status'] = 'idle') {
-  useTeamStore.setState({ teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'], createdAt: 1 }], tasks: [] });
+  useTeamStore.setState({ teams: [{ id: 't1', name: 'zz数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'], createdAt: 1 }]});
   const conversation: Conversation = {
     id: 'c1', title: 'x', teamId: 't1', createdAt: 1, updatedAt: 2, status,
     messages: [
@@ -37,7 +37,7 @@ function seed(status: Conversation['status'] = 'idle') {
 
 describe('TeamFollowUpChips', () => {
   beforeEach(() => { initLanguage('zh-CN'); clearAllComposerDrafts(); });
-  afterEach(() => { cleanup(); useTeamStore.setState({ teams: [], tasks: [] }); clearAllComposerDrafts(); });
+  afterEach(() => { cleanup(); useTeamStore.setState({ teams: []}); clearAllComposerDrafts(); });
 
   it('offers redo-step chips from the last plan and revise chips only for dispatched members; a chip fills the composer', () => {
     seed();

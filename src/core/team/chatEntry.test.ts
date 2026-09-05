@@ -4,7 +4,7 @@ import { matchTeamMention } from './chatEntry';
 
 describe('matchTeamMention (composer fallback for a typed @团队)', () => {
   beforeEach(() => {
-    useTeamStore.setState({ teams: [], tasks: [] });
+    useTeamStore.setState({ teams: []});
   });
 
   function seedTeam(name = '数据小队') {

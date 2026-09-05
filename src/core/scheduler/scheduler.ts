@@ -1,4 +1,3 @@
-import { TEAM_BOARD_ENABLED } from '../team/taskBoardFlag';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
@@ -179,78 +178,30 @@ class SchedulerEngine {
     }
   }
 
+  /** Team schedules fail loud: two consecutive failed runs pause the schedule
+   *  instead of quietly burning money (product decision 2026-09-01). */
+  private autoPauseTeamScheduleAfterRepeatedFailures(task: ScheduledTask): void {
+    if (!task.teamId) return;
+    const fresh = useScheduleStore.getState().tasks[task.id];
+    if (fresh && countLeadingErrorRuns(fresh.runs) >= 2) {
+      useScheduleStore.getState().pauseTask(task.id);
+      notifyScheduledTaskError(format(getI18n().schedule.teamAutoPaused, { name: task.name }));
+    }
+  }
+
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
-
-    // Team dispatch (labs 团队 executor): the orchestrator owns conversations
-    // and plan handling (reusing an accepted split for a repeated goal); the
-    // scheduler records the run and enforces fail-loud — after 2 consecutive
-    // failed runs the SCHEDULE pauses instead of quietly burning money.
-    // Shelved with the task-board model; batch 2 re-wires 交给团队 as a normal
-    // scheduled conversation pinned to the team (design §2.7).
-    if (task.teamId && TEAM_BOARD_ENABLED) {
-      const scheduleStore = useScheduleStore.getState();
-      const runId = scheduleStore.startRun(task.id, '');
-      this.runningTasks.add(task.id);
-      const onFailure = (reason: string) => {
-        scheduleStore.errorRun(task.id, runId, reason);
-        notifyScheduledTaskError(task.name);
-        const fresh = useScheduleStore.getState().tasks[task.id];
-        if (fresh && countLeadingErrorRuns(fresh.runs) >= 2) {
-          useScheduleStore.getState().pauseTask(task.id);
-          notifyScheduledTaskError(format(getI18n().schedule.teamAutoPaused, { name: task.name }));
-        }
-      };
-      // The same unattended envelope an ordinary scheduled run gets. Without
-      // it a member's first escalation falls back to the INTERACTIVE approval
-      // path, which has no timeout and only renders for the active
-      // conversation — every team run lives in a background one, so the task
-      // would hang forever and the 2-strike auto-pause below would never trip.
-      const authorizationScopeId = createAuthorizationScope(
-        resolveEffectivePermissionMode(task) === 'autonomous' ? { shell: 'full' } : undefined,
-      );
-      try {
-        const permissions = resolveScheduledRunPermissions(task, authorizationScopeId);
-        const runPermissionCeiling = buildScheduledRunPermissionCeiling(
-          getToolInvoker().getAllTools().map((tool) => tool.name),
-        );
-        const { runScheduledTeamTask } = await import('@/core/team/orchestrator');
-        const outcome = await runScheduledTeamTask(task.teamId, task.prompt, {
-          // The schedule's own autonomy tier must reach every member run.
-          permissionMode: task.permissionMode,
-          dispatch: {
-            commandConfirmCallback: permissions.commandConfirmCallback,
-            filePermissionCallback: permissions.filePermissionCallback,
-            blockedTools: permissions.blockedTools,
-            allowedTools: runPermissionCeiling.allowedTools as string[],
-            authorizationScopeId,
-            runPermissionCeiling,
-          },
-          authorizeFolder: (folder) => scopedAuthorizeWorkspace(authorizationScopeId, folder),
-          getDenials: permissions.getDenials,
-        });
-        if (outcome.ok) {
-          scheduleStore.completeRun(task.id, runId);
-          notifyScheduledTaskCompleted(task.name);
-        } else {
-          onFailure(outcome.reason ?? 'team dispatch failed');
-        }
-      } catch (err) {
-        onFailure(String(err));
-      } finally {
-        disposeAuthorizationScope(authorizationScopeId);
-        this.runningTasks.delete(task.id);
-      }
-      return;
-    }
 
     const chatStore = useChatStore.getState();
     const scheduleStore = useScheduleStore.getState();
 
     // Create a new conversation for this run (skipActivate to avoid disturbing user)
+    // 交给团队 (design §2.7): the run is an ordinary scheduled conversation
+    // pinned to the team, so its leader takes the prompt with the same
+    // unattended envelope every scheduled run gets.
     const conversationId = chatStore.createConversation(
       task.workspacePath ?? null,
-      { scheduledTaskId: task.id, projectId: task.projectId, skipActivate: true }
+      { scheduledTaskId: task.id, projectId: task.projectId, skipActivate: true, ...(task.teamId ? { teamId: task.teamId } : {}) }
     );
     // Selects the standard/smart/autonomous strategy `registry.ts` applies to
     // every tool call in this run. `task.permissionMode` is undefined for a
@@ -353,6 +304,7 @@ class SchedulerEngine {
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
         }
+        this.autoPauseTeamScheduleAfterRepeatedFailures(task);
         const t = getI18n();
         useToastStore.getState().addToast({
           type: result.reason === 'aborted' ? 'info' : 'error',
@@ -365,6 +317,7 @@ class SchedulerEngine {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
       notifyScheduledTaskError(task.name);
+      this.autoPauseTeamScheduleAfterRepeatedFailures(task);
       const t = getI18n();
       useToastStore.getState().addToast({
         type: 'error',

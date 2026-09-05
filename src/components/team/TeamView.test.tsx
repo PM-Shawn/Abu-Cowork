@@ -93,14 +93,14 @@ function seedAgent(name: string, roleId?: string) {
 
 describe('TeamView', () => {
   beforeEach(() => {
-    useTeamStore.setState({ teams: [], tasks: [] });
+    useTeamStore.setState({ teams: []});
     settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     vi.clearAllMocks();
   });
 
-  it('renders only 队员·团队 while the task board is shelved', () => {
+  it('renders the two tabs 队员·团队 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
       ['收件箱', '任务', '队员', '团队'].includes(label ?? ''));

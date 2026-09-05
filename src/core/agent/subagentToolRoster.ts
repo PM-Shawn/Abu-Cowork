@@ -22,15 +22,12 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
 
 /**
  * Protocol tools every subagent must see regardless of the agent's declared
- * `tools:` allowlist. Marketplace/builtin agents ship frozen tool lists that
- * predate newer protocol tools — team_propose_plan is how a team leader
- * reports its split during a planning run, and it is context-gated (only a
- * registered planning conversation accepts it), so exposure elsewhere is
- * inert. An explicit agent `disallowed-tools` entry still removes it.
+ * `tools:` allowlist (and that dispatch-time re-checks must not refuse). The
+ * task-board leader tool that used to live here is gone with the board; the
+ * mechanism stays for the next protocol tool. An explicit agent
+ * `disallowed-tools` entry still removes a protocol tool.
  */
-const ALWAYS_AVAILABLE_SUBAGENT_TOOLS = new Set<string>([
-  'team_propose_plan',
-]);
+const ALWAYS_AVAILABLE_SUBAGENT_TOOLS = new Set<string>([]);
 
 /** Protocol tools every subagent may call regardless of its declared list. */
 export function isProtocolSubagentTool(toolName: string): boolean {
@@ -46,8 +43,9 @@ export function isProtocolSubagentTool(toolName: string): boolean {
  * input right before executing — and again after a preToolCall hook may have
  * rewritten it. Both re-checks MUST apply the same protocol-tool exemption the
  * roster applies, or a builtin/marketplace agent with a frozen tools list is
- * offered team_propose_plan and then refused when it calls it (real-machine
- * bug 2026-09-03: the leader fell back to asking for manual confirmation).
+ * offered a protocol tool and then refused when it calls it (real-machine
+ * bug 2026-09-03 with the old team_propose_plan: the leader fell back to
+ * asking for manual confirmation).
  *
  * Returns the error string to hand back as the tool result, or null when the
  * call is within bounds.

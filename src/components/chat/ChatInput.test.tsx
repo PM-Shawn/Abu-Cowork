@@ -849,8 +849,7 @@ describe('ChatInput inline agent selection', () => {
   it('groups @ suggestions into 团队 / 队员 sections, names only, and ArrowUp does not wrap', async () => {
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
-      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
+      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
     });
     try {
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
@@ -871,7 +870,7 @@ describe('ChatInput inline agent selection', () => {
       fireEvent.keyDown(textarea, { key: 'ArrowUp' });
       expect(screen.getByRole('option', { name: /zz数据小队/ }).getAttribute('aria-selected')).toBe('true');
     } finally {
-      useTeamStore.setState({ teams: [], tasks: [] });
+      useTeamStore.setState({ teams: []});
     }
   });
 
@@ -902,8 +901,7 @@ describe('ChatInput inline agent selection', () => {
     async function seedTeam() {
       const { useTeamStore } = await import('@/stores/teamStore');
       useTeamStore.setState({
-        teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-        tasks: [],
+        teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
       });
       return useTeamStore;
     }
@@ -933,7 +931,7 @@ describe('ChatInput inline agent selection', () => {
         expect(useChatStore.getState().pendingTeamId).toBeUndefined();
         expect(screen.queryByTestId('composer-team-chip')).toBeNull();
       } finally {
-        useTeamStore.setState({ teams: [], tasks: [] });
+        useTeamStore.setState({ teams: []});
         useChatStore.setState({ pendingTeamId: undefined });
       }
     });
@@ -957,7 +955,7 @@ describe('ChatInput inline agent selection', () => {
         expect(screen.queryByTestId('composer-team-chip')).toBeNull();
         expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
       } finally {
-        useTeamStore.setState({ teams: [], tasks: [] });
+        useTeamStore.setState({ teams: []});
       }
     });
 
@@ -975,7 +973,7 @@ describe('ChatInput inline agent selection', () => {
         const listbox = await screen.findByRole('listbox');
         expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Teams', 'Members']);
       } finally {
-        useTeamStore.setState({ teams: [], tasks: [] });
+        useTeamStore.setState({ teams: []});
       }
     });
 

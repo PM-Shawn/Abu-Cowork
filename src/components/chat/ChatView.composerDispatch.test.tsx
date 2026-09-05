@@ -102,8 +102,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
     configureApiKey();
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
-      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }],
-      tasks: [],
+      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
     });
     dispatchMock.mockResolvedValueOnce({ reason: 'completed' });
     try {
@@ -116,7 +115,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
       expect(useChatStore.getState().pendingTeamId).toBeUndefined();
     } finally {
-      useTeamStore.setState({ teams: [], tasks: [] });
+      useTeamStore.setState({ teams: []});
     }
   });
 

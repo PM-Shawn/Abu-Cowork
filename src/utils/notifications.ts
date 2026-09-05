@@ -58,30 +58,6 @@ export async function notifyTaskCompleted(conversationTitle: string, conversatio
 }
 
 /**
- * Team task reached 待你确认 — the single whole-task barrier notification
- * (member finishes are silent by design, PRD docs/abu-team-prd-v2.md §4.5).
- * Reuses the L1 user_input_needed type: the task literally waits on the user.
- */
-export async function notifyTeamTaskPendingReview(title: string, teamTaskId?: string): Promise<void> {
-  publish({
-    type: 'user_input_needed',
-    source: 'agent',
-    payload: { title, teamTaskId },
-    dedupKey: `team_review:${title}:${Date.now()}`,
-  });
-}
-
-/** Team task blocked — needs the user, must not be silent. */
-export async function notifyTeamTaskBlocked(title: string, teamTaskId?: string): Promise<void> {
-  publish({
-    type: 'agent_error',
-    source: 'agent',
-    payload: { title, teamTaskId },
-    dedupKey: `team_blocked:${title}:${Date.now()}`,
-  });
-}
-
-/**
  * Send a scheduled task completion notification.
  */
 export async function notifyScheduledTaskCompleted(taskName: string): Promise<void> {

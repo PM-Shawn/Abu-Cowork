@@ -7,6 +7,8 @@ import { TaskStepItem, convertExecutionStep, type UnifiedStep } from '@/componen
 import { toUnifiedBatchStep } from '@/components/chat/batchTaskStepAdapter';
 import { batchRowStatusLabel, rowsFromPersistedSummary, type BatchTaskRow } from '@/components/chat/batchProgressViewModel';
 import { snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import type { ExecutionStep, TaskExecution } from '@/types/execution';
 import { useChatStore } from '@/stores/chatStore';
 import type { BatchIdentity, Message } from '@/types';
 
@@ -73,6 +75,35 @@ function totalTokens(task: BatchTaskProgress): number | null {
 interface PersistedBatchTask {
   steps: UnifiedStep[];
   row: BatchTaskRow | undefined;
+  /** Live (still-running) source: the process is being recorded right now. */
+  liveStatus?: ExecutionStep['status'];
+}
+
+/** Children of a dispatch step that belong to `taskIndex`: batch children carry a
+ *  batchTask tag; a delegate_to_agent step's children all belong to task 0. */
+function childrenForTask(children: readonly ExecutionStep[], taskIndex: number): ExecutionStep[] {
+  const tagged = children.some((child) => child.batchTask !== undefined);
+  return tagged ? children.filter((child) => child.batchTask?.index === taskIndex) : (taskIndex === 0 ? [...children] : []);
+}
+
+/** Live fallback for dispatches without a batch-store entry (serial delegate_to_agent). */
+function findLiveDispatch(
+  executions: Record<string, TaskExecution>,
+  identity: BatchIdentity,
+  taskIndex: number,
+  locale: string,
+): PersistedBatchTask | null {
+  for (const exec of Object.values(executions)) {
+    if (exec.conversationId !== identity.conversationId) continue;
+    const step = exec.steps.find((candidate) => candidate.toolCallId === identity.batchToolCallId);
+    if (!step) continue;
+    return {
+      steps: childrenForTask(step.childSteps ?? [], taskIndex).map((child) => convertExecutionStep(child, locale)),
+      row: undefined,
+      liveStatus: step.status,
+    };
+  }
+  return null;
 }
 
 /**
@@ -94,8 +125,7 @@ function findPersistedBatchTask(
   for (const message of candidates) {
     const batchStep = message.executionSteps?.find((step) => step.toolCallId === identity.batchToolCallId);
     if (!batchStep) continue;
-    const children = snapshotToExecutionSteps(batchStep.childSteps ?? [])
-      .filter((child) => child.batchTask?.index === taskIndex);
+    const children = childrenForTask(snapshotToExecutionSteps(batchStep.childSteps ?? []), taskIndex);
     const toolCall = message.toolCalls?.find((call) => call.id === identity.batchToolCallId);
     const row = toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
     return { steps: children.map((child) => convertExecutionStep(child, locale)), row };
@@ -104,13 +134,13 @@ function findPersistedBatchTask(
 }
 
 function PersistedTaskView({ title, persisted, locale, t }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict }) {
-  const { steps, row } = persisted;
-  const rowStatus = row?.status;
+  const { steps, row, liveStatus } = persisted;
+  const rowStatus = row?.status ?? (liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined);
   const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
   // Persisted rows are terminal; a stale live status maps to the warning icon.
   const iconStatus: BatchTaskProgress['status'] | null = !rowStatus || rowStatus === 'unknown'
     ? null
-    : rowStatus === 'running' || rowStatus === 'queued' ? 'incomplete' : rowStatus;
+    : rowStatus === 'queued' ? 'incomplete' : rowStatus;
   return (
     <div className="h-full overflow-auto p-5">
       <div className="mx-auto max-w-4xl">
@@ -130,7 +160,7 @@ function PersistedTaskView({ title, persisted, locale, t }: { title: string; per
               </span>
             )}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
-            <span>{t.workspace.agentPersistedProcess}</span>
+            <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
           </div>
         </header>
         {steps.length === 0 ? (
@@ -172,9 +202,12 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
     [task?.steps, locale],
   );
   const persistedMessages = useChatStore((s) => s.conversations[identity.conversationId]?.messages);
+  const liveExecutions = useTaskExecutionStore((s) => s.executions);
   const persisted = useMemo(
-    () => (batch && task ? null : findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t)),
-    [batch, task, persistedMessages, identity, taskIndex, locale, t],
+    () => (batch && task
+      ? null
+      : findLiveDispatch(liveExecutions, identity, taskIndex, locale) ?? findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t)),
+    [batch, task, liveExecutions, persistedMessages, identity, taskIndex, locale, t],
   );
 
   if (persisted) {

@@ -239,6 +239,8 @@ export interface StepStartPayload {
 export interface BatchTaskRef {
   index: number;
   label: string;
+  /** Exact agent name that ran the task (team member); absent for preset types. */
+  agent?: string;
 }
 
 // --- Execution Step Snapshot (for persistence on Message) ---

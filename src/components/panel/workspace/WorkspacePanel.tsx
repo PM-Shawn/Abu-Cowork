@@ -7,6 +7,7 @@ import PreviewPanel from '../PreviewPanel';
 import TerminalTab from './TerminalTab';
 import BrowserTab from './BrowserTab';
 import SubagentTab from './SubagentTab';
+import TeamTab from './TeamTab';
 
 /**
  * Empty state shown when every tab is closed (TRAE "从这里开始"): a launcher
@@ -78,6 +79,8 @@ export default function WorkspacePanel() {
                 <TerminalTab tabId={tab.id} />
               ) : tab.kind === 'browser' ? (
                 <BrowserTab tabId={tab.id} url={tab.url} />
+              ) : tab.kind === 'team' ? (
+                <TeamTab conversationId={tab.conversationId} />
               ) : (
                 <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
               )}

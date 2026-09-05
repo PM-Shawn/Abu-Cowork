@@ -27,6 +27,7 @@ import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
+import TeamMemberBar from './TeamMemberBar';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
@@ -1503,6 +1504,7 @@ export default function ChatView({
           )}
           {/* Live agent status — compaction / retry, so a slow provider isn't a
               silent dead wait above the composer. */}
+          {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

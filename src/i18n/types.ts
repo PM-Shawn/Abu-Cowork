@@ -2121,6 +2121,21 @@ export interface TranslationDict {
     agentFullProcessUnavailable: string;
     /** Member tab header note when the process is replayed from the message snapshot. */
     agentPersistedProcess: string;
+    /** Member tab header note while the dispatch is still running (live execution source). */
+    teamLiveProcess: string;
+    /** Team overview tab (in-conversation team). */
+    teamTitle: string;
+    teamNotPinned: string;
+    teamLeaderBadge: string;
+    teamLeaderIdle: string;
+    teamMembersHeader: string;
+    teamNoMembers: string;
+    teamMemberIdle: string;
+    teamDispatchCount: string;
+    teamNoDispatchYet: string;
+    teamDispatchOrdinal: string;
+    teamOpenDispatch: string;
+    teamOpenOverview: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;

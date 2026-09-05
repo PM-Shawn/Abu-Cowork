@@ -173,7 +173,7 @@ describe('runAgentBatchTool progress wiring', () => {
         toolName: 'read_file',
         toolInput: { path: 'a.md' },
         toolCallId: 'sub-tool-1',
-        batchTask: { index: 0, label: 'read the doc' },
+        batchTask: expect.objectContaining({ index: 0, label: 'read the doc' }),
       });
       expect(completeChildStep).toHaveBeenCalledWith('loop-children', 'batch-step', 'child-1', 'ok', false, undefined);
     } finally {

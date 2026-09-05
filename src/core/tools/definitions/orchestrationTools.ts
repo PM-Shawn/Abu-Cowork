@@ -577,7 +577,7 @@ export const runAgentBatchTool: ToolDefinition = {
                         toolName: event.toolName,
                         toolInput: event.toolInput,
                         toolCallId: event.id,
-                        batchTask: { index: idx, label: resolved.label },
+                        batchTask: { index: idx, label: resolved.label, agent: resolved.agent.name },
                       });
                       if (childStepId) childStepIds.set(event.id, childStepId);
                     }

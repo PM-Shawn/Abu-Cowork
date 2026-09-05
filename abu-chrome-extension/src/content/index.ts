@@ -532,20 +532,26 @@ function nativeLabelText(el: Element): string {
   if (!LABELABLE_TAGS.has(tag)) return '';
   if (tag === 'input' && inputType(el) === 'hidden') return '';
 
-  const parts: string[] = [];
+  // Collected by element identity, not by text: `<label for="x">姓名<input
+  // id="x"></label>` — the shape form libraries and accessibility tutorials
+  // both emit — is reachable BOTH ways, and pushing the same <label> twice
+  // named the field "姓名 姓名". That name misses the exact and normalized
+  // tiers, so `{name:"姓名"}` fell through to the substring tier, where any
+  // unrelated `aria-label="姓名"` control wins the exact tier outright and
+  // gets filled instead.
+  const labels = new Set<Element>();
   if (el.id) {
     // Compared as attribute values rather than interpolated into a selector:
     // an id is author-controlled, and no escaping scheme has to be trusted if
     // nothing is ever concatenated into a query.
     for (const label of document.querySelectorAll('label[for]')) {
-      if (label.getAttribute('for') === el.id) {
-        parts.push(normalizeWhitespace(label.textContent ?? ''));
-      }
+      if (label.getAttribute('for') === el.id) labels.add(label);
     }
   }
   const wrapping = el.closest?.('label');
-  if (wrapping) parts.push(normalizeWhitespace(wrapping.textContent ?? ''));
+  if (wrapping) labels.add(wrapping);
 
+  const parts = [...labels].map((label) => normalizeWhitespace(label.textContent ?? ''));
   return normalizeWhitespace(parts.filter(Boolean).join(' '));
 }
 

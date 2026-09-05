@@ -1244,6 +1244,34 @@ describe('ambiguity is refused, not resolved by position', () => {
   });
 });
 
+describe('a label written both ways is still one label', () => {
+  it('does not read a for= label that also wraps the field as two labels', async () => {
+    // `<label for="x">文字<input id="x"></label>` is what form libraries and
+    // accessibility tutorials emit. Collecting `label[for]` and then the
+    // wrapping <label> pushed the SAME element twice, so the field answered to
+    // the name "姓名 姓名" — which the exact and normalized tiers both miss.
+    document.body.innerHTML = '<label for="n">姓名<input id="n" /></label>';
+
+    const result = await find({ label: '姓名' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['n']);
+    expect(result.matches[0].name).toBe('姓名');
+  });
+
+  it('does not let a doubled name hand the exact tier to an unrelated field', async () => {
+    // The consequence that makes this more than cosmetic: with the real field
+    // named "姓名 姓名", `{name:"姓名"}` matched only the decoy at the exact
+    // tier and filled it — silently, reporting success.
+    document.body.innerHTML =
+      '<label for="n">姓名<input id="n" /></label><input id="decoy" aria-label="姓名" />';
+
+    await expect(fill({ role: 'textbox', name: '姓名' }, '张三'))
+      .rejects.toThrow(/matches 2 elements/);
+    expect((document.getElementById('n') as HTMLInputElement).value).toBe('');
+    expect((document.getElementById('decoy') as HTMLInputElement).value).toBe('');
+  });
+});
+
 describe('wait_for asks what the page looks like, not whether a locator is unique', () => {
   it('sees a toast appear on a page that shows two of them', async () => {
     // `{appear, css:'.toast'}` — or `.ant-table-row`, or `.ant-spin` — matching

@@ -65,6 +65,7 @@ describe('tool surface', () => {
     const { registered } = collectTools();
     // Sorted so the diff on any future change is readable.
     expect(registered.map((t) => t.name).sort()).toEqual([
+      'batch',
       'click',
       'connection_status',
       'execute_js',
@@ -570,5 +571,156 @@ describe('find', () => {
     // the code does. If a native <button> stops being advertised as reachable
     // by role, the model goes back to snapshot-then-guess.
     expect(find.description).toMatch(/Native HTML counts/);
+  });
+});
+
+describe('batch', () => {
+  /** The one tabsResponse every batch begins with — the origin pin probe. */
+  function tabsOn(url: string) {
+    return { success: true, data: { windows: [{ tabs: [{ tabId: 7, url }] }] } };
+  }
+
+  function collectBatch() {
+    const registered: RegisteredTool[] = [];
+    const server = {
+      tool(
+        name: string,
+        description: string,
+        schemaOrHandler: Record<string, unknown> | ToolHandler,
+        maybeHandler?: ToolHandler,
+      ) {
+        const hasSchema = typeof schemaOrHandler !== 'function';
+        registered.push({
+          name,
+          description,
+          schema: hasSchema ? (schemaOrHandler as Record<string, unknown>) : undefined,
+          handler: (hasSchema ? maybeHandler : (schemaOrHandler as ToolHandler)) as ToolHandler,
+        });
+      },
+    };
+    const sent: Array<{ action: string; payload: Record<string, unknown> }> = [];
+    const transport: BrowserTransport = {
+      isConnected: async () => true,
+      send: async (action: string, payload?: Record<string, unknown>) => {
+        sent.push({ action, payload: payload ?? {} });
+        if (action === 'get_tabs') return tabsOn('https://erp.example.com/form');
+        return { success: true, data: { success: true, message: 'ok' } };
+      },
+      getConnectionError: () => 'not connected',
+    } as unknown as BrowserTransport;
+    registerTools(server as unknown as ServerArg, transport);
+    const batch = registered.find((t) => t.name === 'batch')!;
+    return { batch, sent };
+  }
+
+  const twoFieldsAndSubmit = JSON.stringify([
+    { action: 'fill', locator: { css: '#deviceNo' }, value: 'EQ-001' },
+    { action: 'fill', locator: { role: 'textbox', name: '负责人' }, value: '张三' },
+    { action: 'click', locator: { role: 'button', name: '提交' } },
+  ]);
+
+  it('takes a tabId and a steps list, and nothing else', () => {
+    const { batch } = collectBatch();
+    expect(Object.keys(batch.schema!).sort()).toEqual(['steps', 'tabId']);
+  });
+
+  it('tells the model a form is ONE batch, that it stops at the first failure, and that scripts are out', () => {
+    // #245's lesson again: the description decides the behaviour. Without the
+    // form sentence the model keeps making one fill call per field, which is
+    // the entire cost this tool exists to remove.
+    const { batch } = collectBatch();
+    expect(batch.description).toMatch(/DEFAULT WAY TO FILL A FORM/);
+    expect(batch.description).toMatch(/STOPS AT THE FIRST FAILURE/);
+    expect(batch.description).toMatch(/execute_js and query_js/);
+    expect(batch.description).toMatch(/navigate/);
+  });
+
+  it('dispatches each step as the ordinary single action, in order', async () => {
+    const { batch, sent } = collectBatch();
+    const text = await batch.handler({ tabId: 7, steps: twoFieldsAndSubmit }, {}) as {
+      content: Array<{ text: string }>;
+    };
+    const result = JSON.parse(text.content[0].text);
+
+    expect(sent.filter((s) => s.action !== 'get_tabs').map((s) => s.action))
+      .toEqual(['fill', 'fill', 'click']);
+    expect(result.completedSteps.map((s: { action: string }) => s.action))
+      .toEqual(['fill', 'fill', 'click']);
+    expect(result.remainingSteps).toBe(0);
+    expect(result.stopped).toBeUndefined();
+    expect(result.origin).toBe('https://erp.example.com');
+  });
+
+  it('refuses a scripting step without sending anything at all', async () => {
+    const { batch, sent } = collectBatch();
+    await expect(batch.handler({
+      tabId: 7,
+      steps: JSON.stringify([
+        { action: 'fill', locator: { css: '#a' }, value: 'x' },
+        { action: 'execute_js', code: 'document.cookie' },
+      ]),
+    }, {})).rejects.toThrow(/may not run page scripts/);
+    expect(sent).toEqual([]);
+  });
+
+  it('refuses a navigate step — a batch may not move to another page', async () => {
+    const { batch, sent } = collectBatch();
+    await expect(batch.handler({
+      tabId: 7,
+      steps: JSON.stringify([{ action: 'navigate', url: 'https://evil.example.com' }]),
+    }, {})).rejects.toThrow(/may not navigate/);
+    expect(sent).toEqual([]);
+  });
+
+  it('refuses more steps than one approval may cover', async () => {
+    const { batch, sent } = collectBatch();
+    const steps = Array.from({ length: 26 }, () => ({ action: 'click', locator: { css: '#a' } }));
+    await expect(batch.handler({ tabId: 7, steps: JSON.stringify(steps) }, {}))
+      .rejects.toThrow(/at most 25 steps/);
+    expect(sent).toEqual([]);
+  });
+
+  it('refuses an empty batch, a non-list, and an unknown step type', async () => {
+    const { batch } = collectBatch();
+    await expect(batch.handler({ tabId: 7, steps: '[]' }, {})).rejects.toThrow(/at least one step/);
+    await expect(batch.handler({ tabId: 7, steps: '{"action":"click"}' }, {}))
+      .rejects.toThrow(/must be a JSON array/);
+    await expect(batch.handler({ tabId: 7, steps: '[{"action":"hover"}]' }, {}))
+      .rejects.toThrow(/Unknown batch step "hover"/);
+  });
+
+  it('validates a step with the same parsers the single-action tools use', async () => {
+    const { batch } = collectBatch();
+    await expect(batch.handler({ tabId: 7, steps: '[{"action":"click","locator":{}}]' }, {}))
+      .rejects.toThrow(/Locator must contain at least one of/);
+    await expect(batch.handler({ tabId: 7, steps: '[{"action":"find","query":{}}]' }, {}))
+      .rejects.toThrow(/at least one non-empty/);
+    await expect(batch.handler({
+      tabId: 7,
+      steps: '[{"action":"wait_for","condition":{"type":"exists"}}]',
+    }, {})).rejects.toThrow(/Condition type must be one of/);
+    await expect(batch.handler({
+      tabId: 7,
+      steps: '[{"action":"fill","locator":{"css":"#a"}}]',
+    }, {})).rejects.toThrow(/`value` must be a non-empty string/);
+    // The step number is in the message: "which step" is the first thing a
+    // caller needs when a batch is rejected.
+    await expect(batch.handler({
+      tabId: 7,
+      steps: '[{"action":"click","locator":{"css":"#a"}},{"action":"click","locator":{}}]',
+    }, {})).rejects.toThrow(/^Step 2: /);
+  });
+
+  it('forwards the owner on every step AND on its own origin probe', async () => {
+    const { batch, sent } = collectBatch();
+    await batch.handler({ tabId: 7, steps: twoFieldsAndSubmit }, {
+      _meta: { [ABU_CONVERSATION_META_KEY]: 'conv-1', [ABU_RUN_META_KEY]: 'run-2' },
+    });
+    // Without the owner on the get_tabs probe the host shows no owned tabs,
+    // the origin resolves to null, and every batch would stop before step one.
+    for (const call of sent) {
+      expect(call.payload).toMatchObject({ ownerId: 'conv-1', runId: 'run-2' });
+    }
+    expect(sent.some((s) => s.action === 'get_tabs' && s.payload.createIfEmpty === false)).toBe(true);
   });
 });

@@ -190,3 +190,78 @@ export interface ExtractTableResult {
   rows: string[][];
   rowCount: number;
 }
+
+// --- Batch (one ordered run of several actions against ONE page) ---
+//
+// A batch is a TRANSPORT, not a new authority: every step is the same single
+// action the caller could have sent on its own, and the orchestrator
+// (`abu-browser-bridge/src/tools.ts`) dispatches them one at a time so each
+// keeps the guards that already wrap it — the user-takeover backoff, the 429
+// backoff, the user-reclaim refusal, tab resolution and the abort signal.
+// That is also why page scripting has no step type here: `execute_js` is
+// approved run by run, and a step type for it would let one approval buy many
+// runs.
+
+export type BatchStepType =
+  | 'fill'
+  | 'select'
+  | 'click'
+  | 'keyboard'
+  | 'wait_for'
+  | 'find'
+  | 'read';
+
+export interface BatchStep {
+  action: BatchStepType;
+  /** fill / select / click */
+  locator?: ElementLocator;
+  /** fill / select */
+  value?: string;
+  /** keyboard */
+  key?: string;
+  modifiers?: string[];
+  /** wait_for */
+  condition?: WaitCondition;
+  timeout?: number;
+  /** find */
+  query?: FindQuery;
+  limit?: number;
+  /** read (extract_text) */
+  selector?: string;
+}
+
+export interface BatchStepOutcome {
+  /** 0-based position in the submitted step list. */
+  index: number;
+  action: BatchStepType;
+  ok: boolean;
+  durationMs: number;
+  /** The single action's own result, verbatim; dropped when the batch is trimmed. */
+  result?: unknown;
+  /** Set when `result` was cut to keep the batch within its size budget. */
+  resultTruncated?: true;
+  error?: string;
+}
+
+/** Why the run stopped before the last step. Absent ⇒ every step ran. */
+export type BatchStopReason =
+  | 'step-failed'
+  /** The tab left the origin the batch was authorized against. */
+  | 'origin-changed'
+  /** The tab's current origin could not be read, so it could not be checked. */
+  | 'origin-unverifiable'
+  | 'time-limit';
+
+export interface BatchResult {
+  tabId: number;
+  /** The origin every step was verified against before it ran. */
+  origin: string | null;
+  completedSteps: BatchStepOutcome[];
+  failedStep?: BatchStepOutcome;
+  /** How many submitted steps never ran. */
+  remainingSteps: number;
+  stopped?: BatchStopReason;
+  /** Set when step results were dropped to stay inside the size budget. */
+  truncated?: true;
+  message: string;
+}

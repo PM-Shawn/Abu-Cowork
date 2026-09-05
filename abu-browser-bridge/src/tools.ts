@@ -5,6 +5,8 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { MAX_BATCH_STEPS, parseBatchSteps, runBatch, type BatchDeps } from './batch.js';
+import { parseCondition, parseFindQuery, parseLocator } from './locators.js';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
 
 /**
@@ -179,61 +181,10 @@ function formatResult(response: BrowserTransportResponse): string {
   return JSON.stringify(response.data, null, 2);
 }
 
-/**
- * Parse and validate a JSON locator string from LLM input.
- * Ensures the result is a plain object with at least one known locator key.
- */
-function parseLocator(raw: string): Record<string, unknown> {
-  const parsed = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Locator must be a JSON object');
-  }
-  const validKeys = ['css', 'text', 'tag', 'role', 'name', 'xpath', 'testId', 'ref'];
-  const hasValidKey = Object.keys(parsed).some(k => validKeys.includes(k));
-  if (!hasValidKey) {
-    throw new Error(`Locator must contain at least one of: ${validKeys.join(', ')}`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
-/**
- * Parse and validate a JSON `find` query from LLM input.
- *
- * Separate from `parseLocator` because the two mean different things: a
- * locator must identify one element, a query is allowed — expected — to match
- * several, and it accepts `label`/`placeholder`, which are how a person names
- * a form field rather than how a caller pins one down.
- */
-const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'placeholder'];
-
-function parseFindQuery(raw: string): Record<string, unknown> {
-  const parsed = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Find query must be a JSON object');
-  }
-  const hasValidKey = Object.entries(parsed as Record<string, unknown>).some(
-    ([key, value]) => FIND_QUERY_KEYS.includes(key) && typeof value === 'string' && value !== '',
-  );
-  if (!hasValidKey) {
-    throw new Error(`Find query must contain at least one non-empty: ${FIND_QUERY_KEYS.join(', ')}`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
-/**
- * Parse and validate a JSON wait condition string from LLM input.
- */
-function parseCondition(raw: string): Record<string, unknown> {
-  const parsed = JSON.parse(raw);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Condition must be a JSON object');
-  }
-  const validTypes = ['appear', 'disappear', 'enabled', 'textContains', 'urlContains'];
-  if (!validTypes.includes(parsed.type as string)) {
-    throw new Error(`Condition type must be one of: ${validTypes.join(', ')}`);
-  }
-  return parsed as Record<string, unknown>;
-}
+// Locator / find-query / wait-condition parsing lives in `locators.ts` so
+// `batch.ts` validates a step with the SAME code the single-action tool
+// validates its own argument with — a second, slightly different parser would
+// be a way to reach the page with something the single-action path refuses.
 
 // --- Register all tools ---
 
@@ -352,6 +303,48 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       const owner = ownerPayloadFromExtra(extra);
       const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+    }
+  );
+
+  // 5b. browser_batch — placed next to the actions it composes, for the same
+  // reason `find` sits next to `snapshot`: the model should read the pair
+  // together. (Numbers are documentation, not an ordering contract.)
+  server.tool(
+    'batch',
+    `Run several actions on ONE page in one call, in order. THIS IS THE DEFAULT WAY TO FILL A FORM: send every field and the submit button as one batch instead of one fill call per field — an eight-field form is one call, not eight.
+Steps run strictly in order and the run STOPS AT THE FIRST FAILURE: nothing after a failed step is attempted, and the result tells you which step failed, why, what already completed, and how many steps never ran. Re-read the page and send a new batch for the rest; do not resend the whole batch.
+Every step is checked against the page the batch started on. If the tab leaves that site mid-run (a redirect, a login bounce), the batch stops there rather than carrying on somewhere else. Navigation between sites therefore has no step type: finish the batch, call navigate, start another.
+Scripting has no step type either — execute_js and query_js are approved one run at a time and cannot ride a batch approval.`,
+    {
+      tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      steps: z.string().describe(
+        `JSON array of steps, run in this order (max ${MAX_BATCH_STEPS}). Each step is an object with an "action":
+- { "action": "fill", "locator": { "ref": "e12" }, "value": "EQ-001" }
+- { "action": "fill", "locator": { "role": "textbox", "name": "负责人" }, "value": "张三" }
+- { "action": "select", "locator": { "role": "combobox", "name": "所属部门" }, "value": "运维部" }
+- { "action": "click", "locator": { "role": "button", "name": "提交" } }
+- { "action": "keyboard", "key": "Enter", "modifiers": ["ctrl"] }
+- { "action": "wait_for", "condition": { "type": "appear", "locator": { "text": "保存成功" } }, "timeout": 10000 }
+- { "action": "find", "query": { "role": "button", "name": "提交" } } — read-only look, same as the find tool
+- { "action": "read", "selector": "#result" } — read-only text, same as extract_text
+A step's locator is exactly the one click/fill/select take: ref, css, text, role+name, testId, xpath. (\`label\` and \`placeholder\` are find QUERY keys, not locator keys — run find first and put the refs it returns into the batch.)`,
+      ),
+    },
+    async ({ tabId, steps }, extra) => {
+      await ensureConnected(transport);
+      const parsed = parseBatchSteps(steps);
+      const owner = ownerPayloadFromExtra(extra);
+      const deps: BatchDeps = {
+        now: () => Date.now(),
+        // Every step goes out as the ordinary single action, owner fields and
+        // abort signal included — which is what keeps the host's per-action
+        // guards (user takeover, 429 backoff, reclaim) applying to each step
+        // instead of once for the whole run.
+        send: (action, payload, timeoutMs) =>
+          sendWithSignal(transport, action, { ...payload, ...owner }, extra, timeoutMs),
+      };
+      const result = await runBatch(deps, tabId, parsed);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     }
   );
 

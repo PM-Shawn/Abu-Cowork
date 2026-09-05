@@ -63,12 +63,26 @@ export function ThinkingStatusLine({
  *  typing footer that mimics it — identical markup keeps the label's
  *  horizontal offset (avatar width + gap) and top alignment (mt-0.5) in sync
  *  across the footer → group hand-off. */
-export function AssistantRowAvatar() {
+export function AssistantRowAvatar({ emoji, name }: { emoji?: string; name?: string } = {}) {
   return (
     <div className="shrink-0 mt-0.5">
-      <div className="w-7 h-7 rounded-full overflow-hidden">
-        <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
-      </div>
+      {emoji ? (
+        // Team-pinned conversation: the leader answers, so its avatar sits
+        // where Abu's would (same 28px slot — the label offset stays in sync).
+        <div
+          role="img"
+          aria-label={name}
+          title={name}
+          data-testid="assistant-row-avatar-leader"
+          className="w-7 h-7 rounded-full bg-[var(--abu-bg-muted)] flex items-center justify-center text-body leading-none select-none"
+        >
+          {emoji}
+        </div>
+      ) : (
+        <div className="w-7 h-7 rounded-full overflow-hidden">
+          <img src={abuAvatar} alt="Abu" className="w-full h-full object-cover" />
+        </div>
+      )}
     </div>
   );
 }

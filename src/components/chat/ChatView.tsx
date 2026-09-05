@@ -47,6 +47,7 @@ import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
@@ -125,11 +126,13 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   // Xs" fold header — keeps the label on the same baseline at the same size
   // instead of hopping between typographies ("错行"). The negative top margin
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
+  const footerConv = useActiveConversation();
+  const footerLeader = useConversationTeamLeader(footerConv?.id);
   return (
     <>
       {context?.showTypingIndicator && (
         <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
-          <AssistantRowAvatar />
+          <AssistantRowAvatar emoji={footerLeader?.leaderAvatar} name={footerLeader?.leaderName} />
           <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
         </div>
       )}
@@ -188,6 +191,7 @@ export default function ChatView({
   const renameConversation = useChatStore((s) => s.renameConversation);
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const titleTeamLeader = useConversationTeamLeader(activeConv?.id);
 
   // Cancel any in-progress title rename when the active conversation changes.
   // The rename state is component-local; without this reset a draft started on
@@ -1293,6 +1297,16 @@ export default function ChatView({
             title={activeConv.title}
           >
             {activeConv.title}
+          </span>
+        )}
+        {titleTeamLeader && !isRenamingTitle && (
+          <span
+            data-testid="chat-title-team-badge"
+            className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+            title={`${titleTeamLeader.leaderName} · ${titleTeamLeader.teamName}`}
+          >
+            <span aria-hidden="true">👥</span>
+            <span className="truncate max-w-[160px]">{titleTeamLeader.teamName}</span>
           </span>
         )}
         {/* Chapter navigation moves into the header exactly when the gutter can

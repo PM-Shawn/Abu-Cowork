@@ -5,14 +5,25 @@ import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { getBrowserSignalCursor } from '../observability/browserSignals';
-import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
-import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
+import {
+  browserRunReportOutcomeFor,
+  type BrowserRunReportSnapshot,
+} from '../observability/browserRunReport';
+import {
+  appendBrowserRunReportMessage,
+  buildUnattendedBrowserReport,
+} from '../observability/browserRunReportEmitter';
+import {
+  deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeSummary,
+  type UnattendedRunOutcome,
+} from '../observability/unattendedRunOutcome';
 import {
   notifyTriggerCompleted,
   notifyTriggerError,
 } from '../../utils/notifications';
 import { outputSender } from '../im/outputSender';
-import type { OutputContext } from '../im/adapters/types';
+import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import type { Trigger, TriggerEventPayload } from '../../types/trigger';
 import type { IMReplyContext } from '../../types/im';
 import type { NormalizedIMMessage } from '../im/inboundRouter';
@@ -340,6 +351,8 @@ class TriggerEngine {
     // (Ruling 2): a monotonic cursor, taken before any tool can fire.
     const browserSignalCursor = getBrowserSignalCursor();
     let reportOutcome = browserRunReportOutcomeFor('error', false);
+    /** F7 — built once, read by the IM summary and by the card. */
+    let report: BrowserRunReportSnapshot | null | undefined;
 
     try {
       /*
@@ -379,15 +392,25 @@ class TriggerEngine {
         initiatedBy: 'automation',
       });
 
-      reportOutcome = browserRunReportOutcomeFor(
-        result.reason,
-        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
-      );
+      const abortedByBrowserDenials =
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE;
+      reportOutcome = browserRunReportOutcomeFor(result.reason, abortedByBrowserDenials);
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      const runOutcome = deriveUnattendedRunOutcome({
+        reason: result.reason,
+        abortedByBrowserDenials,
+        report,
+      });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall
       // through and deliver it (just flagged below), rather than dropping the
       // output. aborted / error / no_progress have no usable output → mark the run
-      // and skip the push.
+      // and skip the ANSWER — but not the summary (F7: the scheduler's copy of
+      // this branch explains why silence is not an option here either).
       if (result.reason !== 'completed' && result.reason !== 'max_turns') {
         const errorMsg = result.error ?? (
           result.reason === 'aborted' ? 'Trigger was cancelled'
@@ -396,6 +419,7 @@ class TriggerEngine {
         );
         useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
         console.log(`[Trigger] ${result.reason}: ${trigger.name}`, result.error ?? '');
+        await this.pushOutcome(trigger, runOutcome, payload);
         return;
       }
       if (result.reason === 'max_turns') {
@@ -420,7 +444,7 @@ class TriggerEngine {
       // Output push — send results to IM channel or webhook
       if (trigger.output?.enabled) {
         const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
-        await this.pushOutput(trigger, runId, conversationId, payload, replyContext);
+        await this.pushOutput(trigger, runId, conversationId, payload, runOutcome, replyContext);
       }
 
       notifyTriggerCompleted(trigger.name);
@@ -433,6 +457,17 @@ class TriggerEngine {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
+      // F7 — same as the branch above; `reportOutcome` is still 'error'.
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      await this.pushOutcome(
+        trigger,
+        deriveUnattendedRunOutcome({ reason: 'error', abortedByBrowserDenials: false, report }),
+        payload,
+      );
       notifyTriggerError(trigger.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -443,23 +478,57 @@ class TriggerEngine {
       console.error(`[Trigger] Error: ${trigger.name}`, err);
     } finally {
       // U7 — after the output push, for every terminal. See the scheduler's
-      // copy for why both of those matter.
-      emitBrowserRunReport({
-        conversationId,
-        sinceSeq: browserSignalCursor,
-        outcome: reportOutcome,
-      });
+      // copy for why both of those matter. F7 — the snapshot was built above
+      // so the IM summary and this card come from one aggregation.
+      appendBrowserRunReportMessage({ conversationId, report: report ?? null });
       disposeAuthorizationScope(authorizationScopeId);
     }
   }
 
   // ── Output push ──
 
+  /**
+   * F7 — the ending, with no answer attached, on the trigger's own output.
+   *
+   * Mirrors `scheduler.pushOutcomeToIMChannel`: every non-delivering terminal
+   * used to push nothing at all, so a trigger bound to a chat went silent in
+   * exactly the cases a person needs to hear about. Deliberately does NOT read
+   * the conversation (a failed run's last message is not an answer) and does
+   * NOT touch `updateRunOutput` — the run produced no output, and marking one
+   * as 'sent' would say it did.
+   *
+   * Never throws: it runs on the failure paths, including the outer catch.
+   */
+  private async pushOutcome(
+    trigger: Trigger,
+    outcome: UnattendedRunOutcome,
+    payload: TriggerEventPayload,
+  ) {
+    if (!trigger.output?.enabled) return;
+    try {
+      const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
+      const message: AbuMessage = {
+        content: formatUnattendedOutcomeSummary(outcome, getI18n()),
+        title: trigger.name,
+        color,
+        footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+      };
+      const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
+      const { success, error } = await outputSender.send(trigger.output, message, replyContext);
+      if (!success) {
+        console.warn(`[Trigger] Outcome push failed for ${trigger.name}: ${error}`);
+      }
+    } catch (err) {
+      console.warn(`[Trigger] Outcome push failed for ${trigger.name}`, err);
+    }
+  }
+
   private async pushOutput(
     trigger: Trigger,
     runId: string,
     conversationId: string,
     payload: TriggerEventPayload,
+    outcome: UnattendedRunOutcome,
     replyContext?: IMReplyContext,
   ) {
     if (!trigger.output) return;
@@ -484,7 +553,13 @@ class TriggerEngine {
       eventData: JSON.stringify(payload.data),
     };
 
-    const message = outputSender.buildMessage(conversationId, trigger.output, context);
+    const answer = outputSender.buildMessage(conversationId, trigger.output, context);
+    // F7 — one line in front of the answer, template mode included: whoever
+    // wrote the template still wants to know whether the run finished.
+    const message: AbuMessage = {
+      ...answer,
+      content: `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`,
+    };
     const { success, error } = await outputSender.send(trigger.output, message, replyContext);
 
     useTriggerStore

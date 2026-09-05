@@ -40,7 +40,10 @@ vi.mock('../../utils/notifications', () => ({
 // Mock outputSender
 vi.mock('../im/outputSender', () => ({
   outputSender: {
-    buildMessage: vi.fn().mockReturnValue('test message'),
+    // A real AbuMessage shape: the push paths now build a NEW message that
+    // prepends the run's outcome line to `content` (F7), so a bare string
+    // stand-in would silently produce `undefined` where the answer goes.
+    buildMessage: vi.fn().mockReturnValue({ content: 'test message', title: 'test' }),
     send: vi.fn().mockResolvedValue({ success: true }),
   },
 }));
@@ -653,28 +656,91 @@ describe('TriggerEngine', () => {
       expect(outputSender.send).toHaveBeenCalled();
     });
 
-    it('does NOT deliver output on no_progress (degenerate result)', async () => {
+    /**
+     * F7 — what these two used to pin, and what changed.
+     *
+     * They pinned「没有可用输出就不投递」and that half still holds: no
+     * ANSWER is extracted from the conversation on a degenerate terminal
+     * (`buildMessage` is never called — a failed run's last assistant message
+     * is not an answer, and shipping it as one is worse than saying nothing).
+     * What was wrong was binding「没有可用输出」to「什么都不说」: in IM that
+     * is indistinguishable from the task never having run. So now the run
+     * still tells the user it did not finish — outcome code and reason, no
+     * conversation text.
+     */
+    it('sends no answer on no_progress, but still says the run did not finish', async () => {
       const trigger = makeOutputTrigger('trigger-out-noprogress');
       useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
       const { runAgentLoop } = await import('../agent/agentLoop');
       vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'no_progress' });
       vi.mocked(outputSender.send).mockClear();
+      vi.mocked(outputSender.buildMessage).mockClear();
 
       await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
 
-      expect(outputSender.send).not.toHaveBeenCalled();
+      expect(outputSender.buildMessage).not.toHaveBeenCalled();
+      expect(outputSender.send).toHaveBeenCalledTimes(1);
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toContain('No progress');
+      expect(sent.content).not.toContain('test message');
     });
 
-    it('does NOT deliver output on aborted', async () => {
+    it('sends no answer on aborted, but still says the run was stopped', async () => {
       const trigger = makeOutputTrigger('trigger-out-aborted');
       useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
       const { runAgentLoop } = await import('../agent/agentLoop');
       vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'aborted' });
       vi.mocked(outputSender.send).mockClear();
+      vi.mocked(outputSender.buildMessage).mockClear();
 
       await triggerEngine.handleEvent(trigger.id, { data: { n: 3 } });
 
+      expect(outputSender.buildMessage).not.toHaveBeenCalled();
+      expect(outputSender.send).toHaveBeenCalledTimes(1);
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toContain('Stopped');
+    });
+
+    it('leaves a trigger with no output binding silent — nothing to send to', async () => {
+      const trigger = makeTrigger({ id: 'trigger-out-none' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'error', error: 'boom' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 4 } });
+
       expect(outputSender.send).not.toHaveBeenCalled();
+    });
+
+    it('tells the bound channel when the run threw, not just the desktop', async () => {
+      const trigger = makeOutputTrigger('trigger-out-threw');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockRejectedValueOnce(new Error('agent exploded'));
+      vi.mocked(outputSender.send).mockClear();
+      vi.mocked(outputSender.buildMessage).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 6 } });
+
+      expect(outputSender.buildMessage).not.toHaveBeenCalled();
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toContain('Task failed');
+      // The raw exception text never leaves the machine — it can quote page
+      // content, and the summary carries closed codes only.
+      expect(sent.content).not.toContain('agent exploded');
+    });
+
+    it('prefixes the delivered answer with one outcome line and changes nothing else', async () => {
+      const trigger = makeOutputTrigger('trigger-out-completed');
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      const { runAgentLoop } = await import('../agent/agentLoop');
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+      vi.mocked(outputSender.send).mockClear();
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 5 } });
+
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toBe('Done\n\ntest message');
     });
   });
 
@@ -767,6 +833,7 @@ describe('TriggerEngine', () => {
         stopReason: 'sidecar_unavailable',
       });
       vi.mocked(outputSender.send).mockClear();
+      vi.mocked(outputSender.buildMessage).mockClear();
 
       await triggerEngine.handleEvent(trigger.id, { data: { n: 3 } });
 
@@ -774,7 +841,11 @@ describe('TriggerEngine', () => {
       const run = useTriggerStore.getState().triggers[trigger.id]?.runs.at(-1);
       expect(run?.status).toBe('error');
       expect(run?.error).toContain('Sidecar run state remained unavailable');
-      expect(outputSender.send).not.toHaveBeenCalled();
+      // F7 — no answer is extracted, but the bound channel is told the run
+      // failed rather than being left to guess from silence.
+      expect(outputSender.buildMessage).not.toHaveBeenCalled();
+      const sent = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+      expect(sent.content).toContain('Task failed');
     });
   });
   // ── U7: the run report card ──

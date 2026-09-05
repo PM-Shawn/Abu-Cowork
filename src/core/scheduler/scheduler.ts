@@ -21,7 +21,7 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
 import { resolveUnattendedImTarget } from '../im/approvalTarget';
-import type { OutputContext } from '../im/adapters/types';
+import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { createUnattendedConfirmation } from '../permissions/unattendedConfirmation';
@@ -30,8 +30,19 @@ import {
   getBrowserSignalCursor,
   safeRecordSchedulerDriftSignal,
 } from '../observability/browserSignals';
-import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
-import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
+import {
+  browserRunReportOutcomeFor,
+  type BrowserRunReportSnapshot,
+} from '../observability/browserRunReport';
+import {
+  appendBrowserRunReportMessage,
+  buildUnattendedBrowserReport,
+} from '../observability/browserRunReportEmitter';
+import {
+  deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeSummary,
+  type UnattendedRunOutcome,
+} from '../observability/unattendedRunOutcome';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
@@ -298,6 +309,13 @@ class SchedulerEngine {
      * than none — a run that blew up is exactly the one worth reporting.
      */
     let reportOutcome = browserRunReportOutcomeFor('error', false);
+    /**
+     * Built ONCE per run, read twice: by the IM summary below (which must go
+     * out before the card is appended — see the `finally`) and by the card
+     * itself. One aggregation, so the two can never describe the same run
+     * differently.
+     */
+    let report: BrowserRunReportSnapshot | null | undefined;
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
@@ -328,22 +346,31 @@ class SchedulerEngine {
         initiatedBy: 'automation',
       });
 
-      reportOutcome = browserRunReportOutcomeFor(
-        result.reason,
-        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
-      );
+      const abortedByBrowserDenials =
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE;
+      reportOutcome = browserRunReportOutcomeFor(result.reason, abortedByBrowserDenials);
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      const runOutcome = deriveUnattendedRunOutcome({
+        reason: result.reason,
+        abortedByBrowserDenials,
+        report,
+      });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
       // it like a completion, just flagged as possibly incomplete, rather than
       // silently dropping the output. (no_progress / error / aborted have no usable
-      // output, so they skip delivery below.)
+      // output, so they skip the ANSWER below — but not the summary: F7.)
       if (result.reason === 'completed' || result.reason === 'max_turns') {
         const incomplete = result.reason === 'max_turns';
         useScheduleStore.getState().completeRun(task.id, runId);
 
         // Push results to IM channel if configured
         if (task.outputChannelId) {
-          await this.pushToIMChannel(task, conversationId);
+          await this.pushToIMChannel(task, conversationId, runOutcome);
         }
 
         const t = getI18n();
@@ -387,6 +414,21 @@ class SchedulerEngine {
           resolveEffectivePermissionMode(task),
         );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
+        /**
+         * F7 — the ending reaches the user WHERE THEY ARE.
+         *
+         * There is no answer to deliver on this branch (that is why it does
+         * not extract the conversation's last message), but "no usable
+         * output" and "say nothing" were wrongly the same decision: a task
+         * bound to an IM channel used to go completely silent on every
+         * failing terminal, which in IM is indistinguishable from never
+         * having run. The desktop notification below is not a substitute —
+         * 9am unattended runs exist precisely because nobody is at the
+         * machine.
+         */
+        if (task.outputChannelId) {
+          await this.pushOutcomeToIMChannel(task, runOutcome);
+        }
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
         }
@@ -401,6 +443,23 @@ class SchedulerEngine {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
+      // Same F7 reasoning as the else branch above. `reportOutcome` is still
+      // the 'error' it was initialized to, which is exactly what this is.
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      if (task.outputChannelId) {
+        await this.pushOutcomeToIMChannel(
+          task,
+          deriveUnattendedRunOutcome({
+            reason: 'error',
+            abortedByBrowserDenials: false,
+            report,
+          }),
+        );
+      }
       notifyScheduledTaskError(task.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -422,12 +481,12 @@ class SchedulerEngine {
        * instead of the answer the task produced.
        *
        * Emits nothing when the run never touched the browser.
+       *
+       * F7 — the snapshot itself was built earlier (in `try`, or in `catch`),
+       * because the IM summary is derived from it and has to go out before
+       * this line appends the card. Same object, both surfaces.
        */
-      emitBrowserRunReport({
-        conversationId,
-        sinceSeq: browserSignalCursor,
-        outcome: reportOutcome,
-      });
+      appendBrowserRunReportMessage({ conversationId, report: report ?? null });
       disposeAuthorizationScope(authorizationScopeId);
       this.runningTasks.delete(task.id);
     }
@@ -451,7 +510,11 @@ class SchedulerEngine {
     return this.runningTasks.has(taskId);
   }
 
-  private async pushToIMChannel(task: ScheduledTask, conversationId: string) {
+  private async pushToIMChannel(
+    task: ScheduledTask,
+    conversationId: string,
+    outcome: UnattendedRunOutcome,
+  ) {
     const context: OutputContext = {
       triggerName: task.name,
       aiResponse: '',
@@ -465,8 +528,69 @@ class SchedulerEngine {
       extractMode: 'last_message' as const,
     };
 
-    const message = outputSender.buildMessage(conversationId, baseOutput, context);
+    const answer = outputSender.buildMessage(conversationId, baseOutput, context);
+    /**
+     * F7 — ONE line in front of the answer, never more. A run that worked is
+     * the common case and it is being read on a phone; the ending belongs at
+     * the top, the reasoning does not belong at all.
+     */
+    const message: AbuMessage = {
+      ...answer,
+      content: `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`,
+    };
 
+    await this.sendToTaskChats(task, baseOutput, message);
+  }
+
+  /**
+   * F7 — the ending, with no answer attached.
+   *
+   * Used by every terminal that produces nothing to deliver (error, stopped,
+   * no progress, and the outer catch). It deliberately does NOT read the
+   * conversation: `last_message` on a failed run pulls whatever half-thought
+   * the model stopped on, which reads like an answer and is not one. The
+   * summary is built from closed codes and local counts only.
+   *
+   * Never throws: it is called from the failure paths, including the catch
+   * block, and a notification about a failure must not become a second one.
+   */
+  private async pushOutcomeToIMChannel(task: ScheduledTask, outcome: UnattendedRunOutcome) {
+    try {
+      const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
+      const message: AbuMessage = {
+        content: formatUnattendedOutcomeSummary(outcome, getI18n()),
+        title: task.name,
+        color,
+        footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+      };
+      await this.sendToTaskChats(
+        task,
+        {
+          enabled: true as const,
+          target: 'im_channel' as const,
+          outputChannelId: task.outputChannelId,
+          extractMode: 'last_message' as const,
+        },
+        message,
+        { quiet: true },
+      );
+    } catch (err) {
+      console.warn(`[Scheduler] Outcome push failed for ${task.name}`, err);
+    }
+  }
+
+  /** Send one built message to every chat / user the task names. */
+  private async sendToTaskChats(
+    task: ScheduledTask,
+    baseOutput: {
+      enabled: true;
+      target: 'im_channel';
+      outputChannelId: string | undefined;
+      extractMode: 'last_message';
+    },
+    message: AbuMessage,
+    options: { quiet?: boolean } = {},
+  ) {
     // Collect all targets: group chats + DM users
     const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
 
@@ -506,12 +630,17 @@ class SchedulerEngine {
       console.log(`[Scheduler] Result pushed to ${targets.length} target(s): ${task.name}`);
     } else {
       console.warn(`[Scheduler] IM push: ${targets.length - failures.length}/${targets.length} succeeded for ${task.name}`);
-      const t = getI18n();
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: format(t.schedule.taskCompleted, { name: task.name }),
-        message: t.schedule.outputPushFailed,
-      });
+      // `quiet` for the outcome-only push: the run already raised its own
+      // failure toast and desktop notification, and a second red toast saying
+      // the failure NOTICE failed is noise stacked on noise.
+      if (!options.quiet) {
+        const t = getI18n();
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: format(t.schedule.taskCompleted, { name: task.name }),
+          message: t.schedule.outputPushFailed,
+        });
+      }
     }
   }
 }

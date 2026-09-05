@@ -93,6 +93,41 @@ vi.mock('./ChapterMenu', async () => {
   };
 });
 
+// happy-dom's ResizeObserver never fires without real layout, so record every
+// observer and let a test drive the exact one it means to (determinism rule).
+interface RecordedObserver {
+  callback: () => void;
+  targets: Element[];
+}
+const resizeObservers: RecordedObserver[] = [];
+
+class RecordingResizeObserver {
+  private readonly record: RecordedObserver;
+  constructor(callback: () => void) {
+    this.record = { callback, targets: [] };
+    resizeObservers.push(this.record);
+  }
+  observe(target: Element) {
+    this.record.targets.push(target);
+  }
+  disconnect() {
+    this.record.targets.length = 0;
+  }
+}
+
+/** Fire the observer watching `target`, mirroring a post-layout resize. */
+function fireResizeFor(target: Element | null): boolean {
+  if (!target) return false;
+  let fired = false;
+  for (const observer of resizeObservers) {
+    if (observer.targets.includes(target)) {
+      observer.callback();
+      fired = true;
+    }
+  }
+  return fired;
+}
+
 const geometry = {
   anchorDocumentTop: 220,
   anchorHeight: 40,
@@ -187,6 +222,8 @@ describe('ChatView active-turn scroll state machine', () => {
     geometry.contentHeight = geometry.baselineContentHeight;
     geometry.extraScrollRange = 0;
     geometry.scroller = null;
+    resizeObservers.length = 0;
+    vi.stubGlobal('ResizeObserver', RecordingResizeObserver);
     useChatStore.setState(useChatStore.getInitialState(), true);
     useSettingsStore.setState(useSettingsStore.getInitialState(), true);
     useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
@@ -211,6 +248,7 @@ describe('ChatView active-turn scroll state machine', () => {
 
   afterEach(() => {
     rectSpy.mockRestore();
+    vi.unstubAllGlobals();
     cleanup();
   });
 
@@ -287,6 +325,68 @@ describe('ChatView active-turn scroll state machine', () => {
     act(() => harness.props?.totalListHeightChanged?.(326));
     expect(spacer.dataset.spacerHeight).toBe('174');
     expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+  });
+
+  it('re-sticks when content grows after the last list-height event', async () => {
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    await armNewTurn(conversationId);
+
+    // Exhaust the spacer: the anchor hands off and the view sits at the bottom.
+    geometry.contentHeight = 320;
+    act(() => harness.props?.totalListHeightChanged?.(520));
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+
+    // The real race: the last growth reaches the scroller AFTER the final
+    // `totalListHeightChanged`, so no further event ever arrives to correct it
+    // and the view freezes a few pixels above the bottom.
+    geometry.contentHeight = 329;
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(9);
+
+    // A resize of the scrolled content is the authoritative signal that the
+    // geometry changed. It runs after layout and before paint, so correcting
+    // here is invisible rather than a visible one-frame jump.
+    const content = scroller.querySelector<HTMLElement>('[data-chat-scroll-content]');
+    expect(fireResizeFor(content), 'the scrolled content is not observed').toBe(true);
+    act(() => {});
+    expect(scroller.scrollHeight - getScrollTop() - 300).toBe(0);
+  });
+
+  it('holds the bottom-pin off while a turn anchor is announced but not armed', async () => {
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    scroller.scrollTop = 0;
+
+    // Announced, not yet armed: the arm is about to measure this very geometry,
+    // and every follow path must agree to hold off until it has (otherwise one
+    // writer re-enables the bottom-pin another is deliberately holding off).
+    announceChatTurnScrollIntent({ conversationId, source: 'composer' });
+    geometry.contentHeight = 400;
+    fireResizeFor(scroller.querySelector<HTMLElement>('[data-chat-scroll-content]'));
+    act(() => {});
+
+    expect(getScrollTop()).toBe(0);
+  });
+
+  it('leaves an unpinned reader alone when late content resizes', async () => {
+    const conversationId = setupConversation();
+    render(<ChatView />);
+    const scroller = document.querySelector<HTMLElement>('.overlay-scroll')!;
+    const { getScrollTop } = installGeometry(scroller);
+    await armNewTurn(conversationId);
+    // An explicit upward gesture unpins and freezes the spacer.
+    act(() => { scroller.dispatchEvent(new WheelEvent('wheel', { deltaY: -12 })); });
+    scroller.scrollTop = 120;
+
+    geometry.contentHeight = 329;
+    fireResizeFor(scroller.querySelector<HTMLElement>('[data-chat-scroll-content]'));
+    act(() => {});
+
+    expect(getScrollTop()).toBe(120);
   });
 
   it('self-clears a pending gate whose dispatch never persisted a message', async () => {

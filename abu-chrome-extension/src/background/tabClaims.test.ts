@@ -221,6 +221,25 @@ describe('task-level tab claims', () => {
     expect(store.holderOf(11)?.conversationId).toBe(CONVERSATION_B);
   });
 
+  it("frees the main loop's tab at its run settlement without touching a delegation's", async () => {
+    // The shape the app actually puts on the wire now: its run-settlement
+    // notification always carries a run key, and the conversation's own loop
+    // sends `main` (`abu/runKey`'s "absent ⇒ main" default, resolved on the
+    // bridge). A settling main loop must not strip a subagent run that is
+    // still driving its own page.
+    const store = createTabClaimStore();
+    const chrome = fakeChrome([11, 12]);
+    await resolve(store, chrome, 'click', { tabId: 11, ownerId: CONVERSATION_A });
+    await resolve(store, chrome, 'click', { tabId: 12, ownerId: CONVERSATION_A, runId: RUN_1 });
+
+    expect(store.releaseOwner(CONVERSATION_A, 'main')).toBe(1);
+
+    expect(store.holderOf(11)).toBeNull();
+    expect(store.holderOf(12)?.runKey).toBe(RUN_1);
+    // Freed, so the next conversation to ask for it gets it.
+    expect(await resolve(store, chrome, 'click', { tabId: 11, ownerId: CONVERSATION_B })).toBe(11);
+  });
+
   it('releases every run of a conversation when no runId is given', async () => {
     const store = createTabClaimStore();
     const chrome = fakeChrome([11, 12]);

@@ -250,22 +250,16 @@ function handleResponse(msg: BridgeResponse): void {
  * release costs one stale claim (which the tab closing, or the socket dropping,
  * clears anyway), and no browser action may fail over bookkeeping.
  *
- * KNOWN GAP: nothing calls this yet. A run ending — normally or because the
- * user stopped it — reaches this bridge through no signal it can trust: the
- * only event it sees is a per-REQUEST abort, and the MCP SDK raises that for
- * its own request timeouts too (see the long note at the abort path below).
- * The built-in host has a real channel for this (`browser_dispose_owner` over
- * IPC, called from `src/core/browser/browserViewLifecycle.ts` at a run's
- * settlement seal); this bridge is an MCP stdio server and has none. Giving it
- * one — an MCP notification, not a model-visible tool — is an interface
- * decision, not a fix, and is accounted for separately. Until then a finished
- * run's claim is cleared by the tab closing or the socket dropping.
+ * The ONLY caller is `runSettled.ts`, the handler for the app's run-settlement
+ * MCP notification. Deliberately not the per-request abort path: the MCP SDK
+ * aborts a handler for its own request timeouts too, so a still-running task
+ * would lose its tabs (see the long note at the abort path below).
  *
- * WHEN that caller arrives, it must pass the run key (`runId ?? 'main'`) at a
- * run's settlement: omitting it releases EVERY run of the conversation, which
- * the host never does there — `disposeRunBrowserViews` returns early without a
- * runKey, and the conversation-wide scope belongs to conversation deletion
- * alone. That is what the omitted-`runId` shape is reserved for.
+ * A run's settlement always passes the run key (`runId ?? 'main'`): omitting it
+ * releases EVERY run of the conversation, which the host never does there —
+ * `disposeRunBrowserViews` returns early without a runKey, and the
+ * conversation-wide scope belongs to conversation deletion alone. That is what
+ * the omitted-`runId` shape is reserved for.
  */
 export function releaseExtensionTabs(ownerId: unknown, runId?: unknown): void {
   if (typeof ownerId !== 'string' || ownerId.length === 0) return;
@@ -350,7 +344,8 @@ export function sendToExtension(
       //
       // Claims are therefore dropped by the extension itself — the tab closing
       // and the socket dropping — plus the explicit `{type:'release'}`, which
-      // still has no sender here; see `releaseExtensionTabs`.
+      // the app sends once per run at its settlement seal over a notification
+      // that says so unambiguously; see `runSettled.ts`.
       reject(new DOMException('The operation was aborted.', 'AbortError'));
     });
 

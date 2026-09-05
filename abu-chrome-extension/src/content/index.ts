@@ -350,6 +350,22 @@ function escapeCSS(value: string): string {
 /** Elements that contain everything and are never a meaningful target. */
 const NEVER_A_TARGET = new Set(['html', 'body', 'head', 'script', 'style', 'noscript', 'title']);
 
+/**
+ * Abu's own on-page UI: the highlight ring and the status bubble.
+ *
+ * These live on `document.documentElement`, outside `<body>`, so `snapshot`
+ * never sees them — but every locator scans the document, and the bubble
+ * echoes what was just done ("Abu: Click: 保存"). A `{text:"保存"}` locator
+ * issued after a 保存 click therefore found the real button AND our own
+ * caption, and the second call in a row became "matches 2 elements". The
+ * automation must never be able to act on, or trip over, its own overlay.
+ */
+const ABU_OVERLAY_IDS = new Set(['abu-status', 'abu-highlight']);
+
+function isAbuOverlay(el: Element): boolean {
+  return ABU_OVERLAY_IDS.has(el.id);
+}
+
 /** Short, human-readable handle for an element, used in error messages. */
 function describeElement(el: Element): string {
   const tag = el.tagName.toLowerCase();
@@ -365,6 +381,338 @@ function isClickable(el: Element): boolean {
   if (el.hasAttribute('onclick') || el.hasAttribute('tabindex')) return true;
   const role = el.getAttribute('role');
   return role !== null && ['button', 'link', 'option', 'menuitem', 'tab', 'checkbox', 'radio', 'switch'].includes(role);
+}
+
+// -----------------------------------------------------------------------------
+// 2a. ACCESSIBLE SEMANTICS — implicit roles and accessible names
+//
+// A `{role, name}` locator used to be compiled into the attribute selector
+// `[role="button"][aria-label="保存"]`, which can only ever match a page that
+// spells its semantics out in attributes. Ordinary HTML does not: `<button>
+// 保存</button>` carries the role in its tag and the name in its text, so the
+// most natural locator a model can write returned "Element not found" and sent
+// it off to script the page instead. What follows is the minimum needed to
+// make that locator mean what a browser (and Playwright, and a screen reader)
+// means by it.
+//
+// Deliberately NOT a full ARIA accname implementation: no `::before`/`::after`
+// generated content, no recursive name computation, no `aria-owns` reordering,
+// no role inheritance chains. Those matter for conformance testing; the eight
+// native roles and six name sources below are what office forms are made of.
+// -----------------------------------------------------------------------------
+
+/** `<input type>` values that are buttons. Their name comes from `value`/`alt`. */
+const BUTTON_INPUT_TYPES = new Set(['submit', 'button', 'reset', 'image']);
+
+/**
+ * `<input type>` values that are text boxes. An input with no `type` at all
+ * defaults to `text`, hence the empty string. Types outside this set (`date`,
+ * `range`, `file`, `color`, …) map to roles this module does not model, and
+ * claiming `textbox` for them would make an ambiguity check count elements the
+ * caller never meant — so they get no implicit role at all.
+ */
+const TEXTBOX_INPUT_TYPES = new Set(['', 'text', 'email', 'password', 'search', 'tel', 'url', 'number']);
+
+/** Tag → implicit role, for the tags whose role does not depend on attributes. */
+const IMPLICIT_ROLE_BY_TAG: Record<string, string> = {
+  button: 'button',
+  textarea: 'textbox',
+  select: 'combobox',
+  h1: 'heading',
+  h2: 'heading',
+  h3: 'heading',
+  h4: 'heading',
+  h5: 'heading',
+  h6: 'heading',
+  summary: 'button',
+};
+
+/**
+ * The tags that can carry each implicit role, so a role lookup can stay a
+ * single narrow `querySelectorAll` instead of walking every node on the page
+ * and reading its attributes.
+ */
+const IMPLICIT_ROLE_SELECTORS: Record<string, string> = {
+  button: 'button, input, summary',
+  link: 'a[href]',
+  textbox: 'input, textarea',
+  checkbox: 'input',
+  radio: 'input',
+  combobox: 'select',
+  heading: 'h1, h2, h3, h4, h5, h6',
+  img: 'img',
+};
+
+/** `type`, lowercased, defaulting to the empty string (which means `text`). */
+function inputType(el: Element): string {
+  return (el.getAttribute('type') ?? '').trim().toLowerCase();
+}
+
+/** The role a native element has without anyone writing `role=`. */
+function implicitRole(el: Element): string | null {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input') {
+    const type = inputType(el);
+    if (BUTTON_INPUT_TYPES.has(type)) return 'button';
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (TEXTBOX_INPUT_TYPES.has(type)) return 'textbox';
+    return null;
+  }
+  // A bare `<a>` with no href is a generic span as far as ARIA is concerned.
+  if (tag === 'a') return el.hasAttribute('href') ? 'link' : null;
+  // `alt=""` is how a page says "this image is decorative" — respecting it
+  // keeps spacer GIFs out of an `{role:"img"}` match.
+  if (tag === 'img') return el.getAttribute('alt') === '' ? null : 'img';
+  return IMPLICIT_ROLE_BY_TAG[tag] ?? null;
+}
+
+/**
+ * The role a locator should match: an explicit `role=` wins, otherwise the
+ * native one. A role attribute may list fallbacks (`role="doc-subtitle
+ * heading"`); the first token is the effective one.
+ */
+function effectiveRole(el: Element): string | null {
+  const explicit = (el.getAttribute('role') ?? '').trim().split(/\s+/)[0];
+  if (explicit) return explicit.toLowerCase();
+  return implicitRole(el);
+}
+
+/**
+ * Roles whose accessible name may be taken from their own text.
+ *
+ * The exclusions are what matter: a `<select>`'s text content is the
+ * concatenation of every option ("北京上海广州"), and a `<textarea>`'s is its
+ * default value. Naming those from content would invent names no user ever
+ * sees and make `{role:"combobox", name:"..."}` match by accident.
+ */
+const NAME_FROM_CONTENT_ROLES = new Set([
+  'button', 'link', 'heading', 'option', 'menuitem', 'menuitemcheckbox',
+  'menuitemradio', 'tab', 'checkbox', 'radio', 'switch', 'treeitem',
+  'cell', 'gridcell', 'columnheader', 'rowheader', 'row', 'tooltip',
+]);
+
+/** Elements a native `<label>` can name. */
+const LABELABLE_TAGS = new Set(['button', 'input', 'meter', 'output', 'progress', 'select', 'textarea']);
+
+/** Trim, and collapse every run of whitespace to one space. */
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Whitespace removed entirely — see `looselyNamed` for why this exists. */
+function squashWhitespace(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+/**
+ * Text of the native `<label>`s naming this control — both spellings:
+ * `<label for="id">` anywhere in the document, and an ancestor `<label>` the
+ * control sits inside.
+ *
+ * This is the single highest-value entry in the whole fallback chain. An
+ * office form's inputs almost never carry `aria-label` or `role`; the label is
+ * the only thing on the page that says what the field is, and it is what the
+ * user calls it when they say "put my name in 姓名".
+ *
+ * `aria-describedby` is deliberately not consulted: a description ("8-20
+ * characters") is not a name, and treating it as one makes two different
+ * fields answer to the same locator.
+ */
+function nativeLabelText(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  if (!LABELABLE_TAGS.has(tag)) return '';
+  if (tag === 'input' && inputType(el) === 'hidden') return '';
+
+  const parts: string[] = [];
+  if (el.id) {
+    // Compared as attribute values rather than interpolated into a selector:
+    // an id is author-controlled, and no escaping scheme has to be trusted if
+    // nothing is ever concatenated into a query.
+    for (const label of document.querySelectorAll('label[for]')) {
+      if (label.getAttribute('for') === el.id) {
+        parts.push(normalizeWhitespace(label.textContent ?? ''));
+      }
+    }
+  }
+  const wrapping = el.closest?.('label');
+  if (wrapping) parts.push(normalizeWhitespace(wrapping.textContent ?? ''));
+
+  return normalizeWhitespace(parts.filter(Boolean).join(' '));
+}
+
+/**
+ * The accessible name of an element, by the six sources that carry office
+ * forms, first non-empty wins:
+ *
+ *   1. `aria-labelledby` — the IDREF list, joined
+ *   2. `aria-label`
+ *   3. the native `<label>` (for/id, or wrapping)
+ *   4. `alt` / `value` (buttons only) / `title`
+ *   5. its own visible text — only for roles that take a name from content
+ *   6. `placeholder`
+ */
+function accessibleName(el: Element): string {
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const joined = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => document.getElementById(id))
+      .filter((node): node is HTMLElement => node !== null)
+      .map((node) => normalizeWhitespace(node.textContent ?? ''))
+      .filter(Boolean)
+      .join(' ');
+    if (joined) return joined;
+  }
+
+  const ariaLabel = normalizeWhitespace(el.getAttribute('aria-label') ?? '');
+  if (ariaLabel) return ariaLabel;
+
+  const label = nativeLabelText(el);
+  if (label) return label;
+
+  const alt = normalizeWhitespace(el.getAttribute('alt') ?? '');
+  if (alt) return alt;
+  if (el.tagName.toLowerCase() === 'input' && BUTTON_INPUT_TYPES.has(inputType(el))) {
+    const value = normalizeWhitespace((el as HTMLInputElement).value ?? '');
+    if (value) return value;
+  }
+  const title = normalizeWhitespace(el.getAttribute('title') ?? '');
+  if (title) return title;
+
+  const role = effectiveRole(el);
+  if (role !== null && NAME_FROM_CONTENT_ROLES.has(role)) {
+    const text = normalizeWhitespace(el.textContent ?? '');
+    if (text) return text;
+  }
+
+  return normalizeWhitespace(el.getAttribute('placeholder') ?? '');
+}
+
+/**
+ * Whether an element can be matched by a locator at all.
+ *
+ * `isSnapshotVisible` rather than the stricter `isVisible` on purpose: antd's
+ * combobox puts the semantics on a `width: 0` `<input>` beside the span the
+ * user sees, so "has a layout box" would make every dropdown on the page
+ * unaddressable. The two extra checks below are the states that test cannot
+ * see — `hidden` is applied by the UA stylesheet, and `type="hidden"` inputs
+ * are laid out nowhere but are still perfectly ordinary inputs.
+ */
+function isLocatorVisible(el: Element): boolean {
+  if (el.hasAttribute('hidden')) return false;
+  if (el.tagName.toLowerCase() === 'input' && inputType(el) === 'hidden') return false;
+  return isSnapshotVisible(el);
+}
+
+/** A locator may land here — page content, visible, and not our own overlay. */
+function isLocatorTarget(el: Element): boolean {
+  if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
+  if (isAbuOverlay(el)) return false;
+  return isLocatorVisible(el);
+}
+
+/**
+ * Every element carrying `role`, explicit or implicit.
+ *
+ * `[role]` catches the attribute spelling; the tag list catches the native
+ * one. An unmapped role (`dialog`, `alert`, …) scans only `[role]`, which is
+ * correct — this module claims no implicit mapping for those.
+ */
+function elementsWithRole(role: string): Element[] {
+  const wanted = role.trim().toLowerCase();
+  const selectors = ['[role]'];
+  const implicit = IMPLICIT_ROLE_SELECTORS[wanted];
+  if (implicit) selectors.push(implicit);
+  return [...document.querySelectorAll(selectors.join(', '))].filter(
+    (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && effectiveRole(el) === wanted,
+  );
+}
+
+/**
+ * The loosest tier of name matching: substring, after normalizing whitespace,
+ * case-insensitively — plus the same match with whitespace removed entirely.
+ *
+ * The whitespace-free comparison is not pedantry: antd renders a two-character
+ * Chinese button as `提 交` in the DOM while everyone — the user, the model,
+ * the page's own design — calls it `提交`. `findByText` has carried this rule
+ * since the field report that produced it; a name lookup that did not would
+ * fail on exactly the buttons this work exists to reach.
+ */
+function looselyNamed(name: string, wanted: string): boolean {
+  const normWanted = normalizeWhitespace(wanted).toLowerCase();
+  if (normWanted === '') return true;
+  if (normalizeWhitespace(name).toLowerCase().includes(normWanted)) return true;
+  const squashedWanted = squashWhitespace(wanted).toLowerCase();
+  return squashedWanted !== '' && squashWhitespace(name).toLowerCase().includes(squashedWanted);
+}
+
+/**
+ * Narrow candidates by a name-ish query, keeping the STRICTEST tier that still
+ * matches something: exact, then normalized, then substring.
+ *
+ * Order is the whole point. With `保存` and `保存并提交` both on the page, a
+ * plain substring match makes `{name:"保存"}` ambiguous and refuses to act —
+ * technically defensible, uselessly so, since one of them is called exactly
+ * that. Taking the strictest non-empty tier means an exact name always wins,
+ * and the substring tier only comes into play when nothing matched exactly.
+ */
+function narrowByName(
+  candidates: Element[],
+  wanted: string,
+  nameOf: (el: Element) => string,
+): Element[] {
+  const exact = candidates.filter((el) => nameOf(el) === wanted);
+  if (exact.length > 0) return exact;
+
+  const normWanted = normalizeWhitespace(wanted).toLowerCase();
+  const squashedWanted = squashWhitespace(wanted).toLowerCase();
+  const normalized = candidates.filter((el) => {
+    const name = nameOf(el);
+    return normalizeWhitespace(name).toLowerCase() === normWanted
+      || (squashedWanted !== '' && squashWhitespace(name).toLowerCase() === squashedWanted);
+  });
+  if (normalized.length > 0) return normalized;
+
+  return candidates.filter((el) => looselyNamed(nameOf(el), wanted));
+}
+
+/**
+ * A candidate line for an error message or a `find` result: enough for the
+ * caller to tell two same-looking controls apart and pick one by ref.
+ */
+function describeCandidate(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : '';
+  const role = effectiveRole(el);
+  const name = accessibleName(el);
+  const text = normalizeWhitespace(getVisibleText(el) ?? '').slice(0, 40);
+  return `[${refFor(el)}] <${tag}${id}>`
+    + (role ? ` role=${role}` : '')
+    + (name ? ` name=${JSON.stringify(name.slice(0, 40))}` : '')
+    + (text && text !== name ? ` text=${JSON.stringify(text)}` : '')
+    + (isVisible(el) ? '' : ' (no layout box)');
+}
+
+/**
+ * Refuse an ambiguous locator instead of acting on the first match.
+ *
+ * `querySelector` returning the first of several `.primary` buttons is not a
+ * near miss — with "保存" and "删除" side by side in the same toolbar it is a
+ * wrong, irreversible action reported as a success. Nothing has happened to
+ * the page by the time this throws: every action resolves its target before it
+ * scrolls, highlights or dispatches anything.
+ */
+function uniqueOrAmbiguous(matches: Element[], what: string): Element | null {
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  throw new Error(
+    `${what} matches ${matches.length} elements, so it does not identify one. `
+    + `Nothing on the page was clicked or changed. Pick one by ref:\n`
+    + matches.slice(0, 8).map((el) => `  ${describeCandidate(el)}`).join('\n')
+    + (matches.length > 8 ? `\n  ...and ${matches.length - 8} more` : ''),
+  );
 }
 
 /**
@@ -388,8 +736,7 @@ function findByText(text: string, tag?: string): Element | null {
   // page — says "提交". Whitespace is presentation here, not identity.
   const squashed = wanted.replace(/\s+/g, '');
   const candidates = [...document.querySelectorAll(scope)].filter((el) => {
-    if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
-    if (!isSnapshotVisible(el)) return false;
+    if (!isLocatorTarget(el)) return false;
     const own = normalizedText(el);
     return own.includes(wanted) || (squashed !== '' && own.replace(/\s+/g, '').includes(squashed));
   });
@@ -441,9 +788,10 @@ function findElement(locator: ElementLocator): Element | null {
     throw err;
   }
 
-  // CSS selector
+  // CSS selector — every match, not the first one
   if (locator.css) {
-    return document.querySelector(locator.css);
+    const matches = [...document.querySelectorAll(locator.css)].filter(isLocatorTarget);
+    return uniqueOrAmbiguous(matches, `CSS selector ${JSON.stringify(locator.css)}`);
   }
 
   // Text content
@@ -451,18 +799,21 @@ function findElement(locator: ElementLocator): Element | null {
     return findByText(locator.text, locator.tag);
   }
 
-  // ARIA role + name — use CSS.escape to prevent selector injection
+  // ARIA role + name — explicit `role=` and native roles both count
   if (locator.role) {
-    const escapedRole = escapeCSS(locator.role);
-    const selector = locator.name
-      ? `[role="${escapedRole}"][aria-label="${escapeCSS(locator.name)}"]`
-      : `[role="${escapedRole}"]`;
-    return document.querySelector(selector);
+    const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
+    const matches = locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole;
+    const what = locator.name
+      ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}`
+      : `role ${JSON.stringify(locator.role)}`;
+    return uniqueOrAmbiguous(matches, what);
   }
 
   // data-testid — escape to prevent injection
   if (locator.testId) {
-    return document.querySelector(`[data-testid="${escapeCSS(locator.testId)}"]`);
+    const matches = [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)]
+      .filter(isLocatorTarget);
+    return uniqueOrAmbiguous(matches, `testId ${JSON.stringify(locator.testId)}`);
   }
 
   // XPath
@@ -474,10 +825,40 @@ function findElement(locator: ElementLocator): Element | null {
   throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
 }
 
+/**
+ * What the caller most plausibly meant, for the not-found path.
+ *
+ * "Element not found: {"role":"button","name":"保存"}" is true and useless: it
+ * costs another round trip to learn whether the page has no buttons, or five
+ * of them under other names. Naming the near misses lets the next call be the
+ * right one — and keeps the model from concluding the tools are broken and
+ * falling back to scripting the page.
+ */
+function nearbyCandidates(locator: ElementLocator, cap = 5): Element[] {
+  if (locator.role) {
+    return elementsWithRole(locator.role).filter(isLocatorTarget).slice(0, cap);
+  }
+  const wanted = normalizeWhitespace(locator.text ?? locator.name ?? '');
+  if (!wanted) return [];
+  // Half the query, so "保存并提交" still surfaces when "保存" was asked for.
+  const needle = wanted.length > 2 ? wanted.slice(0, Math.ceil(wanted.length / 2)) : wanted;
+  return [...document.querySelectorAll('a, button, input, textarea, select, summary, [role], [onclick], [tabindex]')]
+    .filter(isLocatorTarget)
+    .filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? '')}`, needle))
+    .slice(0, cap);
+}
+
 function findElementOrThrow(locator: ElementLocator): Element {
   const el = findElement(locator);
-  if (!el) throw new Error(`Element not found: ${JSON.stringify(locator)}`);
-  return el;
+  if (el) return el;
+  const near = nearbyCandidates(locator);
+  throw new Error(
+    `Element not found: ${JSON.stringify(locator)}.`
+    + (near.length > 0
+      ? ` The closest things on the page right now:\n${near.map((c) => `  ${describeCandidate(c)}`).join('\n')}\n`
+        + `Pick one by ref, or call find to search by text.`
+      : ` Call find to search the page by text/role, or snapshot to list what is there.`),
+  );
 }
 
 // =============================================================================
@@ -1339,7 +1720,7 @@ function startRecording(): { success: boolean; message: string } {
 
   recordClickHandler = (e: MouseEvent) => {
     const el = e.target as Element;
-    if (!el || el.id === 'abu-status' || el.id === 'abu-highlight') return;
+    if (!el || isAbuOverlay(el)) return;
     recordedSteps.push({
       action: 'click',
       locator: getBestSelector(el),

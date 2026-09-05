@@ -1018,3 +1018,236 @@ describe('wait_for with refs that go stale (fixed defect)', () => {
     expect(result.elapsed).toBeLessThan(4000);
   });
 });
+
+// =============================================================================
+// F2 — the locator understands ordinary HTML, and refuses to guess
+//
+// Before this: `{role,name}` compiled to `[role="X"][aria-label="Y"]`, so a
+// plain `<button>保存</button>` answered "Element not found"; and `css` /
+// `testId` took `querySelector`'s first match, so two `.primary` buttons meant
+// one of them was clicked and reported as a success. In an office toolbar
+// where 保存 and 删除 sit side by side, that second one is a wrong,
+// irreversible action.
+// =============================================================================
+
+describe('implicit roles — native HTML has semantics without ARIA attributes', () => {
+  it('finds a plain <button> by role and its text', async () => {
+    document.body.innerHTML = '<button id="save">保存</button>';
+
+    const result = await click({ role: 'button', name: '保存' });
+
+    expect(result.success).toBe(true);
+    expect(result.target?.id).toBe('save');
+  });
+
+  it('finds a link, a heading, a submit input and a summary by their native roles', async () => {
+    document.body.innerHTML = `
+      <a href="/next" id="next">下一步</a>
+      <h2 id="head">设备台账</h2>
+      <input type="submit" id="submit" value="提交" />
+      <details><summary id="more">更多</summary>内容</details>`;
+
+    expect((await click({ role: 'link', name: '下一步' })).target?.id).toBe('next');
+    expect((await click({ role: 'heading', name: '设备台账' })).target?.id).toBe('head');
+    expect((await click({ role: 'button', name: '提交' })).target?.id).toBe('submit');
+    expect((await click({ role: 'button', name: '更多' })).target?.id).toBe('more');
+  });
+
+  it('gives a checkbox, a radio and a native select their roles', async () => {
+    document.body.innerHTML = `
+      <label for="agree">同意条款</label><input type="checkbox" id="agree" />
+      <label for="male">男</label><input type="radio" id="male" name="sex" />
+      <label for="city">城市</label><select id="city"><option>北京</option><option>上海</option></select>`;
+
+    expect((await click({ role: 'checkbox', name: '同意条款' })).target?.id).toBe('agree');
+    expect((await click({ role: 'radio', name: '男' })).target?.id).toBe('male');
+    expect((await click({ role: 'combobox', name: '城市' })).target?.id).toBe('city');
+  });
+
+  it('does not name a <select> after its own options', async () => {
+    // textContent of a <select> is every option concatenated. Naming it from
+    // content would invent "北京上海" — a name no user ever sees, that then
+    // matches locators nobody meant.
+    document.body.innerHTML = '<select id="city"><option>北京</option><option>上海</option></select>';
+
+    await expect(click({ role: 'combobox', name: '北京上海' })).rejects.toThrow(/Element not found/);
+  });
+
+  it('still honours an explicit role attribute over the native one', async () => {
+    document.body.innerHTML = '<button role="link" id="fake">看起来像链接</button>';
+
+    expect((await click({ role: 'link', name: '看起来像链接' })).target?.id).toBe('fake');
+    await expect(click({ role: 'button', name: '看起来像链接' })).rejects.toThrow(/Element not found/);
+  });
+
+  it('matches an antd-style button whose two characters the framework spaced apart', async () => {
+    // rc-button inserts a space between the two characters of a two-character
+    // Chinese label, so the DOM says "提 交" while everyone says "提交".
+    document.body.innerHTML = '<button id="submit">提 交</button>';
+
+    expect((await click({ role: 'button', name: '提交' })).target?.id).toBe('submit');
+  });
+});
+
+describe('accessible name — the six-source fallback', () => {
+  it('names an input from a <label for>', async () => {
+    document.body.innerHTML = '<label for="code">设备编号</label><input id="code" type="text" />';
+
+    const result = await fill({ role: 'textbox', name: '设备编号' }, 'EQ-001');
+
+    expect(result.success).toBe(true);
+    expect((document.getElementById('code') as HTMLInputElement).value).toBe('EQ-001');
+  });
+
+  it('names an input from a wrapping <label>', async () => {
+    document.body.innerHTML = '<label>备注 <textarea id="remark"></textarea></label>';
+
+    const result = await fill({ role: 'textbox', name: '备注' }, '正常');
+
+    expect(result.success).toBe(true);
+    expect((document.getElementById('remark') as HTMLTextAreaElement).value).toBe('正常');
+  });
+
+  it('names an element from aria-labelledby before anything else', async () => {
+    document.body.innerHTML =
+      '<span id="lbl">联系人</span><input id="who" aria-labelledby="lbl" placeholder="请输入" />';
+
+    expect((await fill({ role: 'textbox', name: '联系人' }, '张三')).success).toBe(true);
+  });
+
+  it('prefers aria-label over the native label', async () => {
+    document.body.innerHTML =
+      '<label for="code">旧标签</label><input id="code" aria-label="设备编号" />';
+
+    await expect(fill({ role: 'textbox', name: '旧标签' }, 'x')).rejects.toThrow(/Element not found/);
+    expect((await fill({ role: 'textbox', name: '设备编号' }, 'EQ-1')).success).toBe(true);
+  });
+
+  it('falls back to the placeholder when the field has no label at all', async () => {
+    document.body.innerHTML = '<input id="code" type="text" placeholder="请输入设备编号" />';
+
+    const result = await fill({ role: 'textbox', name: '请输入设备编号' }, 'EQ-002');
+
+    expect(result.success).toBe(true);
+    expect((document.getElementById('code') as HTMLInputElement).value).toBe('EQ-002');
+  });
+
+  it('does not treat aria-describedby as a name', async () => {
+    document.body.innerHTML =
+      '<span id="hint">8-20 个字符</span><input id="pwd" type="password" aria-describedby="hint" />';
+
+    await expect(fill({ role: 'textbox', name: '8-20 个字符' }, 'x')).rejects.toThrow(/Element not found/);
+  });
+
+  it('takes an exact name over one that merely contains it', async () => {
+    document.body.innerHTML = '<button id="save">保存</button><button id="both">保存并提交</button>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('save');
+  });
+
+  it('falls through to a substring only when nothing matches exactly', async () => {
+    document.body.innerHTML = '<button id="both">保存并提交</button>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('both');
+  });
+});
+
+describe('ambiguity is refused, not resolved by position', () => {
+  const clickedIds: string[] = [];
+  function recordClicks(): void {
+    for (const el of document.querySelectorAll('button, a, input')) {
+      el.addEventListener('click', () => clickedIds.push(el.id));
+    }
+  }
+  beforeEach(() => { clickedIds.length = 0; });
+
+  it('refuses two buttons with the same accessible name, and touches neither', async () => {
+    document.body.innerHTML = '<button id="first">保存</button><button id="second">保存</button>';
+    recordClicks();
+
+    await expect(click({ role: 'button', name: '保存' }))
+      .rejects.toThrow(/matches 2 elements[\s\S]*Pick one by ref/);
+    expect(clickedIds).toEqual([]);
+  });
+
+  it('lists the candidates with refs, roles and names so the caller can choose', async () => {
+    document.body.innerHTML = '<button id="first">保存</button><button id="second">保存</button>';
+
+    const error = await click({ role: 'button', name: '保存' }).catch((e: Error) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toMatch(/\[e\d+\] <button#first> role=button name="保存"/);
+    expect(message).toMatch(/\[e\d+\] <button#second>/);
+    // The refs it prints must actually resolve — a candidate list the caller
+    // cannot act on is just a longer way of saying "no".
+    const ref = /\[(e\d+)\] <button#second>/.exec(message)![1];
+    expect((await click({ ref })).target?.id).toBe('second');
+  });
+
+  it('refuses a css selector that matches two elements, and touches neither', async () => {
+    document.body.innerHTML =
+      '<button class="primary" id="first">保存</button><button class="primary" id="second">删除</button>';
+    recordClicks();
+
+    await expect(click({ css: '.primary' })).rejects.toThrow(/matches 2 elements/);
+    expect(clickedIds).toEqual([]);
+  });
+
+  it('refuses a duplicated testId, and touches neither', async () => {
+    document.body.innerHTML =
+      '<button data-testid="save" id="first">保存甲</button><button data-testid="save" id="second">保存乙</button>';
+    recordClicks();
+
+    await expect(click({ testId: 'save' })).rejects.toThrow(/matches 2 elements/);
+    expect(clickedIds).toEqual([]);
+  });
+
+  it('refuses an ambiguous locator on fill too, leaving both fields untouched', async () => {
+    document.body.innerHTML = '<input class="f" id="a" /><input class="f" id="b" />';
+
+    await expect(fill({ css: '.f' }, 'x')).rejects.toThrow(/matches 2 elements/);
+    expect((document.getElementById('a') as HTMLInputElement).value).toBe('');
+    expect((document.getElementById('b') as HTMLInputElement).value).toBe('');
+  });
+
+  it('acts when only one of two same-named buttons is actually on screen', async () => {
+    // The hidden copy is the modal that is closed right now. Counting it would
+    // make every page that renders a form twice permanently ambiguous.
+    document.body.innerHTML =
+      '<button id="live">保存</button><div style="display:none"><button id="ghost">保存</button></div>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('leaves out a copy hidden with the hidden attribute', async () => {
+    document.body.innerHTML = '<button id="live">保存</button><button id="ghost" hidden>保存</button>';
+
+    expect((await click({ role: 'button', name: '保存' })).target?.id).toBe('live');
+  });
+
+  it('never matches a type=hidden input', async () => {
+    document.body.innerHTML = '<input type="hidden" data-testid="token" value="abc" />';
+
+    await expect(click({ testId: 'token' })).rejects.toThrow(/Element not found/);
+  });
+});
+
+describe('a miss names the near misses instead of stopping at "not found"', () => {
+  it('lists the buttons that ARE on the page when the named one is not', async () => {
+    document.body.innerHTML = '<button id="submit">提交</button><button id="cancel">取消</button>';
+
+    const error = await click({ role: 'button', name: '保存' }).catch((e: Error) => e);
+
+    expect((error as Error).message).toMatch(/Element not found/);
+    expect((error as Error).message).toMatch(/closest things on the page/i);
+    expect((error as Error).message).toMatch(/name="提交"/);
+    expect((error as Error).message).toMatch(/name="取消"/);
+  });
+
+  it('points at find when it has nothing close to offer', async () => {
+    document.body.innerHTML = '<div>empty</div>';
+
+    await expect(click({ css: '#nope' })).rejects.toThrow(/Element not found[\s\S]*call find|Call find/i);
+  });
+});

@@ -66,7 +66,7 @@
 import type { ToolExecutionContext } from '../../types';
 import { getConversationReader } from './ports/conversationReader';
 import { applyTeamLeaderRoute } from '../team/leaderRoute';
-import { resolveTeamRouteContext } from '../team/teamRouteResolver';
+import { resolveTeamRouteContextAsync } from '../team/teamRouteResolver';
 import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
@@ -103,7 +103,7 @@ export async function precomputeOrchestration(
   // from route.team by the orchestrator and the loop).
   const route = applyTeamLeaderRoute(
     routeInput(userMessage),
-    resolveTeamRouteContext(getConversationReader().getConversation(conversationId)?.teamId),
+    await resolveTeamRouteContextAsync(getConversationReader().getConversation(conversationId)?.teamId),
   );
 
   // Refresh skill content from disk to ensure latest version.

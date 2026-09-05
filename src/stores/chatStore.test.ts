@@ -3366,3 +3366,16 @@ describe('sanitizeLoadedMessages — upstream privacy boundary', () => {
     expect(sanitized.runErrorDetails).toBeUndefined();
   });
 });
+
+describe('pending team pin (welcome-page chip)', () => {
+  it('is consumed only by a foreground creation, never by a background one', () => {
+    useChatStore.setState({ pendingTeamId: 'team-x' });
+    const background = useChatStore.getState().createConversation(null, { scheduledTaskId: 's1', skipActivate: true });
+    expect(useChatStore.getState().conversations[background].teamId).toBeUndefined();
+    expect(useChatStore.getState().pendingTeamId).toBe('team-x');
+
+    const foreground = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[foreground].teamId).toBe('team-x');
+    expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+  });
+});

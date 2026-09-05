@@ -1,6 +1,7 @@
 import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import abuAvatar from '@/assets/abu-avatar.png';
+import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
 
@@ -20,7 +21,7 @@ export interface AvatarAgentLike {
 export function userAgentAvatar(agent: Pick<AvatarAgentLike, 'avatar' | 'filePath'> | null | undefined): string | null {
   if (!agent) return null;
   const emoji = agent.avatar?.trim();
-  if (!emoji || agent.filePath === '__builtin__') return null;
+  if (!emoji || isBuiltinAgentPath(agent.filePath)) return null;
   return emoji;
 }
 

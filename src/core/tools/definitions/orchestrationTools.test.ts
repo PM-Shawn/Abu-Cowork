@@ -143,7 +143,8 @@ describe('runAgentBatchTool progress wiring', () => {
     const report = aggregateBatchResults([
       { label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 },
       { label: 'B', status: 'ok', text: 'checked', toolCallCount: 3 },
-    ]);
+    ], { flagNoToolCalls: true });
+    expect(aggregateBatchResults([{ label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 }])).not.toContain('no tool calls');
     const [, sectionA, sectionB] = report.split('\n\n### ');
     expect(sectionA).toContain('did it');
     expect(sectionA).toContain('no tool calls');

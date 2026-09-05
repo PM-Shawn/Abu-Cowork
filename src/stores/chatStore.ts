@@ -818,7 +818,11 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
-        const initialTeamId = options?.teamId ?? get().pendingTeamId;
+        // The welcome-page chip belongs to the conversation the user is about
+        // to open. Background creators (scheduler / trigger / IM / watcher /
+        // project click) pass skipActivate and must neither inherit nor clear it.
+        const consumePendingTeam = !options?.skipActivate;
+        const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -846,7 +850,7 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = id;
           }
           state.pendingPermissionMode = undefined;
-          state.pendingTeamId = undefined;
+          if (consumePendingTeam) state.pendingTeamId = undefined;
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.

@@ -44,6 +44,8 @@ import { applyDeltaFrames, type PortFrame } from './frameApplier';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
+import { resolveTeamRouteContext } from '../team/teamRouteResolver';
+import { teamRosterNames } from '../team/leaderRoute';
 import { getScratchpadPort } from './ports/scratchpadPort';
 import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
@@ -1195,6 +1197,14 @@ async function handleWorkspaceAuthorizedPaths(rawParams: unknown): Promise<unkno
   return getAuthorizedWritablePaths(session.options.authorizationScopeId);
 }
 
+function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'> {
+  const team = resolveTeamRouteContext(getConversationReader().getConversation(conversationId)?.teamId);
+  return {
+    teamRoster: team ? teamRosterNames(team) : undefined,
+    teamRequirePlanApproval: team?.requirePlanApproval === true ? true : undefined,
+  };
+}
+
 function contextForSession(
   session: RunSession,
   incoming: ToolExecutionContext | undefined,
@@ -1218,6 +1228,10 @@ function contextForSession(
       ? { workspacePath: session.options.workspacePathSnapshot ?? null }
       : {}),
     abortSignal: session.shellAbortController.signal,
+    // Security boundary: the team roster restricts whom the leader may
+    // dispatch to. Re-derived from the shell-owned conversation pin rather
+    // than trusted from the wire (an omitted field would disable the check).
+    ...trustedTeamContext(session.conversationId),
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,

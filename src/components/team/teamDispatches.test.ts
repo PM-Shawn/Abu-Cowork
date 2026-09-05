@@ -59,8 +59,11 @@ describe('collectMemberDispatches', () => {
     } as TaskExecution;
     const live = collectMemberDispatches({ conversationId: 'c1', executions: [exec], messages: [] });
     expect(live[0].lastActivityAt).toBe(40);
-    const messages: Message[] = [{ id: 'a1', role: 'assistant', content: '', timestamp: 5, isStreaming: true,
-      executionSteps: [{ id: 'd2', toolCallId: 'tc-x', type: 'delegate', label: 'x', status: 'completed', toolName: 'delegate_to_agent', agentName: 'b' }] }];
+    const messages: Message[] = [
+      { id: 'u1', role: 'user', content: 'go', timestamp: 4, loopId: 'loop-x', runState: 'interrupted' },
+      { id: 'a1', role: 'assistant', content: '', timestamp: 5, loopId: 'loop-x',
+        executionSteps: [{ id: 'd2', toolCallId: 'tc-x', type: 'delegate', label: 'x', status: 'completed', toolName: 'delegate_to_agent', agentName: 'b' }] },
+    ];
     const persisted = collectMemberDispatches({ conversationId: 'c1', executions: [], messages });
     expect(persisted[0].status).toBe('interrupted');
     expect(persisted[0].lastActivityAt).toBeUndefined();

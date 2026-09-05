@@ -31,6 +31,7 @@ import type { TokenUsage, ToolResult, ToolResultContent } from '@/types';
 import { redactInlineMediaPayloads } from '@/core/security/redaction';
 import {
   prepareSidecarValueForWire,
+  collapseInlineMediaForWire,
   prepareToolResultForSidecarWire,
   redactAbsoluteMediaPaths,
   redactSidecarValueForWireFailure,
@@ -163,7 +164,7 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
       // and every `/word` in tool inputs, results and execution-step labels
       // to `[REDACTED:path]` in the persisted transcript (file cards then
       // showed "文件已不可访问" for files that exist).
-      pushWireFrame({ p: 'chat', m, a: wireArgs });
+      pushWireFrame({ p: 'chat', m, a: collapseInlineMediaForWire(wireArgs) });
       return;
     }
     enqueueTransport(async () => {
@@ -381,7 +382,7 @@ export function createFrameExecutionPort(
     const wireArgs = cloneWireValue(args);
     if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
       // Verbatim for media-free frames — same reasoning as sendPrepared.
-      const frame = { p: 'exec' as const, m: method, a: wireArgs };
+      const frame = { p: 'exec' as const, m: method, a: collapseInlineMediaForWire(wireArgs) };
       pushExecTask(() => push(frame));
       return;
     }

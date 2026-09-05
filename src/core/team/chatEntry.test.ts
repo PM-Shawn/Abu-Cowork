@@ -49,8 +49,13 @@ describe('matchTeamMention (composer fallback for a typed @团队)', () => {
     expect(res?.rest).toBe('[Attachment: `/tmp/a.csv`]\n看看这份数据');
   });
 
-  it('does not treat a mention buried behind other text as a team hand-off', () => {
+  it('skips quoted-reference lines the composer prepends and still finds the mention', () => {
     seedTeam();
-    expect(matchTeamMention('> quoted\n@数据小队 干活')).toBeNull();
+    expect(matchTeamMention('[引用 1 · 来源：周报.md]\n> 上周 GMV\n\n@数据小队 干活')?.rest).toBe('[引用 1 · 来源：周报.md]\n> 上周 GMV\n\n干活');
+  });
+
+  it('does not treat a mention buried behind ordinary text as a team hand-off', () => {
+    seedTeam();
+    expect(matchTeamMention('先看这个\n@数据小队 干活')).toBeNull();
   });
 });

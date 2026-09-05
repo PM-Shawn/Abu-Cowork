@@ -188,6 +188,7 @@ export async function runWithConcurrency<T, R>(
  */
 export function aggregateBatchResults(
   entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number }>,
+  options: { flagNoToolCalls?: boolean } = {},
 ): string {
   const total = entries.length;
   const successCount = entries.filter((e) => e.status === 'ok').length;
@@ -203,7 +204,7 @@ export function aggregateBatchResults(
     const body = entry.status === 'ok' ? entry.text : format(t.batchFailPrefix, { text: entry.text });
     // A member that answered without a single tool call produced nothing it
     // could have verified — say so, so the leader reviews instead of trusting.
-    const note = entry.status === 'ok' && entry.toolCallCount === 0 ? `\n\n${t.batchNoToolCallsNote}` : '';
+    const note = options.flagNoToolCalls && entry.status === 'ok' && entry.toolCallCount === 0 ? `\n\n${t.batchNoToolCallsNote}` : '';
     return `${title}\n${body}${note}`;
   });
 
@@ -289,6 +290,7 @@ function structuredEntryForSettledResult(
 export function aggregateSubagentTextResults(
   settled: PromiseSettledResult<SubagentResult>[],
   labels: string[],
+  options: { flagNoToolCalls?: boolean } = {},
 ): string {
   const entries = settled.map((result, i) => {
     const label = labels[i];
@@ -303,7 +305,7 @@ export function aggregateSubagentTextResults(
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
     return { label, status: 'error' as const, text: errMsg };
   });
-  return aggregateBatchResults(entries);
+  return aggregateBatchResults(entries, options);
 }
 
 // ─── Task item type ────────────────────────────────────────────────────────
@@ -670,7 +672,9 @@ export const runAgentBatchTool: ToolDefinition = {
     }
 
     // Text aggregation path (behavior-preserving, schema absent)
-    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label));
+    // Team leaders must not trust a member that never checked anything; an
+    // ordinary batch keeps the plain report.
+    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), { flagNoToolCalls: !!toolExecContext?.teamRoster });
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

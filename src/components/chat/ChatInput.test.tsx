@@ -936,7 +936,7 @@ describe('ChatInput inline agent selection', () => {
       }
     });
 
-    it('inside a conversation the pick pins the conversation itself, and an @agent pick replaces it', async () => {
+    it('inside a conversation the pick pins the conversation itself, and an @agent pick keeps the pin', async () => {
       const useTeamStore = await seedTeam();
       try {
         const convId = useChatStore.getState().createConversation(null);
@@ -948,11 +948,11 @@ describe('ChatInput inline agent selection', () => {
         expect(useChatStore.getState().conversationIndex[convId].teamId).toBe('tm1');
         expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
 
-        // One 接活方 at a time: choosing a member for the next message drops the team pin.
+        // A member chip routes the next message; the team pin (a conversation property) stays.
         fireEvent.change(textarea, { target: { value: '@pub' } });
         fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
-        expect(useChatStore.getState().conversations[convId].teamId).toBeUndefined();
-        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
+        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
+        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
         expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
       } finally {
         useTeamStore.setState({ teams: []});

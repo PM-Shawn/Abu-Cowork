@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
@@ -100,23 +100,37 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [requireApproval, setRequireApproval] = useState(false);
   const [avatar, setAvatar] = useState('');
   const [saving, setSaving] = useState(false);
+  // Members whose agent is disabled / deleted / managed cannot be shown in the
+  // picker, but they are still part of the team: keep their roleIds and write
+  // them back on save instead of silently dropping them.
+  const [hiddenMemberRoleIds, setHiddenMemberRoleIds] = useState<string[]>([]);
+  // The pool refreshes (new array identity) whenever discovery re-runs — including
+  // ensureRoleId's own refresh during save. Seed from it once per open, via a ref,
+  // so a refresh never wipes what the user has typed.
+  const agentsRef = useRef(agents);
+  useEffect(() => { agentsRef.current = agents; }, [agents]);
 
   useEffect(() => {
     if (!open) return;
+    const pool = agentsRef.current;
     if (team) {
       setName(team.name);
-      setLeaderName(roleLabel(agents, team.leaderRoleId, ''));
-      setMemberNames(team.memberRoleIds.map((id) => roleLabel(agents, id, '')).filter(Boolean));
+      setLeaderName(roleLabel(pool, team.leaderRoleId, ''));
+      const members = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
+      setMemberNames(members.map((id) => roleLabel(pool, id, '')).filter(Boolean));
+      setHiddenMemberRoleIds(members.filter((id) => !roleLabel(pool, id, '')));
       setLeaderNote(team.leaderNote ?? '');
       setRequireApproval(team.requirePlanApproval === true);
       setAvatar(team.avatar ?? '');
     } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
+      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
     }
-  }, [open, team, agents]);
+  }, [open, team]);
 
+  // A leader whose agent is currently hidden keeps its roleId; the team stays editable.
+  const leaderKept = !leaderName && !!team?.leaderRoleId;
   const handleSave = async () => {
-    if (!name.trim() || !leaderName || saving) return;
+    if (!name.trim() || (!leaderName && !leaderKept) || saving) return;
     setSaving(true);
     try {
       // Resolve stable roleIds, writing them into AGENT.md on first use.
@@ -127,8 +141,8 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         if (wrote) await refresh();
         return roleId;
       };
-      const leaderRoleId = await resolve(leaderName);
-      const memberRoleIds: string[] = [];
+      const leaderRoleId = leaderName ? await resolve(leaderName) : (team as Team).leaderRoleId;
+      const memberRoleIds: string[] = [...hiddenMemberRoleIds.filter((id) => id !== leaderRoleId)];
       for (const n of memberNames) {
         if (n === leaderName) continue;
         memberRoleIds.push(await resolve(n));
@@ -235,7 +249,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
           )}
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-          <Button onClick={handleSave} disabled={!name.trim() || !leaderName || saving} data-testid="team-save">
+          <Button onClick={handleSave} disabled={!name.trim() || (!leaderName && !leaderKept) || saving} data-testid="team-save">
             {team ? t.common.save : t.team.createTeamAction}
           </Button>
         </div>
@@ -385,7 +399,7 @@ export default function TeamView() {
                   <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
                     {format(t.team.teamRowSummary, {
                       leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
-                      count: String(team.memberRoleIds.length),
+                      count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
                     })}
                   </div>
                   {(() => {

@@ -461,6 +461,18 @@ describe('createFrameChatDelta', () => {
     expect(safeToolCall.resultContent).toBeUndefined();
   });
 
+  it('collapses an inline base64 data URL inside a media-free frame while keeping paths', () => {
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+    const blob = 'data:image/png;base64,' + 'iVBORw0KGgo='.repeat(64);
+    const toolCalls: ToolCall[] = [{ id: 'tc-1', name: 'fetch_url', input: { url: 'https://a.test' }, result: `saved /Users/me/a.md <img src="${blob}">`, isExecuting: false }];
+    delta.setMessageToolCalls('conv-1', 'm1', toolCalls);
+    const wire = JSON.stringify(frames);
+    expect(wire).toContain('/Users/me/a.md');
+    expect(wire).toContain('[REDACTED:base64]');
+    expect(wire).not.toContain('iVBORw0KGgo=iVBORw0KGgo=');
+  });
+
   it('sends media-free tool-call and execution-step frames verbatim (absolute paths and `/word` text intact)', () => {
     // Regression (2026-09-04): the media-free branch used the fail-closed
     // redactor, so persisted transcripts carried `[REDACTED:path]` in tool

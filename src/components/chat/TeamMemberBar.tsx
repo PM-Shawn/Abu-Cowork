@@ -59,11 +59,11 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
         </button>
       ))}
-      {members.filter((m) => m.status === 'running' && m.latest?.live).map((m) => (
+      {members.map((m) => ({ m, running: m.dispatches.find((d) => d.live && d.status === 'running') })).filter((x) => x.running).map(({ m, running }) => (
         <button
           key={`stop-${m.agent}`}
           type="button"
-          onClick={() => m.latest && requestDispatchCancel(m.latest.key)}
+          onClick={() => running && requestDispatchCancel(running.key)}
           aria-label={format(t.workspace.teamStopDispatch, { member: m.agent })}
           title={format(t.workspace.teamStopDispatch, { member: m.agent })}
           className="inline-flex items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"

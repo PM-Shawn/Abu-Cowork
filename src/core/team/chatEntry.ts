@@ -26,9 +26,11 @@ const ATTACHMENT_MARKER = /^\[Attachment: `[^`]+`\]$/;
 
 export function matchTeamMention(rawText: string): TeamMentionMatch | null {
   const lines = rawText.split('\n');
+  // Skip what the composer prepends ahead of the user's text: attachment
+  // markers, quoted-reference headers (`[引用 …]`) and blockquote lines.
   const idx = lines.findIndex((line) => {
     const trimmed = line.trim();
-    return trimmed.length > 0 && !ATTACHMENT_MARKER.test(trimmed);
+    return trimmed.length > 0 && !ATTACHMENT_MARKER.test(trimmed) && !trimmed.startsWith('[') && !trimmed.startsWith('>');
   });
   if (idx < 0) return null;
   const line = lines[idx].trimStart();

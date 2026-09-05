@@ -1243,6 +1243,7 @@ const enUS: TranslationDict = {
     followUpHint: 'You can just say:',
     fieldPlanApproval: 'Ask me before the split runs',
     fieldPlanApprovalHint: 'When on, the leader pauses for your go-ahead after planning. Off (default): work starts right away — you can watch or stop anytime.',
+    chatReceiptOtherTeam: 'This conversation already belongs to "{current}"; @{other} has no effect. Clear the team chip in the composer to switch.',
     chatReceiptEmptyGoal: 'What should {team} do? Put the ask after the @.',
     fieldLeader: 'Leader',
     fieldLeaderHint: 'The leader plans the split and delegates to members.',

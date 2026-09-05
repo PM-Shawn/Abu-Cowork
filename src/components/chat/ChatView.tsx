@@ -33,6 +33,7 @@ import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
+import { useTeamStore } from '@/stores/teamStore';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -778,6 +779,13 @@ export default function ChatView({
     // (sent before the exact-name detection, pasted, …) still pins the
     // conversation to that team; the mention itself is not sent to the model.
     const teamMention = matchTeamMention(text);
+    // A conversation already pinned to another team is not silently re-pinned:
+    // say so and send the text as typed (the chip is the way to switch).
+    if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
+      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
+      return false;
+    }
     if (teamMention && !teamMention.rest) {
       useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
       return false; // hand the text back to the composer
@@ -788,7 +796,7 @@ export default function ChatView({
     const isNewConversation = !convId;
     if (!convId) {
       convId = createConversation(workspacePath, teamMention ? { teamId: teamMention.teamId } : undefined);
-    } else if (teamMention) {
+    } else if (teamMention && activeConv?.teamId !== teamMention.teamId) {
       setConversationTeamId(convId, teamMention.teamId);
     }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {

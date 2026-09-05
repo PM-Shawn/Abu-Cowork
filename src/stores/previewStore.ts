@@ -341,7 +341,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   closeSubagentTabsForConversation: (conversationId) => {
     const { tabs, activeTabId } = get();
     const matches = (tab: WorkspaceTab): boolean =>
-      tab.kind === 'subagent' && tab.identity.conversationId === conversationId;
+      (tab.kind === 'subagent' && tab.identity.conversationId === conversationId)
+      || (tab.kind === 'team' && tab.conversationId === conversationId);
     if (!tabs.some(matches)) return;
     const nextTabs = tabs.filter((tab) => !matches(tab));
     let nextActiveId = activeTabId;

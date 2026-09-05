@@ -1,4 +1,5 @@
 import type { SubagentDefinition } from '@/types';
+import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 
@@ -19,8 +20,7 @@ export function createRoleId(): string {
  *  (shipped with the app), so a synthetic name-keyed id serves as the roleId.
  *  This is what lets 市场 roles join teams (user feedback 2026-08-31). */
 export function isBuiltinAgent(agent: Pick<SubagentDefinition, 'filePath'>): boolean {
-  const filePath = agent.filePath ?? '';
-  return filePath === '__builtin__' || filePath.includes('builtin-agents');
+  return isBuiltinAgentPath(agent.filePath);
 }
 
 const BUILTIN_ROLE_PREFIX = 'builtin:';

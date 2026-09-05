@@ -159,9 +159,10 @@ function createDefaultProviders(): ProviderInstance[] {
 export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
-// 'agents' tab removed 2026-08-31: agents (队员) live solely in the 团队 page;
-// the toolbox is now the plugin surface (插件): skills + MCP.
-export type ToolboxTab = 'skills' | 'mcp';
+// 'agents' shows in the toolbox only while the 团队 lab is off (then it is the
+// only place custom agents can be managed); with the lab on, 队员 live on the
+// 团队 page and the toolbox is the plugin surface (插件): skills + MCP.
+export type ToolboxTab = 'skills' | 'agents' | 'mcp';
 export type TeamTab = 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 

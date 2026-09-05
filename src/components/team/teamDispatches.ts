@@ -120,11 +120,15 @@ export function collectMemberDispatches(params: {
       }
     }
   }
+  // Persistence clears isStreaming, but the shell marks the triggering user
+  // message's runState 'interrupted' when a run never finished (restart /
+  // crash): hand-offs of that loop are interrupted, not done.
+  const interruptedLoops = new Set(
+    params.messages.filter((m) => m.role === 'user' && m.runState === 'interrupted' && m.loopId).map((m) => m.loopId as string),
+  );
   for (const message of params.messages) {
     if (message.role !== 'assistant' || !message.executionSteps) continue;
-    // A persisted assistant message still marked streaming means the run never
-    // finished (app restart / crash): its hand-offs are interrupted, not done.
-    const interrupted = message.isStreaming === true;
+    const interrupted = message.isStreaming === true || (!!message.loopId && interruptedLoops.has(message.loopId));
     for (const step of message.executionSteps) {
       for (const d of fromStep(step, params.conversationId, message.id, false, message.timestamp, interrupted)) {
         if (!seen.has(d.key)) seen.set(d.key, d);

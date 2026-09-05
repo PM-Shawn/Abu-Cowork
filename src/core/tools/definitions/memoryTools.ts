@@ -218,7 +218,11 @@ export const reportPlanTool: ToolDefinition = {
     // risky plan re-prompts and re-locks writes on every progress update.
     // Strict teams (先确认分工) always go through the approval card — a prompt-only
     // "wait for the user" rule is not honoured reliably by smaller models.
-    const strictTeam = context?.teamRequirePlanApproval === true;
+    // Unattended runs (scheduled / trigger: interactionMode 'background') have
+    // nobody to click the card — it would only render for the active
+    // conversation and time out after 10 minutes with plan mode locked. The
+    // schedule's own permission tier governs those runs instead.
+    const strictTeam = context?.teamRequirePlanApproval === true && context?.interactionMode !== 'background';
     const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning' || strictTeam);
     // IM channels have no interactive approval card: blocking on the desktop
     // dialog would stall the turn until timeout while the remote user never sees

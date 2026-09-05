@@ -2,11 +2,18 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type ToolboxTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
-import { useI18n } from '@/i18n';
-import { Sparkles, Server, Search } from 'lucide-react';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { useI18n, format } from '@/i18n';
+import { Sparkles, Bot, Server, Search } from 'lucide-react';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { useToastStore } from '@/stores/toastStore';
+import { installAgentFromFolder } from '@/core/agent/installer';
+import { useLabsFlag } from '@/core/labs/resolve';
+import { LABS_TEAM } from '@/core/labs/registry';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import SkillsSection from '../customize/SkillsSection';
+import AgentsSection from '../customize/AgentsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
@@ -27,6 +34,10 @@ export default function ToolboxView() {
   } = useSettingsStore();
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const refresh = useDiscoveryStore((s) => s.refresh);
+  // With the 团队 lab on, agents (队员) are managed on the 团队 page; with it off
+  // the toolbox keeps its 代理 tab so custom agents never lose their only UI.
+  const teamLabOn = useLabsFlag(LABS_TEAM);
   const { t } = useI18n();
   const enterpriseMode = useEnterpriseStore(s => s.mode);
   const isEnterprise = enterpriseMode.kind !== 'personal';
@@ -49,9 +60,34 @@ export default function ToolboxView() {
   // Handler for creating with AI, adapts to active tab
   const handleAICreate = () => {
     startNewConversation();
-    const prompt = t.toolbox.aiCreateSkillPrompt;
+    const prompt = activeToolboxTab === 'agents'
+      ? t.toolbox.aiCreateAgentPrompt
+      : t.toolbox.aiCreateSkillPrompt;
     setPendingInput(prompt);
     closeToolbox();
+  };
+
+  // Upload a downloaded agent folder (mirrors the skills upload path).
+  const handleUploadAgentFolder = async () => {
+    const addToast = useToastStore.getState().addToast;
+    try {
+      const folderPath = await openDialog({ directory: true, multiple: false });
+      if (!folderPath) return;
+      const result = await installAgentFromFolder(folderPath as string, { overwrite: true });
+      if (!result.ok) {
+        addToast({ type: 'error', title: t.toolbox.uploadFailed, message: result.message });
+        return;
+      }
+      await refresh();
+      addToast({
+        type: 'success',
+        title: t.toolbox.uploadSuccess,
+        message: format(t.toolbox.uploadSuccessDetail, { name: result.name, count: String(result.fileCount) }),
+      });
+    } catch (err) {
+      console.error('Upload folder failed:', err);
+      addToast({ type: 'error', title: t.toolbox.uploadFailed, message: String(err) });
+    }
   };
 
   // Handler for manual create (opens blank editor in SkillsSection/AgentsSection)
@@ -61,6 +97,7 @@ export default function ToolboxView() {
 
   const navItems: { id: ToolboxTab; label: string; icon: typeof Sparkles }[] = [
     { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
+    ...(teamLabOn ? [] : [{ id: 'agents' as ToolboxTab, label: t.toolbox.agents, icon: Bot }]),
     { id: 'mcp', label: t.toolbox.mcp, icon: Server },
   ];
 
@@ -86,6 +123,16 @@ export default function ToolboxView() {
           showUploadModal={skillUploadModalOpen}
           onUploadModalChange={setSkillUploadModalOpen}
         />;
+      }
+      case 'agents': {
+        if (teamLabOn) return null;
+        if (isEnterprise && capabilityScope === 'organization') {
+          if (!binding) return null;
+          const AgentMarket = getEnterpriseMount('agentMarket');
+          if (!AgentMarket) return null;
+          return <AgentMarket binding={binding} config={config} searchQuery={toolboxSearchQuery} />;
+        }
+        return <AgentsSection manualCreateTrigger={manualCreateTrigger} />;
       }
       case 'mcp': {
         if (isEnterprise && capabilityScope === 'organization') {
@@ -127,7 +174,16 @@ export default function ToolboxView() {
     ) : null;
 
     let createControl: ReactNode = null;
-    if (activeToolboxTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
+    if (activeToolboxTab === 'agents' && !teamLabOn && (!isEnterprise || capabilityScope === 'personal')) {
+      createControl = (
+        <ToolboxCreateMenu
+          onAICreate={handleAICreate}
+          onManualCreate={handleManualCreate}
+          onUploadFile={handleUploadAgentFolder}
+          uploadLabel={t.toolbox.uploadFile}
+        />
+      );
+    } else if (activeToolboxTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}

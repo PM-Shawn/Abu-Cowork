@@ -387,6 +387,16 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(result).toContain('approved');
     });
 
+    it('strict team in an unattended (background) run lands the plan without a card', async () => {
+      mockGetPlanMode.mockReturnValue('off');
+      seedExecution();
+      const result = await reportPlanTool.execute({ ...input }, { ...ctx, loopId: 'loop-1', teamRequirePlanApproval: true, interactionMode: 'background' });
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(mockSetPlanMode).not.toHaveBeenCalled();
+      expect(useTaskExecutionStore.getState().executions['exec-1'].plannedSteps).toHaveLength(2);
+      expect(result).toContain('Execution plan recorded');
+    });
+
     it('strict team: a rejected plan stays in planning and does not land', async () => {
       const t = getI18n().toolResult.memory;
       mockGetPlanMode.mockReturnValue('off');

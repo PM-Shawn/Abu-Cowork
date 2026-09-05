@@ -406,7 +406,10 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
     update();
     window.addEventListener('scroll', update, true);
     window.addEventListener('resize', update);
-    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); };
+    // The textarea auto-grows without any scroll/resize event; follow the anchor.
+    const observer = typeof ResizeObserver === 'function' && anchorRef.current ? new ResizeObserver(update) : null;
+    if (observer && anchorRef.current) observer.observe(anchorRef.current);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); observer?.disconnect(); };
   }, [anchorRef]);
 
   const teamCount = suggestions.filter((item) => item.team).length;
@@ -1249,7 +1252,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         pinTeam(item.teamId);
         setSelectedAgent(null);
       } else {
-        if (pinnedTeamId) pinTeam(undefined);
+        // A member chip is a one-off route for the next message; the team pin
+        // (a conversation property) is left alone.
         setSelectedAgent(item);
       }
       setText(nextText);
@@ -1377,12 +1381,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const bodyParts = [fileContext, referenceContext, trimmed].filter(Boolean).join('\n\n');
 
     let message: string;
-    if (selectedAgent?.team) {
-      // Legacy draft from before the team pin: pin now, send the body as-is.
-      const legacyTeam = activeTeams.find((team) => team.name === selectedAgent.name);
-      if (legacyTeam) pinTeam(legacyTeam.id);
-      message = bodyParts;
-    } else if (selectedAgent) {
+    if (selectedAgent) {
       message = `@${selectedAgent.name}${bodyParts ? ' ' + bodyParts : ''}`;
     } else if (selectedSkill) {
       message = `/${selectedSkill.name}${bodyParts ? ' ' + bodyParts : ''}`;
@@ -1570,9 +1569,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const token = before.length > 0 && !/\s$/.test(before) ? ' @' : '@';
     const nextText = before + token + base.slice(caret);
     const nextCaret = before.length + token.length;
-    // The picker is gated off while an agent chip is set — the menu means
-    // "pick a new one", so clear it (a team pin is replaced on selection).
+    // The menu means "pick a new one": both chips are cleared, or the mention
+    // picker stays gated off (agentMentionTarget bails on a skill chip).
     setSelectedAgent(null);
+    setSelectedSkill(null);
     pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
     setText(nextText);
     setSelection({ start: nextCaret, end: nextCaret });
@@ -1649,9 +1649,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           <span className="truncate">{pinnedTeam.name}</span>
         </button>
       )}
-      {selectedAgent && !pinnedTeam && (
-        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}>{selectedAgent.team ? '👥' : '@'}</span>
+      {selectedAgent && (
+        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={`@${selectedAgent.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>@</span>
           <X aria-hidden="true" className={chipCloseClass} />
           <span className="truncate">{selectedAgent.name}</span>
         </button>

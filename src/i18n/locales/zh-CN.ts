@@ -1244,6 +1244,7 @@ const zhCN: TranslationDict = {
     followUpHint: '可以直接说：',
     fieldPlanApproval: '分工先经我确认',
     fieldPlanApprovalHint: '开启后，队长拆完分工会先停下等你点头再开工。默认拆完直接干，你随时可看可停。',
+    chatReceiptOtherTeam: '这个对话已经交给「{current}」，@{other} 不生效；要换团队，先点掉输入框里的团队标签再选。',
     chatReceiptEmptyGoal: '要交给{team}做什么？把要求写在 @ 后面。',
     fieldLeader: '队长',
     fieldLeaderHint: '队长负责拆解任务并分派给成员。',

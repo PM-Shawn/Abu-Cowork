@@ -410,8 +410,11 @@ export const useScheduleStore = create<ScheduleStore>()(
     })),
     {
       name: 'abu-schedule',
-      version: 5,
+      version: 6,
       migrate(persisted: unknown, version: number) {
+        // v5→v6: ScheduledTask.teamId added (optional; a team-pinned scheduled
+        // conversation). No data transform needed.
+        if (version < 6) { /* no transform needed */ }
         if (version < 2) {
           // v1→v2 added optional IM output fields (outputChannelId, outputChatIds, outputUserIds).
           // These default to undefined, so no data transform needed — just pass through.

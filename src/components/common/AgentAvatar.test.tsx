@@ -9,6 +9,7 @@ describe('AgentAvatar', () => {
 
   it('shows the default mark for builtin/marketplace presets even when they ship an emoji', () => {
     expect(userAgentAvatar({ avatar: '📊', filePath: '__builtin__' })).toBeNull();
+    expect(userAgentAvatar({ avatar: '📊', filePath: '/Applications/Abu.app/Contents/Resources/builtin-agents/analyst/AGENT.md' })).toBeNull();
     render(<AgentAvatar agent={{ name: '数据分析师', avatar: '📊', filePath: '__builtin__' }} />);
     expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'default');
   });

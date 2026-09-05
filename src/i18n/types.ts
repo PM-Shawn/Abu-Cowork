@@ -1424,6 +1424,7 @@ export interface TranslationDict {
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;
+    chatReceiptOtherTeam: string;
     fieldLeader: string;
     fieldLeaderHint: string;
     leaderPlaceholder: string;

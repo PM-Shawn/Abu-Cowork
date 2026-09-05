@@ -42,6 +42,9 @@ const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 350
  */
 const MCP_TOOL_RULES: Record<string, TruncationRule> = {
   snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
+  // `find` caps itself at 50 matches and says so; the budget only has to be
+  // wide enough that the character slicer never gets to shred that JSON.
+  find: { headLines: 0, tailLines: 0, maxChars: 16000 },
   query_js: { headLines: 0, tailLines: 0, maxChars: 32000 },
   extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },
   extract_table: { headLines: 0, tailLines: 0, maxChars: 20000 },

@@ -9,9 +9,16 @@
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 
+/**
+ * Hand-copied mirror of the tools `abu-browser-bridge/src/tools.ts` registers.
+ * A tool missing here is never injected into a turn, so it is invisible to the
+ * model no matter how correctly the rest of the stack routes it — pinned
+ * against the real registration in `toolPrefetch.test.ts`.
+ */
 const BROWSER_TOOL_SUFFIXES = [
   'get_tabs',
   'snapshot',
+  'find',
   'click',
   'fill',
   'select',

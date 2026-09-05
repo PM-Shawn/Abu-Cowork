@@ -27,7 +27,7 @@ describe('browser tool policy', () => {
     });
 
     it('leaves observation tools ungated', () => {
-      for (const tool of ['snapshot', 'get_tabs', 'extract_text', 'extract_table', 'query_js', 'screenshot', 'scroll']) {
+      for (const tool of ['snapshot', 'find', 'get_tabs', 'extract_text', 'extract_table', 'query_js', 'screenshot', 'scroll']) {
         expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe('read-only');
       }
     });

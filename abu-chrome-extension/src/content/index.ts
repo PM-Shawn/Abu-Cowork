@@ -5,7 +5,14 @@
  * Communicates with Background script via chrome.runtime.onMessage.
  */
 
-import type { ElementInfo, ElementLocator, PageSnapshot } from '../shared/types.js';
+import type {
+  ElementInfo,
+  ElementLocator,
+  FindMatch,
+  FindQuery,
+  FindResult,
+  PageSnapshot,
+} from '../shared/types.js';
 
 // Max text size returned by extractText (50KB)
 const MAX_EXTRACT_TEXT_SIZE = 50_000;
@@ -108,6 +115,7 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
       payload.selector as string | undefined,
       typeof payload.maxChars === 'number' ? payload.maxChars : undefined,
     );
+    case 'find': return findElements(payload.query, payload.limit);
     case 'click': return clickElement(payload.locator as ElementLocator);
     case 'fill': return fillElement(payload.locator as ElementLocator, payload.value as string);
     case 'select': return selectOption(payload.locator as ElementLocator, payload.value as string);
@@ -859,6 +867,157 @@ function findElementOrThrow(locator: ElementLocator): Element {
         + `Pick one by ref, or call find to search by text.`
       : ` Call find to search the page by text/role, or snapshot to list what is there.`),
   );
+}
+
+// =============================================================================
+// 2b. FIND — read-only search, the cheap step before acting
+// =============================================================================
+
+/** Matches returned by default; enough to choose from, small enough to read. */
+const FIND_DEFAULT_LIMIT = 20;
+/** Hard ceiling: past this the caller wants a snapshot, not a search. */
+const FIND_MAX_LIMIT = 50;
+
+/** Every key of a find query, for validation and for the "empty query" error. */
+const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'placeholder'] as const;
+
+/**
+ * Search the page and report the candidates — without touching any of them.
+ *
+ * The loop this exists to shorten is: snapshot the whole page, read 200
+ * elements to find the one button, act. `find` answers the same question
+ * directly, in a fraction of the tokens, and — because it shares the locator's
+ * matching rules exactly — its answer is also a preview of what `click` would
+ * do. A caller that gets three matches here knows to disambiguate BEFORE
+ * issuing an action that would be refused, or worse, guessed.
+ *
+ * Several keys are ANDed. Refs come from the same registry `snapshot` hands
+ * out, so anything found here can be acted on by ref with no extra round trip.
+ */
+function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
+  const query = (rawQuery ?? {}) as FindQuery;
+  if (typeof query !== 'object' || Array.isArray(query)) {
+    throw new Error(`find: query must be an object with at least one of: ${FIND_QUERY_KEYS.join(', ')}`);
+  }
+  const used = FIND_QUERY_KEYS.filter((key) => {
+    const value = query[key];
+    return typeof value === 'string' && value !== '';
+  });
+  if (used.length === 0) {
+    throw new Error(`find: query must contain at least one of: ${FIND_QUERY_KEYS.join(', ')}`);
+  }
+
+  const limit = Math.max(1, Math.min(FIND_MAX_LIMIT, Math.trunc(Number(rawLimit) || FIND_DEFAULT_LIMIT)));
+
+  // Universe: the narrowest structural query the caller gave us. Everything
+  // else is a filter, so the expensive per-element work (layout reads inside
+  // the visibility test) runs on as few nodes as possible.
+  let candidates: Element[];
+  if (query.css) {
+    candidates = [...document.querySelectorAll(query.css)];
+  } else if (query.testId) {
+    candidates = [...document.querySelectorAll(`[data-testid="${escapeCSS(query.testId)}"]`)];
+  } else if (query.role) {
+    candidates = elementsWithRole(query.role);
+  } else {
+    candidates = [...document.querySelectorAll('*')];
+  }
+  candidates = candidates.filter(
+    (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && !isAbuOverlay(el),
+  );
+
+  // Attribute/text filters first (no layout), visibility last.
+  if (query.role && (query.css || query.testId)) {
+    const wantedRole = query.role.trim().toLowerCase();
+    candidates = candidates.filter((el) => effectiveRole(el) === wantedRole);
+  }
+  if (query.testId && query.css) {
+    candidates = candidates.filter((el) => el.getAttribute('data-testid') === query.testId);
+  }
+  if (query.name) {
+    candidates = candidates.filter((el) => looselyNamed(accessibleName(el), query.name as string));
+  }
+  if (query.label) {
+    candidates = candidates.filter((el) => looselyNamed(nativeLabelText(el), query.label as string));
+  }
+  if (query.placeholder) {
+    candidates = candidates.filter(
+      (el) => looselyNamed(el.getAttribute('placeholder') ?? '', query.placeholder as string),
+    );
+  }
+  if (query.text) {
+    candidates = candidates.filter(
+      (el) => looselyNamed(normalizeWhitespace(el.textContent ?? ''), query.text as string),
+    );
+  }
+
+  candidates = candidates.filter(isLocatorVisible);
+
+  // Strictest-tier narrowing, same ladder the locator uses, so `find` and
+  // `click` never disagree about which elements a `{role,name}` identifies.
+  if (query.name) candidates = narrowByName(candidates, query.name, accessibleName);
+  if (query.label) candidates = narrowByName(candidates, query.label, nativeLabelText);
+  if (query.placeholder) {
+    candidates = narrowByName(candidates, query.placeholder, (el) => el.getAttribute('placeholder') ?? '');
+  }
+  if (query.text) {
+    // Deepest wins, exactly as in `findByText`: an ancestor is only the answer
+    // when nothing inside it is, or every text query returns the page shell.
+    candidates = candidates.filter((el) => !candidates.some((other) => other !== el && el.contains(other)));
+  }
+
+  const total = candidates.length;
+  const matches = candidates.slice(0, limit).map<FindMatch>((el) => {
+    const rect = el.getBoundingClientRect();
+    const role = effectiveRole(el);
+    const name = accessibleName(el);
+    const text = normalizeWhitespace(el.textContent ?? '').slice(0, 80);
+    const disabled = (el as HTMLButtonElement).disabled === true || el.getAttribute('aria-disabled') === 'true';
+    return {
+      ref: refFor(el),
+      tag: el.tagName.toLowerCase(),
+      ...(el.id ? { id: el.id } : {}),
+      ...(role ? { role } : {}),
+      ...(name ? { name: name.slice(0, 120) } : {}),
+      ...(text && text !== name ? { text } : {}),
+      // `false` means "on the page but with no layout box" — a collapsed antd
+      // combobox input, say. It is still addressable; it just is not what the
+      // user is looking at. Genuinely hidden elements never reach this list.
+      visible: isVisible(el),
+      interactive: isClickable(el),
+      ...(disabled ? { disabled: true } : {}),
+      rect: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+    };
+  });
+
+  const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(' ');
+  return {
+    url: location.href,
+    title: document.title,
+    matches,
+    total,
+    ...(total === 0
+      ? {
+        message:
+            `Nothing on this page matches ${describeQuery}. Hidden elements are excluded. `
+            + `Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`,
+      }
+      : {}),
+    ...(total > matches.length
+      ? {
+        truncated: true,
+        message:
+            `Showing ${matches.length} of ${total} matches. Narrow the query (add \`role\`, or a longer `
+            + `\`text\`/\`name\`) rather than raising \`limit\` — a locator that matches ${total} elements `
+            + `will be refused as ambiguous by click/fill/select.`,
+      }
+      : {}),
+  };
 }
 
 // =============================================================================

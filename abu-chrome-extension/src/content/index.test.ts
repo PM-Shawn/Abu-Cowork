@@ -1251,3 +1251,156 @@ describe('a miss names the near misses instead of stopping at "not found"', () =
     await expect(click({ css: '#nope' })).rejects.toThrow(/Element not found[\s\S]*call find|Call find/i);
   });
 });
+
+describe('find — read-only search, the cheap step before acting', () => {
+  const find = (query: Record<string, unknown>, limit?: number) =>
+    handleAction('find', { query, limit }) as Promise<{
+      matches: Array<{
+        ref: string; tag: string; id?: string; role?: string; name?: string; text?: string;
+        visible: boolean; interactive: boolean; disabled?: true;
+        rect: { x: number; y: number; width: number; height: number };
+      }>;
+      total: number;
+      truncated?: boolean;
+      message?: string;
+    }>;
+
+  it('returns candidates with ref, role, name, visibility and box — and changes nothing', async () => {
+    document.body.innerHTML = '<button id="save" class="primary">保存</button>';
+    let clicks = 0;
+    document.getElementById('save')!.addEventListener('click', () => { clicks += 1; });
+
+    const result = await find({ role: 'button' });
+
+    expect(result.total).toBe(1);
+    expect(result.matches[0]).toMatchObject({
+      tag: 'button', id: 'save', role: 'button', name: '保存', visible: true, interactive: true,
+    });
+    expect(result.matches[0].rect).toMatchObject({ width: 100, height: 20 });
+    expect(result.matches[0].ref).toMatch(/^e\d+$/);
+    expect(clicks).toBe(0);
+  });
+
+  it('hands back a ref that click can use directly', async () => {
+    document.body.innerHTML = '<button id="first">保存</button><button id="second">保存</button>';
+
+    const result = await find({ role: 'button', name: '保存' });
+
+    expect(result.total).toBe(2);
+    const second = result.matches.find((m) => m.id === 'second')!;
+    expect((await click({ ref: second.ref })).target?.id).toBe('second');
+  });
+
+  it('shares the locator\'s ref namespace, so a snapshot ref and a find ref agree', async () => {
+    document.body.innerHTML = '<button id="save">保存</button>';
+    const snap = await snapshot();
+
+    const result = await find({ text: '保存' });
+
+    expect(result.matches[0].ref).toBe(snap.elements.find((e) => e.id === 'save')!.ref);
+  });
+
+  it('finds a form field by the text of its label', async () => {
+    document.body.innerHTML =
+      '<label for="code">设备编号</label><input id="code" />' +
+      '<label for="name">设备名称</label><input id="name" />';
+
+    const result = await find({ label: '设备编号' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['code']);
+  });
+
+  it('finds a form field by its placeholder', async () => {
+    document.body.innerHTML =
+      '<input id="code" placeholder="请输入设备编号" /><input id="remark" placeholder="请输入备注" />';
+
+    const result = await find({ placeholder: '设备编号' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['code']);
+  });
+
+  it('ANDs several keys together', async () => {
+    document.body.innerHTML =
+      '<button class="primary" id="save">保存</button>' +
+      '<button class="ghost" id="save2">保存</button>' +
+      '<button class="primary" id="del">删除</button>';
+
+    const result = await find({ css: '.primary', name: '保存' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['save']);
+  });
+
+  it('leaves hidden elements out, and says so when nothing matches', async () => {
+    document.body.innerHTML = '<div style="display:none"><button id="ghost">保存</button></div>';
+
+    const result = await find({ role: 'button', name: '保存' });
+
+    expect(result.total).toBe(0);
+    expect(result.matches).toEqual([]);
+    expect(result.message).toMatch(/Hidden elements are excluded/);
+  });
+
+  it('caps the list and tells the caller to narrow rather than raise the limit', async () => {
+    document.body.innerHTML = Array.from({ length: 30 }, (_, i) => `<button id="b${i}">按钮</button>`).join('');
+
+    const result = await find({ role: 'button' });
+
+    expect(result.total).toBe(30);
+    expect(result.matches).toHaveLength(20);
+    expect(result.truncated).toBe(true);
+    expect(result.message).toMatch(/Narrow the query/);
+  });
+
+  it('honours an explicit limit, clamped to the ceiling', async () => {
+    document.body.innerHTML = Array.from({ length: 60 }, (_, i) => `<button id="b${i}">按钮</button>`).join('');
+
+    expect((await find({ role: 'button' }, 3)).matches).toHaveLength(3);
+    expect((await find({ role: 'button' }, 999)).matches).toHaveLength(50);
+  });
+
+  it('reports a disabled control as such instead of pretending it is actionable', async () => {
+    document.body.innerHTML = '<button id="save" disabled>保存</button>';
+
+    expect((await find({ role: 'button' })).matches[0].disabled).toBe(true);
+  });
+
+  it('reports a collapsed control as not visible, but still returns it', async () => {
+    // antd's combobox is a zero-box <input> beside the span the user sees.
+    document.body.innerHTML =
+      '<div class="ant-select"><span>请选择</span><input data-hidden id="type" role="combobox" /></div>';
+
+    const result = await find({ role: 'combobox' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['type']);
+    expect(result.matches[0].visible).toBe(false);
+  });
+
+  it('takes the innermost element for a text query, not the wrapper around it', async () => {
+    document.body.innerHTML = '<div id="wrap"><span id="inner">保存</span></div>';
+
+    const result = await find({ text: '保存' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['inner']);
+  });
+
+  it('never matches Abu\'s own status bubble, which echoes what was just done', async () => {
+    // The bubble lives on <html>, outside <body>, and reads "Abu: Click: 保存"
+    // after a 保存 click. Left in scope, the very next {text:"保存"} locator
+    // matched the real button AND our own caption and was refused as
+    // ambiguous — the automation tripping over its own footprint.
+    document.body.innerHTML = '<button id="save">保存</button>';
+    await click({ role: 'button', name: '保存' });
+
+    const result = await find({ text: '保存' });
+
+    expect(result.matches.map((m) => m.id)).toEqual(['save']);
+    expect((await click({ text: '保存' })).target?.id).toBe('save');
+  });
+
+  it('refuses a query with no usable key rather than returning the whole page', async () => {
+    document.body.innerHTML = '<button>保存</button>';
+
+    await expect(find({})).rejects.toThrow(/at least one of/);
+    await expect(find({ name: '' })).rejects.toThrow(/at least one of/);
+  });
+});

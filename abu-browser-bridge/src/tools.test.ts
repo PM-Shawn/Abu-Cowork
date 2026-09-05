@@ -71,6 +71,7 @@ describe('tool surface', () => {
       'extract_table',
       'extract_text',
       'fill',
+      'find',
       'get_downloads',
       'get_tabs',
       'keyboard',
@@ -508,5 +509,66 @@ describe('wait condition parsing', () => {
 
   it('rejects an unknown condition type', async () => {
     await expect(callWait('{"type":"exists","locator":{"css":"#a"}}')).rejects.toThrow(/must be one of/);
+  });
+});
+
+describe('find', () => {
+  const callFind = async (query: string, limit?: number) => {
+    const { registered, transport } = collectTools();
+    const find = registered.find((t) => t.name === 'find')!;
+    await find.handler({ tabId: 7, query, ...(limit === undefined ? {} : { limit }) });
+    return transport.send as unknown as ReturnType<typeof vi.fn>;
+  };
+
+  it('is registered as a read-only tool the permission gate leaves ungated', () => {
+    // Mirror of STATE_CHANGING_TOOLS in src/core/permissions/browserToolPolicy.ts:
+    // anything absent from that set classifies as read-only. `find` must stay
+    // absent — it reads the page and touches nothing, and gating it would put
+    // a confirmation in front of the very step that stops wrong clicks.
+    const gated = ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate'];
+    expect(gated).not.toContain('find');
+  });
+
+  it('sends the parsed query and tabId to the page', async () => {
+    const send = await callFind('{"role":"button","name":"保存"}', 5);
+    expect(send).toHaveBeenCalledWith(
+      'find',
+      { tabId: 7, query: { role: 'button', name: '保存' }, limit: 5 },
+      undefined,
+      { signal: undefined },
+    );
+  });
+
+  it('accepts every documented query key', async () => {
+    for (const raw of [
+      '{"role":"button"}',
+      '{"role":"button","name":"保存"}',
+      '{"text":"保存"}',
+      '{"label":"设备编号"}',
+      '{"placeholder":"请输入"}',
+      '{"css":".ant-btn"}',
+      '{"testId":"submit"}',
+    ]) {
+      await expect(callFind(raw)).resolves.toBeDefined();
+    }
+  });
+
+  it('rejects a query with nothing usable in it rather than searching the whole page', async () => {
+    await expect(callFind('{}')).rejects.toThrow(/at least one non-empty/);
+    await expect(callFind('{"selector":"#a"}')).rejects.toThrow(/at least one non-empty/);
+    await expect(callFind('{"name":""}')).rejects.toThrow(/at least one non-empty/);
+    await expect(callFind('["button"]')).rejects.toThrow(/must be a JSON object/);
+  });
+
+  it('tells the model to reach for it before acting, and instead of scripting the page', () => {
+    const { registered } = collectTools();
+    const find = registered.find((t) => t.name === 'find')!;
+    expect(find.description).toMatch(/WITHOUT clicking or changing anything/);
+    expect(find.description).toMatch(/BEFORE click\/fill\/select/);
+    expect(find.description).toMatch(/instead of falling back to execute_js/);
+    // #245's lesson: the description decides what the model does far more than
+    // the code does. If a native <button> stops being advertised as reachable
+    // by role, the model goes back to snapshot-then-guess.
+    expect(find.description).toMatch(/Native HTML counts/);
   });
 });

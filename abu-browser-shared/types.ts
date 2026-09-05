@@ -46,6 +46,52 @@ export interface ElementLocator {
   ref?: string; // Reference ID from a previous snapshot (e.g., "e1")
 }
 
+// --- Find (read-only semantic search over the page) ---
+//
+// Distinct from `ElementLocator` on purpose. A locator names ONE element and
+// is refused when it names more; a query describes what to look for and is
+// expected to come back with several. `label` and `placeholder` exist here and
+// not there for the same reason: they are how a person describes a form field
+// they are looking for, not how a caller pins the one it has already found.
+
+export interface FindQuery {
+  role?: string;
+  name?: string;
+  text?: string;
+  css?: string;
+  testId?: string;
+  /** Text of the field's native `<label>` (for/id or wrapping). */
+  label?: string;
+  placeholder?: string;
+}
+
+export interface FindMatch {
+  ref: string;
+  tag: string;
+  id?: string;
+  /** Explicit `role=` or the native implicit role. */
+  role?: string;
+  /** Accessible name, by the same six-source fallback the locator uses. */
+  name?: string;
+  /** Visible text, when it differs from the name. */
+  text?: string;
+  /** Has a layout box. `false` = on the page but collapsed, still addressable. */
+  visible: boolean;
+  interactive: boolean;
+  disabled?: true;
+  rect: { x: number; y: number; width: number; height: number };
+}
+
+export interface FindResult {
+  url: string;
+  title: string;
+  matches: FindMatch[];
+  /** Total matches before `limit` — `matches.length` when nothing was cut. */
+  total: number;
+  truncated?: boolean;
+  message?: string;
+}
+
 // --- Snapshot (structured page representation for LLM) ---
 
 export interface ElementInfo {

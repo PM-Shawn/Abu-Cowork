@@ -197,6 +197,30 @@ function parseLocator(raw: string): Record<string, unknown> {
 }
 
 /**
+ * Parse and validate a JSON `find` query from LLM input.
+ *
+ * Separate from `parseLocator` because the two mean different things: a
+ * locator must identify one element, a query is allowed — expected — to match
+ * several, and it accepts `label`/`placeholder`, which are how a person names
+ * a form field rather than how a caller pins one down.
+ */
+const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'placeholder'];
+
+function parseFindQuery(raw: string): Record<string, unknown> {
+  const parsed = JSON.parse(raw);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Find query must be a JSON object');
+  }
+  const hasValidKey = Object.entries(parsed as Record<string, unknown>).some(
+    ([key, value]) => FIND_QUERY_KEYS.includes(key) && typeof value === 'string' && value !== '',
+  );
+  if (!hasValidKey) {
+    throw new Error(`Find query must contain at least one non-empty: ${FIND_QUERY_KEYS.join(', ')}`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * Parse and validate a JSON wait condition string from LLM input.
  */
 function parseCondition(raw: string): Record<string, unknown> {
@@ -244,6 +268,36 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);
       const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...owner }, extra);
+      return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+    }
+  );
+
+  // 2b. browser_find — numbered next to snapshot rather than appended, because
+  // it answers the same question for a fraction of the tokens and the pair
+  // should read together. (The numbers are documentation, not an ordering
+  // contract; renumbering seventeen comments would bury the real diff.)
+  server.tool(
+    'find',
+    `Search the page for elements matching a semantic query and get back the candidates — ref, role, accessible name, text, visibility and position — WITHOUT clicking or changing anything. Prefer this over a full snapshot whenever you are looking for specific controls: it costs a fraction of the tokens and it tells you exactly what a locator would match. Use it BEFORE click/fill/select when you are not certain which element you mean, and use it AFTER a locator came back "not found" or "matches N elements" instead of falling back to execute_js. Refs share the snapshot's namespace, so a ref returned here goes straight into click/fill/select. Native HTML counts: a plain <button>, <a href>, <input>, <select> or <h1> has a role and an accessible name without the page writing any ARIA attributes.`,
+    {
+      tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      query: z.string().describe(
+        `JSON string describing what to look for. Any combination of these (they are ANDed):
+- { "role": "button", "name": "保存" } — ARIA role plus accessible name. Roles: button, link, textbox, checkbox, radio, combobox, heading, img.
+- { "text": "保存" } — visible text, substring match
+- { "label": "姓名" } — the form field whose <label> says this (the usual way to reach an office-form input)
+- { "placeholder": "请输入设备编号" } — input placeholder
+- { "css": ".ant-btn-primary" } — CSS selector
+- { "testId": "submit-btn" } — data-testid
+Name/label/placeholder matching takes the strictest tier that matches: exact, then case/whitespace-insensitive, then substring.`,
+      ),
+      limit: z.coerce.number().optional().describe('Maximum matches to return (default 20, max 50).'),
+    },
+    async ({ tabId, query, limit }, extra) => {
+      await ensureConnected(transport);
+      const parsed = parseFindQuery(query);
+      const owner = ownerPayloadFromExtra(extra);
+      const res = await sendWithSignal(transport, 'find', { tabId, query: parsed, limit, ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

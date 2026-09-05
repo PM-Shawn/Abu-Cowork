@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ABU_CONVERSATION_META_KEY,
   ABU_CREATE_IF_EMPTY_META_KEY,
+  ABU_EXPECTED_ORIGIN_META_KEY,
   ABU_RUN_META_KEY,
   registerTools,
   type BrowserTransport,
@@ -712,6 +713,40 @@ describe('batch', () => {
     expect(result.remainingSteps).toBe(0);
     expect(result.stopped).toBeUndefined();
     expect(result.origin).toBe('https://erp.example.com');
+  });
+
+  it('pins the run to the origin the GATE approved, not to wherever the tab is now', async () => {
+    // `expectedOrigin` is U5's pin: the origin the user was actually shown
+    // when they approved. It arrives on `_meta` (never on the tool schema, so
+    // the model can neither read nor forge it) and has to become the batch's
+    // pin — otherwise a page that moved while the confirmation dialog was up
+    // gets the whole run re-pinned onto where it landed.
+    const { batch, sent } = collectBatch();
+
+    const text = await batch.handler(
+      { tabId: 7, steps: twoFieldsAndSubmit },
+      { _meta: { [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://approved.example.com' } },
+    ) as { content: Array<{ text: string }> };
+    const result = JSON.parse(text.content[0].text);
+
+    // The tab reports erp.example.com; the approval was for another site.
+    expect(result.stopped).toBe('origin-changed');
+    expect(result.origin).toBe('https://approved.example.com');
+    expect(sent.filter((step) => step.action !== 'get_tabs')).toEqual([]);
+  });
+
+  it('runs normally when the tab is still on the approved origin', async () => {
+    const { batch, sent } = collectBatch();
+
+    const text = await batch.handler(
+      { tabId: 7, steps: twoFieldsAndSubmit },
+      { _meta: { [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://erp.example.com' } },
+    ) as { content: Array<{ text: string }> };
+    const result = JSON.parse(text.content[0].text);
+
+    expect(result.stopped).toBeUndefined();
+    expect(sent.filter((step) => step.action !== 'get_tabs').map((step) => step.action))
+      .toEqual(['fill', 'fill', 'click']);
   });
 
   it('refuses a scripting step without sending anything at all', async () => {

@@ -443,6 +443,29 @@ const TAKEOVER_GATED_ACTIONS = new Set([
 const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
 
 /**
+ * The actions that arm JavaScript-dialog interception on the tab they touch.
+ *
+ * `TAKEOVER_GATED_ACTIONS` — everything that drives the page and can therefore
+ * make it call `alert`/`confirm`/`prompt`, or leave a page holding a
+ * `beforeunload` — plus the two tools whose whole subject IS the dialog.
+ *
+ * Read-only actions are NOT here, and that omission is the F1 fix. A
+ * `snapshot` / `extract_text` / `find` cannot cause a dialog, so arming for one
+ * bought nothing; what it cost was every native dialog on that tab from then
+ * on, including on a pane tab the user opened themselves. Since the model runs
+ * a read before nearly every action, "Abu once looked at this page" was enough
+ * to silently swallow the user's own 「确定」 for the rest of the session.
+ *
+ * See the "Scope" note above `DIALOG_AUTO_DISMISS_MS` for the other half of
+ * the fix — how long the watcher stays once armed.
+ */
+const DIALOG_WATCHED_ACTIONS = new Set([
+  ...TAKEOVER_GATED_ACTIONS,
+  'get_dialog',
+  'handle_dialog',
+]);
+
+/**
  * ## Execution-time origin pin (U5)
  *
  * Abu's approval gate resolves WHICH PAGE an action targets, decides, and then
@@ -703,9 +726,16 @@ function addViewActionDepth(viewId, delta) {
  * scope that never suppresses anything — that is rule 1 of the F0 fix.
  */
 function createAiActionScope(action) {
-  if (!ATTRIBUTION_SUPPRESSING_ACTIONS.has(action)) return { global: false, viewId: null };
+  // `dialogWatchViewId` rides along on the same object for the same reason:
+  // it is per-CALL state that must be released in the same `finally`, and a
+  // second parallel bag would be one more thing to forget on an early return.
+  // Null until `runBrowserAutomation` both resolves a target AND decides this
+  // action may arm the watcher.
+  if (!ATTRIBUTION_SUPPRESSING_ACTIONS.has(action)) {
+    return { global: false, viewId: null, dialogWatchViewId: null };
+  }
   globalAiActionDepth += 1;
-  return { global: true, viewId: null };
+  return { global: true, viewId: null, dialogWatchViewId: null };
 }
 
 /**
@@ -1808,13 +1838,32 @@ async function screenshotAutomation(view, fullPage) {
 // hands `prompt` an immediate cancel. Under CDP it is a real dialog with a real
 // text answer.
 //
-// ## Scope: attached per tab, on first automation contact
+// ## Scope: armed for ONE action, on the tab that action drives
 //
-// Not at view creation. Attaching to every pane tab would change what the USER
-// sees while browsing on their own — their `confirm()` would stop showing a
-// native box and start waiting for a model that is not running.
-// `runBrowserAutomation` arms the watcher on the tab it is about to act on, so
-// interception begins exactly when Abu starts driving that tab.
+// Not at view creation, and not on first contact of any kind. Two rules, and
+// the second one exists because the first alone was not enough:
+//
+//  1. WHICH ACTIONS ARM IT — only the ones that can raise a dialog
+//     (`TAKEOVER_GATED_ACTIONS`: click / fill / select / keyboard / navigate /
+//     execute_js / …) plus the two dialog tools themselves. A read-only action
+//     cannot make a page call `confirm()`, so arming for one buys nothing —
+//     and costs the user every native dialog on that tab from then on.
+//  2. HOW LONG IT STAYS — for the duration of that one action, released in
+//     `performBrowserAutomation`'s `finally`. The exception is a tab holding a
+//     PENDING dialog: that watcher is the only thing that can answer it (and
+//     the only thing running the 60s fail-safe), so it is kept until the
+//     dialog is answered, dismissed, or times out.
+//
+// Rule 1 without rule 2 still leaves the user's tab permanently taken over
+// after one `click`; rule 2 without rule 1 still takes it over — briefly — on
+// every `extract_text`, which is what the model does constantly. Both, and the
+// window in which Abu owns the tab's dialogs is exactly the window in which
+// Abu is driving it.
+//
+// This matters most on a LEGACY tab — the pane tab the user opened themselves,
+// which `findViewByTabId` lets any run address. A watcher left on one is a user
+// who clicks their own 「确定」 and watches the page hang for 60 seconds and
+// then silently cancel, with no UI anywhere saying why.
 
 /** Mirrors `JS_DIALOG_AUTO_DISMISS_MS` in `abu-browser-shared/types.ts` (a
  *  CommonJS main-process module cannot import it); the two are pinned together
@@ -1843,8 +1892,28 @@ const DIALOG_UNTRUSTED_NOTICE =
 const pendingDialogs = new Map();
 /** view id -> the last dialog that tab raised, plus how it ended. */
 const lastDialogs = new Map();
-/** webContents that already carry the CDP dialog watcher. */
+/** webContents whose CDP session is currently attached with `Page` enabled. */
 const dialogWatched = new WeakSet();
+/**
+ * webContents whose CDP listeners are already registered.
+ *
+ * Separate from `dialogWatched` because the watcher now attaches and detaches
+ * many times over one tab's life: binding the listeners on every attach would
+ * stack a new pair each time, so one `javascriptDialogOpening` would be
+ * handled N times and the emitter would start warning about a leak. The
+ * listeners are harmless while detached (nothing is delivered), so they are
+ * bound once and left in place.
+ */
+const dialogListenersBound = new WeakSet();
+/**
+ * view id -> how many in-flight automation actions are holding its watcher.
+ *
+ * A count rather than a flag: a batch runs its steps one at a time, but
+ * `get_dialog` and the action it is asking about can legitimately overlap, and
+ * releasing on the first of two to finish would drop interception out from
+ * under the other.
+ */
+const dialogWatchHolders = new Map();
 
 function clampDialogText(value, limit) {
   const text = typeof value === 'string' ? value : '';
@@ -1875,7 +1944,13 @@ function noteDialogOpened(id, params) {
   const existing = pendingDialogs.get(id);
   if (existing) disarmTimer(existing.timer);
   const timer = armTimer(() => {
-    void answerDialog(id, false, undefined, 'auto-dismissed').catch(() => {});
+    // The fail-safe is also the last thing keeping this watcher on the tab
+    // (`detachDialogWatcherIfIdle` refuses while a dialog is pending). Once the
+    // dialog is gone and no action is in flight, the tab goes back to showing
+    // its own native dialogs.
+    void answerDialog(id, false, undefined, 'auto-dismissed')
+      .catch(() => {})
+      .then(() => detachDialogWatcherIfIdle(id));
   }, DIALOG_AUTO_DISMISS_MS);
   pendingDialogs.set(id, { info, timer });
   wakeDialogWaiters(id);
@@ -1915,7 +1990,13 @@ async function answerDialog(id, accept, promptText, disposition) {
   return entry.info;
 }
 
+/**
+ * Arm dialog interception on `id`, and take a lease on it for the caller's
+ * action. Every call must be paired with `releaseDialogWatch(id)` — see the
+ * "Scope" note above `DIALOG_AUTO_DISMISS_MS` for why the lease exists.
+ */
 async function ensureDialogWatcher(id, view) {
+  holdDialogWatch(id);
   const contents = view && view.webContents;
   if (!contents || contents.isDestroyed()) return;
   const dbg = contents.debugger;
@@ -1926,8 +2007,11 @@ async function ensureDialogWatcher(id, view) {
   // Marked BEFORE the first await: two actions racing on the same fresh tab
   // must not both attach.
   dialogWatched.add(contents);
-  try {
-    if (!dbg.isAttached()) dbg.attach('1.3');
+  // Bound once per contents, not once per attach: the watcher now cycles many
+  // times over a tab's life, and re-binding would stack a listener pair per
+  // cycle. Harmless while detached — CDP delivers nothing to them.
+  if (!dialogListenersBound.has(contents)) {
+    dialogListenersBound.add(contents);
     dbg.on('message', (_event, method, params) => {
       if (method === 'Page.javascriptDialogOpening') noteDialogOpened(id, params);
       // Also fired for a dialog that ended some other way (the frame went away
@@ -1947,14 +2031,17 @@ async function ensureDialogWatcher(id, view) {
       }
     });
     dbg.on('detach', () => {
-      // DevTools took the socket, or the contents went away. Drop the mark so a
-      // later action can attach again, and stop claiming a pending dialog that
-      // can no longer be answered.
+      // DevTools took the socket, the contents went away, or we released the
+      // lease ourselves. Drop the mark so a later action can attach again, and
+      // stop claiming a pending dialog that can no longer be answered.
       dialogWatched.delete(contents);
       const entry = pendingDialogs.get(id);
       if (entry) disarmTimer(entry.timer);
       pendingDialogs.delete(id);
     });
+  }
+  try {
+    if (!dbg.isAttached()) dbg.attach('1.3');
     await dbg.sendCommand('Page.enable');
   } catch (error) {
     dialogWatched.delete(contents);
@@ -1962,6 +2049,52 @@ async function ensureDialogWatcher(id, view) {
       `[browserHost] JavaScript-dialog interception unavailable on view ${id}: `
         + (error instanceof Error ? error.message : String(error))
     );
+  }
+}
+
+function holdDialogWatch(id) {
+  dialogWatchHolders.set(id, (dialogWatchHolders.get(id) || 0) + 1);
+}
+
+/**
+ * Give back one action's lease, and take the watcher off the tab if nothing
+ * else needs it.
+ *
+ * Called from `performBrowserAutomation`'s `finally`, so it runs on the
+ * failure and abort paths too — an action that threw must not leave the user's
+ * dialogs captured.
+ */
+function releaseDialogWatch(id) {
+  const next = (dialogWatchHolders.get(id) || 0) - 1;
+  if (next > 0) dialogWatchHolders.set(id, next);
+  else dialogWatchHolders.delete(id);
+  detachDialogWatcherIfIdle(id);
+}
+
+/**
+ * Take the CDP watcher off `id` unless something still needs it:
+ *  - another in-flight action holds a lease, or
+ *  - a dialog is PENDING on that tab. Detaching then would strand it: nothing
+ *    could answer it (`Page.handleJavaScriptDialog` needs the session) and the
+ *    60s fail-safe would have nothing to fire into. The tab keeps the watcher
+ *    until the dialog is answered, dismissed, or times out — and the last of
+ *    those calls back here.
+ */
+function detachDialogWatcherIfIdle(id) {
+  if (dialogWatchHolders.has(id)) return;
+  if (pendingDialogs.has(id)) return;
+  const view = views.get(id);
+  const contents = view && view.webContents;
+  if (!contents || contents.isDestroyed()) return;
+  const dbg = contents.debugger;
+  if (!dbg || typeof dbg.detach !== 'function') return;
+  if (!dialogWatched.has(contents)) return;
+  dialogWatched.delete(contents);
+  try {
+    if (typeof dbg.isAttached !== 'function' || dbg.isAttached()) dbg.detach();
+  } catch {
+    // Already gone (DevTools took it, or the contents is tearing down). The
+    // mark is dropped either way, so a later action re-arms cleanly.
   }
 }
 
@@ -2141,6 +2274,15 @@ async function performBrowserAutomation(action, payload = {}, opts) {
     return await runBrowserAutomation(action, payload, signal, scope);
   } finally {
     endAiActionScope(scope);
+    // Give the dialog watcher back. In the `finally` on purpose: an action
+    // that threw (refused, aborted, timed out) must not leave the user's tab
+    // with its dialogs captured — that failure mode is invisible, and the user
+    // would only meet it later, as their own confirm box never appearing.
+    if (scope.dialogWatchViewId !== null) {
+      const watchedViewId = scope.dialogWatchViewId;
+      scope.dialogWatchViewId = null;
+      releaseDialogWatch(watchedViewId);
+    }
   }
 }
 
@@ -2260,7 +2402,16 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // "Scope" note above `DIALOG_AUTO_DISMISS_MS`), before anything else: a
   // `navigate` can raise a `beforeunload` on its way out, and the watcher has
   // to already be listening when it does.
-  await ensureDialogWatcher(match.id, view);
+  //
+  // Only for actions that can raise one, and only for as long as this action
+  // runs: `scope.dialogWatchViewId` hands the lease to
+  // `performBrowserAutomation`'s `finally`, which gives it back. A read-only
+  // action arms nothing at all, so the tab the user is browsing keeps its own
+  // native dialogs (F1).
+  if (DIALOG_WATCHED_ACTIONS.has(action)) {
+    scope.dialogWatchViewId = match.id;
+    await ensureDialogWatcher(match.id, view);
+  }
 
   // A dialog holds the whole renderer, so every other action on this tab would
   // sit there until its own timeout and then report something untrue ("the

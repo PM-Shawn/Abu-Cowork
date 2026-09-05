@@ -95,6 +95,8 @@ class FakeWebContents {
     this.listeners = new Map();
     this.navigationHistory = { goBack() {}, goForward() {} };
     this.debugger = new FakeDebugger();
+    /** Set to a message to make every page call reject with it. */
+    this.failPageCallsWith = null;
     this.domCalls = [];
     this.loads = [];
   }
@@ -139,6 +141,10 @@ class FakeWebContents {
     // A page suspended inside `confirm()` never answers the isolated-world
     // call either — same renderer, same blocked main thread.
     if (this.suspendPageCalls) return new Promise(() => {});
+    // A page call that rejects — a dead renderer, a script error inside the
+    // automation runtime. The action throws, and the `finally` is what has to
+    // give the dialog watcher back.
+    if (this.failPageCallsWith) throw new Error(this.failPageCallsWith);
     return { success: true, message: 'ok' };
   }
 }
@@ -264,9 +270,34 @@ function loadHost() {
 async function openTab(host) {
   const tabs = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
   const tabId = tabs.windows[0].tabs[0].tabId;
-  // Any action arms the watcher; a read-only one keeps the setup honest.
-  await host.performBrowserAutomation('extract_text', { ownerId: OWNER, tabId });
   return { tabId };
+}
+
+/**
+ * Put a real pending dialog on `tabId`, the only way one can actually arrive:
+ * DURING an action that drives the page.
+ *
+ * The watcher is armed for the length of ONE page-driving action and no
+ * longer (F1), so a dialog fired between actions reaches nothing — which is
+ * the point, and is what the "the user's own tab keeps its native dialogs"
+ * test below asserts. In production a `confirm()` fires while the click that
+ * triggered it is still suspended in the renderer, and that is what this
+ * reproduces: start the click, let it reach the page, then answer with a box.
+ *
+ * The click rejects with the dialog (that is the interrupt working, pinned by
+ * its own test); the dialog stays pending for the caller to read or answer.
+ */
+async function raiseDialog(host, tabId, params) {
+  const contents = contentsRegistry.get(tabId);
+  const suspendedBefore = contents.suspendPageCalls;
+  contents.suspendPageCalls = true;
+  const driving = host.performBrowserAutomation('click', {
+    ownerId: OWNER, tabId, locator: { css: '#submit' },
+  }).catch(() => {});
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+  debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', params);
+  await driving;
+  contents.suspendPageCalls = suspendedBefore;
 }
 
 /** The fake debugger behind a tab id — CDP events are fired through it. */
@@ -285,7 +316,7 @@ test('a dialog freezes the tab: every other action is refused, naming it and quo
   try {
     const { tabId } = await openTab(host);
     const contents = contentsRegistry.get(tabId);
-    debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', ALERT('确定要提交吗'));
+    await raiseDialog(host, tabId, ALERT('确定要提交吗'));
     const domCallsBefore = contents.domCalls.length;
     const loadsBefore = contents.loads.length;
 
@@ -369,7 +400,7 @@ test('get_dialog reads the pending dialog, and handle_dialog accepts it through 
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'confirm', message: '确定要提交吗', url: 'https://example.com/form',
     });
 
@@ -406,7 +437,7 @@ test('dismiss answers a confirm with Cancel', async () => {
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'confirm', message: '删除这条记录？', url: 'https://example.com/list',
     });
 
@@ -426,7 +457,7 @@ test('a prompt carries the typed text, and its default value is reported as page
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'prompt', message: '请输入设备编号', defaultPrompt: 'EQ-000',
       url: 'https://example.com/form',
     });
@@ -453,7 +484,7 @@ test('beforeunload: accept leaves the page, dismiss stays on it', async () => {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
 
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'beforeunload', message: '', url: 'https://example.com/form',
     });
     const read = await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId });
@@ -473,7 +504,7 @@ test('beforeunload: accept leaves the page, dismiss stays on it', async () => {
       false,
     );
 
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'beforeunload', message: '', url: 'https://example.com/form',
     });
     await host.performBrowserAutomation('handle_dialog', { ownerId: OWNER, tabId, action: 'accept' });
@@ -489,7 +520,7 @@ test('nobody answering for 60s dismisses it — never accepts it', async () => {
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    dbg.fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'confirm', message: '确定要删除全部数据吗', url: 'https://example.com/list',
     });
 
@@ -540,7 +571,7 @@ test('a failed answer leaves the dialog pending rather than reporting a freed ta
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    dbg.fireCdp('Page.javascriptDialogOpening', ALERT('提交成功'));
+    await raiseDialog(host, tabId, ALERT('提交成功'));
     dbg.failHandleWith = 'No dialog is showing';
 
     await assert.rejects(
@@ -565,7 +596,7 @@ test('get_tabs marks the frozen tab, so it is not picked as if it were ordinary'
     const before = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
     assert.equal(before.windows[0].tabs[0].dialogPending, undefined);
 
-    debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'prompt', message: '请输入验证码', url: 'https://example.com/',
     });
 
@@ -576,18 +607,104 @@ test('get_tabs marks the frozen tab, so it is not picked as if it were ordinary'
   }
 });
 
-test('the watcher is armed on the tab automation touches, and only once', async () => {
+test('reading the user\'s page does not take over its dialogs — their own confirm still pops', async () => {
+  // Contract 1 in this module's header, and the F1 fix. The tab `openTab`
+  // returns is a LEGACY tab: the pane tab the user opened themselves, which
+  // any run may address. Before this, ONE read of it — and the model reads
+  // before nearly every action — armed CDP interception permanently, so from
+  // then on the user's own `confirm()` showed no native box, froze the page
+  // for 60 seconds, and was silently cancelled. No UI said anything.
   const { host, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
-    assert.equal(dbg.attachCalls, 1);
-    assert.ok(dbg.commands.some((c) => c.method === 'Page.enable'));
 
     await host.performBrowserAutomation('extract_text', { ownerId: OWNER, tabId });
-    await host.performBrowserAutomation('extract_text', { ownerId: OWNER, tabId });
-    assert.equal(dbg.attachCalls, 1, 'attached once, not once per action');
+    await host.performBrowserAutomation('snapshot', { ownerId: OWNER, tabId });
+    await host.performBrowserAutomation('find', {
+      ownerId: OWNER, tabId, query: { role: 'button' },
+    });
+
+    assert.equal(dbg.attachCalls, 0, 'a read must not arm dialog interception');
+    assert.equal(dbg.commands.filter((c) => c.method === 'Page.enable').length, 0);
+    assert.equal(dbg.isAttached(), false);
+
+    // So when the user presses their own button and the page calls confirm(),
+    // Chromium shows it to them — Abu is not listening and captures nothing.
+    dbg.fireCdp('Page.javascriptDialogOpening', ALERT('确定要转账吗'));
+    const seen = await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId });
+    assert.equal(seen.pending, false, 'the user\'s own dialog was never intercepted');
+  } finally {
+    restore();
+  }
+});
+
+test('the watcher is armed for one page-driving action and taken off when it ends', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host);
+    const dbg = debuggerFor(tabId);
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER, tabId, locator: { css: '#submit' },
+    });
+    assert.equal(dbg.attachCalls, 1, 'a page-driving action arms it');
     assert.equal(dbg.commands.filter((c) => c.method === 'Page.enable').length, 1);
+    // …and gives it back, so the tab is the user's again the moment Abu is
+    // done with it. This is the half that makes the arming safe: without it,
+    // one click owns that tab's dialogs for the rest of the session.
+    assert.equal(dbg.isAttached(), false, 'the lease is released when the action ends');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER, tabId, locator: { css: '#submit' },
+    });
+    assert.equal(dbg.attachCalls, 2, 'the next action arms it again');
+    assert.equal(dbg.isAttached(), false);
+  } finally {
+    restore();
+  }
+});
+
+test('a failing action still gives the watcher back', async () => {
+  // The `finally` path. An action that threw must not leave the tab captured:
+  // that failure is invisible until the user's next confirm never appears.
+  const { host, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host);
+    const dbg = debuggerFor(tabId);
+    contentsRegistry.get(tabId).failPageCallsWith = 'the renderer went away';
+
+    await assert.rejects(host.performBrowserAutomation('click', {
+      ownerId: OWNER, tabId, locator: { css: '#submit' },
+    }));
+
+    assert.equal(dbg.attachCalls, 1);
+    assert.equal(dbg.isAttached(), false, 'released even though the action threw');
+  } finally {
+    restore();
+  }
+});
+
+test('a pending dialog keeps the watcher until it is answered', async () => {
+  // The one exception to releasing at the end of the action: nothing can
+  // answer a dialog without the CDP session, and the 60s fail-safe would have
+  // nothing to fire into. So the tab keeps it — and gets it back afterwards.
+  const { host, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host);
+    const dbg = debuggerFor(tabId);
+
+    await raiseDialog(host, tabId, ALERT('确定要提交吗'));
+    assert.equal(dbg.isAttached(), true, 'kept while a dialog is waiting');
+    assert.equal(
+      (await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId })).pending,
+      true,
+    );
+
+    await host.performBrowserAutomation('handle_dialog', {
+      ownerId: OWNER, tabId, action: 'accept',
+    });
+    assert.equal(dbg.isAttached(), false, 'released once the dialog is gone');
   } finally {
     restore();
   }
@@ -597,7 +714,7 @@ test('an unknown dialog kind is treated as a confirm, so its fail-safe answer ch
   const { host, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
-    debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'somethingNew', message: 'x', url: 'https://example.com/',
     });
     const read = await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId });
@@ -611,7 +728,7 @@ test('page-authored dialog text is bounded, so a megabyte of it cannot ride into
   const { host, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
-    debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', {
+    await raiseDialog(host, tabId, {
       type: 'alert', message: 'x'.repeat(50_000), url: 'https://example.com/',
     });
     const read = await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId });

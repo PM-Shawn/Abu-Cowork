@@ -134,7 +134,7 @@ CI does **not** call `verify:full` directly — it runs the same quality checks 
 (Lint / Type check / Test with coverage) so each stage reports independently. `verify:full` is the
 local shorthand that sequences those same steps in one command.
 
-> **Local pre-commit hook (husky + lint-staged):** `.husky/pre-commit` must stay executable — check with `git ls-files -s .husky/pre-commit` (expect `100755`; fix with `git update-index --chmod=+x .husky/pre-commit`) — and `.husky/_/` must exist in every worktree (created by `npm install` / `npx husky`; without it git runs no hook and prints nothing).
+> **Local pre-commit hook (husky + lint-staged):** `.husky/pre-commit` must stay executable — check with `git ls-files -s .husky/pre-commit` (expect `100755`; fix with `git update-index --chmod=+x .husky/pre-commit`) — and `.husky/_/` must exist in every worktree (created by `npm install` / `npx husky`; without it git runs no hook and prints nothing — `npm run electron:dev:check` reports this).
 
 ---
 

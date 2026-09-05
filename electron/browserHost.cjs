@@ -2427,7 +2427,33 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     throw dialogBlockedError(blocking.info);
   }
   if (action === 'get_dialog') return getDialogResult(view.webContents.id, match.id);
-  if (action === 'handle_dialog') return handleDialogAction(view.webContents.id, match.id, payload);
+  if (action === 'handle_dialog') {
+    /**
+     * F6 (2026-09-06 review) — the takeover exemption above covers `dismiss`,
+     * not `accept`.
+     *
+     * The reason it gives is real but partial: under CDP the user cannot
+     * answer the dialog themselves, so making the ANSWER wait for a quiet
+     * window would only extend the freeze. That argues for `dismiss`, which is
+     * the only thing that unfreezes the tab and changes nothing. It does not
+     * argue for `accept`, which is not a way out of the freeze at all — it is
+     * executing the page's action: submitting the form behind the confirm,
+     * leaving the page and discarding what is on it.
+     *
+     * So on a tab the user has taken back, `accept` is refused like any other
+     * page-driving action, and `dismiss` stays available so the tab is never
+     * left stuck. Reading (`get_dialog`) is always free.
+     *
+     * `targetIsUserTab` alone, not the full expression the gate above uses:
+     * its `runReclaimed && !match` half cannot be true here (we are past the
+     * `if (!match)` return), and a reclaimed run acting on a tab of its OWN is
+     * deliberately not blocked — the user closed one tab, not the task.
+     */
+    if (payload && payload.action === 'accept' && targetIsUserTab) {
+      throw new Error(USER_RECLAIMED_MESSAGE);
+    }
+    return handleDialogAction(view.webContents.id, match.id, payload);
+  }
 
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
     assertNotAborted(signal);

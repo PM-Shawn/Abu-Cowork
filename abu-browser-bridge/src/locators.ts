@@ -24,6 +24,35 @@ export const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label'
 
 export const WAIT_CONDITION_TYPES = ['appear', 'disappear', 'enabled', 'textContains', 'urlContains'];
 
+/**
+ * The modifier keys `keyboard` accepts — the ONE list, read by both paths.
+ *
+ * `tools.ts` builds its zod enum from it and `validateKeyboardModifiers` below
+ * checks a batch step against it, so the two cannot disagree. They used to:
+ * the single-action tool took `z.enum(['ctrl','shift','alt','meta'])` while a
+ * batch step took `requireString`, i.e. any non-empty string, which
+ * `browserHost.cjs` then passed to `webContents.sendInputEvent` almost
+ * verbatim. Electron's modifier set is larger than these four (`capsLock`,
+ * `numLock`, `leftButtonDown`, `isAutoRepeat`, …), so a batch could send
+ * modifier bits the single-action path refuses — the second-parser bypass this
+ * module's header names as the thing it exists to prevent, in the one field
+ * that had been left out of the extraction.
+ */
+export const KEYBOARD_MODIFIERS = ['ctrl', 'shift', 'alt', 'meta'] as const;
+
+export type KeyboardModifier = (typeof KEYBOARD_MODIFIERS)[number];
+
+/** Validate an already-decoded `modifiers` array from a batch step. */
+export function validateKeyboardModifiers(value: unknown): KeyboardModifier[] {
+  if (!Array.isArray(value)) throw new Error('`modifiers` must be an array');
+  return value.map((m) => {
+    if (typeof m !== 'string' || !(KEYBOARD_MODIFIERS as readonly string[]).includes(m)) {
+      throw new Error(`\`modifiers[]\` must be one of: ${KEYBOARD_MODIFIERS.join(', ')}`);
+    }
+    return m as KeyboardModifier;
+  });
+}
+
 function asPlainObject(value: unknown, what: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error(`${what} must be a JSON object`);

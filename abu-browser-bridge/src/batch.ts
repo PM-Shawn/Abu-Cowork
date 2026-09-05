@@ -43,15 +43,30 @@ import type {
   BatchStepType,
   BatchStopReason,
 } from './types.js';
-import { validateCondition, validateFindQuery, validateLocator } from './locators.js';
+import {
+  validateCondition,
+  validateFindQuery,
+  validateKeyboardModifiers,
+  validateLocator,
+} from './locators.js';
 
 /** One approval must not buy an unbounded run. */
 export const MAX_BATCH_STEPS = 25;
 
 /**
- * Wall-clock ceiling for the whole run, checked before each step. A batch of
- * `wait_for`s could otherwise sit on 25 × 30s of timeouts under a single
- * approval while the user watches nothing happen.
+ * Wall-clock ceiling for the whole run. A batch of `wait_for`s could otherwise
+ * sit on 25 × 30s of timeouts under a single approval while the user watches
+ * nothing happen.
+ *
+ * Enforced in TWO places, because between-steps alone was not a ceiling (F4,
+ * 2026-09-06 review): the loop checks it before each step, AND a `wait_for`
+ * step's own deadline is clamped to what is left of it. Without the clamp a
+ * single `{action:'wait_for', timeout: 3_600_000}` ran for an hour under this
+ * constant's own promise — the between-steps check never fired, because there
+ * was no next step for it to run before. The single-action `wait_for` tool has
+ * no upper bound on its `timeout`; that is its own pre-existing behaviour and
+ * its own approval. What this fixes is a BATCH advertising a bound it did not
+ * have.
  */
 export const MAX_BATCH_DURATION_MS = 120_000;
 
@@ -150,6 +165,13 @@ function requireString(value: unknown, field: string): string {
   return value;
 }
 
+function requirePositiveNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`\`${field}\` must be a positive number of milliseconds.`);
+  }
+  return value;
+}
+
 function validateStep(raw: unknown): BatchStep {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('each step must be a JSON object.');
@@ -178,15 +200,23 @@ function validateStep(raw: unknown): BatchStep {
       return {
         action: type,
         key: requireString(step.key, 'key'),
-        ...(Array.isArray(step.modifiers)
-          ? { modifiers: step.modifiers.map((m) => requireString(m, 'modifiers[]')) }
+        // The same whitelist the single-action tool's zod enum is built from,
+        // not a second "any non-empty string" parser — see `KEYBOARD_MODIFIERS`.
+        ...(step.modifiers !== undefined
+          ? { modifiers: validateKeyboardModifiers(step.modifiers) }
           : {}),
       };
     case 'wait_for':
       return {
         action: type,
         condition: validateCondition(step.condition) as BatchStep['condition'],
-        ...(typeof step.timeout === 'number' ? { timeout: step.timeout } : {}),
+        // A positive, finite number or nothing. `typeof x === 'number'` alone
+        // let `Infinity` and `NaN` through, and both reached `runStep`'s
+        // `timeout + 5000` — one as an infinite transport deadline, the other
+        // as a NaN one.
+        ...(step.timeout !== undefined
+          ? { timeout: requirePositiveNumber(step.timeout, 'timeout') }
+          : {}),
       };
     case 'find':
       return {
@@ -433,8 +463,11 @@ export async function runBatch(
     ) groupEnd += 1;
     const group = groupEnd > index ? steps.slice(index, groupEnd) : [steps[index]];
 
+    // Read once for the whole group: its steps are dispatched at one instant,
+    // so they share the remaining budget rather than each getting all of it.
+    const budgetLeftMs = Math.max(0, MAX_BATCH_DURATION_MS - (deps.now() - startedAt));
     const outcomes = await Promise.all(
-      group.map((step, offset) => runStep(deps, tabId, step, index + offset)),
+      group.map((step, offset) => runStep(deps, tabId, step, index + offset, budgetLeftMs)),
     );
     for (const outcome of outcomes) {
       if (failedStep) break; // a parallel sibling already failed — report the first
@@ -456,13 +489,17 @@ async function runStep(
   tabId: number,
   step: BatchStep,
   index: number,
+  /** What is left of `MAX_BATCH_DURATION_MS` when this step is dispatched. */
+  budgetLeftMs: number,
 ): Promise<BatchStepOutcome> {
   const action = BATCH_STEP_ACTIONS[step.action];
   const startedAt = deps.now();
-  // A wait owns its own deadline; give the transport the same headroom the
-  // single-action `wait_for` tool gives it.
+  // A wait owns its own deadline — but not one longer than the run it is part
+  // of (F4). Clamped to the remaining budget, so the 120s ceiling this module
+  // advertises is one a single step cannot step over; the +5000 is the same
+  // transport headroom the single-action `wait_for` tool gives it.
   const timeoutMs = step.action === 'wait_for'
-    ? (typeof step.timeout === 'number' ? step.timeout : 30_000) + 5_000
+    ? Math.min(typeof step.timeout === 'number' ? step.timeout : 30_000, budgetLeftMs) + 5_000
     : undefined;
   try {
     const res = await deps.send(action, batchStepPayload(step, tabId), timeoutMs);

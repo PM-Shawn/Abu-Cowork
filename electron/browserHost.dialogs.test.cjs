@@ -222,6 +222,8 @@ function loadHost() {
     contentView: { addChildView() {}, removeChildView() {} },
   };
   let host = null;
+  /** View ids the renderer adopted — what `browser_close` is addressed by. */
+  const openedViewIds = [];
 
   require.cache[electronId] = {
     id: electronId,
@@ -239,6 +241,7 @@ function loadHost() {
     exports: {
       emitEvent(event, payload) {
         if (event === 'browser://automation-open') {
+          openedViewIds.push(payload.id);
           host.browserDispatch(null, 'browser_create', {
             id: payload.id, url: 'about:blank', x: 0, y: 0, width: 800, height: 600,
           });
@@ -255,6 +258,7 @@ function loadHost() {
   return {
     host,
     timeline,
+    openedViewIds,
     restore() {
       host.__testing.setClock(null);
       if (prevElectron) require.cache[electronId] = prevElectron;
@@ -306,6 +310,11 @@ function debuggerFor(tabId) {
   assert.ok(found, `no fake webContents for tab ${tabId}`);
   return found.debugger;
 }
+
+/** Mirrors `USER_RECLAIMED_MESSAGE` in browserHost.cjs, the same way
+ *  `browserHost.ownership.test.cjs` mirrors it. */
+const USER_RECLAIMED_MESSAGE =
+  'The user closed your browser tab. Ask them before opening a new one.';
 
 function ALERT(message) {
   return { type: 'alert', message, url: 'https://example.com/form' };
@@ -734,6 +743,64 @@ test('page-authored dialog text is bounded, so a megabyte of it cannot ride into
     const read = await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId });
     assert.ok(read.dialog.message.length < 2_100, `message was ${read.dialog.message.length} chars`);
     assert.match(read.dialog.message, /truncated/);
+  } finally {
+    restore();
+  }
+});
+
+test('on a tab the user took back, the model may dismiss the dialog but not accept it', async () => {
+  // F6 (2026-09-06 review). The takeover exemption for the dialog pair is
+  // argued from the freeze: under CDP the user sees no native box, so making
+  // the ANSWER wait for a quiet window would only keep their tab frozen
+  // longer. That is true of `dismiss` — the one thing that unfreezes it and
+  // changes nothing — and false of `accept`, which is not an escape from the
+  // freeze at all: it presses the page's OK, submits the form behind the
+  // confirm, leaves the page. On the user's OWN tab, after they took it back.
+  const { host, openedViewIds, restore } = loadHost();
+  try {
+    // An owned automation tab, so the conversation has something to reclaim…
+    await openTab(host);
+    const ownedViewId = openedViewIds[openedViewIds.length - 1];
+    // …and the user's own pane tab beside it.
+    host.browserDispatch(null, 'browser_create', {
+      id: 'user-pane-tab', url: 'https://bank.example/transfer', x: 0, y: 0, width: 800, height: 600,
+    });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
+    const paneTab = listing.windows[0].tabs.find((t) => t.url === 'https://bank.example/transfer');
+    assert.ok(paneTab, 'the user\'s pane tab is addressable');
+
+    // A confirm goes up on the user's tab while Abu is still allowed to drive it.
+    await raiseDialog(host, paneTab.tabId, {
+      type: 'confirm', message: '确认转账 ¥50000?', url: 'https://bank.example/transfer',
+    });
+
+    // Now the user closes the agent's tab — the reclaim gesture.
+    host.browserDispatch(null, 'browser_close', { id: ownedViewId, reason: 'user_close' });
+
+    await assert.rejects(
+      host.performBrowserAutomation('handle_dialog', {
+        ownerId: OWNER, tabId: paneTab.tabId, action: 'accept',
+      }),
+      (error) => {
+        assert.equal(error.message, USER_RECLAIMED_MESSAGE);
+        return true;
+      },
+    );
+    // Reading it stays free — that is how the run explains why it stopped.
+    assert.equal(
+      (await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId: paneTab.tabId })).pending,
+      true,
+      'the dialog is still up: the refusal did not answer it either way',
+    );
+
+    // And dismissing is still allowed, so the tab is never left stuck.
+    await host.performBrowserAutomation('handle_dialog', {
+      ownerId: OWNER, tabId: paneTab.tabId, action: 'dismiss',
+    });
+    assert.equal(
+      (await host.performBrowserAutomation('get_dialog', { ownerId: OWNER, tabId: paneTab.tabId })).pending,
+      false,
+    );
   } finally {
     restore();
   }

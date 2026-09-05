@@ -17,6 +17,7 @@ import {
   runBatch,
   type BatchDeps,
 } from './batch.js';
+import { KEYBOARD_MODIFIERS } from './locators.js';
 import type { BatchStep } from './types.js';
 
 const TAB = 7;
@@ -29,6 +30,8 @@ interface Harness {
   actions: string[];
   /** For each completed send, everything that was in flight beside it. */
   concurrency: string[][];
+  /** The transport deadline each page action was dispatched with. */
+  timeouts: Array<number | undefined>;
 }
 
 interface HarnessOptions {
@@ -46,6 +49,8 @@ function harness(options: HarnessOptions = {}): Harness {
   const urls = options.urls ?? ['https://erp.example.com/form'];
   const sent: string[] = [];
   const actions: string[] = [];
+  /** Transport deadline each non-probe action was dispatched with. */
+  const timeouts: Array<number | undefined> = [];
   const concurrency: string[][] = [];
   const inFlight = new Map<number, string>();
   let probe = 0;
@@ -57,7 +62,7 @@ function harness(options: HarnessOptions = {}): Harness {
       clock += options.tick ?? 1;
       return clock;
     },
-    send: async (action) => {
+    send: async (action, _payload, timeoutMs) => {
       sent.push(action);
       if (action === 'get_tabs') {
         const url = urls[Math.min(probe, urls.length - 1)];
@@ -66,6 +71,7 @@ function harness(options: HarnessOptions = {}): Harness {
       }
       const nth = actions.length;
       actions.push(action);
+      timeouts.push(timeoutMs);
       const id = key++;
       inFlight.set(id, action);
       // Two microtask yields: every sibling dispatched in the same Promise.all
@@ -78,7 +84,7 @@ function harness(options: HarnessOptions = {}): Harness {
       return { success: true, data: options.resultFor?.(action, nth) ?? { success: true, message: 'ok' } };
     },
   };
-  return { deps, sent, actions, concurrency };
+  return { deps, sent, actions, concurrency, timeouts };
 }
 
 function steps(...list: Array<BatchStep['action']>): BatchStep[] {
@@ -322,6 +328,65 @@ describe('runBatch — bounds', () => {
     expect(h.actions).toEqual(['click']);
     expect(result.stopped).toBe('time-limit');
     expect(result.remainingSteps).toBe(2);
+  });
+
+  it('will not let one step\'s own timeout outlast the run\'s budget', async () => {
+    // F4 (2026-09-06 review): the budget used to be checked only BETWEEN
+    // steps, so a batch of exactly one `wait_for` never met it — there was no
+    // next step for the check to run before. `{timeout: 3_600_000}` therefore
+    // ran for an hour under a constant whose own comment promised 120 seconds,
+    // and (being a read-only batch) it did so with no approval at all.
+    const h = harness();
+    const result = await runBatch(h.deps, TAB, [
+      { action: 'wait_for', condition: { type: 'appear', locator: { css: '#a' } }, timeout: 3_600_000 },
+    ]);
+
+    expect(result.completedSteps).toHaveLength(1);
+    // +5000 is the transport headroom; the wait itself is clamped to what was
+    // left of the run's budget.
+    expect(h.timeouts[0]).toBeLessThanOrEqual(MAX_BATCH_DURATION_MS + 5_000);
+  });
+
+  it('gives a later step only what is LEFT of the budget, not the whole of it', async () => {
+    // Half the budget is gone by the time the wait is dispatched, so it may
+    // not ask for the full 120s either.
+    const h = harness({ tick: MAX_BATCH_DURATION_MS / 8 });
+    await runBatch(h.deps, TAB, [
+      { action: 'click', locator: { css: '#a' } },
+      { action: 'wait_for', condition: { type: 'appear', locator: { css: '#a' } }, timeout: 3_600_000 },
+    ]);
+
+    const waitTimeout = h.timeouts[1];
+    expect(waitTimeout).toBeDefined();
+    expect(waitTimeout!).toBeLessThan(MAX_BATCH_DURATION_MS);
+  });
+
+  it('refuses a timeout that is not a positive finite number, instead of passing it through', async () => {
+    // `typeof x === 'number'` let both of these reach `timeout + 5000`: one as
+    // an infinite transport deadline, the other as a NaN one.
+    for (const timeout of [Infinity, NaN, -1, 0]) {
+      expect(() => parseBatchSteps([
+        { action: 'wait_for', condition: { type: 'appear', locator: { css: '#a' } }, timeout },
+      ])).toThrow(/positive number/);
+    }
+  });
+
+  it('accepts only the modifier keys the single-action tool accepts', async () => {
+    // The batch parser took any non-empty string here while `keyboard`'s own
+    // zod schema took an enum of four, and `browserHost.cjs` hands what it is
+    // given to `sendInputEvent` — whose modifier set is larger (capsLock,
+    // leftButtonDown, isAutoRepeat, …). A second, looser parser for one field
+    // is exactly the bypass `locators.ts` was extracted to prevent.
+    for (const modifier of KEYBOARD_MODIFIERS) {
+      expect(() => parseBatchSteps([{ action: 'keyboard', key: 'Enter', modifiers: [modifier] }]))
+        .not.toThrow();
+    }
+    for (const bogus of ['capsLock', 'leftButtonDown', 'isAutoRepeat', 'numLock', 'CTRL', '']) {
+      expect(() => parseBatchSteps([{ action: 'keyboard', key: 'Enter', modifiers: [bogus] }]))
+        .toThrow(/modifiers/);
+    }
+    expect(() => parseBatchSteps([{ action: 'keyboard', key: 'Enter', modifiers: 'ctrl' }]))
+      .toThrow(/modifiers/);
   });
 
   it('cuts an oversized step result rather than letting the envelope be shredded', async () => {

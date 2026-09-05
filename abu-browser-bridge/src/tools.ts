@@ -6,7 +6,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { MAX_BATCH_STEPS, parseBatchSteps, runBatch, type BatchDeps } from './batch.js';
-import { parseCondition, parseFindQuery, parseLocator } from './locators.js';
+import { KEYBOARD_MODIFIERS, parseCondition, parseFindQuery, parseLocator } from './locators.js';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
 import { JS_DIALOG_AUTO_DISMISS_MS } from './types.js';
 
@@ -528,7 +528,7 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       key: z.string().describe('Key to press (e.g., "Enter", "Tab", "Escape", "a", "ArrowDown")'),
-      modifiers: z.array(z.enum(['ctrl', 'shift', 'alt', 'meta'])).optional().describe('Modifier keys to hold'),
+      modifiers: z.array(z.enum(KEYBOARD_MODIFIERS)).optional().describe('Modifier keys to hold'),
     },
     async ({ tabId, key, modifiers }, extra) => {
       await ensureConnected(transport);

@@ -527,6 +527,21 @@ class TriggerEngine {
    * as 'sent' would say it did.
    *
    * Never throws: it runs on the failure paths, including the outer catch.
+   *
+   * ── Deliberate exception to `prefixesOutcomeIntoContent` ──
+   *
+   * That predicate keeps prose out of a webhook body and out of a
+   * `custom_template` payload, and this method does not consult it: it builds
+   * its own `AbuMessage` instead of going through `buildMessage`, so a webhook
+   * and a template DO get a human sentence in `content` here. That is the
+   * ruling, not an oversight, and the reason the two do not conflict is that
+   * the predicate protects *the user's payload* — on a non-delivering terminal
+   * there is no answer, so `buildMessage` was never called, no template was
+   * ever rendered, and there is nothing of theirs to disturb. The tradeoff is
+   * real and belongs in the release notes: before this batch a failed run
+   * POSTed nothing at all, so a consumer doing `JSON.parse(body.content)` now
+   * meets prose on its first failing run and must branch on
+   * `metadata.abuRunOutcome` (always present, always structured) instead.
    */
   private async pushOutcome(
     trigger: Trigger,

@@ -82,6 +82,18 @@ export default function CommandConfirmDialog({
     }
     onConfirm();
   }, [request.browserOrigin, onConfirm]);
+  // ...and say what the verdict opens. A scripting dialog may never mint this
+  // verdict (Ruling-I: one click must not open both the attended no-dialog door
+  // and the automatic-task scripting door), but the click/fill dialog mints the
+  // very same one — and once the scripting row is set to 'allow', an 'allowed'
+  // site is the entire remaining precondition on both of those doors
+  // (`registry.ts`'s `scriptAllowedByPolicy` / `decideBrowserOperation`). The
+  // grant is unchanged; only the label stops understating it, and only in the
+  // configuration where the second door actually exists.
+  const scriptingPolicy = useSettingsStore((s) => s.browserOperationPolicy.scripting);
+  const alwaysAllowSiteLabel = scriptingPolicy === 'allow'
+    ? t.commandConfirm.browserAlwaysAllowSiteWithScripts
+    : t.commandConfirm.browserAlwaysAllowSite;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted
@@ -199,7 +211,7 @@ export default function CommandConfirmDialog({
               className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
               title={request.browserOrigin}
             >
-              {t.commandConfirm.browserAlwaysAllowSite}
+              {alwaysAllowSiteLabel}
             </Button>
           )}
           </div>

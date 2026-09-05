@@ -139,6 +139,17 @@ describe('runAgentBatchTool progress wiring', () => {
     });
   });
 
+  it('flags a member result that made zero tool calls in the aggregated report', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 },
+      { label: 'B', status: 'ok', text: 'checked', toolCallCount: 3 },
+    ]);
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('did it');
+    expect(sectionA).toContain('no tool calls');
+    expect(sectionB).not.toContain('no tool calls');
+  });
+
   it('records each member tool call as a batchTask-tagged child of the batch step (persisted process)', async () => {
     const addChildStepToDelegate = vi.fn(() => 'child-1');
     const completeChildStep = vi.fn();

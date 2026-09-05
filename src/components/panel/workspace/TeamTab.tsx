@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronRight, Loader2, XCircle, CircleDashed, Square, MessageSquarePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
@@ -14,6 +14,9 @@ import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, updateComposerDraft } from '@/stores/composerDraftStore';
 
+/** Minutes without a new step before a running hand-off is called out as stalled. */
+export const STALL_MINUTES = 5;
+
 function StatusIcon({ status }: { status: DispatchStatus | 'idle' }) {
   if (status === 'running') return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)] motion-safe:animate-spin" />;
   if (status === 'completed') return <Check aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-success)]" />;
@@ -27,6 +30,7 @@ function statusLabel(status: DispatchStatus | 'idle', t: ReturnType<typeof useI1
     case 'completed': return t.workspace.agentStatusDone;
     case 'error': return t.workspace.agentStatusError;
     case 'idle': return t.workspace.teamMemberIdle;
+    case 'interrupted': return t.workspace.teamDispatchInterrupted;
     default: return t.workspace.agentStatusIncomplete;
   }
 }
@@ -58,6 +62,20 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
     () => summarizeByMember(team?.members.map((m) => m.name) ?? [], dispatches),
     [team, dispatches],
   );
+  // Stall hint: a running hand-off with no new step for a while.
+  const anyRunning = dispatches.some((d) => d.live && d.status === 'running');
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    setNow(Date.now());
+    return () => window.clearInterval(timer);
+  }, [anyRunning]);
+  const stalledMinutes = (d: { live: boolean; status: DispatchStatus; lastActivityAt?: number }): number | null => {
+    if (!d.live || d.status !== 'running' || d.lastActivityAt === undefined) return null;
+    const minutes = Math.floor((now - d.lastActivityAt) / 60_000);
+    return minutes >= STALL_MINUTES ? minutes : null;
+  };
 
   if (!team) {
     return (
@@ -139,6 +157,9 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                             <StatusIcon status={d.status} />
                             <span className="shrink-0 text-[var(--abu-text-tertiary)]">{format(t.workspace.teamDispatchOrdinal, { n: index + 1 })}</span>
                             <span className="min-w-0 flex-1 truncate text-[var(--abu-text-primary)]">{d.label}</span>
+                            {stalledMinutes(d) !== null && (
+                              <span className="shrink-0 text-[var(--abu-warning)]" data-testid="dispatch-stalled">{format(t.workspace.teamStalledFor, { n: stalledMinutes(d) ?? 0 })}</span>
+                            )}
                             <span className="shrink-0 text-[var(--abu-text-muted)]">{format(t.workspace.agentTools, { count: d.stepCount })}</span>
                             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
                           </button>

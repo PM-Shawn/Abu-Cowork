@@ -51,6 +51,21 @@ describe('collectMemberDispatches', () => {
     expect(byKey['tc-old:0']).toMatchObject({ live: false, agent: 'zz撰写员', identity: { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-old' } });
   });
 
+  it('tracks last activity for live dispatches and marks hand-offs of an interrupted run', () => {
+    const exec: TaskExecution = {
+      id: 'e1', conversationId: 'c1', loopId: 'l1', status: 'running', startTime: 10, plannedSteps: [], planParsed: false,
+      steps: [step({ id: 'd1', type: 'delegate', toolName: 'delegate_to_agent', toolCallId: 'tc-d', agentName: 'a', status: 'running', startTime: 11,
+        childSteps: [step({ id: 'c1', startTime: 20, endTime: 25 }), step({ id: 'c2', status: 'running', startTime: 40 })] })],
+    } as TaskExecution;
+    const live = collectMemberDispatches({ conversationId: 'c1', executions: [exec], messages: [] });
+    expect(live[0].lastActivityAt).toBe(40);
+    const messages: Message[] = [{ id: 'a1', role: 'assistant', content: '', timestamp: 5, isStreaming: true,
+      executionSteps: [{ id: 'd2', toolCallId: 'tc-x', type: 'delegate', label: 'x', status: 'completed', toolName: 'delegate_to_agent', agentName: 'b' }] }];
+    const persisted = collectMemberDispatches({ conversationId: 'c1', executions: [], messages });
+    expect(persisted[0].status).toBe('interrupted');
+    expect(persisted[0].lastActivityAt).toBeUndefined();
+  });
+
   it('summarizes per roster member with running > latest > idle', () => {
     const dispatches = collectMemberDispatches({ conversationId: 'c1', executions: [], messages: [{
       id: 'a1', role: 'assistant', content: '', timestamp: 5,

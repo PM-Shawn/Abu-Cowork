@@ -1418,6 +1418,8 @@ export interface TranslationDict {
     followUpRedoStep: string;
     followUpMemberRevise: string;
     followUpMemberAppend: string;
+    recentConversations: string;
+    noConversationsYet: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
@@ -2078,6 +2080,8 @@ export interface TranslationDict {
     teamStopDispatchShort: string;
     teamStopDispatchShortNamed: string;
     teamAppendInstruction: string;
+    teamStalledFor: string;
+    teamDispatchInterrupted: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -3116,6 +3120,7 @@ export interface TranslationDict {
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
       errNotTeamMember: string;
+      delegateNoToolCallsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3164,6 +3169,8 @@ export interface TranslationDict {
       batchSectionTitle: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
+      /** Appended to a member result that made zero tool calls (team leader review). */
+      batchNoToolCallsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */

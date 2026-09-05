@@ -2,7 +2,7 @@ import type { BatchIdentity, Message } from '@/types';
 import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 
-export type DispatchStatus = 'running' | 'completed' | 'error' | 'unknown';
+export type DispatchStatus = 'running' | 'completed' | 'error' | 'unknown' | 'interrupted';
 
 /** One hand-off from the leader to a member: a delegate_to_agent call, or one task of a run_agent_batch call. */
 export interface MemberDispatch {
@@ -16,6 +16,8 @@ export interface MemberDispatch {
   status: DispatchStatus;
   stepCount: number;
   startTime?: number;
+  /** Latest child step start/end seen (live source only) — drives the stall hint. */
+  lastActivityAt?: number;
   live: boolean;
 }
 
@@ -31,12 +33,24 @@ function delegateLabel(step: { label: string; toolInput?: Record<string, unknown
   return typeof task === 'string' && task.trim() ? task.trim() : step.label;
 }
 
+function lastActivity(children: readonly (ExecutionStep | ExecutionStepSnapshot)[], fallback: number | undefined): number | undefined {
+  let latest = fallback;
+  for (const child of children) {
+    const live = child as ExecutionStep;
+    for (const at of [live.startTime, live.endTime]) {
+      if (typeof at === 'number' && (latest === undefined || at > latest)) latest = at;
+    }
+  }
+  return latest;
+}
+
 function fromStep(
   step: ExecutionStep | ExecutionStepSnapshot,
   conversationId: string,
   assistantMessageId: string | undefined,
   live: boolean,
   startTime: number | undefined,
+  interrupted = false,
 ): MemberDispatch[] {
   if (step.type !== 'delegate' || !step.toolCallId) return [];
   const identity: BatchIdentity = {
@@ -64,9 +78,10 @@ function fromStep(
       identity,
       taskIndex,
       label: entry.label,
-      status: parentStatus === 'running' ? (entry.anyRunning ? 'running' : 'running') : entry.anyError ? 'error' : parentStatus,
+      status: interrupted ? 'interrupted' : parentStatus === 'running' ? 'running' : entry.anyError ? 'error' : parentStatus,
       stepCount: entry.count,
       startTime,
+      lastActivityAt: live ? lastActivity(children.filter((child) => child.batchTask?.index === taskIndex), startTime) : undefined,
       live,
     }));
   }
@@ -79,9 +94,10 @@ function fromStep(
     identity,
     taskIndex: 0,
     label: delegateLabel(step as { label: string; toolInput?: Record<string, unknown> }),
-    status: stepStatus(step.status),
+    status: interrupted ? 'interrupted' : stepStatus(step.status),
     stepCount: children.length,
     startTime,
+    lastActivityAt: live ? lastActivity(children, startTime) : undefined,
     live,
   }];
 }
@@ -106,8 +122,11 @@ export function collectMemberDispatches(params: {
   }
   for (const message of params.messages) {
     if (message.role !== 'assistant' || !message.executionSteps) continue;
+    // A persisted assistant message still marked streaming means the run never
+    // finished (app restart / crash): its hand-offs are interrupted, not done.
+    const interrupted = message.isStreaming === true;
     for (const step of message.executionSteps) {
-      for (const d of fromStep(step, params.conversationId, message.id, false, message.timestamp)) {
+      for (const d of fromStep(step, params.conversationId, message.id, false, message.timestamp, interrupted)) {
         if (!seen.has(d.key)) seen.set(d.key, d);
       }
     }

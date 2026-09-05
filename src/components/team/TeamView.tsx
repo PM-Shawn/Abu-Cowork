@@ -269,6 +269,8 @@ export default function TeamView() {
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
+  const switchConversation = useChatStore((s) => s.switchConversation);
+  const conversationIndex = useChatStore((s) => s.conversationIndex);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
 
@@ -386,6 +388,28 @@ export default function TeamView() {
                       count: String(team.memberRoleIds.length),
                     })}
                   </div>
+                  {(() => {
+                    const recent = Object.values(conversationIndex)
+                      .filter((meta) => meta.teamId === team.id)
+                      .sort((a, b) => b.updatedAt - a.updatedAt)
+                      .slice(0, 5);
+                    return (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1" data-testid={`team-recent-${team.name}`}>
+                        <span className="text-caption text-[var(--abu-text-muted)]">{recent.length > 0 ? t.team.recentConversations : t.team.noConversationsYet}</span>
+                        {recent.map((meta) => (
+                          <button
+                            key={meta.id}
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void switchConversation(meta.id); closeTeam(); }}
+                            className="max-w-[200px] truncate rounded-md bg-[var(--abu-bg-base)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)]"
+                            title={meta.title}
+                          >
+                            {meta.title}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             ))}

@@ -90,6 +90,8 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('4. Review every result against what its step was supposed to produce; send it back with concrete feedback if it falls short.');
   lines.push('5. Finish with one consolidated report to the user.');
   lines.push('6. When the user asks to redo one step or to have one member revise its output, re-dispatch ONLY that step/member with the user\'s feedback quoted verbatim, keep every other result as it is, and report only what changed.');
+  lines.push('7. Shared inputs first: when parallel members would each invent the same figures, definitions or sources, settle them in one earlier step (or let the member that produces them run first) and pass that output verbatim to the others. When merging, list every difference in figures or definitions between members and say which one you kept and why.');
+  lines.push('8. Files: when a member must write files, say in its task text to save them under `<workspace>/<member name>/` with distinct file names; two members must never write the same path.');
   return lines.join('\n');
 }
 

@@ -371,6 +371,10 @@ export const delegateToAgentTool: ToolDefinition = {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }
       toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
+      // No tool call at all = nothing the member could have checked; flag it for the leader.
+      if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
+        return `${result.text}\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
+      }
       return result.text;
     } catch (err) {
       subagentCleanup();

@@ -187,7 +187,7 @@ export async function runWithConcurrency<T, R>(
  *               `### 子任务 N: <label>\n[失败] <text>` (error)
  */
 export function aggregateBatchResults(
-  entries: Array<{ label: string; status: 'ok' | 'error'; text: string }>,
+  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number }>,
 ): string {
   const total = entries.length;
   const successCount = entries.filter((e) => e.status === 'ok').length;
@@ -201,7 +201,10 @@ export function aggregateBatchResults(
   const sections = entries.map((entry, i) => {
     const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label });
     const body = entry.status === 'ok' ? entry.text : format(t.batchFailPrefix, { text: entry.text });
-    return `${title}\n${body}`;
+    // A member that answered without a single tool call produced nothing it
+    // could have verified — say so, so the leader reviews instead of trusting.
+    const note = entry.status === 'ok' && entry.toolCallCount === 0 ? `\n\n${t.batchNoToolCallsNote}` : '';
+    return `${title}\n${body}${note}`;
   });
 
   return [header, ...sections].join('\n\n');
@@ -294,6 +297,7 @@ export function aggregateSubagentTextResults(
         label,
         status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
         text: result.value.text,
+        toolCallCount: result.value.toolCallCount,
       };
     }
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);

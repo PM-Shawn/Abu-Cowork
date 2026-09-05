@@ -974,22 +974,38 @@ export interface TranslationDict {
     capabilitiesDescription: string;
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
-    capabilityBuiltinBrowserDesc: string;
-    capabilityBuiltinBrowserScope: string;
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
+    /** The one consent clause the My Chrome page keeps: it sits on the status
+     *  row while the channel is connected, in place of the footer paragraph
+     *  that used to say the same thing at four times the length. */
     capabilityMyChromeScope: string;
+    /** Level-1 channel cards AND the one-line subtitle under each detail
+     *  page's title — the same sentence in both places, because a detail page
+     *  is the card opened up. Anything longer belongs in a card below. */
+    capabilityBuiltinBrowserSubtitle: string;
+    capabilityMyChromeSubtitle: string;
+    capabilityComputerSubtitle: string;
     browserSitePermsTitle: string;
     browserSitePermsDesc: string;
     browserSitePermsEmpty: string;
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
+    /** Option descriptions: the explanation lives where the choice is made,
+     *  not behind a hover affordance. */
+    browserSitePermsAllowedDesc: string;
+    browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** Card summary on a capability detail page: counts + the fact that the
+     *  verdicts are one shared list across both browser channels. */
+    browserSitePermsSummary: string;
     /** U5 authorization visibility — which sites an unattended run reaches.
      *  ORIGIN-level: a site being listed does not mean every page on it is
-     *  reachable, since the high-risk classifier still refuses per call. */
-    browserUnattendedReachTag: string;
-    browserAttendedOnlyTag: string;
+     *  reachable, since the high-risk classifier still refuses per call.
+     *  The per-row "reachable / attended-only" pair was dropped: allowed means
+     *  allowed, and the per-page refusal now lives in the option description.
+     *  The high-risk tag stays — it reports the one thing the row cannot
+     *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1003,15 +1019,32 @@ export interface TranslationDict {
     browserOpPolicyColumnUnattended: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
+    /** Scripting is split out of the 2x2 matrix into its own card: under
+     *  "automatic tasks" it is a degenerate cell (no allow), and it is the one
+     *  row an ordinary user should not skim past. The class name is that
+     *  card's title, so it carries a description of its own. */
     browserOpClassScripting: string;
+    browserOpClassScriptingDesc: string;
     browserOpStateAllow: string;
     browserOpStateDeny: string;
     browserOpStateAsk: string;
+    browserOpStateAllowDesc: string;
+    browserOpStateDenyDesc: string;
+    browserOpStateAskDesc: string;
+    /** Why "allow" is listed but not choosable for scripting under automatic
+     *  tasks (batch-二 security ruling: a site grant is consent collected under
+     *  "click" semantics and never buys silent code execution). Dropping the
+     *  option silently would leave the column looking broken next to the other
+     *  rows; offering it live would promise what the gate refuses to honor. */
+    browserOpStateAllowUnavailableDesc: string;
+    browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;
-    /** U6 — the built-in browser can refuse an unattended action on an expired
+    /** U6 — the built-in browser can refuse an automatic action on an expired
      *  session before it happens; the Chrome-extension channel can only report
-     *  it after the fact. Shown under the master switch while it is ON. */
+     *  it after the fact. One sentence, shown at the top of the permission card
+     *  on the My Chrome page ONLY — it is advice about that channel, and the
+     *  people it cannot apply to should not have to read past it. */
     browserUnattendedChannelCaveat: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
@@ -1027,9 +1060,10 @@ export interface TranslationDict {
     capabilityStatusReady: string;
     capabilityStatusSetupRequired: string;
     capabilityStatusNotConnected: string;
+    /** My Chrome's detail page reports the channel, not the app's readiness:
+     *  what the user did was connect a browser, so that is the word. */
+    capabilityStatusConnected: string;
     capabilityStatusOff: string;
-    capabilityStatusPermissionRequired: string;
-    capabilityStatusConnectionLost: string;
     capabilityStatusUnavailable: string;
     capabilityStatusChecking: string;
     capabilityStatusNextStep: string;
@@ -1040,11 +1074,9 @@ export interface TranslationDict {
     capabilityPermissionUnknown: string;
     capabilityBuiltinBrowserDisconnected: string;
     capabilityBuiltinBrowserUnavailable: string;
-    capabilityChromeSetupRequired: string;
     capabilityChromeOptional: string;
     capabilityChromeDisconnected: string;
     capabilityChromeProbeUnavailable: string;
-    capabilityComputerDisabled: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
     capabilityComputerModel: string;
@@ -1057,22 +1089,21 @@ export interface TranslationDict {
     capabilityComputerModelUnsupportedNote: string;
     capabilityComputerModelUnknownNote: string;
     capabilityBackToOverview: string;
-    capabilityDone: string;
     capabilityCheckConnection: string;
     capabilityChromeConnect: string;
-    capabilityChromeManage: string;
+    /** Accessible name of the disconnect action. The button SHOWS the short
+     *  form (`capabilityChromeDisconnectShort`) because the page it sits on is
+     *  already titled "My Chrome"; the long form stays as the accessible name
+     *  so a screen reader still hears what is being disconnected, and it
+     *  contains the visible text, as WCAG "label in name" requires. */
     capabilityChromeDisconnect: string;
+    capabilityChromeDisconnectShort: string;
     capabilityChromeSetupTitle: string;
-    capabilityChromeSetupDesc: string;
     capabilityChromeTaskNeedsSetup: string;
-    capabilityChromeConfirmEnable: string;
-    capabilityChromeConsent: string;
     capabilityChromeExperimental: string;
     capabilityChromePermissionScope: string;
     capabilityChromeServiceUnavailable: string;
-    capabilityChromeExtensionTitle: string;
     capabilityChromeExtensionDesc: string;
-    capabilityChromeExtensionConnected: string;
     capabilityChromeOpenInstaller: string;
     capabilityChromeManualTitle: string;
     capabilityChromeManualStep1: string;
@@ -1080,17 +1111,20 @@ export interface TranslationDict {
     capabilityChromeManualStep3: string;
     capabilityChromeResourceMissing: string;
     capabilityChromeOpenFailed: string;
-    capabilityChromePrivacy: string;
     capabilityComputerEnable: string;
-    capabilityComputerStartSetup: string;
-    capabilityComputerContinue: string;
-    capabilityComputerManage: string;
     capabilityComputerSetupTitle: string;
+    /** Still the description the floating permission guide window shows; the
+     *  settings page itself uses the one-line `capabilityComputerSubtitle`. */
     capabilityComputerSetupDesc: string;
     capabilityComputerTaskNeedsSetup: string;
     capabilityComputerConfirmEnable: string;
-    capabilityComputerConsent: string;
+    /** The one consent clause kept on the Computer Use status row, in place of
+     *  the footer paragraph. `capabilityComputerPrivacy` still carries the
+     *  full statement inside the permission guide. */
+    capabilityComputerReadyNote: string;
+    /** See `capabilityChromeDisconnect` for why there are two of these. */
     capabilityComputerDisable: string;
+    capabilityComputerDisableShort: string;
     capabilityScreenReadDesc: string;
     capabilityUIControlDesc: string;
     capabilityComputerStepScreen: string;
@@ -1113,10 +1147,10 @@ export interface TranslationDict {
     capabilityPermissionGuideRestart: string;
     capabilityPermissionGuideRestartTitle: string;
     capabilityPermissionGuideRestartDesc: string;
-    capabilityComputerReadyTitle: string;
-    capabilityComputerReadyDesc: string;
     capabilityReturnToTask: string;
     capabilityComputerPlatformHint: string;
+    /** Guide-window only. The settings page says the same thing in one clause
+     *  on its status row (`capabilityComputerReadyNote`). */
     capabilityComputerPrivacy: string;
     closeWindowBehavior: string;
     composerEnterBehavior: string;

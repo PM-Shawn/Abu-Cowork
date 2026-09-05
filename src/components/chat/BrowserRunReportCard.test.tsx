@@ -149,9 +149,15 @@ describe('BrowserRunReportCard', () => {
 
     expect(screen.getByText(/master switch for unattended browser access is off/)).toBeInTheDocument();
     expect(screen.getByText('No browser action was carried out')).toBeInTheDocument();
+    // The next step names the control the user has to find, and the path is
+    // the one the capability page actually has.
     expect(
-      screen.getByText(/Turn on the unattended master switch/),
+      screen.getByText(/Turn on the master switch in Settings/),
     ).toBeInTheDocument();
+    // ...and the path it names is the one the capability page actually has.
+    expect(
+      screen.getAllByText(/Abu built-in browser → Automatic tasks/).length,
+    ).toBeGreaterThan(0);
   });
 
   // ── Ruling 1 ────────────────────────────────────────────────────────────

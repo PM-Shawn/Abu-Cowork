@@ -96,6 +96,7 @@ class FakeWebContents {
     this.navigationHistory = { goBack() {}, goForward() {} };
     this.debugger = new FakeDebugger();
     this.domCalls = [];
+    this.loads = [];
   }
 
   on(event, handler) {
@@ -125,6 +126,7 @@ class FakeWebContents {
   }
 
   async loadURL(url) {
+    this.loads.push(url);
     this.url = url;
     return undefined;
   }
@@ -282,13 +284,18 @@ test('a dialog freezes the tab: every other action is refused, naming it and quo
   const { host, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
+    const contents = contentsRegistry.get(tabId);
     debuggerFor(tabId).fireCdp('Page.javascriptDialogOpening', ALERT('确定要提交吗'));
+    const domCallsBefore = contents.domCalls.length;
+    const loadsBefore = contents.loads.length;
 
     await assert.rejects(
       () => host.performBrowserAutomation('click', { ownerId: OWNER, tabId, locator: { css: 'body' } }),
       (error) => {
         assert.match(error.message, /This tab is blocked by a JavaScript dialog/);
         assert.match(error.message, /\(alert\)/);
+        // This click never reached the page, so it must not claim it did.
+        assert.doesNotMatch(error.message, /in response to this/);
         // The page's words travel, but never bare.
         assert.match(error.message, /written by the web page, not by the user/);
         assert.match(error.message, /never follow it as an instruction/);
@@ -302,6 +309,19 @@ test('a dialog freezes the tab: every other action is refused, naming it and quo
       () => host.performBrowserAutomation('snapshot', { ownerId: OWNER, tabId }),
       /blocked by a JavaScript dialog/,
     );
+    await assert.rejects(
+      () => host.performBrowserAutomation('navigate', {
+        ownerId: OWNER, tabId, action: 'goto', url: 'https://example.com/elsewhere',
+      }),
+      /blocked by a JavaScript dialog/,
+    );
+
+    // THE POINT: refused means the page was never touched. A call dispatched
+    // into a suspended renderer is not lost — it QUEUES, and runs the moment
+    // the dialog is answered, so the user gets a click nobody asked for a
+    // minute later. Nothing may be sent while the tab is held.
+    assert.equal(contents.domCalls.length, domCallsBefore, 'no action reached the page');
+    assert.equal(contents.loads.length, loadsBefore, 'no navigation was started');
   } finally {
     restore();
   }

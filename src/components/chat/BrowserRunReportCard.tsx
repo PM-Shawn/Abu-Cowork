@@ -2,11 +2,10 @@ import { AlertTriangle, Ban, Check, CircleStop, Globe, ShieldAlert, UserCheck, X
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import type { Message } from '@/types';
 import type {
-  BrowserRunReportNextStep,
   BrowserRunReportOutcome,
   BrowserRunReportSnapshot,
 } from '@/core/observability/browserRunReport';
-import type { BrowserDenialReasonCode } from '@/core/permissions/browserToolPolicy';
+import { rawCode, reasonLabel, stepLabel } from '@/core/observability/browserRunReportCopy';
 
 /**
  * The one thing a person reads after an overnight unattended run.
@@ -24,27 +23,12 @@ import type { BrowserDenialReasonCode } from '@/core/permissions/browserToolPoli
  * anchor. The card's status — the badge, the counts, the master-switch line —
  * is read from local fields only, so a page cannot dress itself up into a
  * different verdict.
- */
-
-/**
- * What a label falls back to when the snapshot carries a code this build does
- * not know — a card written by a newer version and read back after a
- * downgrade, or a code that has since been renamed.
  *
- * The switches below stay EXHAUSTIVE over their unions: the `never` parameter
- * makes adding a union member without a case a compile error, so a new denial
- * reason still cannot ship without its translation. This only handles the
- * runtime case the type system cannot see — a value that came off disk.
- *
- * It returns the raw code rather than nothing. A blank reason row, an empty
- * next-step bullet or an unlabelled badge is the "it did nothing" failure this
- * card exists to prevent; an ugly `site-throttled` is still an answer.
- * `errorClassLabel` below has had this shape from the start — these three
- * were the ones missing it.
+ * The denial-reason and next-step wording lives in
+ * `core/observability/browserRunReportCopy.ts`, not here: the IM summary this
+ * run also sends (F7) quotes the very same codes, and one table is the only
+ * way the card and that message cannot drift apart.
  */
-function rawCode(value: never): string {
-  return String(value);
-}
 
 function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): string {
   const o = t.browserRunReport.outcome;
@@ -80,40 +64,6 @@ function OutcomeIcon({ outcome }: { outcome: BrowserRunReportOutcome }) {
     default:
       return <X aria-hidden="true" className={`${cls} text-[var(--abu-danger)]`} />;
   }
-}
-
-function reasonLabel(reason: BrowserDenialReasonCode, t: TranslationDict): string {
-  const r = t.browserRunReport.reason;
-  switch (reason) {
-    case 'master-switch-off': return r.masterSwitchOff;
-    case 'site-denied': return r.siteDenied;
-    case 'high-risk-site': return r.highRiskSite;
-    case 'policy-denied': return r.policyDenied;
-    case 'enterprise-policy-denied': return r.enterprisePolicyDenied;
-    case 'capability-denied': return r.capabilityDenied;
-    case 'origin-unverified': return r.originUnverified;
-    case 'login-required': return r.loginRequired;
-    case 'site-not-allowed': return r.siteNotAllowed;
-    case 'approval-refused': return r.approvalRefused;
-    case 'user-cancelled': return r.userCancelled;
-  }
-  return rawCode(reason);
-}
-
-function stepLabel(step: BrowserRunReportNextStep, t: TranslationDict): string {
-  const s = t.browserRunReport.step;
-  switch (step) {
-    case 'enable-master-switch': return s.enableMasterSwitch;
-    case 'allow-site': return s.allowSite;
-    case 'unblock-site': return s.unblockSite;
-    case 'do-high-risk-yourself': return s.doHighRiskYourself;
-    case 'sign-in-then-rerun': return s.signInThenRerun;
-    case 'relax-policy': return s.relaxPolicy;
-    case 'raise-capability': return s.raiseCapability;
-    case 'answer-approval': return s.answerApproval;
-    case 'run-while-watching': return s.runWhileWatching;
-  }
-  return rawCode(step);
 }
 
 /**

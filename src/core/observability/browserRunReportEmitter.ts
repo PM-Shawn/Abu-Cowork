@@ -33,6 +33,78 @@ export interface EmitBrowserRunReportOptions {
 }
 
 /**
+ * Aggregate the run's browser facts WITHOUT touching the conversation.
+ *
+ * Split out for F7: the run's IM summary has to be built (and sent) before the
+ * card message is appended — `outputSender`'s `last_message` extraction would
+ * otherwise pick up this deliberately text-less card instead of the answer the
+ * task produced — while both must describe the SAME aggregation. So the caller
+ * builds once, summarizes, pushes, and appends the very same snapshot in its
+ * `finally`. Re-deriving it twice would have been two aggregations that merely
+ * look alike.
+ *
+ * Never throws, for the same reason `emitBrowserRunReport` never throws: an
+ * explanation of what happened must not become a new way for the run that just
+ * finished to fail. A failure here is logged, not swallowed silently.
+ */
+export function buildUnattendedBrowserReport(options: {
+  conversationId: string;
+  sinceSeq: number;
+  outcome: BrowserRunReportOutcome;
+}): BrowserRunReportSnapshot | null {
+  try {
+    return buildBrowserRunReport({
+      signals: getRecentBrowserSignals(),
+      conversationId: options.conversationId,
+      sinceSeq: options.sinceSeq,
+      outcome: options.outcome,
+    });
+  } catch (error) {
+    logger.warn('failed to build the browser run report', {
+      conversationId: options.conversationId,
+      outcome: options.outcome,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Append an already-built snapshot as the run's card message. `null` (the run
+ * never touched a browser) appends nothing.
+ *
+ * Never throws — see above.
+ */
+export function appendBrowserRunReportMessage(options: {
+  conversationId: string;
+  report: BrowserRunReportSnapshot | null;
+  /** Injectable for tests; production reads the clock here and nowhere deeper. */
+  now?: number;
+  id?: string;
+}): BrowserRunReportSnapshot | null {
+  const { report } = options;
+  if (!report) return null;
+  try {
+    useChatStore.getState().addMessage(
+      options.conversationId,
+      createBrowserRunReportMessage({
+        id: options.id ?? generateId(),
+        timestamp: options.now ?? Date.now(),
+        report,
+      }),
+    );
+    return report;
+  } catch (error) {
+    logger.warn('failed to emit the browser run report', {
+      conversationId: options.conversationId,
+      outcome: report.outcome,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
  * Append the run's report card to its conversation, or do nothing when the run
  * never touched the browser.
  *
@@ -54,15 +126,12 @@ export function emitBrowserRunReport(
     });
     if (!report) return null;
 
-    useChatStore.getState().addMessage(
-      options.conversationId,
-      createBrowserRunReportMessage({
-        id: options.id ?? generateId(),
-        timestamp: options.now ?? Date.now(),
-        report,
-      }),
-    );
-    return report;
+    return appendBrowserRunReportMessage({
+      conversationId: options.conversationId,
+      report,
+      ...(options.now !== undefined ? { now: options.now } : {}),
+      ...(options.id !== undefined ? { id: options.id } : {}),
+    });
   } catch (error) {
     /**
      * Still never throws — a report is an explanation of what happened, and it

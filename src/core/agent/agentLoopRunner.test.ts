@@ -2111,6 +2111,38 @@ describe('agentLoopRunner', () => {
       expect(ctx.imContext).toBe(imContext);
     });
 
+    /**
+     * F-A — the sidecar-hosted half of「production really publishes the
+     * approval target」. Browser tools never live in the sidecar's local tool
+     * set, so a sidecar-hosted scheduled run comes back shell-side for the
+     * gate; this is the only place its LoopContext gets built. Drop the field
+     * here and every such run asks nobody and refuses with `no_binding` —
+     * with typecheck and the whole suite still green (the field is optional).
+     */
+    it('installs the unattended approval target so a sidecar-hosted run can still ask', async () => {
+      const { registerRunSession, installShellLoopContext } = await importFresh();
+      const unattendedApproval = {
+        imTarget: {
+          platform: 'feishu',
+          channelId: 'channel-1',
+          chatId: 'oc_team',
+          chatIdType: 'chat_id',
+          senderId: 'ou_li',
+        },
+        runLabel: '每日销售简报',
+      };
+      const session = {
+        ...makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }),
+        options: { unattendedApproval },
+      };
+      registerRunSession('run-1', session);
+
+      installShellLoopContext('run-1', session);
+
+      const [, ctx] = setLoopContextMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(ctx.unattendedApproval).toEqual(unattendedApproval);
+    });
+
     it('removeShellLoopContext calls clearLoopContext with the session loopId', async () => {
       const { registerRunSession, removeShellLoopContext } = await importFresh();
       const session = makeSession({ loopId: 'loop-42' });

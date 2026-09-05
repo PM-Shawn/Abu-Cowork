@@ -643,6 +643,24 @@ const zhCN: TranslationDict = {
     },
   },
 
+  unattendedRun: {
+    outcome: {
+      succeeded: '已完成',
+      partial: '部分完成',
+      blocked: '未完成',
+      notRun: '未运行',
+      failed: '任务失败',
+      stopped: '已停止',
+      noProgress: '没有进展',
+    },
+    summaryWithDetail: '{label}：{detail}',
+    detailWithOrigins: '{reason}（{origins}）',
+    detailActionsFailed: '{failed}/{total} 个浏览器动作失败',
+    detailNothingDelivered: '这次没有产出可交付的结果',
+    detailTurnLimit: '达到轮次上限，下面是已有结果',
+    nextStep: '接下来：{step}',
+  },
+
   settings: {
     title: '设置',
     labs: '实验',
@@ -824,7 +842,7 @@ const zhCN: TranslationDict = {
     browserSitePermsAddHighRisk: '这个网站看起来涉及资金操作（支付 / 转账 / 结算）或政务办理，不能设为「始终允许」——这类页面每次都会单独询问。设为「禁止」仍然可以。',
     browserSitePermsSummary: '已允许 {allowed} 个 · 已禁止 {denied} 个 · 内置浏览器与 Chrome 共用',
     browserHighRiskTag: '高危站点·每次询问',
-    browserUnattendedReachSummary: '自动任务可进入 {count} 个网站；支付 / 转账页面仍会被拒绝。',
+    browserUnattendedReachSummary: '自动任务可进入 {count} 个网站；识别为支付 / 转账的页面会被拒绝。',
     browserUnattendedReachNone: '自动任务当前不能操作任何网站——还没有设为「始终允许」的普通网站。',
     browserUnattendedReachOff: '自动任务总开关已关闭，因此自动任务不能操作任何网站。',
     browserOpPolicyTitle: '操作权限',
@@ -2411,6 +2429,7 @@ const zhCN: TranslationDict = {
     browserUnattendedImAborted: '审批还没回复，任务就被停止了，本次操作已取消',
     browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
+    browserAlwaysAllowSiteWithScripts: '此网站以后都允许（含运行脚本）',
     browserBlockSite: '禁止此网站',
     selfExtensionTitle: '新增能力确认',
     selfExtensionDescription: '阿布要新增或改写长期的代理或自动化状态：',

@@ -69,6 +69,26 @@ function firstId(list: string | undefined): string | null {
 }
 
 /**
+ * Is this IM channel one the user still wants delivered to?
+ *
+ * The R2 reasoning below, reused by the outbound side. `sendViaIMChannel` has
+ * no `enabled` check of its own, so a channel the user switched OFF still
+ * delivers — someone who turned a channel off to stop the noise would keep
+ * getting pushed to. The run's ENDING is the newest thing pushed there (batch
+ * 8), and a failing task can now speak on every tick, so it checks.
+ *
+ * Deliberately not applied to the RESULT push: users receive those today, and
+ * silently dropping results a disabled channel currently delivers is a
+ * separate product decision with its own blast radius (see the batch-8 report).
+ *
+ * `status` is not consulted, for the same reason as below: it is weather.
+ */
+export function isImOutputChannelEnabled(channelId: string | undefined): boolean {
+  if (!channelId) return false;
+  return useIMChannelStore.getState().channels?.[channelId]?.enabled === true;
+}
+
+/**
  * Build the approval target for an automatic run, or null when the automation
  * has nominated nowhere to ask.
  *

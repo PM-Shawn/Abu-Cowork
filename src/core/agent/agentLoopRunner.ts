@@ -277,8 +277,13 @@ export interface AgentLoopRunOptions {
    * F1 — shell-owned approval destination for this unattended run. Like
    * `imReplyTarget` it is authority-bearing outbound identity, so it is kept
    * on the shell session and never accepted from a sidecar-supplied context.
+   *
+   * REQUIRED, `| undefined` rather than `?:` — see `ToolBatchParams`'s copy of
+   * this field for why. Dropping the hand-off into the session's options is
+   * the sidecar-hosted twin of that silent failure: `installShellLoopContext`
+   * then publishes `undefined` and the gate refuses with `no_binding`.
    */
-  unattendedApproval?: import('../permissions/unattendedConfirmation').UnattendedApprovalContext;
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }

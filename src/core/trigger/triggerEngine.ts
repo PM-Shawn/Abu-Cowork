@@ -5,21 +5,34 @@ import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { getBrowserSignalCursor } from '../observability/browserSignals';
-import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
-import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
+import {
+  browserRunReportOutcomeFor,
+  type BrowserRunReportSnapshot,
+} from '../observability/browserRunReport';
+import {
+  appendBrowserRunReportMessage,
+  buildUnattendedBrowserReport,
+} from '../observability/browserRunReportEmitter';
+import {
+  deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeLine,
+  formatUnattendedOutcomeSummary,
+  unattendedRunOutcomeMetadata,
+  type UnattendedRunOutcome,
+} from '../observability/unattendedRunOutcome';
 import {
   notifyTriggerCompleted,
   notifyTriggerError,
 } from '../../utils/notifications';
 import { outputSender } from '../im/outputSender';
-import type { OutputContext } from '../im/adapters/types';
+import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import type { Trigger, TriggerEventPayload } from '../../types/trigger';
 import type { IMReplyContext } from '../../types/im';
 import type { NormalizedIMMessage } from '../im/inboundRouter';
 import { getI18n } from '../../i18n';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { resolveTriggerCallbacks } from './triggerPermission';
-import { resolveUnattendedImTarget } from '../im/approvalTarget';
+import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
 import { createAuthorizationScope, disposeAuthorizationScope } from '../tools/pathSafety';
 import { cacheTriggerContext } from '../im/triggerContextCache';
 import { invoke } from '@tauri-apps/api/core';
@@ -46,6 +59,26 @@ function simpleHash(str: string): string {
     hash |= 0;
   }
   return hash.toString(36);
+}
+
+/**
+ * May the run's ending be spliced into the message body?
+ *
+ * Batch-8 ruling (F8-3). Two payload shapes are the USER's, not ours:
+ *
+ * - a **webhook** body is consumed by a program. Before this batch, "a POST
+ *   arrived" meant "the run delivered"; prose in `content` on top of that
+ *   breaks a `JSON.parse(body.content)` reader outright.
+ * - a **`custom_template`** payload is written literally by the user
+ *   (`CustomAdapter.formatOutbound` passes `content` through untouched), so
+ *   anything we prepend lands inside a body they designed.
+ *
+ * Both still learn the ending — as `metadata`, and for templates as the
+ * opt-in `$RUN_OUTCOME` variable. Only a chat a person reads gets the
+ * sentence, because only there does the sentence help.
+ */
+function prefixesOutcomeIntoContent(output: Trigger['output']): boolean {
+  return output?.target === 'im_channel' && output.extractMode !== 'custom_template';
 }
 
 const MAX_CONCURRENT_TRIGGERS = 5;
@@ -340,6 +373,10 @@ class TriggerEngine {
     // (Ruling 2): a monotonic cursor, taken before any tool can fire.
     const browserSignalCursor = getBrowserSignalCursor();
     let reportOutcome = browserRunReportOutcomeFor('error', false);
+    /** F7 — built once, read by the IM summary and by the card. */
+    let report: BrowserRunReportSnapshot | null | undefined;
+    /** One ending per run — see the scheduler's copy for why this latch. */
+    let outcomePushed = false;
 
     try {
       /*
@@ -379,15 +416,25 @@ class TriggerEngine {
         initiatedBy: 'automation',
       });
 
-      reportOutcome = browserRunReportOutcomeFor(
-        result.reason,
-        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
-      );
+      const abortedByBrowserDenials =
+        result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE;
+      reportOutcome = browserRunReportOutcomeFor(result.reason, abortedByBrowserDenials);
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      const runOutcome = deriveUnattendedRunOutcome({
+        reason: result.reason,
+        abortedByBrowserDenials,
+        report,
+      });
 
       // max_turns hit the cap but still produced a usable (partial) reply — fall
       // through and deliver it (just flagged below), rather than dropping the
       // output. aborted / error / no_progress have no usable output → mark the run
-      // and skip the push.
+      // and skip the ANSWER — but not the summary (F7: the scheduler's copy of
+      // this branch explains why silence is not an option here either).
       if (result.reason !== 'completed' && result.reason !== 'max_turns') {
         const errorMsg = result.error ?? (
           result.reason === 'aborted' ? 'Trigger was cancelled'
@@ -396,6 +443,8 @@ class TriggerEngine {
         );
         useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
         console.log(`[Trigger] ${result.reason}: ${trigger.name}`, result.error ?? '');
+        await this.pushOutcome(trigger, runOutcome, payload);
+        outcomePushed = true;
         return;
       }
       if (result.reason === 'max_turns') {
@@ -420,7 +469,8 @@ class TriggerEngine {
       // Output push — send results to IM channel or webhook
       if (trigger.output?.enabled) {
         const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
-        await this.pushOutput(trigger, runId, conversationId, payload, replyContext);
+        await this.pushOutput(trigger, runId, conversationId, payload, runOutcome, replyContext);
+        outcomePushed = true;
       }
 
       notifyTriggerCompleted(trigger.name);
@@ -433,6 +483,20 @@ class TriggerEngine {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       useTriggerStore.getState().errorRun(trigger.id, runId, errorMsg);
+      // F7 — same as the branch above; `reportOutcome` is still 'error'.
+      report = buildUnattendedBrowserReport({
+        conversationId,
+        sinceSeq: browserSignalCursor,
+        outcome: reportOutcome,
+      });
+      if (!outcomePushed) {
+        await this.pushOutcome(
+          trigger,
+          deriveUnattendedRunOutcome({ reason: 'error', abortedByBrowserDenials: false, report }),
+          payload,
+        );
+        // No latch here: this IS the last statement that can push.
+      }
       notifyTriggerError(trigger.name);
       const t = getI18n();
       useToastStore.getState().addToast({
@@ -443,23 +507,93 @@ class TriggerEngine {
       console.error(`[Trigger] Error: ${trigger.name}`, err);
     } finally {
       // U7 — after the output push, for every terminal. See the scheduler's
-      // copy for why both of those matter.
-      emitBrowserRunReport({
-        conversationId,
-        sinceSeq: browserSignalCursor,
-        outcome: reportOutcome,
-      });
+      // copy for why both of those matter. F7 — the snapshot was built above
+      // so the IM summary and this card come from one aggregation.
+      appendBrowserRunReportMessage({ conversationId, report: report ?? null });
       disposeAuthorizationScope(authorizationScopeId);
     }
   }
 
   // ── Output push ──
 
+  /**
+   * F7 — the ending, with no answer attached, on the trigger's own output.
+   *
+   * Mirrors `scheduler.pushOutcomeToIMChannel`: every non-delivering terminal
+   * used to push nothing at all, so a trigger bound to a chat went silent in
+   * exactly the cases a person needs to hear about. Deliberately does NOT read
+   * the conversation (a failed run's last message is not an answer) and does
+   * NOT touch `updateRunOutput` — the run produced no output, and marking one
+   * as 'sent' would say it did.
+   *
+   * Never throws: it runs on the failure paths, including the outer catch.
+   *
+   * ── Deliberate exception to `prefixesOutcomeIntoContent` ──
+   *
+   * That predicate keeps prose out of a webhook body and out of a
+   * `custom_template` payload, and this method does not consult it: it builds
+   * its own `AbuMessage` instead of going through `buildMessage`, so a webhook
+   * and a template DO get a human sentence in `content` here. That is the
+   * ruling, not an oversight, and the reason the two do not conflict is that
+   * the predicate protects *the user's payload* — on a non-delivering terminal
+   * there is no answer, so `buildMessage` was never called, no template was
+   * ever rendered, and there is nothing of theirs to disturb. The tradeoff is
+   * real and belongs in the release notes: before this batch a failed run
+   * POSTed nothing at all, so a consumer doing `JSON.parse(body.content)` now
+   * meets prose on its first failing run and must branch on
+   * `metadata.abuRunOutcome` (always present, always structured) instead.
+   */
+  private async pushOutcome(
+    trigger: Trigger,
+    outcome: UnattendedRunOutcome,
+    payload: TriggerEventPayload,
+  ) {
+    if (!trigger.output?.enabled) return;
+    /*
+      A channel the user switched OFF is not somewhere to push a failure
+      notice — see `scheduler.pushOutcomeToIMChannel` for the reasoning. Only
+      an `im_channel` target has a channel to switch off; a webhook is a URL.
+    */
+    if (
+      trigger.output.target === 'im_channel'
+      && !isImOutputChannelEnabled(trigger.output.outputChannelId)
+    ) {
+      console.warn(`[Trigger] Outcome push skipped — channel disabled: ${trigger.name}`);
+      return;
+    }
+    try {
+      const color: MessageColor = outcome.code === 'stopped' ? 'info' : 'warning';
+      /*
+        The non-delivering terminals: there is no answer, so nothing the user
+        designed is being disturbed and the short sentence IS the message —
+        for a webhook too. (An empty `content` was the alternative; the sender
+        would transmit it, but the chat platforms reachable through a webhook
+        URL reject an empty body, and it tells an operator watching the feed
+        nothing at all.) The structured ending rides alongside either way.
+      */
+      const message: AbuMessage = {
+        content: formatUnattendedOutcomeSummary(outcome, getI18n()),
+        title: trigger.name,
+        color,
+        footer: `Abu AI · ${new Date().toLocaleString('zh-CN')}`,
+        metadata: unattendedRunOutcomeMetadata(outcome),
+      };
+      const replyContext = (payload as TriggerEventPayload & { _replyContext?: IMReplyContext })._replyContext;
+      const { success, error } = await outputSender.send(trigger.output, message, replyContext);
+      if (!success) {
+        console.warn(`[Trigger] Outcome push failed for ${trigger.name}: ${error}`);
+      }
+    } catch (err) {
+      console.warn(`[Trigger] Outcome push failed for ${trigger.name}`, err);
+    }
+  }
+
   private async pushOutput(
     trigger: Trigger,
     runId: string,
     conversationId: string,
     payload: TriggerEventPayload,
+    outcome: UnattendedRunOutcome,
     replyContext?: IMReplyContext,
   ) {
     if (!trigger.output) return;
@@ -482,9 +616,27 @@ class TriggerEngine {
       runTime: runTimeStr,
       timestamp: new Date().toLocaleString('zh-CN'),
       eventData: JSON.stringify(payload.data),
+      // `$RUN_OUTCOME` — available to a template that asks for it, ignored by
+      // one that does not, so a template written before this batch renders
+      // byte-identically.
+      runOutcome: formatUnattendedOutcomeLine(outcome, getI18n()),
     };
 
-    const message = outputSender.buildMessage(conversationId, trigger.output, context);
+    const answer = outputSender.buildMessage(conversationId, trigger.output, context);
+    /*
+      F7, as amended by the batch-8 ruling: the ending goes in front of the
+      answer only where a PERSON reads it. A webhook body and a
+      `custom_template` payload keep the exact `content` they had before —
+      they get the ending as `metadata` (and, for templates, wherever the user
+      put `$RUN_OUTCOME`).
+    */
+    const message: AbuMessage = {
+      ...answer,
+      content: prefixesOutcomeIntoContent(trigger.output)
+        ? `${formatUnattendedOutcomeSummary(outcome, getI18n())}\n\n${answer.content}`
+        : answer.content,
+      metadata: { ...answer.metadata, ...unattendedRunOutcomeMetadata(outcome) },
+    };
     const { success, error } = await outputSender.send(trigger.output, message, replyContext);
 
     useTriggerStore

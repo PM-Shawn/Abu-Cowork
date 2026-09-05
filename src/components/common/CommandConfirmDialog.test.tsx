@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event';
 import CommandConfirmDialog, { type CommandConfirmRequest } from './CommandConfirmDialog';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
 
 // Pins the browser-confirmation button set: which scopes are offered is a
 // security decision made by the requester (allowPersistentGrant), and the
@@ -15,7 +16,12 @@ import { useSettingsStore } from '@/stores/settingsStore';
 describe('CommandConfirmDialog', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    useSettingsStore.setState({
+      browserSitePermissions: {},
+      // Shipped default (scripting = 'ask'). Reset explicitly so a test that
+      // flips the scripting row cannot rename this button for its neighbours.
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+    });
   });
 
   afterEach(() => {
@@ -95,6 +101,42 @@ describe('CommandConfirmDialog', () => {
     expect(screen.queryByRole('button', { name: /以后都允许/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '确认执行' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument();
+  });
+
+  // The same click writes the same verdict either way — but with the scripting
+  // row on 'allow', that verdict is also the last precondition for scripts to
+  // run on the site with no dialog, and for an automatic task to script there
+  // at all. Ruling-I refused to let a SCRIPT dialog mint the verdict for that
+  // reason; the click/fill dialog still does, so the label has to say so.
+  describe('"always allow this site" names the scripting door when there is one', () => {
+    it('says "including scripts" while the scripting row is set to allow', () => {
+      useSettingsStore.setState({
+        browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, scripting: 'allow' },
+      });
+      renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true });
+
+      expect(
+        screen.getByRole('button', { name: '此网站以后都允许（含运行脚本）' }),
+      ).toBeInTheDocument();
+    });
+
+    it('leaves the label alone on the shipped default, where there is no second door', () => {
+      // scripting = 'ask' (the default set in beforeEach): the site verdict
+      // buys nothing for scripts, so promising it would be the mirror error.
+      renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true });
+
+      expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
+      expect(screen.queryByText(/含运行脚本/)).not.toBeInTheDocument();
+    });
+
+    it('says nothing extra when the scripting row is denied', () => {
+      useSettingsStore.setState({
+        browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, scripting: 'deny' },
+      });
+      renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true });
+
+      expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
+    });
   });
 
   // "Danger level decides whether you can settle it once and for all"

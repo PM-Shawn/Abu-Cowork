@@ -814,6 +814,47 @@ export interface TranslationDict {
     };
   };
 
+  /**
+   * The one-line summary an unattended run sends to its OWN IM channel,
+   * whatever way it ended (F7). Codes → sentences; the codes themselves are
+   * what the run records, so a language switch re-words history instead of
+   * freezing one locale into it.
+   *
+   * The denial reasons and next steps it quotes come from `browserRunReport`
+   * above — one table, both surfaces.
+   */
+  unattendedRun: {
+    outcome: {
+      succeeded: string;
+      /** Delivered, but something was refused / failed / ran out of turns. */
+      partial: string;
+      /** Nothing got through the gate. */
+      blocked: string;
+      /** Nothing was even attempted — the master switch is off. */
+      notRun: string;
+      failed: string;
+      stopped: string;
+      noProgress: string;
+    };
+    /** "{label}：{detail}" */
+    summaryWithDetail: string;
+    /** "{reason}（{origins}）" */
+    detailWithOrigins: string;
+    /** "{failed}/{total} 个浏览器动作失败" */
+    detailActionsFailed: string;
+    /** Nothing was refused and nothing failed, yet there is no answer. */
+    detailNothingDelivered: string;
+    /**
+     * The run ran out of turns but still delivered. The card carries this in
+     * its `incomplete` badge; IM has no badge, so it needs the sentence — and
+     * it must not be `detailNothingDelivered`, which the answer printed right
+     * below it would contradict.
+     */
+    detailTurnLimit: string;
+    /** "接下来：{step}" — second line, only when there is something to do. */
+    nextStep: string;
+  };
+
   // Settings Modal
   settings: {
     title: string;
@@ -2800,6 +2841,13 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** Same button, worn while the scripting row is set to 'allow'. The
+     *  verdict this click writes is the same one either way; what changes is
+     *  what it unlocks — with that row on 'allow', a standing 'allowed' site
+     *  is the whole remaining precondition for running scripts on it without
+     *  a dialog (and for an automatic run to script there at all), so the
+     *  label has to name that second door. */
+    browserAlwaysAllowSiteWithScripts: string;
     /** "Block this site" button — writes a persistent 'denied' verdict and
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */

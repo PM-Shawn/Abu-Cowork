@@ -100,6 +100,24 @@
     "stop_recording"
   ]);
   var OWNER_CURRENT_TAB_ACTIONS = /* @__PURE__ */ new Set(["get_html"]);
+  var TAB_TARGETED_ACTIONS = /* @__PURE__ */ new Set([
+    "screenshot",
+    "screenshot_full_page",
+    "navigate",
+    "execute_js",
+    "snapshot",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "start_recording",
+    "stop_recording"
+  ]);
   var NO_ACTIVE_TAB_MESSAGE = "No active browser tab is available. Call get_tabs and pass tabId.";
   function staleTabMessage(tabId2) {
     return `Browser tab ${tabId2} is no longer open \u2014 it was closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.`;
@@ -128,7 +146,10 @@
       return fallback;
     }
     if (explicit !== void 0) {
-      if (!await deps.tabExists(explicit)) throw new Error(staleTabMessage(explicit));
+      if (!await deps.tabExists(explicit)) {
+        store.releaseTab(explicit);
+        throw new Error(staleTabMessage(explicit));
+      }
       const holder = store.holderOf(explicit);
       if (!holder) {
         store.claim(explicit, owner, deps.now());
@@ -151,6 +172,24 @@
       throw new Error(staleTabMessage(current));
     }
     return current;
+  }
+  var NO_OWNERSHIP = /* @__PURE__ */ new Map();
+  function tabListingFor(store, owner, liveTabIds, legacyCurrentTab) {
+    if (isLegacyOwner(owner)) {
+      return { currentTabId: legacyCurrentTab(), ownership: NO_OWNERSHIP };
+    }
+    const live = new Set(liveTabIds);
+    const ownership = /* @__PURE__ */ new Map();
+    for (const tabId2 of live) {
+      const holder = store.holderOf(tabId2);
+      if (!holder) continue;
+      ownership.set(tabId2, holder.key === owner.key ? "you" : "other");
+    }
+    const current = store.currentTabOf(owner);
+    return {
+      currentTabId: current !== null && live.has(current) ? current : null,
+      ownership
+    };
   }
   function classifyInbound(raw) {
     const message = raw ?? {};
@@ -421,24 +460,6 @@
       return false;
     }
   }
-  var TAB_TARGETED_ACTIONS = /* @__PURE__ */ new Set([
-    "screenshot",
-    "screenshot_full_page",
-    "navigate",
-    "execute_js",
-    "snapshot",
-    "get_html",
-    "click",
-    "fill",
-    "select",
-    "wait_for",
-    "extract_text",
-    "extract_table",
-    "scroll",
-    "keyboard",
-    "start_recording",
-    "stop_recording"
-  ]);
   async function handleRequest(request) {
     const { id, action, payload } = request;
     try {
@@ -487,17 +508,26 @@
             }
           }
           console.log(`[abu-ext] get_tabs result: strategy=${strategy}, targetWindowId=${targetWindowId}`);
-          let focusedTabId;
-          if (lastActiveTabId) {
-            const trackedTab = tabs.find((t) => t.id === lastActiveTabId);
-            if (trackedTab) {
-              focusedTabId = lastActiveTabId;
+          const listing = tabListingFor(
+            tabClaims,
+            ownerFromPayload(payload),
+            tabs.flatMap((t) => t.id === void 0 ? [] : [t.id]),
+            () => {
+              let legacyFocused;
+              if (lastActiveTabId) {
+                const trackedTab = tabs.find((t) => t.id === lastActiveTabId);
+                if (trackedTab) {
+                  legacyFocused = lastActiveTabId;
+                }
+              }
+              if (!legacyFocused && targetWindowId) {
+                const activeInTarget = tabs.find((t) => t.active && t.windowId === targetWindowId);
+                legacyFocused = activeInTarget?.id ?? void 0;
+              }
+              return legacyFocused ?? null;
             }
-          }
-          if (!focusedTabId && targetWindowId) {
-            const activeInTarget = tabs.find((t) => t.active && t.windowId === targetWindowId);
-            focusedTabId = activeInTarget?.id ?? void 0;
-          }
+          );
+          const focusedTabId = listing.currentTabId ?? void 0;
           const normalTabs = tabs.filter((t) => normalWindowIds.has(t.windowId));
           const windowGroups = {};
           for (const t of normalTabs) {
@@ -510,13 +540,23 @@
             return {
               windowId,
               isCurrentWindow: isCurrent,
-              tabs: wTabs.map((t) => ({
-                tabId: t.id,
-                url: t.url ?? "",
-                title: t.title ?? "",
-                active: t.active,
-                isCurrentTab: t.id === focusedTabId
-              }))
+              // `active` stays Chrome's own truth (which tab the user is looking
+              // at in that window); `isCurrentTab` is the owner-scoped one. The
+              // ownership marks tell a task which tabs are already being driven,
+              // so it does not pick one that would only be refused — and are
+              // simply absent for the tabs nobody holds, and for legacy callers.
+              tabs: wTabs.map((t) => {
+                const held = t.id === void 0 ? void 0 : listing.ownership.get(t.id);
+                return {
+                  tabId: t.id,
+                  url: t.url ?? "",
+                  title: t.title ?? "",
+                  active: t.active,
+                  isCurrentTab: t.id === focusedTabId,
+                  ...held === "you" ? { ownedByYou: true } : {},
+                  ...held === "other" ? { ownedByOther: true } : {}
+                };
+              })
             };
           });
           windows.sort((a, b) => (b.isCurrentWindow ? 1 : 0) - (a.isCurrentWindow ? 1 : 0));

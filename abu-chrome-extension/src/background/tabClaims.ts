@@ -37,6 +37,15 @@
  * | tab held by another conversation | throws, names the tab | throws, names the tab AND its holder |
  * | tab gone | "tab not found … call get_tabs" | same shape |
  * | no `tabId` given | that owner's current tab (`get_html` only) | same |
+ * | `get_tabs` current tab | that owner's, else none | same (`tabListingFor`) |
+ * | `get_tabs` listing | filtered to owner + legacy | complete, claimed tabs MARKED |
+ * | user reclaims a tab | conversation locked out of the user's pane tab | NO counterpart |
+ *
+ * The last two rows are the divergences: see `tabListingFor` for why the list
+ * stays complete here, and note that the host's "user reclaims" rule (its only
+ * USER-vs-task rule) has nothing on this side — what is mirrored is the
+ * task-vs-task arbitration. A task that acts on a page keeps it until the tab
+ * closes; there is no user-takeover release. Accounted, not implemented.
  *
  * The one rule that CANNOT be mirrored literally: in the host, a tab the user
  * opened is `LEGACY` and driving it never claims it, because the host owns its
@@ -242,6 +251,39 @@ const LEGACY_LAST_ACTIVE_ACTIONS = new Set([
  */
 const OWNER_CURRENT_TAB_ACTIONS = new Set(['get_html']);
 
+/**
+ * Actions that act on exactly ONE tab, and so must resolve an owner-scoped
+ * target before their handler runs. `get_tabs` / `get_downloads` name no tab
+ * and are excluded; an unknown action resolves nothing and falls through to the
+ * dispatcher's `default:`.
+ *
+ * It lives HERE, next to the rule it gates, rather than beside the switch in
+ * `background/index.ts`: an action that acts on a tab but is missing from this
+ * set skips the ownership gate entirely, and nothing about that failure is
+ * loud. `tabClaims.test.ts` re-derives the list from the bridge's own tool
+ * definitions (`abu-browser-bridge/src/tools.ts` — every action whose payload
+ * carries a `tabId`) and fails when the two drift apart, so adding a tool
+ * without adding it here breaks a test rather than a user's isolation.
+ */
+export const TAB_TARGETED_ACTIONS: ReadonlySet<string> = new Set([
+  'screenshot',
+  'screenshot_full_page',
+  'navigate',
+  'execute_js',
+  'snapshot',
+  'get_html',
+  'click',
+  'fill',
+  'select',
+  'wait_for',
+  'extract_text',
+  'extract_table',
+  'scroll',
+  'keyboard',
+  'start_recording',
+  'stop_recording',
+]);
+
 export interface TabResolutionDeps {
   /** Resolves `true` while the tab is still open. */
   tabExists(tabId: number): Promise<boolean>;
@@ -322,7 +364,14 @@ export async function resolveTargetTab(
   }
 
   if (explicit !== undefined) {
-    if (!(await deps.tabExists(explicit))) throw new Error(staleTabMessage(explicit));
+    if (!(await deps.tabExists(explicit))) {
+      // Drop it on the way out, exactly as the tabId-less path below does: we
+      // have just proved the tab is gone, and a claim `chrome.tabs.onRemoved`
+      // failed to reap (a service-worker restart between the close and the
+      // listener) would otherwise keep refusing everyone else forever.
+      store.releaseTab(explicit);
+      throw new Error(staleTabMessage(explicit));
+    }
     const holder = store.holderOf(explicit);
     if (!holder) {
       store.claim(explicit, owner, deps.now());
@@ -351,6 +400,81 @@ export async function resolveTargetTab(
     throw new Error(staleTabMessage(current));
   }
   return current;
+}
+
+// --- Tab listing (`get_tabs`) ---
+
+/**
+ * How one listed tab relates to the caller. Absent from the map ⇒ no task holds
+ * it, so it is free for the caller to take.
+ *
+ * `other` covers BOTH another conversation (which would be refused) and a
+ * sibling run of the caller's own conversation (which an explicit hand-over may
+ * still act on). The listing is not the place a hand-over is discovered — the
+ * parent names the tab id — so one "someone else is driving this" marker is
+ * enough, and it never invites a model to guess at a tab it does not hold.
+ */
+export type TabOwnership = 'you' | 'other';
+
+export interface OwnerTabListing {
+  /**
+   * The tab this listing may call "the current tab", or `null` when the caller
+   * has none. NEVER the user's active tab for an owned caller: `get_tabs` is
+   * the one place a model learns which tab to act on, so reporting the page the
+   * user happens to be looking at would re-introduce "follow the user" as an
+   * explicit recommendation — the exact behaviour `resolveTargetTab` stopped
+   * doing implicitly.
+   */
+  readonly currentTabId: number | null;
+  readonly ownership: ReadonlyMap<number, TabOwnership>;
+}
+
+const NO_OWNERSHIP: ReadonlyMap<number, TabOwnership> = new Map();
+
+/**
+ * The owner-scoped half of a `get_tabs` reply.
+ *
+ * Mirrors `browserHost.cjs`'s listing (`automationTabs` + the `get_tabs`
+ * branch): the host reports `activeTabIdByOwner.get(ownerKey) ?? null` and
+ * re-points it only at a tab THIS owner may use, leaving an owner with no
+ * eligible tab no current tab at all.
+ *
+ * One deliberate divergence, forced by the carrier: the host also FILTERS the
+ * list to `owner + legacy`, hiding other tasks' tabs outright. Its tabs are
+ * automation views it opened itself, so hiding one hides nothing the user can
+ * see. Here every tab is a real tab in the user's Chrome, and a task claims one
+ * on first use — so filtering would make a single `snapshot` by task A erase a
+ * page the user has open from task B's view of their own browser, and B would
+ * report "no such tab" about a tab the user is looking at. The list therefore
+ * stays complete and each claimed tab is MARKED instead. (See the header table
+ * and the report's comparison table.)
+ *
+ * @param liveTabIds every tab id in the listing, used to drop a `currentTabId`
+ *   that names a tab which is no longer open.
+ * @param legacyCurrentTab read ONLY for a caller that sent no `ownerId`: the
+ *   pre-claims "user's active tab" answer, which that path keeps verbatim.
+ */
+export function tabListingFor(
+  store: TabClaimStore,
+  owner: Owner,
+  liveTabIds: Iterable<number>,
+  legacyCurrentTab: () => number | null,
+): OwnerTabListing {
+  if (isLegacyOwner(owner)) {
+    return { currentTabId: legacyCurrentTab(), ownership: NO_OWNERSHIP };
+  }
+  const live = new Set(liveTabIds);
+  const ownership = new Map<number, TabOwnership>();
+  for (const tabId of live) {
+    const holder = store.holderOf(tabId);
+    if (!holder) continue;
+    ownership.set(tabId, holder.key === owner.key ? 'you' : 'other');
+  }
+  const current = store.currentTabOf(owner);
+  return {
+    currentTabId: current !== null && live.has(current) ? current : null,
+    ownership,
+  };
 }
 
 // --- Inbound message classification ---

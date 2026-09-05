@@ -10,9 +10,12 @@
 
 import type { BridgeRequest, BridgeResponse } from '../shared/types.js';
 import {
+  TAB_TARGETED_ACTIONS,
   classifyInbound,
   createTabClaimStore,
+  ownerFromPayload,
   resolveTargetTab,
+  tabListingFor,
   type BridgeInbound,
   type TabResolutionDeps,
 } from './tabClaims.js';
@@ -311,10 +314,9 @@ function setupSocketHandlers(socket: WebSocket): void {
  * `release` drops the tab claims a finished run holds. `cancel` is now
  * recognised rather than parsed as a request and answered with
  * `Unknown action: undefined` — actually stopping in-flight content-script work
- * is a separate, already-scheduled item ("have the extension channel abort
- * in-flight work on cancel", tracked under R5 in
- * docs/abu-browser-remaining-requirements-2026-09.md) and is deliberately not
- * attempted here.
+ * is a separate, already-scheduled item on the browser batch's remaining-work
+ * list ("have the extension channel abort in-flight work on cancel") and is
+ * deliberately not attempted here.
  */
 function handleControlMessage(inbound: Exclude<BridgeInbound, { kind: 'request' }>): void {
   if (inbound.kind === 'release') {
@@ -380,30 +382,6 @@ function isAllowedUrl(url: string): boolean {
 }
 
 // --- Request Handler ---
-
-/**
- * Actions that act on exactly ONE tab, and so must resolve an owner-scoped
- * target first. `get_tabs` / `get_downloads` name no tab and are excluded; an
- * unknown action resolves nothing and still falls through to `default:`.
- */
-const TAB_TARGETED_ACTIONS = new Set([
-  'screenshot',
-  'screenshot_full_page',
-  'navigate',
-  'execute_js',
-  'snapshot',
-  'get_html',
-  'click',
-  'fill',
-  'select',
-  'wait_for',
-  'extract_text',
-  'extract_table',
-  'scroll',
-  'keyboard',
-  'start_recording',
-  'stop_recording',
-]);
 
 async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
   const { id, action, payload } = request;
@@ -471,17 +449,33 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
 
         console.log(`[abu-ext] get_tabs result: strategy=${strategy}, targetWindowId=${targetWindowId}`);
 
-        let focusedTabId: number | undefined;
-        if (lastActiveTabId) {
-          const trackedTab = tabs.find(t => t.id === lastActiveTabId);
-          if (trackedTab) {
-            focusedTabId = lastActiveTabId;
-          }
-        }
-        if (!focusedTabId && targetWindowId) {
-          const activeInTarget = tabs.find(t => t.active && t.windowId === targetWindowId);
-          focusedTabId = activeInTarget?.id ?? undefined;
-        }
+        // Which tab this listing may call "the current one" is owner-scoped:
+        // an owned caller gets ITS OWN current tab (or none), never the page
+        // the user happens to be looking at. `get_tabs` is where a model picks
+        // its target, so leaving `lastActiveTabId` in that slot would hand the
+        // user's active tab back through the listing — the very retarget
+        // `resolveTargetTab` stopped doing. A caller that sent no `ownerId`
+        // keeps the pre-claims answer, computed below exactly as before.
+        const listing = tabListingFor(
+          tabClaims,
+          ownerFromPayload(payload),
+          tabs.flatMap(t => (t.id === undefined ? [] : [t.id])),
+          () => {
+            let legacyFocused: number | undefined;
+            if (lastActiveTabId) {
+              const trackedTab = tabs.find(t => t.id === lastActiveTabId);
+              if (trackedTab) {
+                legacyFocused = lastActiveTabId;
+              }
+            }
+            if (!legacyFocused && targetWindowId) {
+              const activeInTarget = tabs.find(t => t.active && t.windowId === targetWindowId);
+              legacyFocused = activeInTarget?.id ?? undefined;
+            }
+            return legacyFocused ?? null;
+          },
+        );
+        const focusedTabId: number | undefined = listing.currentTabId ?? undefined;
 
         // Only include tabs from normal windows
         const normalTabs = tabs.filter(t => normalWindowIds.has(t.windowId));
@@ -499,13 +493,23 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           return {
             windowId,
             isCurrentWindow: isCurrent,
-            tabs: wTabs.map(t => ({
-              tabId: t.id,
-              url: t.url ?? '',
-              title: t.title ?? '',
-              active: t.active,
-              isCurrentTab: t.id === focusedTabId,
-            })),
+            // `active` stays Chrome's own truth (which tab the user is looking
+            // at in that window); `isCurrentTab` is the owner-scoped one. The
+            // ownership marks tell a task which tabs are already being driven,
+            // so it does not pick one that would only be refused — and are
+            // simply absent for the tabs nobody holds, and for legacy callers.
+            tabs: wTabs.map(t => {
+              const held = t.id === undefined ? undefined : listing.ownership.get(t.id);
+              return {
+                tabId: t.id,
+                url: t.url ?? '',
+                title: t.title ?? '',
+                active: t.active,
+                isCurrentTab: t.id === focusedTabId,
+                ...(held === 'you' ? { ownedByYou: true } : {}),
+                ...(held === 'other' ? { ownedByOther: true } : {}),
+              };
+            }),
           };
         });
 

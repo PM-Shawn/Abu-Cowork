@@ -104,7 +104,7 @@ export default function CapabilitySetupDialog() {
     await runAgentLoopDispatched(
       request.conversationId,
       summary,
-      images.length > 0 ? { images } : undefined,
+      { initiatedBy: 'user', ...(images.length > 0 ? { images } : {}) },
     );
   };
   const relaunch = async () => {

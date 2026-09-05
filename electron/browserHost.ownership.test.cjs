@@ -862,6 +862,279 @@ test('a 429 on a subresource (non-main-frame) is not treated as the page rate-li
 });
 
 /**
+ * U6 / F2.4 — login-expiry detection.
+ *
+ * Two independent signals, both main-process-only (the model never supplies
+ * them): an HTTP auth challenge on a main-frame response, and a navigation
+ * committing on a login-shaped URL. Both record the ORIGIN, which is what
+ * `get_tabs` then reports as `authState: 'login_required'` so the shell gate
+ * and the model see the same fact.
+ */
+function tabRecord(result, tabId) {
+  return result.windows[0].tabs.find((tab) => tab.tabId === tabId);
+}
+
+/** Commit a navigation the way Chromium does: the URL is already loaded. */
+function commitNavigation(tabId, url) {
+  contentsFor(tabId).url = url;
+  contentsFor(tabId).fire('did-navigate', {}, url);
+}
+
+test('a main-frame 401 marks that origin as needing a login, and get_tabs says so', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'byte-compat: no authState key at all until something is detected');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+
+    const listing = await getTabs(host, OWNER_A);
+    assert.equal(tabRecord(listing, aTab).authState, 'login_required');
+    assert.equal(listing.summary.authState, 'login_required', 'the current tab is summarised too');
+  } finally {
+    restore();
+  }
+});
+
+test('a plain 403 does NOT mark a login — only one carrying an auth challenge does', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 403);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'an ordinary "forbidden" is not an expired session');
+
+    fireHeadersReceived({
+      url: 'https://example.com/reports',
+      statusCode: 403,
+      responseHeaders: { 'WWW-Authenticate': ['Bearer realm="api"'] },
+    });
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+  } finally {
+    restore();
+  }
+});
+
+test('a later 2xx main-frame response on the same origin clears the login flag', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 200);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'the user logged in and the page came back — the flag must not stick');
+  } finally {
+    restore();
+  }
+});
+
+test('a 401 on a subresource is not read as the page needing a login', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/api/ping', 401, 'xhr');
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined);
+  } finally {
+    restore();
+  }
+});
+
+test('committing a navigation on a login-shaped URL marks the origin', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+
+    commitNavigation(aTab, 'https://example.com/account/settings');
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined);
+
+    commitNavigation(aTab, 'https://example.com/login?next=/reports');
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+  } finally {
+    restore();
+  }
+});
+
+test('the login-URL shape is segment-anchored, so ordinary paths do not trip it', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    // A distinct origin per case: the flag is origin-keyed, so reusing one host
+    // would let an earlier case's verdict answer for a later one.
+    let n = 0;
+    const check = async (path, expected) => {
+      n += 1;
+      commitNavigation(aTab, `https://site${n}.example.com${path}`);
+      assert.equal(
+        tabRecord(await getTabs(host, OWNER_A), aTab).authState,
+        expected,
+        `${path} → ${expected ?? 'no flag'}`,
+      );
+    };
+
+    for (const path of ['/authors/jane', '/authentic-brands', '/ssometimes', '/blog/logins-explained']) {
+      await check(path, undefined);
+    }
+    for (const path of ['/sign-in', '/signin', '/sso/start', '/auth/callback', '/oauth2/authorize', '/login']) {
+      await check(path, 'login_required');
+    }
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * I1 — the flag has to be able to GO AWAY. The first round's only exit was a
+ * same-origin main-frame 2xx, which an SPA sign-in never produces: the POST is
+ * an XHR (filtered out) and the redirect is a `history.replaceState`. The user
+ * signed in exactly as asked and every later action was still refused.
+ */
+test('routing off the login page clears a login-page flag, including via replaceState', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    commitNavigation(aTab, 'https://spa.example.com/login');
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    // The SPA signs in over XHR and rewrites the URL without a navigation.
+    contentsFor(aTab).url = 'https://spa.example.com/dashboard';
+    contentsFor(aTab).fire('did-navigate-in-page', {}, 'https://spa.example.com/dashboard');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'the user did what was asked — the flag must not outlive it');
+  } finally {
+    restore();
+  }
+});
+
+test('an in-page navigation may CLEAR the flag but must never SET one', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    contentsFor(aTab).url = 'https://spa.example.com/login';
+    // A pushState is something any page can fire at will.
+    contentsFor(aTab).fire('did-navigate-in-page', {}, 'https://spa.example.com/login');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'a page must not be able to author this flag for itself');
+  } finally {
+    restore();
+  }
+});
+
+test('the navigation that carries a 401 does not erase the flag it just set', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    // Real ordering: headers first, then the error page commits did-navigate
+    // on a URL that is not login-shaped.
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    commitNavigation(aTab, 'https://example.com/reports');
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+  } finally {
+    restore();
+  }
+});
+
+test('a login flag goes stale on its own — `at` is read, not just stored', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    state.t += 10 * 60 * 1000; // the TTL
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined,
+      'a flag older than the TTL is not evidence about now');
+  } finally {
+    restore();
+  }
+});
+
+test('a stale login entry is pruned, not merely hidden', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+    state.t += 10 * 60 * 1000;
+    // Reading prunes; going BACK in virtual time must not resurrect the entry.
+    await getTabs(host, OWNER_A);
+    state.t -= 5 * 60 * 1000;
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, undefined);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * M2 — the 429 backoff and the login flag are set from the SAME listener and
+ * used to spell origins two different ways, so `example.com.` was one site for
+ * one control and another site for the other.
+ */
+test('both halves of the headers listener key origins the same way', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const { clock } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+
+    // A trailing-dot FQDN is the same host over DNS. Both signals arrive
+    // spelled that way; both must land on the dotless origin the tab reports.
+    respond(fireHeadersReceived, 'https://example.com./reports', 401);
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+
+    respond(fireHeadersReceived, 'https://example.com./reports', 429);
+    await assert.rejects(
+      navigate(host, OWNER_A, aTab, 'https://example.com/reports?retry=1'),
+      /Backing off/,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('the login flag is keyed by ORIGIN, so a sibling tab on that site sees it too', async () => {
+  const { host, fireHeadersReceived, restore } = loadHost();
+  try {
+    const aTab = tabIds(await getTabs(host, OWNER_A))[0];
+    await navigate(host, OWNER_A, aTab, 'https://example.com/reports');
+    const bTab = tabIds(await getTabs(host, OWNER_B))[0];
+    await navigate(host, OWNER_B, bTab, 'https://other.com/page');
+
+    respond(fireHeadersReceived, 'https://example.com/reports', 401);
+
+    assert.equal(tabRecord(await getTabs(host, OWNER_A), aTab).authState, 'login_required');
+    assert.equal(tabRecord(await getTabs(host, OWNER_B), bTab).authState, undefined,
+      'a different origin is unaffected');
+  } finally {
+    restore();
+  }
+});
+
+/**
  * I-1 — the R5 gate must check the NAVIGATION TARGET's origin, not the tab's
  * current origin, for a `navigate`/`goto` action. Checking the current origin
  * (the pre-fix behavior) gets both directions wrong: it lets automation
@@ -2747,6 +3020,266 @@ test('F1: a steal does not promote the stolen-onto tab to the owner current tab'
     contentsFor(tabTwo).fire('focus');
     assert.equal((await probeTabs(host)).summary.currentTabId, tabOne, 'steal must not move the current tab');
     assert.equal(mainWin.webContents.focusCalls, 1);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * ── U5: the execution-time origin pin ──────────────────────────────────────
+ *
+ * The approval gate resolves WHICH PAGE an action targets, decides, and the
+ * call then travels here. Between those two moments the page can move — a
+ * server redirect, a `window.location`, a meta refresh — and nothing used to
+ * recheck: a click approved for `https://shop.example.com` executed on
+ * whatever the tab had drifted to. These tests pin the recheck.
+ *
+ * `payload.expectedOrigin` / `payload.unattended` are stamped by Abu's own
+ * approval gate into MCP `_meta` (`abu/expectedOrigin`, `abu/unattended`) and
+ * are unreachable from the tool's input schema, so the model can neither read
+ * nor forge them — see `abu-browser-bridge/src/tools.ts`.
+ */
+
+/** A tab parked on `url`, ready to receive a pinned action. */
+async function tabOn(host, url) {
+  const tab = tabIds(await getTabs(host, OWNER_A))[0];
+  await navigate(host, OWNER_A, tab, url);
+  return tab;
+}
+
+test('U5 pin: an unattended action on the approved origin runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an unattended action refuses after the page drifted cross-origin', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    // The redirect the gate could not see: same tab, different site.
+    contentsFor(tab).url = 'https://evil.example.com/cart';
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        unattended: true,
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      (error) => {
+        assert.match(error.message, /no longer on the page this action was approved for/);
+        // The model is told BOTH ends and what to do next, or it will just retry.
+        assert.match(error.message, /https:\/\/shop\.example\.com/);
+        assert.match(error.message, /https:\/\/evil\.example\.com/);
+        assert.match(error.message, /snapshot/);
+        return true;
+      }
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a same-origin path change is NOT a drift', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://shop.example.com/cart/step-2?x=1';
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: fail-closed — an unattended pinned action with NO expectedOrigin is refused', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    for (const action of ['click', 'fill', 'select', 'keyboard', 'execute_js']) {
+      await assert.rejects(
+        host.performBrowserAutomation(action, {
+          ownerId: OWNER_A,
+          tabId: tab,
+          selector: '#buy',
+          unattended: true,
+        }),
+        (error) => {
+          assert.match(error.message, /sent no approved origin/, `wrong message for ${action}`);
+          return true;
+        }
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a page that crashed onto a non-http url is a mismatch, not a pass', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'about:blank';
+
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        unattended: true,
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      /an unknown page/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: navigate is exempt — its target IS what the gate approved', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    // Pinned to the page it is LEAVING; navigating away must still work, or an
+    // unattended run could never move off any page at all.
+    await host.performBrowserAutomation('navigate', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      action: 'goto',
+      url: 'https://other.example.com/',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+    assert.equal(contentsFor(tab).getURL(), 'https://other.example.com/');
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: read-only actions are exempt — they change nothing', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    await host.performBrowserAutomation('snapshot', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Review ruling I3 inverted the assertion that used to stand here ("an
+ * ATTENDED call is untouched, drifted or not"). A cross-origin drift between
+ * approval and execution is a bug in EVERY run mode, and a human cannot
+ * perceive a sub-second redirect landing before the click they just approved.
+ * What stays attended-only is the MISSING-value refusal, covered by the second
+ * test below — which is what keeps every pre-U5 attended call shape working.
+ */
+test('U5 pin: an ATTENDED call is refused on a cross-origin drift too (I3)', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    // No `unattended` marker — a human is watching, and it is refused anyway.
+    await assert.rejects(
+      host.performBrowserAutomation('click', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        selector: '#buy',
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      /no longer on the page this action was approved for/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an attended call carrying NO pin keeps its exact pre-U5 path', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    // Every call shape that predates `expectedOrigin` still runs. The
+    // missing-value refusal is unattended-only precisely so this holds.
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: an attended call on the approved origin still runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('U5 pin: a trailing-dot FQDN is the same origin, not a way past the pin', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com./cart');
+
+    await host.performBrowserAutomation('click', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      selector: '#buy',
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
   } finally {
     restore();
   }

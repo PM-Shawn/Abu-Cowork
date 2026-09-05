@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useScheduleStore } from '@/stores/scheduleStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
 import { useI18n, format } from '@/i18n';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import {
@@ -10,11 +12,15 @@ import {
   Trash2,
   RotateCw,
   Clock,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScheduleFrequency } from '@/types/schedule';
 import ScheduleRunHistory from './ScheduleRunHistory';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+
+/** Keep the chip row one or two lines; the rest is a "+N more" trailer. */
+const MAX_LISTED_AUTH_ORIGINS = 6;
 
 function getFrequencyLabel(
   freq: ScheduleFrequency,
@@ -41,6 +47,11 @@ export default function ScheduleTaskDetail() {
     deleteTask,
     openEditor,
   } = useScheduleStore();
+
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const allowUnattendedBrowser = useSettingsStore((s) => s.allowUnattendedBrowser);
+  const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
+  const browserAuth = summarizeBrowserAuthorization(sitePermissions, allowUnattendedBrowser);
 
   const [isRunning, setIsRunning] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -162,6 +173,63 @@ export default function ScheduleTaskDetail() {
                 {format(t.schedule.totalRuns, { count: task.totalRuns })}
               </span>
             </div>
+          </div>
+
+          {/* Browser authorization (U5 authorization visibility).
+              A scheduled task runs unattended, so the browser gate lets it act
+              only on the sites the user granted — a standing authorization
+              that was, until now, visible nowhere near the task acting under
+              it. Shown here with the entry point to change it; the verdicts
+              themselves stay owned by Settings (one place to revoke, not two
+              that can disagree). */}
+          <div className="bg-[var(--abu-bg-muted)] rounded-xl border border-[var(--abu-border)] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-body text-[var(--abu-text-tertiary)]">
+                  {t.schedule.browserAuthTitle}
+                </div>
+                <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+                  {browserAuth.masterSwitchOn
+                    ? t.schedule.browserAuthDesc
+                    : t.schedule.browserAuthOff}
+                </p>
+              </div>
+              <button
+                onClick={() => openSystemSettings('capabilities')}
+                className="shrink-0 flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                {t.schedule.browserAuthManage}
+              </button>
+            </div>
+            {browserAuth.masterSwitchOn && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {browserAuth.reachableUnattended.length === 0 ? (
+                  <span className="text-minor text-[var(--abu-text-tertiary)]">
+                    {t.schedule.browserAuthNone}
+                  </span>
+                ) : (
+                  <>
+                    {browserAuth.reachableUnattended.slice(0, MAX_LISTED_AUTH_ORIGINS).map((origin) => (
+                      <span
+                        key={origin}
+                        title={origin}
+                        className="max-w-full truncate rounded-md bg-[var(--abu-success-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-success)]"
+                      >
+                        {origin}
+                      </span>
+                    ))}
+                    {browserAuth.reachableUnattended.length > MAX_LISTED_AUTH_ORIGINS && (
+                      <span className="rounded-md px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
+                        {format(t.schedule.browserAuthMore, {
+                          count: browserAuth.reachableUnattended.length - MAX_LISTED_AUTH_ORIGINS,
+                        })}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Description */}

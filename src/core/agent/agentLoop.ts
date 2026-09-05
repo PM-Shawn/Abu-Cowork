@@ -108,7 +108,12 @@ import {
   hashComputerUseTaskSummary,
   latestUserTaskSummary,
 } from '../capabilityPlugins/computerUseResume';
-import { deriveRunInteractionMode } from './runInteractionMode';
+import { deriveRunInteractionMode, type RunInitiator } from './runInteractionMode';
+import {
+  BROWSER_DENIAL_ABORT_CAUSE,
+  createBrowserDenialTracker,
+  type BrowserDenialAbortCause,
+} from './browserDenialTracker';
 
 const logger = createLogger('agentLoop');
 
@@ -547,6 +552,14 @@ export interface AgentLoopOptions {
   ) => import('../skill/preprocessor').SkillCommandApprovalCallback;
   /** IM headless context — injected into system prompt to replace UI-dependent workspace logic */
   imContext?: IMContext;
+  /**
+   * Who started this run — see `RunInitiator`. Dispatch entry points stamp
+   * it (`'user'` for a desktop send / retry / resume, `'automation'` for the
+   * scheduler, triggers, IM inbound and file watchers). Decides the run's
+   * interaction mode together with the scope/ceiling markers; absent, the
+   * conversation-record provenance decides as before.
+   */
+  initiatedBy?: RunInitiator;
   /** Settings port — defaults to the in-process Zustand-backed reader. Injection point for
    *  a future out-of-process agent runtime (see SettingsReader docstring). */
   settingsReader?: SettingsReader;
@@ -694,6 +707,12 @@ interface AgentLoopResultBase {
   upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
   stopReason?: 'sidecar_unavailable';
+  /**
+   * Why the run aborted ITSELF, when `reason: 'aborted'` was not a Stop
+   * click: today only the consecutive browser-denial guard. Shell-owned —
+   * a sidecar terminal never carries it (see agentRunTerminal.ts's key set).
+   */
+  abortCause?: BrowserDenialAbortCause;
 }
 
 /**
@@ -722,7 +741,7 @@ export type AgentLoopResult =
  * callers don't need full AgentLoopOptions / Conversation objects.
  */
 export function isInteractiveDesktop(
-  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling' | 'initiatedBy'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
 ): boolean {
   return deriveRunInteractionMode({
@@ -731,6 +750,7 @@ export function isInteractiveDesktop(
     imContext: options?.imContext,
     triggerId: conversation?.triggerId,
     scheduledTaskId: conversation?.scheduledTaskId,
+    initiatedBy: options?.initiatedBy,
   }) === 'foreground';
 }
 
@@ -753,7 +773,7 @@ export function isInteractiveDesktop(
  * Pure function, exported for testing.
  */
 export function shouldComputeProposalSignal(
-  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling'> | undefined,
+  options: Pick<AgentLoopOptions, 'imContext' | 'authorizationScopeId' | 'runPermissionCeiling' | 'initiatedBy'> | undefined,
   conversation: { scheduledTaskId?: string; triggerId?: string } | undefined,
   workspacePath: string | null | undefined,
 ): boolean {
@@ -936,12 +956,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     imContext: options?.imContext,
     triggerId: precomputeConversation?.triggerId,
     scheduledTaskId: precomputeConversation?.scheduledTaskId,
+    initiatedBy: options?.initiatedBy,
   });
   const precomputeToolContext: ToolExecutionContext = {
     workspacePath: precomputeWorkspacePath,
     conversationId,
     loopId,
     interactionMode: runInteractionMode,
+    initiatedBy: options?.initiatedBy,
     permissionMode: precomputeConversation?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     authorizationScopeId: options?.authorizationScopeId,
@@ -1006,6 +1028,21 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // improvising (e.g. onto the Desktop). The folder is created lazily on the
   // first write. Headless contexts (IM / scheduled / trigger) are excluded —
   // they must not auto-create workspace directories.
+  // Consecutive browser-denial guard for the IN-PROCESS loop. A sidecar-hosted
+  // loop never reaches this: its tool calls execute in the shell, whose
+  // RunSession owns the counter (agentLoopRunner.ts's contextForSession) and
+  // drops these function-valued fields at the wire. The closing message goes
+  // in BEFORE the abort so it lands after the interrupted turn's bubble.
+  const browserDenials = createBrowserDenialTracker(() => {
+    chatDelta.addMessage(conversationId, {
+      id: generateId(),
+      role: 'assistant',
+      content: getI18n().chat.browserDeniedAbort,
+      timestamp: Date.now(),
+      loopId,
+    });
+    abortController.abort(new Error('Run stopped after consecutive browser denials'));
+  });
   const toolContext: ToolExecutionContext = {
     workspacePath: resolveToolContextWorkspacePath(
       options,
@@ -1015,11 +1052,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     loopId,
     conversationId,
     interactionMode: runInteractionMode,
+    initiatedBy: options?.initiatedBy,
     permissionMode: _convForContext?.permissionMode
       ?? getSettingsReader().getSnapshot().permissionMode,
     runPermissionCeiling: options?.runPermissionCeiling,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
+    reportBrowserDenial: (kind) => browserDenials.reportDenial(kind),
+    reportBrowserAllow: (consent) => browserDenials.reportAllow(consent),
     taskSummaryHash: await hashComputerUseTaskSummary(
       latestUserTaskSummary(_convForContext?.messages ?? []) ?? userMessage,
     ),
@@ -1260,6 +1300,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         imContext: options?.imContext,
         triggerId: _convForContext?.triggerId,
         scheduledTaskId: _convForContext?.scheduledTaskId,
+        initiatedBy: options?.initiatedBy,
+        // The `@agent` route delegates the WHOLE turn, so the run's browser
+        // guard has to follow it there or this entry point would be the one
+        // way to escape it.
+        reportBrowserDenial: toolContext.reportBrowserDenial,
+        reportBrowserAllow: toolContext.reportBrowserAllow,
         parentLoopId: loopId,
         parentUserMessageId: delegatedUserTurn.origin.messageId,
         parentConversationId: conversationId,
@@ -2922,7 +2968,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
         endConversationTrace(conversationId, { output: { reason: 'aborted' } });
         await endComputerUseTaskLease();
-        return { reason: 'aborted' as const };
+        return {
+          reason: 'aborted' as const,
+          ...(browserDenials.tripped ? { abortCause: BROWSER_DENIAL_ABORT_CAUSE } : {}),
+        };
       }
 
       clearLoopContext(loopId);

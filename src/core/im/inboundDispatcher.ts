@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { parseInboundMessage } from './inboundRouter';
 import { triggerEngine } from '../trigger/triggerEngine';
 import { imChannelRouter } from './channelRouter';
+import { tryConsumeApprovalReply } from './pendingApprovals';
 import { isTauriEnv } from '../../utils/tauriEnv';
 import type { ImageAttachment } from '../../types';
 
@@ -67,6 +68,17 @@ function dispatch(
   // "[文件: name]", which silently dropped the one thing the agent needs to open
   // the attachment it was just sent.
   if (text !== undefined) message.text = text;
+
+  // Approval answers first, and they never go further. An unattended run may
+  // be blocked on a "同意 / 拒绝" question pushed into this chat; that one word
+  // is an ANSWER, not a new instruction, and forwarding it would both leave
+  // the run hanging and hand the model a meaningless prompt. Anything that is
+  // not a bare answer is untouched and routes normally — a message that merely
+  // mentions 同意 is an ordinary message (see `classifyApprovalReply`).
+  if (tryConsumeApprovalReply(message)) {
+    console.log('[InboundDispatcher] Message consumed as a pending approval answer');
+    return;
+  }
 
   // Trigger first: check if any IM trigger matches this message
   const matched = triggerEngine.tryMatchIMTriggers(message);

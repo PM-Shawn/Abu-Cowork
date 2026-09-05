@@ -103,6 +103,7 @@ describe('SandboxRecoveryCard', () => {
         {
           allowedTools: ['computer', 'ask_user_question'],
           requireNewRun: true,
+          initiatedBy: 'user',
         },
       );
     });

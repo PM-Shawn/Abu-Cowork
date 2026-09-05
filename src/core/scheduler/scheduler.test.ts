@@ -17,6 +17,7 @@ import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { initLanguage } from '../../i18n';
 import { checkWritePath, hasFullShellAuthorizationScope, revokeWorkspace } from '../tools/pathSafety';
+import { checkToolApproval } from '../tools/registry';
 
 const getSchedulerToolsMock = vi.fn(() => [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
@@ -59,9 +60,15 @@ import { schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { outputSender } from '../im/outputSender';
 import {
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  clearBrowserSignals,
   clearSchedulerDriftSignals,
   getRecentSchedulerDriftSignals,
+  recordBrowserSignal,
 } from '../observability/browserSignals';
+import { isBrowserRunReportMessage } from '../observability/browserRunReport';
+import type { Message } from '../../types';
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -130,6 +137,268 @@ describe('SchedulerEngine output delivery by exit reason', () => {
 
     expect(outputSender.buildMessage).not.toHaveBeenCalled();
     expect(latestRunStatus(task.id)).toBe('error');
+  });
+
+  // A run that stopped ITSELF after consecutive browser refusals is not the
+  // same event as a user pressing Stop, and the run history is the only place
+  // the user sees either. Without this the abort cause the guard records has
+  // no reader at all, and the run reads as a bare "Task was cancelled".
+  it('names the consecutive-browser-denial cause in the run result', async () => {
+    const task = makeTask({ id: 'task-browser-denials' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'aborted',
+      abortCause: 'consecutive_browser_denials',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    // The suite runs under en-US; the zh-CN string names 浏览器操作 the same way.
+    expect(runs[runs.length - 1]?.error).toContain('browser actions were refused');
+    expect(runs[runs.length - 1]?.error).not.toContain('Task was cancelled');
+  });
+});
+
+// ── U7: the unattended task report card ───────────────────────────────────
+//
+// The one part of the unattended feature a person actually reads. Everything
+// else works or refuses silently; if the card is missing, empty, or about the
+// wrong run, the user's verdict on the whole night is "it did nothing".
+describe('SchedulerEngine run report card', () => {
+  /** Every terminal path leads here, so the card is emitted from `finally`. */
+  function cardsIn(conversationId: string): Message[] {
+    const conv = useChatStore.getState().conversations[conversationId];
+    return (conv?.messages ?? []).filter(isBrowserRunReportMessage);
+  }
+
+  function conversationsForTask(taskId: string): string[] {
+    return (useScheduleStore.getState().tasks[taskId]?.runs ?? [])
+      .map((run) => run.conversationId)
+      .filter((id): id is string => typeof id === 'string');
+  }
+
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useChatStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      currentUsage: null,
+      pendingInput: null,
+      agentStates: new Map(),
+    });
+    clearBrowserSignals();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    clearBrowserSignals();
+  });
+
+  it('appends a card describing the run that just touched the browser', async () => {
+    const task = makeTask({ id: 'task-report' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    // The conversation is created inside executeTask, so resolve its id lazily.
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'tool_call',
+            tool: 'abu-browser__navigate',
+            ok: true,
+            durationMs: 5,
+            origin: 'https://intranet.example',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const [conversationId] = conversationsForTask(task.id);
+    const cards = cardsIn(conversationId);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].browserRunReport).toMatchObject({
+      outcome: 'completed',
+      actions: { total: 1, failed: 0 },
+      sites: [{ origin: 'https://intranet.example', actions: 1, failures: 0 }],
+    });
+  });
+
+  it('does NOT append a card to a run that never touched the browser', async () => {
+    const task = makeTask({ id: 'task-no-browser' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+    await schedulerEngine.runNow(task.id);
+
+    const [conversationId] = conversationsForTask(task.id);
+    expect(cardsIn(conversationId)).toHaveLength(0);
+  });
+
+  it('reports a run that was refused everything — the master switch case', async () => {
+    // R1 §1.2: "the report records that it was skipped because the master
+    // switch is off, never silently". The run looks successful and did nothing.
+    const task = makeTask({ id: 'task-master-off' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: 'abu-browser__navigate',
+            opClass: 'interactive',
+            reason: 'master-switch-off',
+            runMode: 'unattended',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    expect(card.browserRunReport?.skippedByMasterSwitch).toBe(true);
+    expect(card.browserRunReport?.nextSteps).toContain('enable-master-switch');
+  });
+
+  it('still reports a run that FAILED — the terminal most worth explaining', async () => {
+    const task = makeTask({ id: 'task-failed' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'tool_call',
+            tool: 'abu-browser__click',
+            ok: false,
+            durationMs: 5,
+            errorClass: 'timeout',
+            origin: 'https://intranet.example',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'error', error: 'boom', messageTaken: true } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    const card = cardsIn(conversationsForTask(task.id)[0])[0];
+    expect(card.browserRunReport?.outcome).toBe('error');
+    expect(card.browserRunReport?.actions).toEqual({ total: 1, failed: 1 });
+  });
+
+  it('names the consecutive-denial abort in the card, not just in the run history', async () => {
+    const task = makeTask({ id: 'task-denial-abort' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: 'abu-browser__execute_js',
+            opClass: 'scripting',
+            reason: 'approval-refused',
+            runMode: 'unattended',
+          },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'aborted', abortCause: 'consecutive_browser_denials' } as never;
+    });
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(cardsIn(conversationsForTask(task.id)[0])[0].browserRunReport?.outcome)
+      .toBe('aborted-denials');
+  });
+
+  /**
+   * Ruling 2, at the real integration point — and the invariant it pins is
+   * the SEQ CURSOR, not the conversation id.
+   *
+   * This test used to let the scheduler mint a conversation per run, so the
+   * conversation predicate alone separated them and a mutant that deleted
+   * `seq > sinceSeq` still passed here (verified: only the aggregation-layer
+   * case went red). Both runs now share ONE conversation — the case Ruling 2
+   * actually exists for — so the cursor is the only thing keeping yesterday's
+   * actions out of today's card.
+   */
+  it('does not put the previous run\'s actions in the next run\'s card', async () => {
+    const task = makeTask({ id: 'task-two-runs' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+
+    // Pin both runs to one conversation. A conversation CAN host more than one
+    // run (a person types a follow-up into a scheduled task's conversation; an
+    // IM session is long-lived); the scheduler simply does not reuse one
+    // today, which is why this had to be forced to test the real invariant.
+    const shared = useChatStore.getState().createConversation(null, {
+      scheduledTaskId: task.id,
+      skipActivate: true,
+    });
+    const realCreateConversation = useChatStore.getState().createConversation;
+    useChatStore.setState({ createConversation: (() => shared) as never });
+
+    let origin = 'https://first.example';
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+
+    try {
+      await schedulerEngine.runNow(task.id);
+      origin = 'https://second.example';
+      await schedulerEngine.runNow(task.id);
+    } finally {
+      useChatStore.setState({ createConversation: realCreateConversation });
+    }
+
+    // Both runs used the same conversation, and both cards landed in it.
+    expect(conversationsForTask(task.id)).toEqual([shared, shared]);
+    const [first, second] = cardsIn(shared).map((m) => m.browserRunReport);
+    expect(first?.sites.map((s) => s.origin)).toEqual(['https://first.example']);
+    expect(second?.sites.map((s) => s.origin)).toEqual(['https://second.example']);
+    // The failure this pins: yesterday's actions showing up in today's report.
+    expect(second?.actions.total).toBe(1);
+    expect(JSON.stringify(second)).not.toContain('first.example');
+    expect(JSON.stringify(first)).not.toContain('second.example');
+  });
+
+  // The card carries no text on purpose, and `pushToIMChannel` extracts the
+  // LAST message. Appending before the push would send an empty IM message
+  // instead of the answer the task produced.
+  it('appends the card after the IM push has read the last message', async () => {
+    const task = makeTask({ id: 'task-push-order' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
+      recordBrowserSignal(
+        buildBrowserSignalRecord(
+          { kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 5, origin: 'https://a.example' },
+          buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+        ),
+      );
+      return { reason: 'completed' } as never;
+    });
+    let cardsAtPushTime = -1;
+    vi.mocked(outputSender.buildMessage).mockImplementation(((convId: string) => {
+      cardsAtPushTime = cardsIn(convId).length;
+      return 'test message';
+    }) as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(cardsAtPushTime).toBe(0);
+    expect(cardsIn(conversationsForTask(task.id)[0])).toHaveLength(1);
   });
 });
 
@@ -336,6 +605,97 @@ describe('SchedulerEngine permission tier', () => {
     expect(latestRunError(task.id)).toContain('https://example.com');
     expect(latestRunError(task.id)).toContain('设置');
     expect(latestRunError(task.id)).toContain('完全自主');
+  });
+
+  // The gate now refuses unattended browser actions itself instead of refusing
+  // by way of a callback that answered false — so it NOTIFIES the run's
+  // callback (ConfirmationInfo.deniedNotice) to keep this accounting alive.
+  // Without it a 3am task would report "failed" and nothing else. These drive
+  // the REAL gate so the whole chain is covered, not just the recorder.
+  describe('unattended browser refusals still explain themselves in the run result', () => {
+    /**
+     * Production shape on purpose: a real scheduled run carries the
+     * run-permission ceiling the scheduler builds, and the ceiling refuses
+     * browser actions BEFORE the operation-policy branch does. A harness that
+     * passed only `{conversationId}` would never exercise that path — which is
+     * exactly how an untranslated, unactionable ceiling diagnostic reached the
+     * run result unnoticed.
+     */
+    function runWithRealGate(toolName: string, input: Record<string, unknown>) {
+      // The scheduled ceiling's roster is a snapshot of the tools that existed
+      // at dispatch, so a browser tool has to be in it or the run is refused
+      // one layer earlier, for an unrelated reason.
+      getSchedulerToolsMock.mockReturnValueOnce([
+        { name: toolName, description: 'browser', inputSchema: { type: 'object', properties: {} } },
+      ] as never);
+      vi.mocked(runAgentLoop).mockImplementation(async (conversationId, _msg, options) => {
+        const opts = options as {
+          commandConfirmCallback: never;
+          runPermissionCeiling?: unknown;
+        };
+        await checkToolApproval(
+          toolName,
+          input,
+          {
+            conversationId,
+            runPermissionCeiling: opts.runPermissionCeiling,
+          } as never,
+          opts.commandConfirmCallback,
+        );
+        return { reason: 'error', error: 'boom' } as never;
+      });
+    }
+
+    it('names the master switch and the site when unattended browser use is off', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: { 'https://example.com': 'allowed' },
+      });
+      const task = makeTask({ id: 'task-browser-master-off', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      expect(latestRunError(task.id)).toContain('https://example.com');
+      expect(latestRunError(task.id)).toContain('设置');
+    });
+
+    it('stays localized and actionable even though the ceiling refuses first', async () => {
+      // The scheduled ceiling denies browser before the policy branch runs, so
+      // the notice must not inherit the ceiling's hardcoded English diagnostic
+      // ('browser action is not permitted by the unattended browser policy') —
+      // that names neither the master switch nor where to change it.
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: { 'https://example.com': 'allowed' },
+      });
+      const task = makeTask({ id: 'task-browser-ceiling', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      const error = latestRunError(task.id);
+      expect(error).toContain('https://example.com');
+      expect(error).toContain('设置');
+      expect(error).not.toContain('browser action is not permitted');
+    });
+
+    it('names the site when the run may use the browser but not on that site', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: {},
+      });
+      const task = makeTask({ id: 'task-browser-site', permissionMode: 'autonomous' });
+      useScheduleStore.setState({ tasks: { [task.id]: task } });
+      runWithRealGate('abu-browser__navigate', { tabId: 1, url: 'https://unlisted.com/report' });
+
+      await schedulerEngine.runNow(task.id);
+
+      expect(latestRunError(task.id)).toContain('https://unlisted.com');
+      expect(latestRunError(task.id)).toContain('无人值守');
+    });
   });
 
   it('labels the denial with the global settings mode when the task follows settings', async () => {

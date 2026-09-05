@@ -67,6 +67,13 @@ vi.mock('../im/pluginRegistry', () => ({
 // Import after mocks
 import { triggerEngine } from './triggerEngine';
 import { outputSender } from '../im/outputSender';
+import {
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  clearBrowserSignals,
+  recordBrowserSignal,
+} from '../observability/browserSignals';
+import { isBrowserRunReportMessage } from '../observability/browserRunReport';
 
 function makeTrigger(overrides: Partial<Trigger> = {}): Trigger {
   return {
@@ -443,7 +450,13 @@ describe('TriggerEngine', () => {
       expect(createAuthorizationScopeMock).toHaveBeenCalledTimes(1);
       expect(resolveTriggerCallbacks).toHaveBeenCalledWith(
         expect.objectContaining({ workspacePath: '/Users/testuser/Projects/trigger' }),
-        { authorizationScopeId: 'scope-trigger-test' },
+        // The conversation rides along too: an approval channel needs it to
+        // find the chat this run can be asked in (and to name it in the
+        // fallback system notice).
+        expect.objectContaining({
+          authorizationScopeId: 'scope-trigger-test',
+          conversationId: expect.any(String),
+        }),
       );
       expect(runAgentLoopMock).toHaveBeenCalledWith(
         expect.any(String),
@@ -520,6 +533,54 @@ describe('TriggerEngine', () => {
       expect(run?.status).toBe('error');
       expect(run?.error).toContain('Sidecar run state remained unavailable');
       expect(outputSender.send).not.toHaveBeenCalled();
+    });
+  });
+  // ── U7: the run report card ──
+  //
+  // Triggers reach the same terminal shape as scheduled tasks, so they get the
+  // same report. Wired through the shared emitter; this pins that the wiring
+  // exists (and that a run with no browser work is not handed an empty card).
+  describe('browser run report card', () => {
+    it('appends a card for a trigger run that touched the browser', async () => {
+      clearBrowserSignals();
+      const trigger = makeTrigger({ id: 'trigger-report' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockImplementationOnce(async (conversationId: string) => {
+        recordBrowserSignal(
+          buildBrowserSignalRecord(
+            {
+              kind: 'gate_denied',
+              tool: 'abu-browser__navigate',
+              opClass: 'interactive',
+              reason: 'master-switch-off',
+              runMode: 'unattended',
+            },
+            buildBrowserSignalContext('builtin', conversationId, 1_700_000_000_000),
+          ),
+        );
+        return { reason: 'completed' };
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      const conversationId = useTriggerStore.getState().triggers[trigger.id]?.runs.at(0)?.conversationId;
+      const messages = useChatStore.getState().conversations[conversationId!]?.messages ?? [];
+      const cards = messages.filter(isBrowserRunReportMessage);
+      expect(cards).toHaveLength(1);
+      expect(cards[0].browserRunReport?.skippedByMasterSwitch).toBe(true);
+      clearBrowserSignals();
+    });
+
+    it('appends nothing for a trigger run that never touched the browser', async () => {
+      clearBrowserSignals();
+      const trigger = makeTrigger({ id: 'trigger-no-browser' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
+
+      const conversationId = useTriggerStore.getState().triggers[trigger.id]?.runs.at(0)?.conversationId;
+      const messages = useChatStore.getState().conversations[conversationId!]?.messages ?? [];
+      expect(messages.filter(isBrowserRunReportMessage)).toHaveLength(0);
     });
   });
 });

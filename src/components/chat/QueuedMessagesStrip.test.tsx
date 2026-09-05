@@ -89,7 +89,7 @@ describe('QueuedMessagesStrip', () => {
     await user.click(screen.getByRole('button', { name: '继续队列' }));
 
     await vi.waitFor(() => {
-      expect(runAgentLoopDispatchedMock).toHaveBeenCalledWith(CONV, '第一条');
+      expect(runAgentLoopDispatchedMock).toHaveBeenCalledWith(CONV, '第一条', { initiatedBy: 'user' });
     });
     expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第二条']);
     expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();

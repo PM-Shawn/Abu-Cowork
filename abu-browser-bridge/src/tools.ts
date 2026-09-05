@@ -437,7 +437,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
     'query_js',
     'Run JavaScript against a detached, inert copy of the page DOM. Reading is fully supported (`querySelectorAll`, `textContent`, attributes, tree/table walks), the real page can never be modified, and no approval prompt is shown. Use this for batch reads that would take many snapshot/extract calls. Not available in the copy: live JS state, computed styles/layout, event dispatch, network, files, or page globals. To interact, use click/fill/select; use execute_js only when the live page itself must run code and the user should approve that single run.',
     {
-      tabId: z.coerce.number().optional().describe('Tab ID from get_tabs. If omitted, uses the current active browser tab.'),
+      tabId: z.coerce.number().optional().describe('Tab ID from get_tabs. If omitted, uses the tab this task last acted on — never whichever tab the user happens to be looking at. Pass one explicitly when this task has no tab of its own yet.'),
       code: z.string().describe('Synchronous JavaScript to evaluate against the detached DOM copy. The completion value is returned as JSON.'),
       selector: z.string().optional().describe('Optional CSS selector to serialize only one subtree before running the query. Use this when the page is large or when you only need one region.'),
     },

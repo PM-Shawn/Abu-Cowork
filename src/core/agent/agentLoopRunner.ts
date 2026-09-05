@@ -132,6 +132,7 @@ import { getAuthorizedWritablePaths } from '../tools/pathSafety';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { showSandboxBlockedToast } from '../sandbox/recovery';
 import { ensureBuiltinBrowserRuntime } from '../browser/builtinBrowserRuntime';
+import { releaseRunBrowserTabClaims } from '../browser/bridgeTabClaims';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import {
   finishRuntimeRun,
@@ -2702,6 +2703,15 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         await waitForConversationPersistence(conversationId);
       }
       throw error;
+    } finally {
+      // Settlement seal for the IN-PROCESS path: `runAgentLoop` has returned,
+      // so this run can no longer start another tool — the same point the
+      // sidecar path seals in its own `finally` below. Both ways a run ends
+      // (it finished; the user pressed Stop, which aborts the controller and
+      // makes the loop return) come through here, and each run reaches exactly
+      // one of the two seals, so the bridge is told once. No run key: this is
+      // the conversation's own loop, which the bridge reads as `main`.
+      releaseRunBrowserTabClaims(conversationId);
     }
   }
 
@@ -2826,13 +2836,22 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       durationMs: Date.now() - runtimeStartedAt,
     });
     finishRuntimeRun(runId);
-    return runInProcessWithPersistedMessage(
-      conversationId,
-      userMessage,
-      runId,
-      clientMessageId,
-      options,
-    );
+    try {
+      return await runInProcessWithPersistedMessage(
+        conversationId,
+        userMessage,
+        runId,
+        clientMessageId,
+        options,
+      );
+    } finally {
+      // Third settlement seal, and the only one outside the two `finally`s
+      // above: a params-build failure runs the WHOLE loop in-process and
+      // returns from here, never reaching the sidecar `try`. The other
+      // pre-dispatch exits (`finalizePreDispatchInterruptedRun`) started no
+      // run at all and must stay silent.
+      releaseRunBrowserTabClaims(conversationId);
+    }
   }
   if (shellAbortController.signal.aborted) {
     return finalizePreDispatchInterruptedRun(
@@ -3390,6 +3409,15 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       // here would delete THAT run's controller and leave its Stop inert.
       abortRegistry.clearAbortController(conversationId, shellAbortController);
     }
+    // Settlement seal for the SIDECAR path, and for a pre-commit transport
+    // failure handed off to the local loop (which finishes inside this same
+    // `try`, so it must not also fire the in-process seal above — it does not:
+    // `runInProcessWithPersistedMessage` calls `runAgentLoop` directly, not
+    // the dispatcher). Stop arrives as an abort on `shellAbortController`,
+    // which ends the run and lands here like any other ending. The run key is
+    // `main`: `contextForSession` forces every tool call on this session to
+    // the conversation's own pool, nested subagents included.
+    releaseRunBrowserTabClaims(conversationId);
   }
 }
 

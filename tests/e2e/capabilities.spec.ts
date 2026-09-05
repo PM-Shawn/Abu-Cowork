@@ -352,7 +352,7 @@ test.describe.serial('Electron capability overview', () => {
     */
     const riskWarning = page.getByText(/风险升高|Elevated risk/);
     await expect(riskWarning).toHaveCount(0);
-    await page.getByText(/^不再询问$|^Never asks again$/).click();
+    await page.getByText(/^在允许的网站上不再询问$|^Never asks again on allowed sites$/).click();
     await expect(riskWarning).toBeVisible();
     await page.waitForTimeout(150);
     await page.screenshot({ path: iaScreenshot('08-script-allow-warning-zh') });

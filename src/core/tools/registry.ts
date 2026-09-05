@@ -1499,6 +1499,35 @@ export async function checkToolApproval(
         // row can never reach this constant.
         const scriptAllowedByPolicy =
           scripting && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
+        /**
+         * F8 (2026-09-05 review) — 「每次询问」 on the click/fill row means
+         * EVERY time, the way it already does on the read-only row.
+         *
+         * Until this line existed, `policyVerdict` was read only when
+         * `scripting` was true (the constant above, R1's fix). The interactive
+         * row's own value was therefore never consulted at all: 'deny' was
+         * consumed further up, and 'allow' and 'ask' were byte-for-byte
+         * identical from here down — same decision AND same dialog count in
+         * all four site states. On an 「始终允许」 site both were silent; on a
+         * 'default' site both asked once and then the conversation grant that
+         * dialog minted swallowed every click for the next 30 minutes. A user
+         * who explicitly chose 「每次询问」 got one dialog per half hour, under
+         * a description saying they would be asked each time.
+         *
+         * So 'ask' now short-circuits `granted`: it honours neither the
+         * standing site verdict nor the conversation grant, and (below) mints
+         * no new grant and offers no "always allow this site". That is exactly
+         * what the read-only row does one branch further down, so this is the
+         * same semantics in a second place, not a new concept.
+         *
+         * 'allow' is untouched and keeps riding the site gate — and 'allow' is
+         * the SHIPPED default for this row, so the default path does not
+         * change at all. High-risk pages are unaffected either way:
+         * `decideBrowserOperation` already downgrades their 'allow' to 'ask',
+         * which lands here as "ask every time" — which is what `!highRisk`
+         * was already forcing.
+         */
+        const asksEveryTime = !scripting && policyVerdict === 'ask';
         // A high-risk page is excluded from BOTH grant scopes, for the same
         // reason scripting is: the conversation grant was minted from a dialog
         // about some ordinary page, and the per-site verdict cannot even be
@@ -1507,7 +1536,7 @@ export async function checkToolApproval(
         // transfer page through on the strength of an unrelated click.
         const granted =
           scriptAllowedByPolicy
-          || (!scripting && !highRisk
+          || (!scripting && !highRisk && !asksEveryTime
             && (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed'));
         const decision = strategy.decideOtherTool(consequence, granted);
         if (decision !== 'allow') {
@@ -1543,7 +1572,10 @@ export async function checkToolApproval(
             browserOrigin: origin ?? undefined,
             // No "always allow this site" for a bank or a checkout page — the
             // standing grant is the artifact this control exists to prevent.
-            allowPersistentGrant: !scripting && !highRisk && origin !== null,
+            // Nor under 「每次询问」 (F8): the grant it would mint is one this
+            // row now ignores, so offering it would promise silence the next
+            // call does not deliver.
+            allowPersistentGrant: !scripting && !highRisk && !asksEveryTime && origin !== null,
           }, toolContext?.loopId);
           if (!confirmed) {
             recordGateDenial('user-cancelled');
@@ -1554,8 +1586,13 @@ export async function checkToolApproval(
           // conversation grant from it would silently unlock 30 minutes of
           // click/fill/navigate the user never approved. Same for a high-risk
           // page: confirming one transfer must not buy 30 minutes of silent
-          // clicking everywhere else in the conversation.
-          if (!scripting && !highRisk) grantBrowserAutomation(toolContext?.conversationId);
+          // clicking everywhere else in the conversation. Same for a row set
+          // to 「每次询问」 (F8): a grant this row will ignore on the next call
+          // is dead weight, and one that leaked to another row would be a
+          // silent widening of a setting the user tightened on purpose.
+          if (!scripting && !highRisk && !asksEveryTime) {
+            grantBrowserAutomation(toolContext?.conversationId);
+          }
         } else if (granted && !scriptAllowedByPolicy) {
           // No dialog because the user already granted this — a standing site
           // verdict, or the conversation grant minted from an earlier dialog.

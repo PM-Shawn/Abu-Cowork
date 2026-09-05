@@ -1700,6 +1700,190 @@ describe('browser gate — operation-class policy', () => {
     });
   });
 
+  /**
+   * F8 (2026-09-05 review) — the click/fill row's three options are three
+   * things, not two.
+   *
+   * `policyVerdict` used to be read only on the scripting path (R1's
+   * constant), so on the INTERACTIVE row 'deny' was consumed upstream and
+   * 'allow' / 'ask' were byte-for-byte identical from the gate down: same
+   * decision AND same dialog count in all four site states. Worse, in the one
+   * state where 'ask' did open a dialog, the conversation grant that dialog
+   * minted swallowed the next 30 minutes of clicks — so 「每次询问」 asked
+   * once an hour at best.
+   *
+   * The table below is the whole row, driven through the REAL gate. The two
+   * cells that differ between the rows (`allowed` under allow vs ask) are the
+   * ones that were wrong; everything else must stay exactly as it shipped.
+   */
+  describe('attended click/fill: 「每次询问」 asks every time (2026-09-05 F8)', () => {
+    const HIGH_RISK_URL = `${ALLOWED_SITE}/account/transfer`;
+
+    /** One interactive call through the gate; returns how many dialogs it opened. */
+    async function callInteractive(
+      state: 'allow' | 'ask' | 'deny',
+      url: string,
+      confirm: ReturnType<typeof vi.fn>,
+    ) {
+      useSettingsStore.setState({
+        browserOperationPolicy: policyWith('interactive', state),
+      });
+      withTabOrigin(url);
+      return await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+      );
+    }
+
+    /*
+      The four site states, as the gate sees them:
+      - allowed   → the user's standing 「始终允许」 verdict
+      - default   → no verdict at all
+      - denied    → the user's standing 「禁止」 verdict
+      - high-risk → a money-movement URL, which REPLACES the stored verdict
+    */
+    const cases: Array<{
+      site: 'allowed' | 'default' | 'denied' | 'high-risk';
+      url: string;
+      allow: { decision: 'allow' | 'deny'; prompts: number };
+      ask: { decision: 'allow' | 'deny'; prompts: number };
+    }> = [
+      // THE fix: on an allowed site 「允许」 is silent and 「每次询问」 asks.
+      { site: 'allowed', url: ALLOWED_URL, allow: { decision: 'allow', prompts: 0 }, ask: { decision: 'allow', prompts: 1 } },
+      { site: 'default', url: UNKNOWN_URL, allow: { decision: 'allow', prompts: 1 }, ask: { decision: 'allow', prompts: 1 } },
+      { site: 'denied', url: `${BLOCKED_SITE}/x`, allow: { decision: 'deny', prompts: 0 }, ask: { decision: 'deny', prompts: 0 } },
+      { site: 'high-risk', url: HIGH_RISK_URL, allow: { decision: 'allow', prompts: 1 }, ask: { decision: 'allow', prompts: 1 } },
+    ];
+
+    it.each(cases)(
+      'on a $site site: 「允许」 → $allow.decision/$allow.prompts dialog(s), 「每次询问」 → $ask.decision/$ask.prompts',
+      async ({ url, allow, ask }) => {
+        useSettingsStore.setState({
+          browserSitePermissions: { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' },
+        });
+
+        const allowConfirm = vi.fn(async () => true);
+        const allowDecision = await callInteractive('allow', url, allowConfirm);
+        expect(allowDecision.decision).toBe(allow.decision);
+        expect(allowConfirm).toHaveBeenCalledTimes(allow.prompts);
+
+        // A fresh conversation grant state for the second half — otherwise the
+        // 'allow' call above would have paid for the 'ask' one.
+        __resetBrowserGrantsForTests();
+        const askConfirm = vi.fn(async () => true);
+        const askDecision = await callInteractive('ask', url, askConfirm);
+        expect(askDecision.decision).toBe(ask.decision);
+        expect(askConfirm).toHaveBeenCalledTimes(ask.prompts);
+      },
+    );
+
+    it('「拒绝」 refuses before any dialog, whatever the site says', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+      });
+      const confirm = vi.fn(async () => true);
+
+      const decision = await callInteractive('deny', ALLOWED_URL, confirm);
+
+      expect(decision.decision).toBe('deny');
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    /*
+      The half of the defect the truth table alone cannot show: even in the one
+      cell where 'ask' used to open a dialog, calls 2 and 3 were silent because
+      the first dialog minted a 30-minute conversation grant. 「每次询问」 has
+      to mean every time, exactly as it already does on the read-only row.
+    */
+    it('asks on every single call — one answer never buys the next half hour', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+      });
+      useSettingsStore.setState({ browserOperationPolicy: policyWith('interactive', 'ask') });
+      withTabOrigin(ALLOWED_URL);
+      const confirm = vi.fn(async () => true);
+
+      for (let i = 0; i < 3; i += 1) {
+        const decision = await checkToolApproval(
+          'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+        );
+        expect(decision.decision).toBe('allow');
+      }
+
+      expect(confirm).toHaveBeenCalledTimes(3);
+    });
+
+    it('offers no "always allow this site" under 「每次询问」', async () => {
+      useSettingsStore.setState({ browserSitePermissions: {} });
+      const confirm = vi.fn(async () => true);
+
+      await callInteractive('ask', UNKNOWN_URL, confirm);
+
+      // The grant it would mint is one this row now ignores; offering it would
+      // promise a silence the next call does not deliver.
+      const info = confirm.mock.calls[0]![0] as unknown as { allowPersistentGrant?: boolean };
+      expect(info.allowPersistentGrant).toBe(false);
+    });
+
+    it('mints no conversation grant a different row could ride', async () => {
+      useSettingsStore.setState({ browserSitePermissions: {} });
+      const confirm = vi.fn(async () => true);
+
+      // 「每次询问」 click on an unknown site, approved.
+      await callInteractive('ask', UNKNOWN_URL, confirm);
+      // A navigate under the SHIPPED default ('allow') on that same site would
+      // ride a conversation grant if one had been minted. None was, so it asks.
+      useSettingsStore.setState({
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      const second = vi.fn(async () => true);
+      await checkToolApproval(
+        'abu-browser__navigate', { tabId: OWNED_TAB_ID, url: UNKNOWN_URL },
+        attendedOwner, second as never,
+      );
+
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the shipped default alone — 「允许」 is what this row ships', async () => {
+      // No policy override at all: the interactive row ships 'allow'.
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      withTabOrigin(ALLOWED_URL);
+      const confirm = vi.fn(async () => true);
+
+      const decision = await checkToolApproval(
+        'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    /*
+      read-only was NOT part of this defect — that row already read its own
+      policy value one branch further down, and its 'ask' already asked every
+      time. Pinned here so a future edit to the interactive branch cannot be
+      "generalized" into the read-only one and quietly change it.
+    */
+    it('does not change the read-only row, which was already honest', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        browserOperationPolicy: policyWith('readOnly', 'ask'),
+      });
+      const confirm = vi.fn(async () => true);
+
+      for (let i = 0; i < 3; i += 1) {
+        await checkToolApproval(
+          'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+        );
+      }
+
+      expect(confirm).toHaveBeenCalledTimes(3);
+    });
+  });
+
   // ───────────────────────────────────────────────────────────────────────
   // U5 compensating controls
   // ───────────────────────────────────────────────────────────────────────

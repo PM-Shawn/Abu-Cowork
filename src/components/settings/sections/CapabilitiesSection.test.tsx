@@ -1556,18 +1556,24 @@ describe('CapabilitiesSection', () => {
 
     /*
       One setting, two execution contexts — so each option says what it means
-      in BOTH, on one line, and says the same thing on every row. Before the
-      collapse there were two columns and two descriptions per state; what did
-      not change is that the explanation travels with the choice instead of
-      sitting in a paragraph above the control.
+      in BOTH, on one line. Before the collapse there were two columns and two
+      descriptions per state; what did not change is that the explanation
+      travels with the choice instead of sitting in a paragraph above the
+      control.
 
       «Ask every time» is the one that carries a real second fact: attended it
       is a dialog, and in an automatic task it is an IM approval at the channel
       the automation itself named (`core/im/approvalTarget.ts`), refused when
       none is bound. Promising only a dialog would promise something nobody is
       there to answer.
+
+      «Allow» is the one that is NOT the same on every row (2026-09-05 F8).
+      Reading a page under it really is unconditional; clicking and scripting
+      are scoped to the sites carrying a standing 「始终允许」 verdict, and a
+      site with no verdict still opens a confirmation. One shared 「不再询问」
+      was true for exactly one of the three rows, so the wording now splits.
     */
-    it('says what each state means in both execution contexts, on every row', async () => {
+    it('says what each state means in both execution contexts, and scopes 「允许」 per row', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
@@ -1576,12 +1582,24 @@ describe('CapabilitiesSection', () => {
         within(permissionCard('Action permissions')).getByText(label).closest('li') as HTMLElement
       ));
 
-      for (const row of [...rows, permissionCard('Run scripts (advanced)')]) {
+      // Reading is the one row whose 「允许」 asks nothing, anywhere.
+      const readOnlyCell = policySelect(rows[0]);
+      await user.click(readOnlyCell);
+      expect(openedOptionLabels(readOnlyCell)).toEqual(['Allow', 'Ask every time', 'Deny']);
+      expect(openedOptionDescriptions(readOnlyCell)).toEqual([
+        'Never asks again',
+        'Asks you here, and over IM in automatic tasks',
+        'Abu will not do this kind of thing',
+      ]);
+      await user.click(readOnlyCell);
+
+      // The two rows that ACT say where their 「允许」 applies.
+      for (const row of [rows[1], permissionCard('Run scripts (advanced)')]) {
         const cell = policySelect(row);
         await user.click(cell);
         expect(openedOptionLabels(cell)).toEqual(['Allow', 'Ask every time', 'Deny']);
         expect(openedOptionDescriptions(cell)).toEqual([
-          'Never asks again',
+          'Never asks again on allowed sites',
           'Asks you here, and over IM in automatic tasks',
           'Abu will not do this kind of thing',
         ]);

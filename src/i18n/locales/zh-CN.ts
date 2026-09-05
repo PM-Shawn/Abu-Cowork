@@ -837,6 +837,7 @@ const zhCN: TranslationDict = {
     browserOpStateDeny: '拒绝',
     browserOpStateAsk: '每次询问',
     browserOpStateAllowDesc: '不再询问',
+    browserOpStateAllowDescSiteScoped: '在允许的网站上不再询问',
     browserOpStateDenyDesc: '阿布不会做这类操作',
     browserOpStateAskDesc: '你在场时弹窗确认，自动任务发到 IM 审批',
     browserUnattendedScriptRiskWarning: '风险升高：脚本能读改页面上的一切；在你设为「始终允许」的网站上，你在场时和自动任务都不再确认',

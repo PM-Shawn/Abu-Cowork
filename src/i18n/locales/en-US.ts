@@ -836,6 +836,7 @@ const enUS: TranslationDict = {
     browserOpStateDeny: 'Deny',
     browserOpStateAsk: 'Ask every time',
     browserOpStateAllowDesc: 'Never asks again',
+    browserOpStateAllowDescSiteScoped: 'Never asks again on allowed sites',
     browserOpStateDenyDesc: 'Abu will not do this kind of thing',
     browserOpStateAskDesc: 'Asks you here, and over IM in automatic tasks',
     browserUnattendedScriptRiskWarning: 'Elevated risk: a script can read and change anything on the page; on sites you set to Always allow it runs unprompted, both here and in automatic tasks',

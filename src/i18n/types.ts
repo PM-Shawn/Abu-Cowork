@@ -1054,7 +1054,16 @@ export interface TranslationDict {
     browserOpStateAllow: string;
     browserOpStateDeny: string;
     browserOpStateAsk: string;
+    /** 「允许」 on the READ-ONLY row, where it is unconditional. */
     browserOpStateAllowDesc: string;
+    /**
+     * 「允许」 on the two rows that ACT (click/fill, run scripts), where it is
+     * scoped to the sites carrying a standing 「始终允许」 verdict — a
+     * 'default' site still opens a confirmation. Split from the read-only
+     * wording by F8 (2026-09-05): one shared sentence 「不再询问」 was true for
+     * exactly one of the three rows.
+     */
+    browserOpStateAllowDescSiteScoped: string;
     browserOpStateDenyDesc: string;
     /**
      * One line covering BOTH execution contexts, because one setting now

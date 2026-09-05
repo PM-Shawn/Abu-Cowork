@@ -286,10 +286,30 @@ export function BrowserPermissionCards({
     ask: t.settings.browserOpStateAsk,
     deny: t.settings.browserOpStateDeny,
   };
-  const stateDescriptions: Record<BrowserOperationState, string> = {
-    allow: t.settings.browserOpStateAllowDesc,
-    ask: t.settings.browserOpStateAskDesc,
-    deny: t.settings.browserOpStateDenyDesc,
+  /*
+    F8 (2026-09-05) — 「允许」 does not mean the same thing on all three rows,
+    so it no longer says the same thing either.
+
+    Reading a page under 「允许」 really is unconditional: that row consults no
+    site verdict at all. The two rows that ACT are scoped to the sites the user
+    set to 「始终允许」 — a site with no standing verdict still opens a
+    confirmation — so 「不再询问」 was simply false there. 「每次询问」 and
+    「拒绝」 are true for every row and are shared as before.
+  */
+  const stateDescription = (
+    opClass: BrowserOperationClass,
+    state: BrowserOperationState,
+  ): string => {
+    switch (state) {
+      case 'allow':
+        return opClass === 'read-only'
+          ? t.settings.browserOpStateAllowDesc
+          : t.settings.browserOpStateAllowDescSiteScoped;
+      case 'ask':
+        return t.settings.browserOpStateAskDesc;
+      case 'deny':
+        return t.settings.browserOpStateDenyDesc;
+    }
   };
   /*
     The option list is asked for per row, not shared — `browserOperationStatesFor`
@@ -306,7 +326,7 @@ export function BrowserPermissionCards({
     browserOperationStatesFor(opClass).map((state) => ({
       value: state,
       label: stateLabels[state],
-      description: stateDescriptions[state],
+      description: stateDescription(opClass, state),
     }));
 
   /** Both cards render their rows through here, so the two ordinary classes

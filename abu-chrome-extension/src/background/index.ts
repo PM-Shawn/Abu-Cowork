@@ -8,7 +8,16 @@
  * 4. Handle tab-level operations (get_tabs, navigate, screenshot)
  */
 
-import type { BridgeRequest, BridgeResponse } from '../shared/types.js';
+import type { BridgeRequest, BridgeResponse, JsDialogAction } from '../shared/types.js';
+import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import {
+  chromeGetDialogResult,
+  chromeHandleDialogResult,
+  JS_DIALOG_AUTO_DISMISS_MS,
+  pageWorldArmDialogAnswer,
+  pageWorldReadDialogState,
+  runInPageWorld,
+} from './pageDialogs.js';
 import {
   TAB_TARGETED_ACTIONS,
   classifyInbound,
@@ -645,6 +654,30 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: `Navigation: ${navAction}` };
       }
 
+      // Both dialog cases consume the OWNER-RESOLVED `tabId` from the top of
+      // this function (they are in `TAB_TARGETED_ACTIONS`), never
+      // `payload.tabId`: reading the payload raw here would let one task read
+      // and answer dialogs on a tab another task has claimed — the exact
+      // isolation `resolveTargetTab` exists to enforce.
+      case 'get_dialog': {
+        const state = await runInPageWorld(tabId, pageWorldReadDialogState, []);
+        return { id, success: true, data: chromeGetDialogResult(tabId, state) };
+      }
+
+      case 'handle_dialog': {
+        const dialogAction = payload.action as JsDialogAction;
+        if (dialogAction !== 'accept' && dialogAction !== 'dismiss') {
+          return { id, success: false, error: "handle_dialog needs action: 'accept' or 'dismiss'." };
+        }
+        const promptText = typeof payload.promptText === 'string' ? payload.promptText : null;
+        const state = await runInPageWorld(
+          tabId,
+          pageWorldArmDialogAnswer,
+          [dialogAction, promptText, JS_DIALOG_AUTO_DISMISS_MS],
+        );
+        return { id, success: true, data: chromeHandleDialogResult(tabId, dialogAction, state) };
+      }
+
       case 'execute_js': {
         // Execute JS via chrome.scripting.executeScript to bypass CSP restrictions
         const code = payload.code as string;
@@ -673,24 +706,24 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: results[0]?.result };
       }
 
-      case 'snapshot':
-      case 'get_html':
-      case 'click':
-      case 'fill':
-      case 'select':
-      case 'wait_for':
-      case 'extract_text':
-      case 'extract_table':
-      case 'scroll':
-      case 'keyboard':
-      case 'start_recording':
-      case 'stop_recording': {
+      default: {
+        // Every action executed by the content script, read from the shared
+        // list rather than re-typed as `case` labels — an action missing from
+        // it falls through to `Unknown action`, which reads to the model as
+        // "the tool is broken" rather than "this channel forgot to route it".
+        //
+        // `tabId` is the OWNER-RESOLVED one from the top of this function, not
+        // `payload.tabId`: every action in this list is in
+        // `TAB_TARGETED_ACTIONS`, so it has already passed the claim gate (and
+        // the tabId-less `get_html` case has already been given the owner's
+        // current tab). Reading the payload again here would be a second,
+        // ungated path to the same tab.
+        if (!CONTENT_SCRIPT_ACTIONS.has(action)) {
+          return { id, success: false, error: `Unknown action: ${action}` };
+        }
         const result = await sendToContentScript(tabId, action, payload);
         return { id, success: true, data: result };
       }
-
-      default:
-        return { id, success: false, error: `Unknown action: ${action}` };
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -24,11 +24,13 @@ const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
  * navigating — as opposed to running arbitrary code in the page's origin
  * (see `SCRIPTING_TOOLS` below, a stronger and separately-gated capability).
  * `navigate` is included because it drives the session somewhere new (and GET
- * endpoints can act); `keyboard` because Enter submits.
+ * endpoints can act); `keyboard` because Enter submits; `handle_dialog`
+ * because accepting a page's own confirm presses its OK button.
  *
- * This set is EXACTLY the pre-three-state `STATE_CHANGING_TOOLS` minus
- * `execute_js` (which is `SCRIPTING_TOOLS` below) — byte-compatible with the
- * legacy gate on purpose. `scroll`, `start_recording`, and `stop_recording`
+ * This set is the pre-three-state `STATE_CHANGING_TOOLS` minus `execute_js`
+ * (which is `SCRIPTING_TOOLS` below) — byte-compatible with the legacy gate
+ * on purpose, plus `handle_dialog` which did not exist when that gate was
+ * written. `scroll`, `start_recording`, and `stop_recording`
  * were ungated (read-only) before this module existed in three-state form;
  * they stay in `READ_ONLY_TOOLS` below rather than moving here, because
  * `toLegacyBrowserToolConsequence` feeds `registry.ts`'s still-unmigrated
@@ -38,7 +40,18 @@ const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
  * their own row in a later task once the gate is fully operation-class-aware
  * and a product decision is made about gating scroll/recording explicitly.)
  */
-const INTERACTIVE_TOOLS = new Set(['click', 'fill', 'select', 'keyboard', 'navigate']);
+const INTERACTIVE_TOOLS = new Set([
+  'click',
+  'fill',
+  'select',
+  'keyboard',
+  'navigate',
+  // Answering a page's own dialog MOVES THE PAGE: accepting a confirm submits
+  // the form behind it, accepting a beforeunload leaves the page and discards
+  // what is on it. `get_dialog` reads the same dialog and stays read-only —
+  // that split is the whole reason the pair is two tools.
+  'handle_dialog',
+]);
 
 /**
  * Observation and other non-state-changing tools — explicit on purpose (see
@@ -49,7 +62,17 @@ const INTERACTIVE_TOOLS = new Set(['click', 'fill', 'select', 'keyboard', 'navig
 const READ_ONLY_TOOLS = new Set([
   'get_tabs',
   'snapshot',
+  // Locating an element is reading the page — it returns candidates and
+  // touches nothing. Listing it here rather than letting it ride the
+  // `'interactive'` fallback is load-bearing: `find` is what the model calls
+  // BEFORE every action, so a fallback classification would put an approval
+  // dialog in front of every single one of them.
+  'find',
   'wait_for',
+  // Reading a pending dialog is reading; ANSWERING it is `handle_dialog`,
+  // which is interactive above. Splitting the pair into two tools only buys
+  // anything if the reading half is actually free.
+  'get_dialog',
   'extract_text',
   'extract_table',
   'query_js',
@@ -159,6 +182,37 @@ export function isScriptingBrowserTool(namespacedName: string): boolean {
 }
 
 /**
+ * Does this tool press a button on a dialog the PAGE put up?
+ *
+ * Its own predicate, alongside `isScriptingBrowserTool`, because it is gated
+ * the same way and for a related reason (F2, 2026-09-06 review).
+ *
+ * `handle_dialog` is `'interactive'` — it moves the page, so the class is
+ * right — but it must not ride the two grant scopes an ordinary click does:
+ *
+ * - The CONVERSATION grant is the wrong shape for it. That grant is minted by
+ *   approving a click, and the most common dialog in existence is the one that
+ *   click just raised. So the click's own approval, seconds earlier, silently
+ *   bought "press OK on this page's confirm" — the two decisions the split
+ *   into `get_dialog` / `handle_dialog` exists to keep apart. A click is
+ *   "do this thing I named"; answering the page's confirm is "agree to
+ *   whatever the page then asked", and the page wrote the question.
+ * - What it agrees to is text the PAGE authored, which is exactly why
+ *   `JS_DIALOG_UNTRUSTED_NOTICE` exists. The model's judgment about whether to
+ *   accept is driven by an untrusted string.
+ *
+ * What it DOES ride, per the 2026-09-06 product ruling, is the same lever
+ * scripting rides: the operation-class row set to `'allow'` on a site the user
+ * set to 始终允许, and not high-risk. That is a permission the user granted in
+ * so many words, and honouring it keeps this consistent with R1 rather than
+ * inventing a third grant model. Everything short of that asks — at most once
+ * per dialog, since a dialog is answered once.
+ */
+export function answersPageDialog(namespacedName: string): boolean {
+  return browserToolNameOf(namespacedName) === 'handle_dialog';
+}
+
+/**
  * Normalize a URL to its origin (scheme://host[:port]). Exact-match keys, no
  * wildcards — `sub.example.com` and `example.com` are distinct entries, the
  * same rule competitors apply. Returns null for unparseable or non-http(s)
@@ -230,6 +284,126 @@ export function getSiteVerdict(
   return 'default';
 }
 
+// ── `batch`: one call, several actions, still one authority ────────────────
+//
+// `batch` is not a new permission surface. It carries N ordinary steps, so it
+// is classified by its HEAVIEST step: any click/fill/select/keyboard makes the
+// whole call `'interactive'` (one ask, covering the run at the pinned origin);
+// a batch of nothing but page reads stays `'read-only'`, exactly as those reads
+// would be on their own. Everything else about the gate — blocked sites, site
+// grants, the conversation grant, the run ceiling, and the operation-class
+// policy `decideBrowserOperation` applies to whatever class comes out — is
+// unchanged.
+//
+// The one thing a batch may NOT contain is page scripting. `execute_js` is
+// deliberately approved run by run and never rides a site grant; a scripting
+// step would let a single "allow" buy an unbounded number of script runs. The
+// bridge refuses such a batch too (`abu-browser-bridge/src/batch.ts`), but the
+// gate must not depend on that: this module is what stands between the model's
+// arguments and the user's logged-in session.
+
+/** Mirrors `MAX_BATCH_STEPS` in `abu-browser-bridge/src/batch.ts`. */
+export const MAX_BROWSER_BATCH_STEPS = 25;
+
+/**
+ * The class each allowed step contributes, in the SAME three-class vocabulary
+ * `classifyBrowserTool` speaks. A step kind absent from this table makes the
+ * batch unreadable (`refuseBrowserBatch` → `'malformed'`); a scripting step is
+ * caught earlier still (`BATCH_SCRIPTING_STEPS`), so this table deliberately
+ * has no `'scripting'` row — a batch never carries that class.
+ */
+const BATCH_STEP_CLASS: Record<string, BrowserOperationClass> = {
+  fill: 'interactive',
+  select: 'interactive',
+  click: 'interactive',
+  keyboard: 'interactive',
+  wait_for: 'read-only',
+  find: 'read-only',
+  read: 'read-only',
+};
+
+/** Step `action` values that mean "run code in the page", however spelled. */
+const BATCH_SCRIPTING_STEPS = new Set(['execute_js', 'query_js', 'script', 'eval']);
+
+export type BrowserBatchRefusalCode = 'scripting-step' | 'too-many-steps' | 'malformed';
+
+/** Uses `browserToolNameOf` — the SAME parse the dispatcher and
+ *  `classifyBrowserTool` use — so a name the gate reads as `batch` is exactly
+ *  the name the executor would run as `batch`. */
+function batchToolName(namespacedName: string): boolean {
+  return browserToolNameOf(namespacedName) === 'batch';
+}
+
+/**
+ * Decode `input.steps`, which the tool schema carries as a JSON string but
+ * which a caller may already have decoded. Returns null when it cannot be read
+ * as a list — which the gate treats as a refusal, never as an empty batch.
+ */
+function decodeBatchSteps(input: unknown): unknown[] | null {
+  const raw = (input as { steps?: unknown } | undefined)?.steps;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function stepAction(step: unknown): string | null {
+  if (typeof step !== 'object' || step === null || Array.isArray(step)) return null;
+  const action = (step as { action?: unknown }).action;
+  return typeof action === 'string' ? action : null;
+}
+
+/**
+ * Why this `batch` must be refused outright, or null when it is acceptable
+ * (or when the tool is not a browser `batch` at all).
+ *
+ * Refusing is separate from classifying on purpose: a batch whose only steps
+ * are reads still has to be refused if one of them is a script, and the
+ * read-only path never reaches the state-changing branch of the gate.
+ */
+export function refuseBrowserBatch(
+  namespacedName: string,
+  input: unknown,
+): BrowserBatchRefusalCode | null {
+  if (!batchToolName(namespacedName)) return null;
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return 'malformed';
+  if (steps.length > MAX_BROWSER_BATCH_STEPS) return 'too-many-steps';
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action !== null && BATCH_SCRIPTING_STEPS.has(action)) return 'scripting-step';
+  }
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action === null || !(action in BATCH_STEP_CLASS)) return 'malformed';
+  }
+  return null;
+}
+
+/**
+ * A one-line "what this batch will do" for the confirmation dialog: step kinds
+ * and counts, in order, and nothing else. Deliberately carries no locator, no
+ * value and no page text — the same rule `deriveTargetKey` follows in the
+ * signal collector, for the same reason.
+ */
+export function summarizeBrowserBatch(namespacedName: string, input: unknown): string | null {
+  if (!batchToolName(namespacedName)) return null;
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return null;
+  const counts: Array<[string, number]> = [];
+  for (const step of steps) {
+    const action = stepAction(step) ?? '?';
+    const last = counts[counts.length - 1];
+    if (last && last[0] === action) last[1] += 1;
+    else counts.push([action, 1]);
+  }
+  return counts.map(([action, n]) => (n > 1 ? `${action} ×${n}` : action)).join(' → ');
+}
+
 /**
  * Classify a namespaced MCP tool name (`server__tool`) into the three-class
  * model. Returns null when the tool is not a browser-automation tool — which
@@ -248,10 +422,24 @@ export function getSiteVerdict(
  * needs explicit unattended allow" rather than silently running ungated.
  * Fail-open on an unknown capability is the wrong default for a surface that
  * acts inside the user's live, logged-in sessions.
+ *
+ * `input` is OPTIONAL and matters only for `batch`, whose class is not a
+ * property of its name: a batch is classified by its HEAVIEST step, so the
+ * arguments are the only place that class can be read from. Callers that do
+ * not have the arguments to hand (the tool-list classifiers, the settings UI,
+ * `browserToolPolicy.test.ts`'s sweep over `BROWSER_TOOL_SUFFIXES`) may keep
+ * calling with one argument — a `batch` with no readable steps falls back to
+ * the same gated `'interactive'` bucket as any other unclassified tool, which
+ * is the safe direction: it over-asks, it never under-asks. `refuseBrowserBatch`
+ * is the first lock on an unreadable batch; this is the second.
  */
-export function classifyBrowserTool(namespacedName: string): BrowserOperationClass | null {
+export function classifyBrowserTool(
+  namespacedName: string,
+  input?: unknown,
+): BrowserOperationClass | null {
   const toolName = browserToolNameOf(namespacedName);
   if (toolName === null) return null;
+  if (toolName === 'batch') return classifyBrowserBatch(input);
   if (SCRIPTING_TOOLS.has(toolName)) return 'scripting';
   if (INTERACTIVE_TOOLS.has(toolName)) return 'interactive';
   if (READ_ONLY_TOOLS.has(toolName)) return 'read-only';
@@ -260,6 +448,30 @@ export function classifyBrowserTool(namespacedName: string): BrowserOperationCla
   // 'interactive', not the fail-open 'read-only' an implicit else-bucket
   // would have produced.
   return 'interactive';
+}
+
+/**
+ * A batch is its heaviest step. Anything unreadable — no arguments at all, a
+ * `steps` that will not decode, a step kind this module has not been taught —
+ * classifies `'interactive'`, the same gated fallback an unknown tool gets:
+ * a call the gate cannot understand must not be the one that skips the ask.
+ * (`refuseBrowserBatch` rejects those outright anyway; this is the second lock.)
+ *
+ * `'scripting'` is unreachable here by construction: a batch carrying a script
+ * step is refused before it is ever classified, and `BATCH_STEP_CLASS` has no
+ * scripting row. If that ever changes, the max below must learn to rank
+ * scripting above interactive.
+ */
+function classifyBrowserBatch(input: unknown): BrowserOperationClass {
+  const steps = decodeBatchSteps(input);
+  if (steps === null || steps.length === 0) return 'interactive';
+  for (const step of steps) {
+    const action = stepAction(step);
+    if (action === null) return 'interactive';
+    const stepClass = BATCH_STEP_CLASS[action];
+    if (stepClass === undefined || stepClass !== 'read-only') return 'interactive';
+  }
+  return 'read-only';
 }
 
 /**

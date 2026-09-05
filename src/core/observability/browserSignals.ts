@@ -40,6 +40,12 @@ export type BrowserSignalEvent =
   | { kind: 'repeat_action'; tool: string; targetKey: string; count: number }
   | { kind: 'confirm_prompt'; origin?: string }
   | { kind: 'blocked_page'; className: 'http_429' | 'challenge' | 'verify_wall' }
+  /** A page's own alert/confirm/prompt/beforeunload froze a tab. `event`:
+   *  `opened` (seen holding the tab), `handled` (answered by the model),
+   *  `timed_out` (nobody answered, so it was dismissed for safety). Carries
+   *  NO page text — the dialog's message is page-authored content, and this
+   *  module never records any (see the module header). */
+  | { kind: 'js_dialog'; event: 'opened' | 'handled' | 'timed_out'; dialogType: string; action?: 'accept' | 'dismiss' }
   | { kind: 'tab_lifetime'; event: 'created' | 'closed'; aliveMs?: number }
   | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean }
   /**
@@ -334,7 +340,21 @@ export function classifyBlockedPage(resultText: string | undefined | null): 'htt
 
 // ── classifyBrowserToolError / detectFrameHint / isBrowserToolResultError ──
 
+/**
+ * The sentence `electron/browserHost.cjs` refuses every other action with
+ * while a JavaScript dialog holds a tab (`DIALOG_BLOCKING_PREFIX` there).
+ * Duplicated rather than imported — that file is a CommonJS main-process
+ * module — and pinned to it by
+ * `src/core/tools/browserDialogs.contract.test.ts`.
+ */
+export const DIALOG_BLOCKING_SENTENCE = 'This tab is blocked by a JavaScript dialog';
+
 const ERROR_CLASS_PATTERNS: [string, RegExp][] = [
+  // First: a dialog-blocked tab is its own thing, and every OTHER browser
+  // tool fails this way while one is open, so it must not be filed as a
+  // generic `unknown_error` (which is what the diagnostic bundle would show
+  // for a task that got stuck behind one confirm box).
+  ['dialog_pending', new RegExp(DIALOG_BLOCKING_SENTENCE, 'i')],
   ['timeout', /\btimeout\b|timed out/i],
   ['not_connected', /extension is not connected|not connected/i],
   ['not_found', /no (?:element|tab|match)(?:es)? found|not found/i],
@@ -362,6 +382,68 @@ export function classifyBrowserToolError(resultText: string | undefined | null):
 export function detectFrameHint(resultText: string | undefined | null): boolean {
   if (!resultText) return false;
   return /\biframe\b/i.test(scanPrefix(resultText));
+}
+
+/**
+ * The `js_dialog` events one browser tool result reveals — derived from the
+ * result the runtime actually sent, not from a side channel.
+ *
+ * `opened` has two sources on purpose: `get_dialog` reporting a pending
+ * dialog, and ANY other browser tool being refused because one is holding the
+ * tab (the far more common way a run discovers it). `timed_out` is only
+ * visible after the fact — nobody is listening at the moment the 60s
+ * auto-dismiss fires, so it is read off the next `get_dialog`'s `last`.
+ *
+ * Deliberately carries no `message`: the dialog's text is page-authored, and
+ * this module records no page content (module header).
+ */
+export function jsDialogSignals(
+  bareToolName: string,
+  resultText: string,
+): Array<Extract<BrowserSignalEvent, { kind: 'js_dialog' }>> {
+  if (isBrowserToolResultError(resultText)) {
+    return DIALOG_BLOCKING_RE.test(resultText)
+      ? [{ kind: 'js_dialog', event: 'opened', dialogType: dialogTypeFromRefusal(resultText) }]
+      : [];
+  }
+  if (bareToolName !== 'get_dialog' && bareToolName !== 'handle_dialog') return [];
+  let envelope: { pending?: unknown; dialog?: unknown; last?: unknown; handled?: unknown; action?: unknown };
+  try {
+    envelope = JSON.parse(resultText) as typeof envelope;
+  } catch {
+    return [];
+  }
+  if (typeof envelope !== 'object' || envelope === null) return [];
+  const events: Array<Extract<BrowserSignalEvent, { kind: 'js_dialog' }>> = [];
+  const dialogType = (value: unknown): string => {
+    const type = (value as { type?: unknown } | null)?.type;
+    return typeof type === 'string' ? type : 'unknown';
+  };
+  if (envelope.pending === true) {
+    events.push({ kind: 'js_dialog', event: 'opened', dialogType: dialogType(envelope.dialog) });
+  }
+  const last = envelope.last as { disposition?: unknown } | undefined;
+  if (last && last.disposition === 'auto-dismissed') {
+    events.push({ kind: 'js_dialog', event: 'timed_out', dialogType: dialogType(envelope.last) });
+  }
+  if (envelope.handled === true) {
+    events.push({
+      kind: 'js_dialog',
+      event: 'handled',
+      dialogType: dialogType(envelope.dialog),
+      ...(envelope.action === 'accept' || envelope.action === 'dismiss'
+        ? { action: envelope.action }
+        : {}),
+    });
+  }
+  return events;
+}
+
+const DIALOG_BLOCKING_RE = new RegExp(`${DIALOG_BLOCKING_SENTENCE} the page opened \\((\\w+)\\)`, 'i');
+
+function dialogTypeFromRefusal(resultText: string): string {
+  const match = DIALOG_BLOCKING_RE.exec(resultText);
+  return match ? match[1].toLowerCase() : 'unknown';
 }
 
 /** This codebase's error-result convention: every failing ToolResult string

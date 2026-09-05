@@ -18,6 +18,7 @@ import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
+  answersPageDialog,
   browserToolTargetsPage,
   classifyBrowserTool,
   decideBrowserOperation,
@@ -26,6 +27,8 @@ import {
   getSiteVerdict,
   isScriptingBrowserTool,
   normalizeBrowserOrigin,
+  refuseBrowserBatch,
+  summarizeBrowserBatch,
   toLegacyBrowserToolConsequence,
   DEFAULT_BROWSER_OPERATION_POLICY,
   type BrowserDenialReasonCode,
@@ -69,6 +72,7 @@ import {
   detectFrameHint,
   getCachedTabOrigin,
   isBrowserToolResultError,
+  jsDialogSignals,
   noteBrowserToolOutcome,
   noteTabOrigin,
   safeRecordBrowserSignal,
@@ -556,6 +560,52 @@ async function resolveBrowserActionTarget(
  * footer) without any of that meaning the page blocked the agent — see
  * `browserSignals.ts`'s `classifyBlockedPage`/`detectFrameHint` docs.
  */
+/**
+ * One `tool_call` event per step a batch actually ran, from the batch's own
+ * result envelope. Returns null when the result is not a readable batch
+ * envelope (an approval refusal, a transport error, a future shape change), so
+ * the caller can fall back to recording the call itself rather than recording
+ * nothing.
+ *
+ * The step's own name is used as the tool suffix, so a `click` inside a batch
+ * is comparable with a standalone `click`.
+ */
+function batchStepSignals(
+  namespacedName: string,
+  resultText: string,
+): Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> | null {
+  const separator = namespacedName.indexOf('__');
+  const serverName = separator === -1 ? namespacedName : namespacedName.slice(0, separator);
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { completedSteps, failedStep } = (envelope ?? {}) as {
+    completedSteps?: unknown;
+    failedStep?: unknown;
+  };
+  if (!Array.isArray(completedSteps)) return null;
+  const steps = [...completedSteps, ...(failedStep ? [failedStep] : [])];
+  const events: Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> = [];
+  for (const raw of steps) {
+    const step = raw as { action?: unknown; ok?: unknown; durationMs?: unknown; error?: unknown };
+    if (typeof step?.action !== 'string') return null;
+    const stepOk = step.ok === true;
+    events.push({
+      kind: 'tool_call',
+      tool: `${serverName}__${step.action}`,
+      ok: stepOk,
+      durationMs: typeof step.durationMs === 'number' ? step.durationMs : 0,
+      ...(stepOk
+        ? {}
+        : { errorClass: classifyBrowserToolError(typeof step.error === 'string' ? step.error : '') ?? 'unknown_error' }),
+    });
+  }
+  return events.length > 0 ? events : null;
+}
+
 function recordBrowserToolCallSignal(
   namespacedName: string,
   toolContext: ToolExecutionContext | undefined,
@@ -593,19 +643,47 @@ function recordBrowserToolCallSignal(
     Date.now(),
     toolContext?.loopId,
   );
-  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
-    {
-      kind: 'tool_call',
-      tool: namespacedName,
-      ok,
-      durationMs,
-      ...(tabId !== undefined ? { tabId } : {}),
-      ...(origin ? { origin } : {}),
-      ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
-      ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
-    },
-    context,
-  ));
+  // A `batch` is one TOOL CALL but N page ACTIONS. Recording it as a single
+  // opaque `batch` event would blind this stream to exactly what batching
+  // exists to do — an eight-field form would read as one browser interaction —
+  // so a batch emits one event PER STEP instead of one for itself. (The "one
+  // tool call" accounting lives in the conversation transcript, which is
+  // unchanged.) A result that cannot be read falls back to the single event.
+  const stepEvents = bareToolName === 'batch'
+    ? batchStepSignals(namespacedName, resultText)
+    : null;
+  if (stepEvents !== null) {
+    for (const event of stepEvents) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { ...event, ...(tabId !== undefined ? { tabId } : {}), ...(origin ? { origin } : {}) },
+        context,
+      ));
+    }
+  } else {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      {
+        kind: 'tool_call',
+        tool: namespacedName,
+        ok,
+        durationMs,
+        ...(tabId !== undefined ? { tabId } : {}),
+        ...(origin ? { origin } : {}),
+        ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+        ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
+      },
+      context,
+    ));
+  }
+
+  // A dialog freezing a tab is its own failure mode: without this it shows up
+  // in the bundle only as a scatter of failed clicks and fills, with nothing
+  // saying they all died behind one confirm box.
+  for (const event of jsDialogSignals(bareToolName, resultText)) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { ...event, ...(tabId !== undefined ? { tabId } : {}) } as typeof event,
+      context,
+    ));
+  }
 
   if (fallback) {
     safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
@@ -964,7 +1042,22 @@ export async function checkToolApproval(
   //      'allowed' site for anything that changes page state
   //   6. attended: the shipped per-site + permission-mode gate, unchanged
   {
-    const opClass = classifyBrowserTool(name);
+    // A `batch` carrying a page-script step (or one the gate cannot read as an
+    // ordered list of allowed steps) is refused whole, BEFORE any classifying:
+    // an all-reads batch never reaches the state-changing branch below, so a
+    // script hidden among reads would otherwise sail straight past the gate.
+    const batchRefusal = refuseBrowserBatch(name, input);
+    if (batchRefusal !== null) {
+      const reason = batchRefusal === 'scripting-step'
+        ? t.commandConfirm.browserBatchScriptStep
+        : batchRefusal === 'too-many-steps'
+          ? t.commandConfirm.browserBatchTooManySteps
+          : t.commandConfirm.browserBatchMalformed;
+      return { decision: 'deny', reason: `Error: ${reason}` };
+    }
+    // `input` is read here because a batch's operation class IS its heaviest
+    // step — the only tool whose class is not a property of its name.
+    const opClass = classifyBrowserTool(name, input);
     if (opClass !== null) {
       const consequence = toLegacyBrowserToolConsequence(opClass);
       // Which column of the operation policy applies. `interactionMode` is the
@@ -1084,6 +1177,64 @@ export async function checkToolApproval(
       const browserActionLabel = origin
         ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
         : `${t.commandConfirm.browserAction}: ${name}`;
+      /**
+       * For a `batch` the user is approving N actions at once, so the dialog
+       * has to say WHICH ones — a bare `…__batch (origin)` asks them to
+       * consent to an unread list. Step KINDS and counts only: no locator, no
+       * value, no page text (`summarizeBrowserBatch` enforces that, the same
+       * rule `deriveTargetKey` follows in the signal collector).
+       *
+       * Only the ASK sites use it. A denial notice keeps the plain label: it
+       * reports what was refused, and the step list adds nothing a user who
+       * cannot approve it can act on.
+       */
+      const batchSummary = summarizeBrowserBatch(name, input);
+      const browserConfirmLabel = batchSummary
+        ? `${browserActionLabel} — ${batchSummary}`
+        : browserActionLabel;
+      /**
+       * WHY this call is being asked about — one sentence, one source, for
+       * every channel that asks.
+       *
+       * R2-1 (2026-09-06 review): this gate has THREE ask sites, not two. Two
+       * are attended (the state-changing one below, and the read-only row a
+       * user set to 「每次询问」); the third is the UNATTENDED round-trip, which
+       * puts the question in front of the reader who can see the least — a
+       * person in a chat window, with no browser in front of them. That site
+       * had grown its own two-way ternary, so it was the one channel that
+       * never got the dialog sentence and was still promised 「允许后……不再
+       * 询问」 — a promise F2 took away from `handle_dialog` (answering a
+       * dialog mints no grant) and F8 took away from 「每次询问」, and one the
+       * unattended path could never keep in the first place: it has no
+       * conversation grant to mint.
+       *
+       * Not derived from `opClass`: `isScriptingBrowserTool` is the same
+       * predicate the grant logic below consults, and a sentence that
+       * disagrees with the rule it describes is worse than a generic one.
+       */
+      const browserAskReason = (): string => {
+        if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
+        if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (answersPageDialog(name)) {
+          // Named, because "browser action: …__handle_dialog" tells a user
+          // nothing about what they are agreeing to. The question the dialog
+          // asks was written by the PAGE, so the box says so — but does not
+          // QUOTE it: page text in an approval box is the attack this
+          // branch's own summary rule already bans (TESTING §13,
+          // "审批弹窗里回显页面内容").
+          //
+          // The two channels are not doing the same thing, so they do not get
+          // the same sentence. The built-in browser ANSWERS a dialog it has
+          // already intercepted; the Chrome extension cannot see a native
+          // dialog at all, so it ARMS the next one — a blind signature on a
+          // question nobody has read yet. Same tool name, materially
+          // different consent.
+          return browserChannelForTool(name) === 'chrome'
+            ? t.commandConfirm.browserDialogArmReason
+            : t.commandConfirm.browserDialogAnswerReason;
+        }
+        return t.commandConfirm.browserReason;
+      };
       /**
        * U7 / G1 — leave a trace of the refusal.
        *
@@ -1343,11 +1494,17 @@ export async function checkToolApproval(
             : undefined;
           const approval = await resolveUnattendedConfirmation({
             info: {
-              command: browserActionLabel,
+              // The step list, for the reader who needs it most. A remote
+              // approver has no browser in front of them, so a bare
+              // `…__batch (origin)` asks them to consent to a list they
+              // cannot read — the exact thing `browserConfirmLabel` exists to
+              // prevent (R2-1). The IM channel's own
+              // `sanitizeUntrustedPromptField` bounds and flattens it, so a
+              // 25-step batch cannot push the reply instructions off a phone
+              // screen.
+              command: browserConfirmLabel,
               level: 'warn',
-              reason: opClass === 'scripting'
-                ? t.commandConfirm.browserScriptReason
-                : t.commandConfirm.browserReason,
+              reason: browserAskReason(),
               kind: 'browser',
               browserOperationClass: opClass,
               ...(origin !== null ? { browserOrigin: origin } : {}),
@@ -1493,12 +1650,49 @@ export async function checkToolApproval(
         // minted a site verdict promised "each run asks separately" — only
         // the scripting ROW's own 'allow' speaks for scripting.
         const scripting = isScriptingBrowserTool(name);
+        /**
+         * F2 (2026-09-06 review) — `handle_dialog` used to ride the
+         * conversation grant, and the link it rode was a causal one: the
+         * click that raised the dialog is what minted the grant, seconds
+         * earlier. So the single most common sequence in this whole feature —
+         * click 提交 → page raises confirm → accept it — asked the user
+         * exactly once, about the click, and then pressed the page's own OK
+         * button on the strength of that. `beforeunload` too, which the task
+         * brief explicitly said must ask an attended user.
+         *
+         * See `answersPageDialog` for why that is the wrong shape. Gated like
+         * scripting from here: NEITHER grant scope, and the only silent path
+         * is the one the user configured in so many words.
+         */
+        const answeringDialog = answersPageDialog(name);
         // The scripting row's own 'allow', scoped exactly as the automatic-run
         // opt-in is (`decideBrowserOperation`): the standing site verdict is
         // what says WHERE. `policyVerdict` is this call's own row, so an 'ask'
         // row can never reach this constant.
         const scriptAllowedByPolicy =
           scripting && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
+        /**
+         * The dialog half of the same rule (2026-09-06 ruling). `policyVerdict`
+         * here is the INTERACTIVE row — `handle_dialog`'s own class — so a user
+         * who left that row at 「每次询问」 is asked for every dialog, and one
+         * who set it to 「允许」 is asked only until they mark the site 始终允许.
+         * High-risk is excluded the same way it is everywhere else: on a
+         * payment page, "press the page's OK" is the single most consequential
+         * thing in this file.
+         *
+         * `!highRisk` here and `siteVerdict`'s own escalation are REDUNDANT
+         * with each other, deliberately — the same pattern, and the same
+         * reasoning, as `decideBrowserOperation`'s scripting clause. Because
+         * `siteVerdict` is one value, `'high-risk'` REPLACES `'allowed'`
+         * rather than accompanying it, so dropping either guard alone changes
+         * no behaviour and turns no test red (both mutations verified green);
+         * dropping BOTH is red. Written out anyway so that a later edit to
+         * either one fails safe instead of silently opening a bank's confirm
+         * boxes to a standing site grant. `policyVerdict` is a third: an
+         * attended high-risk `'allow'` is already upgraded to `'ask'`.
+         */
+        const dialogAnswerAllowedByPolicy =
+          answeringDialog && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';
         /**
          * F8 (2026-09-05 review) — 「每次询问」 on the click/fill row means
          * EVERY time, the way it already does on the read-only row.
@@ -1536,7 +1730,8 @@ export async function checkToolApproval(
         // transfer page through on the strength of an unrelated click.
         const granted =
           scriptAllowedByPolicy
-          || (!scripting && !highRisk && !asksEveryTime
+          || dialogAnswerAllowedByPolicy
+          || (!scripting && !answeringDialog && !highRisk && !asksEveryTime
             && (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed'));
         const decision = strategy.decideOtherTool(consequence, granted);
         if (decision !== 'allow') {
@@ -1560,13 +1755,13 @@ export async function checkToolApproval(
             ),
           ));
           const confirmed = await onRequireConfirmation({
-            command: browserActionLabel,
+            command: browserConfirmLabel,
             level: 'warn',
-            reason: scripting
-              ? t.commandConfirm.browserScriptReason
-              : highRisk
-                ? t.commandConfirm.browserHighRiskReason
-                : t.commandConfirm.browserReason,
+            // Same sentence the unattended round-trip sends — see
+            // `browserAskReason`. Two copies of this ternary is how the
+            // unattended channel drifted into promising silence it could not
+            // deliver (R2-1).
+            reason: browserAskReason(),
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,
@@ -1590,10 +1785,14 @@ export async function checkToolApproval(
           // to 「每次询问」 (F8): a grant this row will ignore on the next call
           // is dead weight, and one that leaked to another row would be a
           // silent widening of a setting the user tightened on purpose.
-          if (!scripting && !highRisk && !asksEveryTime) {
+          // Answering a dialog mints nothing either — in the other direction
+          // this time. "Yes, press OK on this confirm" must not silently buy
+          // the next half hour of clicking, any more than a click buys the
+          // next dialog.
+          if (!scripting && !answeringDialog && !highRisk && !asksEveryTime) {
             grantBrowserAutomation(toolContext?.conversationId);
           }
-        } else if (granted && !scriptAllowedByPolicy) {
+        } else if (granted && !scriptAllowedByPolicy && !dialogAnswerAllowedByPolicy) {
           // No dialog because the user already granted this — a standing site
           // verdict, or the conversation grant minted from an earlier dialog.
           // Both are consent, unlike an unconditional permission-mode allow —
@@ -1617,7 +1816,7 @@ export async function checkToolApproval(
           return refusedByHuman({ decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` });
         }
         const confirmed = await onRequireConfirmation({
-          command: browserActionLabel,
+          command: browserConfirmLabel,
           level: 'warn',
           reason: t.commandConfirm.browserReason,
           kind: 'browser',

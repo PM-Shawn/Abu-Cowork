@@ -32,6 +32,7 @@ import {
   getPendingCommandConfirmation,
   requestCommandConfirmation,
 } from '../agent/permissionBridge';
+import { getI18n } from '../../i18n';
 
 const policyMocks = vi.hoisted(() => ({
   checkTool: vi.fn(() => ({ decision: 'allow' as const })),
@@ -395,6 +396,71 @@ describe('browser gate — operation-class policy', () => {
       // The generic key, not the resolver's English diagnostic.
       expect(denials).toHaveLength(1);
       expect(denials[0]).not.toContain('nope');
+    });
+
+    /**
+     * R2-1 (2026-09-06 review) — this is the THIRD ask site in the gate, and
+     * the two below are what it was missing. Its reader is the one who can
+     * see the least: a person in a chat window with no browser in front of
+     * them, so a bare `…__batch (origin)` asks them to approve a list they
+     * cannot read, and a sentence promising future silence describes a
+     * mechanism this path does not even have.
+     */
+    it('tells the remote approver what the batch will actually do', async () => {
+      const commands: string[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        commands.push(request.info.command);
+        return { approved: false, reason: 'no' };
+      });
+      withTabOrigin(ALLOWED_URL);
+
+      await checkToolApproval(
+        'abu-browser__batch',
+        {
+          tabId: OWNED_TAB_ID,
+          steps: JSON.stringify([
+            { action: 'fill', locator: { css: '#no' }, value: 'EQ-001' },
+            { action: 'fill', locator: { css: '#owner' }, value: '张三' },
+            { action: 'click', locator: { role: 'button', name: '提交' } },
+          ]),
+        },
+        unattendedOwner,
+        undefined,
+      );
+
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toContain('fill ×2 → click');
+      expect(commands[0]).toContain(ALLOWED_SITE);
+      // Step kinds only — the same rule the attended dialog follows. A locator
+      // or a filled value in an approval message is page/user text quoted as
+      // if Abu wrote it (TESTING §13).
+      expect(commands[0]).not.toContain('EQ-001');
+      expect(commands[0]).not.toContain('提交');
+    });
+
+    it('sends the dialog sentence over IM, not the promise of silence it cannot keep', async () => {
+      const reasons: string[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        reasons.push(request.info.reason);
+        return { approved: false, reason: 'no' };
+      });
+      withTabOrigin(ALLOWED_URL);
+
+      await checkToolApproval(
+        'abu-browser__handle_dialog',
+        { tabId: OWNED_TAB_ID, action: 'accept' },
+        unattendedOwner,
+        undefined,
+      );
+
+      const t = getI18n();
+      expect(reasons).toEqual([t.commandConfirm.browserDialogAnswerReason]);
+      // `browserReason` is the one sentence in this file that promises
+      // "later browser actions in this conversation will not ask again".
+      // F2 removed that for `handle_dialog` (answering a dialog mints no
+      // grant), and the unattended path never had a conversation grant to
+      // mint in the first place.
+      expect(reasons[0]).not.toBe(t.commandConfirm.browserReason);
     });
   });
 
@@ -2119,6 +2185,159 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(onThreshold).toHaveBeenCalledTimes(1);
+    });
+  });
+  /**
+   * `batch` and the dialog pair at the operation-class gate.
+   *
+   * These three shapes could not be written when batch-三 was built — the
+   * unattended authorization batch had not landed yet, so `decideBrowserOperation`
+   * and `highRiskSites.ts` did not exist on that branch. They exist now, and
+   * these are the cases where the two batches meet: a tool whose class comes
+   * from its ARGUMENTS (`batch`) and a tool that answers the page
+   * (`handle_dialog`), against the policy that only ever saw name-classified
+   * tools.
+   */
+  describe('batch and the dialog pair (batch-三 × the operation-class policy)', () => {
+    const HIGH_RISK_URL = `${ALLOWED_SITE}/account/transfer`;
+    const formBatch = (): Record<string, unknown> => ({
+      tabId: OWNED_TAB_ID,
+      steps: JSON.stringify([
+        { action: 'fill', locator: { css: '#code' }, value: 'EQ-001' },
+        { action: 'click', locator: { role: 'button', name: '提交' } },
+      ]),
+    });
+    const readBatch = (): Record<string, unknown> => ({
+      tabId: OWNED_TAB_ID,
+      steps: JSON.stringify([
+        { action: 'find', query: { role: 'button' } },
+        { action: 'read', selector: '#result' },
+      ]),
+    });
+
+    describe('unattended, no standing grant', () => {
+      beforeEach(() => {
+        useSettingsStore.setState({
+          allowUnattendedBrowser: true,
+          browserSitePermissions: {},
+        });
+      });
+
+      it('denies a page-touching batch on a site with no standing grant, and sends nothing', async () => {
+        withTabOrigin(UNKNOWN_URL);
+        const confirm = vi.fn(async () => true); // says yes — must not matter
+
+        const decision = await checkToolApproval(
+          'abu-browser__batch', formBatch(), unattendedOwner, confirm as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+        // The ONLY tool call that went out is the gate's own origin probe.
+        expect(mockCallTool.mock.calls.every(
+          (call) => (call[0] as { name?: string }).name === 'get_tabs',
+        )).toBe(true);
+      });
+
+      it('denies handle_dialog there too — nobody is present to read what the page asked', async () => {
+        withTabOrigin(UNKNOWN_URL);
+
+        const decision = await checkToolApproval(
+          'abu-browser__handle_dialog', { tabId: OWNED_TAB_ID, action: 'accept' },
+          unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+      });
+
+      it('lets a read-only batch through on an ALLOWED site — a batch of reads is reads', async () => {
+        useSettingsStore.setState({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
+        withTabOrigin(ALLOWED_URL);
+
+        const decision = await checkToolApproval(
+          'abu-browser__batch', readBatch(), unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('allow');
+      });
+    });
+
+    describe('high-risk pages', () => {
+      beforeEach(() => {
+        useSettingsStore.setState({
+          allowUnattendedBrowser: true,
+          browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        });
+        withTabOrigin(HIGH_RISK_URL);
+      });
+
+      it('unattended: refuses a batch on a money-movement page even on an ALLOWED site', async () => {
+        const decision = await checkToolApproval(
+          'abu-browser__batch', formBatch(), unattendedOwner, (async () => true) as never,
+        );
+
+        expect(decision.decision).toBe('deny');
+        expect(decision.reason).toMatch(/资金|money movement/i);
+      });
+
+      it('unattended: refuses even a READ-ONLY batch, and get_dialog with it', async () => {
+        // dev's precedence step 3: unattended on a high-risk URL is denied for
+        // EVERY class, reads included — quietly pulling a bank page into an
+        // LLM context is the exfiltration half of the same problem.
+        expect((await checkToolApproval(
+          'abu-browser__batch', readBatch(), unattendedOwner, (async () => true) as never,
+        )).decision).toBe('deny');
+        expect((await checkToolApproval(
+          'abu-browser__get_dialog', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
+        )).decision).toBe('deny');
+      });
+
+      it('attended: asks for the batch and for the dialog answer, with no "always allow this site"', async () => {
+        const asked: Array<{ command: string; allowPersistentGrant?: boolean }> = [];
+        const confirm = (async (info: { command: string; allowPersistentGrant?: boolean }) => {
+          asked.push(info);
+          return true;
+        }) as never;
+
+        expect((await checkToolApproval(
+          'abu-browser__batch', formBatch(), attendedOwner, confirm,
+        )).decision).toBe('allow');
+        expect((await checkToolApproval(
+          'abu-browser__handle_dialog', { tabId: OWNED_TAB_ID, action: 'accept' }, attendedOwner, confirm,
+        )).decision).toBe('allow');
+
+        // Both asked, even though the site is 始终允许 and both rows ship 'allow'.
+        expect(asked).toHaveLength(2);
+        expect(asked[0].command).toContain('batch');
+        expect(asked[1].command).toContain('handle_dialog');
+        expect(asked.every((a) => a.allowPersistentGrant === false)).toBe(true);
+      });
+
+      it('attended: a read-only batch is NOT escalated — asking on every observation is how a control gets clicked through', async () => {
+        const asked: string[] = [];
+        const decision = await checkToolApproval(
+          'abu-browser__batch', readBatch(), attendedOwner,
+          (async (info: { command: string }) => { asked.push(info.command); return true; }) as never,
+        );
+
+        expect(decision.decision).toBe('allow');
+        expect(asked).toEqual([]);
+      });
+    });
+
+    it('stamps the approved origin onto the batch so the run cannot re-pin onto wherever the page drifted', async () => {
+      // U5's pin, threaded to `runBatch` (which uses it INSTEAD of re-reading:
+      // see `approvedOrigin`). Without it the gate approves for O_gate, the
+      // page moves while the dialog is up, and the run pins O_run and executes
+      // all 25 steps there — self-consistently, on a site nobody approved.
+      useSettingsStore.setState({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
+      withTabOrigin(ALLOWED_URL);
+
+      const decision = await checkToolApproval(
+        'abu-browser__batch', formBatch(), attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
     });
   });
 });

@@ -14,7 +14,9 @@ import {
   browserToolTargetsPage,
   normalizeBrowserOperationPolicy,
   normalizeBrowserOrigin,
+  refuseBrowserBatch,
   revokeBrowserGrant,
+  summarizeBrowserBatch,
   toLegacyBrowserToolConsequence,
   type BrowserOperationClass,
   type BrowserOperationPolicy,
@@ -50,11 +52,23 @@ const SCRIPTING = ['execute_js'];
  * to run free in the attended flow — see `LEGACY_STATE_CHANGING_TOOLS` below
  * for the pinned regression test.
  */
-const INTERACTIVE = ['click', 'fill', 'select', 'keyboard', 'navigate'];
+const INTERACTIVE = ['click', 'fill', 'select', 'keyboard', 'navigate', 'handle_dialog'];
+
+/**
+ * The one tool whose class is not a property of its NAME: a `batch` is
+ * classified by its heaviest STEP, so it belongs to no fixed bucket. It is
+ * listed separately (and included in the partition below) so that adding a
+ * second input-dependent tool cannot slip through unclassified — and so the
+ * `it.each` sweep still covers it, using the class it falls back to when
+ * called with no arguments.
+ */
+const INPUT_DEPENDENT = ['batch'];
 
 const READ_ONLY = [
   'get_tabs',
   'snapshot',
+  'find',
+  'get_dialog',
   'wait_for',
   'extract_text',
   'extract_table',
@@ -72,10 +86,22 @@ const READ_ONLY = [
  *  test in the `toLegacyBrowserToolConsequence` describe block below. */
 const LEGACY_STATE_CHANGING_TOOLS = ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate'];
 
+/**
+ * Tools that did not exist when `STATE_CHANGING_TOOLS` was written, and that
+ * this branch classifies as gated on their own merits — so the
+ * byte-compatibility regression below expects `'state-changing'` for them
+ * WITHOUT that being a claim about the legacy gate (it never saw them).
+ * `handle_dialog` presses the page's own OK button; a `batch` called with no
+ * arguments falls back to the gated bucket.
+ */
+const POST_LEGACY_STATE_CHANGING_TOOLS = ['handle_dialog', 'batch'];
+
 const CLASS_OF: Record<string, BrowserOperationClass> = Object.fromEntries([
   ...READ_ONLY.map((t) => [t, 'read-only'] as const),
   ...INTERACTIVE.map((t) => [t, 'interactive'] as const),
   ...SCRIPTING.map((t) => [t, 'scripting'] as const),
+  // Called with no arguments — the class a name-only sweep sees.
+  ...INPUT_DEPENDENT.map((t) => [t, 'interactive'] as const),
 ]);
 
 const ALL_BROWSER_TOOLS: Array<[string, BrowserOperationClass]> = BROWSER_TOOL_SUFFIXES.map(
@@ -97,9 +123,25 @@ describe('browser tool policy', () => {
       expect(classifyBrowserTool(`abu-browser-bridge__${tool}`)).toBe(expected);
     });
 
-    it('the three explicit buckets exactly partition the REAL 19-tool list — no gaps, no overlap, no extras', () => {
-      expect(BROWSER_TOOL_SUFFIXES.length).toBe(19);
-      const buckets = [READ_ONLY, INTERACTIVE, SCRIPTING];
+    it('leaves observation tools ungated', () => {
+      for (const tool of [
+        'snapshot',
+        'find',
+        'get_dialog',
+        'get_tabs',
+        'extract_text',
+        'extract_table',
+        'query_js',
+        'screenshot',
+        'scroll',
+      ]) {
+        expect(classifyBrowserTool(`abu-browser__${tool}`)).toBe('read-only');
+      }
+    });
+
+    it('the explicit buckets exactly partition the REAL 23-tool list — no gaps, no overlap, no extras', () => {
+      expect(BROWSER_TOOL_SUFFIXES.length).toBe(23);
+      const buckets = [READ_ONLY, INTERACTIVE, SCRIPTING, INPUT_DEPENDENT];
       const union = buckets.flat();
       // No overlap between buckets.
       expect(union.length).toBe(new Set(union).size);
@@ -126,6 +168,71 @@ describe('browser tool policy', () => {
     });
   });
 
+  describe('batch', () => {
+    const clickStep = { action: 'click', locator: { css: '#a' } };
+
+    it('is classified by its heaviest step, on both server namespaces', () => {
+      for (const server of ['abu-browser', 'abu-browser-bridge']) {
+        expect(classifyBrowserTool(`${server}__batch`, {
+          steps: [{ action: 'find', query: { role: 'button' } }, clickStep],
+        })).toBe('interactive');
+        expect(classifyBrowserTool(`${server}__batch`, {
+          steps: [{ action: 'find', query: { role: 'button' } }, { action: 'read' }],
+        })).toBe('read-only');
+      }
+    });
+
+    it('falls back to the gated bucket when the caller has no arguments to read it by', () => {
+      // A batch's class lives in its steps, so a name-only classification
+      // (the tool-list sweep, the settings UI) cannot know it. It must
+      // over-ask, never under-ask.
+      expect(classifyBrowserTool('abu-browser__batch')).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser__batch', {})).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser__batch', { steps: 'not json' })).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser__batch', { steps: [] })).toBe('interactive');
+      expect(classifyBrowserTool('abu-browser__batch', { steps: [{ action: 'hover' }] })).toBe(
+        'interactive',
+      );
+    });
+
+    it('refuses a scripting step wherever it sits in the run', () => {
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [clickStep, { action: 'execute_js', code: '1' }, clickStep],
+      })).toBe('scripting-step');
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [{ action: 'query_js', code: '1' }],
+      })).toBe('scripting-step');
+    });
+
+    it('reports a scripting step as scripting even when the run is also malformed', () => {
+      // Order matters: "there was a script in it" is the answer the user needs,
+      // not "one of these steps was misspelled".
+      expect(refuseBrowserBatch('abu-browser__batch', {
+        steps: [{ action: 'hover' }, { action: 'execute_js', code: '1' }],
+      })).toBe('scripting-step');
+    });
+
+    it('says nothing about any other tool', () => {
+      expect(refuseBrowserBatch('abu-browser__click', { steps: '[{"action":"execute_js"}]' })).toBeNull();
+      expect(refuseBrowserBatch('other-server__batch', { steps: '[{"action":"execute_js"}]' })).toBeNull();
+      expect(summarizeBrowserBatch('abu-browser__click', { steps: '[]' })).toBeNull();
+    });
+
+    it('summarizes a run as step kinds and counts, and nothing the page could have written', () => {
+      const summary = summarizeBrowserBatch('abu-browser__batch', {
+        steps: [
+          { action: 'fill', locator: { css: '#user' }, value: 'zhangsan@example.com' },
+          { action: 'fill', locator: { css: '#pw' }, value: 'hunter2' },
+          { action: 'click', locator: { role: 'button', name: 'Transfer 5000' } },
+        ],
+      });
+      expect(summary).toBe('fill ×2 → click');
+      expect(summary).not.toContain('hunter2');
+      expect(summary).not.toContain('example.com');
+      expect(summary).not.toContain('Transfer');
+    });
+  });
+
   describe('toLegacyBrowserToolConsequence', () => {
     it('maps read-only straight through', () => {
       expect(toLegacyBrowserToolConsequence('read-only')).toBe('read-only');
@@ -139,7 +246,11 @@ describe('browser tool policy', () => {
     it.each(BROWSER_TOOL_SUFFIXES)(
       'reproduces the pre-U1 STATE_CHANGING_TOOLS gate exactly for %s (byte-compatibility regression)',
       (tool) => {
-        const expected = LEGACY_STATE_CHANGING_TOOLS.includes(tool) ? 'state-changing' : 'read-only';
+        const expected =
+          LEGACY_STATE_CHANGING_TOOLS.includes(tool) ||
+          POST_LEGACY_STATE_CHANGING_TOOLS.includes(tool)
+            ? 'state-changing'
+            : 'read-only';
         const opClass = classifyBrowserTool(`abu-browser__${tool}`);
         expect(opClass).not.toBeNull();
         expect(toLegacyBrowserToolConsequence(opClass!)).toBe(expected);

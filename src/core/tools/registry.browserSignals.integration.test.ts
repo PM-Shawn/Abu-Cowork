@@ -111,6 +111,66 @@ describe('registry.ts browser observability collection', () => {
     expect(typeof (signals[0] as { durationMs: number }).durationMs).toBe('number');
   });
 
+  it('records the three moments of a page dialog: it appeared, it was answered, it timed out', async () => {
+    // A dialog is invisible in this stream unless it is recorded on purpose:
+    // it shows up as a scatter of failed clicks with nothing saying they all
+    // died behind one confirm box.
+    setDefaultResponse(
+      'Error: This tab is blocked by a JavaScript dialog the page opened (confirm). '
+      + 'Call get_dialog to read it. Dialog text: "确定要提交吗"',
+    );
+    const approve = async () => true;
+    await executeAnyTool(
+      'abu-browser__click',
+      { tabId: 1, locator: makeLocator({ css: '#submit' }) },
+      approve,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    setDefaultResponse(JSON.stringify({
+      tabId: 1, action: 'accept', handled: true,
+      dialog: { type: 'confirm', message: '确定要提交吗', url: 'https://erp.example/', openedAt: 1 },
+      message: 'Accepted',
+    }));
+    await executeAnyTool(
+      'abu-browser__handle_dialog',
+      { tabId: 1, action: 'accept' },
+      approve,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    setDefaultResponse(JSON.stringify({
+      tabId: 1, pending: false,
+      last: { type: 'alert', message: '会话已过期', url: 'https://erp.example/', openedAt: 2, disposition: 'auto-dismissed' },
+      message: 'No dialog is open on this tab.',
+    }));
+    await executeAnyTool(
+      'abu-browser__get_dialog',
+      { tabId: 1 },
+      undefined,
+      undefined,
+      { conversationId: 'conv-dialog' },
+    );
+
+    const dialogs = getRecentBrowserSignals().filter((s) => s.kind === 'js_dialog');
+    expect(dialogs).toMatchObject([
+      { event: 'opened', dialogType: 'confirm', tabId: 1, conversationId: 'conv-dialog' },
+      { event: 'handled', dialogType: 'confirm', action: 'accept' },
+      { event: 'timed_out', dialogType: 'alert' },
+    ]);
+    // No page text, ever — same rule the rest of this stream follows.
+    expect(JSON.stringify(dialogs)).not.toContain('确定要提交吗');
+    expect(JSON.stringify(dialogs)).not.toContain('会话已过期');
+    // And the blocked click is filed under its own error class rather than
+    // disappearing into `unknown_error`.
+    const blocked = getRecentBrowserSignals().find(
+      (s) => s.kind === 'tool_call' && s.tool === 'abu-browser__click',
+    );
+    expect(blocked).toMatchObject({ ok: false, errorClass: 'dialog_pending' });
+  });
+
   it('records ok:false and an errorClass for a failing call, without altering the returned error text', async () => {
     setDefaultResponse('Error: Browser extension is not connected.');
 
@@ -356,6 +416,67 @@ describe('registry.ts browser observability collection', () => {
 
       const extractSignal = getRecentBrowserSignals().find((s) => s.kind === 'tool_call' && s.tool === 'abu-browser__extract_text' && s.conversationId === 'conv-2');
       expect((extractSignal as { origin?: string })?.origin).toBeUndefined();
+    });
+  });
+
+
+  // ── batch: one tool call, N page actions ─────────────────────────────────
+  describe('a batch is recorded as the actions it ran, not as one opaque call', () => {
+    const envelope = JSON.stringify({
+      tabId: 1,
+      origin: 'https://erp.example.com',
+      completedSteps: [
+        { index: 0, action: 'fill', ok: true, durationMs: 12 },
+        { index: 1, action: 'fill', ok: true, durationMs: 9 },
+      ],
+      failedStep: { index: 2, action: 'click', ok: false, durationMs: 4, error: 'Element not found: #submit' },
+      remainingSteps: 1,
+      stopped: 'step-failed',
+      message: 'Batch stopped',
+    });
+
+    /** A batch touches the page, so it asks — approve it and get on with it. */
+    const approveOnce = (async () => true) as never;
+
+    it('emits one tool_call per step it ran, with each step named as itself', async () => {
+      // Recording it as a single `batch` event would make an eight-field form
+      // read as one browser interaction — blind to exactly what batching does.
+      setDefaultResponse(envelope);
+
+      await executeAnyTool(
+        'abu-browser__batch',
+        { tabId: 1, steps: '[{"action":"fill","locator":{"css":"#a"},"value":"1"}]' },
+        approveOnce,
+        undefined,
+        { conversationId: 'conv-batch' },
+      );
+
+      const signals = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signals.map((s) => (s as { tool: string }).tool)).toEqual([
+        'abu-browser__fill', 'abu-browser__fill', 'abu-browser__click',
+      ]);
+      expect(signals.map((s) => (s as { ok: boolean }).ok)).toEqual([true, true, false]);
+      expect(signals[2]).toMatchObject({ errorClass: 'unknown_error', durationMs: 4 });
+      // And no leftover `batch` event double-counting the same work.
+      expect(signals.some((s) => (s as { tool: string }).tool.endsWith('__batch'))).toBe(false);
+    });
+
+    it('falls back to recording the call itself when the result is not a batch envelope', async () => {
+      // A refusal, a transport error, or a future shape change must not make
+      // the run invisible to the signal stream.
+      setDefaultResponse('Error: Browser extension is not connected.');
+
+      await executeAnyTool(
+        'abu-browser__batch',
+        { tabId: 1, steps: '[{"action":"fill","locator":{"css":"#a"},"value":"1"}]' },
+        approveOnce,
+        undefined,
+        { conversationId: 'conv-batch' },
+      );
+
+      const signals = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signals).toHaveLength(1);
+      expect(signals[0]).toMatchObject({ tool: 'abu-browser__batch', ok: false });
     });
   });
 

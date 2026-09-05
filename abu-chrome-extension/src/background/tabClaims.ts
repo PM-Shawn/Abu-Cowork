@@ -275,14 +275,26 @@ export const TAB_TARGETED_ACTIONS: ReadonlySet<string> = new Set([
   'click',
   'fill',
   'select',
+  'find',
   'wait_for',
   'extract_text',
   'extract_table',
   'scroll',
   'keyboard',
+  'get_dialog',
+  'handle_dialog',
   'start_recording',
   'stop_recording',
 ]);
+
+/**
+ * `batch` is deliberately ABSENT. It is not a wire action on this channel: the
+ * bridge's `runBatch` decomposes it and sends each STEP as an ordinary action
+ * (`abu-browser-bridge/src/batch.ts`), so every step passes through the gate
+ * above on its own. Listing `batch` here would gate a request the extension
+ * never receives, and the derivation test below — which reads the actions the
+ * bridge actually sends — would then fail, which is the intended alarm.
+ */
 
 export interface TabResolutionDeps {
   /** Resolves `true` while the tab is still open. */

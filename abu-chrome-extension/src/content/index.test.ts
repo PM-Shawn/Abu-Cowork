@@ -22,7 +22,6 @@ type HandleAction = (action: string, payload: Record<string, unknown>) => Promis
 interface SnapshotElement {
   ref: string;
   tag: string;
-  id?: string;
   enabled: boolean;
   visible: boolean;
   text?: string;

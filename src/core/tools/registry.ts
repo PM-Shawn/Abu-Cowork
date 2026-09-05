@@ -1630,6 +1630,17 @@ export async function checkToolApproval(
          * High-risk is excluded the same way it is everywhere else: on a
          * payment page, "press the page's OK" is the single most consequential
          * thing in this file.
+         *
+         * `!highRisk` here and `siteVerdict`'s own escalation are REDUNDANT
+         * with each other, deliberately — the same pattern, and the same
+         * reasoning, as `decideBrowserOperation`'s scripting clause. Because
+         * `siteVerdict` is one value, `'high-risk'` REPLACES `'allowed'`
+         * rather than accompanying it, so dropping either guard alone changes
+         * no behaviour and turns no test red (both mutations verified green);
+         * dropping BOTH is red. Written out anyway so that a later edit to
+         * either one fails safe instead of silently opening a bank's confirm
+         * boxes to a standing site grant. `policyVerdict` is a third: an
+         * attended high-risk `'allow'` is already upgraded to `'ask'`.
          */
         const dialogAnswerAllowedByPolicy =
           answeringDialog && !highRisk && policyVerdict === 'allow' && siteVerdict === 'allowed';

@@ -235,9 +235,13 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
   });
 
   it('mints no conversation grant of its own — one dialog answered is not half an hour of clicking', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
-    await answerDialog('accept');
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    // The site carries NO standing verdict, so this asks and the user says
+    // yes. What they said yes to is "press OK on this confirm" — not "act in
+    // my browser for the next thirty minutes", which is what a minted grant
+    // would have sold, silently, on the very next click.
+    expect((await answerDialog('accept')).decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+    expect(asked[0].command).toContain('handle_dialog');
 
     const click = await checkToolApproval(
       'abu-browser__click',
@@ -247,8 +251,8 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
     );
 
     expect(click.decision).toBe('allow');
-    expect(asked).toHaveLength(1);
-    expect(asked[0].command).toContain('click');
+    expect(asked).toHaveLength(2);
+    expect(asked[1].command).toContain('click');
   });
 
   it('asks on a money-movement page even on a site the user always allows', async () => {

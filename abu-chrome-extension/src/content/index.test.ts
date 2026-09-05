@@ -1291,6 +1291,20 @@ describe('ambiguity is refused, not resolved by position', () => {
 
     expect((await click({ role: 'combobox' })).target?.id).toBe('type');
   });
+
+  it('never treats Abu\'s own status bubble as a candidate', async () => {
+    // The bubble lives on <html> (so `snapshot` never sees it) and echoes what
+    // was just done. Every locator scans the whole document, so after one
+    // action our own caption joins the candidate set and the automation starts
+    // tripping over its own footprint. `find` already pins this; the locator
+    // used by click/fill/select/wait_for did not.
+    document.body.innerHTML = '<input id="q" /><p id="hint">点击保存按钮即可提交</p>';
+    await fill({ css: '#q' }, '保存');
+    expect(document.getElementById('abu-status')?.textContent).toContain('保存');
+
+    expect((await click({ text: '保存' })).target?.id).toBe('hint');
+    await expect(click({ css: '#abu-status' })).rejects.toThrow(/Element not found/);
+  });
 });
 
 describe('a label written both ways is still one label', () => {

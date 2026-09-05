@@ -331,13 +331,24 @@ function ownerKeyOf(id) {
  * that neither side had produced alone.
  *
  * Attribution is a plain time window. `before-input-event` and `focus` on a
- * view are the USER only while `aiActionDepth === 0`; every automation action
- * runs with that depth raised, so `keyboardAutomation`'s own
- * `webContents.focus()` + `sendInputEvent()` are excluded without needing to
- * tag individual events. The depth is deliberately GLOBAL, not per owner:
- * during owner A's action, owner B's real input is misread as automation. That
- * error is one-directional (a missed backoff, never a new block) and the window
- * is milliseconds wide, so it is accepted rather than tracked per owner.
+ * view are the USER only while `aiActionDepth === 0`; an action that can
+ * PRODUCE such an event runs with that depth raised, so
+ * `keyboardAutomation`'s own `webContents.focus()` + `sendInputEvent()` are
+ * excluded without needing to tag individual events.
+ *
+ * Only `ATTRIBUTION_SUPPRESSING_ACTIONS` raise it. It used to be EVERY action
+ * (F0, 2026-09-05), and `wait_for`'s timeout is caller-supplied and unbounded
+ * (`abu-browser-bridge`'s schema defaults it to 30s) — so one `wait_for`
+ * blinded the takeover detector for as long as it ran, while synthesizing
+ * nothing that would have needed excluding. A read-only action has no events
+ * of its own to exclude, so raising the depth for it can only hide the user.
+ *
+ * The depth is still GLOBAL rather than per view, so during owner A's
+ * injecting action owner B's real input is still misread as automation. That
+ * error is one-directional (a missed backoff, never a new block), and with the
+ * unbounded read-only waits out of the picture it no longer spans a 30s
+ * window — but `navigate` and `execute_js` can still be slow, so the next
+ * commit narrows it to the one view the action touches.
  *
  * State-changing actions then wait for a quiet window before running. Read-only
  * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
@@ -399,6 +410,25 @@ const TAKEOVER_GATED_ACTIONS = new Set([
   'scroll',
   'start_recording',
 ]);
+
+/**
+ * The actions whose OWN side effects can look like the user, and which
+ * therefore suppress attribution while they run (F0).
+ *
+ * It is `TAKEOVER_GATED_ACTIONS` plus `get_tabs`, for the same reason the
+ * gated list has its members:
+ *  - every gated action either injects input (`click`/`fill`/`select`/
+ *    `keyboard`/`scroll`/`start_recording`, and `execute_js`, which can
+ *    synthesize anything) or commits a navigation, and Chromium hands the
+ *    guest frame keyboard focus on a navigation commit (F1 above);
+ *  - `get_tabs` is the one listing that can PROVISION — it creates a view and
+ *    loads `about:blank` into it, i.e. it commits a navigation too.
+ *
+ * Everything else (`wait_for`, `snapshot`, `get_html`, `extract_text`,
+ * `extract_table`, `screenshot`, `screenshot_full_page`, `stop_recording`,
+ * `get_downloads`) only reads.
+ */
+const ATTRIBUTION_SUPPRESSING_ACTIONS = new Set([...TAKEOVER_GATED_ACTIONS, 'get_tabs']);
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
 const userInteractionAt = new Map();
@@ -1345,13 +1375,16 @@ async function screenshotAutomation(view, fullPage) {
  */
 async function performBrowserAutomation(action, payload = {}, opts) {
   const signal = opts && opts.signal;
-  // Everything this call does — including creating and loading views — is
-  // automation, so nothing it triggers may be mistaken for the user.
-  aiActionDepth += 1;
+  // What an INJECTING call does — synthesizing input, committing a navigation,
+  // loading a view it just created — is automation, so nothing it triggers may
+  // be mistaken for the user. A read-only call produces no such event and must
+  // not suppress the user's own (F0).
+  const suppresses = ATTRIBUTION_SUPPRESSING_ACTIONS.has(action);
+  if (suppresses) aiActionDepth += 1;
   try {
     return await runBrowserAutomation(action, payload, signal);
   } finally {
-    aiActionDepth -= 1;
+    if (suppresses) aiActionDepth -= 1;
   }
 }
 

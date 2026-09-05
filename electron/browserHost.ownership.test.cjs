@@ -2751,3 +2751,116 @@ test('F1: a steal does not promote the stolen-onto tab to the owner current tab'
     restore();
   }
 });
+
+/**
+ * ## F0 — attribution suppression must not cover read-only actions
+ *
+ * The R4 backoff decides "is this event the user or our own automation?" by a
+ * depth counter raised while an action runs, and it used to be raised for
+ * EVERY action. `wait_for`'s timeout is caller-supplied and unbounded (30s by
+ * default in `abu-browser-bridge/src/tools.ts`), so one `wait_for` blinded the
+ * takeover detector for as long as it ran — while injecting nothing whose
+ * events would have needed excluding. The user took over, the host recorded
+ * nothing, and the next click/navigate went in under their hands with no 3s
+ * quiet wait (external review 2026-09-05, independently confirmed).
+ */
+
+/**
+ * Park an automation action in flight, deterministically and without needing
+ * the built browser-extension runtime on disk: the FIRST isolated-world call a
+ * DOM action makes is `installAutomationRuntime`'s bootstrap, so holding it
+ * suspends the action before `loadAutomationRuntime()` ever reads a file.
+ * Where inside the action it parks is irrelevant to attribution — the
+ * suppression is held for the whole call either way.
+ */
+function holdIsolatedWorld(tabId) {
+  const contents = contentsFor(tabId);
+  const original = contents.executeJavaScriptInIsolatedWorld.bind(contents);
+  let markEntered;
+  const entered = new Promise((resolve) => { markEntered = resolve; });
+  let releaseHeld;
+  const held = new Promise((resolve) => { releaseHeld = resolve; });
+  let first = true;
+  contents.executeJavaScriptInIsolatedWorld = async (worldId, scripts) => {
+    if (!first) return original(worldId, scripts);
+    first = false;
+    markEntered();
+    return held;
+  };
+  return { entered, release: () => releaseHeld(true) };
+}
+
+/** A tab parked on an http(s) document, which every DOM action requires. */
+async function tabOnHttps(host, ownerId, url) {
+  const tabId = tabIds(await getTabs(host, ownerId))[0];
+  await navigate(host, ownerId, tabId, url);
+  return tabId;
+}
+
+test('F0: a long read-only action does not swallow ANOTHER task\'s input', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = await tabOnHttps(host, OWNER_A, 'https://a.example/');
+    const bTab = await tabOnHttps(host, OWNER_B, 'https://b.example/');
+
+    const parked = holdIsolatedWorld(aTab);
+    const aWait = host.performBrowserAutomation('wait_for', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+      condition: { type: 'appear', locator: { css: '#never' } },
+      timeout: 30000,
+    });
+    // The wait's own outcome is not what is under test — it is released below
+    // and may reject on the runtime bootstrap; only the attribution matters.
+    const settled = aWait.then(() => {}, () => {});
+    await parked.entered;
+
+    typeInto(bTab); // the user starts typing in task B's page
+
+    parked.release();
+    await settled;
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_B, bTab, 'https://b.example/next');
+    assert.equal(
+      state.sleeps.length,
+      6,
+      'B\'s input during A\'s long read-only wait is still the user, so B backs off'
+    );
+    assert.equal(contentsFor(bTab).url, 'https://b.example/next');
+  } finally {
+    restore();
+  }
+});
+
+test('F0: a long read-only action does not swallow input on its OWN page', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const aTab = await tabOnHttps(host, OWNER_A, 'https://a.example/');
+
+    const parked = holdIsolatedWorld(aTab);
+    const aWait = host.performBrowserAutomation('wait_for', {
+      ownerId: OWNER_A,
+      tabId: aTab,
+      condition: { type: 'appear', locator: { css: '#never' } },
+      timeout: 30000,
+    });
+    const settled = aWait.then(() => {}, () => {});
+    await parked.entered;
+
+    typeInto(aTab); // the user takes over the very page A is waiting on
+
+    parked.release();
+    await settled;
+
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, aTab, 'https://a.example/next');
+    assert.equal(state.sleeps.length, 6, 'A must yield to the user on its own tab');
+  } finally {
+    restore();
+  }
+});

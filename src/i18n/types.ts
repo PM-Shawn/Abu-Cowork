@@ -1417,6 +1417,7 @@ export interface TranslationDict {
     /** Follow-up chips under a finished team turn. */
     followUpRedoStep: string;
     followUpMemberRevise: string;
+    followUpMemberAppend: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
@@ -2073,6 +2074,10 @@ export interface TranslationDict {
     teamDispatchOrdinal: string;
     teamOpenDispatch: string;
     teamOpenOverview: string;
+    teamStopDispatch: string;
+    teamStopDispatchShort: string;
+    teamStopDispatchShortNamed: string;
+    teamAppendInstruction: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;

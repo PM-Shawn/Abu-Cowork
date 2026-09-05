@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, Check, CircleStop, Clock, Loader2, XCircle, AlertTriangle } from 'lucide-react';
+import { Bot, Check, CircleStop, Clock, Loader2, XCircle, AlertTriangle, Square } from 'lucide-react';
+import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import { cn } from '@/lib/utils';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import { useBatchProgress, type BatchTaskProgress } from '@/stores/batchProgressStore';
@@ -133,7 +134,7 @@ function findPersistedBatchTask(
   return null;
 }
 
-function PersistedTaskView({ title, persisted, locale, t }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict }) {
+function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title: string; persisted: PersistedBatchTask; locale: string; t: TranslationDict; dispatchKey?: string }) {
   const { steps, row, liveStatus } = persisted;
   const rowStatus = row?.status ?? (liveStatus === 'running' ? 'running' : liveStatus === 'error' ? 'failed' : liveStatus === 'completed' ? 'succeeded' : undefined);
   const statusText = rowStatus && rowStatus !== 'unknown' ? batchRowStatusLabel(rowStatus, t) : null;
@@ -161,6 +162,17 @@ function PersistedTaskView({ title, persisted, locale, t }: { title: string; per
             )}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
             <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
+            {liveStatus === 'running' && dispatchKey && (
+              <button
+                type="button"
+                onClick={() => requestDispatchCancel(dispatchKey)}
+                aria-label={format(t.workspace.teamStopDispatch, { member: title })}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
+              >
+                <Square aria-hidden="true" className="h-3 w-3" />
+                {t.workspace.teamStopDispatchShort}
+              </button>
+            )}
           </div>
         </header>
         {steps.length === 0 ? (
@@ -211,7 +223,7 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
   );
 
   if (persisted) {
-    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} />;
+    return <PersistedTaskView title={title} persisted={persisted} locale={locale} t={t} dispatchKey={`${identity.batchToolCallId}:${taskIndex}`} />;
   }
 
   if (!batch || !task) {

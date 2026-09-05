@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Check, ChevronRight, Loader2, XCircle, CircleDashed } from 'lucide-react';
+import { Check, ChevronRight, Loader2, XCircle, CircleDashed, Square, MessageSquarePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -10,6 +10,9 @@ import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import { collectMemberDispatches, summarizeByMember, type DispatchStatus, type MemberSummary } from '@/components/team/teamDispatches';
+import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, updateComposerDraft } from '@/stores/composerDraftStore';
 
 function StatusIcon({ status }: { status: DispatchStatus | 'idle' }) {
   if (status === 'running') return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-clay)] motion-safe:animate-spin" />;
@@ -40,6 +43,11 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
   const teams = useTeamStore((s) => s.teams);
   const executions = useTaskExecutionStore((s) => s.executions);
   const openSubagent = usePreviewStore((s) => s.openSubagent);
+  const draftScope = useEnterpriseStore((state) => getComposerDraftScopeForEnterpriseMode(state.mode));
+  const appendInstruction = (member: string) => {
+    const text = format(t.team.followUpMemberAppend, { member });
+    updateComposerDraft(getComposerDraftKey(conversationId, draftScope), (draft) => ({ ...draft, text: draft.text.trim() ? `${draft.text.trimEnd()} ${text}` : text }));
+  };
 
   const team = useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams]); // eslint-disable-line react-hooks/exhaustive-deps
   const dispatches = useMemo(
@@ -105,6 +113,15 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                         <span>{member.dispatches.length > 0 ? format(t.workspace.teamDispatchCount, { n: member.dispatches.length }) : t.workspace.teamNoDispatchYet}</span>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => appendInstruction(member.agent)}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-caption text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+                      title={t.workspace.teamAppendInstruction}
+                    >
+                      <MessageSquarePlus aria-hidden="true" className="h-3.5 w-3.5" />
+                      {t.workspace.teamAppendInstruction}
+                    </button>
                   </div>
                   {member.dispatches.length > 0 && (
                     <ul className="mt-2 space-y-1 pl-11">
@@ -125,6 +142,18 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                             <span className="shrink-0 text-[var(--abu-text-muted)]">{format(t.workspace.agentTools, { count: d.stepCount })}</span>
                             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
                           </button>
+                          {d.live && d.status === 'running' && (
+                            <button
+                              type="button"
+                              onClick={() => requestDispatchCancel(d.key)}
+                              aria-label={format(t.workspace.teamStopDispatch, { member: member.agent })}
+                              title={format(t.workspace.teamStopDispatch, { member: member.agent })}
+                              className="mt-1 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
+                            >
+                              <Square aria-hidden="true" className="h-3 w-3" />
+                              {t.workspace.teamStopDispatchShort}
+                            </button>
+                          )}
                         </li>
                       ))}
                     </ul>

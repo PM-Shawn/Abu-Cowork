@@ -326,7 +326,8 @@ export const delegateToAgentTool: ToolDefinition = {
     // 7. Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
       effectiveAgentName,
-      loopCtx?.signal
+      loopCtx?.signal,
+      toolExecContext?.toolCallId ? `${toolExecContext.toolCallId}:0` : undefined,
     );
 
     // 8. Sync mode: blocking await

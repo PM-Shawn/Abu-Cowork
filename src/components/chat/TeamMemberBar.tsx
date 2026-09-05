@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Check, Loader2, XCircle } from 'lucide-react';
+import { Check, Loader2, XCircle, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -8,6 +8,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import { collectMemberDispatches, summarizeByMember } from '@/components/team/teamDispatches';
+import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import AgentAvatar from '@/components/common/AgentAvatar';
 
 /**
@@ -56,6 +57,19 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           {member.status === 'running' && <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />}
           {member.status === 'completed' && <Check aria-hidden="true" className="h-3 w-3 text-[var(--abu-success)]" />}
           {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
+        </button>
+      ))}
+      {members.filter((m) => m.status === 'running' && m.latest?.live).map((m) => (
+        <button
+          key={`stop-${m.agent}`}
+          type="button"
+          onClick={() => m.latest && requestDispatchCancel(m.latest.key)}
+          aria-label={format(t.workspace.teamStopDispatch, { member: m.agent })}
+          title={format(t.workspace.teamStopDispatch, { member: m.agent })}
+          className="inline-flex items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
+        >
+          <Square aria-hidden="true" className="h-3 w-3" />
+          <span className="truncate">{format(t.workspace.teamStopDispatchShortNamed, { member: m.agent })}</span>
         </button>
       ))}
     </div>

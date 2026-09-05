@@ -19,6 +19,7 @@ import type {
   SubagentStopReason,
 } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
+import { withDispatchController } from '../../agent/subagentAbort';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -552,7 +553,7 @@ export const runAgentBatchTool: ToolDefinition = {
         const childStepIds = new Map<string, string>(); // member tool_use id -> child step id
         try {
           const result = await runWithTimeout(
-            (sig) => runSubagent({
+            (sig) => withDispatchController(resolved.agent.name, sig, `${batchIdentity.batchToolCallId}:${idx}`, (dispatchSignal) => runSubagent({
               agent: resolved.agent,
               task: effectiveTask,
               context: resolved.context,
@@ -561,7 +562,7 @@ export const runAgentBatchTool: ToolDefinition = {
               parentLoopId: delegatedUserTurn.origin.loopId,
               parentConversationId: delegatedUserTurn.origin.conversationId,
               parentUserMessageId: delegatedUserTurn.origin.messageId,
-              signal: sig,
+              signal: dispatchSignal,
               commandConfirmCallback: loopCtx?.commandConfirmCallback,
               filePermissionCallback: loopCtx?.filePermissionCallback,
               allowedTools: loopCtx?.allowedTools,
@@ -612,7 +613,7 @@ export const runAgentBatchTool: ToolDefinition = {
                   // Best-effort: never let store errors break the batch
                 }
               },
-            }),
+            })),
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
             loopCtx?.signal,
           );

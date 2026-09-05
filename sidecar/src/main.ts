@@ -136,6 +136,7 @@ import {
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
+import { cancelDispatch } from '@/core/agent/subagentAbort';
 import {
   writeLine,
   makeError,
@@ -416,6 +417,18 @@ function handleMessage(raw: string): void {
     } catch (err) {
       applyEnterpriseEntitlementSnapshot(undefined);
       log('state.enterpriseEntitlement handler threw; access revoked', err);
+    }
+    return;
+  }
+
+  if (method === 'state.cancelDispatch') {
+    // Notification only — stop ONE team member's hand-off (`${toolCallId}:${taskIndex}`);
+    // the leader loop and sibling members keep running.
+    try {
+      const key = typeof params === 'object' && params !== null ? (params as { key?: unknown }).key : undefined;
+      if (typeof key === 'string') cancelDispatch(key);
+    } catch (err) {
+      log('state.cancelDispatch handler threw (ignored — notifications get no response)', err);
     }
     return;
   }

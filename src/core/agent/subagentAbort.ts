@@ -14,10 +14,15 @@ interface ActiveSubagent {
   controller: AbortController;
   parentCleanup: () => void; // remove parent signal listener
   startTime: number;
+  /** `${toolCallId}:${taskIndex}` of the hand-off this run serves (team member stop). */
+  dispatchKey?: string;
 }
 
 // Module-level registry of active subagent controllers
 const activeSubagents = new Map<string, ActiveSubagent>();
+// Hand-off key → subagent id, so the UI can stop ONE member without touching
+// the leader or its siblings (in-conversation team, block E).
+const dispatchIndex = new Map<string, string>();
 
 // Listeners for UI state updates
 const listeners = new Set<() => void>();
@@ -32,7 +37,8 @@ function notifyListeners() {
  */
 export function createSubagentController(
   agentName: string,
-  parentSignal?: AbortSignal
+  parentSignal?: AbortSignal,
+  dispatchKey?: string,
 ): { subagentId: string; signal: AbortSignal; cleanup: () => void } {
   const id = `sub-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   const controller = new AbortController();
@@ -56,9 +62,11 @@ export function createSubagentController(
     controller,
     parentCleanup,
     startTime: Date.now(),
+    ...(dispatchKey ? { dispatchKey } : {}),
   };
 
   activeSubagents.set(id, entry);
+  if (dispatchKey) dispatchIndex.set(dispatchKey, id);
   notifyListeners();
 
   const cleanup = () => {
@@ -88,6 +96,7 @@ function removeSubagent(subagentId: string) {
   if (entry) {
     entry.parentCleanup();
     activeSubagents.delete(subagentId);
+    if (entry.dispatchKey && dispatchIndex.get(entry.dispatchKey) === subagentId) dispatchIndex.delete(entry.dispatchKey);
     notifyListeners();
   }
 }
@@ -120,5 +129,36 @@ export function cancelAllSubagents() {
     entry.parentCleanup();
   }
   activeSubagents.clear();
+  dispatchIndex.clear();
   notifyListeners();
+}
+
+/** Stop one hand-off (`${toolCallId}:${taskIndex}`); false when nothing is running under that key. */
+export function cancelDispatch(dispatchKey: string): boolean {
+  const id = dispatchIndex.get(dispatchKey);
+  if (!id) return false;
+  return cancelSubagent(id);
+}
+
+/** Is a hand-off with this key still running in this process? */
+export function isDispatchActive(dispatchKey: string): boolean {
+  return dispatchIndex.has(dispatchKey);
+}
+
+/**
+ * Run a hand-off under its own controller (parent abort still cascades) so it
+ * can be stopped by key; the registry entry is removed when the run settles.
+ */
+export async function withDispatchController<T>(
+  agentName: string,
+  parentSignal: AbortSignal | undefined,
+  dispatchKey: string,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const { signal, cleanup } = createSubagentController(agentName, parentSignal, dispatchKey);
+  try {
+    return await run(signal);
+  } finally {
+    cleanup();
+  }
 }

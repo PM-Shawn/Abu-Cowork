@@ -1193,6 +1193,49 @@ export async function checkToolApproval(
         ? `${browserActionLabel} — ${batchSummary}`
         : browserActionLabel;
       /**
+       * WHY this call is being asked about — one sentence, one source, for
+       * every channel that asks.
+       *
+       * R2-1 (2026-09-06 review): this gate has THREE ask sites, not two. Two
+       * are attended (the state-changing one below, and the read-only row a
+       * user set to 「每次询问」); the third is the UNATTENDED round-trip, which
+       * puts the question in front of the reader who can see the least — a
+       * person in a chat window, with no browser in front of them. That site
+       * had grown its own two-way ternary, so it was the one channel that
+       * never got the dialog sentence and was still promised 「允许后……不再
+       * 询问」 — a promise F2 took away from `handle_dialog` (answering a
+       * dialog mints no grant) and F8 took away from 「每次询问」, and one the
+       * unattended path could never keep in the first place: it has no
+       * conversation grant to mint.
+       *
+       * Not derived from `opClass`: `isScriptingBrowserTool` is the same
+       * predicate the grant logic below consults, and a sentence that
+       * disagrees with the rule it describes is worse than a generic one.
+       */
+      const browserAskReason = (): string => {
+        if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
+        if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (answersPageDialog(name)) {
+          // Named, because "browser action: …__handle_dialog" tells a user
+          // nothing about what they are agreeing to. The question the dialog
+          // asks was written by the PAGE, so the box says so — but does not
+          // QUOTE it: page text in an approval box is the attack this
+          // branch's own summary rule already bans (TESTING §13,
+          // "审批弹窗里回显页面内容").
+          //
+          // The two channels are not doing the same thing, so they do not get
+          // the same sentence. The built-in browser ANSWERS a dialog it has
+          // already intercepted; the Chrome extension cannot see a native
+          // dialog at all, so it ARMS the next one — a blind signature on a
+          // question nobody has read yet. Same tool name, materially
+          // different consent.
+          return browserChannelForTool(name) === 'chrome'
+            ? t.commandConfirm.browserDialogArmReason
+            : t.commandConfirm.browserDialogAnswerReason;
+        }
+        return t.commandConfirm.browserReason;
+      };
+      /**
        * U7 / G1 — leave a trace of the refusal.
        *
        * Every `return { decision: 'deny' }` in this block goes through here
@@ -1451,11 +1494,17 @@ export async function checkToolApproval(
             : undefined;
           const approval = await resolveUnattendedConfirmation({
             info: {
-              command: browserActionLabel,
+              // The step list, for the reader who needs it most. A remote
+              // approver has no browser in front of them, so a bare
+              // `…__batch (origin)` asks them to consent to a list they
+              // cannot read — the exact thing `browserConfirmLabel` exists to
+              // prevent (R2-1). The IM channel's own
+              // `sanitizeUntrustedPromptField` bounds and flattens it, so a
+              // 25-step batch cannot push the reply instructions off a phone
+              // screen.
+              command: browserConfirmLabel,
               level: 'warn',
-              reason: opClass === 'scripting'
-                ? t.commandConfirm.browserScriptReason
-                : t.commandConfirm.browserReason,
+              reason: browserAskReason(),
               kind: 'browser',
               browserOperationClass: opClass,
               ...(origin !== null ? { browserOrigin: origin } : {}),
@@ -1708,29 +1757,11 @@ export async function checkToolApproval(
           const confirmed = await onRequireConfirmation({
             command: browserConfirmLabel,
             level: 'warn',
-            reason: scripting
-              ? t.commandConfirm.browserScriptReason
-              : highRisk
-                ? t.commandConfirm.browserHighRiskReason
-                : answeringDialog
-                  // Named, because "browser action: …__handle_dialog" tells a
-                  // user nothing about what they are agreeing to. The question
-                  // the dialog asks was written by the PAGE, so the box says
-                  // so — but does not QUOTE it: page text in an approval box
-                  // is the attack this branch's own summary rule already bans
-                  // (TESTING §13, "审批弹窗里回显页面内容"). The user reads the
-                  // real dialog from the page, not a copy Abu vouches for.
-                  //
-                  // The two channels are not doing the same thing, so they do
-                  // not get the same sentence. The built-in browser ANSWERS a
-                  // dialog that is on screen now; the Chrome extension cannot
-                  // see a native dialog at all, so it ARMS the next one —
-                  // a blind signature on a question nobody has read yet. Same
-                  // tool name, materially different consent.
-                  ? (browserChannelForTool(name) === 'chrome'
-                    ? t.commandConfirm.browserDialogArmReason
-                    : t.commandConfirm.browserDialogAnswerReason)
-                  : t.commandConfirm.browserReason,
+            // Same sentence the unattended round-trip sends — see
+            // `browserAskReason`. Two copies of this ternary is how the
+            // unattended channel drifted into promising silence it could not
+            // deliver (R2-1).
+            reason: browserAskReason(),
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,

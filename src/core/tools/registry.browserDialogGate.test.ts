@@ -20,6 +20,8 @@ import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
+import zhCN from '../../i18n/locales/zh-CN';
+import enUS from '../../i18n/locales/en-US';
 import type { ToolDefinition } from '../../types';
 
 const OWNER = 'conv-dialog';
@@ -303,6 +305,37 @@ describe('browser permission gate — get_dialog / handle_dialog', () => {
       expect(viaExtension.reason).toMatch(/60|next/i);
     } finally {
       (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser-bridge');
+    }
+  });
+
+  /**
+   * R2-1 / R2-2 (2026-09-06 review) — two things this box must not say.
+   *
+   * Asserted on the DICTIONARIES rather than through the gate because the
+   * defect is in the sentence itself, in both locales, and neither locale is
+   * the one a test run happens to resolve to.
+   */
+  describe('what the dialog approval box may not claim', () => {
+    for (const [locale, dict] of [['zh-CN', zhCN], ['en-US', enUS]] as const) {
+      it(`${locale}: does not send the user to read a dialog Abu has intercepted`, () => {
+        // The built-in browser answers dialogs over CDP, so the native box is
+        // never on screen — the premise F1's whole lease design rests on.
+        // Telling the user to "read it on the page" asks for something this
+        // channel makes impossible. The honest fallback is what `get_dialog`
+        // (free, read-only) already reported into the conversation.
+        expect(dict.commandConfirm.browserDialogAnswerReason).not.toContain('在页面上读');
+        expect(dict.commandConfirm.browserDialogAnswerReason).not.toMatch(/read it on the page/i);
+      });
+
+      it(`${locale}: does not promise that later actions will stop asking`, () => {
+        // `browserReason`'s closing clause. F2 took it away from this tool —
+        // answering a dialog mints no conversation grant, and is not bought
+        // by one either — so neither dialog sentence may carry it.
+        expect(dict.commandConfirm.browserDialogAnswerReason).not.toContain('不再询问');
+        expect(dict.commandConfirm.browserDialogArmReason).not.toContain('不再询问');
+        expect(dict.commandConfirm.browserDialogAnswerReason).not.toMatch(/will not ask again/i);
+        expect(dict.commandConfirm.browserDialogArmReason).not.toMatch(/will not ask again/i);
+      });
     }
   });
 

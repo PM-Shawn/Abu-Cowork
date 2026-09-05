@@ -32,6 +32,7 @@ import {
   getPendingCommandConfirmation,
   requestCommandConfirmation,
 } from '../agent/permissionBridge';
+import { getI18n } from '../../i18n';
 
 const policyMocks = vi.hoisted(() => ({
   checkTool: vi.fn(() => ({ decision: 'allow' as const })),
@@ -395,6 +396,71 @@ describe('browser gate — operation-class policy', () => {
       // The generic key, not the resolver's English diagnostic.
       expect(denials).toHaveLength(1);
       expect(denials[0]).not.toContain('nope');
+    });
+
+    /**
+     * R2-1 (2026-09-06 review) — this is the THIRD ask site in the gate, and
+     * the two below are what it was missing. Its reader is the one who can
+     * see the least: a person in a chat window with no browser in front of
+     * them, so a bare `…__batch (origin)` asks them to approve a list they
+     * cannot read, and a sentence promising future silence describes a
+     * mechanism this path does not even have.
+     */
+    it('tells the remote approver what the batch will actually do', async () => {
+      const commands: string[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        commands.push(request.info.command);
+        return { approved: false, reason: 'no' };
+      });
+      withTabOrigin(ALLOWED_URL);
+
+      await checkToolApproval(
+        'abu-browser__batch',
+        {
+          tabId: OWNED_TAB_ID,
+          steps: JSON.stringify([
+            { action: 'fill', locator: { css: '#no' }, value: 'EQ-001' },
+            { action: 'fill', locator: { css: '#owner' }, value: '张三' },
+            { action: 'click', locator: { role: 'button', name: '提交' } },
+          ]),
+        },
+        unattendedOwner,
+        undefined,
+      );
+
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toContain('fill ×2 → click');
+      expect(commands[0]).toContain(ALLOWED_SITE);
+      // Step kinds only — the same rule the attended dialog follows. A locator
+      // or a filled value in an approval message is page/user text quoted as
+      // if Abu wrote it (TESTING §13).
+      expect(commands[0]).not.toContain('EQ-001');
+      expect(commands[0]).not.toContain('提交');
+    });
+
+    it('sends the dialog sentence over IM, not the promise of silence it cannot keep', async () => {
+      const reasons: string[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        reasons.push(request.info.reason);
+        return { approved: false, reason: 'no' };
+      });
+      withTabOrigin(ALLOWED_URL);
+
+      await checkToolApproval(
+        'abu-browser__handle_dialog',
+        { tabId: OWNED_TAB_ID, action: 'accept' },
+        unattendedOwner,
+        undefined,
+      );
+
+      const t = getI18n();
+      expect(reasons).toEqual([t.commandConfirm.browserDialogAnswerReason]);
+      // `browserReason` is the one sentence in this file that promises
+      // "later browser actions in this conversation will not ask again".
+      // F2 removed that for `handle_dialog` (answering a dialog mints no
+      // grant), and the unattended path never had a conversation grant to
+      // mint in the first place.
+      expect(reasons[0]).not.toBe(t.commandConfirm.browserReason);
     });
   });
 

@@ -2786,7 +2786,14 @@ export interface TranslationDict {
     browserScriptReason: string;
     /** Answering a dialog the PAGE put up (`handle_dialog`) — a different
      *  consent from clicking a button the user named, so it is asked for
-     *  separately and never rides the conversation grant. */
+     *  separately and never rides the conversation grant.
+     *
+     *  Must NOT send the user to look at the page: on this channel the
+     *  built-in browser has already intercepted the dialog over CDP, so the
+     *  native box is not on screen (R2-2, 2026-09-06 review). The honest
+     *  fallback is what Abu itself reported — `get_dialog` is free and
+     *  read-only, so the text is normally in the message right above the
+     *  approval box. */
     browserDialogAnswerReason: string;
     /** Chrome-extension channel only: that channel cannot see a native dialog,
      *  so `handle_dialog` PRE-ARMS the answer to the next one — a blind

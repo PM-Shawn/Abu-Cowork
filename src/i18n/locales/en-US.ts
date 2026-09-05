@@ -642,6 +642,24 @@ const enUS: TranslationDict = {
     },
   },
 
+  unattendedRun: {
+    outcome: {
+      succeeded: 'Done',
+      partial: 'Partly done',
+      blocked: 'Not finished',
+      notRun: 'Did not run',
+      failed: 'Task failed',
+      stopped: 'Stopped',
+      noProgress: 'No progress',
+    },
+    summaryWithDetail: '{label}: {detail}',
+    detailWithOrigins: '{reason} ({origins})',
+    detailActionsFailed: '{failed} of {total} browser actions failed',
+    detailNothingDelivered: 'nothing was produced to deliver',
+    detailTurnLimit: 'hit the turn limit — the partial result is below',
+    nextStep: 'Next: {step}',
+  },
+
   settings: {
     title: 'Settings',
     labs: 'Labs',
@@ -823,7 +841,7 @@ const enUS: TranslationDict = {
     browserSitePermsAddHighRisk: 'This site looks like money movement (payment, transfer, checkout) or a government service, so it cannot be set to Always allow — pages like this always ask separately. Blocking it is still available.',
     browserSitePermsSummary: '{allowed} allowed · {denied} blocked · shared by the built-in browser and Chrome',
     browserHighRiskTag: 'High-risk · asks every time',
-    browserUnattendedReachSummary: 'Automatic tasks may enter {count} site(s); payment / transfer pages are still refused.',
+    browserUnattendedReachSummary: 'Automatic tasks may enter {count} site(s); pages it recognizes as payment / transfer are refused.',
     browserUnattendedReachNone: 'Automatic tasks cannot act on any site right now — no ordinary site is set to "Always allow".',
     browserUnattendedReachOff: 'The automatic-tasks master switch is off, so automatic tasks cannot act on any site.',
     browserOpPolicyTitle: 'Action permissions',
@@ -2409,6 +2427,7 @@ const enUS: TranslationDict = {
     browserUnattendedImAborted: 'The run was stopped before the approval was answered, so the action was cancelled',
     browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
+    browserAlwaysAllowSiteWithScripts: 'Always allow this site (including scripts)',
     browserBlockSite: 'Block this site',
     selfExtensionTitle: 'Confirm new capability',
     selfExtensionDescription: 'Abu wants to add or rewrite long-lived agent or automation state:',

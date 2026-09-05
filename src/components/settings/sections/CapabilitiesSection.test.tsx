@@ -1758,12 +1758,18 @@ describe('CapabilitiesSection', () => {
       // Origin-level, and the copy still says so: entering the site is not the
       // same as every page on it being reachable (M8).
       expect(screen.getByText(/may enter 1 site/)).toBeInTheDocument();
-      // Shortened on a user ruling (2026-09-04: no long lines on this page).
-      // The two facts that had to survive the trim are the COUNT and the
-      // per-page refusal — dropping the latter would leave the line reading
-      // like a blanket grant over every page of those sites.
-      expect(screen.getByText(/payment \/ transfer pages are still refused/))
-        .toBeInTheDocument();
+      // Shortened on a user ruling (2026-09-04: no long lines on this page),
+      // but the shortening is not allowed to cost the HEDGE. `highRiskSites.ts`
+      // calls its own table "deliberately minimal, deliberately incomplete", so
+      // the copy may say what it RECOGNIZES and may never promise that a
+      // category is refused — a user who reads "payment pages are refused" will
+      // believe a payment page this classifier misses is out of reach, and it
+      // is not (it falls back to the ordinary site gate). The trim in
+      // `0b04b84a` dropped exactly this and swapped the assertion out with it;
+      // both directions are pinned now so the gate catches the next one (M8).
+      expect(screen.getByText(/recognizes as payment/)).toBeInTheDocument();
+      expect(screen.queryByText(/payment \/ transfer pages are (still |always )?refused/))
+        .not.toBeInTheDocument();
       // The row itself no longer restates "an allowed site is allowed".
       const row = screen.getByTitle('https://reports.example.com').closest('li') as HTMLElement;
       expect(row).not.toHaveTextContent('Unattended');

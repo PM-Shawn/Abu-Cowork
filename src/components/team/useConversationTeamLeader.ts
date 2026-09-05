@@ -2,17 +2,19 @@ import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { resolveRoleId } from '@/core/team/roleIdentity';
+import type { SubagentDefinition } from '@/types';
+import { userAgentAvatar } from '@/components/common/AgentAvatar';
 
 /** Who answers in a team-pinned conversation (design §2.3: the leader is the root agent). */
 export interface ConversationTeamLeader {
   teamId: string;
   teamName: string;
   leaderName: string;
-  /** Emoji avatar from the leader's AGENT.md; a neutral fallback when absent. */
-  leaderAvatar: string;
+  /** The user's emoji for their own leader agent; null = the default mark. */
+  leaderAvatar: string | null;
+  leader: SubagentDefinition;
+  teamAvatar: string | null;
 }
-
-export const DEFAULT_LEADER_AVATAR = '🧑‍💼';
 
 export function teamLeaderFromTeam(team: Team | null | undefined): ConversationTeamLeader | null {
   if (!team || team.archivedAt) return null;
@@ -22,7 +24,9 @@ export function teamLeaderFromTeam(team: Team | null | undefined): ConversationT
     teamId: team.id,
     teamName: team.name,
     leaderName: leader.name,
-    leaderAvatar: leader.avatar?.trim() || DEFAULT_LEADER_AVATAR,
+    leaderAvatar: userAgentAvatar(leader),
+    leader,
+    teamAvatar: team.avatar?.trim() || null,
   };
 }
 

@@ -8,6 +8,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import { collectMemberDispatches, summarizeByMember } from '@/components/team/teamDispatches';
+import AgentAvatar from '@/components/common/AgentAvatar';
 
 /**
  * WorkBuddy-style member strip under the transcript: leader chip + one chip per
@@ -31,16 +32,13 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   }, [team, conversationId, executions, messages]);
 
   if (!team) return null;
-  const avatarOf = (name: string): string => {
-    const def = name === team.leader.name ? team.leader : team.members.find((m) => m.name === name);
-    return def?.avatar?.trim() || '🤖';
-  };
+  const defOf = (name: string) => (name === team.leader.name ? team.leader : team.members.find((m) => m.name === name)) ?? { name, description: '' };
   const chip = 'inline-flex max-w-[180px] items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors';
 
   return (
     <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5" data-testid="team-member-bar" aria-label={t.workspace.teamTitle}>
       <button type="button" className={chip} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
-        <span aria-hidden="true">{avatarOf(team.leader.name)}</span>
+        <AgentAvatar agent={defOf(team.leader.name)} size="xs" round />
         <span className="truncate">{team.leader.name}</span>
         <span className="text-[var(--abu-text-tertiary)]">{t.workspace.teamLeaderBadge}</span>
       </button>
@@ -53,7 +51,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           title={member.latest ? format(t.workspace.teamDispatchCount, { n: member.dispatches.length }) : t.workspace.teamNoDispatchYet}
           data-status={member.status}
         >
-          <span aria-hidden="true">{avatarOf(member.agent)}</span>
+          <AgentAvatar agent={defOf(member.agent)} size="xs" round />
           <span className="truncate">{member.agent}</span>
           {member.status === 'running' && <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />}
           {member.status === 'completed' && <Check aria-hidden="true" className="h-3 w-3 text-[var(--abu-success)]" />}

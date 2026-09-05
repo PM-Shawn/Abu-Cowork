@@ -36,6 +36,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
@@ -1105,7 +1106,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       {(assistantMsgs.length > 0 || isStopped) && (
         <div className="flex gap-3 w-full overflow-hidden group">
           {/* ABU Avatar - only shown once for the group (the leader's in a team conversation) */}
-          <AssistantRowAvatar emoji={teamLeader?.leaderAvatar} name={teamLeader?.leaderName} />
+          <AssistantRowAvatar avatar={teamLeader ? <AgentAvatar agent={teamLeader.leader} size="md" round /> : undefined} name={teamLeader?.leaderName} />
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">

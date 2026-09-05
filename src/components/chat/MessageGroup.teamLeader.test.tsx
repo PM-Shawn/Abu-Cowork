@@ -34,6 +34,7 @@ describe('MessageGroup in a team-pinned conversation', () => {
   it('shows the leader avatar and a "leader · team" caption', () => {
     const { conversation, assistant } = seed('t1');
     render(<MessageGroup conversationId={conversation.id} messages={[assistant]} isLastGroup />);
+    // A user agent with an avatar shows its emoji; the mocked leader has no filePath so it counts as the user's own.
     expect(screen.getByTestId('assistant-row-avatar-leader')).toHaveTextContent('📊');
     expect(screen.getByTestId('assistant-row-avatar-leader')).toHaveAttribute('aria-label', 'zz数据分析师');
     expect(screen.getByTestId('team-leader-caption')).toHaveTextContent('zz数据分析师 · zz数据小队');

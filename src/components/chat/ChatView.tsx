@@ -50,6 +50,8 @@ import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
+import AgentAvatar from '@/components/common/AgentAvatar';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
@@ -134,7 +136,7 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
     <>
       {context?.showTypingIndicator && (
         <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
-          <AssistantRowAvatar emoji={footerLeader?.leaderAvatar} name={footerLeader?.leaderName} />
+          <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
           <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
         </div>
       )}
@@ -1307,7 +1309,7 @@ export default function ChatView({
             className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
             title={`${titleTeamLeader.leaderName} · ${titleTeamLeader.teamName}`}
           >
-            <span aria-hidden="true">👥</span>
+            <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
             <span className="truncate max-w-[160px]">{titleTeamLeader.teamName}</span>
           </span>
         )}

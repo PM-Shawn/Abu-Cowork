@@ -9,7 +9,7 @@ vi.mock('@/core/team/roleIdentity', () => ({
   resolveRoleId: (roleId: string) => (defs[roleId] as SubagentDefinition) ?? null,
 }));
 
-import { teamLeaderFromTeam, DEFAULT_LEADER_AVATAR } from './useConversationTeamLeader';
+import { teamLeaderFromTeam } from './useConversationTeamLeader';
 import type { Team } from '@/stores/teamStore';
 
 const team = (over: Partial<Team> = {}): Team => ({
@@ -17,11 +17,12 @@ const team = (over: Partial<Team> = {}): Team => ({
 } as Team);
 
 describe('teamLeaderFromTeam', () => {
-  it('resolves the leader name and emoji avatar', () => {
-    expect(teamLeaderFromTeam(team())).toEqual({ teamId: 't1', teamName: 'zz数据小队', leaderName: 'zz数据分析师', leaderAvatar: '📊' });
+  it('resolves the leader name and the user-set emoji avatar', () => {
+    expect(teamLeaderFromTeam(team())).toMatchObject({ teamId: 't1', teamName: 'zz数据小队', leaderName: 'zz数据分析师', leaderAvatar: '📊', teamAvatar: null });
+    expect(teamLeaderFromTeam(team({ avatar: '🚀' }))?.teamAvatar).toBe('🚀');
   });
-  it('falls back to a neutral avatar when the leader has none', () => {
-    expect(teamLeaderFromTeam(team({ leaderRoleId: 'r-plain' }))?.leaderAvatar).toBe(DEFAULT_LEADER_AVATAR);
+  it('uses the default mark (null) when the leader has no avatar of its own', () => {
+    expect(teamLeaderFromTeam(team({ leaderRoleId: 'r-plain' }))?.leaderAvatar).toBeNull();
   });
   it('is null for archived teams, missing leaders, or no team', () => {
     expect(teamLeaderFromTeam(team({ archivedAt: 5 }))).toBeNull();

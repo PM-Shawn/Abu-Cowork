@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Check, ChevronRight, Loader2, Users, XCircle, CircleDashed } from 'lucide-react';
+import { Check, ChevronRight, Loader2, XCircle, CircleDashed } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -7,6 +7,8 @@ import { useTeamStore } from '@/stores/teamStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
+import AgentAvatar from '@/components/common/AgentAvatar';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import { collectMemberDispatches, summarizeByMember, type DispatchStatus, type MemberSummary } from '@/components/team/teamDispatches';
 
 function StatusIcon({ status }: { status: DispatchStatus | 'idle' }) {
@@ -58,21 +60,19 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
   }
 
   const leaderRunning = Object.values(executions).some((exec) => exec.conversationId === conversationId && exec.status === 'running');
-  const avatarOf = (name: string): string => {
-    const def = name === team.leader.name ? team.leader : team.members.find((m) => m.name === name);
-    return def?.avatar?.trim() || '🤖';
-  };
+  const defOf = (name: string) => (name === team.leader.name ? team.leader : team.members.find((m) => m.name === name)) ?? { name, description: '' };
+  const teamAvatar = teams.find((entry) => entry.id === team.teamId)?.avatar;
 
   return (
     <div className="h-full overflow-auto p-5" data-testid="team-tab">
       <div className="mx-auto max-w-3xl space-y-4">
         <header className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
           <div className="flex items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
-            <Users aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={1.5} />
+            <TeamAvatar avatar={teamAvatar} size="sm" />
             <span className="truncate">{team.teamName}</span>
           </div>
           <div className="mt-3 flex items-center gap-3">
-            <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--abu-bg-base)] text-body">{avatarOf(team.leader.name)}</span>
+            <AgentAvatar agent={defOf(team.leader.name)} size="lg" round />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 text-body text-[var(--abu-text-primary)]">
                 <span className="truncate">{team.leader.name}</span>
@@ -97,7 +97,7 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
               {members.map((member) => (
                 <li key={member.agent} className="px-4 py-3" data-testid="team-member-row">
                   <div className="flex items-center gap-3">
-                    <span aria-hidden="true" className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-body">{avatarOf(member.agent)}</span>
+                    <AgentAvatar agent={defOf(member.agent)} size="lg" round />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-body text-[var(--abu-text-primary)]">{member.agent}</div>
                       <div className="flex flex-wrap items-center gap-x-2 text-caption text-[var(--abu-text-muted)]">

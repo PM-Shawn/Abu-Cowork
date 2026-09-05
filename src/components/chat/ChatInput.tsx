@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
@@ -145,6 +146,8 @@ interface SuggestionItem {
    *  to the team (its leader runs the loop) instead of becoming an @ prefix. */
   team?: boolean;
   teamId?: string;
+  /** Team emoji avatar (user-set); absent = default group mark. */
+  avatar?: string;
 }
 
 interface FileAttachmentItem {
@@ -446,7 +449,7 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
                 'w-5 text-center font-mono text-minor shrink-0',
                 suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
               )}>
-                {suggestionType === 'agent' ? (item.team ? '👥' : '@') : '/'}
+                {suggestionType === 'agent' ? (item.team ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" /> : '@') : '/'}
               </span>
               <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
             </button>
@@ -1070,7 +1073,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       const query = agentMentionTarget?.query ?? '';
       const teamItems: SuggestionItem[] = activeTeams
         .filter((team) => !query || team.name.toLowerCase().includes(query))
-        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id }));
+        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
       return [
         ...teamItems,
         ...agents
@@ -1641,7 +1644,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     <>
       {pinnedTeam && (
         <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}>👥</span>
+          <span aria-hidden="true" className={chipMarkClass}><TeamAvatar avatar={pinnedTeam.avatar} size="xs" round /></span>
           <X aria-hidden="true" className={chipCloseClass} />
           <span className="truncate">{pinnedTeam.name}</span>
         </button>

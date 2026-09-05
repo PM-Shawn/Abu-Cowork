@@ -12,6 +12,8 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Inbox, ListTodo, Bot, UsersRound, Search, Paperclip, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
+import TeamAvatar from './TeamAvatar';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import TaskDetailDialog from './TaskDetailDialog';
@@ -77,7 +79,7 @@ function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: strin
 }
 
 function memberOption(a: SubagentDefinition): SearchSelectOption {
-  return { value: a.name, label: a.name, description: a.description || undefined, icon: a.avatar ?? '🤖' };
+  return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
 
 // ---------------------------------------------------------------- Team dialog
@@ -99,6 +101,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [memberNames, setMemberNames] = useState<string[]>([]);
   const [leaderNote, setLeaderNote] = useState('');
   const [requireApproval, setRequireApproval] = useState(false);
+  const [avatar, setAvatar] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -109,8 +112,9 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       setMemberNames(team.memberRoleIds.map((id) => roleLabel(agents, id, '')).filter(Boolean));
       setLeaderNote(team.leaderNote ?? '');
       setRequireApproval(team.requirePlanApproval === true);
+      setAvatar(team.avatar ?? '');
     } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setLeaderNote(''); setRequireApproval(false);
+      setName(''); setLeaderName(''); setMemberNames([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
     }
   }, [open, team, agents]);
 
@@ -133,10 +137,10 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         memberRoleIds.push(await resolve(n));
       }
       if (team) {
-        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval });
+        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined });
         addToast({ type: 'success', title: t.team.teamSaved });
       } else {
-        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval });
+        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined });
         addToast({ type: 'success', title: t.team.teamCreated });
       }
       onClose();
@@ -152,7 +156,19 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       <div className="space-y-4">
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldName}</label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="mt-1" data-testid="team-name-input" />
+          <div className="mt-1 flex items-center gap-2">
+            <TeamAvatar avatar={avatar} size="lg" />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="flex-1" data-testid="team-name-input" />
+            <Input
+              value={avatar}
+              onChange={(e) => setAvatar(e.target.value.slice(0, 4))}
+              placeholder={t.team.fieldAvatarPlaceholder}
+              aria-label={t.team.fieldAvatar}
+              title={t.team.fieldAvatarHint}
+              className="w-20 text-center"
+              data-testid="team-avatar-input"
+            />
+          </div>
         </div>
 
         {agents.length === 0 ? (
@@ -589,7 +605,7 @@ export default function TeamView() {
                     <div className="mt-2 space-y-2">
                       {archivedTeams.map((team) => (
                         <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-                          <UsersRound className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.75} />
+                          <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
                           <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
                           <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
                         </div>
@@ -610,7 +626,7 @@ export default function TeamView() {
                 onClick={() => setTeamDialog({ open: true, team })}
                 data-testid={`team-row-${team.name}`}
               >
-                <UsersRound className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.75} />
+                <TeamAvatar avatar={team.avatar} size="lg" />
                 <div className="flex-1 min-w-0">
                   <div className="text-body text-[var(--abu-text-primary)] truncate">{team.name}</div>
                   <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
@@ -630,7 +646,7 @@ export default function TeamView() {
                 <div className="mt-2 space-y-2">
                   {archivedTeams.map((team) => (
                     <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-                      <UsersRound className="h-5 w-5 text-[var(--abu-text-tertiary)] shrink-0" strokeWidth={1.75} />
+                      <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
                       <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
                       <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
                     </div>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTeamStore } from '@/stores/teamStore';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { TEAM_BOARD_ENABLED } from '@/core/team/taskBoardFlag';
 import { LABS_TEAM } from '@/core/labs/registry';
@@ -252,7 +253,7 @@ export default function ScheduleEditor() {
                 onChange={(v) => setTeamId(v === teamId ? '' : v)}
                 options={[
                   { value: '', label: t.schedule.teamExecutorNone },
-                  ...teams.map((team) => ({ value: team.id, label: team.name, icon: '👥' })),
+                  ...teams.map((team) => ({ value: team.id, label: team.name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
                 ]}
                 placeholder={t.schedule.teamExecutorNone}
                 searchPlaceholder={t.schedule.teamExecutorSearch}

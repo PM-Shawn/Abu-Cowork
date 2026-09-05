@@ -6,7 +6,8 @@ import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check, Bot } from 'lucide-react';
+import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
 import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
@@ -16,7 +17,6 @@ import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
-import abuAvatar from '@/assets/abu-avatar.png';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
   // System / builtin agents ship with the app (registered in registry.ts) —
@@ -25,16 +25,6 @@ function isSystemAgent(agent: SubagentDefinition): boolean {
   return agent.filePath === '__builtin__';
 }
 
-/** Render agent avatar: real image for abu (brand mascot), otherwise a single
- *  uniform robot icon — keeps the agent grid clean and tidy (matches the
- *  connectors' Server-icon style). */
-function AgentAvatar({ agent, size = 'md' }: { agent: SubagentDefinition; size?: 'sm' | 'md' }) {
-  const cls = size === 'sm' ? 'h-5 w-5' : 'h-6 w-6';
-  if (agent.name === 'abu') {
-    return <img src={abuAvatar} alt="Abu" className={`${cls} rounded-full object-cover`} />;
-  }
-  return <Bot className={`${cls} text-[var(--abu-text-muted)]`} />;
-}
 
 /** Display name: locale-aware. Falls back to canonical `name` if no override. */
 function displayName(agent: SubagentDefinition, locale: 'zh-CN' | 'en-US'): string {

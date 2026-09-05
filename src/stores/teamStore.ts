@@ -30,6 +30,8 @@ export interface Team {
    *  Default (false) = plan is visible-not-blocking and execution auto-starts —
    *  the human gates are risky-op approvals, stuck states, and review. */
   requirePlanApproval?: boolean;
+  /** Optional emoji avatar set by the user; absent = the default group mark. */
+  avatar?: string;
   createdAt: number;
   archivedAt?: number;
 }
@@ -105,8 +107,8 @@ interface TeamState {
   focusTaskId: string | null;
   setFocusTaskId: (id: string | null) => void;
 
-  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean }) => Team;
-  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval'>>) => void;
+  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string }) => Team;
+  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar'>>) => void;
   archiveTeam: (id: string) => void;
   restoreTeam: (id: string) => void;
 
@@ -150,6 +152,7 @@ export const useTeamStore = create<TeamState>()(
           memberRoleIds,
           leaderNote: input.leaderNote?.trim() || undefined,
           requirePlanApproval: input.requirePlanApproval || undefined,
+          avatar: input.avatar?.trim() || undefined,
           createdAt: Date.now(),
         };
         // Newest first — freshly created things surface at the top (user feedback).

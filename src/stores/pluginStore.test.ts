@@ -42,7 +42,7 @@ const weather: InstalledPlugin = {
   name: 'weather',
   version: '1.2.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: ['reviewer'] },
 };
 
 function resetStore() {
@@ -171,6 +171,25 @@ describe('uninstall', () => {
     expect([...vi.mocked(setPluginServerNames).mock.calls[0][0]]).not.toContain('weather-mcp');
     expect(usePluginStore.getState().installed).toEqual([]);
     expect(vi.mocked(uninstallPlugin).mock.calls[0][0].removeDir).toBe(removePluginDir);
+  });
+
+  it('re-scans discovery so a withdrawn plugin agent leaves the list', async () => {
+    // A plugin's agents live in ~/.abu/agents, which the registry fs-watcher
+    // DOES watch — but the uninstall only has to be as reliable as the install,
+    // which triggers the re-scan itself. Without this the withdrawn agent stays
+    // in the @-picker and the team roster for the rest of the session.
+    usePluginStore.setState({ installed: [weather] });
+    vi.mocked(uninstallPlugin).mockResolvedValue({
+      key: weather.key,
+      withdrawn: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
+    });
+    vi.mocked(readInstalled).mockResolvedValue([]);
+    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+    mockDiscoveryRefresh.mockClear();
+
+    await usePluginStore.getState().uninstall(HOME, weather.key);
+
+    expect(mockDiscoveryRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the plugin listed and records the error when removal fails', async () => {

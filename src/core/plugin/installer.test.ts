@@ -21,19 +21,32 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   // real-tree suite at the bottom gives them an implementation.
   readFile: vi.fn(),
   writeFile: vi.fn(),
+  writeTextFile: vi.fn(),
   mkdir: vi.fn(),
   remove: vi.fn(),
+  exists: vi.fn(),
   lstat: vi.fn(),
 }));
+
+// The agent payload is handed to the hardened agent installer, which is the
+// module under test in `src/core/agent/installer.test.ts`. Mocked here — the
+// same way the package copy is injected — so these tests pin the ORCHESTRATION
+// (what is materialised, what is handed over, what is credited) rather than
+// re-testing that installer's staging/rename dance.
+vi.mock('@/core/agent/installer', () => ({ installAgentFromFolder: vi.fn() }));
 
 import {
   readTextFile,
   readDir,
   readFile,
   writeFile,
+  writeTextFile,
   mkdir,
+  exists,
   lstat,
 } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
+import { installAgentFromFolder } from '@/core/agent/installer';
 import {
   readManifestFrom,
   resolveSourceDir,
@@ -391,13 +404,15 @@ describe('ignored payloads', () => {
       '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({ name: 'weather' }),
       '/mkt/plugins/weather/skills/today/SKILL.md': '---\nname: today\n---\n',
       '/mkt/plugins/weather/commands/deploy.md': '# deploy',
-      '/mkt/plugins/weather/agents/helper/AGENT.md': '---\nname: helper\n---\n',
+      '/mkt/plugins/weather/agents/helper/AGENT.md': '---\nname: helper\n---\n\nYou help.\n',
       '/mkt/plugins/weather/hooks/hooks.json': '{}',
     });
     const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
-    // Abu consumes skills + mcpServers; the rest is surfaced so the user is not
-    // surprised when part of a plugin silently does nothing here.
-    expect(d.ignoredPayloads.sort()).toEqual(['agents', 'commands', 'hooks']);
+    // Abu consumes skills, mcpServers AND agents; only commands / hooks are
+    // surfaced so the user is not surprised when part of a plugin silently does
+    // nothing here.
+    expect(d.ignoredPayloads.sort()).toEqual(['commands', 'hooks']);
+    expect(d.agents.map((a) => a.name)).toEqual(['helper']);
   });
 
   it('reports an empty list when the plugin only ships supported payloads', async () => {
@@ -694,5 +709,375 @@ describe('a package that ships a symlink where Abu looks for its own payload', (
     await expect(
       planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry }),
     ).rejects.toThrow(PluginSymlinkRootError);
+  });
+});
+
+/**
+ * The `agents/` payload: discovery, disclosure, and what actually lands.
+ *
+ * A plugin's agents are the one payload Abu materialises OUTSIDE the package
+ * directory (`~/.abu/agents/<name>`), so the disclosure has to be exact about
+ * which ones will be skipped — a user who reads "reviewer" on the screen and
+ * finds their own hand-written `reviewer` replaced has lost work no uninstall
+ * can give back.
+ */
+describe('agents payload discovery', () => {
+  const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
+  const manifest = JSON.stringify({ name: 'weather', version: '1.2.0' });
+
+  it('discovers the single-file and the folder shape, sorted by name', async () => {
+    // `agents/<name>.md` is what the Claude Code / Codex ecosystem ships;
+    // `agents/<name>/AGENT.md` is Abu's own on-disk shape, so an Abu plugin can
+    // vendor an agent directory verbatim.
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/reviewer.md':
+        '---\nname: reviewer\ndescription: Reviews code\ntools: Read, Grep\n---\n\nYou review code.\n',
+      '/mkt/plugins/weather/agents/deployer/AGENT.md':
+        '---\nname: deployer\ndescription: Ships it\n---\n\nYou deploy.\n',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents).toEqual([
+      { name: 'deployer', description: 'Ships it' },
+      { name: 'reviewer', description: 'Reviews code' },
+    ]);
+  });
+
+  it('takes the name from frontmatter and falls back to the file or directory name', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/aaa.md': '---\nname: renamed\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/bbb.md': '---\ndescription: no name here\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/ccc/AGENT.md': '---\ndescription: still none\n---\n\nBody.\n',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents.map((a) => a.name)).toEqual(['bbb', 'ccc', 'renamed']);
+  });
+
+  it('ignores payload files that are not markdown', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/README.txt': 'not an agent',
+      '/mkt/plugins/weather/agents/notes/thing.md': 'a directory with no AGENT.md',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents).toEqual([]);
+  });
+
+  it('flags a name that is not a single safe directory segment', async () => {
+    // The name becomes ONE directory under ~/.abu/agents, and `joinPath` does
+    // not collapse `..` — the same predicate the agent installer applies before
+    // it creates that directory decides here, before anything is written.
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/a.md': '---\nname: ../evil\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/b.md': '---\nname: a/b\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/c.md': '---\nname: ".."\n---\n\nBody.\n',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents.every((a) => a.conflict === 'unsafe-name')).toBe(true);
+    expect(d.agents).toHaveLength(3);
+  });
+
+  it('flags an agent whose system prompt is empty', async () => {
+    // Frontmatter with no body is either a packaging mistake or an agent that
+    // would do nothing; either way it is not registered (spec §4).
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/hollow.md': '---\nname: hollow\ndescription: nothing\n---\n',
+      '/mkt/plugins/weather/agents/blank.md': '---\nname: blank\n---\n\n   \n\n',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents).toEqual([
+      { name: 'blank', description: '', conflict: 'empty-prompt' },
+      { name: 'hollow', description: 'nothing', conflict: 'empty-prompt' },
+    ]);
+  });
+
+  it('flags an agent whose name is already taken in ~/.abu/agents', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/reviewer.md': '---\nname: reviewer\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/fresh.md': '---\nname: fresh\n---\n\nBody.\n',
+    });
+    // homeDir() is the expression the agent installer builds its target with.
+    vi.mocked(exists).mockImplementation(async (p) => String(p) === '/Users/testuser/.abu/agents/reviewer');
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents).toEqual([
+      { name: 'fresh', description: '' },
+      { name: 'reviewer', description: '', conflict: 'exists' },
+    ]);
+  });
+
+  it('does not flag an agent this same plugin contributed on a previous install', async () => {
+    // The disclosure for an UPDATE is planned while the old version is still
+    // installed, so its own agent directory is sitting there. Reading that as
+    // "already exists, will be skipped" would tell the user their update drops
+    // every agent it ships.
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/reviewer.md': '---\nname: reviewer\n---\n\nBody.\n',
+      '/home/u/.abu/plugin-packages/installed.json': JSON.stringify([
+        {
+          key: 'weather@official',
+          marketplace: 'official',
+          name: 'weather',
+          version: '1.1.0',
+          installedAt: '2026-09-01T00:00:00.000Z',
+          contributed: { skills: [], mcpServers: [], agents: ['reviewer'] },
+        },
+      ]),
+    });
+    vi.mocked(exists).mockResolvedValue(true);
+
+    const d = await planInstall({
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry,
+      home: '/home/u',
+    });
+
+    expect(d.agents).toEqual([{ name: 'reviewer', description: '' }]);
+  });
+
+  it('still flags a name owned by a DIFFERENT plugin', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/reviewer.md': '---\nname: reviewer\n---\n\nBody.\n',
+      '/home/u/.abu/plugin-packages/installed.json': JSON.stringify([
+        {
+          key: 'notes@personal',
+          marketplace: 'personal',
+          name: 'notes',
+          version: '1.0.0',
+          installedAt: '2026-09-01T00:00:00.000Z',
+          contributed: { skills: [], mcpServers: [], agents: ['reviewer'] },
+        },
+      ]),
+    });
+    vi.mocked(exists).mockResolvedValue(true);
+
+    const d = await planInstall({
+      marketplaceName: 'official',
+      marketplaceDir: '/mkt',
+      entry,
+      home: '/home/u',
+    });
+
+    expect(d.agents).toEqual([{ name: 'reviewer', description: '', conflict: 'exists' }]);
+  });
+
+  it('lists one agent per name when two payload files claim the same one', async () => {
+    // Only one directory can carry the name, so listing it twice would promise
+    // an agent that cannot land. Sorted order picks the winner, so the same
+    // package always installs the same file whatever order the fs lists it in.
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': manifest,
+      '/mkt/plugins/weather/agents/dup.md': '---\nname: dup\ndescription: from the file\n---\n\nBody.\n',
+      '/mkt/plugins/weather/agents/dup/AGENT.md': '---\nname: dup\ndescription: from the folder\n---\n\nBody.\n',
+    });
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+
+    expect(d.agents).toHaveLength(1);
+    expect(d.agents[0].name).toBe('dup');
+  });
+});
+
+/**
+ * Materialising the payload, over a REAL temp tree.
+ *
+ * The install writes a converted `AGENT.md` INSIDE the installed package and
+ * then hands that directory to the hardened agent installer (mocked). Real
+ * files here because "the user's own agent was not touched" is a statement
+ * about bytes on disk, which a mocked fs cannot make.
+ */
+describe('installing the agents payload', () => {
+  let root: string;
+  let mkt: string;
+  let pkg: string;
+  let installDir: string;
+
+  const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
+
+  function useRealTree() {
+    vi.mocked(readTextFile).mockImplementation(async (p) => readFileSync(String(p), 'utf8'));
+    vi.mocked(readDir).mockImplementation(async (p) =>
+      readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+        name: d.name,
+        isDirectory: d.isDirectory(),
+        isFile: d.isFile(),
+        isSymlink: d.isSymbolicLink(),
+      })) as never,
+    );
+    vi.mocked(readFile).mockImplementation(async (p) => new Uint8Array(readFileSync(String(p))));
+    vi.mocked(writeFile).mockImplementation(async (p, data) => {
+      writeFileSync(String(p), data as Uint8Array);
+    });
+    vi.mocked(writeTextFile).mockImplementation(async (p, data) => {
+      writeFileSync(String(p), String(data));
+    });
+    vi.mocked(mkdir).mockImplementation(async (p) => {
+      mkdirSync(String(p), { recursive: true });
+    });
+    vi.mocked(exists).mockImplementation(async (p) => existsSync(String(p)));
+    vi.mocked(lstat).mockImplementation(
+      async (p) => ({ isSymlink: lstatSync(String(p)).isSymbolicLink() }) as never,
+    );
+  }
+
+  async function install() {
+    return installPlugin({
+      home: root,
+      marketplaceName: 'official',
+      marketplaceDir: mkt,
+      entry,
+      copyDir: async (from, to) => {
+        await copyPluginDir(from, to);
+      },
+      now: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-plugin-agents-'));
+    mkt = join(root, 'mkt');
+    pkg = join(mkt, 'plugins', 'weather');
+    installDir = join(root, '.abu', 'plugin-packages', 'official', 'weather', '1.2.0');
+    mkdirSync(join(pkg, '.abu-plugin'), { recursive: true });
+    writeFileSync(
+      join(pkg, '.abu-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'weather', version: '1.2.0' }),
+    );
+    mkdirSync(join(pkg, 'agents', 'writer'), { recursive: true });
+    // The folder shape, carrying two keys Abu must not write back out: the
+    // ecosystem-only `color`, and `memory` (dropped, spec §4).
+    writeFileSync(
+      join(pkg, 'agents', 'writer', 'AGENT.md'),
+      '---\nname: writer\ndescription: Writes\nmemory: user\ncolor: blue\ntools: Read, Grep\n---\n\nYou write.\n',
+    );
+    writeFileSync(
+      join(pkg, 'agents', 'reviewer.md'),
+      '---\nname: reviewer\ndescription: Reviews\n---\n\nYou review.\n',
+    );
+    useRealTree();
+    // Both the plan's conflict test and the agent installer's target are built
+    // from homeDir(), so the temp root has to BE the home for this suite.
+    vi.mocked(homeDir).mockResolvedValue(root);
+    vi.mocked(installAgentFromFolder).mockResolvedValue({
+      ok: true,
+      name: 'writer',
+      fileCount: 1,
+      skipped: [],
+      skippedSymlinks: [],
+    });
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+    vi.mocked(homeDir).mockResolvedValue('/Users/testuser');
+  });
+
+  it('materialises a normalised AGENT.md inside the install dir and hands it over', async () => {
+    const { record } = await install();
+
+    const written = join(installDir, 'agents', 'writer', 'AGENT.md');
+    expect(existsSync(written)).toBe(true);
+    const text = readFileSync(written, 'utf8');
+    // Allowlisted keys survive, normalised; `memory` and the ecosystem-only
+    // `color` do not reach a file Abu will later parse.
+    expect(text).toContain('name: writer');
+    expect(text).toContain('- Read');
+    expect(text).not.toContain('memory:');
+    expect(text).not.toContain('color:');
+    // The single-file shape lands as a directory of the same shape.
+    expect(readFileSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'), 'utf8')).toContain(
+      'name: reviewer',
+    );
+
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0]).sort()).toEqual([
+      join(installDir, 'agents', 'reviewer'),
+      join(installDir, 'agents', 'writer'),
+    ]);
+    // Never overwrite: a user agent that appeared between plan and install
+    // still wins.
+    expect(vi.mocked(installAgentFromFolder).mock.calls[0][1]).toEqual({ overwrite: false });
+    expect(record.contributed.agents).toEqual(['reviewer', 'writer']);
+  });
+
+  it('credits only the agents that actually installed', async () => {
+    vi.mocked(installAgentFromFolder).mockImplementation(async (dir) =>
+      dir.endsWith('writer')
+        ? { ok: true, name: 'writer', fileCount: 1, skipped: [], skippedSymlinks: [] }
+        : { ok: false, code: 'COPY_FAILED', message: 'disk full' },
+    );
+
+    const { record } = await install();
+
+    // The narrowed `contributed` list IS how a partial payload failure is
+    // surfaced — same policy as an MCP server whose name was already taken.
+    expect(record.contributed.agents).toEqual(['writer']);
+  });
+
+  it('does not credit an agent that lost a race with a user-created one', async () => {
+    vi.mocked(installAgentFromFolder).mockResolvedValue({
+      ok: false,
+      code: 'ALREADY_EXISTS',
+      message: 'Agent "writer" already exists',
+    });
+
+    const { record } = await install();
+
+    expect(record.contributed.agents).toEqual([]);
+  });
+
+  it('leaves a user agent of the same name byte-identical and never hands it over', async () => {
+    const userAgent = join(root, '.abu', 'agents', 'reviewer');
+    mkdirSync(userAgent, { recursive: true });
+    const mine = '---\nname: reviewer\n---\n\nMY OWN PROMPT\n';
+    writeFileSync(join(userAgent, 'AGENT.md'), mine);
+
+    const { record } = await install();
+
+    expect(readFileSync(join(userAgent, 'AGENT.md'), 'utf8')).toBe(mine);
+    expect(existsSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'))).toBe(false);
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0])).toEqual([
+      join(installDir, 'agents', 'writer'),
+    ]);
+    expect(record.contributed.agents).toEqual(['writer']);
+  });
+
+  it('treats a linked agent file or a linked agent directory as absent', async () => {
+    // Same rule as every other payload: a link is an instruction to read
+    // something the package does not own, so the copy refuses it and the
+    // disclosure must not promise it either.
+    const outside = join(root, 'outside');
+    mkdirSync(join(outside, 'linkdir'), { recursive: true });
+    writeFileSync(join(outside, 'sneaky.md'), '---\nname: sneaky\n---\n\nBody.\n');
+    writeFileSync(join(outside, 'linkdir', 'AGENT.md'), '---\nname: linked-dir\n---\n\nBody.\n');
+    symlinkSync(join(outside, 'sneaky.md'), join(pkg, 'agents', 'sneaky.md'));
+    symlinkSync(join(outside, 'linkdir'), join(pkg, 'agents', 'linkdir'), 'dir');
+    // …and a real directory whose AGENT.md is the link.
+    mkdirSync(join(pkg, 'agents', 'halflinked'), { recursive: true });
+    symlinkSync(join(outside, 'sneaky.md'), join(pkg, 'agents', 'halflinked', 'AGENT.md'));
+
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: mkt, entry, home: root });
+
+    expect(d.agents.map((a) => a.name)).toEqual(['reviewer', 'writer']);
+    expect(d.skippedSymlinks).toEqual(
+      expect.arrayContaining(['agents/sneaky.md', 'agents/linkdir', 'agents/halflinked/AGENT.md']),
+    );
   });
 });

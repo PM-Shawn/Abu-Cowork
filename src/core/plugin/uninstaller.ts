@@ -9,10 +9,13 @@
  * What gets withdrawn comes from the record's `contributed` list, never from
  * re-scanning the directory: the list is what the user approved at install
  * time, and a package that grew new files afterwards must not gain anything
- * from that.
+ * from that. It is also the only thing that can tell a plugin's agent from a
+ * user's own agent of the same name — the plugin never installed over one, so
+ * uninstall must never delete one.
  */
 
 import { findInstalled, removeInstalled } from './installedStore';
+import { removeContributedAgent } from './agentPayload';
 import { pluginInstallDir } from './paths';
 import { getParentDir } from '../../utils/pathUtils';
 
@@ -63,6 +66,23 @@ export async function uninstallPlugin(opts: UninstallPluginOptions): Promise<Uni
     await opts.removeDir(dir);
   } catch (error) {
     if (!(opts.tolerateMissingDir && isMissingDirError(error))) throw error;
+  }
+
+  // Agents are the one contribution that lives OUTSIDE the package directory
+  // (~/.abu/agents/<name>), so removing the directory above does not withdraw
+  // them. Only after that removal succeeded: while the record still lists this
+  // plugin, its agents are still its own.
+  //
+  // `removeContributedAgent` answers rather than throws, and every answer other
+  // than `removed` is tolerated: `not-found` is a user who deleted the agent by
+  // hand, and `symlink` / `unsafe-name` / `error` are refusals to delete
+  // something this plugin did not write. None of them may strand the install
+  // record — that would leave the plugin listed with its package already gone,
+  // which is the state this module's ordering exists to prevent. This mirrors
+  // the skills, which are withdrawn by the directory removal above and have no
+  // per-item failure channel either.
+  for (const name of record.contributed.agents ?? []) {
+    await removeContributedAgent(name);
   }
 
   await removeInstalled(opts.home, opts.key);

@@ -30,13 +30,17 @@
  *     describe a tree that never lands.
  */
 
-import { readTextFile } from '@tauri-apps/plugin-fs';
+import { readTextFile, writeTextFile, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from './manifest';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
 import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fsOps';
-import type { InstalledPlugin } from './installedStore';
+import { findInstalled, type InstalledPlugin } from './installedStore';
+import { convertSingleFileAgent, renderAgentMd } from './agentPayload';
+import { installAgentFromFolder } from '../agent/installer';
+import { isSafeSkillDirName } from '../skill/skillDirName';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
 export class UnsupportedSourceError extends Error {
@@ -147,12 +151,153 @@ async function discoverSkills(scan: PackageScan): Promise<string[]> {
  * `conflict` says why an agent shown here will NOT be installed: `'exists'`
  * when `~/.abu/agents/<name>` is already taken by something this plugin did not
  * put there (it is never overwritten), `'unsafe-name'` when the declared name
- * is not a single safe directory segment. Absent means it will install.
+ * is not a single safe directory segment, `'empty-prompt'` when the file
+ * carries frontmatter but no system prompt. Absent means it will install.
  */
 export interface PluginAgentDisclosure {
   name: string;
   description: string;
-  conflict?: 'exists' | 'unsafe-name';
+  conflict?: 'exists' | 'unsafe-name' | 'empty-prompt';
+}
+
+/**
+ * One agent read out of a package's `agents/` payload, before any conflict
+ * test — the same data the disclosure is derived from and the install writes.
+ */
+interface PayloadAgent {
+  /** Frontmatter `name`, or the file/directory name it fell back to. */
+  name: string;
+  description: string;
+  /** Package-relative path of the markdown it was read from. */
+  relPath: string;
+  /** An agent with no system prompt is a packaging mistake (spec §4). */
+  emptyPrompt: boolean;
+  /** `AGENT.md` text in Abu's own format, ready to write. */
+  rendered: string;
+}
+
+/** Both payload shapes, converted, sorted by name, one entry per name. */
+async function readPayloadAgents(scan: PackageScan, packageDir: string): Promise<PayloadAgent[]> {
+  const found: PayloadAgent[] = [];
+  for (const entry of await scan.children('agents')) {
+    let relPath: string;
+    let fallbackName: string;
+    if (entry.isDirectory) {
+      // Abu's own shape: `agents/<dir>/AGENT.md`. Through the scan, so a linked
+      // AGENT.md inside a real directory is absent exactly as a linked
+      // `plugin.json` is.
+      const agentMd = await scan.find(`agents/${entry.name}/AGENT.md`);
+      if (!agentMd || agentMd.isDirectory) continue;
+      relPath = `agents/${entry.name}/AGENT.md`;
+      fallbackName = entry.name;
+    } else {
+      // The ecosystem shape: `agents/<name>.md`. Anything else in the directory
+      // (a README, a JSON index) is not an agent.
+      if (!/\.md$/i.test(entry.name)) continue;
+      relPath = `agents/${entry.name}`;
+      fallbackName = entry.name.replace(/\.md$/i, '');
+    }
+    // The folder shape goes through the same converter as the single file: it
+    // normalises the list keys and drops `memory` for both, so the two shapes
+    // cannot install subtly different agents.
+    const converted = convertSingleFileAgent(await readTextFile(joinPath(packageDir, relPath)), fallbackName);
+    found.push({
+      name: converted.name,
+      description: converted.description,
+      relPath,
+      emptyPrompt: converted.body.trim() === '',
+      rendered: renderAgentMd(converted),
+    });
+  }
+
+  const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  found.sort((a, b) => order(a.name, b.name) || order(a.relPath, b.relPath));
+  // Only one directory can carry a name, so two files claiming the same one
+  // cannot both land. Resolving it on the SORTED list rather than on `readDir`
+  // order is what makes the same package install the same file every time.
+  const byName = new Map<string, PayloadAgent>();
+  for (const agent of found) if (!byName.has(agent.name)) byName.set(agent.name, agent);
+  return [...byName.values()];
+}
+
+/**
+ * Mark the agents that will be skipped, in the order the screen lists them.
+ *
+ * `previouslyContributed` are the names THIS plugin's install record already
+ * claims: an update is planned while the old version is still installed, so its
+ * own agent directories are sitting there and reading them as "already taken"
+ * would tell the user their update drops every agent it ships.
+ */
+async function discloseAgents(
+  agents: PayloadAgent[],
+  previouslyContributed: ReadonlySet<string>,
+): Promise<PluginAgentDisclosure[]> {
+  if (agents.length === 0) return [];
+  // The expression `installAgentFromFolder` builds its target with, so the
+  // conflict this reports is the one that install would actually hit.
+  const agentsRoot = joinPath(await homeDir(), '.abu', 'agents');
+
+  const out: PluginAgentDisclosure[] = [];
+  for (const agent of agents) {
+    const disclosure: PluginAgentDisclosure = { name: agent.name, description: agent.description };
+    if (!isSafeSkillDirName(agent.name)) {
+      // First, because an unsafe name must not be turned into a path at all.
+      disclosure.conflict = 'unsafe-name';
+    } else if (agent.emptyPrompt) {
+      disclosure.conflict = 'empty-prompt';
+    } else if (!previouslyContributed.has(agent.name) && (await exists(joinPath(agentsRoot, agent.name)))) {
+      disclosure.conflict = 'exists';
+    }
+    out.push(disclosure);
+  }
+  return out;
+}
+
+/**
+ * Materialise every disclosed agent that has no conflict, and return the names
+ * that actually landed.
+ *
+ * Read back out of the INSTALLED copy, not the source: those are the bytes the
+ * user's approval covered, and the copy already refused everything the package
+ * does not own.
+ *
+ * Partial failure follows the policy MCP registration already sets in
+ * `pluginStore.install`: an item that did not land is simply not credited to
+ * the plugin, and nothing is rolled back. The record's `contributed.agents`
+ * list IS the report — crediting a name that is not on disk would make
+ * uninstall delete something this plugin never installed.
+ */
+async function installPayloadAgents(
+  installDir: string,
+  disclosed: PluginAgentDisclosure[],
+): Promise<string[]> {
+  const wanted = new Set(disclosed.filter((a) => !a.conflict).map((a) => a.name));
+  if (wanted.size === 0) return [];
+
+  const installed: string[] = [];
+  for (const agent of await readPayloadAgents(scanPluginPackage(installDir), installDir)) {
+    if (!wanted.has(agent.name)) continue;
+    // Membership in `wanted` already implies this, but the predicate is applied
+    // wherever a stranger's name becomes a directory — not wherever it happens
+    // to have been checked before.
+    if (!isSafeSkillDirName(agent.name)) continue;
+    try {
+      const dir = joinPath(installDir, 'agents', agent.name);
+      await mkdir(dir, { recursive: true });
+      // Overwrites the copied AGENT.md for the folder shape on purpose: both
+      // shapes hand the agent installer the same normalised file.
+      await writeTextFile(joinPath(dir, 'AGENT.md'), agent.rendered);
+      const result = await installAgentFromFolder(dir, { overwrite: false });
+      // `ALREADY_EXISTS` here is a user agent created between the plan and now:
+      // it wins, and this plugin is not credited with a directory it did not
+      // write. Every other code is a failure that must not be credited either.
+      if (result.ok) installed.push(agent.name);
+    } catch {
+      // Same policy as above: one agent's failure narrows what the plugin is
+      // credited with, it does not undo an install the user already approved.
+    }
+  }
+  return installed;
 }
 
 export interface InstallDisclosure {
@@ -174,10 +319,10 @@ export interface InstallDisclosure {
   agents: PluginAgentDisclosure[];
   capabilities?: string[];
   /**
-   * Top-level payload dirs Abu does NOT consume (commands / agents / hooks —
-   * the Claude/Codex ecosystem ships these; Abu routes agents to the Team view
-   * and does not run the others). Surfaced so the user is not surprised when
-   * part of a plugin silently does nothing here.
+   * Top-level payload dirs Abu does NOT consume (commands / hooks — the
+   * Claude/Codex ecosystem ships these and Abu does not run them). Surfaced so
+   * the user is not surprised when part of a plugin silently does nothing
+   * here. `agents/` left this list when the payload route landed.
    */
   ignoredPayloads: string[];
   /**
@@ -195,7 +340,7 @@ export interface InstallDisclosure {
 }
 
 /** Payload dirs the ecosystem uses that Abu deliberately does not consume. */
-const IGNORED_PAYLOAD_DIRS = ['commands', 'agents', 'hooks'] as const;
+const IGNORED_PAYLOAD_DIRS = ['commands', 'hooks'] as const;
 
 /** Which of the ignored payload dirs this package actually ships. */
 async function discoverIgnoredPayloads(scan: PackageScan): Promise<string[]> {
@@ -273,6 +418,17 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   }
 
   const skills = await discoverSkills(scan);
+  const key = pluginKey(manifest.name, opts.marketplaceName);
+  const payloadAgents = await readPayloadAgents(scan, sourceDir);
+  // Without a home there is no install record to read, so every taken name
+  // counts as a conflict — the conservative direction: an agent is skipped
+  // rather than a user's own one silently replaced.
+  const previouslyContributed = new Set(
+    opts.home && payloadAgents.length > 0
+      ? (await findInstalled(opts.home, key))?.contributed.agents ?? []
+      : [],
+  );
+  const agents = await discloseAgents(payloadAgents, previouslyContributed);
   const ignoredPayloads = await discoverIgnoredPayloads(scan);
   const mcpServers = Object.entries(manifest.mcpServers ?? {}).map(([name, spec]) => ({
     name,
@@ -282,7 +438,7 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
   }));
 
   return {
-    key: pluginKey(manifest.name, opts.marketplaceName),
+    key,
     name: manifest.name,
     marketplace: opts.marketplaceName,
     version: manifest.version,
@@ -290,9 +446,7 @@ export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisc
     sourceDir,
     skills,
     mcpServers,
-    // Discovery lands in the next change; until then the field is honestly
-    // empty rather than absent, so every consumer can already iterate it.
-    agents: [],
+    agents,
     capabilities: manifest.interface?.capabilities,
     ignoredPayloads,
     skippedSymlinks,
@@ -339,6 +493,10 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
 
   await opts.copyDir(disclosure.sourceDir, targetDir);
 
+  // After the copy: the agents are materialised from the installed tree, so
+  // nothing the copy refused can reach ~/.abu/agents.
+  const agents = await installPayloadAgents(targetDir, disclosure.agents);
+
   return {
     record: {
       key: disclosure.key,
@@ -358,9 +516,10 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       contributed: {
         skills: disclosure.skills,
         mcpServers: disclosure.mcpServers.map((s) => s.name),
-        // Only agents this install actually materialised belong here, and none
-        // are installed yet — the payload route is not wired up.
-        agents: [],
+        // Only the agents this install actually materialised: uninstall deletes
+        // every name listed here, so a name that is not on disk (or is someone
+        // else's) must never appear.
+        agents,
       },
     },
     mcpServers: disclosure.mcpServers,

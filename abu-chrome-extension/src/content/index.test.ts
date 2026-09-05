@@ -120,6 +120,9 @@ beforeAll(async () => {
 
 beforeEach(() => {
   document.body.innerHTML = '';
+  // `find` reports the title, and one budget test sets a realistic long one —
+  // reset it here so no test inherits another's page identity.
+  document.title = '';
 });
 
 /** Minimal stand-in for the jeecg/antd form the field report came from. */
@@ -1507,6 +1510,46 @@ describe('find — read-only search, the cheap step before acting', () => {
 
     expect((await find({ role: 'button' }, 3)).matches).toHaveLength(3);
     expect((await find({ role: 'button' }, 999)).matches).toHaveLength(50);
+  });
+
+  it('stays inside its serialized budget on the worst page it can be asked about', async () => {
+    // 50 matches (the ceiling the caller can ask for) with every text field at
+    // its cap. By count alone this is legal and serializes past the 16,000
+    // characters `truncation.ts` budgets for `find` — at which point the only
+    // thing upstream can do is cut CHARACTERS, producing JSON that no longer
+    // parses. The cut has to happen here, where a match is still a match.
+    //
+    // Measured on the WHOLE result, exactly as `formatResult` in the bridge
+    // serializes it (`JSON.stringify(data, null, 2)`) and exactly what the
+    // budget in `truncation.ts` is applied to — bounding `matches` in
+    // isolation looks right and still overflows, because inside the envelope
+    // every line of the array gains two spaces and url/title/message are not
+    // counted at all.
+    document.title = '设备台账 - 某某公司企业资源管理平台';
+    const long = (n: number) => '设备名称超长'.repeat(n);
+    document.body.innerHTML = Array.from({ length: 60 }, (_, i) =>
+      `<button id="equipment-ledger-row-${i}-${long(6)}" aria-label="${long(30)}">${long(20)}</button>`).join('');
+
+    const result = await find({ role: 'button' }, 50);
+
+    const serialized = JSON.stringify(result, null, 2);
+    expect(serialized.length).toBeLessThanOrEqual(16_000);
+    expect(JSON.parse(serialized).matches).toHaveLength(result.matches.length);
+    expect(result.matches.length).toBeGreaterThan(0);
+    expect(result.total).toBe(60);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('caps a single pathological id and name rather than letting one match eat the budget', async () => {
+    const long = (n: number) => 'x'.repeat(n);
+    document.body.innerHTML = `<button id="${long(400)}" aria-label="${long(400)}">${long(400)}</button>`;
+
+    const [match] = (await find({ role: 'button' })).matches;
+
+    expect(match.id!.length).toBeLessThanOrEqual(101);
+    expect(match.id!.endsWith('…')).toBe(true);
+    expect(match.accessibleName!.length).toBeLessThanOrEqual(121);
+    expect(match.text === undefined || match.text.length <= 81).toBe(true);
   });
 
   it('calls the accessible name `accessibleName`, because snapshot\'s `name` is the attribute', async () => {

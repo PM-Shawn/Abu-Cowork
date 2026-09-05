@@ -42,8 +42,10 @@ const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 350
  */
 const MCP_TOOL_RULES: Record<string, TruncationRule> = {
   snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
-  // `find` caps itself at 50 matches and says so; the budget only has to be
-  // wide enough that the character slicer never gets to shred that JSON.
+  // `find` bounds its own payload to this exact number (`MAX_FIND_CHARS` in
+  // `abu-chrome-extension/src/content/index.ts`) by binary search on the real
+  // serialized size, so the character slicer below never gets to shred that
+  // JSON. Changing this without changing that one re-opens the gap.
   find: { headLines: 0, tailLines: 0, maxChars: 16000 },
   query_js: { headLines: 0, tailLines: 0, maxChars: 32000 },
   extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },

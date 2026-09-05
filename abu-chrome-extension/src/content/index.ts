@@ -967,6 +967,27 @@ function findElementOrThrow(locator: ElementLocator): Element {
 const FIND_DEFAULT_LIMIT = 20;
 /** Hard ceiling: past this the caller wants a snapshot, not a search. */
 const FIND_MAX_LIMIT = 50;
+/**
+ * Max serialized size of a find result, measured the way the bridge serializes
+ * it (pretty-printed JSON — see `formatResult`), and set to the budget
+ * `src/core/context/truncation.ts` gives the `find` tool.
+ *
+ * A count cap alone is not a size cap: 50 matches with long names, long text
+ * and long ids serialize to ~21,000 characters, past the budget, and what is
+ * upstream can only cut CHARACTERS — which turns the JSON into something that
+ * no longer parses and drops matches without saying which. `snapshot` bounds
+ * itself for exactly this reason; `find` did not.
+ */
+const MAX_FIND_CHARS = 16_000;
+/** Per-field caps, so one pathological attribute cannot eat the whole budget. */
+const FIND_MAX_NAME_CHARS = 120;
+const FIND_MAX_TEXT_CHARS = 80;
+const FIND_MAX_ID_CHARS = 100;
+
+/** Cut a field to its cap, marking the cut so the caller does not read a lie. */
+function capField(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
 
 /** Every key of a find query, for validation and for the "empty query" error. */
 const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'placeholder'] as const;
@@ -1061,15 +1082,15 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
     const rect = el.getBoundingClientRect();
     const role = effectiveRole(el);
     const name = accessibleName(el);
-    const text = normalizeWhitespace(el.textContent ?? '').slice(0, 80);
+    const rawText = normalizeWhitespace(el.textContent ?? '');
     const disabled = (el as HTMLButtonElement).disabled === true || el.getAttribute('aria-disabled') === 'true';
     return {
       ref: refFor(el),
       tag: el.tagName.toLowerCase(),
-      ...(el.id ? { id: el.id } : {}),
+      ...(el.id ? { id: capField(el.id, FIND_MAX_ID_CHARS) } : {}),
       ...(role ? { role } : {}),
-      ...(name ? { accessibleName: name.slice(0, 120) } : {}),
-      ...(text && text !== name ? { text } : {}),
+      ...(name ? { accessibleName: capField(name, FIND_MAX_NAME_CHARS) } : {}),
+      ...(rawText && rawText !== name ? { text: capField(rawText, FIND_MAX_TEXT_CHARS) } : {}),
       // `false` means "on the page but with no layout box" — a collapsed antd
       // combobox input, say. It is still addressable; it just is not what the
       // user is looking at. Genuinely hidden elements never reach this list.
@@ -1086,10 +1107,10 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
   });
 
   const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(' ');
-  return {
+  const build = (kept: FindMatch[]): FindResult => ({
     url: location.href,
     title: document.title,
-    matches,
+    matches: kept,
     total,
     ...(total === 0
       ? {
@@ -1098,16 +1119,44 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
             + `Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`,
       }
       : {}),
-    ...(total > matches.length
+    ...(total > kept.length
       ? {
         truncated: true,
         message:
-            `Showing ${matches.length} of ${total} matches. Narrow the query (add \`role\`, or a longer `
+            `Showing ${kept.length} of ${total} matches. Narrow the query (add \`role\`, or a longer `
             + `\`text\`/\`name\`) rather than raising \`limit\` — a locator that matches ${total} elements `
             + `will be refused as ambiguous by click/fill/select.`,
       }
       : {}),
-  };
+  });
+
+  // Bound the payload here, where a match is still a structured thing, by
+  // binary search on the REAL serialized size — and on the WHOLE result, the
+  // way `formatResult` in the bridge serializes it. Measuring `matches` alone
+  // would run ~1,200 characters under the truth on a worst-case page (the
+  // array sits one level deeper inside the envelope, so every line carries two
+  // more spaces, and url/title/message are unbudgeted), and an estimate that
+  // runs under hands the result to the upstream character slicer, which cuts
+  // CHARACTERS — the JSON stops parsing and matches vanish without saying
+  // which. That is the failure this budget exists to prevent.
+  const fits = (count: number) => JSON.stringify(build(matches.slice(0, count)), null, 2).length <= MAX_FIND_CHARS;
+  if (matches.length > 0 && !fits(matches.length)) {
+    let low = 1;                 // always return at least one match: a single
+    let high = matches.length;   // oversized match beats an empty list
+    let kept = 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (fits(mid)) {
+        kept = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    matches.length = kept;
+  }
+
+  return build(matches);
 }
 
 // =============================================================================

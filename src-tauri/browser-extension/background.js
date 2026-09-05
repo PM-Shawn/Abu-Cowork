@@ -1,5 +1,22 @@
 "use strict";
 (() => {
+  // src/background/contentActions.ts
+  var CONTENT_SCRIPT_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "find",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "start_recording",
+    "stop_recording"
+  ]);
+
   // src/background/index.ts
   var DISCOVERY_URL = "http://127.0.0.1:9875/status";
   var FIXED_WS_PORT = 9876;
@@ -374,25 +391,10 @@
           });
           return { id, success: true, data: results[0]?.result };
         }
-        // Every action executed by the content script. A new DOM tool that is
-        // not listed here falls through to `default:` and answers
-        // `Unknown action`, which reads to the model as "the tool is broken"
-        // rather than "this channel forgot to route it" — so
-        // `background/index.test.ts` pins this list against the tool surface
-        // `abu-browser-bridge` actually registers.
-        case "snapshot":
-        case "find":
-        case "get_html":
-        case "click":
-        case "fill":
-        case "select":
-        case "wait_for":
-        case "extract_text":
-        case "extract_table":
-        case "scroll":
-        case "keyboard":
-        case "start_recording":
-        case "stop_recording": {
+        default: {
+          if (!CONTENT_SCRIPT_ACTIONS.has(action)) {
+            return { id, success: false, error: `Unknown action: ${action}` };
+          }
           const tabId = typeof payload.tabId === "number" ? payload.tabId : lastActiveTabId;
           if (!tabId) {
             return { id, success: false, error: "No active browser tab is available. Call get_tabs and pass tabId." };
@@ -400,8 +402,6 @@
           const result = await sendToContentScript(tabId, action, payload);
           return { id, success: true, data: result };
         }
-        default:
-          return { id, success: false, error: `Unknown action: ${action}` };
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

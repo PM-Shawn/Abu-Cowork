@@ -330,16 +330,15 @@
     const tag = el.tagName.toLowerCase();
     if (!LABELABLE_TAGS.has(tag)) return "";
     if (tag === "input" && inputType(el) === "hidden") return "";
-    const parts = [];
+    const labels = /* @__PURE__ */ new Set();
     if (el.id) {
       for (const label of document.querySelectorAll("label[for]")) {
-        if (label.getAttribute("for") === el.id) {
-          parts.push(normalizeWhitespace(label.textContent ?? ""));
-        }
+        if (label.getAttribute("for") === el.id) labels.add(label);
       }
     }
     const wrapping = el.closest?.("label");
-    if (wrapping) parts.push(normalizeWhitespace(wrapping.textContent ?? ""));
+    if (wrapping) labels.add(wrapping);
+    const parts = [...labels].map((label) => normalizeWhitespace(label.textContent ?? ""));
     return normalizeWhitespace(parts.filter(Boolean).join(" "));
   }
   function accessibleName(el) {
@@ -370,7 +369,17 @@
   function isLocatorVisible(el) {
     if (el.hasAttribute("hidden")) return false;
     if (el.tagName.toLowerCase() === "input" && inputType(el) === "hidden") return false;
+    if (el.closest?.('[aria-hidden="true"]')) return false;
+    if (el.closest?.("[inert]")) return false;
+    if (isFullyTransparent(el)) return false;
     return isSnapshotVisible(el);
+  }
+  function isFullyTransparent(el) {
+    if (!hasBox(el)) return false;
+    for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
+      if (getComputedStyle(node).opacity === "0") return true;
+    }
+    return false;
   }
   function isLocatorTarget(el) {
     if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
@@ -422,7 +431,7 @@
   ...and ${matches.length - 8} more` : "")
     );
   }
-  function findByText(text, tag) {
+  function textMatches(text, tag) {
     const scope = tag ?? "*";
     const wanted = text.trim();
     const squashed = wanted.replace(/\s+/g, "");
@@ -433,7 +442,7 @@
     });
     const laidOut = candidates.filter(hasBox);
     const matches = laidOut.length > 0 ? laidOut : candidates;
-    if (matches.length === 0) return null;
+    if (matches.length === 0) return [];
     let deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
     const exact = deepest.filter(
       (el) => normalizedText(el) === wanted || normalizedText(el).replace(/\s+/g, "") === squashed
@@ -441,17 +450,13 @@
     if (exact.length > 0) deepest = exact;
     const clickable = deepest.filter(isClickable);
     if (clickable.length > 0) deepest = clickable;
-    if (deepest.length === 1) return deepest[0];
-    throw new Error(
-      `Text "${text}" matches ${deepest.length} different elements, so it does not identify one. Pick one by ref:
-${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (deepest.length > 8 ? `
-  ...and ${deepest.length - 8} more` : "")
-    );
+    return deepest;
   }
-  function findElement(locator) {
+  function matchElements(locator) {
     if (locator.ref) {
       const el = resolveRef(locator.ref);
-      if (el) return el;
+      const what = `Ref ${JSON.stringify(locator.ref)}`;
+      if (el) return { elements: [el], what, strategy: "ref" };
       const err = new Error(
         `Ref "${locator.ref}" no longer exists on this page (the element was removed or replaced). Take a fresh snapshot and use a ref from it.`
       );
@@ -459,27 +464,56 @@ ${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (de
       throw err;
     }
     if (locator.css) {
-      const matches = [...document.querySelectorAll(locator.css)].filter(isLocatorTarget);
-      return uniqueOrAmbiguous(matches, `CSS selector ${JSON.stringify(locator.css)}`);
+      return {
+        elements: [...document.querySelectorAll(locator.css)].filter(isLocatorTarget),
+        what: `CSS selector ${JSON.stringify(locator.css)}`,
+        strategy: "css"
+      };
     }
     if (locator.text) {
-      return findByText(locator.text, locator.tag);
+      return {
+        elements: textMatches(locator.text, locator.tag),
+        what: `Text ${JSON.stringify(locator.text)}`,
+        strategy: "text"
+      };
     }
     if (locator.role) {
       const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
-      const matches = locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole;
-      const what = locator.name ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}` : `role ${JSON.stringify(locator.role)}`;
-      return uniqueOrAmbiguous(matches, what);
+      return {
+        elements: locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole,
+        what: locator.name ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}` : `role ${JSON.stringify(locator.role)}`,
+        strategy: "role"
+      };
     }
     if (locator.testId) {
-      const matches = [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)].filter(isLocatorTarget);
-      return uniqueOrAmbiguous(matches, `testId ${JSON.stringify(locator.testId)}`);
+      return {
+        elements: [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)].filter(isLocatorTarget),
+        what: `testId ${JSON.stringify(locator.testId)}`,
+        strategy: "testId"
+      };
     }
     if (locator.xpath) {
       const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-      return result.singleNodeValue;
+      const el = result.singleNodeValue;
+      return {
+        elements: el ? [el] : [],
+        what: `XPath ${JSON.stringify(locator.xpath)}`,
+        strategy: "xpath"
+      };
     }
     throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
+  }
+  function findElement(locator) {
+    const { elements, what, strategy } = matchElements(locator);
+    if (elements.length <= 1) return elements[0] ?? null;
+    if (strategy === "text") {
+      throw new Error(
+        `Text "${locator.text}" matches ${elements.length} different elements, so it does not identify one. Pick one by ref:
+${elements.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (elements.length > 8 ? `
+  ...and ${elements.length - 8} more` : "")
+      );
+    }
+    return uniqueOrAmbiguous(elements, what);
   }
   function nearbyCandidates(locator, cap = 5) {
     if (locator.role) {
@@ -502,6 +536,13 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
   }
   var FIND_DEFAULT_LIMIT = 20;
   var FIND_MAX_LIMIT = 50;
+  var MAX_FIND_CHARS = 16e3;
+  var FIND_MAX_NAME_CHARS = 120;
+  var FIND_MAX_TEXT_CHARS = 80;
+  var FIND_MAX_ID_CHARS = 100;
+  function capField(value, max) {
+    return value.length > max ? `${value.slice(0, max)}\u2026` : value;
+  }
   var FIND_QUERY_KEYS = ["role", "name", "text", "css", "testId", "label", "placeholder"];
   function findElements(rawQuery, rawLimit) {
     const query = rawQuery ?? {};
@@ -566,15 +607,15 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       const rect = el.getBoundingClientRect();
       const role = effectiveRole(el);
       const name = accessibleName(el);
-      const text = normalizeWhitespace(el.textContent ?? "").slice(0, 80);
+      const rawText = normalizeWhitespace(el.textContent ?? "");
       const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
       return {
         ref: refFor(el),
         tag: el.tagName.toLowerCase(),
-        ...el.id ? { id: el.id } : {},
+        ...el.id ? { id: capField(el.id, FIND_MAX_ID_CHARS) } : {},
         ...role ? { role } : {},
-        ...name ? { name: name.slice(0, 120) } : {},
-        ...text && text !== name ? { text } : {},
+        ...name ? { accessibleName: capField(name, FIND_MAX_NAME_CHARS) } : {},
+        ...rawText && rawText !== name ? { text: capField(rawText, FIND_MAX_TEXT_CHARS) } : {},
         // `false` means "on the page but with no layout box" — a collapsed antd
         // combobox input, say. It is still addressable; it just is not what the
         // user is looking at. Genuinely hidden elements never reach this list.
@@ -590,19 +631,36 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       };
     });
     const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(" ");
-    return {
+    const build = (kept) => ({
       url: location.href,
       title: document.title,
-      matches,
+      matches: kept,
       total,
       ...total === 0 ? {
         message: `Nothing on this page matches ${describeQuery}. Hidden elements are excluded. Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`
       } : {},
-      ...total > matches.length ? {
+      ...total > kept.length ? {
         truncated: true,
-        message: `Showing ${matches.length} of ${total} matches. Narrow the query (add \`role\`, or a longer \`text\`/\`name\`) rather than raising \`limit\` \u2014 a locator that matches ${total} elements will be refused as ambiguous by click/fill/select.`
+        message: `Showing ${kept.length} of ${total} matches. Narrow the query (add \`role\`, or a longer \`text\`/\`name\`) rather than raising \`limit\` \u2014 a locator that matches ${total} elements will be refused as ambiguous by click/fill/select.`
       } : {}
-    };
+    });
+    const fits = (count) => JSON.stringify(build(matches.slice(0, count)), null, 2).length <= MAX_FIND_CHARS;
+    if (matches.length > 0 && !fits(matches.length)) {
+      let low = 1;
+      let high = matches.length;
+      let kept = 1;
+      while (low <= high) {
+        const mid = low + high >> 1;
+        if (fits(mid)) {
+          kept = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      matches.length = kept;
+    }
+    return build(matches);
   }
   function targetInfo(el) {
     const text = getVisibleText(el)?.replace(/\s+/g, " ").trim().slice(0, 50);
@@ -854,13 +912,23 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     const condType = condition.type;
     const describeCurrentState = () => {
       if (condType === "urlContains") return `current url is ${location.href}`;
-      let el;
+      let found;
       try {
-        el = findElement(condition.locator);
-      } catch {
-        return "the locator no longer resolves (its ref is stale) \u2014 take a fresh snapshot";
+        found = matchElements(condition.locator);
+      } catch (err) {
+        if (err instanceof Error && err.name === "StaleRefError") {
+          return "the locator no longer resolves (its ref is stale) \u2014 take a fresh snapshot";
+        }
+        return `the locator could not be evaluated: ${err instanceof Error ? err.message : String(err)}`;
       }
-      if (!el) return "no element matches that locator";
+      const { elements } = found;
+      if (elements.length === 0) return "no element matches that locator";
+      if (elements.length > 1) {
+        return `the locator matches ${elements.length} elements, none of which satisfy "${condType}":
+` + elements.slice(0, 5).map((el2) => `  ${describeCandidate(el2)}`).join("\n") + (elements.length > 5 ? `
+  ...and ${elements.length - 5} more` : "");
+      }
+      const el = elements[0];
       if (!isVisible(el)) return `matched <${el.tagName.toLowerCase()}> but it has no layout box (hidden or zero-sized)`;
       if (condType === "enabled" && el.disabled) {
         return `matched <${el.tagName.toLowerCase()}> but it is still disabled`;
@@ -870,31 +938,28 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       }
       return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
     };
+    const matched = () => matchElements(condition.locator).elements;
     const check = () => {
       switch (condType) {
         case "appear": {
-          const el = findElement(condition.locator);
-          return el !== null && isVisible(el);
+          return matched().some(isVisible);
         }
         case "disappear": {
-          let el;
+          let elements;
           try {
-            el = findElement(condition.locator);
+            elements = matched();
           } catch (err) {
             if (err instanceof Error && err.name === "StaleRefError") return true;
             throw err;
           }
-          return el === null || !isVisible(el);
+          return elements.every((el) => !isVisible(el));
         }
         case "enabled": {
-          const el = findElement(condition.locator);
-          return el !== null && isVisible(el) && !el.disabled;
+          return matched().some((el) => isVisible(el) && !el.disabled);
         }
         case "textContains": {
-          const el = findElement(condition.locator);
-          if (!el) return false;
-          const text = getVisibleText(el) ?? "";
-          return text.includes(condition.text);
+          const wanted = condition.text;
+          return matched().some((el) => (getVisibleText(el) ?? "").includes(wanted));
         }
         case "urlContains": {
           return location.href.includes(condition.pattern);

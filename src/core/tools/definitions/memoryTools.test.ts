@@ -365,6 +365,28 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(result).toContain('approved');
     });
 
+    it('strict team (先确认分工): a SAFE plan still goes through the approval card', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
+      const result = await reportPlanTool.execute(input, { ...ctx, teamRequirePlanApproval: true });
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('approved');
+    });
+
+    it('strict team: a rejected plan stays in planning and does not land', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      seedExecution();
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planRejectLabel] }] });
+      await reportPlanTool.execute({ ...input }, { ...ctx, loopId: 'loop-1', teamRequirePlanApproval: true });
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
+      expect(useTaskExecutionStore.getState().executions['exec-1'].plannedSteps).toEqual([]);
+    });
+
     it('IM run: records the plan and asks for text approval instead of blocking on a card', async () => {
       mockGetPlanMode.mockReturnValue('off');
       const imCtx = { ...ctx, imReplyTarget: { platform: 'wechat', chatId: 'u@im.wechat' } };

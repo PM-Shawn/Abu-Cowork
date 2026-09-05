@@ -1633,32 +1633,35 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Who takes the next message: the team pin, an @agent, or a /skill. Lives in
   // the bottom row next to `+` (WorkBuddy chip bar): neutral pill with an ✕,
   // click = clear.
-  const chipClass = 'inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
-  const chipIconClass = 'h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)]';
+  const chipClass = 'group inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
+  // Rest: kind mark + name. Hover: the mark becomes ✕ and the pill gets a background (WorkBuddy).
+  const chipMarkClass = 'shrink-0 text-[var(--abu-text-tertiary)] group-hover:hidden';
+  const chipCloseClass = 'hidden h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)] group-hover:block';
   const composerChips = (
     <>
       {pinnedTeam && (
-        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close}>
-          <X aria-hidden="true" className={chipIconClass} />
-          <span aria-hidden="true">👥</span>
+        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>👥</span>
+          <X aria-hidden="true" className={chipCloseClass} />
           <span className="truncate">{pinnedTeam.name}</span>
         </button>
       )}
       {selectedAgent && !pinnedTeam && (
-        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close}>
-          <X aria-hidden="true" className={chipIconClass} />
-          <span className="truncate">{selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}</span>
+        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={selectedAgent.team ? `👥${selectedAgent.name}` : `@${selectedAgent.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>{selectedAgent.team ? '👥' : '@'}</span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{selectedAgent.name}</span>
         </button>
       )}
       {selectedSkill && (
-        <button type="button" onClick={removeSkill} className={chipClass} title={t.common.close}>
-          <X aria-hidden="true" className={chipIconClass} />
-          <span className="truncate">/{selectedSkill.name}</span>
+        <button type="button" onClick={removeSkill} className={chipClass} title={t.common.close} aria-label={`/${selectedSkill.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>/</span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{selectedSkill.name}</span>
         </button>
       )}
     </>
   );
-
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;

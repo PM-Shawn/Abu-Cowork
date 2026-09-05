@@ -618,6 +618,8 @@ export interface ToolExecutionContext {
    * preset type while it is present. Wire-safe (plain strings).
    */
   teamRoster?: string[];
+  /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
+  teamRequirePlanApproval?: boolean;
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would

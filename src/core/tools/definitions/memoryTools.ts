@@ -208,7 +208,10 @@ export const reportPlanTool: ToolDefinition = {
     // Once the user has approved this conversation's plan, subsequent report_plan
     // calls (frequent status updates) must NOT re-trigger approval — otherwise a
     // risky plan re-prompts and re-locks writes on every progress update.
-    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning');
+    // Strict teams (先确认分工) always go through the approval card — a prompt-only
+    // "wait for the user" rule is not honoured reliably by smaller models.
+    const strictTeam = context?.teamRequirePlanApproval === true;
+    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning' || strictTeam);
     // IM channels have no interactive approval card: blocking on the desktop
     // dialog would stall the turn until timeout while the remote user never sees
     // it. Instead, record the plan and instruct the model to present it and ask

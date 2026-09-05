@@ -1021,6 +1021,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     runPermissionCeiling: options?.runPermissionCeiling,
     // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
     teamRoster: route.team ? teamRosterNames(route.team) : undefined,
+    teamRequirePlanApproval: route.team?.requirePlanApproval === true ? true : undefined,
     authorizationScopeId: options?.authorizationScopeId,
     abortSignal: abortController.signal,
     taskSummaryHash: await hashComputerUseTaskSummary(

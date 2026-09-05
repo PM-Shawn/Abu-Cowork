@@ -83,7 +83,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('How to run the team:');
   lines.push('1. Plan first: call report_plan with the steps and set `owner` on every step to the exact name of the member who does it (yourself only for review/consolidation steps).' + (
     team.requirePlanApproval
-      ? ' Strict team: after the plan, stop and wait for the user to say "开始" / "start" before dispatching anything.'
+      ? ' Strict team: the user must approve your plan before anything is dispatched — report_plan shows them an approval card and only returns once they decide. If it reports a rejection, talk to the user and resubmit; never dispatch until report_plan reports approval.'
       : ' Then start dispatching right away — do not ask the user to confirm in chat.'));
   lines.push('2. Dispatch: steps that do not depend on each other go out together in ONE run_agent_batch call (one task per member). A step that needs an earlier result waits for it, and you pass that result to the member verbatim in the task text — members do not see this conversation or each other.');
   lines.push('3. Never do a member\'s work yourself and never invent a member\'s output. Only the names listed above can be delegated to; any other agent or preset type is refused.');

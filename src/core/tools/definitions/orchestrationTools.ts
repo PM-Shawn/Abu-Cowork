@@ -21,6 +21,7 @@ import type {
 import { TOOL_NAMES } from '../toolNames';
 import { withDispatchController } from '../../agent/subagentAbort';
 import { isTeamRosterMember } from '../../team/leaderRoute';
+import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -486,6 +487,18 @@ export const runAgentBatchTool: ToolDefinition = {
       });
     }
 
+    // Hard bounds for a team run (teamRunBounds.ts): the whole batch is admitted
+    // or refused as one, so a refusal never starts a partial fan-out.
+    const boundsLoopId = toolExecContext?.teamRoster && toolExecContext.loopId ? toolExecContext.loopId : undefined;
+    if (boundsLoopId) {
+      const admission = admitDispatches(boundsLoopId, resolvedTasks.map((task) => task.agent.name));
+      if (!admission.ok) {
+        return admission.reason === 'run_cap'
+          ? format(ot.errBatchDispatchCapReached, { max: admission.max })
+          : format(ot.errBatchMemberBlocked, { agentName: admission.member, n: admission.failures });
+      }
+    }
+
     // ── 5. Run all sub-agents with concurrency pool ────────────────────────
 
     // Initialize batch progress (best-effort — store failure must never break the batch)
@@ -664,6 +677,9 @@ export const runAgentBatchTool: ToolDefinition = {
       const result = settled[i];
       if (result.status === 'rejected' && !latestTerminalSummary?.tasks.some((task) => task.taskIndex === i)) {
         terminalizeTask(i, terminalForSettledResult(result, structuredEntries?.[i]?.ok));
+      }
+      if (boundsLoopId) {
+        recordDispatchOutcome(boundsLoopId, resolvedTasks[i].agent.name, result.status === 'fulfilled' && result.value.stopReason === 'completed');
       }
     }
 

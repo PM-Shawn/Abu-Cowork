@@ -15,6 +15,7 @@
  * context lives in `teamRouteResolver.ts`, which only the shell-side
  * entryOrchestration imports.
  */
+import { TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
 import type { SubagentDefinition } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
@@ -62,6 +63,7 @@ export function isTeamRosterMember(roster: readonly string[], agentName: string 
 
 /** Appended to the leader's `## Role` section. English scaffold, user content verbatim. */
 export function buildTeamRoleBlock(team: TeamRouteContext): string {
+  // Rule 9 quotes the code-enforced bounds so prompt and gate cannot drift.
   const lines: string[] = [];
   lines.push(`### Team: ${team.teamName}`);
   lines.push(`You are ${team.leader.name}, the leader of this team. The user talks only to you, in this conversation, and you answer for the whole team.`);
@@ -92,6 +94,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('6. When the user asks to redo one step or to have one member revise its output, re-dispatch ONLY that step/member with the user\'s feedback quoted verbatim, keep every other result as it is, and report only what changed.');
   lines.push('7. Shared inputs first: when parallel members would each invent the same figures, definitions or sources, settle them in one earlier step (or let the member that produces them run first) and pass that output verbatim to the others. When merging, list every difference in figures or definitions between members and say which one you kept and why.');
   lines.push('8. Files: when a member must write files, say in its task text to save them under `<workspace>/<member name>/` with distinct file names; two members must never write the same path.');
+  lines.push(`9. Bounds: this run allows at most ${TEAM_MAX_DISPATCHES_PER_RUN} hand-offs in total, and a member that fails ${TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER} hand-offs in a row is blocked for the rest of the run. When a dispatch tool refuses for either reason, do not retry or work around it: stop dispatching and give the user your consolidated report — what is done, what is not, and what blocked it.`);
   return lines.join('\n');
 }
 

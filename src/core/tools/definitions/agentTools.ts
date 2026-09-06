@@ -1,5 +1,6 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { isTeamRosterMember } from '../../team/leaderRoute';
+import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
@@ -229,6 +230,18 @@ export const delegateToAgentTool: ToolDefinition = {
       const t = getI18n().toolResult.agent;
       return format(t.errNotTeamMember, { agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
     }
+    // Hard bounds for the run (teamRunBounds.ts): refuse loudly so the leader
+    // stops dispatching and reports instead of looping.
+    const boundsLoopId = toolExecContext?.teamRoster && agentName && toolExecContext.loopId ? toolExecContext.loopId : undefined;
+    if (boundsLoopId && agentName) {
+      const admission = admitDispatches(boundsLoopId, [agentName]);
+      if (!admission.ok) {
+        const t = getI18n().toolResult.agent;
+        return admission.reason === 'run_cap'
+          ? format(t.errDispatchCapReached, { max: admission.max })
+          : format(t.errMemberBlocked, { agentName: admission.member, n: admission.failures });
+      }
+    }
     if (agentType && PRESET_AGENTS[agentType]) {
       // System preset role
       agent = buildPresetAgent(agentType, task);
@@ -373,6 +386,7 @@ export const delegateToAgentTool: ToolDefinition = {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }
       toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
+      if (boundsLoopId && agentName) recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed');
       // No tool call at all = nothing the member could have checked; flag it for the leader.
       if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
         return `${result.text}\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
@@ -380,6 +394,7 @@ export const delegateToAgentTool: ToolDefinition = {
       return result.text;
     } catch (err) {
       subagentCleanup();
+      if (boundsLoopId && agentName) recordDispatchOutcome(boundsLoopId, agentName, false);
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }

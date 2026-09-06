@@ -3133,6 +3133,10 @@ export interface TranslationDict {
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
       errNotTeamMember: string;
+      /** Team run hit its hand-off cap (teamRunBounds). */
+      errDispatchCapReached: string;
+      /** Member blocked after consecutive failed hand-offs. */
+      errMemberBlocked: string;
       delegateNoToolCallsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
@@ -3170,6 +3174,8 @@ export interface TranslationDict {
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
+      errBatchDispatchCapReached: string;
+      errBatchMemberBlocked: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */

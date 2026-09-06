@@ -377,6 +377,38 @@ describe('delegateToAgentTool', () => {
     expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
   });
 
+  it('blocks a team member after three failed hand-offs in a row (code-enforced bound)', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { clearRunBounds } = await import('../../team/teamRunBounds');
+    clearRunBounds('loop-bounds');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-bounds', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'gave up', stopReason: 'error', toolCallCount: 1 } as never);
+    const ctx = { conversationId: 'conv-1', loopId: 'loop-bounds', teamRoster: ['researcher'] } as never;
+
+    for (let i = 0; i < 3; i++) {
+      const text = await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try' }, ctx);
+      expect(String(text)).toContain('gave up');
+    }
+    const refused = String(await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try again' }, ctx));
+    expect(refused).toMatch(/failed 3 hand-offs in a row|连续 3 次/);
+    expect(refused).toContain('researcher');
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledTimes(3);
+
+    // Outside a team the bound does not apply.
+    const plain = await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try' }, { conversationId: 'conv-1', loopId: 'loop-bounds' } as never);
+    expect(String(plain)).toContain('gave up');
+    clearRunBounds('loop-bounds');
+  });
+
   it('prefers the shell-owned tool execution authorization scope for nested delegation', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

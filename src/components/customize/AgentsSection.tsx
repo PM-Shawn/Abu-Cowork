@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
@@ -67,7 +67,10 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
-  const { extensionsSearchQuery, disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
+  const { disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
+  // No 代理 tab exists in Extensions, so this follows whichever tab is active
+  // — the same string it read back when there was a single shared query.
+  const extensionsSearchQuery = useExtensionsSearchQuery();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const setPendingAgent = useChatStore((s) => s.setPendingAgent);

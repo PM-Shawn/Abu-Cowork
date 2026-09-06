@@ -14,14 +14,16 @@ const settingsState = {
   activeExtensionsTab: 'skills' as ExtensionsTab,
   closeExtensions: vi.fn(),
   setActiveExtensionsTab: vi.fn(),
-  extensionsSearchQuery: '',
-  setExtensionsSearchQuery: vi.fn((value: string) => {
-    settingsState.extensionsSearchQuery = value;
+  extensionsSearchQueries: { plugins: '', skills: '', mcp: '' } as Record<ExtensionsTab, string>,
+  setExtensionsSearchQuery: vi.fn((tab: ExtensionsTab, value: string) => {
+    settingsState.extensionsSearchQueries[tab] = value;
   }),
 };
 
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: () => settingsState,
+  useExtensionsSearchQuery: (tab?: ExtensionsTab) =>
+    settingsState.extensionsSearchQueries[tab ?? settingsState.activeExtensionsTab] ?? '',
 }));
 
 vi.mock('@/stores/chatStore', () => ({
@@ -86,7 +88,7 @@ const mine = () => screen.getByTestId('extensions-source-mine');
 describe('Extensions capability sources (bound enterprise client)', () => {
   beforeEach(() => {
     settingsState.activeExtensionsTab = 'skills';
-    settingsState.extensionsSearchQuery = '';
+    settingsState.extensionsSearchQueries = { plugins: '', skills: '', mcp: '' };
     vi.clearAllMocks();
   });
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useSettingsStore, type ExtensionsTab } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery, useSettingsStore, type ExtensionsTab } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { Sparkles, Server, Search, Puzzle } from 'lucide-react';
@@ -8,7 +8,7 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import SkillsSection from '../customize/SkillsSection';
 import MCPSection from '../customize/MCPSection';
-import TopTabNav from '@/components/toolbox/TopTabNav';
+import TopTabNav, { type TopTabNavItem } from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import SourceSubNav from '@/components/toolbox/SourceSubNav';
 import { sourceTabId, type ExtensionSource } from '@/components/toolbox/extensionSource';
@@ -17,6 +17,7 @@ import ExternalSkillsPanel from '@/components/toolbox/skills/ExternalSkillsPanel
 import ConnectorCatalog from '@/components/toolbox/connectors/ConnectorCatalog';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import { Input } from '@/components/ui/input';
+import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 
 // Enterprise plugin/skill/MCP tab implementations are registered by the
 // enterprise-modules entry point (real impls in the enterprise build, no-op in
@@ -44,11 +45,12 @@ export default function ExtensionsView() {
     activeExtensionsTab: activeTab,
     closeExtensions,
     setActiveExtensionsTab,
-    extensionsSearchQuery,
     setExtensionsSearchQuery,
     pendingExtensionsSource,
     clearPendingExtensionsSource,
   } = useSettingsStore();
+  // Per tab: 插件's words survive a trip to 技能 and are still there on return.
+  const extensionsSearchQuery = useExtensionsSearchQuery(activeTab);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const { t } = useI18n();
@@ -94,24 +96,25 @@ export default function ExtensionsView() {
     clearPendingExtensionsSource();
   }, [pendingExtensionsSource, activeTab, clearPendingExtensionsSource]);
 
-  // Reset manual-create trigger, clear search and spend the pending 「管理」
-  // target when the tab or source CHANGES — not on first paint. A deep link
-  // (SkillProposalCard → openExtensions('skills', 'mine') + setExtensionsSearchQuery(name))
-  // sets the query right before this view mounts; clearing on mount would wipe it.
+  // Reset the manual-create trigger and spend the pending 「管理」 target when
+  // the tab or source CHANGES — not on first paint.
+  //
+  // What it no longer does is clear the search box: each tab remembers its own
+  // words (settingsStore.extensionsSearchQueries), so switching away and back
+  // resumes the same filtered list instead of starting over.
   const lastTabSource = useRef<{ tab: ExtensionsTab; source: ExtensionSource }>({ tab: activeTab, source });
   useEffect(() => {
     const last = lastTabSource.current;
     if (last.tab === activeTab && last.source === source) return;
     lastTabSource.current = { tab: activeTab, source };
     setManualCreateTrigger(0);
-    setExtensionsSearchQuery('');
     // `focusServer` is a one-shot instruction, but as a prop it would stay
     // armed and then fail to re-fire the second time the same server is
     // managed. MCPSection has already consumed it by now (a child's effect
     // runs before its parent's), so withdrawing it here costs nothing and
     // leaves the next 「管理」 free to offer the same name again.
     setMcpFocusServer(null);
-  }, [activeTab, source, setExtensionsSearchQuery]);
+  }, [activeTab, source]);
 
   // Handler for creating a skill with AI (the only tab with an AI-create entry)
   const handleAICreate = () => {
@@ -125,8 +128,15 @@ export default function ExtensionsView() {
     setManualCreateTrigger((c) => c + 1);
   };
 
-  const navItems: { id: ExtensionsTab; label: string; icon: typeof Sparkles }[] = [
-    { id: 'plugins', label: t.toolbox.plugins, icon: Puzzle },
+  const navItems: TopTabNavItem<ExtensionsTab>[] = [
+    // 插件 carries the update badge: the count is about installed plugins, and
+    // this tab is where the market that offers the newer versions lives.
+    {
+      id: 'plugins',
+      label: t.toolbox.plugins,
+      icon: Puzzle,
+      badge: <PluginUpdateBadge testId="plugins-tab-update-badge" />,
+    },
     { id: 'skills', label: t.toolbox.skills, icon: Sparkles },
     { id: 'mcp', label: t.toolbox.connectors, icon: Server },
   ];
@@ -214,7 +224,7 @@ export default function ExtensionsView() {
           type="text"
           placeholder={t.toolbox.searchPlaceholder}
           value={extensionsSearchQuery}
-          onChange={(e) => setExtensionsSearchQuery(e.target.value)}
+          onChange={(e) => setExtensionsSearchQuery(activeTab, e.target.value)}
           className="h-8 pl-8 pr-3 text-body"
         />
       </div>

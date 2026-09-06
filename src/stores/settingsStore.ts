@@ -162,6 +162,11 @@ export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
 export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
+
+/** A fresh, empty per-tab search map — a factory, so no two states share one object. */
+function emptyExtensionsSearchQueries(): Record<ExtensionsTab, string> {
+  return { plugins: '', skills: '', mcp: '' };
+}
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
@@ -207,7 +212,17 @@ export interface SettingsState {
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
   activeExtensionsTab: ExtensionsTab;
-  extensionsSearchQuery: string;
+  /**
+   * The Extensions header search box, remembered **per tab**. Typing in 插件
+   * and stepping over to 技能 used to clear the box (a single shared string,
+   * reset on every tab/source change); each tab now keeps its own words, the
+   * way VS Code's extension views and the Chrome Web Store do, so coming back
+   * resumes where the user left off.
+   *
+   * Session-scoped: not persisted (deliberately absent from `partialize`) and
+   * reset on rehydrate, so a fresh launch always opens on an unfiltered list.
+   *  Do NOT add to partialize. */
+  extensionsSearchQueries: Record<ExtensionsTab, string>;
   /** Which half of the landing tab (市场 | 我的) a deep link is aiming at, when
    *  it knows — `openExtensions('skills', 'mine')` for a jump to a skill the
    *  user authored, which the 市场 panel structurally cannot list. The
@@ -412,7 +427,8 @@ interface SettingsActions {
   /** Spend the one-shot `pendingExtensionsSource` once the view has applied it. */
   clearPendingExtensionsSource: () => void;
   setActiveExtensionsTab: (tab: ExtensionsTab) => void;
-  setExtensionsSearchQuery: (query: string) => void;
+  /** Set one tab's remembered query; the other tabs keep theirs. */
+  setExtensionsSearchQuery: (tab: ExtensionsTab, query: string) => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
@@ -621,6 +637,17 @@ export type SettingsStore = SettingsState & SettingsActions;
 
 const defaultProviders = createDefaultProviders();
 
+/**
+ * The Extensions search words for one tab — the active tab when none is named.
+ *
+ * A hook rather than a raw `s.extensionsSearchQueries[tab]` at each call site
+ * so consumers subscribe to their own string and re-render only when it
+ * changes, not on every keystroke in a sibling tab.
+ */
+export function useExtensionsSearchQuery(tab?: ExtensionsTab): string {
+  return useSettingsStore((s) => s.extensionsSearchQueries[tab ?? s.activeExtensionsTab] ?? '');
+}
+
 export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set) => ({
@@ -649,7 +676,7 @@ export const useSettingsStore = create<SettingsStore>()(
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
       activeExtensionsTab: 'plugins' as ExtensionsTab,
-      extensionsSearchQuery: '',
+      extensionsSearchQueries: emptyExtensionsSearchQueries(),
       pendingExtensionsSource: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
@@ -977,11 +1004,13 @@ export const useSettingsStore = create<SettingsStore>()(
       closeAutomation: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
+      // Neither opening nor closing the view clears the search words: they are
+      // remembered per tab for the whole session, so re-entering Extensions
+      // resumes the list the user had narrowed to.
       openExtensions: (tab, source) =>
         set(() => ({
           viewMode: 'extensions' as ViewMode,
           activeExtensionsTab: tab ?? 'plugins',
-          extensionsSearchQuery: '',
           // Always written, so a source left over from an unconsumed open
           // cannot leak into this one.
           pendingExtensionsSource: source ?? null,
@@ -990,12 +1019,14 @@ export const useSettingsStore = create<SettingsStore>()(
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
-          extensionsSearchQuery: '',
           pendingExtensionsSource: null,
         }),
       clearPendingExtensionsSource: () => set({ pendingExtensionsSource: null }),
-      setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab, extensionsSearchQuery: '' }),
-      setExtensionsSearchQuery: (query) => set({ extensionsSearchQuery: query }),
+      setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab }),
+      setExtensionsSearchQuery: (tab, query) =>
+        set((state) => ({
+          extensionsSearchQueries: { ...state.extensionsSearchQueries, [tab]: query },
+        })),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       openTodos: () => set({ viewMode: 'todos' as ViewMode }),
@@ -1975,7 +2006,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.activeSystemTab = 'usage';
         state.activeAutomationTab = 'schedule';
         state.activeExtensionsTab = 'plugins';
-        state.extensionsSearchQuery = '';
+        state.extensionsSearchQueries = emptyExtensionsSearchQueries();
         state.pendingExtensionsSource = null;
         state.installingItem = null;
         state.viewMode = 'chat';

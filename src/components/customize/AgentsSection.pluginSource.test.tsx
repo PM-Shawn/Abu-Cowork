@@ -71,7 +71,7 @@ beforeEach(() => {
   vi.mocked(agentRegistry.getAgent).mockReturnValue(definition);
   vi.mocked(readInstalled).mockResolvedValue([]);
   usePluginStore.setState({ installed: [weather] });
-  useSettingsStore.setState({ extensionsSearchQuery: '', disabledAgents: [] });
+  useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: '' }, disabledAgents: [] });
   // The section hydrates plugins on mount, which ends in a discovery refresh.
   // These tests seed the discovery store by hand, so keep the refresh inert.
   useDiscoveryStore.setState({ refresh: vi.fn(async () => undefined) });

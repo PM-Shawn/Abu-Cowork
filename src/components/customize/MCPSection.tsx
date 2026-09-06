@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
@@ -112,7 +112,7 @@ interface MCPSectionProps {
 }
 
 export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange, sourceFilter, prefill, focusServer }: MCPSectionProps = {}) {
-  const extensionsSearchQuery = useSettingsStore((s) => s.extensionsSearchQuery);
+  const extensionsSearchQuery = useExtensionsSearchQuery('mcp');
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);

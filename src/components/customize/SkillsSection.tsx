@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
 import { skillLoader } from '@/core/skill/loader';
@@ -83,7 +83,10 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // the 阿布沉淀 category's visibility condition accounts for pending
   // drafts even when there are no workspace-auto skills yet.
   const draftsCount = useSkillDraftsStore((s) => s.drafts.length);
-  const { extensionsSearchQuery, disabledSkills, toggleSkillEnabled, closeExtensions } = useSettingsStore();
+  const { disabledSkills, toggleSkillEnabled, closeExtensions } = useSettingsStore();
+  // The 技能 tab's own remembered query (per-tab since the search box stopped
+  // being cleared on every tab switch).
+  const extensionsSearchQuery = useExtensionsSearchQuery('skills');
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();

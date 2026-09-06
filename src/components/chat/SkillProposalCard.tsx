@@ -225,9 +225,9 @@ export default function SkillProposalCard({
       // skills only — landing there would filter a catalog that can never
       // contain this name.
       openExtensions('skills', 'mine');
-      // openExtensions clears the search query first; set it after so the
-      // view opens already narrowed to this skill.
-      setExtensionsSearchQuery(proposal.skillName);
+      // Overwrites whatever 技能 was last narrowed to, so the view opens on
+      // this skill rather than on the user's previous search.
+      setExtensionsSearchQuery('skills', proposal.skillName);
     };
 
     const baseClass = 'my-2 px-3 py-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-tertiary)]';

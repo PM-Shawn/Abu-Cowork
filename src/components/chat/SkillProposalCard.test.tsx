@@ -302,7 +302,7 @@ describe('SkillProposalCard · settled state', () => {
     // 'mine', not the default 市场: an accepted proposal becomes a user/draft
     // skill, which only the 我的 panel lists.
     expect(mockOpenExtensions).toHaveBeenCalledWith('skills', 'mine');
-    expect(mockSetExtensionsSearchQuery).toHaveBeenCalledWith('weekly-digest');
+    expect(mockSetExtensionsSearchQuery).toHaveBeenCalledWith('skills', 'weekly-digest');
   });
 
   it('rejected pill is non-interactive (no toolbox jump link)', () => {

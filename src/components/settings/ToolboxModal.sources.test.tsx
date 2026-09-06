@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePluginStore } from '@/stores/pluginStore';
 
 // The Extensions view (formerly the Toolbox) has exactly three tabs —
 // 插件 / 技能 / 连接器 — driven straight off the settings store's
@@ -38,6 +39,7 @@ vi.mock('@/i18n', () => ({
         connectors: '连接器', pluginsEmptyState: '还没有安装任何插件',
         sourceMarket: '市场', sourceMine: '我的',
         searchPlaceholder: '搜索...', importEntry: '导入',
+        pluginsUpdatesAvailable: '{count} 个插件可更新',
         aiCreateSkillPrompt: '',
       },
     },
@@ -66,14 +68,14 @@ vi.mock('@/components/toolbox/connectors/ConnectorCatalog', () => ({
 // window-drag / layout plumbing it also depends on.
 vi.mock('@/components/toolbox/TopTabNav', () => ({
   default: ({ items, activeId, onSelect, right }: {
-    items: Array<{ id: string; label: string }>;
+    items: Array<{ id: string; label: string; badge?: ReactNode }>;
     activeId: string;
     onSelect: (id: string) => void;
     right: ReactNode;
   }) => (
     <nav data-active-tab={activeId}>
       {items.map(item => (
-        <button key={item.id} onClick={() => onSelect(item.id)}>{item.label}</button>
+        <button key={item.id} onClick={() => onSelect(item.id)}>{item.label}{item.badge}</button>
       ))}
       {right}
     </nav>
@@ -108,10 +110,28 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
     useSettingsStore.setState({
       viewMode: 'chat',
       activeExtensionsTab: 'plugins',
-      extensionsSearchQuery: '',
+      extensionsSearchQueries: { plugins: '', skills: '', mcp: '' },
       pendingExtensionsSource: null,
     });
+    usePluginStore.setState({ updateAvailableKeys: [], updateAvailableCount: 0 });
     vi.clearAllMocks();
+  });
+
+  it('badges the 插件 tab with the update count, capped at 9+, and nothing at zero', () => {
+    const { unmount } = render(<ExtensionsView />);
+    expect(screen.queryByTestId('plugins-tab-update-badge')).toBeNull();
+    unmount();
+
+    usePluginStore.setState({ updateAvailableCount: 3 });
+    const second = render(<ExtensionsView />);
+    expect(screen.getByTestId('plugins-tab-update-badge')).toHaveTextContent('3');
+    // The badge belongs to 插件 only — the count is about installed plugins.
+    expect(tab('技能').textContent).toBe('技能');
+    second.unmount();
+
+    usePluginStore.setState({ updateAvailableCount: 10 });
+    render(<ExtensionsView />);
+    expect(screen.getByTestId('plugins-tab-update-badge')).toHaveTextContent('9+');
   });
 
   it('renders exactly the three tabs — 插件 / 技能 / 连接器 — and no 代理 tab', () => {
@@ -269,7 +289,7 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
     // on a real tab/source change, never on first paint).
     const { openExtensions, setExtensionsSearchQuery } = useSettingsStore.getState();
     openExtensions('skills', 'mine');
-    setExtensionsSearchQuery('weekly-digest');
+    setExtensionsSearchQuery('skills', 'weekly-digest');
     render(<ExtensionsView />);
 
     expect(useSettingsStore.getState().viewMode).toBe('extensions');
@@ -277,7 +297,7 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
     expect(screen.getByText('Personal skills')).toBeInTheDocument();
     expect(screen.queryByTestId('skills-market')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
-    expect(useSettingsStore.getState().extensionsSearchQuery).toBe('weekly-digest');
+    expect(useSettingsStore.getState().extensionsSearchQueries.skills).toBe('weekly-digest');
     // Spent on arrival — a source that stayed armed would hijack the next open.
     expect(useSettingsStore.getState().pendingExtensionsSource).toBeNull();
   });
@@ -292,14 +312,34 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
     expect(screen.getByTestId('skills-market')).toBeInTheDocument();
   });
 
-  it('switching tabs clears the search query', () => {
+  it('keeps each tab its own search query across tab switches', () => {
+    // VS Code's extension views and the Chrome Web Store both remember the
+    // words per view; clearing on every switch made the shared box lose work
+    // the moment the user glanced at another tab.
     useSettingsStore.getState().openExtensions('skills');
-    useSettingsStore.getState().setExtensionsSearchQuery('weekly-digest');
+    useSettingsStore.getState().setExtensionsSearchQuery('skills', 'weekly-digest');
+    render(<ExtensionsView />);
+    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
+
+    // 连接器 has its own (empty) query…
+    fireEvent.click(tab('连接器'));
+    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('');
+
+    // …and 技能 still has its words on the way back.
+    fireEvent.click(tab('技能'));
+    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
+    expect(useSettingsStore.getState().extensionsSearchQueries.skills).toBe('weekly-digest');
+  });
+
+  it('keeps the query when the 市场 | 我的 source changes within a tab', () => {
+    useSettingsStore.getState().openExtensions('skills');
+    useSettingsStore.getState().setExtensionsSearchQuery('skills', 'weekly-digest');
     render(<ExtensionsView />);
 
-    fireEvent.click(tab('连接器'));
-    expect(useSettingsStore.getState().extensionsSearchQuery).toBe('');
-    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('');
+    fireEvent.click(mine());
+    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
+    fireEvent.click(market());
+    expect(screen.getByPlaceholderText('搜索...')).toHaveValue('weekly-digest');
   });
 
   it('personal (OSS) mode: no 个人/组织 switch on any tab', () => {

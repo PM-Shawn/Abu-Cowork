@@ -47,7 +47,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useMCPStore.setState({ servers: {}, isLoading: false });
   usePluginStore.setState({ installed: [] });
-  useSettingsStore.setState({ extensionsSearchQuery: '' });
+  useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: '' } });
 });
 
 describe('MCPSection · sourceFilter="mine"', () => {
@@ -108,7 +108,7 @@ describe('MCPSection · sourceFilter="mine"', () => {
     useMCPStore.setState({
       servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
     });
-    useSettingsStore.setState({ extensionsSearchQuery: 'hand' });
+    useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: 'hand' } });
     render(<MCPSection sourceFilter="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
     expect(screen.queryByText('github')).toBeNull();

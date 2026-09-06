@@ -51,6 +51,17 @@ export interface ConfirmationInfo {
    */
   browserEmbeddedOrigins?: string[];
   /**
+   * Browser confirmations only: the origin of the PAGE, when the action's own
+   * target is a region inside it.
+   *
+   * `browserOrigin` is where the action EXECUTES, which for a frame-targeted
+   * call is the third-party region — so on its own it leaves the dialog saying
+   * `vendor.example.net` to a user who is looking at `oa.example.com`, with
+   * the page they are actually on named nowhere. Absent when the two are the
+   * same site, which is every non-frame call.
+   */
+  browserPageOrigin?: string;
+  /**
    * Browser confirmations only: whether the dialog may offer a persistent
    * per-site grant. False for scripting tools (execute_js) and for actions
    * whose origin could not be resolved — those are approved one use at a

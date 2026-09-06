@@ -20,9 +20,26 @@ export interface CommandConfirmRequest {
    * Named in the ask, and granted individually by "always allow".
    */
   browserEmbeddedOrigins?: string[];
+  /**
+   * Browser confirmations: the origin of the PAGE, when the action's own
+   * target is a region inside it — see `ConfirmationInfo.browserPageOrigin`.
+   */
+  browserPageOrigin?: string;
   /** Browser confirmations: whether "always allow this site" may be offered. */
   allowPersistentGrant?: boolean;
 }
+
+/**
+ * How many embedded regions one dialog will list — and therefore how many one
+ * click will grant.
+ *
+ * An ordinary portal page can embed dozens of third-party frames (the frame
+ * listing itself only stops at 40), and a prompt that printed all of them
+ * would be asking for consent to a wall of text nobody reads. What is not
+ * listed is not granted: the overflow is counted, said out loud, and left for
+ * a separate ask.
+ */
+const MAX_LISTED_EMBEDDED_ORIGINS = 5;
 
 interface CommandConfirmDialogProps {
   request: CommandConfirmRequest;
@@ -92,18 +109,31 @@ export default function CommandConfirmDialog({
    * something the user never agreed to. Naming them here is what keeps both
    * from happening.
    */
-  const embeddedOrigins = request.kind === 'browser' ? (request.browserEmbeddedOrigins ?? []) : [];
+  const allEmbeddedOrigins = request.kind === 'browser'
+    // Never the action's own target: for a frame-targeted action that origin
+    // IS one of the page's regions, and counting it twice made the button
+    // promise one more region than the click covers.
+    ? (request.browserEmbeddedOrigins ?? []).filter((o) => o !== request.browserOrigin)
+    : [];
+  /** The regions this dialog names — and, exactly, the ones it grants. */
+  const embeddedOrigins = allEmbeddedOrigins.slice(0, MAX_LISTED_EMBEDDED_ORIGINS);
+  const unlistedEmbeddedCount = allEmbeddedOrigins.length - embeddedOrigins.length;
   const handleAlwaysAllowSite = useCallback(() => {
     const store = useSettingsStore.getState();
     if (request.browserOrigin) {
       store.setBrowserSitePermission(request.browserOrigin, 'allowed');
     }
     // One click, one grant per origin — written individually, never as a
-    // pattern, so what is stored is exactly the list the user just read.
-    for (const embedded of request.browserEmbeddedOrigins ?? []) {
-      if (embedded !== request.browserOrigin) store.setBrowserSitePermission(embedded, 'allowed');
+    // pattern, so what is stored is exactly the list the user just read. The
+    // cap is applied HERE as well as in the list, from the same array: a grant
+    // that reached past what the dialog printed would be a wildcard wearing a
+    // count.
+    for (const embedded of embeddedOrigins) {
+      store.setBrowserSitePermission(embedded, 'allowed');
     }
     onConfirm();
+  // `embeddedOrigins` is derived from the same request fields each render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [request.browserOrigin, request.browserEmbeddedOrigins, onConfirm]);
   // ...and say what the verdict opens. A scripting dialog may never mint this
   // verdict (Ruling-I: one click must not open both the attended no-dialog door
@@ -114,11 +144,17 @@ export default function CommandConfirmDialog({
   // grant is unchanged; only the label stops understating it, and only in the
   // configuration where the second door actually exists.
   const scriptingPolicy = useSettingsStore((s) => s.browserOperationPolicy.scripting);
-  const alwaysAllowSiteLabel = embeddedOrigins.length > 0
+  // Two independent facts about the SAME click: how many sites it covers, and
+  // whether it also opens the scripting door. Composed rather than enumerated
+  // — as a nested ternary the regions branch short-circuited the scripting one
+  // and the warning silently disappeared on any page with an iframe (round-2
+  // F2), which is precisely the configuration where the click grants most.
+  const alwaysAllowSiteBase = embeddedOrigins.length > 0
     ? format(t.commandConfirm.browserAlwaysAllowSiteWithEmbedded, { count: embeddedOrigins.length })
-    : scriptingPolicy === 'allow'
-      ? t.commandConfirm.browserAlwaysAllowSiteWithScripts
-      : t.commandConfirm.browserAlwaysAllowSite;
+    : t.commandConfirm.browserAlwaysAllowSite;
+  const alwaysAllowSiteLabel = scriptingPolicy === 'allow'
+    ? `${alwaysAllowSiteBase}${t.commandConfirm.browserAlwaysAllowSiteScriptsSuffix}`
+    : alwaysAllowSiteBase;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted
@@ -191,11 +227,27 @@ export default function CommandConfirmDialog({
             </code>
           </div>
 
+          {/* Which PAGE this is happening on. For an action aimed into a
+              third-party region the command line above names the REGION, and
+              without this the user would be approving something for a page the
+              dialog never mentions. */}
+          {request.kind === 'browser'
+            && request.browserPageOrigin
+            && request.browserPageOrigin !== request.browserOrigin && (
+            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
+              {format(t.commandConfirm.browserPageOrigin, { origin: request.browserPageOrigin })}
+            </p>
+          )}
+
           {/* The page's embedded regions — named before, not after, the click
-              that would authorize them. */}
+              that would authorize them. Capped: what is not printed here is
+              not granted, and the overflow says so rather than going quiet. */}
           {embeddedOrigins.length > 0 && (
             <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
               {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
+              {unlistedEmbeddedCount > 0 && (
+                <> {format(t.commandConfirm.browserEmbeddedOriginsMore, { count: unlistedEmbeddedCount })}</>
+              )}
             </p>
           )}
 

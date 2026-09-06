@@ -2045,6 +2045,13 @@ export async function checkToolApproval(
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,
+            // The page this is happening ON, when it is not the same site as
+            // the action's target — a click inside a third-party region
+            // otherwise names only the region, and the user reads a site they
+            // never navigated to with no mention of the page in front of them.
+            ...(target.topOrigin && target.topOrigin !== origin
+              ? { browserPageOrigin: target.topOrigin }
+              : {}),
             // Named in the SAME ask, and granted in the same click, so
             // per-origin authorization does not cost one prompt per region.
             ...(target.embeddedOrigins && target.embeddedOrigins.length > 0

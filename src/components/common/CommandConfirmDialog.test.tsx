@@ -132,6 +132,92 @@ describe('CommandConfirmDialog', () => {
       expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
       expect(screen.queryByText(/内嵌区域/)).not.toBeInTheDocument();
     });
+
+    /**
+     * Round-2 F2. The click that grants a page AND its regions is the very
+     * click that also opens the scripting door, so the label has to carry both
+     * facts. Written as a nested ternary the regions branch short-circuited
+     * the scripting one, and the warning vanished on exactly the pages where
+     * the grant reaches furthest.
+     */
+    it('still says "including scripts" when the page ALSO has embedded regions', () => {
+      useSettingsStore.setState({
+        browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, scripting: 'allow' },
+      });
+      renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net'],
+        allowPersistentGrant: true,
+      });
+
+      expect(
+        screen.getByRole('button', { name: '此网站及 1 个内嵌区域以后都允许（含运行脚本）' }),
+      ).toBeInTheDocument();
+    });
+
+    /**
+     * Round-2 F3. A portal page can embed dozens of third-party frames; a
+     * prompt that printed all of them would be asking for consent to a wall of
+     * text. The cap is on the GRANT as much as on the list — what is not
+     * printed is not authorized, and the dialog says how many were left out.
+     */
+    it('lists at most five regions, and grants exactly the ones it listed', async () => {
+      const user = userEvent.setup();
+      const many = Array.from({ length: 8 }, (_, i) => `https://r${i}.example.net`);
+      const { onConfirm } = renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: many,
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.getByText(/还有 3 个内嵌区域未列出/)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: '此网站及 5 个内嵌区域以后都允许' }));
+
+      const verdicts = useSettingsStore.getState().browserSitePermissions;
+      expect(Object.keys(verdicts).sort()).toEqual(
+        ['https://oa.example.com', ...many.slice(0, 5)].sort(),
+      );
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('says nothing about unlisted regions when every one of them fits', () => {
+      renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net', 'https://cdn.example.org'],
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.queryByText(/未列出/)).not.toBeInTheDocument();
+    });
+
+    /**
+     * Round-2 F3. `browserOrigin` for a frame-targeted action is the REGION,
+     * and the user is looking at the page that embeds it — which the dialog
+     * otherwise never named.
+     */
+    it('names the page an action inside a region is happening on', () => {
+      renderDialog({
+        browserOrigin: 'https://vendor.example.net',
+        browserPageOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net'],
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.getByText(/当前页面：https:\/\/oa\.example\.com/)).toBeInTheDocument();
+      // …and the region it is already acting in is not counted as a SECOND
+      // site the click would newly cover (round-2 F11).
+      expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
+    });
+
+    it('does not repeat the page origin when the action targets the page itself', () => {
+      renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserPageOrigin: 'https://oa.example.com',
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.queryByText(/当前页面/)).not.toBeInTheDocument();
+    });
   });
 
   it('"just this once" resolves without persisting anything', async () => {

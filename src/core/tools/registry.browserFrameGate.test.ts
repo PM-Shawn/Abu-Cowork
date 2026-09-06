@@ -332,6 +332,34 @@ describe('the merged ask', () => {
     expect(asks[0].browserEmbeddedOrigins).toBeUndefined();
   });
 
+  it('names the PAGE as well as the region when the action is aimed into one', async () => {
+    // Round-2 F3: `browserOrigin` is where the action executes — the region.
+    // Without the page beside it the user reads a site they never navigated
+    // to, with the page in front of them mentioned nowhere.
+    useSettingsStore.setState({ browserSitePermissions: {} });
+    const { cb, asks } = recordingConfirm();
+
+    await checkToolApproval(
+      'abu-browser__click', { tabId: TAB, frameId: 'f4', locator: '{"text":"提交"}' },
+      attended, cb as never,
+    );
+
+    expect(asks[0].browserOrigin).toBe(VENDOR);
+    expect(asks[0].browserPageOrigin).toBe(PAGE);
+  });
+
+  it('leaves the page origin out when the action targets the page itself', async () => {
+    useSettingsStore.setState({ browserSitePermissions: {} });
+    const { cb, asks } = recordingConfirm();
+
+    await checkToolApproval(
+      'abu-browser__click', { tabId: TAB, locator: '{"text":"提交"}' },
+      attended, cb as never,
+    );
+
+    expect(asks[0].browserPageOrigin).toBeUndefined();
+  });
+
   it('says nothing about regions on a page that has none', async () => {
     useSettingsStore.setState({ browserSitePermissions: {} });
     servePage(PAGE_URL, []);

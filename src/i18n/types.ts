@@ -2860,23 +2860,39 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
-    /** Same button, worn while the scripting row is set to 'allow'. The
-     *  verdict this click writes is the same one either way; what changes is
-     *  what it unlocks — with that row on 'allow', a standing 'allowed' site
-     *  is the whole remaining precondition for running scripts on it without
-     *  a dialog (and for an automatic run to script there at all), so the
-     *  label has to name that second door. */
-    browserAlwaysAllowSiteWithScripts: string;
+    /** Appended to whichever "always allow" label is showing while the
+     *  scripting row is set to 'allow'. The verdict this click writes is the
+     *  same one either way; what changes is what it unlocks — with that row on
+     *  'allow', a standing 'allowed' site is the whole remaining precondition
+     *  for running scripts on it without a dialog (and for an automatic run to
+     *  script there at all), so the label has to name that second door.
+     *
+     *  A SUFFIX rather than a second full label on purpose: as soon as the
+     *  embedded-regions label existed, a label-per-combination turned into a
+     *  nested ternary where the regions branch short-circuited this one and
+     *  the scripting warning silently vanished (round-2 F2). Composed, the two
+     *  facts cannot hide each other. */
+    browserAlwaysAllowSiteScriptsSuffix: string;
     /** Named above the buttons when the page embeds regions (iframes) from
      *  other sites the automation can address. Those are authorized on their
      *  own account, so the user has to see them before approving — and
      *  "always allow" then writes a grant for each one separately, never a
      *  wildcard. `{origins}` is the comma-separated list. */
     browserEmbeddedOrigins: string;
+    /** Said after the list when the page embeds more regions than one dialog
+     *  should ask about at once. Those are NOT granted by this click — the
+     *  grant covers exactly the origins printed above it. `{count}` is how
+     *  many were left out. */
+    browserEmbeddedOriginsMore: string;
+    /** The page the action is happening ON, shown whenever it is not the same
+     *  site as the action's own target — a click inside a third-party region
+     *  otherwise names only that region, leaving the user to approve something
+     *  for a page the dialog never mentions. `{origin}` is the page's. */
+    browserPageOrigin: string;
     /** The "always allow" button while embedded regions are listed: the click
      *  grants the page AND those regions, and the label has to say so rather
      *  than let the user discover it afterwards. `{count}` is how many
-     *  regions. */
+     *  regions — the ones actually listed, which are the ones granted. */
     browserAlwaysAllowSiteWithEmbedded: string;
     /** "Block this site" button — writes a persistent 'denied' verdict and
      *  refuses the pending action. Offered whenever the origin is known,

@@ -1132,16 +1132,51 @@ export async function checkToolApproval(
       const settingsSnapshot = getSettingsReader().getSnapshot();
       const masterSwitchUnattended = settingsSnapshot.allowUnattendedBrowser === true;
 
-      // Resolving the origin is an MCP round-trip to the browser host.
-      // ATTENDED read-only skips it: snapshot/screenshot/extract run
-      // constantly, a human is watching, and that path has never consulted a
-      // site verdict. UNATTENDED pays it for EVERY class — reading a page the
-      // user explicitly blocked is exactly the exfiltration an unattended run
-      // must not do quietly, and "it was only a read" is not a defense when
-      // nobody is there to notice. (`get_tabs` and other tab-less tools cost
-      // nothing here: `resolveBrowserActionOrigin` returns null without a
-      // round-trip when there is no `tabId`/`url` to resolve.)
-      const target = consequence === 'state-changing' || runMode === 'unattended'
+      /**
+       * Does the user's site table contain a BLOCK at all?
+       *
+       * F2 (2026-09-06 review): an attended read used to consult no site
+       * verdict whatsoever, so a site the user explicitly blocked was still
+       * readable while they were at the keyboard — the site card promising
+       * 「这个网站一律不操作，包括自动任务」 two rows above a preview saying
+       * 「允许」. A block is not a rule about acting; it is the user naming a
+       * page they do not want Abu on.
+       *
+       * Honouring it costs an origin resolution, which is an MCP round-trip,
+       * on a path (snapshot / screenshot / extract) that runs constantly. So
+       * it is bought only by users who have actually blocked something: with
+       * an empty or block-free table this is `false` and the attended read
+       * path is byte-for-byte what shipped. The scan is over the verdicts the
+       * user created by hand — tens of entries at the very most, and no I/O.
+       */
+      const hasBlockedSite = Object.values(settingsSnapshot.browserSitePermissions ?? {})
+        .some((verdict) => verdict === 'denied');
+      /**
+       * Resolving the origin is an MCP round-trip to the browser host.
+       *
+       * UNATTENDED pays it for EVERY class — reading a page the user
+       * explicitly blocked is exactly the exfiltration an unattended run must
+       * not do quietly, and "it was only a read" is not a defense when nobody
+       * is there to notice. ATTENDED pays it for every state-changing call,
+       * and for a READ only when there is a block to enforce (above).
+       * (`get_tabs` and other tab-less tools cost nothing here:
+       * `resolveBrowserActionOrigin` returns null without a round-trip when
+       * there is no `tabId`/`url` to resolve.)
+       */
+      const resolvesTarget =
+        consequence === 'state-changing' || runMode === 'unattended' || hasBlockedSite;
+      /**
+       * Whether the FULL site verdict applies to this call, which is the same
+       * condition `evaluateBrowserGate` calls `consultsSite`. An attended read
+       * now resolves an origin (above) but still reads only a block out of it:
+       * 「始终允许」 buys a read nothing it did not already have, and a bank
+       * page must not force a confirmation on a screenshot. Keeping the
+       * high-risk classification behind this is what stops the wording of a
+       * read-only confirmation from depending on whether the user happens to
+       * have blocked some unrelated site.
+       */
+      const consultsSiteVerdict = consequence === 'state-changing' || runMode === 'unattended';
+      const target = resolvesTarget
         ? await resolveBrowserActionTarget(
           name,
           input,
@@ -1157,7 +1192,7 @@ export async function checkToolApproval(
        * a note; there is no branch anywhere that turns it into an allow.
        */
       const loginRequired = target.authState === 'login_required';
-      const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
+      const storedVerdict = resolvesTarget
         ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
         : 'default';
       /**
@@ -1170,10 +1205,38 @@ export async function checkToolApproval(
        * 'denied' — a site the user blocked stays blocked, and letting the
        * high-risk verdict replace it could only ever loosen things.
        */
-      const highRisk = storedVerdict !== 'denied' && isHighRiskUrl(target.url);
+      const highRisk = consultsSiteVerdict
+        && storedVerdict !== 'denied'
+        && isHighRiskUrl(target.url);
       const siteVerdict: DecideBrowserOperationSiteVerdict = highRisk
         ? 'high-risk'
         : storedVerdict;
+      /**
+       * The attended read resolved an origin only to fail. The read goes
+       * ahead — a human is watching it, and failing closed on a screenshot
+       * because the browser host was slow would break the path that runs
+       * constantly to protect a block the user may not even have on this site
+       * — but the one thing that must not happen is for that to be silent.
+       * `evaluateBrowserGate` sees `'default'` and cannot tell the difference
+       * between "not blocked" and "could not check", so the difference is
+       * recorded here.
+       */
+      if (
+        hasBlockedSite
+        && !consultsSiteVerdict
+        && origin === null
+        && browserToolTargetsPage(name)
+      ) {
+        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+          { kind: 'site_check_unresolved', tool: name, opClass },
+          buildBrowserSignalContext(
+            browserChannelForTool(name) ?? 'builtin',
+            toolContext?.conversationId,
+            Date.now(),
+            toolContext?.loopId,
+          ),
+        ));
+      }
 
       const browserActionLabel = origin
         ? `${t.commandConfirm.browserAction}: ${name} (${origin})`

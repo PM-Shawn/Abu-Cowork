@@ -2031,7 +2031,13 @@ describe('CapabilitiesSection', () => {
       expect(cell(SCRIPTS, 'Automatic tasks')).toContain('set on the task itself');
     });
 
-    it('shows a blocked site as blocked for automatic runs, and says reads still work while you are here', async () => {
+    /**
+     * F2 (2026-09-06 review). The site card promises 「这个网站一律不操作，
+     * 包括自动任务」 and the preview used to report 「允许」 for the read cell
+     * two rows below it — the same screen contradicting itself. A block binds
+     * every cell now, watched or not, and every one of them says why.
+     */
+    it('shows a blocked site as blocked in every cell, including a read while you are here', async () => {
       useSettingsStore.setState({
         browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'denied' }),
         allowUnattendedBrowser: true,
@@ -2041,8 +2047,26 @@ describe('CapabilitiesSection', () => {
 
       expect(cell(CLICK, 'While you are here')).toContain('Refused');
       expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
-      // Not a bug and not a rounding error: the attended read path resolves no
-      // origin and consults no verdict. The preview's job is to say so.
+      expect(cell(VIEW, 'While you are here')).toContain('Refused');
+      // Named as the SITE, not as the policy row — the user's own block is
+      // what they would go and change.
+      expect(cell(VIEW, 'While you are here')).toContain('blocked automation on this site');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('Refused');
+    });
+
+    /**
+     * Only the block travels into that cell. 「始终允许」 buys a read nothing,
+     * and a bank page must not start prompting on a screenshot — so a
+     * money-movement address still reads 「允许」 while the user is here.
+     */
+    it('still lets a read through on a high-risk page while you are here', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://www.paypal.com/myaccount/transfer');
+
       expect(cell(VIEW, 'While you are here')).toContain('Allowed');
     });
 

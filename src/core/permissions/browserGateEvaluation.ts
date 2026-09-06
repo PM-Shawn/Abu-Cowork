@@ -216,26 +216,39 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
   const scripting = opClass === 'scripting';
 
   /**
-   * An ATTENDED READ-ONLY call consults no site verdict at all.
+   * An ATTENDED READ-ONLY call reads exactly one thing out of the site
+   * verdict: whether the user BLOCKED this site. Nothing else.
    *
-   * This is a rule, not an optimization, even though `registry.ts` expresses it
-   * as one: that path skips resolving the origin (snapshot/screenshot/extract
-   * run constantly and a human is watching), which leaves the stored verdict at
-   * `'default'` and the high-risk classifier with no URL to read. So a site the
-   * user BLOCKED is still readable while they are here, and a bank page does
-   * not force a confirmation on a screenshot. Both are deliberate — the block
-   * and the high-risk escalation are about acting, and about acting with nobody
-   * watching.
+   * A block is the one verdict that is not about acting. 「这个网站一律不操作，
+   * 包括自动任务」 is what the site card promises, `filterDownloadsByOrigin`
+   * already honours it in both run modes ("a blocked site is blocked in both
+   * run modes"), and a screenshot of a site the user blocked is precisely the
+   * page they said they did not want Abu on. The preview used to report
+   * 「允许」 for that cell while the card two rows up said 「一律不操作」 —
+   * the same settings screen contradicting itself.
+   *
+   * The other three verdicts stay out of this path, and that is still a rule
+   * rather than an oversight: a bank page must not force a confirmation on a
+   * screenshot, and 「始终允许」 buys nothing a read did not already have. So
+   * `'high-risk'` and `'allowed'` collapse to `'default'` here exactly as
+   * before, and `highRisk` below stays false for an attended read.
+   *
+   * `registry.ts` pays for this narrowly: it resolves an origin for an
+   * attended read ONLY when the site table actually contains a block, so a
+   * user who has never blocked anything keeps the shipped path byte for byte
+   * (`registry.operationPolicy.test.ts` pins that). When the origin cannot be
+   * resolved the verdict arrives as `'default'` and the read proceeds — the
+   * gate does not fail closed on a read a human is watching — and the gate
+   * records a signal so the silence is observable.
    *
    * Stated here rather than left implicit in what the caller happens to pass,
    * so the preview shows the same thing without having to know how the gate
-   * gathers its facts, and so a future change that DOES resolve origins on that
-   * path cannot silently move the behaviour. The contract test pins the two
-   * together either way.
+   * gathers its facts. The contract test pins the two together either way.
    */
   const consultsSite = stateChanging || runMode === 'unattended';
-  const effectiveSiteVerdict: DecideBrowserOperationSiteVerdict =
-    consultsSite ? siteVerdict : 'default';
+  const effectiveSiteVerdict: DecideBrowserOperationSiteVerdict = consultsSite
+    ? siteVerdict
+    : siteVerdict === 'denied' ? 'denied' : 'default';
   const highRisk = effectiveSiteVerdict === 'high-risk';
 
   const policyVerdict = decideBrowserOperation({
@@ -291,8 +304,8 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
     }
   }
 
-  // 2. A site the user blocked stays blocked, for reads too when nobody is
-  //    watching.
+  // 2. A site the user blocked stays blocked — for reads too, whether or not
+  //    anybody is watching.
   if (effectiveSiteVerdict === 'denied') {
     return denied(
       runMode === 'unattended' ? unattendedDenialCode() : 'site-denied',

@@ -247,13 +247,36 @@ describe('evaluateBrowserGate', () => {
   });
 
   describe('attended runs', () => {
-    // The gate resolves no origin for this path, so a blocked site is still
-    // readable while the user is here and a bank page does not prompt on a
-    // screenshot. Both are deliberate; the preview has to show them.
-    it('read-only ignores the site verdict entirely', () => {
-      for (const siteVerdict of ['denied', 'high-risk', 'allowed', 'default'] as const) {
+    /**
+     * Read-only reads exactly ONE thing out of the site verdict: a block.
+     * 「始终允许」 buys a read nothing it did not already have, and a bank page
+     * must not force a confirmation on a screenshot — so those two collapse to
+     * 'default' here, and only the user's own 「禁止」 survives.
+     */
+    it('read-only ignores every site verdict except the user\'s own block', () => {
+      for (const siteVerdict of ['high-risk', 'allowed', 'default'] as const) {
         const evaluation = evaluateBrowserGate(facts({ opClass: 'read-only', siteVerdict }));
         expect(evaluation.outcome).toBe('allow');
+        expect(evaluation.ask).toBeNull();
+      }
+    });
+
+    /**
+     * F2 (2026-09-06 review). The site card promises 「这个网站一律不操作，
+     * 包括自动任务」 and this path used to make a liar of it: a screenshot of a
+     * blocked page went through as long as the user was at the keyboard, and
+     * Settings' preview reported 「允许」 two rows under the card that said
+     * otherwise. Refused now, and named as the site rather than the policy.
+     */
+    it('read-only IS refused on a site the user blocked, watching or not', () => {
+      for (const runMode of ['attended', 'unattended'] as const) {
+        const evaluation = evaluateBrowserGate(facts({
+          opClass: 'read-only',
+          runMode,
+          siteVerdict: 'denied',
+        }));
+        expect(evaluation.outcome).toBe('deny');
+        expect(evaluation.denialReason).toBe('site-denied');
         expect(evaluation.ask).toBeNull();
       }
     });

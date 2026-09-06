@@ -21,6 +21,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runBatch, type BatchDeps } from '../../../abu-browser-bridge/src/batch.js';
+import { batchInvocationFromExtra, withOwnerFields } from '../../../abu-browser-bridge/src/tools.js';
 import { checkToolApproval, executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
@@ -471,5 +473,180 @@ describe('a batch is pinned per region', () => {
     );
 
     expect(decision.decision).toBe('deny');
+  });
+});
+
+/**
+ * Round-2 F1 — the whole chain, from the real entry point.
+ *
+ * The gate, the `_meta` carrier, the run and the step payload were each
+ * individually sane and the JOIN was broken: the gate handed a batch the
+ * REGION's origin as its page-level pin, the run compared that against the
+ * TAB's address (never equal for a third-party region) and stopped before step
+ * 0 — reporting "the tab left vendor.example.net" about a tab that had never
+ * been there. Every unit test passed, because every fixture supplied the value
+ * the gate was supposed to produce rather than the one it did (TESTING §13.3).
+ *
+ * So this walks it end to end: `executeAnyTool` → the `_meta` the MCP client
+ * really writes → `batchInvocationFromExtra` (the bridge's own extraction) →
+ * `runBatch` → the payload each step puts on the wire. The transport stands in
+ * for the CONTENT half by applying the same rule the frame's own
+ * `assertOriginPin` applies — the origin a step carries must equal the origin
+ * of the document it lands in — so a step pinned to the page and delivered
+ * into a region fails here exactly as it does in a real frame.
+ */
+describe('a cross-origin batch actually runs, end to end', () => {
+  const CDN = 'https://cdn.example.org';
+
+  /** Where each frame handle really is, as the transport (and a real frame) sees it. */
+  type FrameMap = Record<string, string>;
+
+  interface Chain {
+    deps: BatchDeps;
+    /** The two pins the bridge extracted from `_meta`, handed to `runBatch`. */
+    approvedOrigin: string | undefined;
+    approvedFrameOrigins: Record<string, string> | undefined;
+    /** Every page action dispatched, with the origin it was pinned to. */
+    dispatched: Array<{ action: string; frameId?: string; expectedOrigin?: string }>;
+    refusals: string[];
+  }
+
+  /**
+   * The bridge's own `_meta` extraction, then a transport that enforces the
+   * content script's pin rule.
+   */
+  function chainFrom(meta: Record<string, unknown> | undefined, frames: FrameMap, top: string): Chain {
+    const dispatched: Chain['dispatched'] = [];
+    const refusals: string[] = [];
+    const { owner, approvedOrigin, approvedFrameOrigins } = batchInvocationFromExtra({ _meta: meta });
+    let clock = 0;
+    const deps: BatchDeps = {
+      now: () => { clock += 1; return clock; },
+      send: async (action, payload) => {
+        const merged = withOwnerFields(owner, payload) as Record<string, unknown>;
+        if (action === 'get_tabs') {
+          return {
+            success: true,
+            data: {
+              windows: [{
+                tabs: [{
+                  tabId: TAB,
+                  url: `${top}/apply`,
+                  frames: [
+                    { frameId: 'f0', origin: top, sameOriginAsTop: true, accessible: true },
+                    ...Object.entries(frames).map(([frameId, origin]) => ({
+                      frameId,
+                      origin,
+                      url: `${origin}/widget`,
+                      sameOriginAsTop: false,
+                      accessible: true,
+                    })),
+                  ],
+                }],
+              }],
+            },
+          };
+        }
+        const frameId = typeof merged.frameId === 'string' ? merged.frameId : undefined;
+        const expectedOrigin = typeof merged.expectedOrigin === 'string' ? merged.expectedOrigin : undefined;
+        dispatched.push({ action, ...(frameId ? { frameId } : {}), ...(expectedOrigin ? { expectedOrigin } : {}) });
+        // `assertOriginPin`, content-script half: the document this lands in
+        // is the region for a framed step and the page otherwise.
+        const landsOn = frameId ? frames[frameId] : top;
+        if (expectedOrigin !== undefined && expectedOrigin !== landsOn) {
+          const refusal = `Refused: this action targeted a frame from a different site than the one `
+            + `approved (approved ${expectedOrigin}, this frame is ${landsOn})`;
+          refusals.push(refusal);
+          return { success: false, error: refusal };
+        }
+        return { success: true, data: { success: true, message: 'ok' } };
+      },
+    };
+    return { deps, approvedOrigin, approvedFrameOrigins, dispatched, refusals };
+  }
+
+  it('runs every step of a batch that names ONE cross-origin region', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+    });
+    const steps = JSON.stringify([
+      { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+      { action: 'click', frameId: 'f4', locator: { text: '提交' } },
+    ]);
+
+    await executeAnyTool(
+      'abu-browser__batch', { tabId: TAB, steps }, (async () => true) as never,
+      undefined, unattended,
+    );
+    const meta = metaOf('batch');
+    // The page-level pin is the PAGE's — this is the value that used to be the
+    // region's, and the one `driftedBeforeStart` compares the tab against.
+    expect(meta?.['abu/expectedOrigin']).toBe(PAGE);
+    expect(meta?.['abu/expectedFrameOrigins']).toEqual({ f4: VENDOR });
+
+    const chain = chainFrom(meta, { f4: VENDOR }, PAGE);
+    const result = await runBatch(
+      chain.deps, TAB,
+      [
+        { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+        { action: 'click', frameId: 'f4', locator: { text: '提交' } },
+      ],
+      chain.approvedOrigin, chain.approvedFrameOrigins,
+    );
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    expect(chain.refusals).toEqual([]);
+    expect(chain.dispatched.map((d) => d.expectedOrigin)).toEqual([VENDOR, VENDOR]);
+  });
+
+  it('runs every step of a batch that names TWO cross-origin regions', async () => {
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
+    ]);
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [CDN]: 'allowed' },
+    });
+    const list = [
+      { action: 'fill' as const, frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+      { action: 'click' as const, frameId: 'f5', locator: { text: '提交' } },
+    ];
+
+    await executeAnyTool(
+      'abu-browser__batch', { tabId: TAB, steps: JSON.stringify(list) }, (async () => true) as never,
+      undefined, unattended,
+    );
+    const meta = metaOf('batch');
+    expect(meta?.['abu/expectedOrigin']).toBe(PAGE);
+    expect(meta?.['abu/expectedFrameOrigins']).toEqual({ f4: VENDOR, f5: CDN });
+
+    const chain = chainFrom(meta, { f4: VENDOR, f5: CDN }, PAGE);
+    const result = await runBatch(chain.deps, TAB, list, chain.approvedOrigin, chain.approvedFrameOrigins);
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    expect(chain.refusals).toEqual([]);
+    expect(chain.dispatched.map((d) => d.expectedOrigin)).toEqual([VENDOR, CDN]);
+  });
+
+  it('still stops the run when the TAB itself left the page the batch was approved for', async () => {
+    // The page-level pin has not become decorative: it is simply compared
+    // against the thing it describes.
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+    });
+    const list = [{ action: 'fill' as const, frameId: 'f4', locator: { css: '#name' }, value: '张三' }];
+    await executeAnyTool(
+      'abu-browser__batch', { tabId: TAB, steps: JSON.stringify(list) }, (async () => true) as never,
+      undefined, unattended,
+    );
+    const chain = chainFrom(metaOf('batch'), { f4: VENDOR }, 'https://elsewhere.example.com');
+
+    const result = await runBatch(chain.deps, TAB, list, chain.approvedOrigin, chain.approvedFrameOrigins);
+
+    expect(result.stopped).toBe('origin-changed');
+    expect(chain.dispatched).toEqual([]);
   });
 });

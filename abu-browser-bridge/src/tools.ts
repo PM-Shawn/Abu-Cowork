@@ -223,6 +223,45 @@ function framesForTabFromExtra(extra: unknown): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * Everything a `batch` run needs from `_meta`, in one place so a test can walk
+ * the SAME path the tool handler walks.
+ *
+ * The gate → `_meta` → run → step-payload chain is where round-2 F1 hid: each
+ * half was individually sane and the join was not. A fixture that rebuilds
+ * this by hand proves nothing about the join (TESTING §13.3), so the handler
+ * and the chain test both call this.
+ */
+export function batchInvocationFromExtra(extra: unknown): {
+  owner: Record<string, unknown>;
+  /** The PAGE's approved origin. Regions ride `approvedFrameOrigins`. */
+  approvedOrigin: string | undefined;
+  approvedFrameOrigins: Record<string, string> | undefined;
+} {
+  const owner = ownerPayloadFromExtra(extra);
+  return {
+    owner,
+    approvedOrigin: typeof owner.expectedOrigin === 'string' ? owner.expectedOrigin : undefined,
+    approvedFrameOrigins: frameOriginsFromExtra(extra),
+  };
+}
+
+/**
+ * One step's outgoing payload: the owner fields UNDER the step's own.
+ *
+ * A step aimed into an embedded region carries that region's approved origin
+ * (`batchStepPayload`'s `pinnedOrigin`); the batch's page-level
+ * `expectedOrigin` from `_meta` must not overwrite it, or the region's own
+ * `assertOriginPin` refuses every such step. Nothing else in the two objects
+ * collides.
+ */
+export function withOwnerFields(
+  owner: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...owner, ...payload };
+}
+
 /** The gate's approved origin for each region a batch's steps target. */
 function frameOriginsFromExtra(extra: unknown): Record<string, string> | undefined {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
@@ -459,26 +498,32 @@ Any step except keyboard may add "frameId": "f3" to act inside an embedded regio
     async ({ tabId, steps }, extra) => {
       await ensureConnected(transport);
       const parsed = parseBatchSteps(steps);
-      const owner = ownerPayloadFromExtra(extra);
+      const { owner, approvedOrigin, approvedFrameOrigins } = batchInvocationFromExtra(extra);
       const deps: BatchDeps = {
         now: () => Date.now(),
         // Every step goes out as the ordinary single action, owner fields and
         // abort signal included — which is what keeps the host's per-action
         // guards (user takeover, 429 backoff, reclaim) applying to each step
         // instead of once for the whole run.
+        //
+        // The owner fields go UNDER the step payload, not over it: a step
+        // aimed into an embedded region carries that region's own approved
+        // origin (`batchStepPayload`'s `pinnedOrigin`), and the batch's
+        // page-level `expectedOrigin` must not overwrite it — that overwrite
+        // is what made every step into a cross-origin region fail its pin
+        // (round-2 F1). Nothing else in the two objects collides.
         send: (action, payload, timeoutMs) =>
-          sendWithSignal(transport, action, { ...payload, ...owner }, extra, timeoutMs),
+          sendWithSignal(transport, action, withOwnerFields(owner, payload), extra, timeoutMs),
       };
-      // The gate's own approved origin (U5's pin) is the batch's pin too —
-      // the run must not re-derive one from wherever the tab is by the time it
-      // starts. See `runBatch`'s `approvedOrigin`.
-      const approvedOrigin = typeof owner.expectedOrigin === 'string'
-        ? owner.expectedOrigin
-        : undefined;
-      // And the same for each embedded region a step targets: the page-level
-      // pin says nothing about a third-party region inside it, which can
-      // navigate on its own without the tab's address changing.
-      const result = await runBatch(deps, tabId, parsed, approvedOrigin, frameOriginsFromExtra(extra));
+      // The gate's own approved origin (U5's pin) is the batch's pin too — the
+      // run must not re-derive one from wherever the tab is by the time it
+      // starts. See `runBatch`'s `approvedOrigin`. For a batch it is always the
+      // PAGE's origin (the gate makes sure of it, so `driftedBeforeStart` has
+      // something it can compare the tab's own address against); each region a
+      // step targets rides `approvedFrameOrigins`, because the page-level pin
+      // says nothing about a third-party region inside it, which can navigate
+      // on its own without the tab's address changing.
+      const result = await runBatch(deps, tabId, parsed, approvedOrigin, approvedFrameOrigins);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     }
   );

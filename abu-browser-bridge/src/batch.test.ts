@@ -520,12 +520,15 @@ describe('runBatch — region identity between steps', () => {
   function framedHarness(frameUrls: Array<string | null>, options: { accessible?: boolean } = {}) {
     const sent: string[] = [];
     const framesAsked: boolean[] = [];
+    /** Every page action's outgoing payload, in dispatch order. */
+    const payloads: Array<Record<string, unknown>> = [];
     let probe = 0;
     let clock = 0;
     const deps: BatchDeps = {
       now: () => { clock += 1; return clock; },
       send: async (action, payload) => {
         sent.push(action);
+        if (action !== 'get_tabs') payloads.push(payload);
         if (action === 'get_tabs') {
           framesAsked.push((payload as { framesForTabId?: number }).framesForTabId === TAB);
           const url = frameUrls[Math.min(probe, frameUrls.length - 1)];
@@ -560,7 +563,7 @@ describe('runBatch — region identity between steps', () => {
         return { success: true, data: { success: true, message: 'ok' } };
       },
     };
-    return { deps, sent, framesAsked };
+    return { deps, sent, framesAsked, payloads };
   }
 
   const framedSteps: BatchStep[] = [
@@ -589,6 +592,60 @@ describe('runBatch — region identity between steps', () => {
     expect(result.stopped).toBeUndefined();
     expect(result.completedSteps).toHaveLength(2);
     expect(result.frameOrigins).toEqual({ f4: 'https://vendor.example.net' });
+  });
+
+  /**
+   * Round-2 F1. The page-level pin travels on `_meta` and the caller merges it
+   * into every outgoing step; a step aimed into a third-party region that
+   * carried it would be refused by that region's own `assertOriginPin`
+   * (`content/index.ts`), which compares against the region's `location` —
+   * so a cross-region batch failed on step 0 with a refusal nobody could act
+   * on. Each framed step therefore carries the origin ITS OWN region was
+   * approved for.
+   */
+  it('pins each framed step to the region it was approved for, not to the page', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(h.payloads.map((p) => p.expectedOrigin)).toEqual([
+      'https://vendor.example.net',
+      'https://vendor.example.net',
+    ]);
+  });
+
+  it('leaves a main-document step to inherit the page-level pin, in the same batch', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    await runBatch(
+      h.deps,
+      TAB,
+      [
+        { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+        { action: 'click', locator: { text: '下一步' } },
+      ],
+      'https://oa.example.com',
+      { f4: 'https://vendor.example.net' },
+    );
+
+    // The region step names its region; the page step names nothing, so the
+    // owner fields the caller merges in supply the page's own pin.
+    expect(h.payloads.map((p) => p.expectedOrigin)).toEqual([
+      'https://vendor.example.net',
+      undefined,
+    ]);
+  });
+
+  it('sends no per-step pin at all for a batch the gate gave no region origins', async () => {
+    const plain = harness();
+
+    await runBatch(plain.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+
+    // Nothing to override: the owner fields carry the only pin, exactly as
+    // before regions existed.
+    expect(plain.actions).toEqual(['fill', 'click']);
   });
 
   it('stops when the region navigates to another site, even though the tab never moved', async () => {

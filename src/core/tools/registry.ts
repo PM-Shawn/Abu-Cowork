@@ -655,12 +655,24 @@ async function resolveBrowserActionTarget(
           }
           frameOrigins[frameId] = node.origin;
         }
-        // A single action names one region; a batch may name several, and the
-        // one the gate judges is the STRICTEST of them — see `strictestVerdict`
-        // at the gate. The per-region map goes to the run so each step is
-        // re-checked against its own.
-        const primary = namedFrames.length === 1 ? frameOrigins[namedFrames[0]] : undefined;
-        const frameUrl = namedFrames.length === 1
+        // A SINGLE action names one region, and that region is where it
+        // executes — so it is the origin the pin has to carry.
+        //
+        // A `batch` is different, and getting this wrong is what made every
+        // cross-region batch stop before step 0 (round-2 F1). Its page-level
+        // pin is the PAGE's: the run compares it against the tab's own address
+        // (`driftedBeforeStart` in `abu-browser-bridge/src/batch.ts`), which a
+        // third-party region's origin can never equal, and every step's
+        // payload inherited it and was refused by the target frame's own
+        // `assertOriginPin`. The regions are already carried, per frame, in
+        // `frameOrigins`, and the gate folds all of them into its verdict —
+        // so the batch's authorized set is "the page + each named region",
+        // and the pin set the run receives is exactly that same set.
+        const forBatch = toolName === 'batch';
+        const primary = !forBatch && namedFrames.length === 1
+          ? frameOrigins[namedFrames[0]]
+          : undefined;
+        const frameUrl = !forBatch && namedFrames.length === 1
           ? regions.find((region) => region.frameId === namedFrames[0])?.url ?? null
           : null;
         const frameUrls = namedFrames

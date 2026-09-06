@@ -254,23 +254,39 @@ function validateStep(raw: unknown): BatchStep {
   }
 }
 
-/** The payload one step sends, minus the owner fields the caller merges in. */
-export function batchStepPayload(step: BatchStep, tabId: number): Record<string, unknown> {
+/**
+ * The payload one step sends, minus the owner fields the caller merges in.
+ *
+ * `pinnedOrigin` is the origin THIS step must be checked against at the point
+ * it executes, and it is not always the page's. A step aimed into an embedded
+ * region runs inside that region's document, where the runtime's own
+ * `assertOriginPin` compares against `location` — so a step carrying the
+ * PAGE's origin into a third-party region is refused every time, which is how
+ * a cross-region batch used to fail on its first step (round-2 F1). The caller
+ * merges the owner fields UNDER this payload for the same reason: whatever pin
+ * rode `_meta` for the batch as a whole must not overwrite the per-step one.
+ */
+export function batchStepPayload(
+  step: BatchStep,
+  tabId: number,
+  pinnedOrigin?: string,
+): Record<string, unknown> {
   const inFrame = step.frameId !== undefined ? { frameId: step.frameId } : {};
+  const pin = pinnedOrigin !== undefined ? { expectedOrigin: pinnedOrigin } : {};
   switch (step.action) {
     case 'fill':
     case 'select':
-      return { tabId, ...inFrame, locator: step.locator, value: step.value };
+      return { tabId, ...inFrame, ...pin, locator: step.locator, value: step.value };
     case 'click':
-      return { tabId, ...inFrame, locator: step.locator };
+      return { tabId, ...inFrame, ...pin, locator: step.locator };
     case 'keyboard':
       return { tabId, key: step.key, modifiers: step.modifiers };
     case 'wait_for':
-      return { tabId, ...inFrame, condition: step.condition, timeout: step.timeout };
+      return { tabId, ...inFrame, ...pin, condition: step.condition, timeout: step.timeout };
     case 'find':
-      return { tabId, ...inFrame, query: step.query, limit: step.limit };
+      return { tabId, ...inFrame, ...pin, query: step.query, limit: step.limit };
     case 'read':
-      return { tabId, ...inFrame, selector: step.selector };
+      return { tabId, ...inFrame, ...pin, selector: step.selector };
   }
 }
 
@@ -623,7 +639,7 @@ export async function runBatch(
     // so they share the remaining budget rather than each getting all of it.
     const budgetLeftMs = Math.max(0, MAX_BATCH_DURATION_MS - (deps.now() - startedAt));
     const outcomes = await Promise.all(
-      group.map((step, offset) => runStep(deps, tabId, step, index + offset, budgetLeftMs)),
+      group.map((step, offset) => runStep(deps, tabId, step, index + offset, budgetLeftMs, pinnedFrames)),
     );
     // Every outcome is accounted for, not just those before the first failure.
     // `outcomes` is in step order, so the FIRST failure is the one reported —
@@ -653,6 +669,8 @@ async function runStep(
   index: number,
   /** What is left of `MAX_BATCH_DURATION_MS` when this step is dispatched. */
   budgetLeftMs: number,
+  /** The approved origin of each region a step may target — see `runBatch`. */
+  pinnedFrames: Record<string, string>,
 ): Promise<BatchStepOutcome> {
   const action = BATCH_STEP_ACTIONS[step.action];
   const startedAt = deps.now();
@@ -664,7 +682,11 @@ async function runStep(
     ? Math.min(typeof step.timeout === 'number' ? step.timeout : 30_000, budgetLeftMs) + 5_000
     : undefined;
   try {
-    const res = await deps.send(action, batchStepPayload(step, tabId), timeoutMs);
+    // A framed step is pinned to ITS OWN region's approved origin; a step on
+    // the main document carries none here and inherits the batch's page-level
+    // pin from the owner fields the caller merges in.
+    const stepPin = step.frameId !== undefined ? pinnedFrames[step.frameId] : undefined;
+    const res = await deps.send(action, batchStepPayload(step, tabId, stepPin), timeoutMs);
     const durationMs = deps.now() - startedAt;
     if (!res.success) {
       return { index, action: step.action, ok: false, durationMs, error: res.error ?? 'Unknown error' };

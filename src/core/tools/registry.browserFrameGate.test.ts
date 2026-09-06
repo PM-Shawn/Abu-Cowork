@@ -952,6 +952,55 @@ describe('a cross-origin batch actually runs, end to end', () => {
     expect(chain.dispatched.map((d) => d.expectedOrigin)).toEqual([VENDOR, CDN]);
   });
 
+  /**
+   * Round-3 R3-B — the same statement, checked where it is actually read.
+   *
+   * R2-G made the GATE send `{}` when it could confirm no region, and a test
+   * asserted that on the decision object. It never arrived: the MCP client
+   * wrote the `_meta` key only when the map had entries, and the bridge read
+   * an empty map back as `undefined` — two independent "empty means absent"
+   * collapses — so `runBatch` still fell back to `opening.frameOrigins`, the
+   * origins it had observed for itself. The decision-object assertion stayed
+   * green the whole time and vouched for a fix that was not in effect.
+   *
+   * So this walks the same wire the other cases in this describe walk, and
+   * ends on the behaviour rather than the intent: nothing is dispatched.
+   */
+  it('an EMPTY region map survives the wire, and stops the run instead of self-policing', async () => {
+    // The region is listed but unconfirmable, so the gate judges no region at all.
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: false },
+    ]);
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+    });
+    const list = [{ action: 'fill' as const, frameId: 'f4', locator: { css: '#name' }, value: '张三' }];
+    const { cb } = recordingConfirm();
+
+    await executeAnyTool(
+      'abu-browser__batch', { tabId: TAB, steps: JSON.stringify(list) }, cb as never,
+      undefined, attended,
+    );
+
+    const meta = metaOf('batch');
+    // On the WIRE, not on the decision object: present, and empty.
+    expect(meta).toHaveProperty('abu/expectedFrameOrigins');
+    expect(meta?.['abu/expectedFrameOrigins']).toEqual({});
+
+    // And the bridge's own extraction keeps it a map rather than an absence.
+    const chain = chainFrom(meta, { f4: VENDOR }, PAGE);
+    expect(chain.approvedFrameOrigins).toEqual({});
+
+    const result = await runBatch(chain.deps, TAB, list, chain.approvedOrigin, chain.approvedFrameOrigins);
+
+    // The region the run can SEE is vendor.example.net; without the gate's
+    // empty map the run would have pinned itself to that observation and
+    // filled the form. With it, there is no approved pin for `f4` at all.
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(chain.dispatched).toEqual([]);
+  });
+
   it('still stops the run when the TAB itself left the page the batch was approved for', async () => {
     // The page-level pin has not become decorative: it is simply compared
     // against the thing it describes.

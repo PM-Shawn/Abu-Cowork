@@ -262,7 +262,24 @@ export function withOwnerFields(
   return { ...owner, ...payload };
 }
 
-/** The gate's approved origin for each region a batch's steps target. */
+/**
+ * The gate's approved origin for each region a batch's steps target.
+ *
+ * `undefined` and `{}` are DIFFERENT answers (round-3 R3-B), and the whole
+ * chain has to keep them apart:
+ *
+ * - **absent** — no such `_meta` key. The gate said nothing about regions (an
+ *   older shell, or a call that named none), and `runBatch` pins each region
+ *   from the listing it took before step 0. Self-consistent, just anchored a
+ *   moment later than the approval.
+ * - **empty** — the key is there and the map has no entries. The gate looked
+ *   and could confirm NO region, which is a fact about this call. `runBatch`
+ *   then finds no pin for any named region and stops with
+ *   `origin-unverifiable` rather than falling back to its own observations.
+ *
+ * Collapsing the second into the first (which "return only if it has keys"
+ * did) is how a fail-closed statement became a permissive one.
+ */
 function frameOriginsFromExtra(extra: unknown): Record<string, string> | undefined {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   const raw = meta?.[ABU_EXPECTED_FRAME_ORIGINS_META_KEY];
@@ -272,7 +289,10 @@ function frameOriginsFromExtra(extra: unknown): Record<string, string> | undefin
   for (const [frameId, origin] of Object.entries(decoded as Record<string, unknown>)) {
     if (/^f\d+$/.test(frameId) && typeof origin === 'string' && origin !== '') out[frameId] = origin;
   }
-  return Object.keys(out).length > 0 ? out : undefined;
+  // Entries that failed the shape check are dropped rather than trusted, and a
+  // map left empty by that is still a map: unreadable pins must not read as
+  // "no pins were sent".
+  return out;
 }
 
 function safeParse(raw: string): unknown {

@@ -979,7 +979,14 @@ export class MCPClientManager {
       if (typeof opts?.framesForTabId === 'number' && Number.isFinite(opts.framesForTabId)) {
         meta[ABU_FRAMES_FOR_TAB_META_KEY] = opts.framesForTabId;
       }
-      if (opts?.expectedFrameOrigins && Object.keys(opts.expectedFrameOrigins).length > 0) {
+      // `!== undefined`, NOT "has keys" (round-3 R3-B). An EMPTY map is a
+      // statement the gate makes on purpose — "I judged no region" — and the
+      // run reads a region with no pin as `origin-unverifiable` and stops. The
+      // length test silently turned that statement back into an absence, and
+      // absence makes `runBatch` fall back to the origins it observed for
+      // itself, i.e. to policing itself against its own observations. Only a
+      // caller that passes nothing keeps the pre-existing `_meta` shape.
+      if (opts?.expectedFrameOrigins !== undefined) {
         meta[ABU_EXPECTED_FRAME_ORIGINS_META_KEY] = opts.expectedFrameOrigins;
       }
       if (Object.keys(meta).length > 0) {

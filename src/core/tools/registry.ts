@@ -2200,11 +2200,22 @@ export async function checkToolApproval(
  *
  * An entry whose url does not parse is treated as unknown: dropped unattended,
  * kept attended. Fail-safe both ways.
+ *
+ * ## Via-embed marks apply here (round-3 R3-D)
+ *
+ * The unattended tier narrows to `'allowed'`, which is exactly the side a
+ * via-embed mark takes away: `getSiteVerdict` reads a marked grant as
+ * `'default'` for a run nobody is watching. Without the mark this filter kept
+ * handing an unattended run the download records of a site the same run cannot
+ * so much as click on — the two halves of one gate disagreeing, which is the
+ * thing the mark exists to stop. Passing the marks in is not a new rule; it is
+ * this filter finally asking the same question everyone else asks.
  */
 export function filterDownloadsByOrigin(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
+  viaEmbed?: Record<string, true>,
 ): ToolResult {
   if (typeof result !== 'string') return result;
   // An error string ("Error: ...") is not a listing; leave it alone.
@@ -2226,7 +2237,7 @@ export function filterDownloadsByOrigin(
       ? (entry as { url?: unknown }).url
       : undefined;
     const origin = normalizeBrowserOrigin(typeof url === 'string' ? url : undefined);
-    const verdict = getSiteVerdict(origin, sitePermissions);
+    const verdict = getSiteVerdict(origin, sitePermissions, { runMode, viaEmbed });
     if (verdict === 'denied') return false;
     return runMode === 'unattended' ? verdict === 'allowed' : true;
   });
@@ -2285,11 +2296,24 @@ const REDACTED_TAB_FIELD = '[hidden: you blocked this site, and nobody is watchi
  * default-verdict page it navigated to (`snapshot` on that tab is allowed
  * today), so hiding that same page's title here would be the two halves of
  * one gate disagreeing again.
+ *
+ * ## Via-embed marks are passed in and change nothing — on purpose (R3-D)
+ *
+ * They are threaded through so there is ONE verdict rule in this file rather
+ * than two spellings of `getSiteVerdict` that can drift. Behaviourally it is a
+ * no-op by construction: a mark can only take a grant DOWN to `'default'`,
+ * never to `'denied'`, and this filter hides nothing but `'denied'`. Making it
+ * hide marked sites too would be a genuinely new rule — and a self-contradictory
+ * one, since it would hide a marked site's tab while still showing every
+ * never-listed site's tab, i.e. treat a partial grant as worse than no grant
+ * at all. If that rule is ever wanted it belongs to the unattended READ policy
+ * as a whole, not to this one function.
  */
 export function filterTabsBySitePermissions(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
+  viaEmbed?: Record<string, true>,
 ): ToolResult {
   // Attended keeps its exact shipped behavior.
   if (runMode !== 'unattended') return result;
@@ -2311,7 +2335,7 @@ export function filterTabsBySitePermissions(
   let redacted = false;
   const isDenied = (url: unknown): boolean =>
     typeof url === 'string'
-    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions) === 'denied';
+    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions, { runMode, viaEmbed }) === 'denied';
 
   const windows = doc.windows.map((win) => {
     if (!win || typeof win !== 'object') return win;
@@ -2452,10 +2476,12 @@ export async function executeAnyTool(
         }
       }
       if (toolName === 'get_downloads' && isBrowserTool) {
+        const snapshot = getSettingsReader().getSnapshot();
         result = filterDownloadsByOrigin(
           result,
           approval.browserExecution?.runMode ?? 'unattended',
-          getSettingsReader().getSnapshot().browserSitePermissions ?? {},
+          snapshot.browserSitePermissions ?? {},
+          snapshot.browserSiteGrantViaEmbed,
         );
       }
       // The sibling leak (U9 / I1): `get_tabs` reports every tab's url and
@@ -2464,10 +2490,12 @@ export async function executeAnyTool(
       // deliberately AFTER the call, so the gate's own origin probe (which
       // calls mcpManager directly) still sees the unredacted truth.
       if (toolName === 'get_tabs' && isBrowserTool) {
+        const snapshot = getSettingsReader().getSnapshot();
         result = filterTabsBySitePermissions(
           result,
           approval.browserExecution?.runMode ?? 'unattended',
-          getSettingsReader().getSnapshot().browserSitePermissions ?? {},
+          snapshot.browserSitePermissions ?? {},
+          snapshot.browserSiteGrantViaEmbed,
         );
       }
       // U6 / F2.4, the ATTENDED half of the login-expiry split. The action was

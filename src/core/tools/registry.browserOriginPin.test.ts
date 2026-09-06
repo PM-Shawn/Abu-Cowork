@@ -93,6 +93,9 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: true,
+      // `setState` MERGES, so a case that marks a grant would otherwise leave
+      // the mark standing for every case after it.
+      browserSiteGrantViaEmbed: {},
     });
     __resetBrowserGrantsForTests();
   });
@@ -265,6 +268,40 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       ) as string;
 
       expect(result).not.toContain('a.pdf');
+      expect(result).toContain('report.pdf');
+    });
+
+    /**
+     * Round-3 R3-D, through the real entry point. The unit case proves the
+     * filter obeys a mark; this proves the SHELL hands it the marks at all —
+     * the wiring is the half that was missing, and a unit test on a pure
+     * function cannot see it (TESTING §13.3).
+     */
+    it('an unattended run does not see downloads from a VIA-EMBED granted site', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: true },
+      });
+      serveDownloads([{ url: `${ALLOWED_SITE}/report.pdf`, filename: 'report.pdf' }]);
+
+      const result = await executeAnyTool(
+        'abu-browser__get_downloads', {}, (async () => true) as never, undefined, unattendedOwner,
+      ) as string;
+
+      expect(result).not.toContain('report.pdf');
+    });
+
+    it('the same run WITH a human present still sees it', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: true },
+      });
+      serveDownloads([{ url: `${ALLOWED_SITE}/report.pdf`, filename: 'report.pdf' }]);
+
+      const result = await executeAnyTool(
+        'abu-browser__get_downloads', {}, (async () => true) as never, undefined, attendedOwner,
+      ) as string;
+
       expect(result).toContain('report.pdf');
     });
   });
@@ -450,6 +487,37 @@ describe('filterTabsBySitePermissions (unit)', () => {
     expect(parsed.windows[0].tabs[0].title).not.toBe('secret');
     expect(parsed.windows[0].tabs[1]).toMatchObject({ tabId: 2, url: 'https://ok.com/y', title: 'fine' });
   });
+
+  /**
+   * Round-3 R3-D, the other half of the same ruling. The marks are threaded
+   * into this filter too, so there is one verdict rule in `registry.ts` rather
+   * than two spellings that can drift — and the honest thing to pin is that it
+   * changes NOTHING here. A mark can only take a grant down to `'default'`,
+   * and this filter hides `'denied'` only. Hiding marked sites as well would
+   * be a new rule, and a self-contradictory one: it would hide a partially
+   * granted site's tab while still showing every never-listed site's tab.
+   */
+  it('a via-embed mark does not hide a tab: it downgrades to default, and default is visible', () => {
+    const json = JSON.stringify({
+      summary: { currentTabUrl: `${ALLOWED_SITE}/x`, currentTabTitle: 'fine' },
+      windows: [{ tabs: [{ tabId: 1, url: `${ALLOWED_SITE}/x`, title: 'fine' }] }],
+    });
+
+    expect(filterTabsBySitePermissions(json, 'unattended', { ...perms }, { [ALLOWED_SITE]: true }))
+      .toBe(json);
+  });
+
+  it('a BLOCKED site is still redacted when marks are supplied', () => {
+    const json = JSON.stringify({
+      summary: { currentTabUrl: `${BLOCKED_SITE}/x`, currentTabTitle: 'secret' },
+      windows: [{ tabs: [{ tabId: 1, url: `${BLOCKED_SITE}/x`, title: 'secret' }] }],
+    });
+
+    const out = filterTabsBySitePermissions(
+      json, 'unattended', { ...perms }, { [ALLOWED_SITE]: true },
+    ) as string;
+    expect(out).not.toContain('secret');
+  });
 });
 
 describe('filterDownloadsByOrigin (unit)', () => {
@@ -481,5 +549,29 @@ describe('filterDownloadsByOrigin (unit)', () => {
     expect(filterDownloadsByOrigin('Error: boom', 'unattended', { ...perms })).toBe('Error: boom');
     const rich = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'x' } }];
     expect(filterDownloadsByOrigin(rich, 'unattended', { ...perms })).toBe(rich);
+  });
+
+  /**
+   * Round-3 R3-D. A via-embed mark says "full grant with a human present, no
+   * standing grant for a run nobody is watching". This filter's unattended
+   * tier keeps only `'allowed'` origins — the exact side the mark takes away —
+   * so a marked site's download records were still being handed to a run that
+   * could not click anything on that site. The interface said 「自动任务不适用」
+   * while the model was reading that site's filenames and addresses.
+   */
+  it('drops a via-embed marked site unattended, and keeps it attended', () => {
+    const json = JSON.stringify([{ url: `${ALLOWED_SITE}/a` }], null, 2);
+    const marked = { [ALLOWED_SITE]: true } as const;
+
+    const unattended = filterDownloadsByOrigin(json, 'unattended', { ...perms }, { ...marked }) as string;
+    expect(JSON.parse(unattended)).toHaveLength(0);
+
+    // Attended is untouched: the mark only ever narrows the unattended path.
+    expect(filterDownloadsByOrigin(json, 'attended', { ...perms }, { ...marked })).toBe(json);
+  });
+
+  it('an UNMARKED allowed site is still handed over, so the mark is what did it', () => {
+    const json = JSON.stringify([{ url: `${ALLOWED_SITE}/a` }], null, 2);
+    expect(filterDownloadsByOrigin(json, 'unattended', { ...perms }, {})).toBe(json);
   });
 });

@@ -1720,6 +1720,51 @@ async function installAutomationRuntime(view) {
   automationRuntimeReady.add(contents);
 }
 
+/**
+ * Cross-check the runtime's frame list against the BROWSER's own.
+ *
+ * The runtime reaches same-origin child documents through `contentDocument`
+ * and reads their real `location` — authoritative. A CROSS-origin frame is
+ * opaque to it, so all it can offer is the `src` ATTRIBUTE, which the
+ * embedding page writes and the frame can navigate away from. Reporting that
+ * as an origin would let a page name any site it liked as "the region embedded
+ * here", and the approval gate's merged grant reads this list.
+ *
+ * `webContents.mainFrame.framesInSubtree` is the main process's own view of
+ * the frame tree, which no page authors. An unreachable frame keeps its origin
+ * only if the browser agrees a frame with that origin is really embedded;
+ * otherwise the origin is dropped and the region is reported without one —
+ * still listed (so a refusal can name it) but never authorizable.
+ */
+function validateFrameOrigins(view, frames) {
+  if (!Array.isArray(frames)) return frames;
+  const real = new Set();
+  try {
+    for (const frame of view.webContents.mainFrame.framesInSubtree) {
+      const origin = normalizedOriginOf(frame.url);
+      if (origin) real.add(origin);
+    }
+  } catch {
+    // A destroyed webContents has no frame tree; then nothing can be confirmed.
+  }
+  return frames.map((frame) => {
+    if (!frame || frame.accessible !== false || !frame.origin) return frame;
+    if (real.has(frame.origin)) return frame;
+    return { ...frame, origin: null };
+  });
+}
+
+/** The page's embedded regions, or `[]` when the runtime could not be asked. */
+async function frameTreeFor(view) {
+  try {
+    assertAutomationDocumentAllowed(view);
+    const frames = await runDomAutomation(view, 'frames', {});
+    return validateFrameOrigins(view, frames) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 async function runDomAutomation(view, action, payload) {
   await installAutomationRuntime(view);
   const code = `globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__.handleAction(
@@ -1729,10 +1774,18 @@ async function runDomAutomation(view, action, payload) {
   // Never auto-retry an action: a click/fill can take effect just before its
   // execution context is replaced. Replaying it could submit or delete twice.
   // The next explicit tool call installs into the new document as needed.
-  return view.webContents.executeJavaScriptInIsolatedWorld(
+  const result = await view.webContents.executeJavaScriptInIsolatedWorld(
     AUTOMATION_WORLD_ID,
     [{ code }],
   );
+  // A snapshot carries the page's frame list, and the runtime can only guess
+  // the origin of a region it cannot see into. Same cross-check as
+  // `frameTreeFor` — the model must never be shown an origin the browser does
+  // not confirm, because that list is what an approval is granted against.
+  if (action === 'snapshot' && result && typeof result === 'object' && Array.isArray(result.frames)) {
+    return { ...result, frames: validateFrameOrigins(view, result.frames) };
+  }
+  return result;
 }
 
 async function navigateAutomationTab(view, payload) {
@@ -2319,6 +2372,23 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
     // for healthy tabs is byte-for-byte what it was before this existed.
     const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
+    // Frame trees cost one round trip into the page each, so a listing computes
+    // them for at most two tabs: the caller's current one, and the tab the
+    // APPROVAL GATE names with `framesForTabId`. The gate needs it because a
+    // frame-targeted action is authorized against the FRAME's origin, and this
+    // listing is the only probe it makes.
+    const framesWanted = new Set();
+    if (currentTabId !== null && currentTabId !== undefined) framesWanted.add(currentTabId);
+    if (Number.isFinite(Number(payload.framesForTabId))) framesWanted.add(Number(payload.framesForTabId));
+    const framesByTab = new Map();
+    for (const wantedTabId of framesWanted) {
+      const target = tabs.find((tab) => tab.tabId === wantedTabId);
+      if (!target) continue;
+      const wantedView = views.get(target.id);
+      if (!wantedView) continue;
+      const tree = await frameTreeFor(wantedView);
+      if (tree.length > 1) framesByTab.set(wantedTabId, tree);
+    }
     return {
       summary: {
         totalWindows: 1,
@@ -2347,6 +2417,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
             ? { dialogPending: pendingDialogs.get(tab.id).info.type }
             : {}),
           ...(tab.authState ? { authState: tab.authState } : {}),
+          ...(framesByTab.has(tab.tabId) ? { frames: framesByTab.get(tab.tabId) } : {}),
         })),
       }],
     };
@@ -2524,6 +2595,10 @@ async function runBrowserAutomation(action, payload, signal, scope) {
  *  `src/core/tools/browserToolRouting.test.ts`. */
 const domActions = new Set([
   'snapshot',
+  // Read-only, and internal: the tool layer never registers `frames`. It is
+  // how this file asks the injected runtime what embedded regions the page
+  // has, so `get_tabs` and `snapshot` can report them.
+  'frames',
   // Read-only, and deliberately NOT in TAKEOVER_GATED_ACTIONS: `find`
   // changes nothing, so making it wait out a quiet window would only slow
   // down the step a model takes to avoid clicking the wrong thing.

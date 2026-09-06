@@ -6,11 +6,21 @@ import userEvent from '@testing-library/user-event';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useScheduleStore } from '@/stores/scheduleStore';
+import { useTriggerStore } from '@/stores/triggerStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import type { SkillMetadata } from '@/types';
+import type { ScheduledTask } from '@/types/schedule';
+import type { Trigger } from '@/types/trigger';
+import type { IMChannel } from '@/types/imChannel';
 import type { ProviderInstance } from '@/types/provider';
-import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
+import {
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  __resetBrowserGrantsForTests,
+  grantBrowserAutomation,
+} from '@/core/permissions/browserToolPolicy';
 import {
   hasChromeExtensionHandshaked,
   setChromeExtensionHandshaked,
@@ -254,6 +264,12 @@ describe('CapabilitiesSection', () => {
   afterEach(() => {
     cleanup();
     setElectronHost(false);
+    // The automation stores are module-level state shared across this file, so
+    // a task arranged for the S11 card would otherwise still be there for the
+    // next test's counts.
+    useScheduleStore.setState({ tasks: {}, showEditor: false, editingTaskId: null } as never);
+    useTriggerStore.setState({ triggers: {}, showEditor: false, editingTriggerId: null } as never);
+    useIMChannelStore.setState({ channels: {} } as never);
   });
 
   // The overview is three channel cards and nothing else: one badge, one line,
@@ -1555,6 +1571,42 @@ describe('CapabilitiesSection', () => {
       expect(useSettingsStore.getState().browserOperationPolicy.interactive).toBe('allow');
     });
 
+    /**
+     * F5 (2026-09-06 review). The save status is keyed by persisted FIELD and
+     * all three rows live in one field, so both policy cards subscribed to the
+     * same notice and both lit up 「已保存」 when either was touched.
+     * Confirmation that lands on a control the user did not move is noise, and
+     * noise on this line is how a user learns to stop reading the one place
+     * that would tell them a permission failed to save.
+     */
+    it('confirms the save on the card that was edited, and only that one', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const scriptCell = policySelect(permissionCard('Run scripts (advanced)'));
+      await user.click(scriptCell);
+      await user.click(openedOption(scriptCell, /^Deny/));
+
+      expect(within(permissionCard('Run scripts (advanced)')).getByText('Saved')).toBeInTheDocument();
+      expect(within(permissionCard('Action permissions')).queryByText('Saved')).not.toBeInTheDocument();
+    });
+
+    it('moves the confirmation to the other card when that one is edited', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const viewRow = within(permissionCard('Action permissions'))
+        .getByText('View pages').closest('li') as HTMLElement;
+      const viewCell = policySelect(viewRow);
+      await user.click(viewCell);
+      await user.click(openedOption(viewCell, /^Deny/));
+
+      expect(within(permissionCard('Action permissions')).getByText('Saved')).toBeInTheDocument();
+      expect(within(permissionCard('Run scripts (advanced)')).queryByText('Saved')).not.toBeInTheDocument();
+    });
+
     /*
       One setting, two execution contexts — so each option says what it means
       in BOTH, on one line. Before the collapse there were two columns and two
@@ -1738,6 +1790,415 @@ describe('CapabilitiesSection', () => {
    * reachable/attended-only pair was dropped as restatement; the summary and
    * the high-risk flag, which say something a row cannot, stayed.
    */
+  /**
+   * S11 — the automatic-task overview card, directly under the master switch.
+   *
+   * The judgement itself is proved in `browserAutomationOverview.test.ts`. What
+   * is checked here is what only the component can get wrong: that it feeds the
+   * summary the live stores, uses the REAL approval resolver rather than a
+   * lookalike, and that 「去修改」 lands in the right editor with settings out of
+   * the way.
+   */
+  describe('automatic-task configuration overview', () => {
+    const overviewCard = () => permissionCard('Browser setup for automatic tasks');
+
+    function withAutomations(options: {
+      tasks?: Array<Partial<ScheduledTask> & { id: string; name: string }>;
+      triggers?: Array<Partial<Trigger> & { id: string; name: string }>;
+      channels?: Array<Partial<IMChannel> & { id: string; name: string }>;
+    }) {
+      useScheduleStore.setState({
+        tasks: Object.fromEntries((options.tasks ?? []).map((task) => [task.id, {
+          status: 'active', prompt: '', schedule: {}, runs: [], totalRuns: 0,
+          createdAt: 0, updatedAt: 0, ...task,
+        }])) as never,
+      });
+      useTriggerStore.setState({
+        triggers: Object.fromEntries((options.triggers ?? []).map((trigger) => [trigger.id, {
+          status: 'active', source: {}, filter: {}, debounce: {},
+          action: { type: 'prompt', prompt: '', capability: 'full' },
+          runs: [], totalRuns: 0, createdAt: 0, updatedAt: 0, ...trigger,
+        }])) as never,
+      });
+      useIMChannelStore.setState({
+        channels: Object.fromEntries((options.channels ?? []).map((channel) => [channel.id, {
+          platform: 'feishu', appId: '', appSecret: '', capability: 'full',
+          responseMode: 'mention_only', allowedUsers: [], workspacePaths: [],
+          sessionTimeoutMinutes: 0, maxRoundsPerSession: 0, enabled: true,
+          status: 'connected', createdAt: 0, updatedAt: 0, ...channel,
+        }])) as never,
+      });
+    }
+
+    it('counts what each kind of automation contributes', async () => {
+      withAutomations({
+        tasks: [{ id: 't1', name: 'Nightly report' }],
+        triggers: [
+          { id: 'r1', name: 'On new mail' },
+          // read_tools cannot reach a browser tool — not counted.
+          { id: 'r2', name: 'Read only', action: { type: 'prompt', prompt: '', capability: 'read_tools' } as never },
+        ],
+        channels: [{ id: 'c1', name: 'Feishu' }],
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('Scheduled 1 · Triggers 1 · Chat channels 1');
+    });
+
+    it('says so plainly when no automation can use the browser at all', async () => {
+      withAutomations({});
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('No automatic task can use the browser yet');
+    });
+
+    // Four lines of prerequisites, all-clear and caveats about an EMPTY set is
+    // text that answers a question nobody asked. The subtitle already said it.
+    it('says nothing else when there is nothing to say it about', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: testSiteVerdicts({}),
+      });
+      withAutomations({});
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).not.toHaveTextContent('The master switch is off');
+      expect(overviewCard()).not.toHaveTextContent('Nothing here needs attention');
+      expect(overviewCard()).not.toHaveTextContent('only known at run time');
+    });
+
+    it('names the master switch as the thing blocking everything, once', async () => {
+      useSettingsStore.setState({ allowUnattendedBrowser: false });
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('The master switch is off');
+      expect(overviewCard()).not.toHaveTextContent('No site is set to Always allow');
+    });
+
+    it('points at the empty site list once the switch is on', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({}),
+      });
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('No site is set to Always allow');
+    });
+
+    /*
+      The real resolver, not a lookalike: a task naming a channel that does not
+      exist has nobody to ask, and that is what the gate will decide at 3am.
+    */
+    it('flags a task whose approval binding resolves to nobody', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      withAutomations({
+        tasks: [{ id: 't1', name: 'Nightly report', outputChannelId: 'gone', outputUserIds: 'u1' }],
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('Nightly report');
+      expect(overviewCard()).toHaveTextContent('nobody is set to answer it');
+    });
+
+    it('clears the flag once the binding resolves', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      withAutomations({
+        tasks: [{ id: 't1', name: 'Nightly report', outputChannelId: 'c1', outputUserIds: 'u1' }],
+        channels: [{ id: 'c1', name: 'Feishu' }],
+      });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('Nothing here needs attention');
+    });
+
+    it('sends "Fix" to that task\'s own editor, and gets settings out of the way', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        systemSettingsOpen: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      await user.click(within(overviewCard()).getByRole('button', { name: 'Fix' }));
+
+      expect(useScheduleStore.getState().editingTaskId).toBe('t1');
+      expect(useScheduleStore.getState().showEditor).toBe(true);
+      expect(useSettingsStore.getState().viewMode).toBe('automation');
+      expect(useSettingsStore.getState().activeAutomationTab).toBe('schedule');
+      // An editor behind a settings overlay is an editor the user cannot use.
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    });
+
+    it('sends a trigger\'s "Fix" to the trigger editor instead', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      });
+      withAutomations({ triggers: [{ id: 'r1', name: 'On new mail' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      await user.click(within(overviewCard()).getByRole('button', { name: 'Fix' }));
+
+      expect(useTriggerStore.getState().editingTriggerId).toBe('r1');
+      expect(useSettingsStore.getState().activeAutomationTab).toBe('trigger');
+    });
+
+    // 「不猜测任务使用的网站或是否需要审批」 — the card has to say that out loud
+    // rather than let a clean list read as a guarantee.
+    it('always says the real check happens at run time', async () => {
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('only known at run time');
+    });
+  });
+
+  /**
+   * S12 — the preview row inside the operation-permission card.
+   *
+   * The verdict logic itself is proved elsewhere: `browserGateEvaluation.test.ts`
+   * states what each rule does, and the contract test proves the real gate
+   * agrees. What is checked HERE is the part only the component can get wrong —
+   * that it feeds the shared function the same facts the gate would, renders
+   * all six cells, and stays inert.
+   */
+  describe('effective-permission preview', () => {
+    /** The preview's own input, by its accessible name. */
+    const previewInput = () => screen.getByLabelText('Preview: what Abu can do on a site');
+    /** Row labels — the same strings the policy rows above the preview use. */
+    const VIEW = 'View pages';
+    const CLICK = 'Click and fill in';
+    const SCRIPTS = 'Run scripts (advanced)';
+
+    /** The cell at (operation class, execution context) as one string. */
+    function cell(rowLabel: string, column: 'While you are here' | 'Automatic tasks'): string {
+      const header = screen.getByRole('columnheader', { name: column });
+      const index = Array.from(header.parentElement?.children ?? []).indexOf(header);
+      const row = screen.getByRole('rowheader', { name: rowLabel }).closest('tr') as HTMLElement;
+      return (row.children[index] as HTMLElement).textContent ?? '';
+    }
+
+    async function preview(user: User, url: string) {
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      await user.type(previewInput(), url);
+    }
+
+    it('says nothing until an address is typed', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      expect(screen.queryByRole('rowheader', { name: SCRIPTS })).not.toBeInTheDocument();
+    });
+
+    it('refuses to guess at something that is not an http(s) address', async () => {
+      const user = userEvent.setup();
+      await preview(user, 'not a url');
+      expect(screen.getByText('Enter an http or https address')).toBeInTheDocument();
+      expect(screen.queryByRole('rowheader', { name: SCRIPTS })).not.toBeInTheDocument();
+    });
+
+    it('reports the shipped defaults on a site with no standing verdict', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({}),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: false,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      // Reading while the user is here is unconditional; an automatic run is
+      // refused outright because the master switch is off.
+      expect(cell(VIEW, 'While you are here')).toContain('Allowed');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('Refused');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('master switch');
+      // A click on an unknown site asks; a script asks by default.
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      expect(cell(SCRIPTS, 'While you are here')).toContain('Asks first');
+    });
+
+    it('follows the master switch and the standing verdict into the automatic column', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Allowed');
+      // The script row still asks, and unattended that question goes to chat —
+      // and the pane refuses to name a person, because the approver is bound
+      // per task, not here.
+      expect(cell(SCRIPTS, 'Automatic tasks')).toContain('Asks first');
+      expect(cell(SCRIPTS, 'Automatic tasks')).toContain('set on the task itself');
+    });
+
+    /**
+     * F2 (2026-09-06 review). The site card promises 「这个网站一律不操作，
+     * 包括自动任务」 and the preview used to report 「允许」 for the read cell
+     * two rows below it — the same screen contradicting itself. A block binds
+     * every cell now, watched or not, and every one of them says why.
+     */
+    it('shows a blocked site as blocked in every cell, including a read while you are here', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'denied' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Refused');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+      expect(cell(VIEW, 'While you are here')).toContain('Refused');
+      // Named as the SITE, not as the policy row — the user's own block is
+      // what they would go and change.
+      expect(cell(VIEW, 'While you are here')).toContain('blocked automation on this site');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('Refused');
+    });
+
+    /**
+     * Only the block travels into that cell. 「始终允许」 buys a read nothing,
+     * and a bank page must not start prompting on a screenshot — so a
+     * money-movement address still reads 「允许」 while the user is here.
+     */
+    it('still lets a read through on a high-risk page while you are here', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://www.paypal.com/myaccount/transfer');
+
+      expect(cell(VIEW, 'While you are here')).toContain('Allowed');
+    });
+
+    it('flags a money-movement page even on a site the user allowed', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://www.paypal.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+    });
+
+    /**
+     * F1 (2026-09-06 review). The domain table is only half of what
+     * `highRiskSites.ts` recognizes — the other half is the PATH
+     * (`/checkout`, `/transfer`, `/wire`), which is what gives it reach
+     * beyond a list nobody can finish. The preview used to hand the
+     * classifier `normalizeBrowserOrigin`'s output, and that function accepts
+     * a URL with a path and returns the origin without complaining, so this
+     * whole half was silently discarded: an ordinary shop's checkout page
+     * previewed as an ordinary site while the real gate refused it. The
+     * contract test cannot catch this — it builds its own `siteVerdict` and
+     * never runs this component — so the pin lives here.
+     */
+    it('flags a checkout PATH on a site whose domain is ordinary', async () => {
+      useSettingsStore.setState({
+        // Standing 「始终允许」, so the verdict the path has to override is the
+        // most permissive one there is: without the fix this cell read
+        // 「允许」 for an automatic run the gate would refuse outright.
+        browserSitePermissions: testSiteVerdicts({ 'https://shop.example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://shop.example.com/checkout');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Money movement');
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+    });
+
+    /** The same address with the path removed is an ordinary site again —
+     *  so the row above is the PATH being read, not the host. */
+    it('leaves the same shop alone when the address has no money-movement path', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://shop.example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://shop.example.com/cart');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Allowed');
+    });
+
+    /**
+     * The load-bearing property of the whole feature: a preview that acted
+     * would be a permission bypass wearing a settings row. Nothing may reach
+     * the browser, and no verdict may be written.
+     */
+    it('has no side effects — opens nothing, writes no verdict', async () => {
+      useSettingsStore.setState({ browserSitePermissions: testSiteVerdicts({}) });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      // Cleared AFTER the page is up: the detail page probes the bridge for its
+      // own status row, which is the page's business and not the preview's.
+      // What must stay at zero is everything the preview could add.
+      mcpManagerMock.callTool.mockClear();
+
+      await user.type(previewInput(), 'https://example.com');
+
+      expect(mcpManagerMock.callTool).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+    });
+
+    // A live conversation grant is an accident of the last half hour, not a
+    // setting. Reporting it here would answer a question about configuration
+    // with something that expires.
+    it('ignores the 30-minute conversation grant', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({}),
+        allowUnattendedBrowser: false,
+      });
+      grantBrowserAutomation('conv-preview');
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      __resetBrowserGrantsForTests();
+    });
+  });
+
   describe('automatic-task reach of the site list', () => {
     function withSites(
       sitePermissions: Record<string, 'allowed' | 'denied'>,

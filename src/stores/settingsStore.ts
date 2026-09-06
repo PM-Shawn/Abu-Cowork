@@ -1,6 +1,6 @@
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
@@ -14,6 +14,18 @@ import {
   type BrowserSiteVerdicts,
 } from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
+import {
+  BROWSER_CONFIG_FIELDS,
+  INITIAL_BROWSER_CONFIG_REVISIONS,
+  browserConfigWasStored,
+  mergeBrowserConfigForWrite,
+  nextBrowserConfigRevision,
+  parsePersistedSettings,
+  readBrowserConfigRevisions,
+  type BrowserConfigField,
+  type BrowserConfigRevisions,
+} from './browserConfigPersistence';
+import { browserSaveStatus } from './browserSaveStatus';
 import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
@@ -291,6 +303,14 @@ export interface SettingsState {
    * browser access they did not have before this batch shipped.
    */
   allowUnattendedBrowser: boolean;
+  /**
+   * One monotonic counter per browser authorization field, so a write from a
+   * second window keeps whichever side of each field is newer instead of
+   * overwriting the lot (S18). Not a user setting — see
+   * `browserConfigPersistence.ts` for why it exists and why it is a counter
+   * rather than a timestamp.
+   */
+  browserConfigRevisions: BrowserConfigRevisions;
   preventSleep: boolean;
   allowSkillCommands: boolean;
   soulInitialized: boolean;
@@ -464,6 +484,12 @@ interface SettingsActions {
     verdict: BrowserOperationPolicy['readOnly'],
   ) => void;
   setAllowUnattendedBrowser: (allow: boolean) => void;
+  /** Write the last CONFIRMED value of one browser field back into memory —
+   *  after a failed save, or after another window turned out to hold a newer
+   *  one. See `installBrowserConfigSaveReporting`. */
+  restoreBrowserConfigField: (field: BrowserConfigField, value: unknown, revision: number) => void;
+  /** Try the failed write again, with the value it was trying to store. */
+  retryBrowserConfigSave: (field: BrowserConfigField) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
@@ -662,6 +688,213 @@ function mintBrowserSiteVerdicts(
   return entries as BrowserSiteVerdicts;
 }
 
+/** The key zustand persists this store under. Named once, used by the storage
+ *  adapter and by the revision probe. */
+const SETTINGS_STORAGE_KEY = 'abu-settings';
+
+/**
+ * `localStorage`, or nothing.
+ *
+ * Some environments throw on the ACCESSOR itself (a browser set to block site
+ * data, a sandboxed frame), not only on the call, so the property read is
+ * inside the try.
+ */
+function safeLocalStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === 'undefined' ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Browser fields edited since the last write landed. The storage adapter
+ * settles exactly these, because `persist` writes the whole blob on EVERY
+ * state change — reporting "saved" for a field nobody touched would put a
+ * confirmation next to a control the user never used.
+ */
+const browserConfigWriteQueue = new Set<BrowserConfigField>();
+
+/**
+ * The last value of each browser field that was READ BACK from storage.
+ *
+ * This is what a failed write rolls back to. Not the previous in-memory value:
+ * that one may itself never have been stored, and rolling back to an
+ * unconfirmed value would be the same lie one step removed.
+ */
+const lastConfirmedBrowserConfig = new Map<BrowserConfigField, { value: unknown; revision: number }>();
+
+/**
+ * What a FAILED write was trying to store.
+ *
+ * Retry has to re-apply this, not whatever is in memory: memory was rolled back
+ * to the last confirmed value the moment the write failed, so a retry built
+ * from it would cheerfully re-save the setting the user was trying to change
+ * away from and report success.
+ */
+const lastAttemptedBrowserConfig = new Map<BrowserConfigField, unknown>();
+
+/**
+ * True while the store is being corrected FROM the storage layer (a rollback
+ * or an adoption). Those corrections are themselves writes, and without this
+ * flag a storage that keeps failing would roll back, write, fail, roll back
+ * forever.
+ */
+let repairingBrowserConfig = false;
+
+/**
+ * The storage zustand persists through: `localStorage`, plus a per-field merge
+ * and a read-back confirmation for the three browser authorization fields.
+ *
+ * Everything else in the blob is written exactly as before. If any part of the
+ * merge or confirmation throws, the write still goes through unmerged — a bug
+ * in this layer must not be able to stop settings being saved at all.
+ */
+const settingsStateStorage: StateStorage = {
+  getItem: (name) => safeLocalStorage()?.getItem(name) ?? null,
+  removeItem: (name) => { safeLocalStorage()?.removeItem(name); },
+  setItem: (name, value) => {
+    const storage = safeLocalStorage();
+    const pending = [...browserConfigWriteQueue];
+    browserConfigWriteQueue.clear();
+
+    if (!storage) {
+      // No storage at all: nothing was saved, and saying so is the point.
+      for (const field of pending) browserSaveStatus.settle(field, 'failed');
+      if (pending.length > 0) repairBrowserConfig(pending, null);
+      return;
+    }
+
+    let intended = parsePersistedSettings(value);
+    let adopted: BrowserConfigField[] = [];
+    let toWrite = value;
+    try {
+      if (intended !== null) {
+        const merge = mergeBrowserConfigForWrite(
+          intended,
+          parsePersistedSettings(storage.getItem(name)),
+        );
+        intended = merge.merged;
+        adopted = merge.adopted;
+        toWrite = JSON.stringify(merge.merged);
+      }
+    } catch {
+      // Fall through and write the original value: an unmerged save beats no
+      // save, and the confirmation below still reports the truth about it.
+      intended = parsePersistedSettings(value);
+      adopted = [];
+      toWrite = value;
+    }
+
+    let stored: boolean;
+    try {
+      storage.setItem(name, toWrite);
+      // A `setItem` that returns without throwing is not evidence: a
+      // quota-exceeded write can be partially applied, and some engines
+      // swallow the write entirely. Read it back.
+      stored = intended !== null && browserConfigWasStored(intended, storage.getItem(name));
+    } catch {
+      stored = false;
+    }
+
+    if (stored && intended !== null) {
+      const revisions = readBrowserConfigRevisions(intended.state);
+      for (const field of BROWSER_CONFIG_FIELDS) {
+        lastConfirmedBrowserConfig.set(field, {
+          value: intended.state[field],
+          revision: revisions[field],
+        });
+      }
+    }
+    for (const field of pending) browserSaveStatus.settle(field, stored ? 'saved' : 'failed');
+    if (!stored) {
+      for (const field of pending) {
+        if (intended !== null) lastAttemptedBrowserConfig.set(field, intended.state[field]);
+      }
+      if (pending.length > 0) repairBrowserConfig(pending, null);
+    }
+    if (stored && adopted.length > 0 && intended !== null) repairBrowserConfig(adopted, intended);
+  },
+};
+
+/**
+ * Bring memory back in line with what is actually stored, for named fields
+ * only.
+ *
+ * Two callers, one job. After a FAILED write the pane is showing a permission
+ * that does not exist, and after an ADOPTED merge it is showing one the other
+ * window replaced; both are the same lie, and both are fixed by displaying what
+ * storage holds. Scoped per field on purpose: a failure while saving the
+ * operation policy must not undo the site verdict that saved a moment earlier.
+ */
+function repairBrowserConfig(
+  fields: readonly BrowserConfigField[],
+  source: { state: Record<string, unknown> } | null,
+): void {
+  if (repairingBrowserConfig) return;
+  repairingBrowserConfig = true;
+  try {
+    const revisions = source === null ? null : readBrowserConfigRevisions(source.state);
+    for (const field of fields) {
+      const confirmed = source !== null && revisions !== null
+        ? { value: source.state[field], revision: revisions[field] }
+        : lastConfirmedBrowserConfig.get(field);
+      // Nothing was ever confirmed for this field (the very first write of a
+      // fresh install failed). There is no known-good value to show, so the
+      // status is left as the only signal rather than inventing one.
+      if (confirmed === undefined) continue;
+      useSettingsStore.getState()
+        .restoreBrowserConfigField(field, confirmed.value, confirmed.revision);
+    }
+  } finally {
+    repairingBrowserConfig = false;
+  }
+}
+
+/** Test-only — module-level bookkeeping shared across a test file. */
+export function __resetBrowserConfigPersistenceForTests(): void {
+  browserConfigWriteQueue.clear();
+  lastConfirmedBrowserConfig.clear();
+  lastAttemptedBrowserConfig.clear();
+  repairingBrowserConfig = false;
+}
+
+/**
+ * The revision map currently on disk, read fresh.
+ *
+ * Bumping only the in-memory counter would leave a window that has been open a
+ * while permanently behind the other one, and every edit it made would then be
+ * discarded by the merge as "older news". Reading disk at the moment of the
+ * edit is what makes the writer win for the field it actually touched, while
+ * still losing to a newer value of a field it did not.
+ */
+function diskBrowserConfigRevisions(): BrowserConfigRevisions {
+  try {
+    const stored = parsePersistedSettings(safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null);
+    return readBrowserConfigRevisions(stored?.state);
+  } catch {
+    return INITIAL_BROWSER_CONFIG_REVISIONS;
+  }
+}
+
+/**
+ * Mark one browser field as being written and stamp it with a revision past
+ * both copies. Returns the patch the setter merges into its own `set`.
+ */
+function beginBrowserFieldWrite(
+  field: BrowserConfigField,
+  current: BrowserConfigRevisions,
+): { browserConfigRevisions: BrowserConfigRevisions } {
+  browserSaveStatus.begin(field);
+  browserConfigWriteQueue.add(field);
+  return {
+    browserConfigRevisions: {
+      ...current,
+      [field]: nextBrowserConfigRevision(field, current, diskBrowserConfigRevisions()),
+    },
+  };
+}
+
 const defaultProviders = createDefaultProviders();
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -727,6 +960,7 @@ export const useSettingsStore = create<SettingsStore>()(
       browserSitePermissions: mintBrowserSiteVerdicts({}),
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
+      browserConfigRevisions: INITIAL_BROWSER_CONFIG_REVISIONS,
       preventSleep: false,
       allowSkillCommands: true,
       soulInitialized: false,
@@ -1080,11 +1314,15 @@ export const useSettingsStore = create<SettingsStore>()(
           ...state.browserSitePermissions,
           [origin]: verdict,
         }),
+        ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
       })),
       removeBrowserSitePermission: (origin) => set((state) => {
         const next: Record<string, 'allowed' | 'denied'> = { ...state.browserSitePermissions };
         delete next[origin];
-        return { browserSitePermissions: mintBrowserSiteVerdicts(next) };
+        return {
+          browserSitePermissions: mintBrowserSiteVerdicts(next),
+          ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
+        };
       }),
       // Normalized on write, not just on read: the persisted policy must never
       // say something the gate will not honor — a setting that lies about what
@@ -1100,8 +1338,50 @@ export const useSettingsStore = create<SettingsStore>()(
           ...state.browserOperationPolicy,
           [opClass]: verdict,
         }),
+        ...beginBrowserFieldWrite('browserOperationPolicy', state.browserConfigRevisions),
       })),
-      setAllowUnattendedBrowser: (allowUnattendedBrowser) => set({ allowUnattendedBrowser }),
+      setAllowUnattendedBrowser: (allowUnattendedBrowser) => set((state) => ({
+        allowUnattendedBrowser,
+        ...beginBrowserFieldWrite('allowUnattendedBrowser', state.browserConfigRevisions),
+      })),
+      /**
+       * Put a confirmed value back, without treating it as a new edit: no
+       * status, no queue entry, and the revision is the one that value already
+       * carries. Used for a rollback after a failed write, and for adopting a
+       * newer value another window stored.
+       */
+      restoreBrowserConfigField: (field, value, revision) => set((state) => ({
+        ...(field === 'browserSitePermissions'
+          ? {
+            browserSitePermissions: mintBrowserSiteVerdicts(
+              value as Record<string, 'allowed' | 'denied'>,
+            ),
+          }
+          : field === 'browserOperationPolicy'
+            ? { browserOperationPolicy: normalizeBrowserOperationPolicy(value) }
+            : { allowUnattendedBrowser: value === true }),
+        browserConfigRevisions: { ...state.browserConfigRevisions, [field]: revision },
+      })),
+      retryBrowserConfigSave: (field) => set((state) => {
+        const attempted = lastAttemptedBrowserConfig.get(field);
+        // Nothing recorded means nothing failed (or it already succeeded on a
+        // later attempt). Re-saving the current value would report a success
+        // that answers no question.
+        if (attempted === undefined) return {};
+        lastAttemptedBrowserConfig.delete(field);
+        return {
+          ...(field === 'browserSitePermissions'
+            ? {
+              browserSitePermissions: mintBrowserSiteVerdicts(
+                attempted as Record<string, 'allowed' | 'denied'>,
+              ),
+            }
+            : field === 'browserOperationPolicy'
+              ? { browserOperationPolicy: normalizeBrowserOperationPolicy(attempted) }
+              : { allowUnattendedBrowser: attempted === true }),
+          ...beginBrowserFieldWrite(field, state.browserConfigRevisions),
+        };
+      }),
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1160,10 +1440,39 @@ export const useSettingsStore = create<SettingsStore>()(
       setPetOpen: (open) => set({ petOpen: open }),
     }),
     {
+      // Literal, not `SETTINGS_STORAGE_KEY`: `tests/e2e/storeVersions.ts` reads
+      // this store's persisted version by matching `name: '<key>', version: N`
+      // in this source file, so that a seeded localStorage entry can never
+      // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 47,
+      version: 48,
+      // The default is `createJSONStorage(() => localStorage)`; this is the
+      // same thing with a per-field merge and a read-back confirmation for the
+      // browser authorization fields (S18). See `settingsStateStorage`.
+      //
+      // Declared AFTER `version` on purpose: `tests/e2e/storeVersions.ts`
+      // matches `name: '<key>', version: N` with only whitespace and comments
+      // allowed between the two, so anything else in that gap silently breaks
+      // the probe that keeps e2e seeds from drifting.
+      storage: createJSONStorage(() => settingsStateStorage),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V48: `browserConfigRevisions` — one monotonic counter per browser
+        // authorization field, so a write from a second window keeps whichever
+        // side of each field is newer instead of overwriting the lot (S18).
+        //
+        // Starting every counter at 0 is correct rather than merely
+        // convenient: an upgraded store has exactly one writer, so there is no
+        // ordering to reconstruct, and 0 is the value a missing counter is
+        // read as anyway (`readBrowserConfigRevisions`). The first edit after
+        // the upgrade bumps past whatever it finds on disk, which is what makes
+        // a second window that upgrades later still able to win its own field.
+        // ════════════════════════════════════════════════
+        if (version < 48) {
+          state.browserConfigRevisions = { ...INITIAL_BROWSER_CONFIG_REVISIONS };
+        }
 
         // ════════════════════════════════════════════════
         // V47: `browserOperationPolicy` collapses its two run-mode columns
@@ -2044,6 +2353,7 @@ export const useSettingsStore = create<SettingsStore>()(
         browserSitePermissions: state.browserSitePermissions,
         browserOperationPolicy: state.browserOperationPolicy,
         allowUnattendedBrowser: state.allowUnattendedBrowser,
+        browserConfigRevisions: state.browserConfigRevisions,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,
         allowSkillCommands: state.allowSkillCommands,
@@ -2078,6 +2388,10 @@ export const useSettingsStore = create<SettingsStore>()(
         // well-formed policy passes through unchanged.
         state.browserOperationPolicy = normalizeBrowserOperationPolicy(state.browserOperationPolicy);
         state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
+        // Same defense in depth for the counters that order those two fields:
+        // a hand-edited or partially-written map must not freeze a field by
+        // claiming a revision nothing can beat.
+        state.browserConfigRevisions = readBrowserConfigRevisions(state);
         // Force reset ephemeral UI state
         state.showSettings = false;
         state.activeSystemTab = 'usage';

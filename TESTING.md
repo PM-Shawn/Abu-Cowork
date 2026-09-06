@@ -471,6 +471,14 @@ npm run test:e2e:electron -- tests/e2e/browser-unattended.spec.ts
 
 ⚠️ 这五条不在 `verify:full` 里（E2E 是外层门禁，见 §9 Positioning）。改浏览器授权链路的任何一层，**必须**本地跑一次这个文件。
 
+🔴 **夹具纪律（issue #362，改这个文件前必读）**：mock LLM 按**上一轮工具结果 + 宿主实况**推进，绝不按"请求体里看起来对的那段文本"推进。三条硬规则：
+
+1. **每个动作型回合先 `lastSuccessfulToolResult(body, <它跟在哪个工具后面>)`** —— 按 `tool_call_id` 配对（不是"第一条形状像的 tool 消息"），前一个工具返回 `Error:` 就当场失败并把原文报出来，不在失败的工具上再叠一回合。
+2. **`tabId` 只走 `currentTab()` / `tabOn()`**：前者从**这一轮自己的 `get_tabs` 结果**读 `currentTabId`，再拿实况 `WebContentsView` 校验它还活着；后者等实况 view 真的落在目标 URL 上（302 跳完）才合成下一步。从旧 `get_tabs` 抄一个 `tabId` 直接用，会写进一个**仍然有效但已经不是本次运行那一个**的 tab（`createAutomationView` 等渲染进程认领只等 2.5s，超时就自己建一个）。
+3. **触发前先 `waitForBuiltinBrowserRuntime()`**，等设置›能力里「阿布内置浏览器 · 已就绪」。`scheduler.runNow` 在派发时用 `getAllTools()` **冻结**本次运行的工具名单（`buildScheduledRunPermissionCeiling`），`abu-browser` MCP 还没连上就点「立即执行」，整轮每一个浏览器工具都会被 `is not allowed for this agent run` 拒掉——这是 fail-closed 的设计，不是 bug，但夹具踩进去测的就成了 MCP 连接耗时。实测：给机器加负载后基线 **10/10 红**，五条旅程全中过。
+
+同一条原则的反面：**任何"某次拒绝是因为 X"的断言，只能在运行真的到达 X 所描述的状态之后再下**（③a/④ 断 `no_binding` 前先断"不是 origin 无法确认"）。这几种红全在 fail-closed 方向，用 `retries` / quarantine / `waitForTimeout` 掩盖，等于把"机器慢"和"门坏了"变成同一个信号。
+
 ### 13.3 纪律
 
 - **复审 finding 先证伪再动**：本仓 §15（`AGENTS.md`）的四步 sanity check 对这张表同样适用——对抗式审查产出量大、假阳性率高（本仓实测基线 82%），任何 🔴/🟡 finding 都要先读代码 `file:line`、复现失败模式、查既有防御，站得住才动手，站不住就**补一条回归测试**把这个假警报钉死，别让它下一轮再来一次。

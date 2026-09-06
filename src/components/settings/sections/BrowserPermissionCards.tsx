@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronRight, CircleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,13 @@ import {
   normalizeBrowserOrigin,
   type BrowserOperationClass,
   type BrowserOperationState,
+  type DecideBrowserOperationSiteVerdict,
 } from '@/core/permissions/browserToolPolicy';
+import {
+  browserGatePreviewVerdict,
+  evaluateBrowserGate,
+} from '@/core/permissions/browserGateEvaluation';
+import { reasonLabel } from '@/core/observability/browserRunReportCopy';
 import { CapabilityBreadcrumb, settingsCardClass } from './CapabilitySetupView';
 
 /** Which browser channel a detail page is configuring. The permission cards
@@ -247,6 +253,164 @@ export function BrowserSitePermissionsPage({
   );
 }
 
+/** The three rows of the preview grid, in the order the policy card lists them. */
+const PREVIEW_CLASSES: ReadonlyArray<{ opClass: BrowserOperationClass; labelKey: 'browserOpClassReadOnly' | 'browserOpClassInteractive' | 'browserOpClassScripting' }> = [
+  { opClass: 'read-only', labelKey: 'browserOpClassReadOnly' },
+  { opClass: 'interactive', labelKey: 'browserOpClassInteractive' },
+  { opClass: 'scripting', labelKey: 'browserOpClassScripting' },
+];
+
+/**
+ * S12 — "what can Abu do on this site right now?", answered with zero side
+ * effects.
+ *
+ * It opens nothing, fetches nothing, sends nothing and grants nothing: the
+ * whole answer is `evaluateBrowserGate` applied to values already in the store.
+ * That is also why it is trustworthy — it is the SAME function
+ * `checkToolApproval` decides with, so the pane cannot quietly disagree with
+ * what actually happens (`browserGateEvaluation.contract.test.ts` proves it
+ * over the full matrix).
+ *
+ * Three things it deliberately does NOT claim:
+ *  - the conversation grant is ignored. A 30-minute session grant is not a
+ *    setting, and reporting 「允许」 because one happens to be live would answer
+ *    a question about configuration with an accident of the last half hour.
+ *  - sign-in state is not checked, because checking it means opening the site.
+ *  - the automatic column assumes a run whose capability tier carries the
+ *    browser. A specific trigger or chat channel may be tighter, and this pane
+ *    has no task selected to read one from. Both are said once, in the caveat
+ *    line, rather than as a badge per cell.
+ */
+function BrowserPermissionPreview() {
+  const { t } = useI18n();
+  const policy = useSettingsStore((s) => s.browserOperationPolicy);
+  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const permissionMode = useSettingsStore((s) => s.permissionMode);
+  const [draft, setDraft] = useState('');
+
+  const trimmed = draft.trim();
+  const origin = trimmed === '' ? null : normalizeBrowserOrigin(trimmed);
+
+  const rows = useMemo(() => {
+    if (origin === null) return null;
+    /*
+      Exactly what the gate does with a target URL: the stored verdict, unless
+      the classifier calls the page money-movement or government — in which case
+      high-risk REPLACES it, except on a site the user blocked (a block outranks
+      everything and could only be loosened by the substitution).
+    */
+    const stored = sitePermissions[origin];
+    const siteVerdict: DecideBrowserOperationSiteVerdict = stored === 'denied'
+      ? 'denied'
+      : isHighRiskUrl(origin) ? 'high-risk' : (stored ?? 'default');
+
+    return PREVIEW_CLASSES.map(({ opClass, labelKey }) => ({
+      opClass,
+      label: t.settings[labelKey],
+      cells: (['attended', 'unattended'] as const).map((runMode) => {
+        const evaluation = evaluateBrowserGate({
+          opClass,
+          runMode,
+          policy,
+          masterSwitchUnattended: allowUnattended,
+          siteVerdict,
+          permissionMode,
+          // No task is selected, so no ceiling can be read. Named in the
+          // caveat line rather than guessed at.
+          runPermissionCeiling: null,
+          toolTargetsPage: true,
+          originResolved: true,
+          answersPageDialog: false,
+          loginRequired: false,
+          conversationGrant: false,
+          confirmationChannelAvailable: true,
+          originKnown: true,
+        });
+        const verdict = browserGatePreviewVerdict(evaluation);
+        return {
+          runMode,
+          verdict,
+          label: verdict === 'allow'
+            ? t.settings.browserPreviewAllow
+            : verdict === 'ask' ? t.settings.browserPreviewAsk : t.settings.browserPreviewDeny,
+          // The refusal wording is the report card's own short label for the
+          // same code — one vocabulary, so the pane and the morning card can
+          // never explain the same block differently.
+          why: verdict === 'deny' && evaluation.denialReason !== null
+            ? reasonLabel(evaluation.denialReason, t)
+            : verdict === 'ask'
+              ? (evaluation.ask?.channel === 'im'
+                ? t.settings.browserPreviewAskIm
+                : t.settings.browserPreviewAskDialog)
+              : t.settings.browserPreviewNoPrompt,
+        };
+      }),
+    }));
+  }, [origin, sitePermissions, policy, allowUnattended, permissionMode, t]);
+
+  const verdictColor = (verdict: 'allow' | 'ask' | 'deny'): string =>
+    verdict === 'allow'
+      ? 'text-[var(--abu-success)]'
+      : verdict === 'ask' ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-danger)]';
+
+  return (
+    <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
+      <p className="text-body text-[var(--abu-text-secondary)]">
+        {t.settings.browserPreviewTitle}
+      </p>
+      <Input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder={t.settings.browserPreviewPlaceholder}
+        aria-label={t.settings.browserPreviewTitle}
+        className="mt-2 h-8 w-full"
+      />
+      {trimmed !== '' && origin === null && (
+        <p className="mt-2 text-minor leading-relaxed text-[var(--abu-danger)]">
+          {t.settings.browserPreviewInvalid}
+        </p>
+      )}
+      {rows !== null && (
+        // Wide content scrolls inside its own box rather than pushing the pane.
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full min-w-[22rem] border-collapse text-left">
+            <thead>
+              <tr className="text-minor text-[var(--abu-text-muted)]">
+                <th scope="col" className="w-1/4 py-1 font-normal" />
+                <th scope="col" className="py-1 font-normal">{t.settings.browserPreviewAttended}</th>
+                <th scope="col" className="py-1 font-normal">{t.settings.browserPreviewUnattended}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--abu-border)]">
+              {rows.map((row) => (
+                <tr key={row.opClass} className="align-top">
+                  <th scope="row" className="py-2 pr-3 text-body font-normal text-[var(--abu-text-secondary)]">
+                    {row.label}
+                  </th>
+                  {row.cells.map((cell) => (
+                    <td key={cell.runMode} className="py-2 pr-3">
+                      <span className={cn('block text-body font-medium', verdictColor(cell.verdict))}>
+                        {cell.label}
+                      </span>
+                      <span className="mt-0.5 block text-minor leading-relaxed text-[var(--abu-text-muted)]">
+                        {cell.why}
+                      </span>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-2 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {t.settings.browserPreviewCaveat}
+      </p>
+    </div>
+  );
+}
+
 /**
  * The browser permission surface, shared by both channels because the settings
  * themselves are shared: one operation policy, one master switch, one site
@@ -416,6 +580,8 @@ export function BrowserPermissionCards({
             ))}
           </ul>
         </div>
+
+        <BrowserPermissionPreview />
       </div>
 
       <div className={settingsCardClass}>

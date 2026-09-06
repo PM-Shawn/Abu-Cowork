@@ -10,7 +10,11 @@ import { useMCPStore } from '@/stores/mcpStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import type { SkillMetadata } from '@/types';
 import type { ProviderInstance } from '@/types/provider';
-import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
+import {
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  __resetBrowserGrantsForTests,
+  grantBrowserAutomation,
+} from '@/core/permissions/browserToolPolicy';
 import {
   hasChromeExtensionHandshaked,
   setChromeExtensionHandshaked,
@@ -1738,6 +1742,152 @@ describe('CapabilitiesSection', () => {
    * reachable/attended-only pair was dropped as restatement; the summary and
    * the high-risk flag, which say something a row cannot, stayed.
    */
+  /**
+   * S12 — the preview row inside the operation-permission card.
+   *
+   * The verdict logic itself is proved elsewhere: `browserGateEvaluation.test.ts`
+   * states what each rule does, and the contract test proves the real gate
+   * agrees. What is checked HERE is the part only the component can get wrong —
+   * that it feeds the shared function the same facts the gate would, renders
+   * all six cells, and stays inert.
+   */
+  describe('effective-permission preview', () => {
+    /** The preview's own input, by its accessible name. */
+    const previewInput = () => screen.getByLabelText('Preview: what Abu can do on a site');
+    /** Row labels — the same strings the policy rows above the preview use. */
+    const VIEW = 'View pages';
+    const CLICK = 'Click and fill in';
+    const SCRIPTS = 'Run scripts (advanced)';
+
+    /** The cell at (operation class, execution context) as one string. */
+    function cell(rowLabel: string, column: 'While you are here' | 'Automatic tasks'): string {
+      const header = screen.getByRole('columnheader', { name: column });
+      const index = Array.from(header.parentElement?.children ?? []).indexOf(header);
+      const row = screen.getByRole('rowheader', { name: rowLabel }).closest('tr') as HTMLElement;
+      return (row.children[index] as HTMLElement).textContent ?? '';
+    }
+
+    async function preview(user: User, url: string) {
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      await user.type(previewInput(), url);
+    }
+
+    it('says nothing until an address is typed', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      expect(screen.queryByRole('rowheader', { name: SCRIPTS })).not.toBeInTheDocument();
+    });
+
+    it('refuses to guess at something that is not an http(s) address', async () => {
+      const user = userEvent.setup();
+      await preview(user, 'not a url');
+      expect(screen.getByText('Enter an http or https address')).toBeInTheDocument();
+      expect(screen.queryByRole('rowheader', { name: SCRIPTS })).not.toBeInTheDocument();
+    });
+
+    it('reports the shipped defaults on a site with no standing verdict', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({}),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: false,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      // Reading while the user is here is unconditional; an automatic run is
+      // refused outright because the master switch is off.
+      expect(cell(VIEW, 'While you are here')).toContain('Allowed');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('Refused');
+      expect(cell(VIEW, 'Automatic tasks')).toContain('master switch');
+      // A click on an unknown site asks; a script asks by default.
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      expect(cell(SCRIPTS, 'While you are here')).toContain('Asks first');
+    });
+
+    it('follows the master switch and the standing verdict into the automatic column', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Allowed');
+      // The script row still asks, and unattended that question goes to chat —
+      // and the pane refuses to name a person, because the approver is bound
+      // per task, not here.
+      expect(cell(SCRIPTS, 'Automatic tasks')).toContain('Asks first');
+      expect(cell(SCRIPTS, 'Automatic tasks')).toContain('set on the task itself');
+    });
+
+    it('shows a blocked site as blocked for automatic runs, and says reads still work while you are here', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'denied' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Refused');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+      // Not a bug and not a rounding error: the attended read path resolves no
+      // origin and consults no verdict. The preview's job is to say so.
+      expect(cell(VIEW, 'While you are here')).toContain('Allowed');
+    });
+
+    it('flags a money-movement page even on a site the user allowed', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://www.paypal.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+    });
+
+    /**
+     * The load-bearing property of the whole feature: a preview that acted
+     * would be a permission bypass wearing a settings row. Nothing may reach
+     * the browser, and no verdict may be written.
+     */
+    it('has no side effects — opens nothing, writes no verdict', async () => {
+      useSettingsStore.setState({ browserSitePermissions: testSiteVerdicts({}) });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+      // Cleared AFTER the page is up: the detail page probes the bridge for its
+      // own status row, which is the page's business and not the preview's.
+      // What must stay at zero is everything the preview could add.
+      mcpManagerMock.callTool.mockClear();
+
+      await user.type(previewInput(), 'https://example.com');
+
+      expect(mcpManagerMock.callTool).not.toHaveBeenCalled();
+      expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+    });
+
+    // A live conversation grant is an accident of the last half hour, not a
+    // setting. Reporting it here would answer a question about configuration
+    // with something that expires.
+    it('ignores the 30-minute conversation grant', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({}),
+        allowUnattendedBrowser: false,
+      });
+      grantBrowserAutomation('conv-preview');
+      const user = userEvent.setup();
+      await preview(user, 'https://example.com');
+
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+      __resetBrowserGrantsForTests();
+    });
+  });
+
   describe('automatic-task reach of the site list', () => {
     function withSites(
       sitePermissions: Record<string, 'allowed' | 'denied'>,

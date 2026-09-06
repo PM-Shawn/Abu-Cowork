@@ -1121,6 +1121,56 @@ export interface TranslationDict {
      *  live. An attended script is asked about every time whatever this row
      *  says, so the switch is what makes an `allow` here mean anything. */
     browserUnattendedScriptRiskWarning: string;
+    /* ── S12 生效权限预览 ─────────────────────────────────────────────
+     * A row inside the operation-permission card that answers "what can Abu
+     * do on this site right now?" with NO side effects. The verdict comes
+     * from `evaluateBrowserGate`, the same function the real gate uses, and
+     * the refusal wording is reused verbatim from `browserRunReport.reason`
+     * so the pane and the morning card never disagree.
+     */
+    browserPreviewTitle: string;
+    browserPreviewPlaceholder: string;
+    /** Shown when the typed text is not an http(s) address. */
+    browserPreviewInvalid: string;
+    /** Column headers: the two execution contexts. */
+    browserPreviewAttended: string;
+    browserPreviewUnattended: string;
+    /** The three verdicts a cell can carry. */
+    browserPreviewAllow: string;
+    browserPreviewAsk: string;
+    browserPreviewDeny: string;
+    /** The one-line "why" under an allow. */
+    browserPreviewNoPrompt: string;
+    browserPreviewAskDialog: string;
+    /** Deliberately does NOT name a person: the approver is bound per task
+     *  (S11), and this pane holds no global one to promise. */
+    browserPreviewAskIm: string;
+    /** What the preview did not check, said once. */
+    browserPreviewCaveat: string;
+    /* ── S11 自动任务配置总览 ──────────────────────────────────────── */
+    browserAutomationOverviewTitle: string;
+    /** "定时任务 {schedule} · 触发器 {trigger} · 消息渠道 {im}" */
+    browserAutomationOverviewCounts: string;
+    /** Nothing to fix — not "everything will work". */
+    browserAutomationOverviewClear: string;
+    /** No automation declares the browser at all. */
+    browserAutomationOverviewEmpty: string;
+    /** Card-level prerequisites, each one line. */
+    browserAutomationMasterOff: string;
+    browserAutomationNoAllowedSite: string;
+    /** Per-row issue: the policy needs a confirmation and the task named
+     *  nobody who could answer it. */
+    browserAutomationNoApprover: string;
+    /** Per-row: the automation is paused, so nothing runs either way. */
+    browserAutomationPaused: string;
+    /** Source tags. */
+    browserAutomationSourceSchedule: string;
+    browserAutomationSourceTrigger: string;
+    browserAutomationSourceIm: string;
+    /** The jump to that automation's own editor. */
+    browserAutomationFix: string;
+    /** Honest label for "we cannot tell statically whether it uses the browser". */
+    browserAutomationRuntimeCheck: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;

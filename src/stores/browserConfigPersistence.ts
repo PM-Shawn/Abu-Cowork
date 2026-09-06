@@ -53,9 +53,28 @@ export type BrowserConfigField = (typeof BROWSER_CONFIG_FIELDS)[number];
  * the other window still holds, silently promoting a region grant into one an
  * unattended run may act on.
  *
- * A companion the disk copy does not have is REMOVED rather than kept: the
- * disk copy is then a store that predates the mark, and its grants are
- * unmarked by its own account.
+ * A companion the disk copy does not have is REMOVED rather than kept.
+ *
+ * ## What that choice really costs (round-3 R3-F)
+ *
+ * Everything else in this module fails CLOSED — an unreadable revision counts
+ * as 0, a `setItem` that returns proves nothing, a blob that will not parse is
+ * not merged. This one rule fails OPEN: dropping a mark promotes a region
+ * grant into one an automatic run may act on.
+ *
+ * It is deliberate anyway, and the honest reason is narrower than "its own
+ * account": a disk copy with no `browserSiteGrantViaEmbed` key was written by
+ * a build that does not KNOW about marks, not by one that examined its grants
+ * and declared them unmarked. Keeping this window's marks over it would be
+ * just as much of a guess, and would strand a mark on a store that has no way
+ * to clear it. So the rule is "the adopted state is taken whole, companions
+ * included" — one store wins, not a splice of two.
+ *
+ * The trigger is another window running an OLDER build (or a downgrade, whose
+ * v48 blob comes back through migrate unmarked). v48/v49 are unreleased and
+ * shipped builds stop at v45, so in practice this is a development machine.
+ * Both halves of the rule are pinned: `mergeBrowserConfigForWrite` below, and
+ * `restoreBrowserConfigField` in `settingsStore.ts`.
  */
 export const BROWSER_CONFIG_COMPANION_FIELDS: Readonly<
   Partial<Record<BrowserConfigField, readonly string[]>>

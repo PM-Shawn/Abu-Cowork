@@ -1442,8 +1442,12 @@ export const useSettingsStore = create<SettingsStore>()(
             browserSitePermissions: mintBrowserSiteVerdicts(
               value as Record<string, 'allowed' | 'denied'>,
             ),
-            // An absent companion is a store that has none, which is a fact
-            // about it — not a reason to keep this window's copy.
+            // An absent companion is not a reason to keep this window's copy:
+            // the adopted value is taken WHOLE, companions included, so one
+            // store wins rather than a splice of two. The cost of that (a mark
+            // dropped by an older build that never knew about marks widens the
+            // grant) is stated where the rule lives —
+            // `BROWSER_CONFIG_COMPANION_FIELDS` in browserConfigPersistence.ts.
             browserSiteGrantViaEmbed:
               (companions?.browserSiteGrantViaEmbed as Record<string, true> | undefined) ?? {},
           }

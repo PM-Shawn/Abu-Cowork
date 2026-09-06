@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets } from './settingsStore';
+import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
 
 // ─── Test fixture helpers ─────────────────────────────────────
@@ -511,6 +511,101 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
 
     expect(partialize(useSettingsStore.getState()).browserSiteGrantViaEmbed)
       .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  /**
+   * Round-3 R3-F / mutation M9. `restoreBrowserConfigField` is the OTHER half
+   * of the companion rule — the one that runs when another window turns out to
+   * hold a newer copy — and it was the half nothing pinned. Rewriting it to
+   * keep this window's marks (`?? state.browserSiteGrantViaEmbed`) left all
+   * 123 cases green, and that rewrite is the widening direction: it would
+   * strand a mark on a store that has no way to clear it, and the mirror of it
+   * (adopting a mark the other window already cleared) would take away a grant
+   * the user just gave back.
+   *
+   * The rule is "the adopted value is taken WHOLE, companions included" — one
+   * store wins, never a splice of two — so both directions are pinned here.
+   */
+  describe('restoreBrowserConfigField takes the adopted value whole', () => {
+    beforeEach(() => {
+      // The save pipeline is LIVE in this file, and it is doing its job: a
+      // restore carrying a revision older than the blob already in storage is
+      // legitimately adopted straight back by the cross-window merge. These
+      // cases are about the action itself, so they start from an empty disk.
+      localStorage.clear();
+      __resetBrowserConfigPersistenceForTests();
+    });
+
+    /**
+     * One marked grant, at a LOW revision. The revision matters: the restores
+     * below carry revision 7, and a restore older than the copy already in
+     * storage is (correctly) adopted straight back by the cross-window merge —
+     * which would make these cases pass or fail on the write queue rather than
+     * on the rule they are about.
+     */
+    function seedMarkedGrant(): void {
+      useSettingsStore.setState({
+        browserSitePermissions: { 'https://a.example.com': 'allowed' } as never,
+        browserSiteGrantViaEmbed: { 'https://a.example.com': true },
+        browserConfigRevisions: {
+          browserSitePermissions: 1, browserOperationPolicy: 0, allowUnattendedBrowser: 0,
+        },
+      });
+    }
+
+    it('adopts the other window\'s marks along with its verdicts', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions',
+        { 'https://b.example.com': 'allowed' },
+        7,
+        { browserSiteGrantViaEmbed: { 'https://b.example.com': true } },
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+        .toEqual({ 'https://b.example.com': true });
+    });
+
+    it('drops this window\'s marks when the adopted store carries none', () => {
+      // The widening direction, and the one M9 could reverse in silence: a
+      // mark kept here would qualify grants that are no longer in the store,
+      // and a marked grant that outlives its store reads as a standing one an
+      // automatic run may act on.
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions',
+        { 'https://a.example.com': 'allowed' },
+        7,
+        {},
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+    });
+
+    it('drops them when no companions are passed at all', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions', { 'https://a.example.com': 'allowed' }, 7,
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+      // The verdict itself still landed — this is not "restore did nothing".
+      expect(useSettingsStore.getState().browserSitePermissions['https://a.example.com'])
+        .toBe('allowed');
+      expect(useSettingsStore.getState().browserConfigRevisions.browserSitePermissions).toBe(7);
+    });
+
+    it('leaves the marks alone when a DIFFERENT field is restored', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField('allowUnattendedBrowser', true, 3);
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+        .toEqual({ 'https://a.example.com': true });
+    });
   });
 
   it('v49 migration gives pre-existing installs an empty map, not a marked one', () => {

@@ -69,6 +69,25 @@ export type UnattendedOutcomeCode =
   /** The model produced no usable tool calls. */
   | 'no-progress';
 
+/**
+ * A capability the run needed and the HOST could not offer it — as opposed to
+ * a gate that refused an action the run was able to attempt.
+ *
+ * Separate from `BrowserDenialReasonCode` on purpose: every member of that
+ * union is a decision the browser gate made about a call that reached it, and
+ * the next step it implies ("authorize the site", "loosen the policy") is
+ * actively wrong here. Nothing was decided — the tool was not in the run's
+ * roster to begin with.
+ */
+export type UnattendedRuntimeGapCode =
+  /**
+   * The built-in browser's MCP server had not finished connecting when this
+   * run's tool roster was frozen, so the run had no browser tools at all
+   * (issue #389). Bounded by the scheduler's readiness wait, so reaching this
+   * means the runtime was still absent after that budget.
+   */
+  | 'browser-tools-not-ready';
+
 export interface UnattendedRunOutcome {
   code: UnattendedOutcomeCode;
   /**
@@ -97,6 +116,13 @@ export interface UnattendedRunOutcome {
   denied: number;
   /** Where it got stuck, as a closed code. Absent when nothing was refused. */
   blockedReason?: BrowserDenialReasonCode;
+  /**
+   * A capability the host never handed this run. Absent on the normal path.
+   * Reported even for a `succeeded` run: an answer produced without the
+   * browser tools the task was written around is exactly the "green card for a
+   * run that did nothing" the user must not have to guess at.
+   */
+  runtimeGap?: UnattendedRuntimeGapCode;
   /** The origins that refusal happened on (already clamped and capped). */
   blockedOrigins: string[];
   /** The card's「接下来可以做什么」list, verbatim — same codes, same order. */
@@ -110,6 +136,12 @@ export interface DeriveUnattendedRunOutcomeInput {
   abortedByBrowserDenials: boolean;
   /** This run's report snapshot, or `null` when it never touched a browser. */
   report: BrowserRunReportSnapshot | null;
+  /**
+   * A capability missing from the run's frozen roster, decided by the engine
+   * BEFORE the run started (there is no signal for it in the report: a tool
+   * the roster never carried produces no browser signals at all).
+   */
+  runtimeGap?: UnattendedRuntimeGapCode;
 }
 
 /** The terminals that hand the user an answer. Mirrors both engines' branch. */
@@ -171,7 +203,7 @@ function leadingDenial(
 export function deriveUnattendedRunOutcome(
   input: DeriveUnattendedRunOutcomeInput,
 ): UnattendedRunOutcome {
-  const { reason, abortedByBrowserDenials, report } = input;
+  const { reason, abortedByBrowserDenials, report, runtimeGap } = input;
   const denials = report?.denials ?? [];
   const denied = denials.reduce((sum, row) => sum + row.count, 0);
   const lead = report ? leadingDenial(report) : undefined;
@@ -230,6 +262,7 @@ export function deriveUnattendedRunOutcome(
     },
     denied,
     ...(lead ? { blockedReason: lead.reason } : {}),
+    ...(runtimeGap ? { runtimeGap } : {}),
     blockedOrigins: originsForExport(lead?.origins ?? []),
     nextSteps: report?.nextSteps ?? [],
   };
@@ -268,6 +301,12 @@ export interface UnattendedRunOutcomeMetadata {
   hitTurnLimit: boolean;
   /** The leading refusal, absent when nothing was refused. */
   reason?: BrowserDenialReasonCode;
+  /**
+   * A capability the host never gave this run, absent on the normal path.
+   * Additive to `v: 1`: a consumer that has never seen this key reads the
+   * same object it always did.
+   */
+  runtimeGap?: UnattendedRuntimeGapCode;
   denied: number;
   actions: number;
   failed: number;
@@ -288,6 +327,7 @@ export function unattendedRunOutcomeMetadata(
       delivered: outcome.delivered,
       hitTurnLimit: outcome.hitTurnLimit,
       ...(outcome.blockedReason ? { reason: outcome.blockedReason } : {}),
+      ...(outcome.runtimeGap ? { runtimeGap: outcome.runtimeGap } : {}),
       denied: outcome.denied,
       actions: outcome.did.actions,
       failed: outcome.did.failed,
@@ -316,6 +356,19 @@ function outcomeLabel(code: UnattendedOutcomeCode, blockedByMasterSwitch: boolea
 }
 
 /**
+ * Copy for a missing host capability. Exhaustive over the union for the same
+ * reason `browserRunReportCopy.ts`'s switches are: a new gap code cannot ship
+ * without its sentence, and a code read back from an older/newer build still
+ * renders as itself rather than as a blank.
+ */
+function runtimeGapLabel(gap: UnattendedRuntimeGapCode, t: TranslationDict): string {
+  switch (gap) {
+    case 'browser-tools-not-ready': return t.unattendedRun.detailBrowserToolsNotReady;
+  }
+  return rawCode(gap);
+}
+
+/**
  * The ending as ONE line: `结局：原因（站点）`, never more.
  *
  * Split out from the summary below because it is also the value of the
@@ -336,7 +389,18 @@ export function formatUnattendedOutcomeLine(
   const label = outcomeLabel(outcome.code, byMasterSwitch, t);
 
   let detail = '';
-  if (outcome.code === 'succeeded') {
+  if (outcome.runtimeGap) {
+    /*
+      First, and ahead of `succeeded`'s "label alone" rule.
+
+      A run whose roster never carried the browser tools has no denials to
+      report (nothing reached the gate) and may well have "completed" — by
+      writing an answer about how it could not look anything up. That is the
+      one ending where the label on its own actively misleads, so this is the
+      sentence that has to be on the line.
+    */
+    detail = runtimeGapLabel(outcome.runtimeGap, t);
+  } else if (outcome.code === 'succeeded') {
     /*
       The label alone.
 

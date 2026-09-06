@@ -261,6 +261,38 @@ export function browserToolTargetsPage(namespacedName: string): boolean {
 export type SiteVerdict = 'allowed' | 'denied' | 'default';
 
 /**
+ * Nominal marker on the stored per-site verdict map, so the type system —
+ * not only a source scan — enforces who may mint one.
+ *
+ * `'allowed'` is the strongest thing this app stores about a website: it is
+ * what stops the confirmation dialog appearing, AND the one signal that lets
+ * an AUTOMATIC task act on that site at all. Its safety argument is
+ * provenance: every entry is a human act, taken in a surface the user opened,
+ * with the reason next to the control. `browserSiteGrantWriters.test.ts`
+ * enumerates the writers to keep that argument checkable, and this brand is
+ * the compile-time half of the same rule: nothing outside `settingsStore.ts`
+ * can PRODUCE a value of this type, because the only function that attaches
+ * the brand (`mintBrowserSiteVerdicts`) is module-private there.
+ *
+ * READING is unaffected — the brand is an extra symbol-keyed property on top
+ * of the same string index signature, so a branded map is still assignable to
+ * the plain `Record<string, 'allowed' | 'denied'>` every consumer takes.
+ * Only construction is closed.
+ *
+ * As with any TypeScript nominal type this is not proof against a deliberate
+ * `as` cast; it is proof against an ACCIDENTAL fourth writer, which is the
+ * failure mode the rule exists for ("something that shows up in a diff nobody
+ * reads"). Test files cast freely and always could — they are not shipped
+ * behaviour, and the source scan skips them for the same reason.
+ */
+declare const BROWSER_SITE_VERDICTS_BRAND: unique symbol;
+
+/** The persisted `browserSitePermissions` map. See {@link BROWSER_SITE_VERDICTS_BRAND}. */
+export type BrowserSiteVerdicts = Record<string, 'allowed' | 'denied'> & {
+  readonly [BROWSER_SITE_VERDICTS_BRAND]: 'settingsStore';
+};
+
+/**
  * Resolve a persistent per-site verdict. Precedence is fixed:
  * denied > allowed > default — a site the user blocked stays blocked no
  * matter what else would have allowed it.

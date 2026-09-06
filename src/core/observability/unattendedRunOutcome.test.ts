@@ -13,6 +13,8 @@ import type { BrowserRunReportSnapshot } from './browserRunReport';
 import {
   deriveUnattendedRunOutcome,
   formatUnattendedOutcomeSummary,
+  unattendedRunOutcomeMetadata,
+  RUN_OUTCOME_METADATA_KEY,
 } from './unattendedRunOutcome';
 
 function makeReport(overrides: Partial<BrowserRunReportSnapshot> = {}): BrowserRunReportSnapshot {
@@ -193,6 +195,36 @@ describe('deriveUnattendedRunOutcome · one code per ending', () => {
     // Counting is over ALL refusals, not just the leading row.
     expect(outcome.denied).toBe(10);
   });
+
+  /**
+   * #389 — a capability the host never handed the run.
+   *
+   * There is no report to read it out of: a tool that was never in the run's
+   * roster produces no browser signals, so this fact can only come from the
+   * engine that froze the roster. It rides the same object and reaches the
+   * same two surfaces as everything else here.
+   */
+  it('carries a runtime gap the report cannot possibly contain', () => {
+    const outcome = deriveUnattendedRunOutcome({
+      reason: 'completed',
+      abortedByBrowserDenials: false,
+      report: null,
+      runtimeGap: 'browser-tools-not-ready',
+    });
+    expect(outcome.runtimeGap).toBe('browser-tools-not-ready');
+    // Not a gate refusal — nothing reached the gate to be refused.
+    expect(outcome.blockedReason).toBeUndefined();
+    expect(outcome.denied).toBe(0);
+    expect(unattendedRunOutcomeMetadata(outcome)[RUN_OUTCOME_METADATA_KEY])
+      .toMatchObject({ v: 1, code: 'succeeded', runtimeGap: 'browser-tools-not-ready' });
+  });
+
+  it('leaves the gap key off a run that had every tool it needed', () => {
+    const outcome = derive('completed', makeReport());
+    expect(outcome.runtimeGap).toBeUndefined();
+    expect(unattendedRunOutcomeMetadata(outcome)[RUN_OUTCOME_METADATA_KEY])
+      .not.toHaveProperty('runtimeGap');
+  });
 });
 
 describe('formatUnattendedOutcomeSummary · one line a person can act on', () => {
@@ -293,6 +325,27 @@ describe('formatUnattendedOutcomeSummary · one line a person can act on', () =>
   it('adds no next-step line to a successful run', () => {
     const outcome = { ...derive('completed', makeReport()), nextSteps: ['run-while-watching' as const] };
     expect(formatUnattendedOutcomeSummary(outcome, getI18n())).toBe('Done');
+  });
+
+  /**
+   * #389 — the one case where a bare「已完成」is a lie.
+   *
+   * A run whose roster never carried the browser tools can still reach a
+   * delivering terminal: the model writes an answer explaining it could not
+   * look anything up. The label alone would file that under "Done", so the
+   * gap outranks `succeeded`'s otherwise-strict "label and nothing else" rule.
+   */
+  it('says the browser tools were missing even on a delivering run', () => {
+    const summary = formatUnattendedOutcomeSummary(
+      deriveUnattendedRunOutcome({
+        reason: 'completed',
+        abortedByBrowserDenials: false,
+        report: null,
+        runtimeGap: 'browser-tools-not-ready',
+      }),
+      getI18n(),
+    );
+    expect(summary).toBe('Done: the browser tools were not ready, so this run had no browser');
   });
 
   it('re-words the same codes when the app language changes', () => {

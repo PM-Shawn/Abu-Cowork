@@ -27,9 +27,34 @@
  * - `nativeBrowserViewStates()` / `evaluateInNativeView()` as GROUND TRUTH for
  *   the actual native WebContentsView — never the React tab strip, which can
  *   look right while the page underneath is wrong.
- * - `MockReplyPlanEntry` may be a function of the request body, because
- *   `navigate` needs a `tabId` that only exists once the preceding `get_tabs`
- *   result is on the wire.
+ * - `MockReplyPlanEntry` may be an ASYNC function of the request body, because
+ *   a turn that acts on a page can only be synthesized once the previous tool
+ *   really finished.
+ *
+ * ## The fixture rule this file exists under (issue #362)
+ *
+ * **A scripted turn reads what happened from the TOOL RESULT and from the live
+ * host — never from whatever text the request body happens to carry.**
+ *
+ * Concretely, every turn that acts on a page:
+ *   1. calls `lastSuccessfulToolResult(body, <the tool it follows>)`, which
+ *      matches by `tool_call_id` and refuses to script anything on top of a
+ *      tool that came back `Error:`; and
+ *   2. takes its `tabId` from `currentTab()` / `tabOn()`, which resolve it out
+ *      of the run's own `get_tabs` result and/or the live `WebContentsView` —
+ *      simultaneously the "the navigation (302 chain included) landed" gate
+ *      and the "the bundled browser runtime is up" gate.
+ *
+ * Before that rule, turns quoted a `tabId` back out of the FIRST `get_tabs`
+ * result in the history and fired immediately: journeys ① and ③b filled a
+ * stale-but-still-valid tab, ② clicked before the 302 landed and read
+ * `origin-unverified` where it asserts "outside the allowed sites", and ③a
+ * read the same thing where it asserts `no_binding`. All four are load
+ * races in the HARNESS, and all four are fail-closed — which is exactly why
+ * they had to go: a slow machine and a broken gate were producing the same
+ * red. Anything added here must keep both properties: no sleeps, and no
+ * assertion about WHY something was refused before the run has reached the
+ * state that refusal is about.
  *
  * ## Conventions specific to this file
  *
@@ -96,7 +121,16 @@ type MockReplyPlan =
     }
   | { kind: 'complete'; responseText: string };
 
-type MockReplyPlanEntry = MockReplyPlan | ((body: unknown) => MockReplyPlan);
+/**
+ * A scripted turn. The function form is ASYNC on purpose: a turn that acts on
+ * a page may only be synthesized once the PREVIOUS tool actually finished —
+ * see `waitForNativeTab`. Anything a plan needs to know about the run's tabs
+ * it reads from the live host, never from a `get_tabs` transcript that may
+ * already be stale.
+ */
+type MockReplyPlanEntry =
+  | MockReplyPlan
+  | ((body: unknown) => MockReplyPlan | Promise<MockReplyPlan>);
 
 interface OpenAiMock {
   baseUrl: string;
@@ -105,6 +139,13 @@ interface OpenAiMock {
   /** How many entries of `replyPlans` were actually consumed. A plan entry
    *  that is never consumed proves the run stopped before asking for it. */
   consumedPlans: () => number;
+  /**
+   * Why the mock could not script a turn (the preceding tool failed, or the
+   * tab it was supposed to act on never appeared). Surfaced by
+   * `waitForTaskTurns` so the run's own diagnosis is what fails the test,
+   * instead of a bare "expected 4 requests, got 2" forty-five seconds later.
+   */
+  planFailure: () => string | undefined;
 }
 
 interface OpenAiRequestMessage {
@@ -169,6 +210,7 @@ function isCompressionRequest(body: unknown): boolean {
 async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promise<OpenAiMock> {
   const requests: MockRequest[] = [];
   let taskRequestCount = 0;
+  let planFailure: string | undefined;
   const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (req, res) => {
     activeResponses.add(res);
@@ -219,7 +261,21 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
       return;
     }
-    const replyPlan = typeof rawPlan === 'function' ? rawPlan(body) : rawPlan;
+    let replyPlan: MockReplyPlan;
+    try {
+      // A plan may await the previous tool's real effect (see
+      // `waitForNativeTab`), so this is the one place the mock blocks. The
+      // agent is simply waiting on its own HTTP response meanwhile.
+      replyPlan = typeof rawPlan === 'function' ? await rawPlan(body) : rawPlan;
+    } catch (error) {
+      // Record it and answer, rather than leaving the request hanging: an
+      // unanswered SSE response turns a precise "navigate came back Error: …"
+      // into an opaque poll timeout.
+      planFailure ??= error instanceof Error ? error.message : String(error);
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: planFailure }));
+      return;
+    }
 
     res.writeHead(200, {
       'cache-control': 'no-cache',
@@ -251,6 +307,7 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
     close: () => closeServer(server, activeResponses),
     requests,
     consumedPlans: () => taskRequestCount,
+    planFailure: () => planFailure,
   };
 }
 
@@ -276,39 +333,113 @@ function taskRequests(mock: OpenAiMock): MockRequest[] {
 }
 
 /**
- * The `currentTabId` a preceding `abu-browser__get_tabs` put into this
- * request's message history. The tool result is JSON, so a small regex avoids
- * depending on the adapter's exact message-content shape.
+ * Wait for the run to reach its `count`-th scripted turn, and assert it
+ * stopped exactly there.
+ *
+ * Replaces a bare `expect.poll(...).toBe(count)` so that a turn the mock
+ * could not script (a tool that came back `Error:`, a tab that never
+ * appeared) fails IMMEDIATELY with that diagnosis instead of timing out
+ * forty-five seconds later on a request count.
  */
-function extractCurrentTabId(body: unknown): number {
-  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
-  const toolMessage = messages.find((message) =>
-    message.role === 'tool'
-    && typeof message.content === 'string'
-    && message.content.includes('"currentTabId"')
-  );
-  if (!toolMessage) {
-    throw new Error('Expected an abu-browser__get_tabs tool result in the request body');
+async function waitForTaskTurns(mock: OpenAiMock, count: number): Promise<void> {
+  const deadline = Date.now() + READY_TIMEOUT;
+  for (;;) {
+    const failure = mock.planFailure();
+    if (failure) throw new Error(`the mock could not script the next turn — ${failure}`);
+    if (taskRequests(mock).length >= count) break;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `only ${taskRequests(mock).length} of ${count} scripted turns arrived within ${READY_TIMEOUT}ms`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  const match = /"currentTabId":\s*(\d+)/.exec(String(toolMessage.content));
-  if (!match) throw new Error('Could not find currentTabId in the get_tabs tool result');
-  return Number(match[1]);
+  expect(taskRequests(mock).length).toBe(count);
+}
+
+/**
+ * Every tool call the model has made in this conversation, paired with the
+ * result the host handed back, matched by `tool_call_id` and in call order.
+ *
+ * Matching by id rather than by "the first tool message that looks right" is
+ * the point: journey ④ calls `navigate` twice, and journeys ①/③ have several
+ * tool results carrying a tabId. A by-shape search silently answers with the
+ * OLDEST of them, which is exactly how a stale tab identity used to get
+ * baked into the next turn.
+ */
+function toolExchanges(body: unknown): Array<{ id: string; name: string; result?: string }> {
+  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
+  const results = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'tool' || typeof message.tool_call_id !== 'string') continue;
+    results.set(message.tool_call_id, String(message.content ?? ''));
+  }
+  return messages
+    .filter((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    .flatMap((message) => message.tool_calls ?? [])
+    .flatMap((call) => {
+      const id = typeof call.id === 'string' ? call.id : null;
+      const name = typeof call.function?.name === 'string' ? call.function.name : null;
+      if (id === null || name === null) return [];
+      const result = results.get(id);
+      return [result === undefined ? { id, name } : { id, name, result }];
+    });
+}
+
+/**
+ * The result of the model's MOST RECENT tool call — what the run was actually
+ * told about the action it just took, as opposed to what the harness hoped
+ * happened. Throws (naming the tool it found instead, and the result it read)
+ * rather than returning something plausible, so a desynced plan says so on
+ * the turn it desynced.
+ */
+function lastToolResult(body: unknown, expectedToolName: string): string {
+  const exchanges = toolExchanges(body);
+  const last = exchanges[exchanges.length - 1];
+  if (!last) {
+    throw new Error(
+      `expected the run to have called ${expectedToolName}, but the request body carries no tool call at all`,
+    );
+  }
+  if (last.name !== expectedToolName) {
+    throw new Error(
+      `expected ${expectedToolName} to be the run's last tool call, but it was ${last.name}`,
+    );
+  }
+  if (last.result === undefined) {
+    throw new Error(`${expectedToolName} has no tool result in the request body yet`);
+  }
+  return last.result;
+}
+
+/** The most recent result for `toolName` anywhere in the history, or
+ *  `undefined` if that tool has not answered yet. */
+function latestResultFor(body: unknown, toolName: string): string | undefined {
+  const calls = toolExchanges(body).filter((entry) => entry.name === toolName);
+  return calls[calls.length - 1]?.result;
+}
+
+/** As `lastToolResult`, and refuses to script another turn on top of a tool
+ *  the host refused or could not run. A `navigate` that failed under load and
+ *  a real regression produce the same red otherwise. */
+function lastSuccessfulToolResult(body: unknown, expectedToolName: string): string {
+  const result = lastToolResult(body, expectedToolName);
+  if (/^Error:/.test(result)) {
+    throw new Error(`${expectedToolName} did not succeed: ${result.slice(0, 400)}`);
+  }
+  return result;
 }
 
 /** The tool result the host/gate produced for one tool call, read out of the
- *  NEXT request the mock received. This is what the MODEL was told. */
+ *  NEXT request the mock received. This is what the MODEL was told. The LAST
+ *  call wins, so journey ④'s repeated `navigate` reports its second refusal
+ *  rather than its first. */
 function toolResultFor(body: unknown, toolName: string): string {
-  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
-  const call = messages
-    .filter((message) => message.role === 'assistant' && Array.isArray(message.tool_calls))
-    .flatMap((message) => message.tool_calls ?? [])
-    .find((entry) => entry.function?.name === toolName);
+  const calls = toolExchanges(body).filter((entry) => entry.name === toolName);
+  const call = calls[calls.length - 1];
   expect(call, `no ${toolName} tool call in the request body`).toBeDefined();
-  const resultMessage = messages.find((message) =>
-    message.role === 'tool' && message.tool_call_id === call?.id
-  );
-  expect(resultMessage, `no tool result for ${toolName}`).toBeDefined();
-  return String(resultMessage?.content ?? '');
+  expect(call?.result, `no tool result for ${toolName}`).toBeDefined();
+  return String(call?.result ?? '');
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -471,27 +602,139 @@ async function startRedirectFixture(target: () => string): Promise<FixturePage> 
 // Native WebContentsView ground truth
 // ─────────────────────────────────────────────────────────────────────────
 
+interface NativeTabState {
+  /** `webContents.id` — the SAME number the host reports as `tabId`
+   *  (browserHost.cjs's `automationTabs` builds it from `contents.id`), so
+   *  this is a tab identity the browser tools accept verbatim. */
+  tabId: number;
+  url: string;
+  visible: boolean;
+}
+
 async function nativeBrowserViewStates(
   electronApp: ElectronApplication,
-): Promise<Array<{ url: string; visible: boolean }>> {
+): Promise<NativeTabState[]> {
   return electronApp.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window || window.isDestroyed()) return [];
+    // The app's own renderer is not a browser tab. Excluding it by id keeps
+    // "the run's only automation tab" an honest question to ask.
+    const rendererId = window.webContents.id;
     return window.contentView.children.flatMap((child) => {
       const candidate = child as unknown as {
         getVisible?: () => boolean;
-        webContents?: { getURL: () => string; isDestroyed: () => boolean };
+        webContents?: { id: number; getURL: () => string; isDestroyed: () => boolean };
       };
       if (
         typeof candidate.getVisible !== 'function'
         || !candidate.webContents
         || candidate.webContents.isDestroyed()
+        || candidate.webContents.id === rendererId
       ) {
         return [];
       }
-      return [{ url: candidate.webContents.getURL(), visible: candidate.getVisible() }];
+      return [{
+        tabId: candidate.webContents.id,
+        url: candidate.webContents.getURL(),
+        visible: candidate.getVisible(),
+      }];
     });
   });
+}
+
+/** How long a scripted turn will wait for the previous tool's real effect. */
+const TAB_SETTLE_TIMEOUT = 30_000;
+
+/**
+ * Wait until the run has a live automation tab matching `matches`, and answer
+ * with it. THE fixture's only source of tab identity and of "the previous
+ * navigation finished".
+ *
+ * ## Why not the `get_tabs` transcript
+ *
+ * A `tabId` copied out of the first `get_tabs` result is a number the model
+ * was told once. Between then and the next action the host may have replaced
+ * the view underneath it — `createAutomationView` waits a bounded 2.5s for the
+ * renderer to adopt the tab and builds its own if that wait loses, which on a
+ * loaded machine it sometimes does. Filling "the tab id from the transcript"
+ * then writes into a tab that is still perfectly valid and no longer the one
+ * the run is on. Reading the LIVE view instead removes the whole class.
+ *
+ * ## Why it doubles as the readiness gate
+ *
+ * No automation view exists until a `get_tabs` really reached the browser
+ * runtime. Waiting for one is therefore also the answer to "is the bundled
+ * browser MCP server up yet" — with no sleep, no poll count, and no separate
+ * probe that could drift from what the tools actually see.
+ */
+async function waitForNativeTab(
+  electronApp: ElectronApplication,
+  matches: (tab: NativeTabState) => boolean,
+  describeWanted: string,
+): Promise<NativeTabState> {
+  const deadline = Date.now() + TAB_SETTLE_TIMEOUT;
+  for (;;) {
+    const seen = await nativeBrowserViewStates(electronApp);
+    const found = seen.find(matches);
+    if (found) return found;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for ${describeWanted}; the run's live tabs were ${JSON.stringify(seen)}`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/** The tab the run is on once `url` has finished loading THERE — the
+ *  determinate "the navigation (302 chain included) landed" signal journeys
+ *  ② and ③ need before they may act on the page. */
+function tabOn(electronApp: ElectronApplication, url: string): Promise<NativeTabState> {
+  return waitForNativeTab(electronApp, (tab) => tab.url === url, `a live tab on ${url}`);
+}
+
+/**
+ * The tab the run is on before anything has navigated: the one its own
+ * `get_tabs` named as current, **read out of that call's result** and then
+ * confirmed to be a live native view before it is handed to another tool.
+ *
+ * Both halves are load-bearing.
+ *  - Reading the id from the tool RESULT (matched by `tool_call_id`, most
+ *    recent call wins) is what makes it the run's answer rather than the
+ *    harness's guess.
+ *  - Confirming it against the live views is what catches the id going stale:
+ *    `createAutomationView` may emit a view for the renderer to adopt, give up
+ *    after a bounded 2.5s, and build its own — so on a loaded machine there can
+ *    be a second, perfectly valid `WebContentsView` that is not the run's tab.
+ *
+ * A `get_tabs` that never produced a listing fails here too, which is the
+ * readiness gate: no listing means the bundled browser runtime was not up when
+ * the run asked, and every assertion after this point would be about that
+ * rather than about authorization.
+ */
+async function currentTab(
+  electronApp: ElectronApplication,
+  body: unknown,
+): Promise<NativeTabState> {
+  const listing = latestResultFor(body, 'abu-browser__get_tabs');
+  if (listing === undefined) {
+    throw new Error('the run never got a get_tabs result to take a tab identity from');
+  }
+  if (/^Error:/.test(listing)) {
+    throw new Error(
+      `get_tabs did not return a tab listing — is the bundled browser runtime up? ${listing.slice(0, 400)}`,
+    );
+  }
+  const match = /"currentTabId":\s*(\d+)/.exec(listing);
+  if (!match) {
+    throw new Error(`get_tabs named no current tab: ${listing.slice(0, 400)}`);
+  }
+  const tabId = Number(match[1]);
+  return waitForNativeTab(
+    electronApp,
+    (tab) => tab.tabId === tabId,
+    `the live automation tab ${tabId} that get_tabs named as current`,
+  );
 }
 
 /**
@@ -700,6 +943,72 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
   await waitForApp(page);
 }
 
+/** Settings › Capabilities, and the built-in browser row's accessible name —
+ *  `<capability> · <status>`, so the badge is part of the name (see
+ *  `ChannelCard` in CapabilitiesSection.tsx, and tests/e2e/capabilities.spec.ts
+ *  which pins this same row). */
+const ACCOUNT_MENU = /^(我|Me)$/;
+const SETTINGS_MENU_ITEM = /^(设置|Settings)$/;
+const CAPABILITIES_TAB = /^(能力|Capabilities)$/;
+const BROWSER_CARD_READY = /^(阿布内置浏览器|Abu built-in browser) · (已就绪|Ready)$/;
+/** `SystemSettingsDialog`'s own close affordance. Addressed by its data
+ *  attribute rather than by the localized `aria-label`, so the readiness gate
+ *  cannot start failing because a translation moved. */
+const SETTINGS_DIALOG = '[data-abu-settings-dialog]';
+const SETTINGS_DIALOG_CLOSE = '[data-abu-settings-close]';
+
+/**
+ * Do not fire the run until the bundled browser runtime is really connected.
+ *
+ * ## Why this has to happen BEFORE "Run Now"
+ *
+ * `scheduler.runNow` freezes the run's tool roster at dispatch:
+ * `buildScheduledRunPermissionCeiling(getToolInvoker().getAllTools())`. The
+ * bundled browser MCP server (`abu-browser`) connects asynchronously after each
+ * renderer load, and `seedUnattendedRun` reloads. On a loaded machine the click
+ * can win that race — and then EVERY browser tool in the run is refused with
+ * `is not allowed for this agent run`, permanently, for the whole run. That is
+ * a deliberate fail-closed reachability snapshot, not a bug; but a spec that
+ * fires into it is measuring MCP connect latency, not the authorization chain.
+ * It was the single largest source of this file's flake (10/10 reds under
+ * load, spread over all five journeys — issue #362).
+ *
+ * ## Why it re-opens the page instead of waiting on a live locator
+ *
+ * The badge comes from `mcpManager.isConnected('abu-browser')` read at RENDER
+ * time (`readCapabilityRuntimeSnapshot`), and nothing re-renders the section
+ * when that flips — `mcpStore` never gets an `abu-browser` entry to change.
+ * So each attempt leaves the tab and comes back, which remounts the section
+ * and re-reads the live manager. No sleeps, and the thing being polled is the
+ * app's own answer to "is the browser ready", not a proxy for it.
+ */
+async function waitForBuiltinBrowserRuntime(page: Page): Promise<void> {
+  const deadline = Date.now() + READY_TIMEOUT;
+  for (;;) {
+    await page.getByRole('button', { name: ACCOUNT_MENU }).click();
+    await page.getByRole('menuitem', { name: SETTINGS_MENU_ITEM }).click();
+    const capabilitiesTab = page.getByRole('button', { name: CAPABILITIES_TAB });
+    await expect(capabilitiesTab).toBeVisible({ timeout: READY_TIMEOUT });
+    await capabilitiesTab.click();
+    const ready = await page
+      .getByRole('button', { name: BROWSER_CARD_READY })
+      .waitFor({ state: 'visible', timeout: 2_000 })
+      .then(() => true, () => false);
+    // Always leave the app as it was found: the dialog is an overlay, and the
+    // automation navigation the journey drives next is behind its scrim.
+    // Closing is also what remounts the section for the next attempt.
+    await page.locator(SETTINGS_DIALOG_CLOSE).click();
+    await expect(page.locator(SETTINGS_DIALOG)).toHaveCount(0);
+    if (ready) return;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'the bundled browser runtime never reported ready in Settings › Capabilities, '
+        + 'so a scheduled run would have frozen a tool roster without any browser tool in it',
+      );
+    }
+  }
+}
+
 async function openScheduledTask(page: Page, taskName: string): Promise<void> {
   await page
     .getByRole('navigation', { name: /^(Main navigation|主导航)$/ })
@@ -816,28 +1125,43 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: fixture.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: {
-          tabId: extractCurrentTabId(body),
-          locator: JSON.stringify({ css: '#field' }),
-          value: filledValue,
-        },
-        toolCallId: `call-fill-${randomUUID()}`,
-        toolName: 'abu-browser__fill',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), locator: JSON.stringify({ css: '#submit' }) },
-        toolCallId: `call-click-${randomUUID()}`,
-        toolName: 'abu-browser__click',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        // The fill may only be scripted once `navigate` really landed the run
+        // on the fixture page — and onto the tab it landed on, not the one an
+        // older listing named.
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            locator: JSON.stringify({ css: '#field' }),
+            value: filledValue,
+          },
+          toolCallId: `call-fill-${randomUUID()}`,
+          toolName: 'abu-browser__fill',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__fill');
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            locator: JSON.stringify({ css: '#submit' }),
+          },
+          toolCallId: `call-click-${randomUUID()}`,
+          toolName: 'abu-browser__click',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -850,11 +1174,26 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       scheduleName: taskName,
       prompt: `fill the form at ${fixture.url}`,
     });
+    await waitForBuiltinBrowserRuntime(page);
     await watchConfirmDialogTitles(page);
     await runScheduledTaskNow(page, taskName);
 
     // All five scripted turns land — nothing blocked on a dialog nobody could answer.
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+    await waitForTaskTurns(mock, 5);
+
+    // Every browser tool the run made really RAN. Without this a `navigate`
+    // that failed under load and a broken gate produce the same red, and the
+    // page assertions below have to carry a diagnosis they cannot give.
+    for (const [index, toolName] of ([
+      [2, 'abu-browser__navigate'],
+      [3, 'abu-browser__fill'],
+      [4, 'abu-browser__click'],
+    ] as const)) {
+      expect(
+        toolResultFor(taskRequests(mock!)[index]!.body, toolName),
+        `${toolName} was refused or failed in an unattended run that should have been allowed`,
+      ).not.toMatch(/^Error:/);
+    }
 
     // GROUND TRUTH: the native view is really on the fixture page, and the
     // form value the model asked for is really IN that live document.
@@ -899,18 +1238,33 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: entry.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), locator: JSON.stringify({ css: '#submit' }) },
-        toolCallId: `call-click-${randomUUID()}`,
-        toolName: 'abu-browser__click',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: entry.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        // THE gate this journey turns on: the click may only be scripted once
+        // the 302 has actually landed the tab on the unauthorized origin.
+        // Click before that and the gate resolves no origin at all, refuses as
+        // `origin-unverified`, and the spec reads a fail-closed harness race
+        // as a fail-closed product — the two say opposite things about whether
+        // the site check works.
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, destination.url)).tabId,
+            locator: JSON.stringify({ css: '#submit' }),
+          },
+          toolCallId: `call-click-${randomUUID()}`,
+          toolName: 'abu-browser__click',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -924,26 +1278,31 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       scheduleName: taskName,
       prompt: `open ${entry.url} and submit`,
     });
+    await waitForBuiltinBrowserRuntime(page);
     await watchConfirmDialogTitles(page);
     await runScheduledTaskNow(page, taskName);
 
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+    await waitForTaskTurns(mock, 4);
 
-    // The tab really followed the 302 onto the unauthorized origin...
-    await expect.poll(
-      async () => (await nativeBrowserViewStates(app!)).some((state) => state.url === destination.url),
-      { timeout: READY_TIMEOUT },
+    // The tab really followed the 302 onto the unauthorized origin. (The
+    // scripted click already waited for exactly this, so a failure here means
+    // the tab moved BACK — it is not the load-bearing wait.)
+    expect(
+      (await nativeBrowserViewStates(app!)).some((state) => state.url === destination.url),
     ).toBe(true);
-    // ...and the click was refused for the RIGHT reason: outside the allowed
-    // site set, not "we could not tell which site this is". Those two failure
-    // modes look the same from the outside and mean opposite things about
-    // whether the gate is working.
     const clickResult = toolResultFor(taskRequests(mock!)[3]!.body, 'abu-browser__click');
+    // Asserted BEFORE the positive match, so the two failure modes never trade
+    // places in the report: "we could not tell which site this is" and
+    // "outside the allowed site set" look the same from the outside and mean
+    // opposite things about whether the gate is working.
+    expect(
+      clickResult,
+      'the gate could not resolve the origin of a page the run had already landed on',
+    ).not.toMatch(
+      /无法确认这次操作所在的网站|The site this action targets could not be determined/,
+    );
     expect(clickResult).toMatch(
       /无人值守运行只能在你已明确允许的网站上操作|may only act on sites you explicitly allowed/,
-    );
-    expect(clickResult).not.toMatch(
-      /无法确认这次操作所在的网站|The site this action targets could not be determined/,
     );
 
     // No click side effect on the page the tab actually landed on.
@@ -981,23 +1340,33 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: fixture.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: {
-          tabId: extractCurrentTabId(body),
-          // If ANY of this ran, the sentinel below would no longer read
-          // 'untouched'.
-          code: 'window.__abuE2eScriptSentinel = "EXECUTED"; document.title = "EXECUTED"; "ok"',
-        },
-        toolCallId: `call-js-${randomUUID()}`,
-        toolName: 'abu-browser__execute_js',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        // Scripted only once the page is really there: this journey is about
+        // what the APPROVAL SEAM does with a script on a site the gate can
+        // name, so it must not be run against a tab whose origin the gate
+        // cannot resolve yet.
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            // If ANY of this ran, the sentinel below would no longer read
+            // 'untouched'.
+            code: 'window.__abuE2eScriptSentinel = "EXECUTED"; document.title = "EXECUTED"; "ok"',
+          },
+          toolCallId: `call-js-${randomUUID()}`,
+          toolName: 'abu-browser__execute_js',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -1012,13 +1381,23 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       scheduleName: taskName,
       prompt: `read ${fixture.url}`,
     });
+    await waitForBuiltinBrowserRuntime(page);
     await watchConfirmDialogTitles(page);
     await runScheduledTaskNow(page, taskName);
 
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+    await waitForTaskTurns(mock, 4);
 
     const scriptResult = toolResultFor(taskRequests(mock!)[3]!.body, 'abu-browser__execute_js');
     expect(scriptResult).toMatch(/^Error:/);
+    // The site is CONFIRMED first. `origin-unverified` short-circuits the gate
+    // before the approval seam is ever consulted, so asserting `no_binding`
+    // over it would be asserting a refusal this journey is not about.
+    expect(
+      scriptResult,
+      'the gate could not resolve the origin of the page the run had navigated to',
+    ).not.toMatch(
+      /无法确认这次操作所在的网站|The site this action targets could not be determined/,
+    );
     /*
       The refusal now comes from the APPROVAL SEAM rather than from the policy
       row: since the 2026-09-04 column collapse the shipped default for
@@ -1076,23 +1455,29 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: fixture.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: {
-          tabId: extractCurrentTabId(body),
-          // Byte-identical to ③a's payload on purpose: the ONLY difference
-          // between the two journeys is the policy cell.
-          code: 'window.__abuE2eScriptSentinel = "EXECUTED"; document.title = "EXECUTED"; "ok"',
-        },
-        toolCallId: `call-js-${randomUUID()}`,
-        toolName: 'abu-browser__execute_js',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            // Byte-identical to ③a's payload on purpose: the ONLY difference
+            // between the two journeys is the policy cell.
+            code: 'window.__abuE2eScriptSentinel = "EXECUTED"; document.title = "EXECUTED"; "ok"',
+          },
+          toolCallId: `call-js-${randomUUID()}`,
+          toolName: 'abu-browser__execute_js',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -1109,10 +1494,11 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       scheduleName: taskName,
       prompt: `read ${fixture.url}`,
     });
+    await waitForBuiltinBrowserRuntime(page);
     await watchConfirmDialogTitles(page);
     await runScheduledTaskNow(page, taskName);
 
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+    await waitForTaskTurns(mock, 4);
 
     const scriptResult = toolResultFor(taskRequests(mock!)[3]!.body, 'abu-browser__execute_js');
     expect(scriptResult).not.toMatch(/^Error:/);
@@ -1166,12 +1552,28 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     const fixture = await startFormFixture(`abu-e2e-unattended-abort-${randomUUID().slice(0, 8)}`);
     fixtures.push(fixture);
     const neverReached = `abu-e2e-never-reached-${randomUUID()}`;
-    const navigatePlan = (body: unknown): MockReplyPlan => ({
-      kind: 'tool-call',
-      arguments: { tabId: extractCurrentTabId(body), url: fixture.url },
-      toolCallId: `call-nav-${randomUUID()}`,
-      toolName: 'abu-browser__navigate',
-    });
+    /**
+     * Nothing ever leaves the blank automation tab here — every `navigate` is
+     * refused — so the only tab identity to read is the one `get_tabs`
+     * provisioned. Read LIVE all the same: the point is that no journey in
+     * this file quotes a tab id back out of an older transcript.
+     *
+     * `navigate` resolves its own origin from its `url` input, so this journey
+     * never depends on the gate probing a page; the site is confirmed by
+     * construction before the refusal is asserted.
+     */
+    const navigatePlan = async (body: unknown): Promise<MockReplyPlan> => {
+      const previous = toolExchanges(body).at(-1);
+      if (previous?.name === 'abu-browser__get_tabs') {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+      }
+      return {
+        kind: 'tool-call',
+        arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url },
+        toolCallId: `call-nav-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      };
+    };
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
@@ -1195,14 +1597,20 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       scheduleName: taskName,
       prompt: `open ${fixture.url} and submit`,
     });
+    await waitForBuiltinBrowserRuntime(page);
     await watchConfirmDialogTitles(page);
     await runScheduledTaskNow(page, taskName);
 
     // get_tabs, navigate (refusal 1), navigate (refusal 2) — then the guard trips.
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
+    await waitForTaskTurns(mock, 3);
 
     const navigateResult = toolResultFor(taskRequests(mock!)[2]!.body, 'abu-browser__navigate');
     expect(navigateResult).toMatch(/^Error:/);
+    // Same discipline as ③a: the refusal under test is the approval seam's,
+    // so an unresolvable site is a different refusal and must say so.
+    expect(navigateResult).not.toMatch(
+      /无法确认这次操作所在的网站|The site this action targets could not be determined/,
+    );
     expect(navigateResult).toMatch(/没有绑定可回复的 IM 频道|bound to no IM chat/);
 
     await openScheduledRunConversation(page, taskName);
@@ -1241,31 +1649,45 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: host.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: host.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
       // The handles are runtime values, so the model has to LEARN them — same
       // as a real run: snapshot the page, read `frames`, then act in one.
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body) },
-        toolCallId: `call-shot-${randomUUID()}`,
-        toolName: 'abu-browser__snapshot',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: {
-          tabId: extractCurrentTabId(body),
-          frameId: extractFrameId(body, '/inner'),
-          locator: JSON.stringify({ css: '#innerField' }),
-          value: filledValue,
-        },
-        toolCallId: `call-fill-${randomUUID()}`,
-        toolName: 'abu-browser__fill',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call',
+          // `tabOn` rather than `currentTab`: the navigation has to have LANDED
+          // before the snapshot, or the frame handles come from whatever the
+          // tab was showing a moment ago.
+          arguments: { tabId: (await tabOn(app!, host.url)).tabId },
+          toolCallId: `call-shot-${randomUUID()}`,
+          toolName: 'abu-browser__snapshot',
+        };
+      },
+      async (body) => {
+        // A snapshot that failed would make `extractFrameId` throw a message
+        // about a missing handle and hide the real cause (#388's rule).
+        lastSuccessfulToolResult(body, 'abu-browser__snapshot');
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, host.url)).tabId,
+            frameId: extractFrameId(body, '/inner'),
+            locator: JSON.stringify({ css: '#innerField' }),
+            value: filledValue,
+          },
+          toolCallId: `call-fill-${randomUUID()}`,
+          toolName: 'abu-browser__fill',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -1332,22 +1754,33 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: host.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body) },
-        toolCallId: `call-shot-${randomUUID()}`,
-        toolName: 'abu-browser__snapshot',
-      }),
-      (body) => ({
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: host.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call',
+          // `tabOn` rather than `currentTab`: the navigation has to have LANDED
+          // before the snapshot, or the frame handles come from whatever the
+          // tab was showing a moment ago.
+          arguments: { tabId: (await tabOn(app!, host.url)).tabId },
+          toolCallId: `call-shot-${randomUUID()}`,
+          toolName: 'abu-browser__snapshot',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__snapshot');
+        return {
         kind: 'tool-call',
         arguments: {
-          tabId: extractCurrentTabId(body),
+          tabId: (await tabOn(app!, host.url)).tabId,
           steps: JSON.stringify([
             {
               action: 'fill',
@@ -1365,7 +1798,8 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
         },
         toolCallId: `call-batch-${randomUUID()}`,
         toolName: 'abu-browser__batch',
-      }),
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 
@@ -1424,29 +1858,41 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     mock = await startOpenAiMock([
       { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body), url: host.url },
-        toolCallId: `call-nav-${randomUUID()}`,
-        toolName: 'abu-browser__navigate',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: { tabId: extractCurrentTabId(body) },
-        toolCallId: `call-shot-${randomUUID()}`,
-        toolName: 'abu-browser__snapshot',
-      }),
-      (body) => ({
-        kind: 'tool-call',
-        arguments: {
-          tabId: extractCurrentTabId(body),
-          frameId: extractFrameId(body, vendor.host),
-          locator: JSON.stringify({ css: '#field' }),
-          value: neverWritten,
-        },
-        toolCallId: `call-fill-${randomUUID()}`,
-        toolName: 'abu-browser__fill',
-      }),
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: host.url },
+          toolCallId: `call-nav-${randomUUID()}`,
+          toolName: 'abu-browser__navigate',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call',
+          // `tabOn` rather than `currentTab`: the navigation has to have LANDED
+          // before the snapshot, or the frame handles come from whatever the
+          // tab was showing a moment ago.
+          arguments: { tabId: (await tabOn(app!, host.url)).tabId },
+          toolCallId: `call-shot-${randomUUID()}`,
+          toolName: 'abu-browser__snapshot',
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__snapshot');
+        return {
+          kind: 'tool-call',
+          arguments: {
+            tabId: (await tabOn(app!, host.url)).tabId,
+            frameId: extractFrameId(body, vendor.host),
+            locator: JSON.stringify({ css: '#field' }),
+            value: neverWritten,
+          },
+          toolCallId: `call-fill-${randomUUID()}`,
+          toolName: 'abu-browser__fill',
+        };
+      },
       { kind: 'complete', responseText: finalAnswer },
     ]);
 

@@ -7,6 +7,7 @@ import CommandConfirmDialog, { type CommandConfirmRequest } from './CommandConfi
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '@/core/permissions/browserToolPolicy';
+import { testSiteVerdicts } from '@/test/browserSiteVerdicts';
 
 // Pins the browser-confirmation button set: which scopes are offered is a
 // security decision made by the requester (allowPersistentGrant), and the
@@ -17,7 +18,7 @@ describe('CommandConfirmDialog', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     useSettingsStore.setState({
-      browserSitePermissions: {},
+      browserSitePermissions: testSiteVerdicts({}),
       browserSiteGrantViaEmbed: {},
       // Shipped default (scripting = 'ask'). Reset explicitly so a test that
       // flips the scripting row cannot rename this button for its neighbours.
@@ -407,7 +408,7 @@ describe('CommandConfirmDialog', () => {
     it('overwrites an existing allow verdict for the same origin', async () => {
       const user = userEvent.setup();
       useSettingsStore.setState({
-        browserSitePermissions: { 'https://example.com': 'allowed' },
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
       });
       renderDialog({ browserOrigin: 'https://example.com', allowPersistentGrant: true });
 

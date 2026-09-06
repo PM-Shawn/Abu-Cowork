@@ -513,7 +513,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
       .toEqual({ 'https://vendor.example.net': true });
   });
 
-  it('v48 migration gives pre-existing installs an empty map, not a marked one', () => {
+  it('v49 migration gives pre-existing installs an empty map, not a marked one', () => {
     const migrate = (useSettingsStore as unknown as {
       persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
     }).persist.getOptions().migrate;
@@ -523,7 +523,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
     // unmarked grant is a full one.
     const migrated = migrate(
       { browserSitePermissions: { 'https://example.com': 'allowed' } },
-      47,
+      48,
     );
     expect(migrated.browserSiteGrantViaEmbed).toEqual({});
   });

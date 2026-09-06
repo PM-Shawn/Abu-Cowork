@@ -38,7 +38,11 @@ import {
 } from '../permissions/browserToolPolicy';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const HOST = fs.readFileSync(path.join(ROOT, 'electron/browserHost.cjs'), 'utf8');
+// Normalized so the anchor regexes below (`;\n`) still match when git checked
+// this file out with CRLF line endings (Windows `core.autocrlf`/`.gitattributes`
+// defaults) — otherwise every `;\n` anchor sees `;\r\n` and silently fails to
+// match, and `hostConstant`/`hostString` throw on a null match.
+const HOST = fs.readFileSync(path.join(ROOT, 'electron/browserHost.cjs'), 'utf8').replace(/\r\n/g, '\n');
 
 function hostConstant(name: string): string {
   const match = new RegExp(`const ${name} =\\s*([\\s\\S]*?);\\n`).exec(HOST);

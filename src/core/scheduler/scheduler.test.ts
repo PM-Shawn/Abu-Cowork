@@ -15,7 +15,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
-import { initLanguage } from '../../i18n';
+import { getI18n, initLanguage } from '../../i18n';
 import { checkWritePath, hasFullShellAuthorizationScope, revokeWorkspace } from '../tools/pathSafety';
 import { checkToolApproval } from '../tools/registry';
 import { useIMChannelStore } from '../../stores/imChannelStore';
@@ -29,18 +29,44 @@ import {
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 
-const getSchedulerToolsMock = vi.fn(() => [
+/**
+ * What the host registry reports before the built-in browser has connected —
+ * i.e. what an app-start catch-up run would freeze if it did not wait (#389).
+ */
+const REGISTRY_WITHOUT_BROWSER = [
   { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} } },
   { name: 'github__list_repositories', description: 'mcp read', inputSchema: { type: 'object', properties: {} } },
   { name: 'github__delete_repository', description: 'mcp destructive', inputSchema: { type: 'object', properties: {} } },
   { name: 'computer', description: 'foreground UI', inputSchema: { type: 'object', properties: {} } },
-]);
+];
+const getSchedulerToolsMock = vi.fn(() => REGISTRY_WITHOUT_BROWSER);
 vi.mock('../agent/ports/toolInvoker', () => ({
   getToolInvoker: () => ({
     getAllTools: () => getSchedulerToolsMock(),
     executeAnyTool: vi.fn(),
     toolResultToString: (value: unknown) => String(value),
   }),
+}));
+
+/**
+ * The built-in browser runtime, as the scheduler and the dispatch see it.
+ *
+ * `waitForBuiltinBrowserTools` is the seam this file drives for #389; the
+ * other exports are here because `agentLoopRunner` (NOT mocked in this file)
+ * imports the same module.
+ */
+const builtinBrowserMocks = vi.hoisted(() => ({
+  // Default: the runtime is already up, which is every run except the one
+  // racing app start. `vi.clearAllMocks()` keeps these implementations.
+  waitForBuiltinBrowserTools: vi.fn(async () => 'ready' as const),
+  ensureBuiltinBrowserRuntime: vi.fn(async () => false),
+}));
+vi.mock('../browser/builtinBrowserRuntime', () => ({
+  BUILTIN_BROWSER_SERVER_NAME: 'abu-browser',
+  waitForBuiltinBrowserTools: builtinBrowserMocks.waitForBuiltinBrowserTools,
+  ensureBuiltinBrowserRuntime: builtinBrowserMocks.ensureBuiltinBrowserRuntime,
+  initBuiltinBrowserRuntime: vi.fn(),
+  cleanupBuiltinBrowserRuntime: vi.fn(async () => {}),
 }));
 
 // Mock agentLoop — control the exit reason. isIncompleteReason is a trivial pure
@@ -82,6 +108,7 @@ import {
   recordBrowserSignal,
 } from '../observability/browserSignals';
 import { isBrowserRunReportMessage } from '../observability/browserRunReport';
+import { RUN_OUTCOME_METADATA_KEY } from '../observability/unattendedRunOutcome';
 import type { Message } from '../../types';
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
@@ -1691,5 +1718,161 @@ describe('the approval target reaches the browser gate, not just the callback (F
     // The label is still worth carrying: it is what an operator reads in the
     // console trail even when no prompt can be delivered.
     expect(captured.current?.runLabel).toBe('无频道任务');
+  });
+});
+
+/**
+ * #389 — the roster must be frozen AFTER the host has settled.
+ *
+ * `buildScheduledRunPermissionCeiling` snapshots the tools that exist at
+ * dispatch, and the built-in `abu-browser` MCP server connects asynchronously
+ * after every renderer load. `schedulerEngine.start()` deliberately ticks
+ * immediately to catch up missed tasks, so an overdue browser task at app
+ * start raced that connect — and on a busy machine it won, freezing "there is
+ * no browser" into the run's whole lifetime with no retry and nothing but a
+ * tool error for the model to interpret.
+ *
+ * The fix is ordering, not a wider ceiling: `runAgentLoopDispatched` already
+ * awaits this same readiness a few lines later, so the run now waits BEFORE it
+ * takes the snapshot. What these pin is that it waits, that it stops waiting,
+ * and that it says so when it gave up.
+ */
+describe('SchedulerEngine built-in tool readiness', () => {
+  const BROWSER_TOOL = {
+    name: 'abu-browser__get_tabs',
+    description: 'browser',
+    inputSchema: { type: 'object', properties: {} },
+  };
+
+  beforeEach(() => {
+    useScheduleStore.setState({ tasks: {} });
+    useChatStore.setState({
+      conversations: {},
+      activeConversationId: null,
+      currentUsage: null,
+      pendingInput: null,
+      agentStates: new Map(),
+    });
+    seedOutputChannel();
+    vi.clearAllMocks();
+    initLanguage('en-US');
+    vi.mocked(outputSender.buildMessage).mockReturnValue({ content: 'test message', title: 'test' } as never);
+  });
+
+  afterEach(() => {
+    useIMChannelStore.setState({ channels: {} });
+    // The registry mock is shared with the rest of the file; a test that
+    // swapped it must put the pre-connect roster back.
+    getSchedulerToolsMock.mockImplementation(() => REGISTRY_WITHOUT_BROWSER);
+  });
+
+  /** The options the run handed the agent loop. */
+  function captureDispatch(): { current?: Record<string, unknown> } {
+    const captured: { current?: Record<string, unknown> } = {};
+    vi.mocked(runAgentLoop).mockImplementation(async (_conv, _msg, options) => {
+      captured.current = options as unknown as Record<string, unknown>;
+      return { reason: 'completed' } as never;
+    });
+    return captured;
+  }
+
+  /** The structured ending pushed to the task's channel. */
+  function pushedOutcome(): Record<string, unknown> | undefined {
+    const message = vi.mocked(outputSender.send).mock.calls[0]?.[1] as
+      | { metadata?: Record<string, Record<string, unknown>> }
+      | undefined;
+    return message?.metadata?.[RUN_OUTCOME_METADATA_KEY];
+  }
+
+  it('waits for the built-in browser before freezing the roster, and picks up its tools', async () => {
+    const task = makeTask({ id: 'task-roster-waits' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    let finishConnect: (() => void) | undefined;
+    builtinBrowserMocks.waitForBuiltinBrowserTools.mockImplementationOnce(
+      () => new Promise((resolve) => { finishConnect = () => resolve('ready'); }),
+    );
+    const dispatch = captureDispatch();
+
+    const run = schedulerEngine.runNow(task.id);
+    await Promise.resolve();
+
+    // Nothing has been frozen yet: the run is parked on the readiness wait
+    // rather than snapshotting a registry that is still filling up.
+    expect(runAgentLoop).not.toHaveBeenCalled();
+
+    // The handshake completes — `abu-browser`'s tools are in the registry now.
+    getSchedulerToolsMock.mockImplementation(() => [...REGISTRY_WITHOUT_BROWSER, BROWSER_TOOL]);
+    finishConnect?.();
+    await run;
+
+    expect(dispatch.current?.allowedTools).toContain('abu-browser__get_tabs');
+    expect((dispatch.current?.runPermissionCeiling as { allowedTools: string[] }).allowedTools)
+      .toContain('abu-browser__get_tabs');
+    // Still a snapshot, still frozen — the wait moved WHEN it is taken, not
+    // what it is.
+    expect(Object.isFrozen(dispatch.current?.runPermissionCeiling)).toBe(true);
+    expect(pushedOutcome()).not.toHaveProperty('runtimeGap');
+  });
+
+  it('dispatches anyway when the browser never arrives, and names that in the ending', async () => {
+    const task = makeTask({ id: 'task-roster-timeout' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    builtinBrowserMocks.waitForBuiltinBrowserTools.mockResolvedValueOnce('not-ready' as never);
+    const dispatch = captureDispatch();
+
+    await schedulerEngine.runNow(task.id);
+
+    // The run is NOT skipped: a task that only reads files must still run.
+    expect(runAgentLoop).toHaveBeenCalledTimes(1);
+    expect(dispatch.current?.allowedTools).not.toContain('abu-browser__get_tabs');
+    // …and the user is told why the browser did nothing, as a closed code on
+    // the run's ending rather than a raw tool error inside the transcript.
+    expect(pushedOutcome()).toMatchObject({ runtimeGap: 'browser-tools-not-ready' });
+    const message = vi.mocked(outputSender.send).mock.calls[0]?.[1] as { content: string };
+    expect(message.content).toContain(getI18n().unattendedRun.detailBrowserToolsNotReady);
+  });
+
+  it('adds no wait, and no excuse, when the runtime is already connected', async () => {
+    const task = makeTask({ id: 'task-roster-ready' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    getSchedulerToolsMock.mockImplementation(() => [...REGISTRY_WITHOUT_BROWSER, BROWSER_TOOL]);
+    const dispatch = captureDispatch();
+
+    await schedulerEngine.runNow(task.id);
+
+    // One bounded ask, and the answer was immediate (the readiness helper
+    // returns without a timer when the server is connected — see
+    // builtinBrowserRuntime.test.ts).
+    expect(builtinBrowserMocks.waitForBuiltinBrowserTools).toHaveBeenCalledTimes(1);
+    expect(builtinBrowserMocks.waitForBuiltinBrowserTools).toHaveBeenCalledWith({ timeoutMs: 15_000 });
+    expect(dispatch.current?.allowedTools).toContain('abu-browser__get_tabs');
+    expect(pushedOutcome()).not.toHaveProperty('runtimeGap');
+  });
+
+  it('says nothing about a browser on a host that has none', async () => {
+    // Legacy Tauri / web: there is no built-in browser to wait for, and
+    // reporting a missing capability that never existed here would send the
+    // user looking for a problem they do not have.
+    const task = makeTask({ id: 'task-roster-no-host' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    builtinBrowserMocks.waitForBuiltinBrowserTools.mockResolvedValueOnce('unavailable' as never);
+    captureDispatch();
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(runAgentLoop).toHaveBeenCalledTimes(1);
+    expect(pushedOutcome()).not.toHaveProperty('runtimeGap');
+  });
+
+  it('still reports the gap when the run itself then blows up', async () => {
+    const task = makeTask({ id: 'task-roster-timeout-throws' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    builtinBrowserMocks.waitForBuiltinBrowserTools.mockResolvedValueOnce('not-ready' as never);
+    vi.mocked(runAgentLoop).mockRejectedValue(new Error('boom'));
+
+    await schedulerEngine.runNow(task.id);
+
+    expect(latestRunStatus(task.id)).toBe('error');
+    expect(pushedOutcome()).toMatchObject({ code: 'failed', runtimeGap: 'browser-tools-not-ready' });
   });
 });

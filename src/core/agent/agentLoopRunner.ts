@@ -1799,12 +1799,32 @@ const SETTINGS_DEBOUNCE_MS = 50;
 
 let settingsUnsub: (() => void) | undefined;
 let settingsDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * Monotonic push counter — the ordering the notification channel itself does
+ * not provide.
+ *
+ * `notifySidecar` is fire-and-forget, so two pushes in flight can arrive in
+ * either order and the mirror's "latest push wins" would then mean "latest
+ * ARRIVAL wins". A snapshot taken BEFORE the user tightened a setting could
+ * therefore land after the one taken AFTER it, and the sidecar's gate would go
+ * on reading the permission the user had just removed. The revision is stamped
+ * at SEND time (not at snapshot time) because that is the order the reader has
+ * to reconstruct; `settingsMirror.ts` drops anything not strictly newer.
+ *
+ * Never reset — a restarted sidecar starts with no applied revision and accepts
+ * whatever comes next, so the counter only ever has to be increasing within one
+ * shell process.
+ */
+let settingsPushRevision = 0;
 
 function scheduleSettingsPush(): void {
   if (settingsDebounceTimer) clearTimeout(settingsDebounceTimer);
   settingsDebounceTimer = setTimeout(() => {
     settingsDebounceTimer = undefined;
-    notifySidecar('state.settings', { settings: getSettingsReader().getSnapshot() });
+    notifySidecar('state.settings', {
+      settings: getSettingsReader().getSnapshot(),
+      revision: settingsPushRevision++,
+    });
   }, SETTINGS_DEBOUNCE_MS);
 }
 

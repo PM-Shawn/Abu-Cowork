@@ -17,6 +17,7 @@ import { initLanguage } from '@/i18n';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { ScheduledTask } from '@/types/schedule';
+import { testSiteVerdicts } from '@/test/browserSiteVerdicts';
 
 vi.mock('@/core/scheduler/scheduler', () => ({
   schedulerEngine: { runNow: vi.fn() },
@@ -47,7 +48,7 @@ describe('ScheduleTaskDetail — browser authorization', () => {
     initLanguage('en-US');
     useScheduleStore.setState({ tasks: { 'task-1': TASK }, selectedTaskId: 'task-1' });
     useSettingsStore.setState({
-      browserSitePermissions: {},
+      browserSitePermissions: testSiteVerdicts({}),
       allowUnattendedBrowser: true,
       systemSettingsOpen: false,
     });
@@ -57,10 +58,10 @@ describe('ScheduleTaskDetail — browser authorization', () => {
 
   it('lists the origins an unattended run of this task may act on', () => {
     useSettingsStore.setState({
-      browserSitePermissions: {
+      browserSitePermissions: testSiteVerdicts({
         'https://reports.example.com': 'allowed',
         'https://blocked.example.com': 'denied',
-      },
+      }),
     });
     render(<ScheduleTaskDetail />);
 
@@ -71,7 +72,7 @@ describe('ScheduleTaskDetail — browser authorization', () => {
 
   it('leaves a high-risk site out of the set, even when the user allowed it', () => {
     useSettingsStore.setState({
-      browserSitePermissions: { 'https://www.paypal.com': 'allowed' },
+      browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
     });
     render(<ScheduleTaskDetail />);
 
@@ -81,7 +82,7 @@ describe('ScheduleTaskDetail — browser authorization', () => {
 
   it('says the task cannot use the browser at all while the master switch is off', () => {
     useSettingsStore.setState({
-      browserSitePermissions: { 'https://reports.example.com': 'allowed' },
+      browserSitePermissions: testSiteVerdicts({ 'https://reports.example.com': 'allowed' }),
       allowUnattendedBrowser: false,
     });
     render(<ScheduleTaskDetail />);
@@ -94,7 +95,7 @@ describe('ScheduleTaskDetail — browser authorization', () => {
   it('caps a long list and counts the rest', () => {
     const many: Record<string, 'allowed'> = {};
     for (let i = 0; i < 9; i += 1) many[`https://s${i}.example.com`] = 'allowed';
-    useSettingsStore.setState({ browserSitePermissions: many });
+    useSettingsStore.setState({ browserSitePermissions: testSiteVerdicts(many) });
     render(<ScheduleTaskDetail />);
 
     expect(within(card()).getByText('3 more')).toBeInTheDocument();

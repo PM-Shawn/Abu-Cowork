@@ -7,6 +7,10 @@
  * (P1-3a-pre's port #7 + the new per-run-injectable-options extension —
  * see subagentLoop.ts's `SubagentLoopOptions.settingsReader`/`toolInvoker`).
  *
+ * The `SettingsReader` is the ONE port that is deliberately NOT per-run: it is
+ * the sidecar's shared `settingsMirror`, so a setting the user changes mid-run
+ * reaches subagents already in flight. See `handleSubagentRun`'s comment.
+ *
  * Per-run isolation: each `subagent.run` gets its OWN `AbortController`,
  * `ToolInvoker` (closes over its OWN `runId` for `tool.invoke` routing),
  * and `AsyncLocalStorage` context (`subagentRunContext.ts` — carries the
@@ -42,6 +46,7 @@ import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
+import { getSettingsMirrorReader, seedSettingsMirrorIfEmpty } from './settingsMirror';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
 import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
@@ -386,7 +391,27 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const controller = new AbortController();
   activeRuns.set(runId, { controller });
 
-  const settingsReader: SettingsReader = { getSnapshot: () => params.settingsSnapshot };
+  /**
+   * Read settings through the sidecar's SHARED mirror, not through this run's
+   * dispatch-time snapshot (config-batch4, 2026-09-06).
+   *
+   * This used to be `getSnapshot: () => params.settingsSnapshot` — a snapshot
+   * frozen for the whole life of the subagent. The original note called that an
+   * acceptable simplification because a subagent run is short; it is not. A
+   * delegated agent can browse for minutes, and every permission it consults
+   * lives in these settings — so a user who noticed something going wrong and
+   * turned the unattended-browser master switch OFF was still read as having it
+   * ON by every subagent already running. That is the one case S10/AC-S16's
+   * 「关闭总闸阻止下一浏览器动作」 promises to cover, and the frozen snapshot is
+   * where it was being lost.
+   *
+   * Seeding first preserves the previous behaviour for the only case the freeze
+   * was actually protecting: a subagent that starts before any `state.settings`
+   * push has landed still has its own snapshot to read. Once a push arrives,
+   * every run — main loop and subagent alike — reads the same live value.
+   */
+  seedSettingsMirrorIfEmpty(params.settingsSnapshot);
+  const settingsReader: SettingsReader = getSettingsMirrorReader();
   const toolInvoker = createReverseToolInvoker(runId, params.tools, params.parentConversationId, controller.signal);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();

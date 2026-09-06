@@ -11,6 +11,7 @@ import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   normalizeBrowserOperationPolicy,
   type BrowserOperationPolicy,
+  type BrowserSiteVerdicts,
 } from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 import { hasElectronCommandHost } from '../utils/electronHost';
@@ -263,8 +264,14 @@ export interface SettingsState {
    * converge on: `denied` beats `allowed` beats absent-(ask-every-time).
    * Written from the browser confirmation dialog's "always allow this site"
    * action; revocable from Settings › Capabilities.
+   *
+   * The type is BRANDED (`BrowserSiteVerdicts`) so that `setBrowserSitePermission`
+   * / `removeBrowserSitePermission` are the only things that can produce one:
+   * `setState({ browserSitePermissions: { ... } })` from anywhere else does not
+   * typecheck. See `BROWSER_SITE_VERDICTS_BRAND` and
+   * `src/__tests__/browserSiteGrantWriters.test.ts`, its runtime counterpart.
    */
-  browserSitePermissions: Record<string, 'allowed' | 'denied'>;
+  browserSitePermissions: BrowserSiteVerdicts;
   /**
    * Operation-class three-state policy: one allow/deny/ask row per operation
    * class (read-only / interactive / scripting). Consumed by
@@ -636,6 +643,25 @@ export function getAllEnabledModels(state: SettingsState): Array<{
 
 export type SettingsStore = SettingsState & SettingsActions;
 
+/**
+ * The ONLY place a `BrowserSiteVerdicts` comes into existence.
+ *
+ * Deliberately module-private and never exported: the brand on
+ * `BrowserSiteVerdicts` makes this function the single door into the field, so
+ * exporting it would put the door back in the wall. Everything outside this
+ * file reads the map (a branded value is assignable to the plain
+ * `Record<string, 'allowed' | 'denied'>`) and writes it only through
+ * `setBrowserSitePermission` / `removeBrowserSitePermission`.
+ *
+ * Runtime is a plain identity — the brand exists only in the type system, so
+ * nothing is added to what gets persisted.
+ */
+function mintBrowserSiteVerdicts(
+  entries: Record<string, 'allowed' | 'denied'>,
+): BrowserSiteVerdicts {
+  return entries as BrowserSiteVerdicts;
+}
+
 const defaultProviders = createDefaultProviders();
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -698,7 +724,7 @@ export const useSettingsStore = create<SettingsStore>()(
       behaviorSensorEnabled: false,
       telemetryOptOut: false,
       computerUseEnabled: false,
-      browserSitePermissions: {},
+      browserSitePermissions: mintBrowserSiteVerdicts({}),
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       preventSleep: false,
@@ -1050,12 +1076,15 @@ export const useSettingsStore = create<SettingsStore>()(
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
       setBrowserSitePermission: (origin, verdict) => set((state) => ({
-        browserSitePermissions: { ...state.browserSitePermissions, [origin]: verdict },
+        browserSitePermissions: mintBrowserSiteVerdicts({
+          ...state.browserSitePermissions,
+          [origin]: verdict,
+        }),
       })),
       removeBrowserSitePermission: (origin) => set((state) => {
-        const next = { ...state.browserSitePermissions };
+        const next: Record<string, 'allowed' | 'denied'> = { ...state.browserSitePermissions };
         delete next[origin];
-        return { browserSitePermissions: next };
+        return { browserSitePermissions: mintBrowserSiteVerdicts(next) };
       }),
       // Normalized on write, not just on read: the persisted policy must never
       // say something the gate will not honor — a setting that lies about what

@@ -788,6 +788,14 @@ describe('agentLoopHost', () => {
       expect(() => handleStateSettings(null)).not.toThrow();
       expect(() => handleStateSettings({})).not.toThrow();
     });
+
+    // A push with no revision cannot be ordered against the mirror, and
+    // applying an unorderable snapshot is how a stale one restores a
+    // permission the user just removed. Dropped, not applied.
+    it('ignores a push carrying no revision', () => {
+      expect(() => handleStateSettings({ settings: { agentMaxTurns: 5 } })).not.toThrow();
+      expect(() => handleStateSettings({ settings: { agentMaxTurns: 5 }, revision: 'one' })).not.toThrow();
+    });
   });
 
   describe('handleStatePlanMode', () => {

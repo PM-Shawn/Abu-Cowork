@@ -1210,10 +1210,19 @@ export function handleStateExecPatch(rawParams: unknown): void {
   run.applyExecPatch(run.conversationId, rawParams.plannedSteps as PlannedStep[]);
 }
 
-/** `{ settings }` — sidecar-GLOBAL settings mirror push, see `settingsMirror.ts`. Not per-run, so not routed through `activeRuns`. */
+/**
+ * `{ settings, revision }` — sidecar-GLOBAL settings mirror push, see
+ * `settingsMirror.ts`. Not per-run, so not routed through `activeRuns`.
+ *
+ * `revision` is the shell's monotonic push counter and is REQUIRED: a push that
+ * cannot be ordered against the mirror's current contents is dropped rather
+ * than applied, because applying one is how a stale snapshot restores a
+ * permission the user just removed (see `settingsMirror.ts`'s doc).
+ */
 export function handleStateSettings(rawParams: unknown): void {
   if (!isRecord(rawParams) || !isRecord(rawParams.settings)) return;
-  applySettingsSnapshot(rawParams.settings as unknown as SettingsState);
+  if (typeof rawParams.revision !== 'number') return;
+  applySettingsSnapshot(rawParams.settings as unknown as SettingsState, rawParams.revision);
 }
 
 /** `{ conversationId, mode }` — mirror-apply (no re-notify — `planMode.ts`'s `applyPlanModeState` doesn't fire `onPlanModeChange`, per P1-3b-2's design). */

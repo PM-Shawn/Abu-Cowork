@@ -15,6 +15,7 @@ import {
   hasChromeExtensionHandshaked,
   setChromeExtensionHandshaked,
 } from '@/core/capabilityPlugins/chromeHandshakeLatch';
+import { testSiteVerdicts } from '@/test/browserSiteVerdicts';
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
@@ -337,7 +338,7 @@ describe('CapabilitiesSection', () => {
 
   it('walks into the site list and back out through the breadcrumb', async () => {
     useSettingsStore.setState({
-      browserSitePermissions: { 'https://example.com': 'allowed' },
+      browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
     });
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
@@ -1223,10 +1224,10 @@ describe('CapabilitiesSection', () => {
   describe('browser site permissions list', () => {
     it('lists both verdicts and switches an allowed site to blocked', async () => {
       useSettingsStore.setState({
-        browserSitePermissions: {
+        browserSitePermissions: testSiteVerdicts({
           'https://allowed.example.com': 'allowed',
           'https://blocked.example.com': 'denied',
-        },
+        }),
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1250,7 +1251,7 @@ describe('CapabilitiesSection', () => {
 
     it('removes a verdict entirely, restoring ask-every-time', async () => {
       useSettingsStore.setState({
-        browserSitePermissions: { 'https://example.com': 'denied' },
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'denied' }),
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1265,7 +1266,7 @@ describe('CapabilitiesSection', () => {
     // The explanation is where the choice is, not behind a hover target.
     it('explains each verdict inside the dropdown that sets it', async () => {
       useSettingsStore.setState({
-        browserSitePermissions: { 'https://example.com': 'allowed' },
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1298,7 +1299,7 @@ describe('CapabilitiesSection', () => {
       // Earlier tests in this file leave verdicts behind; every assertion here
       // is about the exact contents of the map, so it starts empty.
       beforeEach(() => {
-        useSettingsStore.setState({ browserSitePermissions: {} });
+        useSettingsStore.setState({ browserSitePermissions: testSiteVerdicts({}) });
       });
 
       /** The verdict select of the ADD row — named for its job, so it never
@@ -1364,7 +1365,7 @@ describe('CapabilitiesSection', () => {
 
       it('updates an origin that is already listed instead of duplicating it', async () => {
         useSettingsStore.setState({
-          browserSitePermissions: { 'https://example.com': 'allowed' },
+          browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
         });
         const user = userEvent.setup();
         render(<CapabilitiesSection />);
@@ -1443,11 +1444,11 @@ describe('CapabilitiesSection', () => {
     // waiting behind it, and that both channels answer to the same list.
     it('summarizes the list on the card that leads to it', async () => {
       useSettingsStore.setState({
-        browserSitePermissions: {
+        browserSitePermissions: testSiteVerdicts({
           'https://a.example.com': 'allowed',
           'https://b.example.com': 'allowed',
           'https://c.example.com': 'denied',
-        },
+        }),
       });
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
@@ -1743,7 +1744,7 @@ describe('CapabilitiesSection', () => {
       allowUnattendedBrowser: boolean,
     ) {
       useSettingsStore.setState({
-        browserSitePermissions: sitePermissions,
+        browserSitePermissions: testSiteVerdicts(sitePermissions),
         allowUnattendedBrowser,
         browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       });

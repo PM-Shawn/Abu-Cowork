@@ -1798,7 +1798,30 @@ describe('agentLoopRunner', () => {
       expect(notifySidecar).not.toHaveBeenCalled();
 
       vi.advanceTimersByTime(50);
-      expect(notifySidecar).toHaveBeenCalledWith('state.settings', { settings: { agentMaxTurns: 200 } });
+      expect(notifySidecar).toHaveBeenCalledWith('state.settings', {
+        settings: { agentMaxTurns: 200 },
+        revision: expect.any(Number),
+      });
+    });
+
+    // The mirror drops anything not strictly newer (settingsMirror.ts), so a
+    // repeated or absent revision would make the SECOND push a no-op: the user
+    // tightens a setting and the sidecar keeps reading the old one.
+    it('stamps each push with a strictly increasing revision', async () => {
+      vi.useFakeTimers();
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession());
+
+      capturedSettingsCb?.();
+      vi.advanceTimersByTime(50);
+      capturedSettingsCb?.();
+      vi.advanceTimersByTime(50);
+
+      const revisions = notifySidecar.mock.calls
+        .filter((c) => c[0] === 'state.settings')
+        .map((c) => (c[1] as { revision: number }).revision);
+      expect(revisions).toHaveLength(2);
+      expect(revisions[1]).toBeGreaterThan(revisions[0] as number);
     });
 
     it('coalesces rapid-fire changes into a single push', async () => {

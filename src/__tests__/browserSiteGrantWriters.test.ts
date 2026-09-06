@@ -13,10 +13,21 @@
  * required to be a DECISION, taken by whoever adds it, rather than something
  * that shows up in a diff nobody reads.
  *
- * Two ways in are checked:
+ * Four ways in are checked:
  *  1. the store's setter, `setBrowserSitePermission`;
  *  2. writing the `browserSitePermissions` map straight through `setState`,
- *     which would bypass the setter entirely.
+ *     which would bypass the setter entirely;
+ *  3. casting to the branded `BrowserSiteVerdicts` type, which is how a
+ *     writer would get past the compiler now that the field is nominal
+ *     (config-batch4);
+ *  4. importing the test-only minting helper from shipped code.
+ *
+ * (3) and (4) are the escape hatches the TYPE constraint leaves open. The
+ * brand makes an accidental writer impossible — `setState({
+ * browserSitePermissions: {...} })` no longer compiles anywhere outside
+ * `settingsStore.ts` — but any nominal type in TypeScript can be forced with
+ * an `as`, so the scan still has to say that forcing it is a decision rather
+ * than a detail.
  *
  * Deliberately a source scan rather than a runtime spy: the property is about
  * code that EXISTS, and a call site nobody exercises in a test would be
@@ -37,6 +48,16 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'dist-electron', 'coverage', 
  * walking through it.
  */
 const STORE = join('src', 'stores', 'settingsStore.ts');
+
+/**
+ * The test harness's own minting helper. It lives under `src/test/` — the
+ * directory `tsconfig.app.json` excludes and nothing shipped imports — and it
+ * is the file that HOLDS the deliberate cast, so it matches the cast scan by
+ * construction. Same relationship to the rule as `STORE`: the door, not
+ * someone walking through it. Its importers are what the scan is looking for,
+ * and that is checked separately below.
+ */
+const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
 
 /**
  * Every file that may write a site verdict, and the user action behind each.
@@ -79,7 +100,9 @@ function sourceFiles(): string[] {
 
 function filesMatching(predicate: (source: string) => boolean): string[] {
   return sourceFiles()
-    .filter((file) => file !== STORE && predicate(readFileSync(join(REPO_ROOT, file), 'utf-8')))
+    .filter((file) => file !== STORE
+      && file !== TEST_VERDICT_HELPER
+      && predicate(readFileSync(join(REPO_ROOT, file), 'utf-8')))
     .sort();
 }
 
@@ -88,6 +111,7 @@ describe('standing browser site verdicts have exactly two writers', () => {
     const files = sourceFiles();
     expect(files.length).toBeGreaterThan(200);
     expect(files).toContain(STORE);
+    expect(files).toContain(TEST_VERDICT_HELPER);
     for (const writer of PERMITTED_WRITERS) expect(files).toContain(writer);
     // A path typo in PERMITTED_WRITERS would otherwise make this suite pass by
     // comparing two empty-ish sets.
@@ -106,5 +130,22 @@ describe('standing browser site verdicts have exactly two writers', () => {
       (src) => /setState\s*\(/.test(src) && src.includes('browserSitePermissions'),
     );
     expect(bypass).toEqual([]);
+  });
+
+  it('lets nobody force the brand with a cast', () => {
+    // The compile-time half of the rule (config-batch4): the field's type is
+    // nominal, so only `settingsStore.ts`'s module-private
+    // `mintBrowserSiteVerdicts` can produce one. A cast is the one way past
+    // that, and it must not appear in shipped code.
+    const forced = filesMatching((src) => /\bas\s+BrowserSiteVerdicts\b/.test(src));
+    expect(forced).toEqual([]);
+  });
+
+  it('lets nobody reach for the test-only minting helper', () => {
+    // `src/test/browserSiteVerdicts.ts` casts on purpose, for component tests
+    // that arrange standing verdicts without driving the UI. A shipped file
+    // importing it would be that same cast wearing a helper's name.
+    const importers = filesMatching((src) => src.includes('test/browserSiteVerdicts'));
+    expect(importers).toEqual([]);
   });
 });

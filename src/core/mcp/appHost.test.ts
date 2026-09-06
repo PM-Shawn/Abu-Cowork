@@ -1,3 +1,8 @@
+// @vitest-environment happy-dom
+//
+// `buildAppSrcdoc` parses the server HTML with `DOMParser` (the renderer has
+// one; a bare node runner does not), and these cases assert on the PARSED
+// output rather than on the string, so the DOM is part of the contract here.
 import { describe, it, expect } from 'vitest';
 import {
   APP_IFRAME_SANDBOX,
@@ -133,6 +138,33 @@ describe('appHost', () => {
       expect(isAppDomainAllowed('*')).toBe(false);
       expect(isAppDomainAllowed('https://a.example.com/x')).toBe(false);
     });
+
+    it('rejects CSP separators that URL happily keeps inside the host', () => {
+      // `new URL('https://a.example.com;frame-src')` parses and echoes the
+      // separator back from `.origin`, so the charset gate is what stops it.
+      for (const smuggled of [
+        'https://a.example.com;frame-src https://evil.example.com',
+        'https://a.example.com;',
+        'https://a.example.com,https://evil.example.com',
+        'https://a.example.com,',
+        'https://a.example.com b.example.com',
+        'https://a.example.com\thttps://evil.example.com',
+        'https://a.example.com\nhttps://evil.example.com',
+        "https://a.example.com;script-src 'unsafe-eval'",
+      ]) {
+        expect(isAppDomainAllowed(smuggled)).toBe(false);
+      }
+    });
+
+    it('keeps a separator-smuggling domain out of the built policy', () => {
+      const { csp, rejected } = buildAppCsp({
+        connectDomains: ['https://a.example.com;frame-src https://evil.example.com'],
+      });
+      expect(directive(csp, 'connect-src')).toBe("connect-src 'none'");
+      expect(directive(csp, 'frame-src')).toBe("frame-src 'none'");
+      expect(csp).not.toContain('evil.example.com');
+      expect(rejected).toHaveLength(1);
+    });
   });
 
   describe('buildAppSrcdoc', () => {
@@ -172,6 +204,67 @@ describe('appHost', () => {
       const out = buildAppSrcdoc('<html><head></head><body></body></html>', 'default-src "none"; x');
       expect(out).not.toContain('content="default-src "none"');
       expect(out).toContain('&quot;');
+    });
+
+    describe('the meta lands in the real head, whatever the HTML looks like', () => {
+      /** Re-parse the produced srcdoc the way the iframe will, then report the
+       *  first element of its head. Regex assertions cannot tell a meta inside
+       *  a comment / script from a live one — this can. */
+      const firstHeadElement = (out: string): Element | null =>
+        new DOMParser().parseFromString(out, 'text/html').head?.firstElementChild ?? null;
+
+      const expectOurMetaFirst = (out: string) => {
+        const first = firstHeadElement(out);
+        expect(first?.tagName.toLowerCase()).toBe('meta');
+        expect(first?.getAttribute('http-equiv')).toBe('Content-Security-Policy');
+        expect(first?.getAttribute('content')).toBe(CSP);
+      };
+
+      it('is not fooled by a commented-out head before the real one', () => {
+        const out = buildAppSrcdoc(
+          '<!-- <head> --><html><head><title>t</title></head><body>x</body></html>',
+          CSP,
+        );
+        expectOurMetaFirst(out);
+      });
+
+      it('is not fooled by a head tag inside a script string', () => {
+        const out = buildAppSrcdoc(
+          '<html><body><script>var s = "<head>";</script></body></html>',
+          CSP,
+        );
+        expectOurMetaFirst(out);
+      });
+
+      it('comes before a CSP meta the server supplied itself', () => {
+        const out = buildAppSrcdoc(
+          '<html><head><meta http-equiv="Content-Security-Policy" content="default-src *"><title>t</title></head><body></body></html>',
+          CSP,
+        );
+        expectOurMetaFirst(out);
+        const metas = Array.from(
+          new DOMParser().parseFromString(out, 'text/html').querySelectorAll('meta[http-equiv="Content-Security-Policy"]'),
+        );
+        expect(metas).toHaveLength(2);
+        expect(metas[1].getAttribute('content')).toBe('default-src *');
+      });
+
+      it('drops a server-supplied base element', () => {
+        const out = buildAppSrcdoc(
+          '<html><head><base href="https://evil.example.com/"></head><body>x</body></html>',
+          CSP,
+        );
+        expectOurMetaFirst(out);
+        expect(new DOMParser().parseFromString(out, 'text/html').querySelector('base')).toBeNull();
+        expect(out).not.toContain('evil.example.com');
+      });
+
+      it('synthesizes a head for a bare fragment', () => {
+        const out = buildAppSrcdoc('<div id="app">hi</div>', CSP);
+        expectOurMetaFirst(out);
+        const doc = new DOMParser().parseFromString(out, 'text/html');
+        expect(doc.querySelector('#app')?.textContent).toBe('hi');
+      });
     });
   });
 

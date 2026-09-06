@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { getLocale } from '@/i18n';
 import { mcpManager } from '@/core/mcp/client';
+import { useMCPStore } from '@/stores/mcpStore';
 import type { McpAppResource } from '@/core/mcp/appResources';
 import {
   APP_IFRAME_SANDBOX,
@@ -22,6 +23,10 @@ import type { ToolResultContent } from '@/types';
  *  and send `ui/notifications/initialized` before we give up and fall back to
  *  the plain tool result. Tests pass 0 to disable the timer entirely. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/** How many rejected domains the disclosure line names before it says "and
+ *  more" — the note is one line under a tool card, not a report. */
+const MAX_LISTED_REJECTED_DOMAINS = 3;
 
 type BlockStatus = 'loading' | 'ready' | 'failed' | 'disconnected';
 
@@ -199,6 +204,13 @@ export default function McpAppBlock({
   const [resource, setResource] = useState<McpAppResource | undefined>(undefined);
   const [height, setHeight] = useState(120);
 
+  // Live connection state (spec §4.4: a server that goes away must take its
+  // interface with it). A server the store has never heard of says nothing —
+  // only an explicit non-connected status counts as a disconnect, so the
+  // `isConnected` seam stays authoritative everywhere else.
+  const serverStatus = useMCPStore((s) => s.servers[server]?.status);
+  const storeDisconnected = serverStatus !== undefined && serverStatus !== 'connected';
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const sessionRef = useRef<AppBridgeSession | null>(null);
@@ -210,7 +222,7 @@ export default function McpAppBlock({
     setStatus('loading');
     setResource(undefined);
 
-    if (!isConnected(server)) {
+    if (storeDisconnected || !isConnected(server)) {
       setStatus('disconnected');
       return;
     }
@@ -233,10 +245,10 @@ export default function McpAppBlock({
 
     return () => { cancelledEffect = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, server, resourceUri]);
+  }, [active, server, resourceUri, storeDisconnected]);
 
   const meta = (resource?.meta ?? undefined) as McpAppResourceMeta | undefined;
-  const { csp } = useMemo(() => buildAppCsp(meta?.csp), [meta]);
+  const { csp, rejected } = useMemo(() => buildAppCsp(meta?.csp), [meta]);
   const srcdoc = useMemo(
     () => (resource ? buildAppSrcdoc(resource.text, csp) : undefined),
     [resource, csp],
@@ -244,10 +256,27 @@ export default function McpAppBlock({
   // `domain` (a dedicated sandbox origin) and `permissions` (camera/mic/…) are
   // never honoured — surface that instead of silently ignoring it.
   const unsupportedMeta = Boolean(meta?.domain) || Boolean(meta?.permissions);
+  // Same idea for domains `buildAppCsp` threw away: the app will fail to reach
+  // them at runtime, so say which ones rather than leaving a silent CSP block.
+  const ignoredDomains = useMemo(() => {
+    if (rejected.length === 0) return undefined;
+    const shown = rejected.slice(0, MAX_LISTED_REJECTED_DOMAINS).join(', ');
+    const listed = rejected.length > MAX_LISTED_REJECTED_DOMAINS
+      ? `${shown}${t.chat.mcpAppIgnoredDomainsMore}`
+      : shown;
+    return format(t.chat.mcpAppIgnoredDomains, { domains: listed });
+  }, [rejected, t]);
+  const disclosure = [unsupportedMeta ? t.chat.mcpAppUnsupportedMeta : undefined, ignoredDomains]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ');
 
   // ---- 2. Bridge lifecycle -------------------------------------------------
+  // `active` is a dependency, not just a guard: losing the LRU slot unmounts
+  // the iframe, so the session must run the same teardown as an unmount (kill
+  // the handshake timer, tell the app, close the transport) instead of holding
+  // a bridge onto a window that no longer exists.
   useEffect(() => {
-    if (status !== 'ready' || !srcdoc) return;
+    if (!active || status !== 'ready' || !srcdoc) return;
     const frameWindow = frameRef.current?.contentWindow;
     if (!frameWindow) {
       setStatus('failed');
@@ -291,7 +320,7 @@ export default function McpAppBlock({
       void session.teardown();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, srcdoc]);
+  }, [active, status, srcdoc]);
 
   // ---- 3. Tool lifecycle ---------------------------------------------------
   // The session buffers until the app reports `initialized`, so a fast tool
@@ -318,18 +347,18 @@ export default function McpAppBlock({
 
   // ---- 4. Theme + container size -------------------------------------------
   useEffect(() => {
-    if (status !== 'ready') return;
+    if (!active || status !== 'ready') return;
     const observer = new MutationObserver(() => {
       void sessionRef.current?.sendHostContextChange({ theme: readIsDark() ? 'dark' : 'light' });
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [active, status]);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (status !== 'ready' || !container || typeof ResizeObserver === 'undefined') return;
+    if (!active || status !== 'ready' || !container || typeof ResizeObserver === 'undefined') return;
     let frame: number | undefined;
     const observer = new ResizeObserver(() => {
       // rAF-debounced (never a timer) so a resize storm collapses into one
@@ -347,7 +376,7 @@ export default function McpAppBlock({
       if (frame !== undefined) cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [status]);
+  }, [active, status]);
 
   const activate = useCallback(() => {
     claimSlot(conversationKey, toolCallId);
@@ -392,9 +421,9 @@ export default function McpAppBlock({
 
   return (
     <div className="my-2" data-testid="mcp-app-block" ref={containerRef}>
-      {unsupportedMeta && (
+      {disclosure && (
         <div className="mb-1 px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-unsupported">
-          {t.chat.mcpAppUnsupportedMeta}
+          {disclosure}
         </div>
       )}
       {status === 'loading' || !srcdoc ? (

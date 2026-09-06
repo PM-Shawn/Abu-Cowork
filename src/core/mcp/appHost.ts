@@ -8,7 +8,6 @@
  */
 import type { McpUiHostContext, McpUiStyles, McpUiTheme } from '@modelcontextprotocol/ext-apps/app-bridge';
 import { WIDGET_THEME_VARS } from '@/core/widget/designSystem';
-import { ensureDoctype, isFullDocument } from '@/components/chat/widgetNormalize';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,15 +67,31 @@ export interface McpAppResourceMeta {
 // ---------------------------------------------------------------------------
 
 /**
+ * Character whitelist for the `host[:port]` part of a declared domain.
+ *
+ * `URL` is not enough on its own: it happily keeps `;` and `,` inside the host
+ * (`https://a.com;frame-src` parses, and `origin` echoes it back), which would
+ * let a server smuggle extra directives into the policy string we build. Only
+ * letters, digits, `.`, `-` and an optional numeric port may reach the CSP.
+ *
+ * Uppercase and non-ASCII (IDN) inputs fail closed by design: the `candidate
+ * === url.origin` comparison below is case- and encoding-sensitive, so a server
+ * that wants a domain allowed must declare it lowercase and punycoded.
+ */
+const DOMAIN_HOST_PORT_RE = /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/;
+
+const HTTPS_PREFIX = 'https://';
+
+/**
  * A declared domain is accepted only when it is a bare `https://host[:port]`
  * origin — no scheme other than https, no wildcard, no path/query/fragment, no
- * credentials. Everything else is dropped (spec §4.5: `connectDomains` must not
- * accept `*`).
+ * credentials, no CSP separators. Everything else is dropped (spec §4.5:
+ * `connectDomains` must not accept `*`).
  */
 export function isAppDomainAllowed(value: unknown): boolean {
   if (typeof value !== 'string') return false;
   const raw = value.trim();
-  if (!raw || raw.includes('*') || !raw.startsWith('https://')) return false;
+  if (!raw || raw.includes('*') || !raw.startsWith(HTTPS_PREFIX)) return false;
   // A single trailing slash is the only decoration tolerated.
   const candidate = raw.endsWith('/') ? raw.slice(0, -1) : raw;
   if (candidate.endsWith('/')) return false;
@@ -90,7 +105,10 @@ export function isAppDomainAllowed(value: unknown): boolean {
   if (url.username || url.password) return false;
   if (url.search || url.hash) return false;
   if (url.pathname !== '/' && url.pathname !== '') return false;
-  return candidate === url.origin;
+  if (candidate !== url.origin) return false;
+  // Last gate: whatever `URL` decided to keep as the authority must still be
+  // plain `host[:port]` — see DOMAIN_HOST_PORT_RE.
+  return DOMAIN_HOST_PORT_RE.test(candidate.slice(HTTPS_PREFIX.length));
 }
 
 function normalizeDomains(
@@ -149,11 +167,10 @@ export function buildAppCsp(declared?: McpAppCspDeclaration): { csp: string; rej
 // srcdoc
 // ---------------------------------------------------------------------------
 
-const HEAD_OPEN_RE = /<head\b[^>]*>/i;
-const HTML_OPEN_RE = /<html\b[^>]*>/i;
-
 /** Attribute-safe CSP text — the policy itself only uses single quotes, but a
- *  malformed/hostile value must not be able to close the `content="…"` attr. */
+ *  malformed/hostile value must not be able to close the `content="…"` attr.
+ *  Only the DOM-less fallback shell needs this; `DOMParser` output is escaped
+ *  by the serializer. */
 function escapeAttribute(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
@@ -163,26 +180,49 @@ function cspMetaTag(csp: string): string {
 }
 
 /**
+ * Host-owned shell: the server's HTML goes in the body, so it is textually
+ * *after* our meta no matter what it contains. Used for the environments that
+ * have no `DOMParser` (non-DOM unit runners) — never as a regex fallback.
+ */
+function wrapInHostShell(html: string, csp: string): string {
+  return `<!DOCTYPE html><html><head>${cspMetaTag(csp)}</head><body>${html}</body></html>`;
+}
+
+/**
  * Produce the iframe `srcdoc` for an app resource: the server's HTML with the
- * host-built CSP meta as the FIRST thing inside `<head>` (a meta CSP only
- * governs what comes after it, so position matters).
+ * host-built CSP meta as the FIRST child of `<head>` (a meta CSP only governs
+ * what comes after it, so position matters).
  *
- * Three shapes are handled: a document with a head (inject), a document without
- * one (synthesize a head), and a bare fragment (wrap in a minimal document).
+ * The location of `<head>` is decided by an HTML parser, never by a regex: in
+ * `<!-- <head> -->…` a regex match lands inside a comment and the document ends
+ * up with no policy at all. Parsing also normalises the three input shapes
+ * (full document, `<html>` without a head, bare fragment) into one code path,
+ * since the parser synthesizes `<head>`/`<body>` for us.
  */
 export function buildAppSrcdoc(html: string, csp: string): string {
-  const meta = cspMetaTag(csp);
-  const headMatch = HEAD_OPEN_RE.exec(html);
-  if (headMatch) {
-    const at = headMatch.index + headMatch[0].length;
-    return ensureDoctype(`${html.slice(0, at)}${meta}${html.slice(at)}`);
+  if (typeof DOMParser === 'undefined') return wrapInHostShell(html, csp);
+
+  let doc: Document;
+  try {
+    doc = new DOMParser().parseFromString(html, 'text/html');
+  } catch {
+    return wrapInHostShell(html, csp);
   }
-  const htmlMatch = HTML_OPEN_RE.exec(html);
-  if (htmlMatch && isFullDocument(html)) {
-    const at = htmlMatch.index + htmlMatch[0].length;
-    return ensureDoctype(`${html.slice(0, at)}<head>${meta}</head>${html.slice(at)}`);
-  }
-  return `<!DOCTYPE html><html><head>${meta}<meta charset="utf-8"></head><body>${html}</body></html>`;
+  const head = doc.head;
+  if (!head) return wrapInHostShell(html, csp);
+
+  // `base-uri 'none'` already neuters it; dropping the element removes the
+  // ambiguity (and any relative-URL surprise) instead of relying on the policy.
+  for (const base of Array.from(doc.querySelectorAll('base'))) base.remove();
+
+  const meta = doc.createElement('meta');
+  meta.setAttribute('http-equiv', 'Content-Security-Policy');
+  meta.setAttribute('content', csp);
+  // First child, so a server-supplied CSP meta / <script> / <base> can only
+  // ever come after ours.
+  head.insertBefore(meta, head.firstChild);
+
+  return `<!DOCTYPE html>${doc.documentElement.outerHTML}`;
 }
 
 // ---------------------------------------------------------------------------

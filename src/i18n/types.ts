@@ -329,6 +329,11 @@ export interface TranslationDict {
     /** One-line disclosure that the resource asked for capabilities Abu does
      *  not grant (a dedicated sandbox `domain`, device `permissions`). */
     mcpAppUnsupportedMeta: string;
+    /** Same line, for domains the host refused to put in the CSP.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppIgnoredDomains: string;
+    /** Suffix appended to that list when it was truncated. */
+    mcpAppIgnoredDomainsMore: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;

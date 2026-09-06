@@ -284,6 +284,8 @@ const zhCN: TranslationDict = {
     mcpAppNotConnected: '连接 {server} 以显示界面',
     mcpAppLoadPlaceholder: '点击加载界面',
     mcpAppUnsupportedMeta: '已忽略该界面申请的额外权限',
+    mcpAppIgnoredDomains: '已忽略无效域名：{domains}',
+    mcpAppIgnoredDomainsMore: ' 等',
     widgetCardError: '组件渲染失败',
     widgetCardCancelled: '组件渲染已取消',
     enterpriseModelLoading: '加载企业模型列表中...',

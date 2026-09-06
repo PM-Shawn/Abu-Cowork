@@ -284,6 +284,8 @@ const enUS: TranslationDict = {
     mcpAppNotConnected: 'Connect {server} to show the app view',
     mcpAppLoadPlaceholder: 'Load app view',
     mcpAppUnsupportedMeta: 'Ignored the extra permissions this app view asked for',
+    mcpAppIgnoredDomains: 'Ignored invalid domains: {domains}',
+    mcpAppIgnoredDomainsMore: '…',
     widgetCardError: 'Widget failed to render',
     widgetCardCancelled: 'Widget rendering cancelled',
     enterpriseModelLoading: 'Loading enterprise models...',

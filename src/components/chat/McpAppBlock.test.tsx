@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
+import { useMCPStore } from '@/stores/mcpStore';
 import type { McpAppResource } from '@/core/mcp/appResources';
 import type { AppBridgeSession } from '@/core/mcp/appBridgeSession';
 import McpAppBlock, { resetMcpAppSlots, toCallToolResult, type McpAppBlockProps } from './McpAppBlock';
@@ -60,14 +61,23 @@ async function settle() {
   await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 }
 
+/** Put one server into the MCP store with the given status. */
+function setServerStatus(name: string, status: 'connected' | 'disconnected' | 'error') {
+  useMCPStore.setState({
+    servers: { [name]: { config: { name }, status, tools: [] } },
+  });
+}
+
 describe('McpAppBlock', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     resetMcpAppSlots();
+    useMCPStore.setState({ servers: {} });
   });
   afterEach(() => {
     cleanup();
     resetMcpAppSlots();
+    useMCPStore.setState({ servers: {} });
     vi.restoreAllMocks();
   });
 
@@ -139,6 +149,36 @@ describe('McpAppBlock', () => {
       expect(screen.getByTestId('mcp-app-unsupported')).toBeInTheDocument();
     });
 
+    it('names the domains the CSP builder threw away, capped at three', async () => {
+      renderBlock({
+        deps: {
+          readResource: async () => appResource({
+            meta: {
+              csp: {
+                connectDomains: [
+                  '*',
+                  'http://a.example.com',
+                  'https://b.example.com;frame-src',
+                  'https://c.example.com,https://evil.example.com',
+                ],
+              },
+            },
+          }),
+        },
+      });
+      await settle();
+
+      const note = screen.getByTestId('mcp-app-unsupported');
+      expect(note).toHaveTextContent('已忽略无效域名');
+      expect(note).toHaveTextContent('http://a.example.com');
+      expect(note).toHaveTextContent('等');
+      // Capped: the fourth rejected entry is not spelled out.
+      expect(note.textContent).not.toContain('c.example.com');
+      // Nothing was smuggled into the policy either.
+      expect(screen.getByTestId('mcp-app-frame').getAttribute('srcdoc') ?? '')
+        .not.toContain('evil.example.com');
+    });
+
     it('tears the bridge down on unmount', async () => {
       const sink: { session?: ReturnType<typeof makeSession> } = {};
       const view = renderBlock({}, sink);
@@ -194,9 +234,44 @@ describe('McpAppBlock', () => {
     });
   });
 
+  describe('server disconnect', () => {
+    it('tears the app down and offers to reconnect when the server drops', async () => {
+      const sink: { session?: ReturnType<typeof makeSession> } = {};
+      setServerStatus('weather', 'connected');
+      renderBlock({}, sink);
+      await settle();
+      expect(screen.getByTestId('mcp-app-frame')).toBeInTheDocument();
+
+      await act(async () => { setServerStatus('weather', 'disconnected'); });
+      await settle();
+
+      expect(sink.session?.calls).toContain('teardown');
+      expect(screen.queryByTestId('mcp-app-frame')).toBeNull();
+      expect(screen.getByTestId('mcp-app-status')).toHaveTextContent('连接 weather 以显示界面');
+    });
+
+    it('re-mounts with a fresh fetch when the server comes back', async () => {
+      let reads = 0;
+      setServerStatus('weather', 'connected');
+      renderBlock({ deps: { readResource: async () => { reads += 1; return appResource(); } } });
+      await settle();
+      expect(reads).toBe(1);
+
+      await act(async () => { setServerStatus('weather', 'disconnected'); });
+      await settle();
+      expect(screen.queryByTestId('mcp-app-frame')).toBeNull();
+
+      await act(async () => { setServerStatus('weather', 'connected'); });
+      await settle();
+      expect(screen.getByTestId('mcp-app-frame')).toBeInTheDocument();
+      expect(reads).toBe(2);
+    });
+  });
+
   describe('concurrency cap', () => {
     it('collapses the oldest blocks past the cap into a click-to-load placeholder', async () => {
       const blocks = Array.from({ length: 7 }, (_, i) => i);
+      const sessions = new Map<string, ReturnType<typeof makeSession>>();
       const view = render(
         <>
           {blocks.map((i) => (
@@ -213,7 +288,11 @@ describe('McpAppBlock', () => {
                 isConnected: () => true,
                 handshakeTimeoutMs: 0,
                 isDark: () => false,
-                createSession: () => makeSession(),
+                createSession: () => {
+                  const s = makeSession();
+                  sessions.set(`tc-${i}`, s);
+                  return s;
+                },
               }}
             />
           ))}
@@ -224,12 +303,19 @@ describe('McpAppBlock', () => {
       expect(screen.getAllByTestId('mcp-app-frame')).toHaveLength(6);
       const placeholders = screen.getAllByTestId('mcp-app-placeholder');
       expect(placeholders).toHaveLength(1);
+      // The block evicted before it ever rendered never built a bridge.
+      expect(sessions.has('tc-0')).toBe(false);
+      expect(sessions.get('tc-1')?.calls).not.toContain('teardown');
 
       await act(async () => { fireEvent.click(placeholders[0]); });
       await settle();
       // Re-activating the evicted block pushes the next-oldest out instead.
       expect(screen.getAllByTestId('mcp-app-frame')).toHaveLength(6);
       expect(screen.getAllByTestId('mcp-app-placeholder')).toHaveLength(1);
+      // …and eviction runs the same teardown as an unmount, so the evicted
+      // block's bridge (and its window message listener) is gone.
+      expect(sessions.get('tc-1')?.calls).toContain('teardown');
+      expect(sessions.has('tc-0')).toBe(true);
       view.unmount();
     });
   });

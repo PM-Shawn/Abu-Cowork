@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCP App demo table</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        padding: 12px;
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--mcp-color-text, #29261b);
+        background: var(--mcp-color-background, transparent);
+      }
+      table { border-collapse: collapse; width: 100%; }
+      td { padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.3); }
+      td.value { text-align: right; font-variant-numeric: tabular-nums; }
+      .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      button { padding: 4px 10px; cursor: pointer; }
+      pre { margin: 8px 0 0; font-size: 11px; opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <h1 style="font-size: 14px; margin: 0 0 8px">演示表格</h1>
+    <table>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="actions">
+      <button type="button" id="refresh" data-testid="demo-refresh">刷新</button>
+      <button type="button" id="send" data-testid="demo-send">发到对话</button>
+      <button type="button" id="link" data-testid="demo-link">打开文档</button>
+      <button type="button" id="fullscreen" data-testid="demo-fullscreen">全屏</button>
+    </div>
+    <pre id="status" data-testid="demo-status">booting</pre>
+    <pre id="log" data-testid="demo-log"></pre>
+    <script>
+      (function () {
+        'use strict';
+        var PROTOCOL_VERSION = '2026-01-26';
+        var nextId = 1;
+        var pending = {};
+        var initialized = false;
+        var rows = [];
+        var seed = 0;
+
+        /** Wire trace — makes "the click never produced a request" and "the host
+         *  never answered" distinguishable from outside the sandbox. */
+        var trace = [];
+        function note(line) {
+          trace.push(line);
+          if (trace.length > 40) trace.shift();
+          var element = document.getElementById('log');
+          if (element) element.textContent = trace.join('\n');
+        }
+
+        function post(message) {
+          note((message.id === undefined ? 'notify ' : 'send ') + (message.method || ('reply#' + message.id)));
+          window.parent.postMessage(message, '*');
+        }
+        function notify(method, params) {
+          post({ jsonrpc: '2.0', method: method, params: params || {} });
+        }
+        function request(method, params) {
+          return new Promise(function (resolve, reject) {
+            var id = nextId++;
+            pending[id] = { resolve: resolve, reject: reject };
+            post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+          });
+        }
+        function setStatus(text) {
+          document.getElementById('status').textContent = text;
+        }
+
+        window.addEventListener('message', function (event) {
+          if (event.source !== window.parent) return;
+          var message = event.data;
+          if (!message || message.jsonrpc !== '2.0') return;
+          var hasId = message.id !== undefined && message.id !== null;
+          if (hasId && (message.result !== undefined || message.error !== undefined)) {
+            note('recv reply#' + message.id + (message.error ? ' error' : ' ok'));
+            var entry = pending[message.id];
+            if (!entry) return;
+            delete pending[message.id];
+            if (message.error) entry.reject(new Error(message.error.message || 'rpc error'));
+            else entry.resolve(message.result);
+            return;
+          }
+          if (hasId && typeof message.method === 'string') {
+            // Host -> app request (ping / ui/resource-teardown). Answering
+            // everything with an empty result keeps the host from waiting on a
+            // demo that has nothing to clean up.
+            note('recv request ' + message.method);
+            post({ jsonrpc: '2.0', id: message.id, result: {} });
+            return;
+          }
+          if (typeof message.method === 'string') {
+            note('recv ' + message.method);
+            onNotification(message.method, message.params || {});
+          }
+        });
+
+        function onNotification(method, params) {
+          if (method === 'ui/notifications/tool-input') {
+            var args = params.arguments || {};
+            if (typeof args.seed === 'number') seed = args.seed;
+            setStatus('tool-input');
+            render();
+          } else if (method === 'ui/notifications/tool-result') {
+            applyResult(params);
+          } else if (method === 'ui/notifications/tool-cancelled') {
+            setStatus('tool-cancelled');
+          } else if (method === 'ui/notifications/host-context-changed') {
+            if (params && params.theme) {
+              document.documentElement.setAttribute('data-theme', params.theme);
+            }
+          }
+        }
+
+        /**
+         * Replayed steps arrive without `structuredContent`: the host only
+         * persists the DISPLAY result, so a reopened conversation hands the app
+         * back its text summary alone. Parse that as a fallback rather than
+         * rendering an empty table — the same defence a real app needs.
+         */
+        function parseRowsFromContent(content) {
+          var parsed = [];
+          if (!Array.isArray(content)) return parsed;
+          content.forEach(function (block) {
+            if (!block || block.type !== 'text' || typeof block.text !== 'string') return;
+            var pattern = /([A-Za-z]+)=(\d+)/g;
+            var match = pattern.exec(block.text);
+            while (match) {
+              parsed.push({ name: match[1], value: Number(match[2]) });
+              match = pattern.exec(block.text);
+            }
+          });
+          return parsed;
+        }
+
+        function applyResult(result) {
+          var structured = result && result.structuredContent;
+          if (structured && Array.isArray(structured.rows)) {
+            rows = structured.rows;
+            if (typeof structured.seed === 'number') seed = structured.seed;
+          } else {
+            var parsed = parseRowsFromContent(result && result.content);
+            if (parsed.length > 0) rows = parsed;
+          }
+          setStatus('tool-result');
+          render();
+          reportSize();
+          // Tell the model, in one line, what the user is looking at.
+          request('ui/update-model-context', {
+            content: [{ type: 'text', text: 'mcp-app-demo summary: ' + tableText() }],
+          }).catch(function () {});
+        }
+
+        function tableText() {
+          return rows
+            .map(function (row) { return row.name + '=' + row.value; })
+            .join(' ');
+        }
+
+        function render() {
+          var body = document.getElementById('rows');
+          body.textContent = '';
+          rows.forEach(function (row) {
+            var tr = document.createElement('tr');
+            tr.setAttribute('data-testid', 'demo-row');
+            var name = document.createElement('td');
+            name.textContent = row.name;
+            var value = document.createElement('td');
+            value.className = 'value';
+            value.setAttribute('data-testid', 'demo-value-' + row.name);
+            value.textContent = String(row.value);
+            tr.appendChild(name);
+            tr.appendChild(value);
+            body.appendChild(tr);
+          });
+        }
+
+        function reportSize() {
+          notify('ui/notifications/size-changed', {
+            height: document.documentElement.scrollHeight,
+          });
+          // Report again after the frame the new rows actually lay out in:
+          // scrollHeight read in the same tick as the DOM write can still be
+          // the pre-layout value, and an under-reported height leaves the
+          // buttons clipped outside the host's iframe box.
+          window.requestAnimationFrame(function () {
+            notify('ui/notifications/size-changed', {
+              height: document.documentElement.scrollHeight,
+            });
+          });
+        }
+
+        document.getElementById('refresh').addEventListener('click', function () {
+          setStatus('refreshing');
+          request('tools/call', { name: 'refresh_rows', arguments: { seed: seed + 1 } })
+            .then(function (result) { applyResult(result); })
+            .catch(function (error) { setStatus('refresh failed: ' + error.message); });
+        });
+        document.getElementById('send').addEventListener('click', function () {
+          note('click send');
+          request('ui/message', {
+            role: 'user',
+            content: [{ type: 'text', text: 'mcp-app-demo table: ' + tableText() }],
+          })
+            .then(function () { setStatus('message sent'); })
+            .catch(function (error) { setStatus('message failed: ' + error.message); });
+        });
+        document.getElementById('link').addEventListener('click', function () {
+          request('ui/open-link', { url: 'https://modelcontextprotocol.io/' })
+            .then(function () { setStatus('link opened'); })
+            .catch(function (error) { setStatus('link refused: ' + error.message); });
+        });
+        document.getElementById('fullscreen').addEventListener('click', function () {
+          request('ui/request-display-mode', { mode: 'fullscreen' })
+            .then(function (result) { setStatus('display mode: ' + (result && result.mode)); })
+            .catch(function (error) { setStatus('display mode failed: ' + error.message); });
+        });
+
+        // The host attaches its message listener in a React effect; a srcdoc
+        // document can finish parsing first. Re-send `ui/initialize` until one
+        // attempt is answered rather than hanging on the lost first frame.
+        (function connect() {
+          var attempts = 0;
+          (function attempt() {
+            if (initialized) return;
+            attempts += 1;
+            request('ui/initialize', {
+              appInfo: { name: 'mcp-app-demo', version: '1.0.0' },
+              appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
+              protocolVersion: PROTOCOL_VERSION,
+            })
+              .then(function () {
+                if (initialized) return;
+                initialized = true;
+                notify('ui/notifications/initialized', {});
+                setStatus('initialized');
+                reportSize();
+              })
+              .catch(function () {});
+            if (attempts < 40) window.setTimeout(attempt, 250);
+          })();
+        })();
+      })();
+    </script>
+  </body>
+</html>

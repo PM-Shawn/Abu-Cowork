@@ -25,6 +25,13 @@ export default defineConfig({
       // without this entry the generic prefix below would mangle it into
       // `mcp.ts/shared/protocol.js`.
       { find: '@modelcontextprotocol/sdk/shared/protocol.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js') },
+      // The MCP App demo fixture (tests/fixtures/mcp-app-demo) boots a REAL
+      // server over a REAL in-memory transport — a stub would make its contract
+      // test assert nothing. Both files are pure protocol code (zod only, no
+      // Node built-ins), so they load unchanged; without these entries the
+      // generic prefix below mangles them into `mcp.ts/server/mcp.js`.
+      { find: '@modelcontextprotocol/sdk/server/mcp.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js') },
+      { find: '@modelcontextprotocol/sdk/inMemory.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js') },
       { find: '@modelcontextprotocol/sdk', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
     ],
   },
@@ -63,7 +70,7 @@ export default defineConfig({
     // the built-in Electron browser, which injects the same content bundle).
     // They were outside the gate entirely; anything shipped from them was
     // unverified. Keep them in.
-    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts', 'tests/fixtures/**/*.test.ts'],
     exclude: [...configDefaults.exclude, 'src/__tests__/quarantine/**'],
     // NOTE: the existing *.integration.test.ts files here are fast, in-process
     // (Tauri/SDKs mocked — no real DB or network), so they stay in the default

@@ -12,6 +12,8 @@ import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
+import McpAppBlock from './McpAppBlock';
+import { resolveToolCallAppUi } from './ToolCallsGroup';
 import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -705,6 +707,43 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     return files;
   }, [allToolCalls, assistantMsgs, home]);
 
+  /**
+   * MCP Apps: steps whose connector declares a `ui://` interface (spec §4.2).
+   *
+   * These are resolved here, alongside the other per-step cards, and NOT inside
+   * the task workflow: the work fold unmounts its contents on auto-collapse, so
+   * an interface rendered in there would be destroyed — iframe, bridge, app
+   * state and all — the moment the turn finished. `ToolCallsGroup` renders the
+   * same block for the surfaces that still go through `MessageBubble` directly;
+   * an assistant turn's steps only ever come through this path.
+   */
+  const mcpAppSteps = useMemo(() => {
+    const ownerByToolCallId = new Map<string, string>();
+    for (const message of assistantMsgs) {
+      for (const toolCall of message.toolCalls ?? []) ownerByToolCallId.set(toolCall.id, message.id);
+    }
+    return allToolCalls.flatMap((toolCall) => {
+      const ui = resolveToolCallAppUi(toolCall);
+      const messageId = ownerByToolCallId.get(toolCall.id);
+      return ui && messageId ? [{ toolCall, ui, messageId }] : [];
+    });
+  }, [allToolCalls, assistantMsgs]);
+
+  // Persist the resolved `ui` on the step so a reopened conversation can
+  // rebuild the interface without asking the MCP client again (spec §4.4).
+  useEffect(() => {
+    if (!activeConversationId) return;
+    for (const step of mcpAppSteps) {
+      if (step.toolCall.ui) continue;
+      useChatStore.getState().setToolCallAppUi(
+        activeConversationId,
+        step.messageId,
+        step.toolCall.id,
+        step.ui,
+      );
+    }
+  }, [mcpAppSteps, activeConversationId]);
+
   // Check if any tool is executing
   const isAnyExecuting = allToolCalls.some((tc) => tc.isExecuting);
 
@@ -1228,6 +1267,24 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 />
               );
             })}
+
+            {activeConv?.id && mcpAppSteps.map((step) => (
+              <McpAppBlock
+                key={`mcp-app-${step.toolCall.id}`}
+                toolCallId={step.toolCall.id}
+                server={step.ui.server}
+                resourceUri={step.ui.resourceUri}
+                input={step.toolCall.input ?? {}}
+                result={step.toolCall.result}
+                resultContent={step.toolCall.resultContent}
+                isError={step.toolCall.isError}
+                isExecuting={step.toolCall.isExecuting}
+                conversationId={activeConv.id}
+                toolName={step.toolCall.name}
+                messageId={step.messageId}
+                modelContext={step.toolCall.modelContext}
+              />
+            ))}
 
             {/* Grouped skill-patch summary — one collapsible fold-row per
                 skill, replacing the old per-patch floating pills. */}

@@ -17,7 +17,14 @@ export default defineConfig({
       { find: '@modelcontextprotocol/sdk/validation/cfworker', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
       // Own stub file (not mcp.ts): test files that vi.mock the client entry would
       // otherwise replace the shared module and drop the notification schemas.
+      // It re-exports the REAL types.js — `@modelcontextprotocol/ext-apps/app-bridge`
+      // (MCP Apps host) needs the actual zod schemas to evaluate.
       { find: '@modelcontextprotocol/sdk/types.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcpTypes.ts') },
+      // Same reason: the Apps bridge extends the SDK `Protocol` class. This file
+      // is pure protocol logic (no Node built-ins), so the real one loads fine —
+      // without this entry the generic prefix below would mangle it into
+      // `mcp.ts/shared/protocol.js`.
+      { find: '@modelcontextprotocol/sdk/shared/protocol.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js') },
       { find: '@modelcontextprotocol/sdk', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
     ],
   },

@@ -430,6 +430,7 @@ const zhCN: TranslationDict = {
     unsupportedDocumentAttachment: '本批暂不支持直接发送 PDF 附件，请移除“{name}”后重试。',
     attachmentAdmissionPending: '附件仍在添加中，请稍等片刻再发送。',
     sendAlreadyPending: '上一条发送仍在确认中，请稍等片刻再重试。',
+    memberInstructionSent: '已转给 {member}，它下一步就会看到',
     attachmentAdmissionFailed: '无法添加该附件，请重新选择或拖入。',
     composerSuggestions: '代理和技能建议',
     suggestionSectionTeams: '团队',
@@ -437,6 +438,7 @@ const zhCN: TranslationDict = {
     suggestionSectionSkills: '技能',
     subagent: {
       taskCancelled: 'Error: 任务被取消',
+      memberInstruction: '## 用户的追加指令\n{text}\n\n把这条指令纳入当前任务继续执行；与原任务冲突时以这条为准。',
       outputLimitIncomplete: '[子代理输出多次达到 token 上限仍未完成，以下结果可能不完整，建议换用输出预算更大的模型重试。]',
       stoppedIncomplete: '[子代理已停止：模型连续多次生成不完整的工具调用或输出被截断，可能是该模型能力不足或上下文过长，建议换用能力更强的模型重试。]',
       cancelled: '[已取消]',

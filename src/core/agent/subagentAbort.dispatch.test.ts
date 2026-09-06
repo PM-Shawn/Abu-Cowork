@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { cancelDispatch, createSubagentController, isDispatchActive, withDispatchController } from './subagentAbort';
+import { enqueueDispatchInput, hasDispatchInput } from './dispatchInput';
 
 describe('dispatch keys (team member stop)', () => {
   it('cancelDispatch aborts only the run registered under that key', () => {
@@ -13,6 +14,19 @@ describe('dispatch keys (team member stop)', () => {
     expect(cancelDispatch('tc-1:0')).toBe(false);
     b.cleanup();
     expect(isDispatchActive('tc-1:1')).toBe(false);
+  });
+
+  it('drops instructions still queued for a hand-off when it settles or is stopped', () => {
+    const a = createSubagentController('zz取数员', undefined, 'tc-3:0');
+    enqueueDispatchInput('tc-3:0', '补充一句');
+    expect(hasDispatchInput('tc-3:0')).toBe(true);
+    a.cleanup();
+    expect(hasDispatchInput('tc-3:0')).toBe(false);
+
+    createSubagentController('zz撰写员', undefined, 'tc-3:1');
+    enqueueDispatchInput('tc-3:1', '补充一句');
+    expect(cancelDispatch('tc-3:1')).toBe(true);
+    expect(hasDispatchInput('tc-3:1')).toBe(false);
   });
 
   it('withDispatchController registers for the duration of the run and cascades the parent abort', async () => {

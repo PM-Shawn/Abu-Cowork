@@ -442,6 +442,8 @@ export interface TranslationDict {
     attachmentAdmissionPending: string;
     /** Composer has an in-flight initial send for this draft. */
     sendAlreadyPending: string;
+    /** Toast after a direct instruction was queued for a running team member. */
+    memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
@@ -453,6 +455,8 @@ export interface TranslationDict {
     subagent: {
       /** Subagent task was cancelled. */
       taskCancelled: string;
+      /** User content wrapping a direct instruction to a running team member. */
+      memberInstruction: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */

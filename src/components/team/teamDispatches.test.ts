@@ -1,11 +1,35 @@
 import { describe, it, expect } from 'vitest';
 import type { Message } from '@/types';
 import type { ExecutionStep, TaskExecution } from '@/types/execution';
-import { collectMemberDispatches, summarizeByMember } from './teamDispatches';
+import { collectMemberDispatches, findRunningDispatch, parseMemberAddress, summarizeByMember, type MemberDispatch } from './teamDispatches';
 
 function step(over: Partial<ExecutionStep>): ExecutionStep {
   return { id: 's', executionId: 'e', type: 'tool', label: 'x', status: 'completed', toolName: 'read_file', toolInput: {}, source: 'agent', detailBlocks: [], ...over };
 }
+
+describe('parseMemberAddress / findRunningDispatch (direct instruction to a running member)', () => {
+  it('reads the agent chip or a leading @name and requires a body', () => {
+    expect(parseMemberAddress('@zz取数员 先看 Q3', 'zz取数员')).toEqual({ member: 'zz取数员', body: '先看 Q3' });
+    expect(parseMemberAddress('先看 Q3', 'zz取数员')).toEqual({ member: 'zz取数员', body: '先看 Q3' });
+    expect(parseMemberAddress('@zz取数员', 'zz取数员')).toBeNull();
+    expect(parseMemberAddress('  @zz撰写员   改成三段  ')).toEqual({ member: 'zz撰写员', body: '改成三段' });
+    expect(parseMemberAddress('@zz撰写员')).toBeNull();
+    expect(parseMemberAddress('顺便改一下')).toBeNull();
+  });
+
+  it('picks the member\'s newest live running hand-off only', () => {
+    const base = { kind: 'delegate' as const, identity: { conversationId: 'c1', batchToolCallId: 'x' }, taskIndex: 0, label: 'l', stepCount: 0 };
+    const dispatches: MemberDispatch[] = [
+      { ...base, key: 'a:0', agent: 'zz取数员', status: 'running', live: true },
+      { ...base, key: 'b:0', agent: 'zz取数员', status: 'completed', live: true },
+      { ...base, key: 'c:0', agent: 'zz撰写员', status: 'running', live: false },
+      { ...base, key: 'd:0', agent: 'zz取数员', status: 'running', live: true },
+    ];
+    expect(findRunningDispatch(dispatches, 'zz取数员')?.key).toBe('d:0');
+    expect(findRunningDispatch(dispatches, 'zz撰写员')).toBeNull();
+    expect(findRunningDispatch(dispatches, 'zz队长')).toBeNull();
+  });
+});
 
 describe('collectMemberDispatches', () => {
   it('reads live delegate steps (with children) and batch children grouped by task', () => {

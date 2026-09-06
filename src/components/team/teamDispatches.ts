@@ -1,6 +1,7 @@
 import type { BatchIdentity, Message } from '@/types';
 import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { MEMBER_INSTRUCTION_STEP } from '@/core/agent/dispatchInput';
 
 export type DispatchStatus = 'running' | 'completed' | 'error' | 'unknown' | 'interrupted';
 
@@ -67,7 +68,9 @@ function fromStep(
     ...(assistantMessageId ? { assistantMessageId } : {}),
     batchToolCallId: step.toolCallId,
   };
-  const children = (step.childSteps ?? []) as Array<ExecutionStep | ExecutionStepSnapshot>;
+  // Injected user instructions show in the process but are not tool calls.
+  const children = ((step.childSteps ?? []) as Array<ExecutionStep | ExecutionStepSnapshot>)
+    .filter((child) => child.toolName !== MEMBER_INSTRUCTION_STEP);
   if (step.toolName === TOOL_NAMES.RUN_AGENT_BATCH) {
     const byIndex = new Map<number, { agent: string; label: string; count: number; anyRunning: boolean; anyError: boolean }>();
     for (const child of children) {
@@ -145,6 +148,33 @@ export function collectMemberDispatches(params: {
     }
   }
   return Array.from(seen.values()).sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
+}
+
+/**
+ * `@member body` typed while a run is in flight — either the composer's agent
+ * chip or a leading `@name` token. null when the message does not address a
+ * member or has no body to pass on.
+ */
+export function parseMemberAddress(message: string, selectedAgentName?: string | null): { member: string; body: string } | null {
+  const trimmed = message.trim();
+  if (selectedAgentName) {
+    const prefix = `@${selectedAgentName}`;
+    const body = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length).trim() : trimmed;
+    return body ? { member: selectedAgentName, body } : null;
+  }
+  const match = /^@(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!match) return null;
+  const body = (match[2] ?? '').trim();
+  return body ? { member: match[1], body } : null;
+}
+
+/** The member's newest hand-off that is still running in this app session. */
+export function findRunningDispatch(dispatches: readonly MemberDispatch[], member: string): MemberDispatch | null {
+  for (let i = dispatches.length - 1; i >= 0; i--) {
+    const d = dispatches[i];
+    if (d.agent === member && d.live && d.status === 'running') return d;
+  }
+  return null;
 }
 
 export interface MemberSummary {

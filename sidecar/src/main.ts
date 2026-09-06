@@ -136,7 +136,8 @@ import {
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
-import { cancelDispatch } from '@/core/agent/subagentAbort';
+import { cancelDispatch, isDispatchActive } from '@/core/agent/subagentAbort';
+import { enqueueDispatchInput } from '@/core/agent/dispatchInput';
 import {
   writeLine,
   makeError,
@@ -429,6 +430,18 @@ function handleMessage(raw: string): void {
       if (typeof key === 'string') cancelDispatch(key);
     } catch (err) {
       log('state.cancelDispatch handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.dispatchInput') {
+    // Notification only — a direct user instruction to ONE running team member
+    // (`${toolCallId}:${taskIndex}`); queued only when this process owns the run.
+    try {
+      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; text?: unknown }) : {};
+      if (typeof p.key === 'string' && typeof p.text === 'string' && isDispatchActive(p.key)) enqueueDispatchInput(p.key, p.text);
+    } catch (err) {
+      log('state.dispatchInput handler threw (ignored — notifications get no response)', err);
     }
     return;
   }

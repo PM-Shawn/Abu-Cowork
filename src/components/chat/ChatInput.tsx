@@ -22,6 +22,9 @@ import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { requestDispatchInput } from '@/core/agent/dispatchCancel';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { collectMemberDispatches, findRunningDispatch, parseMemberAddress } from '@/components/team/teamDispatches';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -1402,6 +1405,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
     if (isRunning && activeConv?.id && message) {
+      // `@队员 …` while that member is working goes straight to it (block M);
+      // anything else waits in the queue strip for the leader as before.
+      const address = parseMemberAddress(message, selectedAgent?.name);
+      const running = address
+        ? findRunningDispatch(
+          collectMemberDispatches({ conversationId: activeConv.id, executions: Object.values(useTaskExecutionStore.getState().executions), messages: activeConv.messages }),
+          address.member,
+        )
+        : null;
+      if (address && running) {
+        requestDispatchInput(running.key, address.body);
+        useToastStore.getState().addToast({ type: 'success', title: format(t.chat.memberInstructionSent, { member: running.agent }) });
+        resetInput();
+        return;
+      }
       enqueueUserInput(activeConv.id, message);
       resetInput();
       return;

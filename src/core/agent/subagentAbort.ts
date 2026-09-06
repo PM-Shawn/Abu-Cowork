@@ -7,6 +7,8 @@
  * 3. Tracks active subagents for UI visibility
  */
 
+import { clearDispatchInputs } from './dispatchInput';
+
 /** Active subagent entry */
 interface ActiveSubagent {
   id: string;
@@ -96,7 +98,10 @@ function removeSubagent(subagentId: string) {
   if (entry) {
     entry.parentCleanup();
     activeSubagents.delete(subagentId);
-    if (entry.dispatchKey && dispatchIndex.get(entry.dispatchKey) === subagentId) dispatchIndex.delete(entry.dispatchKey);
+    if (entry.dispatchKey && dispatchIndex.get(entry.dispatchKey) === subagentId) {
+      dispatchIndex.delete(entry.dispatchKey);
+      clearDispatchInputs(entry.dispatchKey);
+    }
     notifyListeners();
   }
 }
@@ -127,6 +132,7 @@ export function cancelAllSubagents() {
   for (const entry of activeSubagents.values()) {
     entry.controller.abort();
     entry.parentCleanup();
+    if (entry.dispatchKey) clearDispatchInputs(entry.dispatchKey);
   }
   activeSubagents.clear();
   dispatchIndex.clear();

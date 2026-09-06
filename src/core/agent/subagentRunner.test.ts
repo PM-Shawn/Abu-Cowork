@@ -316,7 +316,8 @@ describe('subagentRunner', () => {
         | 'authorizationScopeId'
         | 'runPermissionCeiling'
         | 'triggerId'
-        | 'scheduledTaskId';
+        | 'scheduledTaskId'
+        | 'dispatchKey';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -340,6 +341,7 @@ describe('subagentRunner', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'dispatchKey',
         'locale',
         'uiStrings',
         'settingsSnapshot',

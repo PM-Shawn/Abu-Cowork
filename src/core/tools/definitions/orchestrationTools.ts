@@ -574,6 +574,7 @@ export const runAgentBatchTool: ToolDefinition = {
               allowedTools: loopCtx?.allowedTools,
               blockedTools: loopCtx?.blockedTools,
               imContext: loopCtx?.imContext,
+              dispatchKey: `${batchIdentity.batchToolCallId}:${idx}`,
               ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
               onProgress: (event) => {
                 try {

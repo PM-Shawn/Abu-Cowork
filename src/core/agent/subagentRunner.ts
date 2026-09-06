@@ -196,6 +196,8 @@ export interface SubagentRunParams {
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
+  dispatchKey?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -669,6 +671,7 @@ function buildSubagentRunParams(
     runPermissionCeiling: options.runPermissionCeiling,
     triggerId: options.triggerId,
     scheduledTaskId: options.scheduledTaskId,
+    dispatchKey: options.dispatchKey,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,

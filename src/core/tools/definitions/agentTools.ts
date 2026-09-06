@@ -324,10 +324,11 @@ export const delegateToAgentTool: ToolDefinition = {
     const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // 7. Create per-subagent AbortController (linked to parent)
+    const dispatchKey = toolExecContext?.toolCallId ? `${toolExecContext.toolCallId}:0` : undefined;
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
       effectiveAgentName,
       loopCtx?.signal,
-      toolExecContext?.toolCallId ? `${toolExecContext.toolCallId}:0` : undefined,
+      dispatchKey,
     );
 
     // 8. Sync mode: blocking await
@@ -361,6 +362,7 @@ export const delegateToAgentTool: ToolDefinition = {
         blockedTools: loopCtx?.blockedTools,
         imContext: loopCtx?.imContext,
         persistParentToolImages: true,
+        ...(dispatchKey ? { dispatchKey } : {}),
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });

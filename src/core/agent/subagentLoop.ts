@@ -48,6 +48,7 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
+import { appendInstructionToHistory, drainDispatchInputs, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
@@ -465,6 +466,12 @@ export interface SubagentLoopOptions {
   /** Parent unattended provenance, retained across delegation boundaries. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /**
+   * `${toolCallId}:${taskIndex}` of the hand-off this run serves (in-conversation
+   * team). Lets the user address THIS member while it runs: the loop drains
+   * dispatchInput.ts's queue for the key between turns.
+   */
+  dispatchKey?: string;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
@@ -749,6 +756,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         await emitHook({ type: 'subagentEnd', timestamp: Date.now(), agentName: agent.name, result: abortResult.text, error: false });
         subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
         return abortResult;
+      }
+
+      // A direct user instruction to THIS member while it runs (block M):
+      // show it in the member's process as a step, then put it in front of the
+      // model as user content before this turn's request.
+      if (options.dispatchKey) {
+        const notes = drainDispatchInputs(options.dispatchKey);
+        notes.forEach((note, noteIndex) => {
+          const noteId = `note-${turn}-${noteIndex}`;
+          onProgress?.({ type: 'tool-start', id: noteId, toolName: MEMBER_INSTRUCTION_STEP, toolInput: { text: note } });
+          onProgress?.({ type: 'tool-end', id: noteId, toolName: MEMBER_INSTRUCTION_STEP, result: note, error: false });
+          appendInstructionToHistory(messages, format(getI18n().chat.subagent.memberInstruction, { text: note }), `sub-note-${turn}-${noteIndex}`);
+        });
       }
 
       const collectedToolCalls: Array<{

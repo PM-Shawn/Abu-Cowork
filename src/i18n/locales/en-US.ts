@@ -430,6 +430,7 @@ const enUS: TranslationDict = {
     unsupportedDocumentAttachment: 'Direct PDF attachments are not available in this batch. Remove “{name}” and try again.',
     attachmentAdmissionPending: 'Still adding attachments. Wait a moment, then send.',
     sendAlreadyPending: 'A previous send is still being accepted. Wait a moment, then try again.',
+    memberInstructionSent: 'Passed to {member} — it will see this on its next step',
     attachmentAdmissionFailed: 'Could not add that attachment. Try attaching it again.',
     composerSuggestions: 'Agent and skill suggestions',
     suggestionSectionTeams: 'Teams',
@@ -437,6 +438,7 @@ const enUS: TranslationDict = {
     suggestionSectionSkills: 'Skills',
     subagent: {
       taskCancelled: 'Error: task was cancelled',
+      memberInstruction: '## Instruction from the user\n{text}\n\nFold this into the current task and continue; where it conflicts with the original task, this instruction wins.',
       outputLimitIncomplete: '[The subagent repeatedly hit the output token limit without finishing; the result below may be incomplete. Consider retrying with a model that has a larger output budget.]',
       stoppedIncomplete: '[Subagent stopped: the model repeatedly produced incomplete tool calls or its output was truncated — the model may not be capable enough or the context too long. Consider retrying with a more capable model.]',
       cancelled: '[cancelled]',

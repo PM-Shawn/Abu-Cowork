@@ -658,6 +658,7 @@ const zhCN: TranslationDict = {
     detailActionsFailed: '{failed}/{total} 个浏览器动作失败',
     detailNothingDelivered: '这次没有产出可交付的结果',
     detailTurnLimit: '达到轮次上限，下面是已有结果',
+    detailBrowserToolsNotReady: '浏览器工具未就绪，这次运行没有浏览器能力',
     nextStep: '接下来：{step}',
   },
 

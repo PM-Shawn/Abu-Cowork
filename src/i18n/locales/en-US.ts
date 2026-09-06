@@ -657,6 +657,7 @@ const enUS: TranslationDict = {
     detailActionsFailed: '{failed} of {total} browser actions failed',
     detailNothingDelivered: 'nothing was produced to deliver',
     detailTurnLimit: 'hit the turn limit — the partial result is below',
+    detailBrowserToolsNotReady: 'the browser tools were not ready, so this run had no browser',
     nextStep: 'Next: {step}',
   },
 

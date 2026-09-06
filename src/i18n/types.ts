@@ -851,6 +851,12 @@ export interface TranslationDict {
      * below it would contradict.
      */
     detailTurnLimit: string;
+    /**
+     * The built-in browser had not connected when the run's tool roster was
+     * frozen, so the run never had browser tools (issue #389). Not a gate
+     * refusal — nothing was decided, the tools were simply absent.
+     */
+    detailBrowserToolsNotReady: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
   };

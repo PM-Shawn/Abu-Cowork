@@ -23,6 +23,7 @@ import { outputSender } from '../im/outputSender';
 import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
 import type { AbuMessage, MessageColor, OutputContext } from '../im/adapters/types';
 import { getToolInvoker } from '../agent/ports/toolInvoker';
+import { waitForBuiltinBrowserTools } from '../browser/builtinBrowserRuntime';
 import { buildScheduledRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { createUnattendedConfirmation } from '../permissions/unattendedConfirmation';
 import {
@@ -43,6 +44,7 @@ import {
   formatUnattendedOutcomeSummary,
   unattendedRunOutcomeMetadata,
   type UnattendedRunOutcome,
+  type UnattendedRuntimeGapCode,
 } from '../observability/unattendedRunOutcome';
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
@@ -204,6 +206,24 @@ function describeDenials(denials: string[], mode: PermissionMode): string {
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
 
+/**
+ * How long a dispatch waits for the BUILT-IN browser runtime before freezing
+ * this run's tool roster (issue #389).
+ *
+ * Long enough for the connect that races app start — spawning the child
+ * process and completing the MCP handshake — on a machine busy enough to have
+ * lost that race in the first place. Short enough that a runtime which will
+ * never arrive costs one delayed dispatch rather than a hung 9am task: past
+ * this point the run proceeds without browser tools and SAYS SO
+ * (`runtimeGap`), instead of leaving the model to interpret a bare
+ * "tool ... is not allowed for this agent run".
+ *
+ * Only the built-in server is waited on. A third-party MCP server may be
+ * unreachable or user-disabled for days, and no scheduled run may sit behind
+ * one.
+ */
+const BUILTIN_BROWSER_READY_TIMEOUT_MS = 15_000;
+
 class SchedulerEngine {
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private runningTasks = new Set<string>();
@@ -328,11 +348,49 @@ class SchedulerEngine {
      * one-line latch rather than a restructure.
      */
     let outcomePushed = false;
+    /**
+     * A capability the host could not give this run, decided before the first
+     * tool call. Declared out here because BOTH endings report it: the outcome
+     * built in `try`, and the one the outer `catch` builds when the run blew
+     * up after dispatching without the browser.
+     */
+    let runtimeGap: UnattendedRuntimeGapCode | undefined;
     try {
       // Everything after scope creation belongs inside this lifecycle owner.
       // Tool discovery and permission initialization can throw synchronously;
       // the finally below must still dispose the scope and release runningTasks.
       const permissions = resolveScheduledRunPermissions(task, authorizationScopeId, conversationId);
+      /**
+       * #389 — take the roster snapshot AFTER the host has settled, not during.
+       *
+       * The ceiling below is "a reachability snapshot, not a new grant", and
+       * that is the right posture; the bug was WHEN it was taken.
+       * `schedulerEngine.start()` ticks immediately to catch up missed tasks,
+       * and `abu-browser` connects asynchronously after every renderer load —
+       * so an overdue browser task at app start could freeze "no browser
+       * exists" into its whole lifetime and report it only as a tool error the
+       * model cannot act on. It never retried, and the runtime was up seconds
+       * later.
+       *
+       * `runAgentLoopDispatched` already awaits exactly this readiness a few
+       * lines below (for every entry point); the fix is to do it BEFORE the
+       * snapshot rather than after it. Bounded, and a timeout is reported as
+       * `runtimeGap` on the run's ending rather than silently frozen in.
+       *
+       * NOT solved by refreshing the roster mid-run: the ceiling's whole
+       * contract is that it is frozen at dispatch and may only remove
+       * authority. Widening it while a run is in flight is a different (and
+       * much larger) security question than this bug.
+       */
+      const browserReadiness = await waitForBuiltinBrowserTools({
+        timeoutMs: BUILTIN_BROWSER_READY_TIMEOUT_MS,
+      });
+      if (browserReadiness === 'not-ready') {
+        runtimeGap = 'browser-tools-not-ready';
+        console.warn(
+          `[Scheduler] Built-in browser not ready within ${BUILTIN_BROWSER_READY_TIMEOUT_MS}ms — running without browser tools: ${task.name}`,
+        );
+      }
       const runPermissionCeiling = buildScheduledRunPermissionCeiling(
         getToolInvoker().getAllTools().map((tool) => tool.name),
       );
@@ -370,6 +428,7 @@ class SchedulerEngine {
         reason: result.reason,
         abortedByBrowserDenials,
         report,
+        ...(runtimeGap ? { runtimeGap } : {}),
       });
 
       // max_turns hit the cap but still produced a usable (partial) answer — deliver
@@ -471,6 +530,7 @@ class SchedulerEngine {
             reason: 'error',
             abortedByBrowserDenials: false,
             report,
+            ...(runtimeGap ? { runtimeGap } : {}),
           }),
         );
         // No latch here: this IS the last statement that can push.

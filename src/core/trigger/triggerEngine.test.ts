@@ -76,6 +76,7 @@ import { useSettingsStore } from '../../stores/settingsStore';
 import { checkToolApproval } from '../tools/registry';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import { decideToolUnderRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import {
   __resetUnattendedConfirmationForTests,
   setUnattendedConfirmationResolver,
@@ -933,6 +934,36 @@ describe('TriggerEngine', () => {
         expect.any(String),
         expect.objectContaining({ authorizationScopeId: 'scope-trigger-test' }),
       );
+    });
+
+    /**
+     * #389, checked at the OTHER unattended entry point.
+     *
+     * The scheduler had to start waiting for the built-in browser because it
+     * freezes a snapshot of the live tool registry at dispatch. A trigger run
+     * does not: its ceiling comes from the trigger's own capability, so a
+     * registry that is still filling up at app start cannot lock the run out
+     * of tools it is entitled to. This pins that asymmetry — the day someone
+     * gives triggers a roster snapshot, they inherit #389 and this test says
+     * so.
+     */
+    it('derives its ceiling from the capability, never from the live tool registry', async () => {
+      const trigger = makeTrigger({
+        id: 'trigger-ceiling-not-a-roster',
+        action: { prompt: 'Check the dashboard', capability: 'full' },
+      });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      const ceiling = runAgentLoopMock.mock.calls.at(-1)?.[2]?.runPermissionCeiling;
+      expect(ceiling).toEqual({ version: 1, source: 'trigger', capability: 'full' });
+      // No `allowedTools` to go stale, so a browser tool that only appears in
+      // the registry seconds later is still reachable for this run.
+      expect(ceiling).not.toHaveProperty('allowedTools');
+      expect(
+        decideToolUnderRunPermissionCeiling(ceiling, 'abu-browser__get_tabs', {}).decision,
+      ).toBe('allow');
     });
 
     it('disposes the trigger-run scope when the agent runner throws', async () => {

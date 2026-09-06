@@ -1420,6 +1420,9 @@ export interface TranslationDict {
     followUpMemberAppend: string;
     recentConversations: string;
     noConversationsYet: string;
+    rerunConversation: string;
+    rerunConversationTitle: string;
+    rerunConversationEmpty: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
@@ -2083,6 +2086,10 @@ export interface TranslationDict {
     teamAppendInstruction: string;
     teamStalledFor: string;
     teamDispatchInterrupted: string;
+    teamDispatchNoToolCalls: string;
+    teamMemberBarCollapse: string;
+    teamMemberBarExpand: string;
+    teamMemberBarCollapsed: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -2123,6 +2130,7 @@ export interface TranslationDict {
     teamExecutorEmpty: string;
     teamExecutorHint: string;
     teamAutoPaused: string;
+    teamPlanUnconfirmed: string;
     title: string;
     newTask: string;
     editTask: string;

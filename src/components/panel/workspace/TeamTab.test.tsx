@@ -51,6 +51,19 @@ describe('TeamTab', () => {
     expect(tabs.some((tab) => tab.kind === 'subagent' && tab.title === 'zz取数员' && tab.identity.batchToolCallId === 'tc-d')).toBe(true);
   });
 
+  it('flags a completed hand-off with zero tool calls as unverified', () => {
+    const conversation = useChatStore.getState().conversations.c1;
+    const messages = [{
+      id: 'a2', role: 'assistant' as const, content: '', timestamp: 6,
+      executionSteps: [{ id: 'd2', toolCallId: 'tc-e', type: 'delegate' as const, label: '委派', status: 'completed' as const, toolName: 'delegate_to_agent', agentName: 'zz撰写员', childSteps: [] }],
+    }];
+    useChatStore.setState({ conversations: { c1: { ...conversation, messages: [...conversation.messages, ...messages] } } });
+    render(<TeamTab conversationId="c1" />);
+    const badges = screen.getAllByTestId('dispatch-unverified');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('未调用工具');
+  });
+
   it('explains when the conversation has no team', () => {
     useChatStore.setState((s) => ({ conversations: { c1: { ...s.conversations.c1, teamId: undefined } } }));
     render(<TeamTab conversationId="c1" />);

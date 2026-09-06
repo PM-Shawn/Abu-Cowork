@@ -21,6 +21,15 @@ export interface MemberDispatch {
   live: boolean;
 }
 
+/**
+ * A member that finished without a single tool call had nothing it could have
+ * checked — the same signal the leader gets as a note in the tool result
+ * (delegateNoToolCallsNote / batchNoToolCallsNote), here for the UI.
+ */
+export function isUnverifiedDispatch(d: Pick<MemberDispatch, 'status' | 'stepCount'>): boolean {
+  return d.status === 'completed' && d.stepCount === 0;
+}
+
 function stepStatus(status: ExecutionStep['status'] | ExecutionStepSnapshot['status']): DispatchStatus {
   if (status === 'running' || status === 'pending') return 'running';
   if (status === 'completed') return 'completed';

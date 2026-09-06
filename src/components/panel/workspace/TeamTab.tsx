@@ -7,7 +7,7 @@ import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import type { DispatchStatus } from '@/components/team/teamDispatches';
+import { isUnverifiedDispatch, type DispatchStatus } from '@/components/team/teamDispatches';
 import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -152,6 +152,9 @@ export default function TeamTab({ conversationId }: { conversationId: string }) 
                             <span className="min-w-0 flex-1 truncate text-[var(--abu-text-primary)]">{d.label}</span>
                             {stalledMinutes(d) !== null && (
                               <span className="shrink-0 text-[var(--abu-warning)]" data-testid="dispatch-stalled">{format(t.workspace.teamStalledFor, { n: stalledMinutes(d) ?? 0 })}</span>
+                            )}
+                            {isUnverifiedDispatch(d) && (
+                              <span className="shrink-0 text-[var(--abu-warning)]" data-testid="dispatch-unverified">{t.workspace.teamDispatchNoToolCalls}</span>
                             )}
                             <span className="shrink-0 text-[var(--abu-text-muted)]">{format(t.workspace.agentTools, { count: d.stepCount })}</span>
                             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />

@@ -72,6 +72,20 @@ export async function notifyScheduledTaskCompleted(taskName: string): Promise<vo
 /**
  * Send a scheduled task error notification.
  */
+/**
+ * A scheduled run pinned to a strict team ("confirm the split first") ran
+ * unattended, so the split was never confirmed. Tell the user to review the
+ * result rather than letting the skip go unnoticed.
+ */
+export async function notifyScheduledTeamRunUnconfirmed(message: string): Promise<void> {
+  publish({
+    type: 'schedule_fired',
+    source: 'scheduler',
+    payload: { title: message, outcome: 'completed' },
+    dedupKey: `schedule_team_unconfirmed:${message}:${Date.now()}`,
+  });
+}
+
 export async function notifyScheduledTaskError(taskName: string): Promise<void> {
   publish({
     type: 'agent_error',

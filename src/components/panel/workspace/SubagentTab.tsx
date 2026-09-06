@@ -167,6 +167,9 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
               </span>
             )}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
+            {rowStatus === 'succeeded' && steps.length === 0 && (
+              <span className="text-[var(--abu-warning)]" data-testid="dispatch-unverified">{t.workspace.teamDispatchNoToolCalls}</span>
+            )}
             <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
             {liveStatus === 'running' && dispatchKey && (
               <button

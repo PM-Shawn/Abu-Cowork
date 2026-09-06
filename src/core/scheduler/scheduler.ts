@@ -6,7 +6,9 @@ import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyScheduledTaskCompleted,
   notifyScheduledTaskError,
+  notifyScheduledTeamRunUnconfirmed,
 } from '../../utils/notifications';
+import { useTeamStore } from '../../stores/teamStore';
 import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
 import type { PermissionMode } from '../permissions/permissionMode';
@@ -189,6 +191,18 @@ class SchedulerEngine {
     }
   }
 
+  /** A strict team ("confirm the split first") has nobody to confirm during a
+   *  scheduled run, so report_plan auto-approves (memoryTools.ts). Say so once
+   *  the run delivers, instead of letting the skipped confirmation pass silently. */
+  private notifyStrictTeamSkippedConfirmation(task: ScheduledTask): void {
+    if (!task.teamId) return;
+    const team = useTeamStore.getState().teams.find((entry) => entry.id === task.teamId);
+    if (!team || team.requirePlanApproval !== true) return;
+    const message = format(getI18n().schedule.teamPlanUnconfirmed, { name: task.name, team: team.name });
+    notifyScheduledTeamRunUnconfirmed(message);
+    useToastStore.getState().addToast({ type: 'info', title: message });
+  }
+
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
 
@@ -267,6 +281,7 @@ class SchedulerEngine {
         if (task.outputChannelId) {
           await this.pushToIMChannel(task, conversationId);
         }
+        this.notifyStrictTeamSkippedConfirmation(task);
 
         const t = getI18n();
         if (incomplete) {

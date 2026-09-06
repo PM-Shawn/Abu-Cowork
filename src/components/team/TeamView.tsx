@@ -8,7 +8,8 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search } from 'lucide-react';
+import { Bot, UsersRound, Search, RotateCcw } from 'lucide-react';
+import { getMessageText } from '@/core/context/contextUtils';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
@@ -305,9 +306,27 @@ export default function TeamView() {
   const teams = useTeamStore((s) => s.teams);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const switchConversation = useChatStore((s) => s.switchConversation);
+  const createConversation = useChatStore((s) => s.createConversation);
   const conversationIndex = useChatStore((s) => s.conversationIndex);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
+  const addToast = useToastStore((s) => s.addToast);
+
+  // "Run again": a fresh conversation pinned to the same team, same workspace,
+  // with the original first request prefilled (not sent) so it can be tweaked.
+  const rerunConversation = async (team: Team, meta: { id: string; workspacePath?: string | null }) => {
+    const { loadMessages } = await import('@/core/session/conversationStorage');
+    const messages = await loadMessages(meta.id);
+    const first = messages.find((m) => m.role === 'user');
+    const text = first ? getMessageText(first.content).trim() : '';
+    if (!text) {
+      addToast({ type: 'info', title: t.team.rerunConversationEmpty });
+      return;
+    }
+    createConversation(meta.workspacePath ?? null, { teamId: team.id });
+    setPendingInput(text);
+    closeTeam();
+  };
 
   const [search, setSearch] = useState('');
   // AgentsSection filters by the shared toolbox query — bind the members-tab
@@ -415,15 +434,25 @@ export default function TeamView() {
                       <div className="mt-1.5 flex flex-wrap items-center gap-1" data-testid={`team-recent-${team.name}`}>
                         <span className="text-caption text-[var(--abu-text-muted)]">{recent.length > 0 ? t.team.recentConversations : t.team.noConversationsYet}</span>
                         {recent.map((meta) => (
-                          <button
-                            key={meta.id}
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); void switchConversation(meta.id); closeTeam(); }}
-                            className="max-w-[200px] truncate rounded-md bg-[var(--abu-bg-base)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)]"
-                            title={meta.title}
-                          >
-                            {meta.title}
-                          </button>
+                          <span key={meta.id} className="inline-flex max-w-[240px] items-center rounded-md bg-[var(--abu-bg-base)]">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void switchConversation(meta.id); closeTeam(); }}
+                              className="min-w-0 truncate px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)]"
+                              title={meta.title}
+                            >
+                              {meta.title}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); void rerunConversation(team, meta); }}
+                              className="shrink-0 rounded-md px-1 py-0.5 text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+                              aria-label={`${t.team.rerunConversation}: ${meta.title}`}
+                              title={t.team.rerunConversationTitle}
+                            >
+                              <RotateCcw aria-hidden="true" className="h-3 w-3" />
+                            </button>
+                          </span>
                         ))}
                       </div>
                     );

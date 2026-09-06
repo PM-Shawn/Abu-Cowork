@@ -52,12 +52,15 @@ vi.mock('../im/outputSender', () => ({
 vi.mock('../../utils/notifications', () => ({
   notifyScheduledTaskCompleted: vi.fn(),
   notifyScheduledTaskError: vi.fn(),
+  notifyScheduledTeamRunUnconfirmed: vi.fn(),
 }));
 
 // Import after mocks
 import { countLeadingErrorRuns, schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { outputSender } from '../im/outputSender';
+import { notifyScheduledTeamRunUnconfirmed } from '../../utils/notifications';
+import { useTeamStore } from '../../stores/teamStore';
 
 function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -104,6 +107,29 @@ describe('SchedulerEngine output delivery by exit reason', () => {
 
     expect(outputSender.buildMessage).toHaveBeenCalled();
     expect(latestRunStatus(task.id)).toBe('completed');
+  });
+
+  it('tells the user when a strict team ran unattended (split never confirmed)', async () => {
+    useTeamStore.setState({ teams: [
+      { id: 't-strict', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1', 'r2'], createdAt: 1, requirePlanApproval: true },
+      { id: 't-loose', name: '闲聊小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 },
+    ] });
+    try {
+      const strict = makeTask({ id: 'task-strict', name: '周报', teamId: 't-strict' });
+      const loose = makeTask({ id: 'task-loose', name: '闲聊', teamId: 't-loose' });
+      useScheduleStore.setState({ tasks: { [strict.id]: strict, [loose.id]: loose } });
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+      await schedulerEngine.runNow(strict.id);
+      expect(notifyScheduledTeamRunUnconfirmed).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(notifyScheduledTeamRunUnconfirmed).mock.calls[0][0]).toContain('周报');
+      expect(vi.mocked(notifyScheduledTeamRunUnconfirmed).mock.calls[0][0]).toContain('数据小队');
+
+      await schedulerEngine.runNow(loose.id);
+      expect(notifyScheduledTeamRunUnconfirmed).toHaveBeenCalledTimes(1);
+    } finally {
+      useTeamStore.setState({ teams: [] });
+    }
   });
 
   it('does NOT deliver output on no_progress (degenerate result)', async () => {

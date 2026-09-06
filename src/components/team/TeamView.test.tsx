@@ -22,12 +22,19 @@ vi.mock('@/stores/settingsStore', () => ({
     selector ? selector(settingsState) : settingsState,
 }));
 
+const chatState = {
+  setPendingInput: vi.fn(),
+  startNewConversation: vi.fn(),
+  switchConversation: vi.fn(),
+  createConversation: vi.fn(() => 'c-new'),
+  conversationIndex: {} as Record<string, { id: string; title: string; updatedAt: number; teamId?: string; workspacePath?: string | null }>,
+};
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    setPendingInput: vi.fn(),
-    startNewConversation: vi.fn(),
-  }),
+  useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector(chatState),
 }));
+
+const loadMessages = vi.fn();
+vi.mock('@/core/session/conversationStorage', () => ({ loadMessages: (id: string) => loadMessages(id) }));
 
 const discoveryState = { agents: [] as Array<{ name: string }>, refresh: vi.fn() };
 vi.mock('@/stores/discoveryStore', () => ({
@@ -97,6 +104,7 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
+    chatState.conversationIndex = {};
     vi.clearAllMocks();
   });
 
@@ -112,6 +120,29 @@ describe('TeamView', () => {
     render(<TeamView />);
     expect(screen.getByText('还没有团队')).toBeTruthy();
     expect(screen.getAllByText('新建团队').length).toBeGreaterThan(0);
+  });
+
+  it('teams tab: "再来一次" opens a new conversation pinned to the team with the first request prefilled', async () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
+    chatState.conversationIndex = { c1: { id: 'c1', title: '出周报', updatedAt: 5, teamId: 't1', workspacePath: '/ws' } };
+    loadMessages.mockResolvedValueOnce([{ id: 'u1', role: 'user', content: '出一版本周周报', timestamp: 1 }]);
+    render(<TeamView />);
+    fireEvent.click(screen.getByRole('button', { name: '再来一次: 出周报' }));
+    await waitFor(() => expect(chatState.createConversation).toHaveBeenCalledWith('/ws', { teamId: 't1' }));
+    expect(chatState.setPendingInput).toHaveBeenCalledWith('出一版本周周报');
+    expect(chatState.switchConversation).not.toHaveBeenCalled();
+  });
+
+  it('teams tab: "再来一次" without a first user message explains instead of opening an empty conversation', async () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
+    chatState.conversationIndex = { c1: { id: 'c1', title: '空对话', updatedAt: 5, teamId: 't1' } };
+    loadMessages.mockResolvedValueOnce([]);
+    render(<TeamView />);
+    fireEvent.click(screen.getByRole('button', { name: '再来一次: 空对话' }));
+    await waitFor(() => expect(addToast).toHaveBeenCalled());
+    expect(chatState.createConversation).not.toHaveBeenCalled();
   });
 
   it('team dialog: create button stays disabled until name + leader are set', async () => {

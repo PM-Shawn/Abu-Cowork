@@ -39,6 +39,15 @@ const PAGE = 'https://oa.example.com/apply';
 let nextContentsId = 900;
 const contentsRegistry = new Map();
 
+/** The origin Electron would report for a url, or undefined when it has none. */
+function originOfUrl(url) {
+  try {
+    return new URL(String(url)).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 class FakeWebContents {
   constructor() {
     this.id = (nextContentsId += 1);
@@ -67,7 +76,16 @@ class FakeWebContents {
     const contents = this;
     return {
       get framesInSubtree() {
-        return [{ url: contents.url }, ...contents.realFrames.map((url) => ({ url }))];
+        // `origin` as Electron 43 reports it: the browser's own answer, and
+        // the literal string 'null' for an opaque (sandboxed) frame. A row
+        // given as a bare string is a frame that reports no origin at all,
+        // which is what makes the url fallback observable.
+        return [
+          { url: contents.url, origin: originOfUrl(contents.url) },
+          ...contents.realFrames.map((frame) => (typeof frame === 'string'
+            ? { url: frame }
+            : frame)),
+        ];
       },
     };
   }
@@ -361,6 +379,31 @@ test('a REACHABLE region\'s origin is left alone: same-origin access already pro
     const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     assert.equal(tabRow(listing, tabId).frames[1].origin, 'https://oa.example.com');
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Round-2 F9. `WebFrameMain.origin` is the browser's own answer and is honest
+ * about an opaque origin — a sandboxed frame reports the string 'null'.
+ * Deriving one from the address instead would confirm a site for a document
+ * that has none, and the page-authored `src` would then be believed.
+ */
+test('an opaque frame confirms nothing, even though its address looks like a site', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
+    const { tabId } = await openTab(host, {
+      runtimeFrames: [main, opaqueRegion('https://bank.example.com')],
+      // The browser sees a frame whose ADDRESS is bank.example.com but whose
+      // origin is opaque: it is sandboxed. It confirms nothing.
+      realFrames: [{ url: 'https://bank.example.com/transfer', origin: 'null' }],
+    });
+
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
+
+    assert.equal(tabRow(listing, tabId).frames[1].origin, null);
   } finally {
     restore();
   }

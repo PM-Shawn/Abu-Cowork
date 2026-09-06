@@ -1741,7 +1741,15 @@ function validateFrameOrigins(view, frames) {
   const real = new Set();
   try {
     for (const frame of view.webContents.mainFrame.framesInSubtree) {
-      const origin = normalizedOriginOf(frame.url);
+      // `WebFrameMain.origin` over `url`: it is the browser's own answer, and
+      // it is honest about an opaque origin (a sandboxed frame reports the
+      // string "null", which normalizes away and so confirms nothing) where
+      // reverse-engineering one from the address would quietly manufacture a
+      // site. `url` remains the fallback for a frame that reports no origin.
+      const stated = typeof frame.origin === 'string' && frame.origin !== ''
+        ? frame.origin
+        : frame.url;
+      const origin = normalizedOriginOf(stated);
       if (origin) real.add(origin);
     }
   } catch {

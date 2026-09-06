@@ -2802,11 +2802,24 @@ function moveOffScreen(frame: HTMLIFrameElement): void {
   });
 }
 
-/** A frame the browser refuses to open up: exactly what a cross-origin one is. */
+/**
+ * A frame the browser refuses to open up: exactly what a cross-origin one is.
+ *
+ * The `src` is served through a stubbed `getAttribute` rather than written to
+ * the real attribute. Setting it makes happy-dom actually FETCH the address —
+ * a live request out of a unit test, which TESTING §3's determinism rule
+ * forbids and which showed up as `NetworkError … The operation was aborted`
+ * on every run. The runtime reads the attribute through `getAttribute`, so the
+ * stub is the same input by the path the code actually takes.
+ */
 function addOpaqueFrame(id: string, src: string): HTMLIFrameElement {
   const frame = document.createElement('iframe');
   frame.id = id;
-  frame.setAttribute('src', src);
+  const realGetAttribute = frame.getAttribute.bind(frame);
+  Object.defineProperty(frame, 'getAttribute', {
+    configurable: true,
+    value: (name: string) => (name === 'src' ? src : realGetAttribute(name)),
+  });
   Object.defineProperty(frame, 'contentDocument', { configurable: true, get: () => null });
   document.body.appendChild(frame);
   return frame;

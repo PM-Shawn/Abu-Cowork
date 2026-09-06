@@ -116,6 +116,35 @@ describe('building the tree', () => {
     });
   });
 
+  it('keeps a sandboxed region inaccessible instead of letting its url rescue it', () => {
+    // A sandbox with an opaque origin reports the literal string "null". The
+    // shared type promises that an `accessible` row's origin came from the
+    // browser; reverse-engineering one from the address would break that
+    // promise AND put the manufactured origin into the merged grant.
+    const tree = buildFrameTree(
+      [
+        { frameId: 0, documentId: 'doc-0', result: { url: 'https://oa.example.com/apply', origin: 'https://oa.example.com', title: '' } },
+        { frameId: 3, documentId: 'doc-3', result: { url: 'https://vendor.example.net/widget', origin: 'null', title: '' } },
+      ],
+      normalizeOrigin,
+    );
+
+    expect(tree[1]).toMatchObject({
+      frameId: 'f3', origin: null, accessible: false, inaccessibleReason: 'not-a-web-page',
+    });
+  });
+
+  it('still derives an origin from the url for a probe that reported none', () => {
+    // The field is newer than the probe; an older answer must not become "not
+    // a web page" just because it predates it.
+    const tree = buildFrameTree(
+      [{ frameId: 0, documentId: 'doc-0', result: { url: 'https://oa.example.com/apply', title: '' } }],
+      normalizeOrigin,
+    );
+
+    expect(tree[0]).toMatchObject({ origin: 'https://oa.example.com', accessible: true });
+  });
+
   it('leaves out a frame that never answered rather than inventing a row for it', () => {
     const tree = buildFrameTree(
       [row(0, 'https://oa.example.com/form'), { frameId: 9, documentId: 'doc-9' }],

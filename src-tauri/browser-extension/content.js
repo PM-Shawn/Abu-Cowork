@@ -89,6 +89,7 @@
   var MAX_SHADOW_DEPTH = 10;
   var LOCAL_FRAME_WALK = !!electronBrowserRuntime;
   var hostFrameId = MAIN_FRAME_REF;
+  var frameListTruncated = false;
   function hostScope() {
     return { doc: document, frameId: hostFrameId };
   }
@@ -189,6 +190,7 @@
       }
     };
     if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
+    frameListTruncated = out.length >= MAX_FRAMES;
     frameNodeById.clear();
     for (const node of out) frameNodeById.set(node.frameId, node);
     return out;
@@ -215,7 +217,9 @@
     if (doc && doc.defaultView) return { doc, frameId: wanted };
     const known = frameNodeById.get(wanted);
     if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
-    throw new Error(frameGoneMessage(wanted));
+    throw new Error(
+      frameGoneMessage(wanted) + (frameListTruncated ? ` This page has more than ${MAX_FRAMES} embedded regions and only the first ${MAX_FRAMES} are listed, so this one may simply be past the end of that list rather than gone.` : "")
+    );
   }
   var LOCATOR_ROUTED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select"]);
   function resolveLocatorFrame(action, payload, scope) {

@@ -40,7 +40,7 @@
     return Number.isSafeInteger(id2) && id2 >= 0 ? id2 : null;
   }
   function buildFrameTree(injections, normalizeOrigin) {
-    const originOf = (result) => normalizeOrigin(result?.origin) ?? normalizeOrigin(result?.url);
+    const originOf = (result) => result?.origin !== void 0 ? normalizeOrigin(result.origin) : normalizeOrigin(result?.url);
     const answered = injections.filter((row) => row.result !== void 0);
     const main = answered.find((row) => row.frameId === 0);
     const topOrigin = main ? originOf(main.result) : null;

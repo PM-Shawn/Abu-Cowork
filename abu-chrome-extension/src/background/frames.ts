@@ -110,8 +110,19 @@ export function buildFrameTree(
   injections: FrameInjection[],
   normalizeOrigin: (url: string | undefined) => string | null,
 ): FrameTree {
+  /**
+   * A frame's origin, from what the frame itself reported.
+   *
+   * `origin` WINS OUTRIGHT when the probe sent one — the url is a fallback for
+   * a probe that predates the field, not a second opinion. A sandboxed frame
+   * reports the string `"null"`, which normalizes to null and must STAY null:
+   * letting the url rescue it would hand an opaque-origin document an
+   * `accessible: true` row, and the shared type promises that such a row's
+   * origin is browser-authoritative — which of an opaque origin it is not. It
+   * would also put that origin into the merged grant.
+   */
   const originOf = (result: FrameProbeResult | undefined): string | null =>
-    normalizeOrigin(result?.origin) ?? normalizeOrigin(result?.url);
+    result?.origin !== undefined ? normalizeOrigin(result.origin) : normalizeOrigin(result?.url);
   const answered = injections.filter((row) => row.result !== undefined);
   const main = answered.find((row) => row.frameId === 0);
   const topOrigin = main ? originOf(main.result) : null;

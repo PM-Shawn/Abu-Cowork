@@ -211,6 +211,9 @@ const LOCAL_FRAME_WALK = !!electronBrowserRuntime;
  */
 let hostFrameId: FrameRef = MAIN_FRAME_REF;
 
+/** Did the last frame walk stop at `MAX_FRAMES` with regions still unvisited? */
+let frameListTruncated = false;
+
 /** A document plus the frame handle it answers to. The unit every search takes. */
 interface DomScope {
   doc: Document;
@@ -398,6 +401,11 @@ function enumerateFrames(): FrameTree {
   };
 
   if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
+  // A page with more regions than the cap is reported truncated, and a handle
+  // that is not in the list then gets an honest refusal rather than "it
+  // reloaded, or was removed" — which of a region that is sitting right there,
+  // just past row 40, is simply untrue.
+  frameListTruncated = out.length >= MAX_FRAMES;
   frameNodeById.clear();
   for (const node of out) frameNodeById.set(node.frameId, node);
   return out;
@@ -436,7 +444,13 @@ function resolveScope(payload: Record<string, unknown>): DomScope {
   if (doc && doc.defaultView) return { doc, frameId: wanted };
   const known = frameNodeById.get(wanted);
   if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
-  throw new Error(frameGoneMessage(wanted));
+  throw new Error(
+    frameGoneMessage(wanted)
+    + (frameListTruncated
+      ? ` This page has more than ${MAX_FRAMES} embedded regions and only the first ${MAX_FRAMES} `
+        + 'are listed, so this one may simply be past the end of that list rather than gone.'
+      : ''),
+  );
 }
 
 /**

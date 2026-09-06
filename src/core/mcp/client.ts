@@ -775,7 +775,13 @@ export class MCPClientManager {
     return this.appResources.read(serverName, uri, async () => {
       const client = server.client as {
         readResource: (params: { uri: string }) => Promise<{
-          contents?: Array<{ uri?: string; mimeType?: string; text?: string; blob?: string }>;
+          contents?: Array<{
+          uri?: string;
+          mimeType?: string;
+          text?: string;
+          blob?: string;
+          _meta?: Record<string, unknown>;
+        }>;
         }>;
       };
       const result = await client.readResource({ uri });
@@ -800,7 +806,19 @@ export class MCPClientManager {
       }
 
       const mimeType = content.mimeType ?? '';
-      return { mimeType, text: content.text, isMcpApp: isMcpAppMimeType(mimeType) };
+      // Carry `_meta.ui` through untouched — the renderer builds the sandbox
+      // CSP (`connectDomains`/`resourceDomains`) and the border preference from
+      // it. Validation happens there, on the security boundary.
+      const rawMeta = (content as { _meta?: Record<string, unknown> })._meta;
+      const uiMeta = rawMeta && typeof rawMeta.ui === 'object' && rawMeta.ui !== null
+        ? (rawMeta.ui as Record<string, unknown>)
+        : undefined;
+      return {
+        mimeType,
+        text: content.text,
+        isMcpApp: isMcpAppMimeType(mimeType),
+        ...(uiMeta ? { meta: uiMeta } : {}),
+      };
     });
   }
 

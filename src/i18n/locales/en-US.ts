@@ -278,6 +278,12 @@ const enUS: TranslationDict = {
     htmlWidgetDownload: 'Download file',
     htmlWidgetViewCode: 'View code',
     htmlWidgetViewPreview: 'View preview',
+    // MCP Apps (connector-provided interfaces)
+    mcpAppLoading: 'Loading the app view',
+    mcpAppLoadFailed: "Couldn't load the app view",
+    mcpAppNotConnected: 'Connect {server} to show the app view',
+    mcpAppLoadPlaceholder: 'Load app view',
+    mcpAppUnsupportedMeta: 'Ignored the extra permissions this app view asked for',
     widgetCardError: 'Widget failed to render',
     widgetCardCancelled: 'Widget rendering cancelled',
     enterpriseModelLoading: 'Loading enterprise models...',

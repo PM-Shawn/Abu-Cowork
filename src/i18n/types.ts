@@ -315,6 +315,20 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // ── MCP Apps (connector-provided interfaces, spec io.modelcontextprotocol/ui) ──
+    /** Muted line while the connector's ui:// resource is being fetched. */
+    mcpAppLoading: string;
+    /** Muted line under the plain tool result when the interface could not be
+     *  fetched, was not an MCP App resource, or never completed its handshake. */
+    mcpAppLoadFailed: string;
+    /** Muted line on replay when the connector that owns the interface is
+     *  offline. `{server}` is the MCP server name. */
+    mcpAppNotConnected: string;
+    /** Button on a collapsed placeholder past the concurrent-app cap. */
+    mcpAppLoadPlaceholder: string;
+    /** One-line disclosure that the resource asked for capabilities Abu does
+     *  not grant (a dedicated sandbox `domain`, device `permissions`). */
+    mcpAppUnsupportedMeta: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;

@@ -634,6 +634,14 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  /**
+   * Record the MCP Apps interface a tool step turned out to have
+   * (`ToolCall.ui`). Written once by `ToolCallsGroup` the first time the step
+   * renders, because `ToolDefinition.ui` lives only in the renderer's MCP
+   * client — it never reaches the sidecar loop that creates the tool call.
+   * No-op when the step already carries the same `ui`.
+   */
+  setToolCallAppUi: (convId: string, messageId: string, toolCallId: string, ui: NonNullable<ToolCall['ui']>) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
@@ -1416,6 +1424,28 @@ export const useChatStore = create<ChatStore>()(
         });
         // Persist so the settled state survives reload. Mirrors the pattern
         // used by updateToolCall above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallAppUi: (convId, messageId, toolCallId, ui) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.ui?.server === ui.server && tc.ui?.resourceUri === ui.resourceUri) return;
+          tc.ui = ui;
+          changed = true;
+        });
+        if (!changed) return;
+        // Persist so a reopened conversation still knows this step had an
+        // interface even if the server is gone. Same write-through as
+        // setToolCallNoticeCardAction above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {

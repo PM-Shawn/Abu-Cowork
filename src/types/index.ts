@@ -261,6 +261,18 @@ export interface ToolCall {
   subagentStopReason?: SubagentStopReason;
   /** Minimal persisted terminal summary for run_agent_batch. */
   batchTerminalSummary?: BatchTerminalSummary;
+  /**
+   * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
+   *
+   * Resolved in the RENDERER when the step first renders — `ToolDefinition.ui`
+   * never crosses the sidecar wire (the loop only sees name/description/schema),
+   * so it cannot be filled in where the tool call is created. Persisting it
+   * means a reopened conversation still knows the step had an interface, and
+   * which server to name in the placeholder, even when that server is offline.
+   *
+   * Optional and additive: ledgers written before MCP Apps simply lack it.
+   */
+  ui?: { server: string; resourceUri: string };
 }
 
 // Multimodal content types for messages

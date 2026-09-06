@@ -278,6 +278,12 @@ const zhCN: TranslationDict = {
     htmlWidgetDownload: '下载文件',
     htmlWidgetViewCode: '查看代码',
     htmlWidgetViewPreview: '查看预览',
+    // MCP Apps（连接器自带界面）
+    mcpAppLoading: '界面加载中',
+    mcpAppLoadFailed: '界面加载失败',
+    mcpAppNotConnected: '连接 {server} 以显示界面',
+    mcpAppLoadPlaceholder: '点击加载界面',
+    mcpAppUnsupportedMeta: '已忽略该界面申请的额外权限',
     widgetCardError: '组件渲染失败',
     widgetCardCancelled: '组件渲染已取消',
     enterpriseModelLoading: '加载企业模型列表中...',

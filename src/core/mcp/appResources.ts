@@ -23,6 +23,13 @@ export interface McpAppResource {
   mimeType: string;
   text: string;
   isMcpApp: boolean;
+  /**
+   * The resource's own `_meta.ui` (`io.modelcontextprotocol/ui`), verbatim.
+   * The renderer needs it to build the sandbox CSP from the server's declared
+   * domains and to honour `prefersBorder`; it is intentionally NOT interpreted
+   * here — `appHost.buildAppCsp` validates every domain and drops the rest.
+   */
+  meta?: Record<string, unknown>;
 }
 
 export type McpAppResourceErrorCode =

@@ -1,9 +1,13 @@
 /**
  * Read a marketplace manifest off disk.
  *
- * Lives in the UI layer on purpose: `core/plugin/marketplace.ts` is a pure
- * parser with no filesystem dependency (which is what makes it cheap to test),
- * so the "where does the JSON come from" half belongs to whoever is browsing.
+ * Split from `marketplace.ts` on purpose: that module is a pure parser with no
+ * filesystem dependency (which is what makes it cheap to test), so the "where
+ * does the JSON come from" half lives here. It used to sit next to the browser
+ * UI; it moved into `core/` once `pluginStore.recomputeUpdates` needed to scan
+ * every added market for the update badge — a store must not import from
+ * `components/`, and both callers have to read markets the same way for the
+ * badge count and the market rows to agree.
  *
  * Candidate order matches the installer's manifest lookup: Abu's own
  * `.abu-plugin` wins over the `.claude-plugin` and `.agents/plugins`

@@ -31,6 +31,7 @@
  * path — and it is pinned by tests in pluginStore.test.ts.
  */
 
+import { homeDir } from '@tauri-apps/api/path';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { installPlugin } from '@/core/plugin/installer';
@@ -43,6 +44,8 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
+import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
+import { installedByEntryName, updateAvailableKeysFor } from '@/core/plugin/updateCheck';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 import { ENTERPRISE_MARKET_NAME } from '@/core/plugin/enterpriseMarket';
 import { parsePluginKey } from '@/core/plugin/paths';
@@ -104,6 +107,14 @@ interface PluginState {
    * work around: the next browse/sync recomputes it from scratch.
    */
   updateAvailableKeys: string[];
+  /**
+   * `updateAvailableKeys.length`, kept as a field rather than derived in each
+   * consumer so the two badges (sidebar 「扩展」 entry, 插件 tab label) can
+   * subscribe to a primitive instead of re-rendering on every array identity
+   * change. Every write goes through {@link updateKeysPatch}, which is the
+   * only way the two can be set — so they cannot drift apart.
+   */
+  updateAvailableCount: number;
   loading: boolean;
   error: string | null;
 }
@@ -134,6 +145,18 @@ interface PluginActions {
    * stable, order-independent list.
    */
   setUpdateAvailableKeys: (keys: string[], scope: 'personal' | 'organization') => void;
+  /**
+   * Rescan every added (personal) marketplace and replace the personal-scope
+   * update flags with the union across all of them.
+   *
+   * Reads each market the same way the browser does (`loadMarketplaceFromDir`
+   * + `installedByEntryName`), so the badge count and the market's own
+   * 「更新」 rows can never disagree. No new network traffic: a local market
+   * is a directory read, and a git one was already cloned when it was added.
+   * There is no timer either — it runs at app start, when the market panel
+   * opens, and after an install/uninstall.
+   */
+  recomputeUpdates: (home: string) => Promise<void>;
 }
 
 export type PluginStore = PluginState & PluginActions;
@@ -150,6 +173,23 @@ function getMcpStoreOps(): McpStoreOps {
   };
 }
 
+/**
+ * The only way to write the update flags: keys and their count in one patch,
+ * so a badge can never show a stale number for a list that has changed.
+ */
+function updateKeysPatch(keys: string[]): { updateAvailableKeys: string[]; updateAvailableCount: number } {
+  return { updateAvailableKeys: keys, updateAvailableCount: keys.length };
+}
+
+/**
+ * Generation counter for `recomputeUpdates`. Two scans can overlap (the market
+ * panel mounting while an install's scan is still reading marketplaces off
+ * disk); without this the slower one would land last and overwrite the fresher
+ * result. Monotonic and module-level on purpose — it needs no reset between
+ * tests, since only "am I still the newest call" is ever asked.
+ */
+let recomputeSeq = 0;
+
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -161,6 +201,7 @@ export const usePluginStore = create<PluginStore>()(
       installed: [],
       knownMcpServerNames: [],
       updateAvailableKeys: [],
+      updateAvailableCount: 0,
       loading: false,
       error: null,
 
@@ -198,8 +239,8 @@ export const usePluginStore = create<PluginStore>()(
           marketplaces: state.marketplaces.filter((m) => m.name !== name),
           // A removed market can no longer be browsed, so its update flags
           // would otherwise sit in the badge count forever.
-          updateAvailableKeys: state.updateAvailableKeys.filter(
-            (k) => parsePluginKey(k)?.marketplace !== name,
+          ...updateKeysPatch(
+            state.updateAvailableKeys.filter((k) => parsePluginKey(k)?.marketplace !== name),
           ),
         }));
       },
@@ -211,7 +252,9 @@ export const usePluginStore = create<PluginStore>()(
         // exists on disk.
         set((state) => ({
           installed,
-          updateAvailableKeys: state.updateAvailableKeys.filter((k) => installed.some((p) => p.key === k)),
+          ...updateKeysPatch(
+            state.updateAvailableKeys.filter((k) => installed.some((p) => p.key === k)),
+          ),
         }));
         // Security-critical, not bookkeeping — see the module doc. Kept here
         // (rather than duplicated in install/uninstall) so every mutation path
@@ -279,6 +322,11 @@ export const usePluginStore = create<PluginStore>()(
           await upsertInstalled(req.home, persistedRecord);
 
           await get().refreshInstalled(req.home);
+          // Re-score every market: the new version usually clears this
+          // plugin's own flag, and whatever else moved on disk since the last
+          // scan lands in the same pass. Best-effort — a badge that failed to
+          // recompute must not turn a successful install into an error.
+          await get().recomputeUpdates(req.home).catch(() => undefined);
           return persistedRecord;
         } catch (error) {
           set({ error: messageOf(error) });
@@ -304,6 +352,9 @@ export const usePluginStore = create<PluginStore>()(
           // it created (registration refuses to overwrite existing names).
           deregisterPluginServers(withdrawn.mcpServers, getMcpStoreOps());
           await get().refreshInstalled(home);
+          // `refreshInstalled` already dropped this plugin's flag; the rescan
+          // is for the rest (best-effort, same reasoning as install).
+          await get().recomputeUpdates(home).catch(() => undefined);
         } catch (error) {
           set({ error: messageOf(error) });
           throw error;
@@ -331,7 +382,44 @@ export const usePluginStore = create<PluginStore>()(
         const isOrg = (k: string) => parsePluginKey(k)?.marketplace === ENTERPRISE_MARKET_NAME;
         const kept = get().updateAvailableKeys.filter((k) => (scope === 'organization' ? !isOrg(k) : isOrg(k)));
         const next = [...new Set([...kept, ...keys.filter((k) => (scope === 'organization') === isOrg(k))])].sort();
-        set({ updateAvailableKeys: next });
+        set(updateKeysPatch(next));
+      },
+
+      recomputeUpdates: async (home) => {
+        const seq = ++recomputeSeq;
+        const { marketplaces, installed } = get();
+        const keys: string[] = [];
+        for (const market of marketplaces) {
+          // The organization catalog is not ours to score: its versions come
+          // from the private catalog-sync, which reports them by calling
+          // `setUpdateAvailableKeys(keys, 'organization')` — this same setter,
+          // other scope. (Enterprise slot: nothing to change here.)
+          if (market.name === ENTERPRISE_MARKET_NAME) continue;
+          try {
+            // Dirs are stored already expanded (see MarketplaceRef), so this
+            // is belt-and-braces for a hand-edited localStorage value — and it
+            // is the only thing `home` is needed for.
+            const marketplace = await loadMarketplaceFromDir(expandHome(market.dir, home));
+            keys.push(
+              ...updateAvailableKeysFor(
+                marketplace.plugins,
+                // Keyed by the market POINTER's name, matching how
+                // `installer.ts` builds installed.json keys — not the
+                // manifest's own `name`, which need not match.
+                installedByEntryName(installed, market.name, marketplace.renames),
+                market.name,
+              ),
+            );
+          } catch {
+            // A market whose manifest is missing or malformed contributes no
+            // flags. The browser surfaces that failure with a readable error
+            // when the user opens it; a badge is the wrong place to report it.
+          }
+        }
+        // A newer scan started while this one was reading disk — its result is
+        // the current one, so drop ours instead of overwriting it.
+        if (seq !== recomputeSeq) return;
+        get().setUpdateAvailableKeys(keys, 'personal');
       },
     }),
     {
@@ -369,3 +457,22 @@ export const usePluginStore = create<PluginStore>()(
     },
   ),
 );
+
+/**
+ * App-start bootstrap for the plugin update badge.
+ *
+ * Hydrating `installed` is a precondition, not a bonus: `recomputeUpdates`
+ * scores marketplaces AGAINST the installed set, so a scan that runs before
+ * the hydrate lands would always report zero. Opening the 插件 tab used to be
+ * the earliest hydrate (see PluginsTab's module doc) — which is exactly why a
+ * user who never opened it never learned an update existed.
+ *
+ * Best-effort by design: every failure here degrades to "no badge", never to a
+ * broken launch. The MCP approval gate does NOT depend on this running — it is
+ * armed synchronously from persisted `knownMcpServerNames` on rehydrate.
+ */
+export async function bootstrapPluginUpdates(): Promise<void> {
+  const home = await homeDir();
+  await usePluginStore.getState().refreshInstalled(home);
+  await usePluginStore.getState().recomputeUpdates(home);
+}

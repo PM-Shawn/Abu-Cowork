@@ -20,6 +20,11 @@ vi.mock('@/core/plugin/installedStore', () => ({
 }));
 vi.mock('@/core/plugin/fsOps', () => ({ copyPluginDir: vi.fn(), removePluginDir: vi.fn() }));
 vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn() }));
+// Only the disk read is faked; `expandHome` and the real update scoring stay.
+vi.mock('@/core/plugin/loadMarketplace', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/plugin/loadMarketplace')>()),
+  loadMarketplaceFromDir: vi.fn(),
+}));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 vi.mock('@/stores/discoveryStore', () => ({ useDiscoveryStore: { getState: () => ({ refresh: mockDiscoveryRefresh }) } }));
 
@@ -28,6 +33,9 @@ import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
+import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
+import { updateAvailableKeysFor } from '@/core/plugin/updateCheck';
+import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
 import { useMCPStore } from './mcpStore';
@@ -50,6 +58,7 @@ function resetStore() {
     marketplaces: [],
     installed: [],
     updateAvailableKeys: [],
+    updateAvailableCount: 0,
     loading: false,
     error: null,
   });
@@ -515,5 +524,112 @@ describe('updateAvailableKeys', () => {
       updateAvailableKeys: ['a@abu-official'],
     });
     expect(persisted.updateAvailableKeys).toBeUndefined();
+  });
+});
+
+describe('recomputeUpdates', () => {
+  /** A local-source entry, the shape whose `version` drives update detection. */
+  const entry = (name: string, version: string): MarketplaceEntry => ({
+    name,
+    version,
+    source: { kind: 'relative', path: `./${name}` },
+  });
+  const market = (name: string, plugins: MarketplaceEntry[]): Marketplace => ({ name, plugins });
+
+  const installedAt = '2026-09-01T00:00:00.000Z';
+  const contributed = { skills: [], mcpServers: [], agents: [] };
+  const install = (name: string, marketplace: string, version: string): InstalledPlugin => ({
+    key: `${name}@${marketplace}`, marketplace, name, version, installedAt, contributed,
+  });
+
+  it('unions every added market, de-duped, and agrees with updateAvailableKeysFor', async () => {
+    const official = market('official', [entry('weather', '1.0.0'), entry('notes', '2.0.0')]);
+    const mine = market('my-market', [entry('todo', '3.0.0')]);
+    usePluginStore.setState({
+      // The same pointer twice is what a hand-edited localStorage looks like;
+      // the badge must count it once.
+      marketplaces: [
+        { name: 'official', dir: '/m/official' },
+        { name: 'official', dir: '/m/official' },
+        { name: 'my-market', dir: '/m/mine' },
+      ] as MarketplaceRefLike[],
+      installed: [
+        install('weather', 'official', '0.9.0'),   // older → flagged
+        install('notes', 'official', '2.0.0'),     // current → not flagged
+        install('todo', 'my-market', '2.9.0'),     // older → flagged
+      ],
+    });
+    vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir: string) =>
+      dir === '/m/mine' ? mine : official,
+    );
+
+    await usePluginStore.getState().recomputeUpdates(HOME);
+
+    const state = usePluginStore.getState();
+    // Exactly what the pure detector says, market by market — the badge does
+    // not get its own second opinion.
+    const expectedFor = (m: Marketplace, name: string) =>
+      updateAvailableKeysFor(
+        m.plugins,
+        new Map(state.installed.filter((p) => p.marketplace === name).map((p) => [p.name, p])),
+        name,
+      );
+    expect(state.updateAvailableKeys).toEqual(
+      [...new Set([...expectedFor(official, 'official'), ...expectedFor(mine, 'my-market')])].sort(),
+    );
+    expect(state.updateAvailableKeys).toEqual(['todo@my-market', 'weather@official']);
+    expect(state.updateAvailableCount).toBe(2);
+  });
+
+  it('flags nothing when nothing is installed', async () => {
+    usePluginStore.setState({
+      marketplaces: [{ name: 'official', dir: '/m/official' }] as MarketplaceRefLike[],
+      installed: [],
+      updateAvailableKeys: ['weather@official'],
+      updateAvailableCount: 1,
+    });
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue(market('official', [entry('weather', '1.0.0')]));
+
+    await usePluginStore.getState().recomputeUpdates(HOME);
+
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual([]);
+    expect(usePluginStore.getState().updateAvailableCount).toBe(0);
+  });
+
+  it('never scans the enterprise catalog, and keeps the flags its sync set', async () => {
+    // The organization scope belongs to the private catalog-sync; a personal
+    // scan must neither read that market nor clear what the sync reported.
+    usePluginStore.setState({
+      marketplaces: [
+        { name: 'enterprise', dir: '/m/enterprise' },
+        { name: 'official', dir: '/m/official' },
+      ] as MarketplaceRefLike[],
+      installed: [install('weather', 'official', '0.9.0')],
+    });
+    usePluginStore.getState().setUpdateAvailableKeys(['acme@enterprise'], 'organization');
+    vi.mocked(loadMarketplaceFromDir).mockResolvedValue(market('official', [entry('weather', '1.0.0')]));
+
+    await usePluginStore.getState().recomputeUpdates(HOME);
+
+    expect(vi.mocked(loadMarketplaceFromDir).mock.calls.map((c) => c[0])).toEqual(['/m/official']);
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['acme@enterprise', 'weather@official']);
+  });
+
+  it('lets an unreadable market contribute nothing without losing the others', async () => {
+    usePluginStore.setState({
+      marketplaces: [
+        { name: 'broken', dir: '/m/broken' },
+        { name: 'official', dir: '/m/official' },
+      ] as MarketplaceRefLike[],
+      installed: [install('weather', 'official', '0.9.0')],
+    });
+    vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir: string) => {
+      if (dir === '/m/broken') throw new Error('No marketplace manifest in /m/broken');
+      return market('official', [entry('weather', '1.0.0')]);
+    });
+
+    await usePluginStore.getState().recomputeUpdates(HOME);
+
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']);
   });
 });

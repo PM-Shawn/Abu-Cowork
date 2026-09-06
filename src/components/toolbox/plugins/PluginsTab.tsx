@@ -8,8 +8,10 @@
  * `pluginToolPolicy`'s in-memory server-name set (see pluginStore's module
  * doc); without a hydrate somewhere, a plugin installed in a *previous*
  * session would have its MCP tools run unapproved until the next install.
- * Opening this tab is the earliest guaranteed point for that today — a startup
- * hydrate belongs with the skill loader's bootstrap and is tracked separately.
+ * App start now hydrates too (`bootstrapPluginUpdates`, called from App's boot
+ * effect so the update badge has something to count), so this one is no longer
+ * the earliest — it stays because opening the tab is also when the user
+ * expects to see changes made on disk since launch.
  *
  * What it deliberately does NOT own any more is navigation. 市场 | 我的 is a
  * choice shared by every Extensions tab, so the sub-nav lives above this

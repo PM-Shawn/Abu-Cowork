@@ -1268,7 +1268,7 @@ const enUS: TranslationDict = {
     pluginsUpdate: 'Update',
     pluginsUpdateSucceeded: 'Updated “{name}”',
     pluginsUpdateReloadHint: 'Start a new conversation to pick up the new version.',
-    pluginsUpdatesAvailable: '{count} updates available',
+    pluginsUpdatesAvailable: '{count} plugin updates available',
     pluginsUninstall: 'Uninstall',
     pluginsUninstallTitle: 'Uninstall plugin',
     pluginsUninstallMessage: 'Uninstall "{name}"? The {skills} skills, {servers} connectors and {agents} agents it brought in are removed with it.',

@@ -14,7 +14,7 @@
  */
 
 import type { InstalledPlugin } from './installedStore';
-import type { MarketplaceEntry } from './marketplace';
+import { resolveRename, type MarketplaceEntry } from './marketplace';
 import { pluginKey } from './paths';
 
 export type UpdateStatus = 'not-installed' | 'up-to-date' | 'update-available';
@@ -60,4 +60,27 @@ export function updateAvailableKeysFor(
     .filter((entry) => entryUpdateStatus(entry, installedByName.get(entry.name)) === 'update-available')
     .map((entry) => pluginKey(entry.name, marketplaceName))
     .sort();
+}
+
+/**
+ * The installs that belong to `marketplaceName`, keyed by the entry name they
+ * would appear under **today** — i.e. resolved through the marketplace's
+ * rename table, so a plugin installed under its old name still matches its
+ * renamed entry.
+ *
+ * Shared by the market rows and `pluginStore.recomputeUpdates` so the badge
+ * count and the per-row 「更新」 button are computed from exactly the same map;
+ * two independently-built maps were how the two could disagree.
+ */
+export function installedByEntryName(
+  installed: readonly InstalledPlugin[],
+  marketplaceName: string,
+  renames: Record<string, string> | undefined,
+): Map<string, InstalledPlugin> {
+  const byName = new Map<string, InstalledPlugin>();
+  for (const p of installed) {
+    if (p.marketplace !== marketplaceName) continue;
+    byName.set(resolveRename(p.name, renames), p);
+  }
+  return byName;
 }

@@ -66,7 +66,7 @@ describe('Sidebar — Extensions entry', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     useSettingsStore.setState({ viewMode: 'chat', activeExtensionsTab: 'plugins', guideOpen: false });
-    usePluginStore.setState({ updateAvailableKeys: [] });
+    usePluginStore.setState({ updateAvailableKeys: [], updateAvailableCount: 0 });
   });
   afterEach(() => cleanup());
 
@@ -92,10 +92,24 @@ describe('Sidebar — Extensions entry', () => {
     expect(useSettingsStore.getState().activeExtensionsTab).toBe('plugins');
   });
 
-  it('carries the plugin-update dot when updates are available', () => {
-    usePluginStore.setState({ updateAvailableKeys: ['market/plugin-a'] });
+  it('carries the plugin-update count when updates are available', () => {
+    // The sidebar entry is the only permanently visible one, so it is where a
+    // user who never opens the market learns an update exists.
+    usePluginStore.setState({ updateAvailableKeys: ['a@market', 'b@market', 'c@market'], updateAvailableCount: 3 });
     render(<Sidebar />);
-    const entry = within(mainNav()).getByRole('button', { name: /扩展/ });
-    expect(within(entry).getByLabelText(/1/)).toBeInTheDocument();
+    const badge = within(mainNav()).getByTestId('extensions-update-badge');
+    expect(badge).toHaveTextContent('3');
+    expect(badge).toHaveAttribute('aria-label', '3 个插件可更新');
+  });
+
+  it('caps the count at 9+', () => {
+    usePluginStore.setState({ updateAvailableCount: 12 });
+    render(<Sidebar />);
+    expect(within(mainNav()).getByTestId('extensions-update-badge')).toHaveTextContent('9+');
+  });
+
+  it('shows nothing when there is no update', () => {
+    render(<Sidebar />);
+    expect(within(mainNav()).queryByTestId('extensions-update-badge')).toBeNull();
   });
 });

@@ -19,7 +19,7 @@ import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { usePluginStore } from '@/stores/pluginStore';
-import { expandHome, loadMarketplaceFromDir } from './loadMarketplace';
+import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 
 interface AddMarketplaceDialogProps {
   open: boolean;

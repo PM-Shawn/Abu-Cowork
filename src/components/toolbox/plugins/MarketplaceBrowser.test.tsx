@@ -18,7 +18,12 @@ function makeDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void }
   return { promise, resolve };
 }
 
-vi.mock('./loadMarketplace', () => ({ loadMarketplaceFromDir: vi.fn() }));
+// Only the disk read is faked — `expandHome` stays real, because the store's
+// scan calls it on every market dir.
+vi.mock('@/core/plugin/loadMarketplace', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/plugin/loadMarketplace')>()),
+  loadMarketplaceFromDir: vi.fn(),
+}));
 vi.mock('@/core/plugin/installer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/plugin/installer')>()),
   planInstall: vi.fn(),
@@ -74,7 +79,7 @@ import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { format, getI18n } from '@/i18n';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { usePluginStore } from '@/stores/pluginStore';
-import { loadMarketplaceFromDir } from './loadMarketplace';
+import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import MarketplaceBrowser from './MarketplaceBrowser';
 
 const localEntry: MarketplaceEntry = {
@@ -490,10 +495,15 @@ describe('MarketplaceBrowser', () => {
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
     // weather is installed at 0.9.0, marketplace offers 1.0.0 → updatable.
-    expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument();
+    // The flag arrives via the store's scan, so wait for it rather than
+    // asserting on the first paint.
+    await waitFor(() => expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument());
   });
 
-  it('does not score the previous market\'s entries against a newly selected market', async () => {
+  it('scores every added market, not just the displayed one', async () => {
+    // The badge is the union across markets. Browsing a second market used to
+    // REPLACE the personal-scope keys, so opening a market with nothing to
+    // update silently cleared an update that was still true in the first one.
     const installedAt = '2026-09-01T00:00:00.000Z';
     const contributed = { skills: [], mcpServers: [], agents: [] };
     usePluginStore.setState({
@@ -502,13 +512,13 @@ describe('MarketplaceBrowser', () => {
         { key: 'weather@other', marketplace: 'other', name: 'weather', version: '0.9.0', installedAt, contributed },
       ],
       updateAvailableKeys: [],
+      updateAvailableCount: 0,
     });
     renderBrowser();
     await waitFor(() => expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']));
 
-    // Add a market (auto-selected) whose manifest stays in flight. Without the
-    // guard, official's `weather 1.0.0` entry is scored against the
-    // `weather@other 0.9.0` install and a bogus `weather@other` key lands.
+    // A second market, auto-selected on arrival. Its own entries are scored
+    // against its own installs — official's flag survives either way.
     const other = makeDeferred<Marketplace>();
     vi.mocked(loadMarketplaceFromDir).mockImplementation((dir) =>
       dir === '/m/other' ? other.promise : Promise.resolve(marketplace),
@@ -518,12 +528,34 @@ describe('MarketplaceBrowser', () => {
         marketplaces: [{ name: 'official', dir: '/m/official' }, { name: 'other', dir: '/m/other' }],
       });
     });
-    expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']);
+    await act(async () => {
+      other.resolve({
+        name: 'other',
+        plugins: [{ name: 'weather', version: '2.0.0', source: { kind: 'relative', path: './weather' } }],
+      });
+    });
+    await waitFor(() =>
+      expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official', 'weather@other']),
+    );
+    expect(usePluginStore.getState().updateAvailableCount).toBe(2);
+  });
+
+  it('takes the row\'s Update state from the store, not a second local scoring', async () => {
+    // One source of truth: the badge count and this button are the same keys.
+    // A key the store does not carry must not sprout an Update button.
+    usePluginStore.setState({
+      installed: [{
+        key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+      }],
+    });
+    renderBrowser();
+    await waitFor(() => expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument());
 
     await act(async () => {
-      other.resolve({ name: 'other', plugins: [] });
+      usePluginStore.getState().setUpdateAvailableKeys([], 'personal');
     });
-    await waitFor(() => expect(usePluginStore.getState().updateAvailableKeys).toEqual([]));
+    expect(screen.queryByTestId('plugin-update-button')).toBeNull();
   });
 
   it('shows a disabled Already-installed button when versions match', async () => {

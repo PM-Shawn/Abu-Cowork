@@ -42,14 +42,14 @@ import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
-import { entryUpdateStatus, updateAvailableKeysFor } from '@/core/plugin/updateCheck';
+import { installedByEntryName } from '@/core/plugin/updateCheck';
+import { pluginKey } from '@/core/plugin/paths';
 import {
-  resolveRename,
   type Marketplace,
   type MarketplaceEntry,
   type PluginSource,
 } from '@/core/plugin/marketplace';
-import { loadMarketplaceFromDir } from './loadMarketplace';
+import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
@@ -81,7 +81,7 @@ interface MarketplaceBrowserProps {
 type EntriesState =
   | { kind: 'idle' }
   | { kind: 'loading' }
-  | { kind: 'ready'; marketplace: Marketplace; forName: string }
+  | { kind: 'ready'; marketplace: Marketplace }
   | { kind: 'error'; message: string };
 
 function authorName(author: MarketplaceEntry['author']): string | undefined {
@@ -116,7 +116,8 @@ export default function MarketplaceBrowser({
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
-  const setUpdateAvailableKeys = usePluginStore((s) => s.setUpdateAvailableKeys);
+  const recomputeUpdates = usePluginStore((s) => s.recomputeUpdates);
+  const updateAvailableKeys = usePluginStore((s) => s.updateAvailableKeys);
   const addToast = useToastStore((s) => s.addToast);
 
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -179,7 +180,7 @@ export default function MarketplaceBrowser({
     setCategory(ALL_CATEGORIES);
     loadMarketplaceFromDir(selected.dir)
       .then((marketplace) => {
-        if (!cancelled) setEntriesState({ kind: 'ready', marketplace, forName: selected.name });
+        if (!cancelled) setEntriesState({ kind: 'ready', marketplace });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -194,48 +195,33 @@ export default function MarketplaceBrowser({
   }, [selected]);
 
   const marketplace = entriesState.kind === 'ready' ? entriesState.marketplace : null;
-  /** Which market `marketplace` was loaded for — see the update-keys effect. */
-  const marketplaceForName = entriesState.kind === 'ready' ? entriesState.forName : null;
 
   /**
    * Names already installed *from this marketplace*, resolved through the
    * marketplace's rename table so a plugin installed under its old name still
    * reads as installed after an upstream rename.
    */
-  const installedByName = useMemo(() => {
-    const renames = marketplace?.renames ?? {};
-    const byName = new Map<string, typeof installed[number]>();
-    for (const p of installed) {
-      if (p.marketplace !== selected?.name) continue;
-      byName.set(resolveRename(p.name, renames), p);
-    }
-    return byName;
-  }, [installed, marketplace, selected]);
+  const installedByName = useMemo(
+    () => installedByEntryName(installed, selected?.name ?? '', marketplace?.renames),
+    [installed, marketplace, selected],
+  );
 
-  // Reports which entries of the *currently displayed* market have an update,
-  // to drive the sidebar red dot and the Plugins-tab count badge.
+  // Opening the market panel is one of the three moments the update badge is
+  // recomputed (the others: app start, and after an install/uninstall inside
+  // the store). It scans EVERY added market, not just the displayed one, so
+  // the count is the union rather than "whatever was browsed last" — and the
+  // rows below read their 「更新」 state from the same store keys, so the badge
+  // and the buttons cannot disagree.
   //
-  // Known limitation (kept deliberately small for this P1 pass): the store's
-  // personal-scope key set is REPLACED, not merged, on every run of this
-  // effect — so switching markets makes the badge reflect only the market
-  // last browsed, not the union of every personal market with an update.
-  // Browsing market A (which has an update) then market B (which does not)
-  // will clear the update signal from A even though it is still true on disk.
-  // A full cross-market signal would need a background scan of every personal
-  // marketplace, which is out of scope here.
+  // `installed` is in the deps because it arrives asynchronously (PluginsTab's
+  // hydrate): a scan that ran before it landed would have nothing to compare
+  // against.
   useEffect(() => {
-    if (!marketplace || !selected) return;
-    // On a market switch this effect runs in the same commit as the load
-    // effect above, i.e. BEFORE its `loading` state lands — so `marketplace`
-    // is still the previous market's while `selected` is already the new one.
-    // Scoring the old entries under the new market's name would flag keys
-    // that do not exist; wait until the entries belong to `selected`.
-    if (marketplaceForName !== selected.name) return;
-    // Keyed by `selected.name` (the marketplace pointer's name), matching how
-    // `installer.ts` builds `installed.json` keys — NOT the manifest's own
-    // internal `name` field, which need not match the pointer name.
-    setUpdateAvailableKeys(updateAvailableKeysFor(marketplace.plugins, installedByName, selected.name), 'personal');
-  }, [marketplace, marketplaceForName, selected, installedByName, setUpdateAvailableKeys]);
+    void recomputeUpdates(home);
+  }, [recomputeUpdates, home, marketplaces, installed]);
+
+  /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
+  const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);
 
   /**
    * Installs whose marketplace is no longer in the user's list. Only asked
@@ -374,8 +360,9 @@ export default function MarketplaceBrowser({
     // row's menu acts on that exact record, so a row that claims to be
     // installed without one would offer 管理/卸载 that quietly do nothing.
     const installedRecord = installedByName.get(entry.name);
-    const updateStatus = entryUpdateStatus(entry, installedRecord);
-    const hasUpdate = updateStatus === 'update-available';
+    // Read from the store rather than scored here: one source of truth for the
+    // badge count and this button (see the recompute effect above).
+    const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
     return (
       <div className="pb-1.5">
         <div

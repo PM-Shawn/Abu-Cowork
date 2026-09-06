@@ -78,6 +78,7 @@ import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
+import { bootstrapPluginUpdates } from '@/stores/pluginStore';
 import {
   initBuiltinBrowserRuntime,
   cleanupBuiltinBrowserRuntime,
@@ -433,6 +434,12 @@ function App() {
     registerBuiltinTools();
     refreshDiscovery();
     provisionFirstPartyMCPServers();
+    // Hydrate installed plugins and score every added market once, so the
+    // sidebar 「扩展」 badge is right before the user opens anything. Failure
+    // costs the badge and nothing else.
+    bootstrapPluginUpdates().catch((err) => {
+      console.warn('[App] Plugin update scan failed:', err);
+    });
     initMCPStoreSync();
     initBuiltinBrowserRuntime();
 

@@ -4,8 +4,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
-import { usePluginStore } from '@/stores/pluginStore';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
+import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { Plus, Workflow, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
@@ -85,7 +85,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const importConversation = useChatStore((s) => s.importConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
   const openExtensions = useSettingsStore((s) => s.openExtensions);
-  const updateCount = usePluginStore((s) => s.updateAvailableKeys.length);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -376,13 +375,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           )}
         >
           <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.extensions}</span>
-          {updateCount > 0 && (
-            <span
-              className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0"
-              aria-label={format(t.toolbox.pluginsUpdatesAvailable, { count: updateCount })}
-            />
-          )}
+          <span className="flex-1 text-left">{t.sidebar.extensions}</span>
+          <PluginUpdateBadge testId="extensions-update-badge" />
         </button>
         <button
           onClick={() => { openAutomation(); setShowFileTree(false); }}

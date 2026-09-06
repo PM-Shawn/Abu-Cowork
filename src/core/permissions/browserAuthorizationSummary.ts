@@ -40,6 +40,11 @@ export interface BrowserAuthorizationSummary {
    * unattended-reachable — `getSiteVerdict` reads them as `'default'` for a
    * run nobody is watching — so they are reported separately rather than
    * inflating the "a scheduled task can act here" count.
+   *
+   * "Reachable" means ACT (round-3 R3-G). A marked site behaves exactly like
+   * any never-listed site for an unattended run: no clicking, filling or
+   * scripting, and reading unchanged. Every string built on this field is
+   * scoped to acting for that reason.
    */
   viaEmbedAllowed: string[];
   /** Origins with a `'denied'` verdict — blocked in both run modes. */

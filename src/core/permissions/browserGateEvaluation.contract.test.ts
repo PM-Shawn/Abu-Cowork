@@ -264,6 +264,17 @@ describe('browser gate — preview and the real gate agree', () => {
  * Held fixed at what the other matrix varies: one op class (`interactive` —
  * the class that can actually name a region), the shipped policy, master
  * switch on. The point here is the fold, not a second sweep of the same rows.
+ *
+ * ## What this block therefore does NOT say (round-3 R3-G)
+ *
+ * Because the class is pinned to `interactive`, none of these rows describes a
+ * READ. That matters for `via-embed` in particular: the mark takes the grant
+ * down to `'default'`, and an unattended READ on a `'default'` site is allowed
+ * — `browserGateEvaluation.ts`'s cross-origin fail-closed rule is written
+ * `if (stateChanging && …)`. So "a marked site is unreachable for an automatic
+ * task" is true of ACTING and not of reading, and no row here is evidence
+ * either way. The user-facing strings say so explicitly; this note exists so
+ * the next reader does not take the 30 green rows as the broader claim.
  */
 describe('browser gate — a call that names a region agrees too', () => {
   // Its own setup: a sibling describe does not inherit the other one's.

@@ -1082,9 +1082,14 @@ export interface TranslationDict {
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
-     *  embedded regions get, so an automatic task is still refused there. */
+     *  embedded regions get, so an automatic task is refused when it tries to
+     *  ACT there. Scoped to acting on purpose (round-3 R3-G): the mark takes
+     *  the grant down to `'default'`, and reading a default-verdict site is
+     *  something an unattended run has always been allowed to do — a tag that
+     *  said 「不适用」 promised a wall that is not there. */
     browserViaEmbedTag: string;
-    /** `title` for {@link browserViaEmbedTag} — how to promote it. */
+    /** `title` for {@link browserViaEmbedTag} — what is refused, what is not,
+     *  and how to promote it. */
     browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1157,6 +1162,8 @@ export interface TranslationDict {
      *  (S11), and this pane holds no global one to promise. */
     browserPreviewAskIm: string;
     /** What the preview did not check, said once. */
+    /** What the preview does NOT know: it answers for the address on its own,
+     *  and a real call folds in every embedded region it touches (R3-I). */
     browserPreviewCaveat: string;
     /* ── S11 自动任务配置总览 ──────────────────────────────────────── */
     browserAutomationOverviewTitle: string;

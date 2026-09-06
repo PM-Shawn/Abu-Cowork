@@ -1814,6 +1814,25 @@ let settingsDebounceTimer: ReturnType<typeof setTimeout> | undefined;
  * Never reset — a restarted sidecar starts with no applied revision and accepts
  * whatever comes next, so the counter only ever has to be increasing within one
  * shell process.
+ *
+ * 🔴 THE OTHER DIRECTION IS AN INVARIANT, NOT AN ACCIDENT. This is a
+ * module-level variable in the RENDERER, so it restarts at 0 whenever the
+ * renderer reloads. If a sidecar could outlive a renderer, its `appliedRevision`
+ * would stay high while this counter started over, and `settingsMirror.ts`
+ * would then discard EVERY subsequent push — the mirror frozen forever at the
+ * pre-reload snapshot, which is this change's own failure mode running
+ * backwards.
+ *
+ * It cannot happen today because a sidecar never outlives its renderer:
+ * `sidecarManager.ts` issues `mcp_kill` for the sidecar id BEFORE it spawns
+ * one, so every renderer start gets a brand-new process with no applied
+ * revision. That kill-then-spawn is the whole load-bearing structure — nothing
+ * in `electron/mcpBridge.cjs` cleans up per-webContents, and
+ * `electron/sidecarSupervisor.cjs` exists precisely to let the MAIN process own
+ * a sidecar (it did once; `mcpBridge.cjs` says so). Any refactor that moves
+ * ownership back to main must carry a producer nonce in the push — or reset
+ * `appliedRevision` when the producer changes — before it lands, or settings
+ * silently stop reaching the sidecar.
  */
 let settingsPushRevision = 0;
 

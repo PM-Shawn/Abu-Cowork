@@ -656,6 +656,29 @@ function closedShadowNote(count: number): string {
 const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
 
 /**
+ * Actions that copy the page's CONTENTS into the conversation, and must
+ * therefore land on the document the gate approved (round-2 R2-A). Mirrors
+ * `ORIGIN_PINNED_READ_ACTIONS` in `electron/browserHost.cjs`.
+ *
+ * A read changes nothing about the page, which is why it was exempt — but it
+ * changes the transcript, and on this channel the region it reads is a
+ * third-party document that navigates whenever its owner feels like it. Reading
+ * the body of a site the gate never judged is an exfiltration, so a read that
+ * CARRIES a pin has to match it.
+ *
+ * A read that carries NO pin keeps its previous path in both run modes: the
+ * auto-routing probe (`resolveAcrossFrames` in the worker) sends bare `locate`
+ * calls with no gate fields at all, and whether an unattended run may read
+ * without a resolved origin is the gate's question, not this file's.
+ *
+ * `wait_for` is absent on purpose — a wait is frequently how a run waits OUT a
+ * navigation, and it reads a condition rather than the page's contents.
+ */
+const ORIGIN_PINNED_READ_ACTIONS = new Set([
+  'snapshot', 'find', 'locate', 'get_html', 'extract_text', 'extract_table',
+]);
+
+/**
  * ## Execution-time origin pin, content-script half (U5, review round 1)
  *
  * The first round pinned only the built-in Electron browser. The extension
@@ -679,10 +702,13 @@ const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
  * no pin keeps its exact pre-U5 path.
  */
 function assertOriginPin(action: string, payload: Record<string, unknown>, scope: DomScope): void {
-  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+  if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    // A read that arrived without a pin keeps its pre-R2-A path whatever the
+    // run mode — see `ORIGIN_PINNED_READ_ACTIONS`.
+    if (pinnedRead || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be '
       + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
@@ -843,6 +869,11 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
   if (ORIGIN_PINNED_ACTIONS.has(action)) {
     if (frameServicesAction(action, payload, scope)) assertOriginPin(action, payload, scope);
     else assertFrameAbstains(payload);
+  } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
+    // No deferral to arrange here: the worker addresses every message to one
+    // frame (`chrome.tabs.sendMessage(..., { frameId })`), so this copy IS the
+    // one answering and there is no losing racer to keep quiet.
+    assertOriginPin(action, payload, scope);
   }
   // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
   // page-derived detection can never reorder, skip, or excuse the pin. See

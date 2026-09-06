@@ -607,26 +607,8 @@ export async function runBatch(
       break;
     }
 
-    // And the same question for the REGION this step targets. The tab staying
-    // put says nothing about a third-party region inside it: that region can
-    // navigate on its own, and an approval given for the site it was showing
-    // must not carry over to whatever replaced it.
-    const targetFrame = steps[index].frameId;
-    if (targetFrame !== undefined) {
-      const expected = pinnedFrames[targetFrame];
-      const nowShowing = reading.frameOrigins[targetFrame];
-      if (expected === undefined || nowShowing === undefined) {
-        stopped = 'origin-unverifiable';
-        break;
-      }
-      if (nowShowing !== expected) {
-        stopped = 'frame-origin-changed';
-        break;
-      }
-    }
-
     // Consecutive page reads go together; an action never shares the page with
-    // anything else. The identity check above covers the whole group — the
+    // anything else. The page-identity check above covers the whole group — the
     // reads are dispatched at one instant, and none of them can move the page.
     let groupEnd = index;
     while (
@@ -634,6 +616,40 @@ export async function runBatch(
       && PARALLEL_READ_ACTIONS.has(steps[groupEnd].action)
     ) groupEnd += 1;
     const group = groupEnd > index ? steps.slice(index, groupEnd) : [steps[index]];
+
+    // And the same question for EVERY REGION this group targets — one answer
+    // per step, not one for the group. The tab staying put says nothing about
+    // a third-party region inside it: that region can navigate on its own, and
+    // an approval given for the site it was showing must not carry over to
+    // whatever replaced it.
+    //
+    // Asking only about the FIRST step's region was a real hole (round-2 R2-A):
+    // a parallel read group is dispatched in one instant, so steps 2..n went
+    // out with nobody having checked where their region had got to — and
+    // `extract_text` / `find` are reads, which the execution-time pin used to
+    // wave through. A read of a site the gate never approved is an exfiltration,
+    // so the whole group is checked BEFORE any of it is dispatched: one bad
+    // region stops the run with nothing sent, rather than letting its
+    // well-behaved siblings race ahead of the refusal.
+    let regionStop: BatchStopReason | undefined;
+    for (const step of group) {
+      const targetFrame = step.frameId;
+      if (targetFrame === undefined) continue;
+      const expected = pinnedFrames[targetFrame];
+      const nowShowing = reading.frameOrigins[targetFrame];
+      if (expected === undefined || nowShowing === undefined) {
+        regionStop = 'origin-unverifiable';
+        break;
+      }
+      if (nowShowing !== expected) {
+        regionStop = 'frame-origin-changed';
+        break;
+      }
+    }
+    if (regionStop) {
+      stopped = regionStop;
+      break;
+    }
 
     // Read once for the whole group: its steps are dispatched at one instant,
     // so they share the remaining budget rather than each getting all of it.

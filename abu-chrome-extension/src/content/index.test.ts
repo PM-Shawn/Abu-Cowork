@@ -721,13 +721,65 @@ describe('execution-time origin pin, content-script half (I2)', () => {
     }
   });
 
-  it('leaves read-only actions alone — they change nothing', async () => {
+  /**
+   * Round 2, R2-A. This used to assert the opposite ("leaves read-only actions
+   * alone — they change nothing"). A read changes nothing about the PAGE; what
+   * it changes is the CONVERSATION, and on this channel the document it reads
+   * is a third-party region that navigates whenever its owner feels like it.
+   * Copying an unapproved site's body into the transcript is an exfiltration.
+   */
+  it('refuses a read that carries a pin once the document drifted', async () => {
     pageAt('https://evil.example.com/');
+    for (const [action, payload] of [
+      ['snapshot', {}],
+      ['find', { query: 'Buy' }],
+      ['locate', { locator: { css: '#buy' } }],
+      ['get_html', {}],
+      ['extract_text', {}],
+      ['extract_table', {}],
+    ] as Array<[string, Record<string, unknown>]>) {
+      await expect(
+        handleAction(action, { ...payload, unattended: true, expectedOrigin: APPROVED }),
+      ).rejects.toThrow(/no longer on the page/);
+    }
+  });
+
+  it('refuses an ATTENDED read on a drift too', async () => {
+    pageAt('https://evil.example.com/');
+    await expect(handleAction('extract_text', {
+      expectedOrigin: APPROVED,
+    })).rejects.toThrow(/no longer on the page/);
+  });
+
+  it('runs a read that is still on the approved origin', async () => {
+    pageAt(`${APPROVED}/cart/step-2`);
     const snap = await handleAction('snapshot', {
       unattended: true,
       expectedOrigin: APPROVED,
     }) as PageSnapshot;
     expect(snap.elements.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The missing-value refusal stays state-change-only. The worker's own
+   * auto-routing probe sends bare `locate` calls with no gate fields at all,
+   * and whether an unattended run may read without a resolved origin is the
+   * gate's question, not this file's.
+   */
+  it('leaves a read that carries NO pin on its pre-R2-A path, unattended included', async () => {
+    pageAt('https://evil.example.com/');
+    const snap = await handleAction('snapshot', { unattended: true }) as PageSnapshot;
+    expect(snap.elements.length).toBeGreaterThan(0);
+  });
+
+  it('leaves wait_for exempt — a wait is how a run waits OUT a navigation', async () => {
+    pageAt('https://evil.example.com/');
+    const result = await handleAction('wait_for', {
+      condition: { type: 'urlContains', pattern: 'evil' },
+      unattended: true,
+      expectedOrigin: APPROVED,
+    }) as { success?: boolean };
+    expect(result.success).toBe(true);
   });
 
   it('fail-closed: an unattended pinned action with no approved origin is refused', async () => {

@@ -722,3 +722,139 @@ describe('runBatch — region identity between steps', () => {
     expect(result.frameOrigins).toBeUndefined();
   });
 });
+
+/**
+ * ## Round-2 R2-A — every step of a parallel read group is checked, not the first
+ *
+ * Consecutive `find` / `read` steps are dispatched in one instant. The region
+ * check used to ask only about the step the loop happened to be standing on,
+ * so a group's second step went out with nobody having asked where ITS region
+ * had got to — and `extract_text` / `find` were exempt from the execution-time
+ * pin, so nothing downstream asked either. A region that had drifted to another
+ * site got its body read into the transcript under an approval that named a
+ * different one.
+ *
+ * The tab's own address is constant throughout, as in the block above: this is
+ * about a third-party region navigating under a page that never moved.
+ */
+describe('runBatch — every region in a parallel read group', () => {
+  /** Two third-party regions, each of which can be pointed somewhere else. */
+  function twoRegionHarness(f4Url: string, f5Url: string) {
+    /** Every page action's outgoing payload, in dispatch order. */
+    const payloads: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    let clock = 0;
+    const deps: BatchDeps = {
+      now: () => { clock += 1; return clock; },
+      send: async (action, payload) => {
+        sent.push(action);
+        if (action !== 'get_tabs') payloads.push(payload);
+        if (action === 'get_tabs') {
+          return {
+            success: true,
+            data: {
+              windows: [{
+                tabs: [{
+                  tabId: TAB,
+                  url: 'https://oa.example.com/apply',
+                  frames: [
+                    { frameId: 'f0', origin: 'https://oa.example.com', sameOriginAsTop: true, accessible: true },
+                    {
+                      frameId: 'f4',
+                      origin: new URL(f4Url).origin,
+                      url: f4Url,
+                      sameOriginAsTop: false,
+                      accessible: true,
+                    },
+                    {
+                      frameId: 'f5',
+                      origin: new URL(f5Url).origin,
+                      url: f5Url,
+                      sameOriginAsTop: false,
+                      accessible: true,
+                    },
+                  ],
+                }],
+              }],
+            },
+          };
+        }
+        return { success: true, data: { text: 'whatever this region is showing' } };
+      },
+    };
+    return { deps, sent, payloads };
+  }
+
+  /** Two reads in a row — consecutive, so they form one parallel group. */
+  const twoRegionReads: BatchStep[] = [
+    { action: 'read', frameId: 'f4', selector: '#a' },
+    { action: 'read', frameId: 'f5', selector: '#b' },
+  ];
+
+  const approvedRegions = {
+    f4: 'https://vendor.example.net',
+    f5: 'https://cdn.example.org',
+  };
+
+  it('reads both regions while each keeps showing the site it was approved for', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    // Still ONE group: the fix checks more, it does not serialise reads.
+    expect(h.sent).toEqual(['get_tabs', 'extract_text', 'extract_text']);
+  });
+
+  it('stops the group when the SECOND region drifted, and reads neither', async () => {
+    // The gate approved cdn.example.org for f5; by the time the batch runs, f5
+    // is showing evil.example. The first step's region never moved.
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://evil.example/collect');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    // Nothing was dispatched — not even the innocent first step, because the
+    // group goes out in one instant and there is no recalling it.
+    expect(h.payloads).toEqual([]);
+    expect(result.completedSteps).toHaveLength(0);
+  });
+
+  it('stops the group when the SECOND region is one the gate never judged', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', { f4: 'https://vendor.example.net' },
+    );
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.payloads).toEqual([]);
+  });
+
+  it('still stops when the FIRST region of the group drifted', async () => {
+    const h = twoRegionHarness('https://evil.example/collect', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(h.payloads).toEqual([]);
+  });
+
+  it('carries each region\'s own pin on its own step, across the group', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    await runBatch(h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions);
+
+    expect(h.payloads).toEqual([
+      { tabId: TAB, frameId: 'f4', expectedOrigin: 'https://vendor.example.net', selector: '#a' },
+      { tabId: TAB, frameId: 'f5', expectedOrigin: 'https://cdn.example.org', selector: '#b' },
+    ]);
+  });
+});

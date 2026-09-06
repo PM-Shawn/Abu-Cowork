@@ -479,10 +479,7 @@ const DIALOG_WATCHED_ACTIONS = new Set([
  * (never the tool's input schema, so the model can neither read nor forge it);
  * this set names the actions that must match it before executing.
  *
- * Two deliberate exemptions:
- * - READ-ONLY actions (snapshot/screenshot/extract/scroll/…): they change
- *   nothing, and the run's site verdict already gated whether it may read at
- *   all. A drifted read returns a page the model can see is different.
+ * One deliberate exemption:
  * - `navigate` ITSELF: its target IS the thing the gate approved, and the tab's
  *   current origin is by definition the page it is leaving. Pinning it would
  *   refuse every navigation away from anywhere.
@@ -493,6 +490,40 @@ const ORIGIN_PINNED_ACTIONS = new Set([
   'select',
   'keyboard',
   'execute_js',
+]);
+
+/**
+ * ## Reads are pinned too (round-2 R2-A)
+ *
+ * The set above used to be the whole story, on the reasoning that a read
+ * "changes nothing". That reasoning was wrong about WHERE the change lands: a
+ * read does not change the page, it changes the CONVERSATION — the body of
+ * whatever site the tab is showing goes into the transcript and the model's
+ * context. If the page drifted between the approval and this instant, the site
+ * the user (or the standing grant) authorized is not the site being copied out.
+ * That is an exfiltration, and it is the exact hole a batch's parallel read
+ * group walked into.
+ *
+ * These are checked against the pin they CARRY, but — unlike a state change —
+ * a read that carries no pin at all keeps its pre-existing path in both run
+ * modes. Widening the missing-pin refusal to reads would change what an
+ * unattended run may look at, which is a policy question for the gate, not a
+ * question this file gets to answer.
+ *
+ * `wait_for` is deliberately absent: waiting is frequently how a run waits OUT
+ * a navigation, so pinning it would refuse the one call whose whole purpose is
+ * to observe the page becoming something else. It reads a condition, not the
+ * page's contents.
+ */
+const ORIGIN_PINNED_READ_ACTIONS = new Set([
+  'snapshot',
+  'screenshot',
+  'screenshot_full_page',
+  'find',
+  'locate',
+  'get_html',
+  'extract_text',
+  'extract_table',
 ]);
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
@@ -942,10 +973,13 @@ function normalizedOriginOf(urlString) {
  * approval gate over `_meta`, never the model-visible tool schema.
  */
 function assertOriginPin(action, payload, view) {
-  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+  if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    // A read that arrived without a pin keeps its pre-R2-A path whatever the
+    // run mode — see `ORIGIN_PINNED_READ_ACTIONS`.
+    if (pinnedRead || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
         'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'

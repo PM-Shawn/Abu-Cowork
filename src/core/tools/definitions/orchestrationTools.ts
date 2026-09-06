@@ -22,6 +22,7 @@ import { TOOL_NAMES } from '../toolNames';
 import { withDispatchController } from '../../agent/subagentAbort';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -316,6 +317,7 @@ interface BatchTaskItem {
   agent_name?: string;
   task: string;
   context?: string;
+  expected_files?: unknown;
 }
 
 // ─── Tool definition ───────────────────────────────────────────────────────
@@ -355,6 +357,11 @@ export const runAgentBatchTool: ToolDefinition = {
             context: {
               type: 'string',
               description: 'Additional context (optional)',
+            },
+            expected_files: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Files this task must produce (absolute, or relative to the workspace). Checked after the agent finishes: a missing file fails the task.',
             },
           },
           required: ['task'],
@@ -445,7 +452,7 @@ export const runAgentBatchTool: ToolDefinition = {
       && typeof loopCtx?.eventRouter?.completeChildStep === 'function';
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
-    type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };
+    type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string; expectedFiles: string[] };
 
     const resolvedTasks: ResolvedTask[] = [];
     for (let i = 0; i < rawTasks.length; i++) {
@@ -484,6 +491,7 @@ export const runAgentBatchTool: ToolDefinition = {
         task: item.task,
         context: item.context,
         label: item.task.slice(0, 60) + (item.task.length > 60 ? '…' : ''),
+        expectedFiles: parseExpectedFiles(item.expected_files),
       });
     }
 
@@ -637,6 +645,13 @@ export const runAgentBatchTool: ToolDefinition = {
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
             loopCtx?.signal,
           );
+          // Define-done check: declared artifacts must exist, whatever the text says.
+          if (resolved.expectedFiles.length > 0) {
+            const missingFiles = await findMissingExpectedFiles(resolved.expectedFiles, toolExecContext?.workspacePath);
+            if (missingFiles.length > 0) {
+              throw new Error(format(ot.errBatchExpectedFilesMissing, { i: idx, agentName: resolved.agent.name, files: missingFiles.join(', ') }));
+            }
+          }
           const settledResult = { status: 'fulfilled', value: result } as const satisfies PromiseSettledResult<SubagentResult>;
           if (structuredEntries !== undefined && schema !== undefined) {
             structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);

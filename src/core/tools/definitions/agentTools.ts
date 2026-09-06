@@ -1,6 +1,7 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
@@ -213,6 +214,7 @@ export const delegateToAgentTool: ToolDefinition = {
       type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
+      expected_files: { type: 'array', items: { type: 'string' }, description: 'Files this step must produce (absolute, or relative to the workspace). Checked after the agent finishes: a missing file fails the step.' },
     },
     required: ['task'],
   },
@@ -221,6 +223,7 @@ export const delegateToAgentTool: ToolDefinition = {
     const agentType = input.type as string | undefined;
     const task = input.task as string;
     const context = input.context as string | undefined;
+    const expectedFiles = parseExpectedFiles(input.expected_files);
 
     // 1. Resolve agent: by name (user-defined) or by type (system preset)
     let agent: SubagentDefinition | undefined;
@@ -345,6 +348,7 @@ export const delegateToAgentTool: ToolDefinition = {
     );
 
     // 8. Sync mode: blocking await
+    let outcomeRecorded = false;
     try {
       // A model tool call may describe its task, but it never chooses the
       // source message. The active shell loop owns both ids. Refuse to
@@ -385,8 +389,22 @@ export const delegateToAgentTool: ToolDefinition = {
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }
-      toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
-      if (boundsLoopId && agentName) recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed');
+      // Define-done check: declared artifacts must exist, whatever the text says.
+      const missingFiles = expectedFiles.length > 0
+        ? await findMissingExpectedFiles(expectedFiles, toolExecContext?.workspacePath)
+        : [];
+      toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
+      if (boundsLoopId && agentName) {
+        recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed' && missingFiles.length === 0);
+        outcomeRecorded = true;
+      }
+      if (missingFiles.length > 0) {
+        throw new Error(format(getI18n().toolResult.agent.errExpectedFilesMissing, {
+          agentName: effectiveAgentName,
+          files: missingFiles.join(', '),
+          text: result.text,
+        }));
+      }
       // No tool call at all = nothing the member could have checked; flag it for the leader.
       if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
         return `${result.text}\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
@@ -394,7 +412,7 @@ export const delegateToAgentTool: ToolDefinition = {
       return result.text;
     } catch (err) {
       subagentCleanup();
-      if (boundsLoopId && agentName) recordDispatchOutcome(boundsLoopId, agentName, false);
+      if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }

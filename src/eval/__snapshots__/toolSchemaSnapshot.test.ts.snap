@@ -81,6 +81,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "paramNames": [
       "agent_name",
       "context",
+      "expected_files",
       "task",
       "type",
     ],

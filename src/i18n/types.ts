@@ -3147,6 +3147,8 @@ export interface TranslationDict {
       errDispatchCapReached: string;
       /** Member blocked after consecutive failed hand-offs. */
       errMemberBlocked: string;
+      /** Declared artifacts missing after the member finished (define-done check). */
+      errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
@@ -3186,6 +3188,7 @@ export interface TranslationDict {
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;
+      errBatchExpectedFilesMissing: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */

@@ -74,6 +74,7 @@ import {
   UnsupportedSourceError,
   PluginSecurityError,
 } from './installer';
+import { InstalledManifestUnreadableError } from './installedStore';
 import type { PluginSource } from './marketplace';
 import { copyPluginDir, PluginPackageNotFoundError, PluginSymlinkRootError } from './fsOps';
 
@@ -286,6 +287,24 @@ describe('installPlugin', () => {
     // The outcome also carries the mcp specs (for registration) out of the one
     // planInstall, so no caller has to re-plan.
     expect(mcpServers).toEqual([{ name: 'forecast', command: 'npx', args: undefined, url: undefined }]);
+  });
+
+  // 🔴 Ordering, not just refusal: `upsertInstalled` refuses an unreadable
+  // manifest, so a check made only at persist time would abort AFTER the
+  // package was copied — bytes on disk with no record to uninstall them.
+  it('rejects before any copy when the install manifest cannot be read', async () => {
+    // `exists` says the manifest is there (Once: the very first `exists` call
+    // in this flow is the manifest probe, and the rest of the suite relies on
+    // the default), while the virtual tree has no such file — so the read
+    // throws, which is exactly the unreadable/corrupt case.
+    vi.mocked(exists).mockResolvedValueOnce(true);
+    const copyDir = vi.fn(async () => {});
+
+    await expect(
+      installPlugin({ home: '/home/u', marketplaceName: 'official', marketplaceDir: '/mkt', entry, copyDir }),
+    ).rejects.toBeInstanceOf(InstalledManifestUnreadableError);
+
+    expect(copyDir).not.toHaveBeenCalled();
   });
 
   it('does not record an install when the copy fails', async () => {

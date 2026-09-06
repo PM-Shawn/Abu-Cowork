@@ -197,9 +197,51 @@ async function writeInstalled(home: string, plugins: InstalledPlugin[]): Promise
   await writeTextFile(path, JSON.stringify(plugins, null, 2));
 }
 
-/** Insert `p`, or replace the existing entry with the same key. */
+/**
+ * The manifest could not be read, so it must not be written either.
+ *
+ * 🔴 Every write here is read-modify-write. {@link readInstalled} collapses a
+ * failed read to `[]`, which is right for a consumer that only ever *grants*
+ * something — and catastrophic for a writer: an unreadable manifest would come
+ * back empty, and the write would replace the user's whole install record with
+ * a single entry (or, on uninstall, silently drop every other plugin). The
+ * records are the only account of what is on disk, so losing them orphans
+ * every installed package. Refuse instead: an install/uninstall that fails
+ * loudly is recoverable, a manifest rewritten from a failed read is not.
+ */
+export class InstalledManifestUnreadableError extends Error {
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super(
+      'Could not read the installed-plugins manifest (installed.json); '
+      + 'refusing to rewrite it. Fix or remove the file and try again.',
+    );
+    this.name = 'InstalledManifestUnreadableError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * Read the records for a caller that is about to write them back.
+ *
+ * @throws {InstalledManifestUnreadableError} when the manifest exists but
+ * cannot be read or parsed. A MISSING manifest is not a failure — that is the
+ * honest empty state, and the first install must be able to create the file.
+ */
+export async function readInstalledForWrite(home: string): Promise<InstalledPlugin[]> {
+  const result = await readInstalledResult(home);
+  if (!result.ok) throw new InstalledManifestUnreadableError(result.error);
+  return result.plugins;
+}
+
+/**
+ * Insert `p`, or replace the existing entry with the same key.
+ *
+ * @throws {InstalledManifestUnreadableError} — see {@link readInstalledForWrite}.
+ */
 export async function upsertInstalled(home: string, p: InstalledPlugin): Promise<void> {
-  const plugins = await readInstalled(home);
+  const plugins = await readInstalledForWrite(home);
   const idx = plugins.findIndex((x) => x.key === p.key);
   if (idx >= 0) {
     plugins[idx] = p;
@@ -209,9 +251,13 @@ export async function upsertInstalled(home: string, p: InstalledPlugin): Promise
   await writeInstalled(home, plugins);
 }
 
-/** Remove the entry with `key`. No-op (no throw, no write) if it isn't present. */
+/**
+ * Remove the entry with `key`. No-op (no throw, no write) if it isn't present.
+ *
+ * @throws {InstalledManifestUnreadableError} — see {@link readInstalledForWrite}.
+ */
 export async function removeInstalled(home: string, key: string): Promise<void> {
-  const plugins = await readInstalled(home);
+  const plugins = await readInstalledForWrite(home);
   const next = plugins.filter((x) => x.key !== key);
   if (next.length === plugins.length) return;
   await writeInstalled(home, next);

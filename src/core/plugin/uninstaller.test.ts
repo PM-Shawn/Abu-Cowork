@@ -13,6 +13,7 @@ vi.mock('./agentPayload', () => ({ removeContributedAgent: vi.fn() }));
 
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs';
 import { uninstallPlugin, PluginNotInstalledError } from './uninstaller';
+import { InstalledManifestUnreadableError } from './installedStore';
 import { removeContributedAgent } from './agentPayload';
 import type { InstalledPlugin } from './installedStore';
 
@@ -194,5 +195,23 @@ describe('uninstallPlugin — contributed agents', () => {
       uninstallPlugin({ home: '/home/u', key: 'weather@official', removeDir }),
     ).rejects.toThrow('EPERM');
     expect(removeContributedAgent).not.toHaveBeenCalled();
+  });
+
+  // The lenient read reports an unreadable manifest as "nothing installed",
+  // which would answer `PluginNotInstalledError` for a file we simply could not
+  // parse — and then `removeInstalled` would be asked to rewrite it from that
+  // empty list. Refuse before anything is deleted.
+  it('rejects — and deletes nothing — when the manifest cannot be read', async () => {
+    mockExists.mockResolvedValue(true);
+    mockRead.mockRejectedValue(new Error('EACCES'));
+    const removeDir = vi.fn(async () => {});
+
+    await expect(
+      uninstallPlugin({ home: '/home/u', key: 'weather@official', removeDir }),
+    ).rejects.toBeInstanceOf(InstalledManifestUnreadableError);
+
+    expect(removeDir).not.toHaveBeenCalled();
+    expect(removeContributedAgent).not.toHaveBeenCalled();
+    expect(mockWrite).not.toHaveBeenCalled();
   });
 });

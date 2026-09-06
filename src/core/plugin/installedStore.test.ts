@@ -9,6 +9,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 import {
+  InstalledManifestUnreadableError,
   readInstalled,
   readInstalledResult,
   upsertInstalled,
@@ -236,6 +237,51 @@ describe('removeInstalled', () => {
 
     await expect(removeInstalled(HOME, 'does-not-exist@mkt')).resolves.not.toThrow();
     expect(mockWriteTextFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('write-side fail-closed (controller ruling)', () => {
+  // Every write here is read-modify-write, and `readInstalled` collapses a
+  // failed read to `[]`. Without this guard an unreadable manifest would be
+  // REWRITTEN from that empty list — install would replace the user's whole
+  // record with one entry, uninstall would silently drop every other plugin,
+  // and the packages on disk would be orphaned with nothing to remove them.
+
+  it('upsertInstalled refuses to write when the manifest cannot be read', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockRejectedValue(new Error('EACCES'));
+
+    await expect(upsertInstalled(HOME, makePlugin())).rejects.toBeInstanceOf(
+      InstalledManifestUnreadableError,
+    );
+    expect(mockWriteTextFile).not.toHaveBeenCalled();
+  });
+
+  it('upsertInstalled refuses to write when the manifest is not valid JSON', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue('{ this is not json');
+
+    await expect(upsertInstalled(HOME, makePlugin())).rejects.toBeInstanceOf(
+      InstalledManifestUnreadableError,
+    );
+    expect(mockWriteTextFile).not.toHaveBeenCalled();
+  });
+
+  it('removeInstalled refuses to write when the manifest cannot be read', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue('null');
+
+    await expect(removeInstalled(HOME, 'foo@mkt')).rejects.toBeInstanceOf(
+      InstalledManifestUnreadableError,
+    );
+    expect(mockWriteTextFile).not.toHaveBeenCalled();
+  });
+
+  it('still writes when the manifest is merely ABSENT — the honest empty state', async () => {
+    mockExists.mockResolvedValue(false);
+
+    await expect(upsertInstalled(HOME, makePlugin())).resolves.toBeUndefined();
+    expect(mockWriteTextFile).toHaveBeenCalledWith(MANIFEST_PATH, expect.any(String));
   });
 });
 

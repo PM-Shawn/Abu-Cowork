@@ -14,7 +14,7 @@
  * uninstall must never delete one.
  */
 
-import { findInstalled, removeInstalled } from './installedStore';
+import { readInstalledForWrite, removeInstalled } from './installedStore';
 import { removeContributedAgent } from './agentPayload';
 import { pluginInstallDir } from './paths';
 import { getParentDir } from '../../utils/pathUtils';
@@ -55,7 +55,12 @@ function isMissingDirError(error: unknown): boolean {
 }
 
 export async function uninstallPlugin(opts: UninstallPluginOptions): Promise<UninstallResult> {
-  const record = await findInstalled(opts.home, opts.key);
+  // 🔴 Read through the WRITE path: an unreadable manifest throws here, before
+  // the package directory is removed. Reading it the lenient way would report
+  // "not installed" for a manifest we simply could not parse — and, worse,
+  // `removeInstalled` would then be asked to rewrite a file whose contents we
+  // never saw. Nothing is deleted until the record is genuinely known.
+  const record = (await readInstalledForWrite(opts.home)).find((p) => p.key === opts.key) ?? null;
   if (!record) throw new PluginNotInstalledError(opts.key);
 
   // Remove the plugin's whole <market>/<name>/ dir, not just the <version>

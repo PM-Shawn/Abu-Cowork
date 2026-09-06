@@ -37,7 +37,7 @@ import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from '.
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
 import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fsOps';
-import { findInstalled, type InstalledPlugin } from './installedStore';
+import { findInstalled, readInstalledForWrite, type InstalledPlugin } from './installedStore';
 import { convertSingleFileAgent, renderAgentMd } from './agentPayload';
 import { installAgentFromFolder } from '../agent/installer';
 import { agentRegistry, getBuiltinAgentNames } from '../agent/registry';
@@ -575,6 +575,13 @@ export interface InstallOutcome {
 }
 
 export async function installPlugin(opts: InstallPluginOptions): Promise<InstallOutcome> {
+  // 🔴 Fail-closed BEFORE anything is fetched or copied. The install record is
+  // written at the very end of this flow, and `upsertInstalled` now refuses an
+  // unreadable manifest — so checking only there would abort *after* the
+  // package is already on disk, leaving bytes with nothing to record or
+  // uninstall them. One read up front turns that into a clean refusal.
+  await readInstalledForWrite(opts.home);
+
   const { disclosure, previouslyContributedAgents } = await planInstallWithHistory(opts);
   const version = disclosure.version ?? UNVERSIONED;
   const targetDir = pluginInstallDir(opts.home, opts.marketplaceName, disclosure.name, version);

@@ -7,7 +7,15 @@ import { cn } from '@/lib/utils';
 import { Select, type SelectOption } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useScheduleStore } from '@/stores/scheduleStore';
+import { useTriggerStore } from '@/stores/triggerStore';
+import { useIMChannelStore } from '@/stores/imChannelStore';
 import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
+import {
+  summarizeBrowserAutomations,
+  type BrowserAutomationSource,
+} from '@/core/permissions/browserAutomationOverview';
+import { resolveUnattendedImTarget } from '@/core/im/approvalTarget';
 import { isHighRiskUrl } from '@/core/permissions/highRiskSites';
 import {
   browserOperationStatesFor,
@@ -248,6 +256,152 @@ export function BrowserSitePermissionsPage({
             ))}
           </ul>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * S11 — "which automations use the browser, and which one is misconfigured?",
+ * directly under the master switch that governs them all.
+ *
+ * A read-only view over configuration that lives elsewhere: the approver and
+ * the result channel belong to the individual task, so this reports a gap and
+ * hands the user to the editor that owns it. It never copies an editor in here,
+ * and 「去修改」 is a jump, not a second place to change the same thing.
+ *
+ * What it refuses to do is guess. Nothing statically declares "this task uses
+ * the browser", so the only claim made is the one that IS knowable: whether the
+ * automation's capability tier could reach a browser tool at all. Everything
+ * else is 「运行时检查」, and a green summary is never shown in place of an
+ * unknown (`summarizeBrowserAutomations` holds those rules).
+ */
+function BrowserAutomationOverviewCard() {
+  const { t } = useI18n();
+  const policy = useSettingsStore((s) => s.browserOperationPolicy);
+  const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
+  const openAutomation = useSettingsStore((s) => s.openAutomation);
+  const tasks = useScheduleStore((s) => s.tasks);
+  const triggers = useTriggerStore((s) => s.triggers);
+  const channels = useIMChannelStore((s) => s.channels);
+
+  const overview = useMemo(() => summarizeBrowserAutomations({
+    scheduledTasks: Object.values(tasks).map((task) => ({
+      id: task.id,
+      name: task.name,
+      status: task.status,
+      outputChannelId: task.outputChannelId,
+      outputChatIds: task.outputChatIds,
+      outputUserIds: task.outputUserIds,
+    })),
+    triggers: Object.values(triggers).map((trigger) => ({
+      id: trigger.id,
+      name: trigger.name,
+      status: trigger.status,
+      action: trigger.action,
+      output: trigger.output,
+    })),
+    imChannels: Object.values(channels ?? {}).map((channel) => ({
+      id: channel.id,
+      name: channel.name,
+      capability: channel.capability,
+      enabled: channel.enabled,
+    })),
+    policy,
+    masterSwitchOn: allowUnattended,
+    reachableSiteCount:
+      summarizeBrowserAuthorization(sitePermissions, allowUnattended).reachableUnattended.length,
+    // The REAL rule, not a copy of it: the same resolver the gate builds its
+    // approval target from, so "this task has nobody to ask" here means exactly
+    // what it will mean at 3am.
+    hasApprovalTarget: (binding) => resolveUnattendedImTarget(binding) !== null,
+  }), [tasks, triggers, channels, policy, allowUnattended, sitePermissions]);
+
+  const sourceLabel: Record<BrowserAutomationSource, string> = {
+    schedule: t.settings.browserAutomationSourceSchedule,
+    trigger: t.settings.browserAutomationSourceTrigger,
+    im: t.settings.browserAutomationSourceIm,
+  };
+
+  /** Leave settings and land in the editor that owns the missing binding. */
+  const goFix = (entry: { source: BrowserAutomationSource; id: string }) => {
+    if (entry.source === 'schedule') {
+      useScheduleStore.getState().setSelectedTaskId(entry.id);
+      useScheduleStore.getState().openEditor(entry.id);
+      openAutomation('schedule');
+    } else if (entry.source === 'trigger') {
+      useTriggerStore.getState().setSelectedTriggerId(entry.id);
+      useTriggerStore.getState().openEditor(entry.id);
+      openAutomation('trigger');
+    }
+    // Settings is an overlay; leaving it open would put the editor behind it.
+    closeSystemSettings();
+  };
+
+  return (
+    <div className={settingsCardClass}>
+      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
+        {t.settings.browserAutomationOverviewTitle}
+      </h4>
+      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {overview.anyBrowserCapable
+          ? format(t.settings.browserAutomationOverviewCounts, {
+            schedule: overview.counts.schedule,
+            trigger: overview.counts.trigger,
+            im: overview.counts.im,
+          })
+          : t.settings.browserAutomationOverviewEmpty}
+      </p>
+      <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
+        {overview.prerequisites.map((prerequisite) => (
+          <p
+            key={prerequisite}
+            className="flex items-start gap-2 pb-2 text-minor leading-relaxed text-[var(--abu-warning)]"
+          >
+            <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {prerequisite === 'master-switch-off'
+              ? t.settings.browserAutomationMasterOff
+              : t.settings.browserAutomationNoAllowedSite}
+          </p>
+        ))}
+        {overview.entries.length === 0 ? (
+          <p className="text-minor leading-relaxed text-[var(--abu-text-tertiary)]">
+            {/* "Nothing needs fixing" — deliberately NOT "everything will
+                work". What runs depends on sign-in, files and the model too,
+                none of which this card checked. */}
+            {t.settings.browserAutomationOverviewClear}
+          </p>
+        ) : (
+          <ul className="divide-y divide-[var(--abu-border)]">
+            {overview.entries.map((entry) => (
+              <li key={`${entry.source}:${entry.id}`} className="flex items-center gap-3 py-2">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-body text-[var(--abu-text-secondary)]" title={entry.name}>
+                    {entry.name}
+                  </span>
+                  <span className="mt-0.5 block text-minor leading-relaxed text-[var(--abu-text-muted)]">
+                    {sourceLabel[entry.source]}
+                    {' · '}
+                    {t.settings.browserAutomationNoApprover}
+                    {!entry.active && ` · ${t.settings.browserAutomationPaused}`}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => goFix(entry)}
+                  className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
+                >
+                  {t.settings.browserAutomationFix}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="pt-2 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+          {t.settings.browserAutomationRuntimeCheck}
+        </p>
       </div>
     </div>
   );
@@ -546,6 +700,8 @@ export function BrowserPermissionCards({
           />
         </div>
       </div>
+
+      <BrowserAutomationOverviewCard />
 
       <div className={settingsCardClass}>
         <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">

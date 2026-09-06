@@ -15,6 +15,14 @@ import { persist } from 'zustand/middleware';
  * R2 builds it on conversations + the message ledger, not a parallel DB.
  */
 
+export interface TeamLastPlan {
+  /** The user's request that split answered (trimmed). */
+  request: string;
+  /** Step text, "@owner" appended when the step had one. */
+  steps: string[];
+  savedAt: number;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -31,6 +39,8 @@ export interface Team {
   requirePlanApproval?: boolean;
   /** Optional emoji avatar set by the user; absent = the default group mark. */
   avatar?: string;
+  /** The split the leader used last time (reference input for the next run, never a skip). */
+  lastPlan?: TeamLastPlan;
   createdAt: number;
   archivedAt?: number;
 }
@@ -41,7 +51,7 @@ interface TeamState {
 
 interface TeamActions {
   createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string }) => Team;
-  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar'>>) => void;
+  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar' | 'lastPlan'>>) => void;
   archiveTeam: (id: string) => void;
   restoreTeam: (id: string) => void;
 

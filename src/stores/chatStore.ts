@@ -13,6 +13,7 @@ import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
+import { getMessageText } from '../core/context/contextUtils';
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
@@ -1803,6 +1804,22 @@ export const useChatStore = create<ChatStore>()(
 
       setPlannedStepsSnapshot: (convId, loopId, steps) => {
         let targetMsgId: string | undefined;
+        // Team conversations remember the split on the Team record so the
+        // leader can reuse it next time as reference input (block S).
+        const teamId = get().conversations[convId]?.teamId;
+        if (teamId && steps.length > 0) {
+          const firstUser = get().conversations[convId]?.messages.find((m) => m.role === 'user' && !m.isSystem);
+          const request = firstUser ? getMessageText(firstUser.content).trim().slice(0, 300) : '';
+          import('./teamStore').then(({ useTeamStore }) => {
+            useTeamStore.getState().updateTeam(teamId, {
+              lastPlan: {
+                request,
+                steps: steps.map((s) => (s.owner ? `${s.description} @${s.owner}` : s.description)),
+                savedAt: Date.now(),
+              },
+            });
+          }).catch(() => {});
+        }
         set((state) => {
           const conv = state.conversations[convId];
           if (!conv) return;

@@ -69,6 +69,7 @@ import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
+import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
@@ -610,6 +611,9 @@ function App() {
             isRecoveryNotice: true,
           });
           await clearCheckpoint(cp.conversationId);
+          // A team run continues on its own from where it stopped (block R);
+          // an ordinary conversation still waits for the user.
+          void resumeTeamRunAfterRestart(cp.conversationId, cp.turnCount);
           // Do NOT auto-navigate — app always starts on welcome screen.
           // The recovery message is visible when user clicks the conversation in sidebar.
         }

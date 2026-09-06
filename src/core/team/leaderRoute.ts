@@ -30,6 +30,8 @@ export interface TeamRouteContext {
   leaderNote?: string;
   /** Strict team: the leader must wait for the user's go-ahead after planning. */
   requirePlanApproval?: boolean;
+  /** The split used last time — reference input, never a reason to skip planning. */
+  lastPlan?: { request: string; steps: string[] };
 }
 
 /**
@@ -82,6 +84,12 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
     lines.push('Instructions from the user for you as leader:');
     lines.push(team.leaderNote.trim());
   }
+  if (team.lastPlan && team.lastPlan.steps.length > 0) {
+    lines.push('');
+    lines.push(`Last time this team handled: "${team.lastPlan.request || '(request not recorded)'}" with this split:`);
+    for (const step of team.lastPlan.steps) lines.push(`- ${step}`);
+    lines.push('Reuse it when the new request is the same kind of work (still call report_plan with it); adjust or drop it when the request differs.');
+  }
   lines.push('');
   lines.push('How to run the team:');
   lines.push('1. Plan first: call report_plan with the steps and set `owner` on every step to the exact name of the member who does it (yourself only for review/consolidation steps).' + (
@@ -99,6 +107,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('10. Confirmations: nobody is asked mid-run. When a member reports that an action was refused pending the user\'s confirmation, do not retry it and do not work around it; continue with steps that do not depend on it and list it under "等你确认" in your report. If the user later approves, you get a follow-up message — re-dispatch ONLY that step to the same member.');
   lines.push('11. Define done before dispatching: whenever a step must produce a file, put its path in `expected_files` (workspace-relative or absolute) on that delegate_to_agent call or run_agent_batch task. The harness checks the files after the member finishes; a missing file fails the step regardless of what the member wrote — re-dispatch that step once quoting the missing paths, then mark it blocked.');
   lines.push(`12. Stalls: a member with no new step for ${STALL_STOP_MINUTES} minutes is stopped automatically and its result says so. Re-dispatch that step once with a smaller scope or a different approach; if it stalls again, mark it blocked.`);
+  lines.push('13. Restart: when a message says the app restarted mid-run, first read this conversation and the existing output files to see which steps already completed; never redo them. Dispatch only what is missing, then report.');
   return lines.join('\n');
 }
 

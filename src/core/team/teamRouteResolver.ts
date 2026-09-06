@@ -31,6 +31,7 @@ export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteCo
     members,
     leaderNote: team.leaderNote,
     requirePlanApproval: team.requirePlanApproval,
+    ...(team.lastPlan && team.lastPlan.steps.length > 0 ? { lastPlan: { request: team.lastPlan.request, steps: team.lastPlan.steps } } : {}),
   };
 }
 

@@ -68,6 +68,14 @@ describe('roster guard + prompt blocks', () => {
     expect(loose).not.toContain('Instructions from the user');
   });
 
+  it('role block hands the last split over as reference input, never as a skip', () => {
+    const block = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], lastPlan: { request: '出周报', steps: ['取数 @a', '汇总 @lead'] } });
+    expect(block).toContain('Last time this team handled: "出周报"');
+    expect(block).toContain('- 取数 @a');
+    expect(block).toContain('still call report_plan');
+    expect(buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [], lastPlan: { request: 'x', steps: [] } })).not.toContain('Last time');
+  });
+
   it('available-agents text lists only members (null when the team has none)', () => {
     const text = buildTeamAvailableAgentsText({ teamId: 't', teamName: 'x', leader: def('lead'), members: [def('a')] }, () => '[tools]');
     expect(text).toContain('- a: a desc [tools]');

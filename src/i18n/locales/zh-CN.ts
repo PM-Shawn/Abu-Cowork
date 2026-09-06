@@ -1255,6 +1255,7 @@ const zhCN: TranslationDict = {
     confirmationNotice: '{member} 需要你确认：{detail}',
     confirmationApprovedFollowUp: '我已批准 {member} 执行「{detail}」。请只把这一步重派给 {member} 补跑，其他已完成的结果保持不变，补完后汇报变化。',
     stallStoppedNotice: '{member} {n} 分钟没有新动作，已自动停止这次派活，队长会重派一次',
+    resumeAfterRestart: '应用重启了，上次任务在第 {turn} 轮中断。请从中断处继续：先看这段对话里已完成的步骤和已存在的产出文件，不要重做；只把没做完的步骤派出去，然后汇报。原始请求：{request}',
     confirmationRejectedFollowUp: '我拒绝了 {member} 执行「{detail}」。这一步按受阻处理，不要再尝试也不要绕过；其他结果保持不变，汇报时说明。',
     followUpHint: '可以直接说：',
     fieldPlanApproval: '分工先经我确认',

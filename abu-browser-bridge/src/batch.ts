@@ -374,10 +374,6 @@ function safeJson(raw: string): unknown {
  * provisions an automation view when the caller owns none, and a check that
  * runs between two steps must never be the thing that opens a tab.
  */
-async function currentOrigin(deps: BatchDeps, tabId: number): Promise<string | null> {
-  return (await readTab(deps, tabId, false)).origin;
-}
-
 /**
  * The tab's origin, and — when the batch has frame-targeted steps — the
  * current origin of every addressable region.

@@ -158,7 +158,7 @@
           continue;
         }
         const src = el.getAttribute("src") ?? "";
-        let hinted = null;
+        let hinted;
         try {
           hinted = src ? normalizedOrigin(new URL(src, doc.baseURI).href) : null;
         } catch {

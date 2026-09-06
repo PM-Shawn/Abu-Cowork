@@ -337,7 +337,7 @@ function enumerateFrames(): FrameTree {
       // authorization is granted against. The built-in host cross-checks it
       // against the browser's own frame list before the gate ever sees it.
       const src = el.getAttribute('src') ?? '';
-      let hinted: string | null = null;
+      let hinted: string | null;
       try {
         hinted = src ? normalizedOrigin(new URL(src, doc.baseURI).href) : null;
       } catch {

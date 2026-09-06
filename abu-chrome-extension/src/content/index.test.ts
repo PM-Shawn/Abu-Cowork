@@ -76,6 +76,8 @@ const find = (query: Record<string, unknown>, limit?: number) =>
     }>;
     total: number;
     truncated?: boolean;
+    /** How many sealed (closed shadow) regions the search passed over. */
+    closedShadowHosts?: number;
     message?: string;
   }>;
 

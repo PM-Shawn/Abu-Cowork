@@ -63,6 +63,27 @@ const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
 const ABU_UNATTENDED_META_KEY = 'abu/unattended';
 
 /**
+ * MCP request `_meta` key asking the browser server's `get_tabs` to include
+ * ONE tab's frame tree. The gate's only probe is `get_tabs`, and a
+ * frame-targeted action is authorized against the FRAME's origin — so the gate
+ * has to be able to ask for the tree of the tab it is judging. Not in the tool
+ * schema: a tree costs a browser round trip, and the model must not be able to
+ * spend them at will. Mirrors `ABU_FRAMES_FOR_TAB_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_FRAMES_FOR_TAB_META_KEY = 'abu/framesForTab';
+
+/**
+ * MCP request `_meta` key carrying, for a `batch`, the origin the gate
+ * approved for each embedded region its steps target. The page-level pin says
+ * nothing about a third-party region inside it — that region can navigate on
+ * its own without the tab's address changing. An authorization fact, so it
+ * rides `_meta` exactly as `expectedOrigin` does. Mirrors
+ * `ABU_EXPECTED_FRAME_ORIGINS_META_KEY` in `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
+
+/**
  * The Chrome-extension bridge. Named here because it is the one MCP server
  * whose tab bookkeeping outlives a single tool call, so the app has to tell it
  * when a run is over. (`abu-browser` — the built-in Electron host — is told the
@@ -882,6 +903,17 @@ export class MCPClientManager {
        */
       expectedOrigin?: string;
       unattended?: boolean;
+      /**
+       * Only meaningful for the browser server's `get_tabs`: include this
+       * tab's frame tree in the listing, so the gate can resolve a
+       * frame-targeted action's origin without a second probe.
+       */
+      framesForTabId?: number;
+      /**
+       * Browser servers' `batch` only: the origin the gate approved for each
+       * embedded region the batch's steps target, keyed by frame handle.
+       */
+      expectedFrameOrigins?: Record<string, string>;
     }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
@@ -943,6 +975,12 @@ export class MCPClientManager {
       // and the host reads "absent ⇒ attended ⇒ no pin enforcement".
       if (opts?.unattended === true) {
         meta[ABU_UNATTENDED_META_KEY] = true;
+      }
+      if (typeof opts?.framesForTabId === 'number' && Number.isFinite(opts.framesForTabId)) {
+        meta[ABU_FRAMES_FOR_TAB_META_KEY] = opts.framesForTabId;
+      }
+      if (opts?.expectedFrameOrigins && Object.keys(opts.expectedFrameOrigins).length > 0) {
+        meta[ABU_EXPECTED_FRAME_ORIGINS_META_KEY] = opts.expectedFrameOrigins;
       }
       if (Object.keys(meta).length > 0) {
         params._meta = meta;

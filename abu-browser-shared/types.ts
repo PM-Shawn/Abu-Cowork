@@ -494,6 +494,12 @@ export type BatchStopReason =
   | 'origin-changed'
   /** The tab's current origin could not be read, so it could not be checked. */
   | 'origin-unverifiable'
+  /**
+   * The embedded region a step targets is no longer showing the site the gate
+   * authorized for THAT region. A batch is authorized per target frame, so one
+   * region drifting stops the run even though the top page never moved.
+   */
+  | 'frame-origin-changed'
   | 'time-limit';
 
 export interface BatchResult {

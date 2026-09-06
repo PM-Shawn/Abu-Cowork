@@ -14,6 +14,26 @@
 export const LOCATOR_KEYS = ['css', 'text', 'tag', 'role', 'name', 'xpath', 'testId', 'ref'];
 
 /**
+ * A frame handle, or nothing.
+ *
+ * `frameId` is not a locator key: it says which DOCUMENT to look in, and every
+ * strategy above is then applied inside it. Validated in one place so a batch
+ * step and a single action refuse the same strings — a step that reached the
+ * page with a handle the single-action path rejects would be the second-parser
+ * bypass this module exists to prevent.
+ */
+export function validateFrameId(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || !/^f\d+$/.test(value)) {
+    throw new Error(
+      '`frameId` must be a frame handle from a snapshot\'s `frames` list, like "f0" or "f3". '
+      + 'Omit it to act on the main document.',
+    );
+  }
+  return value;
+}
+
+/**
  * Keys a `find` query accepts. Separate from `LOCATOR_KEYS` because the two
  * mean different things: a locator must identify one element, a query is
  * allowed — expected — to match several, and it accepts `label`/`placeholder`,

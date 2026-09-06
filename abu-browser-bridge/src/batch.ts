@@ -46,6 +46,7 @@ import type {
 import {
   validateCondition,
   validateFindQuery,
+  validateFrameId,
   validateKeyboardModifiers,
   validateLocator,
 } from './locators.js';
@@ -191,16 +192,29 @@ function validateStep(raw: unknown): BatchStep {
   if (!STEP_TYPES.includes(action as BatchStepType)) throw new Error(stepTypeError(action));
   const type = action as BatchStepType;
 
+  // Which document the step acts in. `keyboard` is deliberately excluded: it
+  // sends to whatever holds focus rather than to a located element, so a frame
+  // handle there would promise a targeting this layer does not do.
+  const frame = validateFrameId(step.frameId);
+  if (frame !== undefined && type === 'keyboard') {
+    throw new Error(
+      'a `keyboard` step takes no `frameId` — it goes to whatever has focus. '
+      + 'Click into the region first, then send the key.',
+    );
+  }
+  const inFrame = frame !== undefined ? { frameId: frame } : {};
+
   switch (type) {
     case 'fill':
     case 'select':
       return {
         action: type,
+        ...inFrame,
         locator: validateLocator(step.locator) as BatchStep['locator'],
         value: requireString(step.value, 'value'),
       };
     case 'click':
-      return { action: type, locator: validateLocator(step.locator) as BatchStep['locator'] };
+      return { action: type, ...inFrame, locator: validateLocator(step.locator) as BatchStep['locator'] };
     case 'keyboard':
       return {
         action: type,
@@ -214,6 +228,7 @@ function validateStep(raw: unknown): BatchStep {
     case 'wait_for':
       return {
         action: type,
+        ...inFrame,
         condition: validateCondition(step.condition) as BatchStep['condition'],
         // A positive, finite number or nothing. `typeof x === 'number'` alone
         // let `Infinity` and `NaN` through, and both reached `runStep`'s
@@ -226,12 +241,14 @@ function validateStep(raw: unknown): BatchStep {
     case 'find':
       return {
         action: type,
+        ...inFrame,
         query: validateFindQuery(step.query) as BatchStep['query'],
         ...(typeof step.limit === 'number' ? { limit: step.limit } : {}),
       };
     case 'read':
       return {
         action: type,
+        ...inFrame,
         ...(typeof step.selector === 'string' ? { selector: step.selector } : {}),
       };
   }
@@ -239,20 +256,21 @@ function validateStep(raw: unknown): BatchStep {
 
 /** The payload one step sends, minus the owner fields the caller merges in. */
 export function batchStepPayload(step: BatchStep, tabId: number): Record<string, unknown> {
+  const inFrame = step.frameId !== undefined ? { frameId: step.frameId } : {};
   switch (step.action) {
     case 'fill':
     case 'select':
-      return { tabId, locator: step.locator, value: step.value };
+      return { tabId, ...inFrame, locator: step.locator, value: step.value };
     case 'click':
-      return { tabId, locator: step.locator };
+      return { tabId, ...inFrame, locator: step.locator };
     case 'keyboard':
       return { tabId, key: step.key, modifiers: step.modifiers };
     case 'wait_for':
-      return { tabId, condition: step.condition, timeout: step.timeout };
+      return { tabId, ...inFrame, condition: step.condition, timeout: step.timeout };
     case 'find':
-      return { tabId, query: step.query, limit: step.limit };
+      return { tabId, ...inFrame, query: step.query, limit: step.limit };
     case 'read':
-      return { tabId, selector: step.selector };
+      return { tabId, ...inFrame, selector: step.selector };
   }
 }
 
@@ -295,17 +313,50 @@ export interface BatchDeps {
   now: () => number;
 }
 
-/** Pull the tab's current URL out of a `get_tabs` response, whatever its shape. */
-function tabUrlFrom(data: unknown, tabId: number): string | null {
+interface TabRow {
+  tabId?: number;
+  url?: string;
+  frames?: Array<{ frameId?: string; origin?: string | null; accessible?: boolean }>;
+}
+
+/** Pull one tab's row out of a `get_tabs` response, whatever its shape. */
+function tabRowFrom(data: unknown, tabId: number): TabRow | null {
   const parsed = typeof data === 'string' ? safeJson(data) : data;
-  const windows = (parsed as { windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }> })?.windows;
+  const windows = (parsed as { windows?: Array<{ tabs?: TabRow[] }> })?.windows;
   if (!Array.isArray(windows)) return null;
   for (const win of windows) {
     for (const tab of win?.tabs ?? []) {
-      if (tab?.tabId === tabId) return typeof tab.url === 'string' ? tab.url : null;
+      if (tab?.tabId === tabId) return tab;
     }
   }
   return null;
+}
+
+/** Pull the tab's current URL out of a `get_tabs` response, whatever its shape. */
+function tabUrlFrom(data: unknown, tabId: number): string | null {
+  const url = tabRowFrom(data, tabId)?.url;
+  return typeof url === 'string' ? url : null;
+}
+
+/**
+ * Each addressable region's CURRENT origin, from the same listing the tab's
+ * own origin came from.
+ *
+ * Only `accessible` regions are read: on a region this channel cannot see
+ * into, the reported origin is a hint the embedding page could author, and the
+ * shared type is explicit that only an accessible frame's origin is
+ * browser-authoritative. A step aimed at an inaccessible region therefore has
+ * no verifiable origin and stops the run, which is the right answer — that
+ * step could not have run anyway.
+ */
+function frameOriginsFrom(data: unknown, tabId: number): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const frame of tabRowFrom(data, tabId)?.frames ?? []) {
+    if (!frame || frame.accessible !== true) continue;
+    if (typeof frame.frameId !== 'string' || typeof frame.origin !== 'string') continue;
+    out[frame.frameId] = frame.origin;
+  }
+  return out;
 }
 
 function safeJson(raw: string): unknown {
@@ -324,9 +375,31 @@ function safeJson(raw: string): unknown {
  * runs between two steps must never be the thing that opens a tab.
  */
 async function currentOrigin(deps: BatchDeps, tabId: number): Promise<string | null> {
-  const res = await deps.send('get_tabs', { createIfEmpty: false });
-  if (!res.success) return null;
-  return batchOrigin(tabUrlFrom(res.data, tabId));
+  return (await readTab(deps, tabId, false)).origin;
+}
+
+/**
+ * The tab's origin, and — when the batch has frame-targeted steps — the
+ * current origin of every addressable region.
+ *
+ * `framesForTabId` is what makes the listing carry the frame tree; without it
+ * a listing over every tab would pay a browser round trip per tab for
+ * information almost no caller wants.
+ */
+async function readTab(
+  deps: BatchDeps,
+  tabId: number,
+  wantFrames: boolean,
+): Promise<{ origin: string | null; frameOrigins: Record<string, string> }> {
+  const res = await deps.send('get_tabs', {
+    createIfEmpty: false,
+    ...(wantFrames ? { framesForTabId: tabId } : {}),
+  });
+  if (!res.success) return { origin: null, frameOrigins: {} };
+  return {
+    origin: batchOrigin(tabUrlFrom(res.data, tabId)),
+    frameOrigins: wantFrames ? frameOriginsFrom(res.data, tabId) : {},
+  };
 }
 
 function stopMessage(reason: BatchStopReason, ran: number, total: number, pinned: string | null): string {
@@ -342,6 +415,11 @@ function stopMessage(reason: BatchStopReason, ran: number, total: number, pinned
     case 'origin-unverifiable':
       return `Batch stopped: ${progress}, then the tab's current address could not be read, so the next step `
         + 'could not be checked against the page this batch was approved for. Call get_tabs and try again.';
+    case 'frame-origin-changed':
+      return `Batch stopped: ${progress}, then the embedded region the next step targets was no longer showing `
+        + 'the site it was authorized for — it reloaded, navigated, or was replaced. The remaining steps were '
+        + 'NOT run: an approval for one region does not carry over to whatever took its place. Take a fresh '
+        + 'snapshot to re-read the regions, then send a new batch.';
     case 'time-limit':
       return `Batch stopped: ${progress} before hitting the ${Math.round(MAX_BATCH_DURATION_MS / 1000)}s limit `
         + 'for one batch. Send the rest as another batch.';
@@ -425,13 +503,32 @@ export async function runBatch(
    * work: absent, the run re-reads as before.
    */
   approvedOrigin?: string,
+  /**
+   * The origin the gate approved for each embedded region a step targets.
+   *
+   * A batch is authorized per TARGET FRAME, not per page: a step aimed into
+   * `f3` was judged against `f3`'s own origin, so `approvedOrigin` (the top
+   * page) says nothing about whether that step may still run. Without this the
+   * only check between steps was the tab's address, which a third-party region
+   * navigating away does not change at all — the region could swap sites
+   * mid-batch and keep the approval.
+   *
+   * Optional: absent, each region's origin is pinned from the listing taken
+   * before step 0, which is still self-consistent and still stops on drift,
+   * just from an instant slightly later than the approval.
+   */
+  approvedFrameOrigins?: Record<string, string>,
 ): Promise<BatchResult> {
   const startedAt = deps.now();
   const completedSteps: BatchStepOutcome[] = [];
   let failedStep: BatchStepOutcome | undefined;
   let stopped: BatchStopReason | undefined;
 
-  const observed = await currentOrigin(deps, tabId);
+  const framedSteps = steps.some((step) => step.frameId !== undefined);
+  const opening = await readTab(deps, tabId, framedSteps);
+  const observed = opening.origin;
+  // The gate's map wins, exactly as `approvedOrigin` does for the page.
+  const pinnedFrames: Record<string, string> = { ...opening.frameOrigins, ...(approvedFrameOrigins ?? {}) };
   // The gate's origin wins as the pin — never the observed one — so a run that
   // drifted before it began stops rather than re-pinning onto where it landed.
   const pinned = approvedOrigin ?? observed;
@@ -445,6 +542,7 @@ export async function runBatch(
     return fitEnvelope({
       tabId,
       origin: pinned,
+      ...(framedSteps ? { frameOrigins: pinnedFrames } : {}),
       completedSteps,
       ...(failedStep ? { failedStep } : {}),
       remainingSteps,
@@ -477,7 +575,11 @@ export async function runBatch(
     // approved for one origin, and a step that would run somewhere else must
     // not run at all. A same-origin navigation (a form posting to its own
     // results page) is not a drift and does not stop the run.
-    const here: string | null = index === 0 ? pinned : await currentOrigin(deps, tabId);
+    const reading: { origin: string | null; frameOrigins: Record<string, string> } =
+      index === 0 && !framedSteps
+        ? { origin: pinned, frameOrigins: opening.frameOrigins }
+        : await readTab(deps, tabId, framedSteps);
+    const here: string | null = reading.origin;
     if (here === null) {
       stopped = 'origin-unverifiable';
       break;
@@ -485,6 +587,24 @@ export async function runBatch(
     if (here !== pinned) {
       stopped = 'origin-changed';
       break;
+    }
+
+    // And the same question for the REGION this step targets. The tab staying
+    // put says nothing about a third-party region inside it: that region can
+    // navigate on its own, and an approval given for the site it was showing
+    // must not carry over to whatever replaced it.
+    const targetFrame = steps[index].frameId;
+    if (targetFrame !== undefined) {
+      const expected = pinnedFrames[targetFrame];
+      const nowShowing = reading.frameOrigins[targetFrame];
+      if (expected === undefined || nowShowing === undefined) {
+        stopped = 'origin-unverifiable';
+        break;
+      }
+      if (nowShowing !== expected) {
+        stopped = 'frame-origin-changed';
+        break;
+      }
     }
 
     // Consecutive page reads go together; an action never shares the page with

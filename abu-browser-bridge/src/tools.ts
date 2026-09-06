@@ -6,7 +6,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { MAX_BATCH_STEPS, parseBatchSteps, runBatch, type BatchDeps } from './batch.js';
-import { KEYBOARD_MODIFIERS, parseCondition, parseFindQuery, parseLocator } from './locators.js';
+import {
+  KEYBOARD_MODIFIERS,
+  parseCondition,
+  parseFindQuery,
+  parseLocator,
+  validateFrameId,
+} from './locators.js';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
 import { JS_DIALOG_AUTO_DISMISS_MS } from './types.js';
 
@@ -62,6 +68,41 @@ export const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
  * "unattended and the pin is missing" — the second is a refusal.
  */
 export const ABU_UNATTENDED_META_KEY = 'abu/unattended';
+
+/**
+ * MCP `_meta` key asking `get_tabs` to include ONE tab's frame tree.
+ *
+ * The approval gate's only probe is `get_tabs`, and a frame-targeted action is
+ * authorized against the FRAME's origin — so the gate has to be able to ask
+ * for the tree of the tab it is about to judge. Computing it for every tab in
+ * the listing would cost a browser round trip per tab for information the
+ * model rarely wants, and putting it in the input schema would let the model
+ * spend those round trips at will.
+ */
+export const ABU_FRAMES_FOR_TAB_META_KEY = 'abu/framesForTab';
+
+/**
+ * MCP `_meta` key carrying, for a `batch`, the origin the gate approved for
+ * each embedded region its steps target — `{"f3":"https://vendor.example"}`.
+ *
+ * The page-level `expectedOrigin` says nothing about a third-party region
+ * inside it: that region can navigate on its own without the tab's address
+ * changing at all. An authorization fact, so — like `expectedOrigin` — it
+ * lives in `_meta` where the model can neither read nor forge it.
+ */
+export const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
+
+/**
+ * What every DOM-scoped tool says about `frameId`.
+ *
+ * One sentence, everywhere, because the model has to learn the concept once:
+ * a page is several documents, and a search covers one of them.
+ */
+const FrameIdDescription =
+  'Which embedded region (iframe) to act in — a handle like "f3" from a snapshot\'s `frames` list '
+  + 'or get_tabs. Omit it for the page\'s main document. An OA/ERP form is usually inside one of '
+  + 'these: if a locator comes back "not found" and the page has regions, look in them rather than '
+  + 'reaching for a script.';
 
 export interface BrowserTransportResponse {
   success: boolean;
@@ -172,6 +213,34 @@ function createIfEmptyFromExtra(extra: unknown): false | undefined {
   return meta?.[ABU_CREATE_IF_EMPTY_META_KEY] === false ? false : undefined;
 }
 
+/** The one tab whose frame tree the caller asked `get_tabs` to include. */
+function framesForTabFromExtra(extra: unknown): number | undefined {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const value = Number(meta?.[ABU_FRAMES_FOR_TAB_META_KEY]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** The gate's approved origin for each region a batch's steps target. */
+function frameOriginsFromExtra(extra: unknown): Record<string, string> | undefined {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const raw = meta?.[ABU_EXPECTED_FRAME_ORIGINS_META_KEY];
+  const decoded = typeof raw === 'string' ? safeParse(raw) : raw;
+  if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [frameId, origin] of Object.entries(decoded as Record<string, unknown>)) {
+    if (/^f\d+$/.test(frameId) && typeof origin === 'string' && origin !== '') out[frameId] = origin;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function safeParse(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Pull the per-request `AbortSignal` out of a tool handler's `extra` (the MCP
  * SDK's `RequestHandlerExtra.signal`, set for every request). The SDK fires
@@ -229,9 +298,11 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);
       const createIfEmpty = createIfEmptyFromExtra(extra);
+      const framesForTabId = framesForTabFromExtra(extra);
       const res = await sendWithSignal(transport, 'get_tabs', {
         ...owner,
         ...(createIfEmpty === false ? { createIfEmpty: false } : {}),
+        ...(framesForTabId !== undefined ? { framesForTabId } : {}),
       }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
@@ -240,16 +311,18 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // 2. browser_snapshot
   server.tool(
     'snapshot',
-    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions, plus its \`id\`/\`name\` when the page provides them. Refs stay valid across snapshots for as long as the element stays on the page, so you can snapshot, act, and re-snapshot without re-reading refs you already hold. This is the primary way to understand what's on a page before taking action. If you need to batch-read many DOM nodes, trees, attributes, or tables in one call, use query_js instead of execute_js. If a result says it was truncated, follow the instruction in its message (scope with \`selector\`, or raise \`maxChars\`) rather than switching to execute_js.`,
+    `Get a structured snapshot of all interactive elements on the page (buttons, inputs, links, selects, etc.). Returns each element with a short reference ID (e.g., "e1") that can be used in subsequent actions, plus its \`id\`/\`name\` when the page provides them. Refs stay valid across snapshots for as long as the element stays on the page, so you can snapshot, act, and re-snapshot without re-reading refs you already hold. A snapshot of the main document also lists the page's embedded regions (iframes) under \`frames\` when it has any — a snapshot covers ONE document, so pass \`frameId\` to look inside one of them. This is the primary way to understand what's on a page before taking action. If you need to batch-read many DOM nodes, trees, attributes, or tables in one call, use query_js instead of execute_js. If a result says it was truncated, follow the instruction in its message (scope with \`selector\`, or raise \`maxChars\`) rather than switching to execute_js.`,
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page (e.g. the form you are filling). Use this first when a snapshot comes back truncated.'),
       maxChars: z.coerce.number().optional().describe('Maximum serialized size of the element list (default 30000). Raise it if the snapshot is truncated and you cannot scope it with a selector.'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, selector, maxChars }, extra) => {
+    async ({ tabId, selector, maxChars, frameId }, extra) => {
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'snapshot', { tabId, selector, maxChars, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -260,7 +333,7 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
   // contract; renumbering seventeen comments would bury the real diff.)
   server.tool(
     'find',
-    `Search the page for elements matching a semantic query and get back the candidates — ref, role, \`accessibleName\`, text, visibility and position — WITHOUT clicking or changing anything. (\`accessibleName\` is what \`{role, name}\` matches against; it is NOT snapshot's \`name\` field, which is the HTML name attribute.) Prefer this over a full snapshot whenever you are looking for specific controls: it costs a fraction of the tokens and it tells you exactly what a locator would match. Use it BEFORE click/fill/select when you are not certain which element you mean, and use it AFTER a locator came back "not found" or "matches N elements" instead of falling back to execute_js. Refs share the snapshot's namespace, so a ref returned here goes straight into click/fill/select. Native HTML counts: a plain <button>, <a href>, <input>, <select> or <h1> has a role and an accessible name without the page writing any ARIA attributes.`,
+    `Search the page for elements matching a semantic query and get back the candidates — ref, role, \`accessibleName\`, text, visibility and position — WITHOUT clicking or changing anything. (\`accessibleName\` is what \`{role, name}\` matches against; it is NOT snapshot's \`name\` field, which is the HTML name attribute.) Prefer this over a full snapshot whenever you are looking for specific controls: it costs a fraction of the tokens and it tells you exactly what a locator would match. Use it BEFORE click/fill/select when you are not certain which element you mean, and use it AFTER a locator came back "not found" or "matches N elements" instead of falling back to execute_js. Refs share the snapshot's namespace, so a ref returned here goes straight into click/fill/select. Native HTML counts: a plain <button>, <a href>, <input>, <select> or <h1> has a role and an accessible name without the page writing any ARIA attributes. A search covers ONE document: if a page has embedded regions (iframes) and nothing matched, the result says so — search inside one with \`frameId\` rather than reaching for a script.`,
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       query: z.string().describe(
@@ -274,12 +347,14 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
 Name/label/placeholder matching takes the strictest tier that matches: exact, then case/whitespace-insensitive, then substring.`,
       ),
       limit: z.coerce.number().optional().describe('Maximum matches to return (default 20, max 50).'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, query, limit }, extra) => {
+    async ({ tabId, query, limit, frameId }, extra) => {
       await ensureConnected(transport);
       const parsed = parseFindQuery(query);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'find', { tabId, query: parsed, limit, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'find', { tabId, query: parsed, limit, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -291,12 +366,14 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, locator }, extra) => {
+    async ({ tabId, locator, frameId }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'click', { tabId, locator: parsed, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'click', { tabId, locator: parsed, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -309,12 +386,14 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The text value to fill into the field'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, locator, value }, extra) => {
+    async ({ tabId, locator, value, frameId }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'fill', { tabId, locator: parsed, value, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'fill', { tabId, locator: parsed, value, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -327,12 +406,14 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The option value or visible text to select'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, locator, value }, extra) => {
+    async ({ tabId, locator, value, frameId }, extra) => {
       await ensureConnected(transport);
       const parsed = parseLocator(locator);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -358,7 +439,8 @@ Scripting has no step type either — execute_js and query_js are approved one r
 - { "action": "wait_for", "condition": { "type": "appear", "locator": { "text": "保存成功" } }, "timeout": 10000 }
 - { "action": "find", "query": { "role": "button", "name": "提交" } } — read-only look, same as the find tool
 - { "action": "read", "selector": "#result" } — read-only text, same as extract_text
-A step's locator is exactly the one click/fill/select take: ref, css, text, role+name, testId, xpath. (\`label\` and \`placeholder\` are find QUERY keys, not locator keys — run find first and put the refs it returns into the batch.)`,
+A step's locator is exactly the one click/fill/select take: ref, css, text, role+name, testId, xpath. (\`label\` and \`placeholder\` are find QUERY keys, not locator keys — run find first and put the refs it returns into the batch.)
+Any step except keyboard may add "frameId": "f3" to act inside an embedded region (iframe) — see the frameId parameter on click/fill/find. Steps in different regions can share one batch; each is checked against the site ITS OWN region was authorized for, so a region that navigates mid-run stops the batch even though the page did not move.`,
       ),
     },
     async ({ tabId, steps }, extra) => {
@@ -380,7 +462,10 @@ A step's locator is exactly the one click/fill/select take: ref, css, text, role
       const approvedOrigin = typeof owner.expectedOrigin === 'string'
         ? owner.expectedOrigin
         : undefined;
-      const result = await runBatch(deps, tabId, parsed, approvedOrigin);
+      // And the same for each embedded region a step targets: the page-level
+      // pin says nothing about a third-party region inside it, which can
+      // navigate on its own without the tab's address changing.
+      const result = await runBatch(deps, tabId, parsed, approvedOrigin, frameOriginsFromExtra(extra));
       return { content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }] };
     }
   );
@@ -444,15 +529,17 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
 - { "type": "urlContains", "pattern": "/success" } — wait for URL change`
       ),
       timeout: z.coerce.number().optional().default(30000).describe('Maximum wait time in ms (default: 30000)'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, condition, timeout }, extra) => {
+    async ({ tabId, condition, timeout, frameId }, extra) => {
       await ensureConnected(transport);
       const parsed = parseCondition(condition);
       const owner = ownerPayloadFromExtra(extra);
+      const frame = validateFrameId(frameId);
       const res = await sendWithSignal(
         transport,
         'wait_for',
-        { tabId, condition: parsed, timeout, ...owner },
+        { tabId, condition: parsed, timeout, ...(frame ? { frameId: frame } : {}), ...owner },
         extra,
         timeout + 5000
       );
@@ -467,11 +554,13 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector to extract text from. If omitted, extracts the full page text (may be large).'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, selector }, extra) => {
+    async ({ tabId, selector, frameId }, extra) => {
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'extract_text', { tabId, selector, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'extract_text', { tabId, selector, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -483,11 +572,13 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector for the target table. If omitted, extracts the largest table on the page.'),
+      frameId: z.string().optional().describe(FrameIdDescription),
     },
-    async ({ tabId, selector }, extra) => {
+    async ({ tabId, selector, frameId }, extra) => {
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'extract_table', { tabId, selector, ...owner }, extra);
+      const frame = validateFrameId(frameId);
+      const res = await sendWithSignal(transport, 'extract_table', { tabId, selector, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );

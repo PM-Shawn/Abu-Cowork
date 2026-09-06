@@ -439,6 +439,9 @@ export class MCPClientManager {
         };
 
         // App-only tools stay out of the model's tool table (spec §4.1).
+        // `execute` above deliberately takes the model path, so calling an
+        // app-only definition that way rejects; the app bridge must call
+        // `callTool(server, tool, args, { viaAppBridge: true })` instead.
         if (isAppOnlyTool(ui)) {
           appTools.set(tool.name, toolDef);
         } else {
@@ -776,7 +779,11 @@ export class MCPClientManager {
         }>;
       };
       const result = await client.readResource({ uri });
-      const content = result.contents?.find((c) => typeof c.text === 'string');
+      // A server may answer with several contents (the interface plus siblings).
+      // Prefer the one that actually is the requested uri; only fall back to
+      // "first text content" when none of them carries a matching uri.
+      const textContents = (result.contents ?? []).filter((c) => typeof c.text === 'string');
+      const content = textContents.find((c) => c.uri === uri) ?? textContents[0];
       if (!content || typeof content.text !== 'string') {
         throw new McpAppResourceError(
           'no-text-content',
@@ -859,6 +866,9 @@ export class MCPClientManager {
         };
 
         // App-only tools stay out of the model's tool table (spec §4.1).
+        // `execute` above deliberately takes the model path, so calling an
+        // app-only definition that way rejects; the app bridge must call
+        // `callTool(server, tool, args, { viaAppBridge: true })` instead.
         if (isAppOnlyTool(ui)) {
           appTools.set(tool.name, toolDef);
         } else {
@@ -886,10 +896,23 @@ export class MCPClientManager {
     }
   }
 
+  /**
+   * Call a tool on a connected server.
+   *
+   * `options.viaAppBridge` marks the call as coming from the MCP App bridge
+   * (the sandboxed interface), which is the ONLY caller allowed to invoke an
+   * app-only tool (`_meta.ui.visibility` without `model`). Hiding those tools
+   * from the model's tool table is not enough on its own: the model can still
+   * emit a `tool_use` for a name it learned from the app's HTML, a README or a
+   * replayed session, and dispatch-by-name (registry.ts) would happily run it.
+   * So the check is fail-closed here, before any RPC — the model path must NOT
+   * pass this option.
+   */
   async callTool(
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    options?: { viaAppBridge?: boolean }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
@@ -899,9 +922,19 @@ export class MCPClientManager {
       throw new Error(`Server ${serverName} not connected`);
     }
 
+    const modelToolDef = server.tools.get(toolName);
+    const appToolDef = server.appTools.get(toolName);
+    if (!modelToolDef && appToolDef && options?.viaAppBridge !== true) {
+      throw new McpAppResourceError(
+        'app-only-tool',
+        `Tool ${toolName} on ${serverName} is app-only and can only be called through its MCP App interface`
+      );
+    }
+
     // Coerce string → number for numeric-typed parameters before sending to MCP server.
     // LLMs occasionally pass large integer IDs (e.g. Chrome tabId) as quoted strings.
-    const toolDef = server.tools.get(toolName) ?? server.appTools.get(toolName);
+    // App-only tools get the same coercion once the bridge check above passed.
+    const toolDef = modelToolDef ?? appToolDef;
     const coercedArgs = toolDef ? coerceNumericArgs(toolDef, args) : args;
 
     let timerId: ReturnType<typeof setTimeout>;

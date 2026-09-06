@@ -23,6 +23,7 @@ const mcpMock = vi.hoisted(() => {
     readCalls: [] as string[],
     readResource: (uri: string): Promise<unknown> =>
       Promise.resolve({ contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: '<h1>hi</h1>' }] }),
+    callCalls: [] as Array<{ name: string; arguments: Record<string, unknown> }>,
     notificationHandlers: [] as Array<{ schema: unknown; handler: (n: unknown) => void }>,
     closed: 0,
   };
@@ -39,6 +40,10 @@ const mcpMock = vi.hoisted(() => {
       state.readCalls.push(params.uri);
       return state.readResource(params.uri);
     }
+    async callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown> {
+      state.callCalls.push(params);
+      return { content: [{ type: 'text', text: `called ${params.name}` }] };
+    }
     setNotificationHandler(schema: unknown, handler: (n: unknown) => void): void {
       state.notificationHandlers.push({ schema, handler });
     }
@@ -54,7 +59,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: mcpMock.Fa
 const { state } = mcpMock;
 
 import { mcpManager } from './client';
-import { MAX_APP_RESOURCE_BYTES } from './appResources';
+import { MAX_APP_RESOURCE_BYTES, McpAppResourceError } from './appResources';
 
 const SERVER = 'ui-server';
 
@@ -67,6 +72,16 @@ function tool(name: string, meta?: Record<string, unknown>): FakeTool {
   };
 }
 
+/** Same as `tool()` but with a numeric parameter, to observe string → number coercion. */
+function numericTool(name: string, meta?: Record<string, unknown>): FakeTool {
+  return {
+    name,
+    description: `${name} description`,
+    inputSchema: { type: 'object', properties: { n: { type: 'number' } }, required: ['n'] },
+    ...(meta ? { _meta: meta } : {}),
+  };
+}
+
 async function connect(tools: FakeTool[], name = SERVER): Promise<void> {
   state.tools = tools;
   await mcpManager.connectServer({ name, command: 'echo', args: [] });
@@ -75,6 +90,7 @@ async function connect(tools: FakeTool[], name = SERVER): Promise<void> {
 beforeEach(() => {
   state.tools = [];
   state.readCalls = [];
+  state.callCalls = [];
   state.notificationHandlers = [];
   state.closed = 0;
   state.readResource = (uri: string) =>
@@ -158,6 +174,76 @@ describe('app-only tools', () => {
   });
 });
 
+describe('callTool — app-only tools are fail-closed outside the app bridge', () => {
+  const APP_ONLY = { ui: { resourceUri: 'ui://x/1.html', visibility: ['app'] } };
+  const BOTH = { ui: { resourceUri: 'ui://x/2.html', visibility: ['model', 'app'] } };
+
+  it('rejects an app-only tool on the model path without reaching the SDK', async () => {
+    await connect([tool('appOnly', APP_ONLY)]);
+
+    // The model can learn the name from the app's HTML / a README / a replayed
+    // session; registry.ts dispatches any `server__tool` by name, so hiding the
+    // tool is not enough — the call itself must fail before any RPC.
+    const err = await mcpManager.callTool(SERVER, 'appOnly', { q: '1' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(McpAppResourceError);
+    expect((err as McpAppResourceError).code).toBe('app-only-tool');
+    expect(state.callCalls).toHaveLength(0);
+  });
+
+  it('runs an app-only tool when the app bridge asks, with numeric coercion', async () => {
+    await connect([numericTool('appOnly', APP_ONLY)]);
+
+    const result = await mcpManager.callTool(SERVER, 'appOnly', { n: '42' }, { viaAppBridge: true });
+
+    expect(result).toBe('called appOnly');
+    expect(state.callCalls).toEqual([{ name: 'appOnly', arguments: { n: 42 } }]);
+  });
+
+  it('leaves a model+app tool callable on both paths', async () => {
+    await connect([numericTool('both', BOTH)]);
+
+    expect(await mcpManager.callTool(SERVER, 'both', { n: '7' })).toBe('called both');
+    expect(await mcpManager.callTool(SERVER, 'both', { n: '8' }, { viaAppBridge: true })).toBe('called both');
+    expect(state.callCalls).toEqual([
+      { name: 'both', arguments: { n: 7 } },
+      { name: 'both', arguments: { n: 8 } },
+    ]);
+  });
+});
+
+describe('refreshServerTools', () => {
+  it('re-splits model / app-only tools and carries ui metadata over', async () => {
+    await connect([
+      tool('a', { ui: { resourceUri: 'ui://x/1.html', visibility: ['model', 'app'] } }),
+      tool('b', {}),
+    ]);
+    expect(mcpManager.getAppTool(SERVER, 'a')).toBeUndefined();
+
+    // 'a' flips to app-only, 'b' gains a model-visible interface.
+    state.tools = [
+      tool('a', { ui: { resourceUri: 'ui://x/1.html', visibility: ['app'] } }),
+      tool('b', { ui: { resourceUri: 'ui://x/2.html', visibility: ['model'] } }),
+    ];
+    const count = await mcpManager.refreshServerTools(SERVER);
+
+    expect(count).toBe(1);
+    expect(mcpManager.getServerTools(SERVER).map((t) => t.name)).toEqual([`${SERVER}__b`]);
+    expect(mcpManager.getServerTools(SERVER)[0]?.ui).toEqual({
+      resourceUri: 'ui://x/2.html',
+      visibility: ['model'],
+    });
+    expect(mcpManager.getAppTool(SERVER, 'a')?.ui).toEqual({
+      resourceUri: 'ui://x/1.html',
+      visibility: ['app'],
+    });
+    expect(mcpManager.getAppTool(SERVER, 'b')).toBeUndefined();
+
+    // The refreshed split is enforced by callTool too.
+    const err = await mcpManager.callTool(SERVER, 'a', {}).catch((e: unknown) => e);
+    expect((err as McpAppResourceError).code).toBe('app-only-tool');
+  });
+});
+
 describe('readResource', () => {
   it('reads a ui:// resource and flags MCP App HTML', async () => {
     await connect([]);
@@ -172,6 +258,36 @@ describe('readResource', () => {
     const res = await mcpManager.readResource(SERVER, 'ui://x/plain.html');
     expect(res.isMcpApp).toBe(false);
     expect(res.text).toBe('<p>x</p>');
+  });
+
+  it('picks the content whose uri matches, not merely the first text content', async () => {
+    await connect([]);
+    state.readResource = () =>
+      Promise.resolve({
+        contents: [
+          { uri: 'ui://x/sibling.html', mimeType: 'text/html;profile=mcp-app', text: 'sibling' },
+          { uri: 'ui://x/1.html', mimeType: 'text/html;profile=mcp-app', text: 'wanted' },
+        ],
+      });
+
+    const res = await mcpManager.readResource(SERVER, 'ui://x/1.html');
+    expect(res.text).toBe('wanted');
+    // …and the cache keeps the matched one.
+    expect((await mcpManager.readResource(SERVER, 'ui://x/1.html')).text).toBe('wanted');
+    expect(state.readCalls).toEqual(['ui://x/1.html']);
+  });
+
+  it('falls back to the first text content when no uri matches', async () => {
+    await connect([]);
+    state.readResource = () =>
+      Promise.resolve({
+        contents: [
+          { mimeType: 'image/png', blob: 'AAAA' },
+          { mimeType: 'text/html;profile=mcp-app', text: 'only-text' },
+        ],
+      });
+
+    expect((await mcpManager.readResource(SERVER, 'ui://x/1.html')).text).toBe('only-text');
   });
 
   it('caches by server+uri', async () => {

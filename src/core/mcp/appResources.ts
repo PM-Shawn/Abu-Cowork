@@ -30,10 +30,12 @@ export type McpAppResourceErrorCode =
   | 'server-not-authorized'
   | 'unsupported-uri'
   | 'no-text-content'
-  | 'resource-too-large';
+  | 'resource-too-large'
+  | 'app-only-tool';
 
 /**
- * Typed rejection from `readResource`. `code` lets the renderer distinguish
+ * Typed rejection from `readResource` (and from `callTool` when an app-only
+ * tool is invoked outside the app bridge). `code` lets the caller distinguish
  * "server is gone, offer reconnect" from "this resource is not renderable".
  */
 export class McpAppResourceError extends Error {
@@ -91,10 +93,28 @@ export function isAppOnlyTool(ui: McpAppToolUi | undefined): boolean {
   return ui !== undefined && !ui.visibility.includes('model');
 }
 
-/** `text/html;profile=mcp-app` (parameter order / spacing insensitive). */
+/**
+ * `text/html;profile=mcp-app` — parsed, not substring-matched.
+ *
+ * The essence must be exactly `text/html` (case-insensitive) and one of the
+ * `;`-separated parameters must be `profile=mcp-app` (key case-insensitive,
+ * value optionally quoted). A substring test would accept look-alikes such as
+ * `text/html-fragment;profile=mcp-app` or `text/html;xprofile=mcp-app` and let
+ * a non-App payload into the sandboxed renderer.
+ */
 export function isMcpAppMimeType(mimeType: string): boolean {
-  const normalized = mimeType.toLowerCase().replace(/\s+/g, '');
-  return normalized.startsWith('text/html') && normalized.includes('profile=mcp-app');
+  const [essence, ...params] = mimeType.split(';');
+  if (essence.trim().toLowerCase() !== 'text/html') return false;
+
+  return params.some((param) => {
+    const eq = param.indexOf('=');
+    if (eq === -1) return false;
+    if (param.slice(0, eq).trim().toLowerCase() !== 'profile') return false;
+
+    const raw = param.slice(eq + 1).trim();
+    const value = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+    return value === 'mcp-app';
+  });
 }
 
 /** UTF-8 byte length of a string (the size the ceiling is expressed in). */

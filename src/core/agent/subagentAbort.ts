@@ -81,11 +81,13 @@ export function createSubagentController(
 /**
  * Cancel a specific subagent by ID (without affecting parent or siblings)
  */
-export function cancelSubagent(subagentId: string): boolean {
+export function cancelSubagent(subagentId: string, reason?: string): boolean {
   const entry = activeSubagents.get(subagentId);
   if (!entry) return false;
 
-  entry.controller.abort();
+  // A string reason rides on the signal so the member's abort result can say
+  // WHY it was stopped (e.g. the stall watchdog) to the leader.
+  entry.controller.abort(reason);
   removeSubagent(subagentId);
   return true;
 }
@@ -140,10 +142,10 @@ export function cancelAllSubagents() {
 }
 
 /** Stop one hand-off (`${toolCallId}:${taskIndex}`); false when nothing is running under that key. */
-export function cancelDispatch(dispatchKey: string): boolean {
+export function cancelDispatch(dispatchKey: string, reason?: string): boolean {
   const id = dispatchIndex.get(dispatchKey);
   if (!id) return false;
-  return cancelSubagent(id);
+  return cancelSubagent(id, reason);
 }
 
 /** Is a hand-off with this key still running in this process? */

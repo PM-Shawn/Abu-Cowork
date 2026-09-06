@@ -96,6 +96,16 @@ export async function notifyTeamConfirmationPending(title: string, conversationI
   });
 }
 
+/** The stall watchdog stopped a team hand-off with no new step for a while (block Q). */
+export async function notifyTeamStallStopped(title: string, conversationId: string): Promise<void> {
+  publish({
+    type: 'stuck_detection',
+    source: 'agent',
+    payload: { title, conversationId },
+    dedupKey: `team_stall:${conversationId}:${title}:${Date.now()}`,
+  });
+}
+
 export async function notifyScheduledTaskError(taskName: string): Promise<void> {
   publish({
     type: 'agent_error',

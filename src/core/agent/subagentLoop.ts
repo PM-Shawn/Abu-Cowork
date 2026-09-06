@@ -192,6 +192,13 @@ export function shouldRecoverMaxTokens(params: {
  * max_tokens truncation) is concatenated with no separator so a mid-thought /
  * mid-word cut is stitched back together rather than gaining a spurious break.
  */
+/** Abort reason (a string on the signal, e.g. the stall watchdog's note) appended to the abort result. */
+function abortedResultText(resultBuffer: string, signal: AbortSignal | undefined): string {
+  const base = resultBuffer || getI18n().chat.subagent.taskCancelled;
+  const reason = typeof signal?.reason === 'string' ? signal.reason.trim() : '';
+  return reason ? `${base}\n\n${reason}` : base;
+}
+
 export function appendTurnText(buffer: string, text: string, seamless: boolean): string {
   if (!text) return buffer;
   if (!buffer) return text;
@@ -746,7 +753,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
         const abortResult = new SubagentResult({
-          text: resultBuffer || getI18n().chat.subagent.taskCancelled,
+          text: abortedResultText(resultBuffer, signal),
           toolCallCount: totalToolCalls,
           turnCount: turn,
           tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
@@ -1257,7 +1264,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       || (err instanceof LLMError && err.code === 'cancelled');
     if (wasAborted) {
       const abortResult = new SubagentResult({
-        text: resultBuffer || getI18n().chat.subagent.taskCancelled,
+        text: abortedResultText(resultBuffer, signal),
         toolCallCount: totalToolCalls,
         turnCount: completedTurns,
         tokenUsage: { input: totalInputTokens, output: totalOutputTokens },

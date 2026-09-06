@@ -457,6 +457,8 @@ export interface TranslationDict {
       taskCancelled: string;
       /** User content wrapping a direct instruction to a running team member. */
       memberInstruction: string;
+      /** Abort reason attached when the stall watchdog stops a hand-off. */
+      stalledStopped: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */
@@ -641,6 +643,7 @@ export interface TranslationDict {
     skillDraftReady: string;
     imInbound: string;
     updateAvailable: string;
+    stuckDetection: string;
   };
 
   // Scratchpad entry titles (scratchpadStore.ts)
@@ -1435,6 +1438,7 @@ export interface TranslationDict {
     confirmationNotice: string;
     confirmationApprovedFollowUp: string;
     confirmationRejectedFollowUp: string;
+    stallStoppedNotice: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;

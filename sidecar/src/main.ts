@@ -426,8 +426,8 @@ function handleMessage(raw: string): void {
     // Notification only — stop ONE team member's hand-off (`${toolCallId}:${taskIndex}`);
     // the leader loop and sibling members keep running.
     try {
-      const key = typeof params === 'object' && params !== null ? (params as { key?: unknown }).key : undefined;
-      if (typeof key === 'string') cancelDispatch(key);
+      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; reason?: unknown }) : {};
+      if (typeof p.key === 'string') cancelDispatch(p.key, typeof p.reason === 'string' ? p.reason : undefined);
     } catch (err) {
       log('state.cancelDispatch handler threw (ignored — notifications get no response)', err);
     }

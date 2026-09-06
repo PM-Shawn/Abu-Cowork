@@ -16,6 +16,13 @@ describe('dispatch keys (team member stop)', () => {
     expect(isDispatchActive('tc-1:1')).toBe(false);
   });
 
+  it('carries a stop reason on the aborted signal', () => {
+    const a = createSubagentController('zz取数员', undefined, 'tc-4:0');
+    expect(cancelDispatch('tc-4:0', '卡住了')).toBe(true);
+    expect(a.signal.aborted).toBe(true);
+    expect(a.signal.reason).toBe('卡住了');
+  });
+
   it('drops instructions still queued for a hand-off when it settles or is stopped', () => {
     const a = createSubagentController('zz取数员', undefined, 'tc-3:0');
     enqueueDispatchInput('tc-3:0', '补充一句');

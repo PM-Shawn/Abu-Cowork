@@ -7,10 +7,10 @@ import { notifySidecar } from '@/core/sidecar/sidecarManager';
  * process (in-process fallback) or in the sidecar, so both are told; each
  * side ignores a key it does not own.
  */
-export function requestDispatchCancel(dispatchKey: string): void {
-  cancelDispatch(dispatchKey);
+export function requestDispatchCancel(dispatchKey: string, reason?: string): void {
+  cancelDispatch(dispatchKey, reason);
   try {
-    notifySidecar('state.cancelDispatch', { key: dispatchKey });
+    notifySidecar('state.cancelDispatch', { key: dispatchKey, ...(reason ? { reason } : {}) });
   } catch {
     // The sidecar may not be up (in-process run) — the local cancel above covered it.
   }

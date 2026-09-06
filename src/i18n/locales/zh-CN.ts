@@ -439,6 +439,7 @@ const zhCN: TranslationDict = {
     subagent: {
       taskCancelled: 'Error: 任务被取消',
       memberInstruction: '## 用户的追加指令\n{text}\n\n把这条指令纳入当前任务继续执行；与原任务冲突时以这条为准。',
+      stalledStopped: '[这次派活 {n} 分钟没有新动作，已被自动停止。作为队长：把这一步拆小或换个思路重派一次；再卡就标为「受阻」。]',
       outputLimitIncomplete: '[子代理输出多次达到 token 上限仍未完成，以下结果可能不完整，建议换用输出预算更大的模型重试。]',
       stoppedIncomplete: '[子代理已停止：模型连续多次生成不完整的工具调用或输出被截断，可能是该模型能力不足或上下文过长，建议换用能力更强的模型重试。]',
       cancelled: '[已取消]',
@@ -1253,6 +1254,7 @@ const zhCN: TranslationDict = {
     confirmationReject: '拒绝',
     confirmationNotice: '{member} 需要你确认：{detail}',
     confirmationApprovedFollowUp: '我已批准 {member} 执行「{detail}」。请只把这一步重派给 {member} 补跑，其他已完成的结果保持不变，补完后汇报变化。',
+    stallStoppedNotice: '{member} {n} 分钟没有新动作，已自动停止这次派活，队长会重派一次',
     confirmationRejectedFollowUp: '我拒绝了 {member} 执行「{detail}」。这一步按受阻处理，不要再尝试也不要绕过；其他结果保持不变，汇报时说明。',
     followUpHint: '可以直接说：',
     fieldPlanApproval: '分工先经我确认',
@@ -2670,6 +2672,7 @@ const zhCN: TranslationDict = {
     skillDraftReady: '技能草稿就绪',
     imInbound: '收到新消息',
     updateAvailable: '有新版本可用',
+    stuckDetection: '队员卡住，已停止',
   },
 
   scratchpad: {

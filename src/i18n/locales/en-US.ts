@@ -439,6 +439,7 @@ const enUS: TranslationDict = {
     subagent: {
       taskCancelled: 'Error: task was cancelled',
       memberInstruction: '## Instruction from the user\n{text}\n\nFold this into the current task and continue; where it conflicts with the original task, this instruction wins.',
+      stalledStopped: '[This hand-off produced no new step for {n} minutes and was stopped automatically. As the leader: re-dispatch this step once with a smaller scope or a different approach; if it stalls again, mark it blocked.]',
       outputLimitIncomplete: '[The subagent repeatedly hit the output token limit without finishing; the result below may be incomplete. Consider retrying with a model that has a larger output budget.]',
       stoppedIncomplete: '[Subagent stopped: the model repeatedly produced incomplete tool calls or its output was truncated — the model may not be capable enough or the context too long. Consider retrying with a more capable model.]',
       cancelled: '[cancelled]',
@@ -1252,6 +1253,7 @@ const enUS: TranslationDict = {
     confirmationReject: 'Reject',
     confirmationNotice: '{member} needs your confirmation: {detail}',
     confirmationApprovedFollowUp: 'I approved {member} to run "{detail}". Re-dispatch only that step to {member}; keep every other finished result as it is and report what changed.',
+    stallStoppedNotice: '{member} produced no new step for {n} min; that hand-off was stopped and the leader will re-dispatch it once',
     confirmationRejectedFollowUp: 'I rejected {member} running "{detail}". Treat that step as blocked — do not retry or work around it; keep the other results and say so in your report.',
     followUpHint: 'You can just say:',
     fieldPlanApproval: 'Ask me before the split runs',
@@ -2668,6 +2670,7 @@ const enUS: TranslationDict = {
     skillDraftReady: 'Skill draft ready',
     imInbound: 'New message received',
     updateAvailable: 'New version available',
+    stuckDetection: 'A member stalled and was stopped',
   },
 
   scratchpad: {

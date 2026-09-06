@@ -16,6 +16,7 @@
  * entryOrchestration imports.
  */
 import { TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
+import { STALL_STOP_MINUTES } from './stallThreshold';
 import type { SubagentDefinition } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
@@ -97,6 +98,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push(`9. Bounds: this run allows at most ${TEAM_MAX_DISPATCHES_PER_RUN} hand-offs in total, and a member that fails ${TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER} hand-offs in a row is blocked for the rest of the run. When a dispatch tool refuses for either reason, do not retry or work around it: stop dispatching and give the user your consolidated report — what is done, what is not, and what blocked it.`);
   lines.push('10. Confirmations: nobody is asked mid-run. When a member reports that an action was refused pending the user\'s confirmation, do not retry it and do not work around it; continue with steps that do not depend on it and list it under "等你确认" in your report. If the user later approves, you get a follow-up message — re-dispatch ONLY that step to the same member.');
   lines.push('11. Define done before dispatching: whenever a step must produce a file, put its path in `expected_files` (workspace-relative or absolute) on that delegate_to_agent call or run_agent_batch task. The harness checks the files after the member finishes; a missing file fails the step regardless of what the member wrote — re-dispatch that step once quoting the missing paths, then mark it blocked.');
+  lines.push(`12. Stalls: a member with no new step for ${STALL_STOP_MINUTES} minutes is stopped automatically and its result says so. Re-dispatch that step once with a smaller scope or a different approach; if it stalls again, mark it blocked.`);
   return lines.join('\n');
 }
 

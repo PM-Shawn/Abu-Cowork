@@ -7,7 +7,9 @@
  * the React/DOM side and `appBridgeSession` owns the protocol side.
  */
 import type { McpUiHostContext, McpUiStyles, McpUiTheme } from '@modelcontextprotocol/ext-apps/app-bridge';
+import type { ToolCall } from '@/types';
 import { WIDGET_THEME_VARS } from '@/core/widget/designSystem';
+import { mcpManager } from './client';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -358,4 +360,32 @@ export function splitMcpToolName(
     }
   }
   return best;
+}
+
+/**
+ * Does this step have an MCP Apps interface (spec §4.1)?
+ *
+ * `ToolDefinition.ui` only exists in the renderer's MCP client — the sidecar
+ * loop that creates the tool call never sees it — so the lookup happens at
+ * render time, and the answer is written back onto the step (see
+ * `setToolCallAppUi`) so a reopened conversation does not have to ask a
+ * possibly-offline server again.
+ *
+ * ⚠️ The answer depends on live MCP connection state, which is NOT an argument
+ * here: a caller that memoizes this must key that memo on the set of connected
+ * servers too, or a connector that finishes connecting after the conversation
+ * opened never gets its interface (see `MessageGroup`'s `connectedKey`).
+ *
+ * This is the one place in `appHost` that is not dependency-free; it lives here
+ * rather than in a component so both the renderer and its tests have a single
+ * definition to point at.
+ */
+export function resolveToolCallAppUi(toolCall: ToolCall): { server: string; resourceUri: string } | undefined {
+  if (toolCall.ui) return toolCall.ui;
+  const split = splitMcpToolName(toolCall.name, mcpManager.getConnectedServers());
+  if (!split) return undefined;
+  const def = mcpManager.getServerTools(split.server).find((d) => d.name === toolCall.name)
+    ?? mcpManager.getAppTool(split.server, split.tool);
+  if (!def?.ui) return undefined;
+  return { server: split.server, resourceUri: def.ui.resourceUri };
 }

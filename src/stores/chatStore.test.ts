@@ -1520,6 +1520,58 @@ describe('chatStore', () => {
       expect(msg.toolCalls).toBeUndefined();
       expect(msg.isStreaming).toBe(true);
     });
+
+    // Renderer-only fields must survive a wholesale replacement. The frame that
+    // carries `collectedToolCalls` comes from the sidecar, which has never seen
+    // `ui` (resolved from the renderer's MCP client) or `modelContext` (written
+    // by the app bridge) — so a replay/late frame for a message that already has
+    // an interface would blank it, exactly the way `sandboxRecoveryAction` had
+    // to be preserved on the disk side (conversationStorage.ts).
+    it('preserves renderer-only ui / modelContext when the incoming frame has none', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/view.html',
+      });
+      useChatStore.getState().setToolCallModelContext(id, 'a1', 't1', 'rows: 3');
+
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+
+      const [first, second] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(first.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/view.html' });
+      expect(first.modelContext).toBe('rows: 3');
+      expect(second.ui).toBeUndefined();
+    });
+
+    it('lets an incoming frame that DOES carry ui / modelContext win', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{ id: 't1', name: 'weather__forecast', input: {} }]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/old.html',
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{
+        id: 't1',
+        name: 'weather__forecast',
+        input: {},
+        ui: { server: 'weather', resourceUri: 'ui://weather/new.html' },
+        modelContext: 'fresh',
+      }]);
+      const [only] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(only.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/new.html' });
+      expect(only.modelContext).toBe('fresh');
+    });
   });
 
   // ── appendMessageToolCall (subagent image persistence) ──

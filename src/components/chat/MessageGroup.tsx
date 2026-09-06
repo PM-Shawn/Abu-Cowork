@@ -13,7 +13,7 @@ import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
 import McpAppBlock from './McpAppBlock';
-import { resolveToolCallAppUi } from './ToolCallsGroup';
+import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -21,6 +21,7 @@ import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from '.
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
@@ -708,6 +709,20 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   }, [allToolCalls, assistantMsgs, home]);
 
   /**
+   * Which MCP servers are connected right now, as one stable string.
+   *
+   * A joined key rather than the `servers` object itself: the store hands out a
+   * new object on every status tick (connecting → connected → tools loaded), so
+   * depending on it directly would re-resolve every interface on unrelated
+   * churn, while depending on nothing at all makes a late connection invisible.
+   */
+  const connectedKey = useMCPStore((s) => Object.entries(s.servers)
+    .filter(([, entry]) => entry.status === 'connected')
+    .map(([name]) => name)
+    .sort()
+    .join('|'));
+
+  /**
    * MCP Apps: steps whose connector declares a `ui://` interface (spec §4.2).
    *
    * These are resolved here, alongside the other per-step cards, and NOT inside
@@ -727,7 +742,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       const messageId = ownerByToolCallId.get(toolCall.id);
       return ui && messageId ? [{ toolCall, ui, messageId }] : [];
     });
-  }, [allToolCalls, assistantMsgs]);
+    // `connectedKey` is in the deps because `resolveToolCallAppUi` reads the
+    // LIVE MCP client, which is not otherwise an input to this memo. Its
+    // subscription (above) is what actually re-renders this group when a
+    // connector finishes connecting after the conversation was opened — without
+    // it the interface stays permanently absent, and the "connect {server}"
+    // placeholder is unreachable too, since the block is what renders it. The
+    // dep keeps that correct if `messages` ever stops being a fresh array per
+    // render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allToolCalls, assistantMsgs, connectedKey]);
 
   // Persist the resolved `ui` on the step so a reopened conversation can
   // rebuild the interface without asking the MCP client again (spec §4.4).

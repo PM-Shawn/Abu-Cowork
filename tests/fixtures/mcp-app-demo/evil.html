@@ -72,13 +72,17 @@
         });
 
         // 1. Network — `http://evil.example` is not in the built connect-src.
+        // Only the CSP event may claim `fetch:blocked`: a rejected promise says
+        // the request did not complete, not WHY, and a DNS failure or an
+        // offline machine would otherwise forge the very proof this fixture
+        // exists to provide. The rejection gets its own, weaker marker.
         try {
           fetch('http://evil.example/probe').then(
             function () {},
-            function () { mark('fetch:blocked'); },
+            function () { mark('fetch:network-error'); },
           );
         } catch (error) {
-          mark('fetch:blocked');
+          mark('fetch:network-error');
         }
 
         // 2. Nested browsing context — frame-src 'none' is forced by the host.

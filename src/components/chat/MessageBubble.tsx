@@ -786,7 +786,7 @@ export default function MessageBubble({
         )}
         {/* Tool calls - grouped in a single collapsible block */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} messageId={message.id} />
+          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} />
         )}
         {/* Inline images from non-CU tool results (e.g. read_file QR codes) */}
         {message.toolCalls && message.toolCalls.length > 0 && (
@@ -841,7 +841,7 @@ export default function MessageBubble({
         )}
         {/* Tool calls - grouped in a single collapsible block */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} messageId={message.id} />
+          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} />
         )}
         {/* Inline images from non-CU tool results (e.g. read_file QR codes) */}
         {message.toolCalls && message.toolCalls.length > 0 && (

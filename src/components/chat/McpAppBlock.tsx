@@ -520,11 +520,23 @@ export default function McpAppBlock({
   // a bridge onto a window that no longer exists.
   useEffect(() => {
     if (!active || status !== 'ready' || !srcdoc) return;
-    const frameWindow = frameRef.current?.contentWindow;
-    if (!frameWindow) {
+    const frame = frameRef.current;
+    const frameWindow = frame?.contentWindow;
+    if (!frame || !frameWindow) {
       setStatus('failed');
       return;
     }
+
+    // 🔴 A new session needs a new document. The app's `ui/initialize` retry
+    // loop stops for good once the first handshake lands, so a bridge rebuilt
+    // over a document that is still running (StrictMode's double-invoke, a
+    // `status` flicker back through 'loading', a theme/srcdoc churn) would wait
+    // for a handshake that can never arrive — the app goes silently deaf and
+    // its own requests get no answer. Assigning `srcdoc` re-navigates the frame
+    // even when the value is byte-identical, which is exactly the property
+    // wanted here. Nothing is lost in the gap: the session buffers
+    // `tool-input`/`tool-result` until the app reports `initialized`.
+    frame.srcdoc = srcdoc;
 
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;

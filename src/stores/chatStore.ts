@@ -1718,7 +1718,28 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg) {
-            msg.toolCalls = toolCalls;
+            // Wholesale replacement, with one exception: fields the sender
+            // cannot know about. This frame is built in the sidecar from the
+            // model's tool calls, so it never carries `ui` (resolved from the
+            // renderer's MCP client at render time) or `modelContext` (written
+            // by an MCP App through the bridge). Assigning it verbatim would
+            // blank an interface that is already on screen — the same class of
+            // regression `sandboxRecoveryAction` had on the disk side, see
+            // `preservePersistedSandboxRecoveryActions` in conversationStorage.
+            // An incoming value still wins; only absence falls back.
+            const previousById = new Map((msg.toolCalls ?? []).map((tc) => [tc.id, tc]));
+            msg.toolCalls = toolCalls.map((tc) => {
+              const previous = previousById.get(tc.id);
+              if (!previous) return tc;
+              const ui = tc.ui ?? previous.ui;
+              const modelContext = tc.modelContext ?? previous.modelContext;
+              if (ui === tc.ui && modelContext === tc.modelContext) return tc;
+              return {
+                ...tc,
+                ...(ui ? { ui } : {}),
+                ...(modelContext !== undefined ? { modelContext } : {}),
+              };
+            });
             msg.isStreaming = false;
           }
         });

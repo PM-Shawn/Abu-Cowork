@@ -2,6 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -45,7 +46,11 @@ interface SessionSink {
   sessions?: ReturnType<typeof makeSession>[];
 }
 
-function renderBlock(over: Partial<McpAppBlockProps> = {}, sessionSink: SessionSink = {}) {
+function renderBlock(
+  over: Partial<McpAppBlockProps> = {},
+  sessionSink: SessionSink = {},
+  options: { strict?: boolean } = {},
+) {
   const defaultDeps: McpAppBlockProps['deps'] = {
     readResource: async () => appResource(),
     isConnected: () => true,
@@ -69,7 +74,40 @@ function renderBlock(over: Partial<McpAppBlockProps> = {}, sessionSink: SessionS
     ...over,
     deps: { ...defaultDeps, ...over.deps },
   };
-  return render(<McpAppBlock {...props} />);
+  return render(<McpAppBlock {...props} />, options.strict ? { wrapper: StrictMode } : undefined);
+}
+
+/**
+ * Count every write to an iframe's `srcdoc` DOM property.
+ *
+ * React sets the initial value as an attribute, so what this sees is exactly
+ * the host's own re-navigations — one per bridge session is the property under
+ * test. Returns a restore function; the descriptor is patched on the prototype
+ * because the block owns its iframe and never hands the element out before the
+ * effect that reassigns it has already run.
+ */
+function trackSrcdocWrites(): { writes: string[]; restore: () => void } {
+  const writes: string[] = [];
+  const proto = HTMLIFrameElement.prototype as unknown as Record<string, unknown>;
+  const original = Object.getOwnPropertyDescriptor(proto, 'srcdoc');
+  Object.defineProperty(proto, 'srcdoc', {
+    configurable: true,
+    get(this: HTMLIFrameElement) {
+      return original?.get ? original.get.call(this) : this.getAttribute('srcdoc');
+    },
+    set(this: HTMLIFrameElement, value: string) {
+      writes.push(String(value));
+      if (original?.set) original.set.call(this, value);
+      else this.setAttribute('srcdoc', String(value));
+    },
+  });
+  return {
+    writes,
+    restore: () => {
+      if (original) Object.defineProperty(proto, 'srcdoc', original);
+      else delete proto['srcdoc'];
+    },
+  };
 }
 
 /** Let the resource promise + the effects it unblocks settle. */
@@ -357,6 +395,91 @@ describe('McpAppBlock', () => {
     });
   });
   // ── Task 3: interaction (spec §4.3) ───────────────────────────────────────
+
+  describe('bridge lifecycle', () => {
+    /**
+     * 🔴 A rebuilt bridge over a still-running document is a dead bridge: the
+     * app's `ui/initialize` retry loop stops after its first success, so the
+     * new session would wait forever for a handshake and the interface goes
+     * silently deaf. StrictMode's mount → unmount → mount is the cheapest
+     * faithful reproduction (it is also what dev builds do on every mount).
+     */
+    it('re-navigates the frame once per bridge session', async () => {
+      const tracker = trackSrcdocWrites();
+      try {
+        const sink: SessionSink = {};
+        // StrictMode is the shape the real double-invoke arrives in. React runs
+        // in its production build under vitest, so it may mount only once here;
+        // the assertion is therefore "one host re-navigation per session", which
+        // is the invariant either way (and was ZERO before this fix).
+        const view = renderBlock({}, sink, { strict: true });
+        await settle();
+        expect(tracker.writes).toHaveLength(sink.sessions!.length);
+
+        // A second session over the same block — a different interface resource
+        // rebuilds the bridge — must get its own fresh document.
+        const sessionsBefore = sink.sessions!.length;
+        await act(async () => {
+          view.rerender(
+            <StrictMode>
+              <McpAppBlock
+                toolCallId="tc-1"
+                server="weather"
+                resourceUri="ui://weather/other.html"
+                input={{ city: 'Beijing' }}
+                result="25C"
+                conversationId="conv-1"
+                deps={{
+                  readResource: async () => appResource(),
+                  isConnected: () => true,
+                  handshakeTimeoutMs: 0,
+                  isDark: () => false,
+                  createSession: () => {
+                    const s = makeSession();
+                    sink.session = s;
+                    (sink.sessions ??= []).push(s);
+                    return s;
+                  },
+                }}
+              />
+            </StrictMode>,
+          );
+        });
+        await settle();
+
+        expect(sink.sessions!.length).toBeGreaterThan(sessionsBefore);
+        expect(tracker.writes).toHaveLength(sink.sessions!.length);
+        for (const written of tracker.writes) expect(written).toContain('Content-Security-Policy');
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('re-navigates on a plain single mount too, so the first session also gets a fresh document', async () => {
+      const tracker = trackSrcdocWrites();
+      try {
+        const sink: SessionSink = {};
+        renderBlock({}, sink);
+        await settle();
+        expect(sink.sessions).toHaveLength(1);
+        expect(tracker.writes).toHaveLength(1);
+      } finally {
+        tracker.restore();
+      }
+    });
+
+    it('still buffers tool input/result behind the handshake after a re-navigation', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink, { strict: true });
+      await settle();
+      // The surviving session is the one that must carry the payload: it gets
+      // both messages, and the session itself is what holds them until the app
+      // reports `initialized` (appBridgeSession.test.ts pins that queueing).
+      const last = sink.sessions![sink.sessions!.length - 1];
+      expect(last.calls.some((c) => c.startsWith('input:'))).toBe(true);
+      expect(last.calls.some((c) => c.startsWith('result:'))).toBe(true);
+    });
+  });
 
   describe('display mode', () => {
     it('goes fullscreen without rebuilding the iframe or the bridge', async () => {

@@ -7,9 +7,6 @@ import { useI18n } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { resolveOutputRefSource } from '@/core/session/outputSnapshots';
 import { cn } from '@/lib/utils';
-import { mcpManager } from '@/core/mcp/client';
-import { splitMcpToolName } from '@/core/mcp/appHost';
-import McpAppBlock from './McpAppBlock';
 
 /** True when an ask_user_question tool call is parked waiting on the user. */
 function isAwaitingUser(tc: ToolCall): boolean {
@@ -19,29 +16,13 @@ function isAwaitingUser(tc: ToolCall): boolean {
 interface ToolCallsGroupProps {
   toolCalls: ToolCall[];
   conversationId?: string;
-  /** Owning assistant message — needed to persist a resolved `ToolCall.ui`. */
-  messageId?: string;
 }
 
-/**
- * Does this step have an MCP Apps interface (spec §4.1)?
- *
- * `ToolDefinition.ui` only exists in the renderer's MCP client — the sidecar
- * loop that creates the tool call never sees it — so the lookup happens here,
- * at first render, and the answer is written back onto the step (see the
- * `setToolCallAppUi` effect) so a reopened conversation does not have to ask a
- * possibly-offline server again.
- */
-// eslint-disable-next-line react-refresh/only-export-components
-export function resolveToolCallAppUi(toolCall: ToolCall): { server: string; resourceUri: string } | undefined {
-  if (toolCall.ui) return toolCall.ui;
-  const split = splitMcpToolName(toolCall.name, mcpManager.getConnectedServers());
-  if (!split) return undefined;
-  const def = mcpManager.getServerTools(split.server).find((d) => d.name === toolCall.name)
-    ?? mcpManager.getAppTool(split.server, split.tool);
-  if (!def?.ui) return undefined;
-  return { server: split.server, resourceUri: def.ui.resourceUri };
-}
+// MCP Apps note: an app-backed step's interface is NOT rendered here. Assistant
+// turns reach the transcript through `MessageGroup`, which never renders this
+// component (a `MessageBubble` for an assistant message returns early in
+// `actionsOnly` mode), so a block wired in here would be unreachable for every
+// tool call a model makes. `MessageGroup` owns it — see `mcpAppSteps` there.
 
 type ToolResultImageBlock = Extract<ToolResultContent, { type: 'image' }>;
 type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
@@ -50,30 +31,9 @@ type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
  * Compact tool calls display - collapsed by default showing a single line
  * with scrolling tool execution status, expandable to show details.
  */
-export default function ToolCallsGroup({ toolCalls, conversationId, messageId }: ToolCallsGroupProps) {
+export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsGroupProps) {
   // Filter out hidden tool calls (like report_plan)
   const visibleToolCalls = useMemo(() => toolCalls.filter((tc) => !tc.hidden), [toolCalls]);
-
-  // MCP Apps: steps whose tool declares a `ui://` interface get one rendered
-  // below the tool card. Resolution is memoized on the step list so an
-  // unrelated re-render does not re-query the MCP client.
-  const appSteps = useMemo(
-    () => visibleToolCalls
-      .map((tc) => {
-        const ui = resolveToolCallAppUi(tc);
-        return ui ? { toolCall: tc, ui } : undefined;
-      })
-      .filter((e): e is { toolCall: ToolCall; ui: { server: string; resourceUri: string } } => e !== undefined),
-    [visibleToolCalls],
-  );
-
-  useEffect(() => {
-    if (!conversationId || !messageId) return;
-    for (const step of appSteps) {
-      if (step.toolCall.ui) continue;
-      useChatStore.getState().setToolCallAppUi(conversationId, messageId, step.toolCall.id, step.ui);
-    }
-  }, [appSteps, conversationId, messageId]);
 
   const [expanded, setExpanded] = useState(false);
   const [currentDisplayIndex, setCurrentDisplayIndex] = useState(0);
@@ -204,28 +164,6 @@ export default function ToolCallsGroup({ toolCalls, conversationId, messageId }:
         </div>
       )}
       </div>
-
-      {/* MCP Apps — one sandboxed interface per app-backed step. Rendered
-          outside the collapsible card so the interface is visible without
-          expanding, and so a failed interface degrades to a muted line while
-          the plain result stays where it already is. */}
-      {appSteps.map(({ toolCall, ui }) => (
-        <McpAppBlock
-          key={`app-${toolCall.id}`}
-          toolCallId={toolCall.id}
-          server={ui.server}
-          resourceUri={ui.resourceUri}
-          input={toolCall.input}
-          result={toolCall.result}
-          resultContent={toolCall.resultContent}
-          isError={toolCall.isError}
-          isExecuting={toolCall.isExecuting}
-          conversationId={conversationId}
-          messageId={messageId}
-          toolName={toolCall.name}
-          modelContext={toolCall.modelContext}
-        />
-      ))}
     </div>
   );
 }

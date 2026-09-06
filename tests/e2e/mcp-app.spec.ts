@@ -352,10 +352,35 @@ test.describe.serial('MCP Apps host in Electron', () => {
       page.locator('[data-testid="virtuoso-item-list"]')
         .getByText('mcp-app-demo table: alpha=100 beta=200 gamma=300'),
     ).toHaveCount(0);
-    expect(mock.requestCount()).toBe(requestsBeforeDraft);
+    // The counter only ever grows, so the real property is "still equal after a
+    // quiet window", not "equal right now". Hold the probe back until the window
+    // has elapsed — an expect.poll that can pass on its first tick would prove
+    // nothing about a send that happens 300ms later.
+    const quietUntil = Date.now() + 1_000;
+    await expect
+      .poll(() => (Date.now() < quietUntil ? -1 : mock!.requestCount()), {
+        timeout: 10_000,
+        intervals: [100],
+      })
+      .toBe(requestsBeforeDraft);
     await composer.fill('');
 
     // ---- ui/open-link asks first, and records the refusal ----------------
+    // `openWidgetLink` is a renderer-side `window.open` (the popup is then
+    // denied and re-routed to `shell.openExternal` by securityBoundary.cjs), so
+    // recording it here catches the whole chain at its first link. It records
+    // WITHOUT calling through: if the consent gate ever leaked, the assertion
+    // below should fail rather than actually launch a browser on the machine
+    // running the suite.
+    const windowsBeforeLink = app!.windows().length;
+    await page.evaluate(() => {
+      const w = window as unknown as { __abuOpenedLinks?: string[] };
+      w.__abuOpenedLinks = [];
+      window.open = ((url?: string | URL) => {
+        w.__abuOpenedLinks!.push(String(url));
+        return null;
+      }) as typeof window.open;
+    });
     await clickInApp(content, 'demo-link');
     await expect(page.getByRole('heading', { name: '界面想打开链接' })).toBeVisible({
       timeout: READY_TIMEOUT,
@@ -368,6 +393,11 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(declinedRow).toBeVisible({ timeout: READY_TIMEOUT });
     await declinedRow.click();
     await expect(declinedRow).toContainText('已拒绝打开');
+    // Refused means refused: nothing reached the shell, and no window opened.
+    expect(
+      await page.evaluate(() => (window as unknown as { __abuOpenedLinks?: string[] }).__abuOpenedLinks ?? []),
+    ).toEqual([]);
+    expect(app!.windows()).toHaveLength(windowsBeforeLink);
 
     // ---- fullscreen promotes the same iframe, then returns inline --------
     await clickInApp(content, 'demo-fullscreen');
@@ -453,9 +483,9 @@ test.describe.serial('MCP Apps host in Electron', () => {
     // Assert on the policy the host BUILT, not on the whole document: the
     // hostile page's own source of course mentions the domains it tries.
     const evilSrcdoc = (await appFrame(page, 1).getAttribute('srcdoc')) ?? '';
-    const evilCsp = evilSrcdoc
-      .split('<meta')
-      .find((part) => part.includes('Content-Security-Policy')) ?? '';
+    const evilCsp = /<meta[^>]*http-equiv="Content-Security-Policy"[^>]*content="([^"]*)"/i
+      .exec(evilSrcdoc)?.[1] ?? '';
+    expect(evilCsp).not.toBe('');
     expect(evilCsp).toContain('connect-src https://ok.example');
     expect(evilCsp).not.toContain('evil.example');
     expect(evilCsp).not.toContain('*');

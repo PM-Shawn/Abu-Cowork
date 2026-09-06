@@ -512,8 +512,16 @@ const ORIGIN_PINNED_ACTIONS = new Set([
  *
  * `wait_for` is deliberately absent: waiting is frequently how a run waits OUT
  * a navigation, so pinning it would refuse the one call whose whole purpose is
- * to observe the page becoming something else. It reads a condition, not the
- * page's contents.
+ * to observe the page becoming something else.
+ *
+ * That exemption has a price, and it is stated rather than argued away (R3-E):
+ * a wait is NOT contents-free on its TIMEOUT path, which reports the page's
+ * current URL and up to 80 characters of visible text (`describeCurrentState`
+ * in the content runtime) so the model can see why the condition never held.
+ * A `wait_for` that times out inside a drift window can therefore carry that
+ * much of the new site back. Known, bounded, accepted — tightening it (a
+ * timeout that says "the page is no longer the approved site" instead of
+ * quoting it) is tracked, not done here.
  */
 const ORIGIN_PINNED_READ_ACTIONS = new Set([
   'snapshot',

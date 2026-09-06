@@ -421,13 +421,21 @@ export function normalizedOrigin(href: string | undefined): string | null {
 }
 
 /**
- * The pin for actions that never reach the content script — `execute_js`,
- * which this worker runs through `chrome.scripting.executeScript`.
+ * The pin for actions that never reach the content script — `execute_js` and
+ * the two screenshots, which this worker runs itself (`chrome.scripting`
+ * and `chrome.tabs.captureVisibleTab`).
  *
  * Compares the tab's LIVE url (read here, not whatever the gate saw) against
  * the origin the approval was given for. Same rules and the same message as
  * the content script's `assertOriginPin` and the Electron host's: both run
  * modes compare, only the missing-value refusal is unattended-only.
+ *
+ * `read: true` marks a READ (round-3 R3-A: the screenshots). A read that
+ * CARRIES a pin is compared exactly like a state change; a read that carries
+ * NO pin keeps its previous path in both run modes — the same split the other
+ * two channels make in `ORIGIN_PINNED_READ_ACTIONS`, and for the same reason:
+ * whether an unattended run may look at a page with no resolved origin is the
+ * gate's question, not this file's.
  *
  * A tab whose url cannot be read at all is a mismatch, not a pass.
  */
@@ -435,10 +443,11 @@ export async function assertTabOriginPin(
   tabId: number,
   payload: Record<string, unknown>,
   getTab: (id: number) => Promise<{ url?: string }> = (id) => chrome.tabs.get(id),
+  opts: { read?: boolean } = {},
 ): Promise<void> {
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    if (opts.read || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be '
       + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
@@ -647,6 +656,20 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: recentDownloads };
       }
 
+      // ## Both screenshots are pinned reads (round-3 R3-A)
+      //
+      // Round 2 brought the text reads under the execution-time origin pin on
+      // both channels, but pixels never reached that code: a screenshot does
+      // not go through the content script at all — it is taken here, by
+      // `chrome.tabs.captureVisibleTab`. So the highest-bandwidth read of the
+      // set was the one still unchecked, on the channel driving the user's
+      // REAL logged-in Chrome. A page that drifts between approval and capture
+      // put a full screen of the new site into the transcript.
+      //
+      // The pin is taken AFTER the activation below, not before: activating a
+      // background tab and waiting for it to paint is 300ms during which the
+      // page can navigate, and the url that matters is the one showing when
+      // the pixels are read.
       case 'screenshot': {
         const tab = await chrome.tabs.get(tabId);
         // Activate the target tab first to ensure we capture the right one
@@ -655,6 +678,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           // Brief wait for tab switch to render
           await new Promise(r => setTimeout(r, 300));
         }
+        await assertTabOriginPin(tabId, payload, undefined, { read: true });
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
         return { id, success: true, data: dataUrl };
       }
@@ -665,6 +689,9 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           await chrome.tabs.update(tabId, { active: true });
           await new Promise(r => setTimeout(r, 300));
         }
+        // Scrolls the page and stitches many captures, so it is a strictly
+        // longer window than `screenshot` — pinned before the first scroll.
+        await assertTabOriginPin(tabId, payload, undefined, { read: true });
         const result = await captureFullPage(tabId, tab.windowId);
         return { id, success: true, data: result };
       }

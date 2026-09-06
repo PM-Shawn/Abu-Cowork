@@ -666,8 +666,7 @@ const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
 
 /**
  * Actions that copy the page's CONTENTS into the conversation, and must
- * therefore land on the document the gate approved (round-2 R2-A). Mirrors
- * `ORIGIN_PINNED_READ_ACTIONS` in `electron/browserHost.cjs`.
+ * therefore land on the document the gate approved (round-2 R2-A).
  *
  * A read changes nothing about the page, which is why it was exempt — but it
  * changes the transcript, and on this channel the region it reads is a
@@ -680,8 +679,23 @@ const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
  * calls with no gate fields at all, and whether an unattended run may read
  * without a resolved origin is the gate's question, not this file's.
  *
- * `wait_for` is absent on purpose — a wait is frequently how a run waits OUT a
- * navigation, and it reads a condition rather than the page's contents.
+ * ## Why this is NOT the same list as `electron/browserHost.cjs` (R3-A)
+ *
+ * The host's `ORIGIN_PINNED_READ_ACTIONS` also carries `screenshot` and
+ * `screenshot_full_page`. They are absent here because on THIS channel a
+ * screenshot never reaches the content script: the background worker takes it
+ * with `chrome.tabs.captureVisibleTab`, and pins it there
+ * (`assertTabOriginPin(…, { read: true })`) — the same split `execute_js`
+ * already has. Two files, one rule; neither list is complete on its own.
+ *
+ * `wait_for` is exempt on both channels because waiting is frequently how a
+ * run waits OUT a navigation: pinning it would refuse the one call whose whole
+ * purpose is to watch the page become something else. The cost is real and
+ * accepted rather than talked away — its TIMEOUT diagnostic reports the page's
+ * current URL and up to 80 characters of visible text (`describeCurrentState`
+ * below), so a wait that times out inside a drift window can carry that much
+ * of the new site back. Known, bounded, and not a claim that a wait reads
+ * nothing.
  */
 const ORIGIN_PINNED_READ_ACTIONS = new Set([
   'snapshot', 'find', 'locate', 'get_html', 'extract_text', 'extract_table',

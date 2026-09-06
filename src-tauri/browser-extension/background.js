@@ -747,10 +747,10 @@
       return null;
     }
   }
-  async function assertTabOriginPin(tabId2, payload2, getTab = (id2) => chrome.tabs.get(id2)) {
+  async function assertTabOriginPin(tabId2, payload2, getTab = (id2) => chrome.tabs.get(id2), opts = {}) {
     const expected = typeof payload2.expectedOrigin === "string" ? payload2.expectedOrigin : "";
     if (!expected) {
-      if (payload2.unattended !== true) return;
+      if (opts.read || payload2.unattended !== true) return;
       throw new Error(
         "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
       );
@@ -899,12 +899,27 @@
         case "get_downloads": {
           return { id, success: true, data: recentDownloads };
         }
+        // ## Both screenshots are pinned reads (round-3 R3-A)
+        //
+        // Round 2 brought the text reads under the execution-time origin pin on
+        // both channels, but pixels never reached that code: a screenshot does
+        // not go through the content script at all — it is taken here, by
+        // `chrome.tabs.captureVisibleTab`. So the highest-bandwidth read of the
+        // set was the one still unchecked, on the channel driving the user's
+        // REAL logged-in Chrome. A page that drifts between approval and capture
+        // put a full screen of the new site into the transcript.
+        //
+        // The pin is taken AFTER the activation below, not before: activating a
+        // background tab and waiting for it to paint is 300ms during which the
+        // page can navigate, and the url that matters is the one showing when
+        // the pixels are read.
         case "screenshot": {
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
             await chrome.tabs.update(tabId, { active: true });
             await new Promise((r) => setTimeout(r, 300));
           }
+          await assertTabOriginPin(tabId, payload, void 0, { read: true });
           const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
           return { id, success: true, data: dataUrl };
         }
@@ -914,6 +929,7 @@
             await chrome.tabs.update(tabId, { active: true });
             await new Promise((r) => setTimeout(r, 300));
           }
+          await assertTabOriginPin(tabId, payload, void 0, { read: true });
           const result = await captureFullPage(tabId, tab.windowId);
           return { id, success: true, data: result };
         }

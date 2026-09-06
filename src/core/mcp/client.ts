@@ -739,18 +739,30 @@ export class MCPClientManager {
   /**
    * Test connection to a server config without persisting the connection.
    * Returns { success, message } with tool count on success.
+   *
+   * `toolCount` keeps its meaning — the MODEL-visible tools, which is what the
+   * user is deciding about when they wire a connector up. App-only tools
+   * (`_meta.ui.visibility` without `'model'`) are reported separately as
+   * `appToolCount` rather than folded in: a server whose tools are all
+   * interface-driven would otherwise test as "0 tools" and read as broken.
    */
-  async testConnection(config: MCPServerConfig): Promise<{ success: boolean; toolCount?: number; error?: string }> {
+  async testConnection(config: MCPServerConfig): Promise<{
+    success: boolean;
+    toolCount?: number;
+    appToolCount?: number;
+    error?: string;
+  }> {
     const tempName = `__test_${Date.now()}`;
     const tempConfig = { ...config, name: tempName };
 
     try {
       await this.connectServer(tempConfig);
       const toolCount = this.servers.get(tempName)?.tools.size ?? 0;
+      const appToolCount = this.servers.get(tempName)?.appTools.size ?? 0;
       await this.disconnectServer(tempName);
       // Clean up any logs/reconnect state for the temp name
       this.serverLogs.delete(tempName);
-      return { success: true, toolCount };
+      return { success: true, toolCount, appToolCount };
     } catch (err) {
       // Make sure temp connection is cleaned up
       await this.disconnectServer(tempName).catch(() => {});

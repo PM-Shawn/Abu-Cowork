@@ -20,8 +20,8 @@ import {
 } from '@/core/mcp/appHost';
 import { createAppBridgeSession, type AppBridgeSession } from '@/core/mcp/appBridgeSession';
 import {
+  appendAuditRow,
   createAppBridgeHandlers,
-  MAX_AUDIT_ROWS,
   MAX_AUDIT_SUMMARY_CHARS,
   type AppApprovalDecision,
   type McpAppAuditEntry,
@@ -607,7 +607,9 @@ export default function McpAppBlock({
       setDisplayMode: (mode) => setDisplayMode(mode),
       lastUserGestureAt: () => lastUserGestureAtRef.current,
       lastUserExitAt: () => lastUserExitAtRef.current,
-      onAudit: (entry) => setAudit((prev) => [...prev, entry].slice(-MAX_AUDIT_ROWS)),
+      // Per-kind caps (see `appendAuditRow`): a resource-read storm must not
+      // be able to push the tool-call rows out of the trail.
+      onAudit: (entry) => setAudit((prev) => appendAuditRow(prev, entry)),
       onRateLimited: () => setRateLimited(true),
     });
 

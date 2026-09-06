@@ -16,6 +16,9 @@ import {
   FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
   FULLSCREEN_GESTURE_WINDOW_MS,
   TOO_MANY_RESOURCE_READS_MESSAGE,
+  MAX_AUDIT_ROWS,
+  appendAuditRow,
+  auditPoolOf,
   createAppBridgeHandlers,
   createRateLimiter,
   textFromContentBlocks,
@@ -614,5 +617,58 @@ describe('ui/request-display-mode', () => {
     expect(h.spies.onRateLimited).toHaveBeenCalledTimes(1);
     expect(h.spies.setDisplayMode).not.toHaveBeenCalled();
     expect(h.audit[h.audit.length - 1]).toMatchObject({ kind: 'display-mode', outcome: 'rate-limited', isError: true });
+  });
+});
+
+describe('audit row pools', () => {
+  function row(kind: McpAppAuditEntry['kind'], id: string): McpAppAuditEntry {
+    return { id, kind, tool: kind, args: {}, summary: id, isError: false };
+  }
+
+  it('pools open-link and display-mode together, tool-call and resource apart', () => {
+    expect(auditPoolOf('tool-call')).toBe('tool-call');
+    expect(auditPoolOf('resource')).toBe('resource');
+    expect(auditPoolOf('open-link')).toBe('other');
+    expect(auditPoolOf('display-mode')).toBe('other');
+  });
+
+  // 🔴 The whole point: `resources/read` has a 60/min budget against
+  // `tools/call`'s 20, so one flat cap of 50 lets an app page through its own
+  // resources until every tool-call row — the ones the trail exists to show —
+  // has been evicted.
+  it('keeps every tool-call row when a resource storm blows past the cap', () => {
+    let rows: McpAppAuditEntry[] = [];
+    for (let i = 0; i < 5; i++) rows = appendAuditRow(rows, row('tool-call', `call-${i}`));
+    for (let i = 0; i < 60; i++) rows = appendAuditRow(rows, row('resource', `res-${i}`));
+
+    const calls = rows.filter((r) => r.kind === 'tool-call');
+    expect(calls.map((r) => r.id)).toEqual(['call-0', 'call-1', 'call-2', 'call-3', 'call-4']);
+    // The resource pool trimmed itself to its own cap, oldest first.
+    const resources = rows.filter((r) => r.kind === 'resource');
+    expect(resources).toHaveLength(MAX_AUDIT_ROWS);
+    expect(resources[0].id).toBe(`res-${60 - MAX_AUDIT_ROWS}`);
+  });
+
+  it('trims each pool to its own cap and keeps the newest of that pool', () => {
+    let rows: McpAppAuditEntry[] = [];
+    for (let i = 0; i < MAX_AUDIT_ROWS + 5; i++) rows = appendAuditRow(rows, row('tool-call', `call-${i}`));
+
+    expect(rows).toHaveLength(MAX_AUDIT_ROWS);
+    expect(rows[0].id).toBe('call-5');
+    expect(rows[rows.length - 1].id).toBe(`call-${MAX_AUDIT_ROWS + 4}`);
+  });
+
+  it('renders one merged timeline — surviving rows stay in insertion order', () => {
+    let rows: McpAppAuditEntry[] = [];
+    for (let i = 0; i < 3; i++) {
+      rows = appendAuditRow(rows, row('tool-call', `call-${i}`));
+      rows = appendAuditRow(rows, row('resource', `res-${i}`));
+      rows = appendAuditRow(rows, row('open-link', `link-${i}`));
+    }
+    expect(rows.map((r) => r.id)).toEqual([
+      'call-0', 'res-0', 'link-0',
+      'call-1', 'res-1', 'link-1',
+      'call-2', 'res-2', 'link-2',
+    ]);
   });
 });

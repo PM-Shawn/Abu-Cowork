@@ -947,6 +947,42 @@ describe('McpAppBlock', () => {
       expect(screen.getAllByTestId('mcp-app-audit-row')).toHaveLength(MAX_AUDIT_ROWS);
     });
 
+    // 🔴 Pools, not one flat list: resource reads have a 3x larger per-minute
+    // budget, so a single cap lets an app page through its own resources until
+    // every tool-call row is gone — hiding exactly what the trail is for.
+    it('does not let a resource storm evict the tool-call rows', async () => {
+      const sink: SessionSink = {};
+      const tool = {
+        name: 'weather__ping',
+        description: 'ping',
+        inputSchema: { type: 'object' as const, properties: {} },
+        execute: async () => 'unused',
+      };
+      renderBlock({
+        deps: {
+          findTool: () => tool,
+          checkApproval: async () => ({ decision: 'allow' as const }),
+          callTool: async () => 'ok',
+          listServerResources: async () => ({ resources: [] }),
+        },
+      }, sink);
+      await settle();
+
+      await act(async () => {
+        for (let i = 0; i < 5; i++) {
+          await sink.handlers!.oncalltool!({ name: 'ping', arguments: { i } } as never).catch(() => {});
+        }
+        for (let i = 0; i < 60; i++) {
+          await sink.handlers!.onlistresources!({} as never).catch(() => {});
+        }
+      });
+
+      const rows = screen.getAllByTestId('mcp-app-audit-row');
+      const callRows = rows.filter((r) => r.textContent?.includes('ping'));
+      expect(callRows).toHaveLength(5);
+      expect(rows.filter((r) => r.textContent?.includes('resources/list'))).toHaveLength(MAX_AUDIT_ROWS);
+    });
+
     it('caps the rendered arguments the way it caps the result summary', async () => {
       const sink: SessionSink = {};
       const tool = {

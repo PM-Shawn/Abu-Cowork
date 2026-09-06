@@ -71,6 +71,20 @@
           document.getElementById('status').textContent = text;
         }
 
+        /**
+         * Repaint probe. `data-theme` on <html> is what the demo styles itself
+         * with; the `theme:<value>` marker on <body> is what the host-side E2E
+         * reads, because "the app was TOLD which theme it is in" is the thing
+         * under test and a CSS variable cannot be asserted on from outside the
+         * sandbox. Set from the `ui/initialize` result's hostContext, then on
+         * every `host-context-changed` that carries a theme.
+         */
+        function applyTheme(theme) {
+          if (theme !== 'light' && theme !== 'dark') return;
+          document.documentElement.setAttribute('data-theme', theme);
+          document.body.setAttribute('data-theme', 'theme:' + theme);
+        }
+
         window.addEventListener('message', function (event) {
           if (event.source !== window.parent) return;
           var message = event.data;
@@ -110,9 +124,9 @@
           } else if (method === 'ui/notifications/tool-cancelled') {
             setStatus('tool-cancelled');
           } else if (method === 'ui/notifications/host-context-changed') {
-            if (params && params.theme) {
-              document.documentElement.setAttribute('data-theme', params.theme);
-            }
+            // A patch carries only what changed, so a container-size or
+            // display-mode notification must not clear the theme marker.
+            if (params && params.theme) applyTheme(params.theme);
           }
         }
 
@@ -233,9 +247,12 @@
               appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
               protocolVersion: PROTOCOL_VERSION,
             })
-              .then(function () {
+              .then(function (result) {
                 if (initialized) return;
                 initialized = true;
+                // The host states the theme in the handshake result; the app
+                // must start in it, not wait for the first change notification.
+                if (result && result.hostContext) applyTheme(result.hostContext.theme);
                 notify('ui/notifications/initialized', {});
                 setStatus('initialized');
                 reportSize();

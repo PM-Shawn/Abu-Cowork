@@ -1579,6 +1579,8 @@ const enUS: TranslationDict = {
     testing: 'Testing...',
     // Tool count
     toolCount: '{count} tools',
+    // Shown only when the server actually has app-only tools (M > 0).
+    toolCountWithApp: '{count} tools ({app} app-only)',
     noTools: 'No tools',
     // Server logs
     viewLogs: 'View Logs',

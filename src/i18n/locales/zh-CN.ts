@@ -1581,6 +1581,8 @@ const zhCN: TranslationDict = {
     testing: '测试中...',
     // Tool count
     toolCount: '{count} 个工具',
+    // Shown only when the server actually has app-only tools (M > 0).
+    toolCountWithApp: '{count} 个工具（含 {app} 个界面专用）',
     noTools: '无工具',
     // Server logs
     viewLogs: '查看日志',

@@ -43,8 +43,53 @@ export const MAX_APP_MESSAGE_BYTES = 4 * 1024;
 export const MAX_APP_MODEL_CONTEXT_BYTES = 8 * 1024;
 /** How much of a tool result the audit row keeps as its summary. */
 export const MAX_AUDIT_SUMMARY_CHARS = 500;
-/** How many audit rows one block keeps; older ones are dropped. */
+/**
+ * How many audit rows one block keeps PER POOL; older ones in that pool are
+ * dropped.
+ *
+ * 🔴 Per pool, not per block. `resources/read` and `resources/list` have their
+ * own, much larger per-minute budget (60 vs 20), so a single flat list lets an
+ * app that pages through its own resources push every `tool-call` row out of
+ * the audit trail — i.e. hide exactly the actions the trail exists to show.
+ * Pools cannot evict each other; render order stays chronological.
+ */
 export const MAX_AUDIT_ROWS = 50;
+
+/**
+ * Which cap an audit row competes under. `open-link` and `display-mode` are
+ * rare, user-gated one-offs, so they share one pool rather than each getting
+ * a cap of their own.
+ */
+export type McpAppAuditPool = 'tool-call' | 'resource' | 'other';
+
+export function auditPoolOf(kind: McpAppAuditEntry['kind']): McpAppAuditPool {
+  if (kind === 'tool-call') return 'tool-call';
+  if (kind === 'resource') return 'resource';
+  return 'other';
+}
+
+/**
+ * Append one row and trim each pool back to {@link MAX_AUDIT_ROWS}.
+ *
+ * Walks from the newest end so the rows kept are the most recent of each pool,
+ * then restores chronological order — the list the block renders is still one
+ * merged timeline, only the eviction is per pool.
+ */
+export function appendAuditRow(
+  rows: readonly McpAppAuditEntry[],
+  entry: McpAppAuditEntry,
+): McpAppAuditEntry[] {
+  const next = [...rows, entry];
+  const kept: McpAppAuditEntry[] = [];
+  const seen = new Map<McpAppAuditPool, number>();
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const pool = auditPoolOf(next[i].kind);
+    const count = (seen.get(pool) ?? 0) + 1;
+    seen.set(pool, count);
+    if (count <= MAX_AUDIT_ROWS) kept.push(next[i]);
+  }
+  return kept.reverse();
+}
 /**
  * Longest `ui/open-link` URL the host will even offer to open. A URL is the
  * ONLY channel an app has to move bytes out (`connect-src 'none'` blocks the

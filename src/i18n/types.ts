@@ -1823,6 +1823,7 @@ export interface TranslationDict {
     testing: string;
     // Tool count
     toolCount: string;
+    toolCountWithApp: string;
     noTools: string;
     // Server logs
     viewLogs: string;

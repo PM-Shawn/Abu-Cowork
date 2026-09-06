@@ -50,6 +50,10 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEST_API_KEY = 'abu-e2e-mcp-app-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-mcp-app-model';
 const SERVER_NAME = 'mcp-app-demo';
+// `chat.mcpAppNotConnected` with `{server}` filled in — the block's own
+// disconnected placeholder (spec §6.5b). Spelled out rather than imported so a
+// silent wording change has to be acknowledged here.
+const NOT_CONNECTED = new RegExp(`^(连接 ${SERVER_NAME} 以显示界面|Connect ${SERVER_NAME} to show the app view)$`);
 const FIXTURE_ENTRY = path.join(REPO_ROOT, 'tests', 'fixtures', 'mcp-app-demo', 'server.ts');
 const TSX_CLI = path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 
@@ -206,6 +210,64 @@ async function seedDemoConnector(page: Page, readyFile: string): Promise<void> {
   }, { name: SERVER_NAME, command: process.execPath, args: [TSX_CLI, FIXTURE_ENTRY], readyFile });
 }
 
+/**
+ * Put Abu's theme on `system` so the suite can repaint the app the way the OS
+ * does, with `page.emulateMedia({ colorScheme })`.
+ *
+ * That is the app's OWN lever: `App.tsx` listens to
+ * `matchMedia('(prefers-color-scheme: dark)')` while the theme is `system` and
+ * toggles the `dark` class on `<html>`, which is exactly what `McpAppBlock`'s
+ * theme MutationObserver watches. Poking the class (or the store) directly
+ * would assert the bridge without proving the app is wired to Abu's theme at
+ * all. Must run before the reload that `configureLocalMockProvider` performs —
+ * it re-reads and re-writes this same key, preserving whatever else is in it.
+ */
+async function useSystemTheme(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before the E2E theme setup');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown> };
+    persisted.state.theme = 'system';
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  });
+}
+
+/**
+ * Flip the demo connector's connection from the real Connectors UI, the way a
+ * user would: 扩展 → 连接器 → 我的 → the server card → the connect/disconnect
+ * action in its detail header. Going through the UI (rather than reaching into
+ * the store) is what makes this evidence for §6.5b: the block reacts to the
+ * store status the UI actually writes.
+ */
+async function toggleDemoConnector(page: Page, expectConnected: boolean): Promise<void> {
+  await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
+  const panel = page.getByRole('main');
+  await panel.getByRole('button', { name: /^(连接器|Connectors)$/ }).click({ timeout: READY_TIMEOUT });
+  await page.getByTestId('extensions-source-mine').click();
+  await panel.getByRole('button', { name: new RegExp(SERVER_NAME) }).first().click();
+  const toggle = page.getByTestId('mcp-server-toggle-connection');
+  await expect(toggle).toBeVisible({ timeout: READY_TIMEOUT });
+  await toggle.click();
+  // Wait for the control itself to report the new state before leaving the
+  // page: it renders from the connector store's status, so this is the store
+  // settling (a spawn, or a process teardown) rather than a sleep.
+  await expect(toggle).toHaveAttribute('data-connected', String(expectConnected), {
+    timeout: READY_TIMEOUT,
+  });
+  await page.keyboard.press('Escape');
+}
+
+/** Back to the conversation the run opened, from wherever the sidebar is. */
+async function openConversation(page: Page, prompt: string): Promise<void> {
+  const sidebarToggle = page.getByTitle(/显示侧栏|Show sidebar/);
+  if (await sidebarToggle.count()) await sidebarToggle.first().click();
+  const recentConversation = page
+    .getByRole('button', { name: `${prompt.slice(0, 30)}...` })
+    .first();
+  await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
+  await recentConversation.click();
+}
+
 /** Arm the plugin-tool approval gate for the demo connector (see file header). */
 async function armPluginApprovalGate(page: Page): Promise<void> {
   await page.evaluate((serverName) => {
@@ -269,7 +331,7 @@ test.describe.serial('MCP Apps host in Electron', () => {
   test('renders, gates, drafts and sandboxes a connector-provided interface', async () => {
     // One Electron launch, one spawned connector, two model turns and a
     // reload — well past the 90s suite default.
-    test.setTimeout(300_000);
+    test.setTimeout(420_000);
 
     // Four steps up front, one turn each: show_table, its follow-up answer,
     // show_evil, its follow-up answer.
@@ -298,6 +360,11 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await waitForApp(page);
 
     await seedDemoConnector(page, readyFile);
+    // Deterministic starting point for the §6.3 repaint check: `system` theme
+    // plus an explicitly emulated LIGHT scheme, so the run does not inherit
+    // whatever the machine's OS appearance happens to be.
+    await page.emulateMedia({ colorScheme: 'light' });
+    await useSystemTheme(page);
     // Reloads on its way out, which is what starts the connector.
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
     await expect
@@ -337,6 +404,36 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(content.getByTestId('demo-status')).toHaveText('tool-result', {
       timeout: READY_TIMEOUT,
     });
+    // ---- §6.3 the interface repaints when Abu switches to dark ----------
+    // The marker is written from the `ui/initialize` result's hostContext and
+    // rewritten on every `host-context-changed` — so it proves both halves:
+    // the app was told its theme at handshake time, and it is told again when
+    // the host's theme changes under it.
+    const frameBody = content.locator('body');
+    await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
+      timeout: READY_TIMEOUT,
+    });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    // Two separate claims, asserted separately so a failure says which one
+    // broke: (1) the emulated OS preference reached the renderer at all,
+    // (2) Abu reacted to it.
+    await expect
+      .poll(() => page.evaluate(() => window.matchMedia('(prefers-color-scheme: dark)').matches), {
+        timeout: READY_TIMEOUT,
+      })
+      .toBe(true);
+    // Abu itself went dark (App.tsx's matchMedia listener), which is what the
+    // block's MutationObserver reacts to.
+    await expect(page.locator('html')).toHaveClass(/(^|\s)dark(\s|$)/, { timeout: READY_TIMEOUT });
+    await expect(frameBody).toHaveAttribute('data-theme', 'theme:dark', {
+      timeout: READY_TIMEOUT,
+    });
+    // And back — a one-way notification would look identical above.
+    await page.emulateMedia({ colorScheme: 'light' });
+    await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
+      timeout: READY_TIMEOUT,
+    });
+
     const requestsBeforeDraft = mock.requestCount();
     await clickInApp(content, 'demo-send');
     await expect(content.getByTestId('demo-status')).toHaveText('message sent', {
@@ -435,13 +532,7 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect
       .poll(() => fs.existsSync(readyFile), { timeout: READY_TIMEOUT })
       .toBe(true);
-    const sidebarToggle = page.getByTitle(/显示侧栏|Show sidebar/);
-    if (await sidebarToggle.count()) await sidebarToggle.first().click();
-    const recentConversation = page
-      .getByRole('button', { name: `${prompt.slice(0, 30)}...` })
-      .first();
-    await expect(recentConversation).toBeVisible({ timeout: READY_TIMEOUT });
-    await recentConversation.click();
+    await openConversation(page, prompt);
 
     // The interface comes back from the persisted step (spec §4.4) — same rows.
     const replayed = appFrameContent(page, 0);
@@ -464,6 +555,22 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(
       page.getByTestId('mcp-app-audit-row').filter({ hasText: 'refresh_rows' }),
     ).toBeVisible({ timeout: READY_TIMEOUT });
+
+    // ---- §6.5b a disconnected connector takes its interface with it ------
+    // The tool card above still shows the plain result; what must go is the
+    // live interface, replaced by a line naming the connector to reconnect.
+    await toggleDemoConnector(page, false);
+    await openConversation(page, prompt);
+    await expect(page.getByTestId('mcp-app-status')).toHaveText(NOT_CONNECTED, {
+      timeout: READY_TIMEOUT,
+    });
+    await expect(page.locator('[data-testid="mcp-app-frame"]')).toHaveCount(0);
+
+    // Reconnecting brings it back — with its rows, from the persisted step.
+    await toggleDemoConnector(page, true);
+    await openConversation(page, prompt);
+    const reconnected = appFrameContent(page, 0);
+    await expect(reconnected.getByTestId('demo-row')).toHaveCount(3, { timeout: READY_TIMEOUT });
 
     // ---- the hostile interface -------------------------------------------
     const evilPrompt = `abu-e2e-mcp-app-evil-${randomUUID()}`;

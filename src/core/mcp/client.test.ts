@@ -189,6 +189,37 @@ describe('app-only tools', () => {
   });
 });
 
+describe('testConnection', () => {
+  // The count in the connector UI is a decision aid: a server whose tools are
+  // all interface-driven would read as "0 tools" — i.e. broken — if app-only
+  // tools were simply left out, and as a bigger model surface than it has if
+  // they were folded into `toolCount`. So they are reported separately.
+  it('reports model-visible and app-only tools separately', async () => {
+    state.tools = [
+      tool('modelTool', { ui: { resourceUri: 'ui://x/1.html', visibility: ['model', 'app'] } }),
+      tool('plain'),
+      tool('appOnly', { ui: { resourceUri: 'ui://x/2.html', visibility: ['app'] } }),
+    ];
+
+    const result = await mcpManager.testConnection({ name: 'probe', command: 'echo', args: [] });
+
+    expect(result).toMatchObject({ success: true, toolCount: 2, appToolCount: 1 });
+  });
+
+  it('reports zero app-only tools for a plain connector', async () => {
+    state.tools = [tool('plain')];
+
+    expect(await mcpManager.testConnection({ name: 'probe', command: 'echo', args: [] }))
+      .toMatchObject({ success: true, toolCount: 1, appToolCount: 0 });
+  });
+
+  it('leaves no temp server behind', async () => {
+    state.tools = [tool('plain')];
+    await mcpManager.testConnection({ name: 'probe', command: 'echo', args: [] });
+    expect(mcpManager.getStatus().map((s) => s.name)).not.toContain('probe');
+  });
+});
+
 describe('callTool — app-only tools are fail-closed outside the app bridge', () => {
   const APP_ONLY = { ui: { resourceUri: 'ui://x/1.html', visibility: ['app'] } };
   const BOTH = { ui: { resourceUri: 'ui://x/2.html', visibility: ['model', 'app'] } };

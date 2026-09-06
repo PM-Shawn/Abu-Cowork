@@ -6,6 +6,7 @@ import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useI18n, format } from '@/i18n';
+import { toolCountLabel } from './toolCountLabel';
 import { getMCPTemplates, getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
@@ -617,7 +618,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     try {
       const result = await mcpManager.testConnection(entry.config);
       const message = result.success
-        ? `${t.toolbox.testSuccess} (${result.toolCount ?? 0} tools)`
+        ? `${t.toolbox.testSuccess} · ${toolCountLabel(t, result.toolCount, result.appToolCount)}`
         : (result.error ?? t.toolbox.testFailed);
       setTestResults((prev) => ({ ...prev, [name]: { success: result.success, message } }));
       // A successful test invalidates any prior connect-time error.
@@ -972,6 +973,8 @@ function ServerHeaderActions({
         {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
       </button>
       <button onClick={onToggleConnection} disabled={isConnecting}
+        data-testid="mcp-server-toggle-connection"
+        data-connected={isConnected ? 'true' : 'false'}
         className={cn('p-1.5 rounded-lg transition-colors',
           isConnecting ? 'text-[var(--abu-warning)] cursor-wait' : isConnected ? 'text-[var(--abu-success)] hover:text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
         )} title={isConnecting ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>

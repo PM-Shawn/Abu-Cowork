@@ -411,6 +411,32 @@ async function startFrameHostFixture(marker: string, vendorUrl: string): Promise
 }
 
 /**
+ * A page hosting TWO same-origin regions, for the multi-region `batch` journey.
+ *
+ * Its own fixture rather than a third iframe on `startFrameHostFixture`: that
+ * one's regions are addressed by a `/inner` substring, and a second path
+ * starting the same way would make the existing journeys pick by luck.
+ */
+async function startTwoRegionHostFixture(marker: string): Promise<FixturePage> {
+  return listenLoopback(createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    const url = req.url ?? '/';
+    if (url.startsWith('/regionA') || url.startsWith('/regionB')) {
+      const which = url.startsWith('/regionA') ? 'A' : 'B';
+      res.end(`<!doctype html><html><head><title>${marker} ${which}</title></head><body>
+<input id="field${which}" name="field${which}" type="text" value="" />
+</body></html>`);
+      return;
+    }
+    res.end(`<!doctype html><html><head><title>${marker}</title></head><body>
+<h1>${marker}</h1>
+<iframe id="a" src="/regionA" width="300" height="120"></iframe>
+<iframe id="b" src="/regionB" width="300" height="120"></iframe>
+</body></html>`);
+  }));
+}
+
+/**
  * The handle of the region whose address contains `needle`, read out of the
  * snapshot result the model was just given.
  *
@@ -1275,6 +1301,115 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
 
     const fillResult = toolResultFor(taskRequests(mock!)[4]!.body, 'abu-browser__fill');
     expect(fillResult).not.toMatch(/^Error:/);
+    await expectNoConfirmationDialogEverAppeared(page);
+  });
+
+  /**
+   * Round-2 F1, end to end in a real Electron shell: a `batch` whose steps act
+   * in DIFFERENT embedded regions runs all of them.
+   *
+   * The regression it guards is the one that made every region-naming batch
+   * stop before step 0 — the gate handing the run a pin the run then compared
+   * against the wrong thing, and each step carrying the page's origin into a
+   * region that checks its own.
+   *
+   * SAME-origin regions, stated plainly: the built-in browser cannot reach
+   * inside a cross-origin region at all (see the journey below), and there is
+   * no e2e harness that drives a real Chrome through the extension, which is
+   * the only channel that can. So this pins "a batch that names regions runs,
+   * and each step lands in the region it named" against a real browser; the
+   * CROSS-origin half of the chain — gate → `_meta` → run → per-step payload,
+   * with the content script's pin rule applied — is pinned at unit level in
+   * `src/core/tools/registry.browserFrameGate.test.ts`.
+   */
+  test('runs a batch whose steps act in two DIFFERENT embedded regions', async () => {
+    const marker = `abu-e2e-batch-frames-${randomUUID().slice(0, 8)}`;
+    const host = await startTwoRegionHostFixture(marker);
+    fixtures.push(host);
+    const valueA = `abu-e2e-region-a-${randomUUID().slice(0, 8)}`;
+    const valueB = `abu-e2e-region-b-${randomUUID().slice(0, 8)}`;
+    const finalAnswer = `abu-e2e-batch-frames-done-${randomUUID()}`;
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: host.url },
+        toolCallId: `call-nav-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body) },
+        toolCallId: `call-shot-${randomUUID()}`,
+        toolName: 'abu-browser__snapshot',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          steps: JSON.stringify([
+            {
+              action: 'fill',
+              frameId: extractFrameId(body, '/regionA'),
+              locator: { css: '#fieldA' },
+              value: valueA,
+            },
+            {
+              action: 'fill',
+              frameId: extractFrameId(body, '/regionB'),
+              locator: { css: '#fieldB' },
+              value: valueB,
+            },
+          ]),
+        },
+        toolCallId: `call-batch-${randomUUID()}`,
+        toolName: 'abu-browser__batch',
+      }),
+      { kind: 'complete', responseText: finalAnswer },
+    ]);
+
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `T4 region batch ${randomUUID().slice(0, 8)}`;
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true,
+      sitePermissions: { [host.origin]: 'allowed' },
+      scheduleId: `schedule-t4-batch-frames-${randomUUID()}`,
+      scheduleName: taskName,
+      prompt: `fill both embedded forms at ${host.url}`,
+    });
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+
+    // GROUND TRUTH, read out of the two LIVE child documents: each step landed
+    // in the region it named, and neither value crossed over.
+    await expect.poll(
+      () => evaluateInNativeView(
+        app!, host.url,
+        'document.getElementById("a").contentDocument.getElementById("fieldA").value',
+      ),
+      { timeout: READY_TIMEOUT },
+    ).toBe(valueA);
+    expect(
+      await evaluateInNativeView(
+        app!, host.url,
+        'document.getElementById("b").contentDocument.getElementById("fieldB").value',
+      ),
+    ).toBe(valueB);
+
+    const batchResult = toolResultFor(taskRequests(mock!)[4]!.body, 'abu-browser__batch');
+    expect(batchResult).not.toMatch(/^Error:/);
+    const parsed = JSON.parse(batchResult) as {
+      stopped?: string; completedSteps?: unknown[]; frameOrigins?: Record<string, string>;
+    };
+    // The failure this journey exists for: `stopped: 'origin-changed'` with
+    // zero completed steps, blaming a tab that never moved.
+    expect(parsed.stopped).toBeUndefined();
+    expect(parsed.completedSteps).toHaveLength(2);
+    expect(Object.values(parsed.frameOrigins ?? {})).toEqual([host.origin, host.origin]);
+
     await expectNoConfirmationDialogEverAppeared(page);
   });
 

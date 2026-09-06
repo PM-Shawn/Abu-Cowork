@@ -355,6 +355,39 @@ describe('registry.ts browser observability collection', () => {
     });
   });
 
+  // The fact next to the guess: `frameHint` says a failure smelled like an
+  // iframe, `frameTargeted` says the call actually addressed one. Reading the
+  // second against the first is how "did T4 remove the problem" gets answered.
+  describe('frameTargeted records that a call addressed an embedded region', () => {
+    it('marks a call that named a region', async () => {
+      setDefaultResponse(JSON.stringify({ success: true, message: 'filled' }));
+      await executeAnyTool(
+        'abu-browser__fill',
+        { tabId: 1, frameId: 'f3', locator: makeLocator({ css: '#name' }), value: 'x' },
+        async () => true, undefined, { conversationId: 'conv-1' },
+      );
+      const [signal] = getRecentBrowserSignals().filter((s) => s.kind === 'tool_call');
+      expect(signal).toMatchObject({ frameTargeted: true });
+    });
+
+    it('leaves a main-document call unmarked, and does not invent one from a bad handle', async () => {
+      setDefaultResponse(JSON.stringify({ success: true, message: 'filled' }));
+      await executeAnyTool(
+        'abu-browser__fill',
+        { tabId: 1, locator: makeLocator({ css: '#name' }), value: 'x' },
+        async () => true, undefined, { conversationId: 'conv-1' },
+      );
+      await executeAnyTool(
+        'abu-browser__fill',
+        { tabId: 1, frameId: 'the-login-frame', locator: makeLocator({ css: '#name' }), value: 'x' },
+        async () => true, undefined, { conversationId: 'conv-1' },
+      );
+      for (const signal of getRecentBrowserSignals().filter((s) => s.kind === 'tool_call')) {
+        expect((signal as { frameTargeted?: true }).frameTargeted).toBeUndefined();
+      }
+    });
+  });
+
   // ── Fix-wave: navigate success caches tabId→origin, zero extra round trips ──
   describe('tab origin cache (fix-wave)', () => {
     it('gives a later call on the same tab the origin a prior successful navigate resolved, without an extra get_tabs call', async () => {

@@ -378,6 +378,58 @@ async function startFormFixture(marker: string): Promise<FixturePage> {
 }
 
 /**
+ * A page whose form lives in EMBEDDED REGIONS — the ordinary shape of an
+ * OA/ERP screen, and the shape T4 exists for.
+ *
+ * Two regions, on purpose:
+ *  - `#same` loads `/inner` from THIS server, so it is the same site as the
+ *    page and covered by the page's own grant;
+ *  - `#vendor` loads a page from a SECOND loopback server, which is genuinely
+ *    a different origin (different port ⇒ different site) and therefore has to
+ *    be authorized on its own account.
+ *
+ * `#innerField` is the witness: the harness reads it back out of the LIVE
+ * child document afterwards, which is the only way to tell "the fill landed in
+ * the region" apart from "the tool returned ok".
+ */
+async function startFrameHostFixture(marker: string, vendorUrl: string): Promise<FixturePage> {
+  return listenLoopback(createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    if ((req.url ?? '/').startsWith('/inner')) {
+      res.end(`<!doctype html><html><head><title>${marker} inner</title></head><body>
+<input id="innerField" name="innerField" type="text" value="" />
+</body></html>`);
+      return;
+    }
+    res.end(`<!doctype html><html><head><title>${marker}</title></head><body>
+<h1>${marker}</h1>
+<input id="outerField" type="text" value="" />
+<iframe id="same" src="/inner" width="300" height="120"></iframe>
+<iframe id="vendor" src="${vendorUrl}" width="300" height="120"></iframe>
+</body></html>`);
+  }));
+}
+
+/**
+ * The handle of the region whose address contains `needle`, read out of the
+ * snapshot result the model was just given.
+ *
+ * The handles are minted at runtime and are opaque by design, so the only
+ * honest way to name one in a scripted turn is the same way a model would:
+ * read it from the `frames` list the previous tool call returned.
+ */
+function extractFrameId(body: unknown, needle: string): string {
+  const snapshot = JSON.parse(toolResultFor(body, 'abu-browser__snapshot')) as {
+    frames?: Array<{ frameId?: string; url?: string }>;
+  };
+  const region = (snapshot.frames ?? []).find((frame) => String(frame.url ?? '').includes(needle));
+  if (!region?.frameId) {
+    throw new Error(`snapshot listed no region matching ${needle}: ${JSON.stringify(snapshot.frames)}`);
+  }
+  return region.frameId;
+}
+
+/**
  * A page that answers every request with a real HTTP 302 to another origin.
  * Used for journey ②: the origin the gate approved for `navigate` is NOT the
  * origin the tab ends up on.
@@ -445,6 +497,42 @@ async function evaluateInNativeView(
     }
     return undefined;
   }, { url, expression });
+}
+
+/**
+ * The same read, but inside an EMBEDDED REGION of that view.
+ *
+ * A cross-origin region cannot be reached from the host page's own scripts —
+ * that is precisely what makes it a different site — so the harness goes
+ * around the outside, through the main process's own frame tree
+ * (`webContents.mainFrame.framesInSubtree`). This is the test looking at the
+ * page from privileged code, never the agent reaching content it was refused.
+ */
+async function evaluateInNativeViewFrame(
+  electronApp: ElectronApplication,
+  viewUrl: string,
+  frameUrlPrefix: string,
+  expression: string,
+): Promise<unknown> {
+  return electronApp.evaluate(async ({ BrowserWindow }, payload) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window || window.isDestroyed()) return undefined;
+    for (const child of window.contentView.children) {
+      const contents = (child as unknown as {
+        webContents?: {
+          getURL: () => string;
+          isDestroyed: () => boolean;
+          mainFrame: { framesInSubtree: Array<{ url: string; executeJavaScript: (code: string) => Promise<unknown> }> };
+        };
+      }).webContents;
+      if (!contents || contents.isDestroyed() || contents.getURL() !== payload.viewUrl) continue;
+      for (const frame of contents.mainFrame.framesInSubtree) {
+        if (!frame.url.startsWith(payload.frameUrlPrefix)) continue;
+        return await frame.executeJavaScript(payload.expression);
+      }
+    }
+    return undefined;
+  }, { viewUrl, frameUrlPrefix, expression });
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1109,6 +1197,152 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     expect(taskRequests(mock!).length).toBe(3);
     expect(mock!.consumedPlans()).toBe(3);
     await expect(page.getByText(neverReached, { exact: true })).toHaveCount(0);
+
+    await expectNoConfirmationDialogEverAppeared(page);
+  });
+
+  // ⑥ embedded regions: a same-origin one is covered by the page's grant, a
+  //    cross-origin one is not — and the built-in browser cannot even reach
+  //    inside it, which it says rather than failing quietly.
+  test('fills a field inside a SAME-origin embedded region, and the value lands in that region\'s document', async () => {
+    const marker = `abu-e2e-frames-${randomUUID().slice(0, 8)}`;
+    const vendor = await startFormFixture(`${marker}-vendor`);
+    fixtures.push(vendor);
+    const host = await startFrameHostFixture(marker, vendor.url);
+    fixtures.push(host);
+    const filledValue = `abu-e2e-in-region-${randomUUID().slice(0, 8)}`;
+    const finalAnswer = `abu-e2e-frames-done-${randomUUID()}`;
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: host.url },
+        toolCallId: `call-nav-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      }),
+      // The handles are runtime values, so the model has to LEARN them — same
+      // as a real run: snapshot the page, read `frames`, then act in one.
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body) },
+        toolCallId: `call-shot-${randomUUID()}`,
+        toolName: 'abu-browser__snapshot',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          frameId: extractFrameId(body, '/inner'),
+          locator: JSON.stringify({ css: '#innerField' }),
+          value: filledValue,
+        },
+        toolCallId: `call-fill-${randomUUID()}`,
+        toolName: 'abu-browser__fill',
+      }),
+      { kind: 'complete', responseText: finalAnswer },
+    ]);
+
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `T4 region fill ${randomUUID().slice(0, 8)}`;
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true,
+      // ONLY the page's own site. The same-origin region is covered by it;
+      // nothing here authorizes the vendor.
+      sitePermissions: { [host.origin]: 'allowed' },
+      scheduleId: `schedule-t4-frames-${randomUUID()}`,
+      scheduleName: taskName,
+      prompt: `fill the embedded form at ${host.url}`,
+    });
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+
+    // GROUND TRUTH, read out of the LIVE child document: the value is inside
+    // the region, and the identically-named field on the outer page was not
+    // touched — which is what "bound to one document" has to mean.
+    await expect.poll(
+      () => evaluateInNativeView(
+        app!, host.url,
+        'document.getElementById("same").contentDocument.getElementById("innerField").value',
+      ),
+      { timeout: READY_TIMEOUT },
+    ).toBe(filledValue);
+    expect(
+      await evaluateInNativeView(app!, host.url, 'document.getElementById("outerField").value'),
+    ).toBe('');
+
+    const fillResult = toolResultFor(taskRequests(mock!)[4]!.body, 'abu-browser__fill');
+    expect(fillResult).not.toMatch(/^Error:/);
+    await expectNoConfirmationDialogEverAppeared(page);
+  });
+
+  test('refuses to act inside a CROSS-origin embedded region the user never authorized', async () => {
+    const marker = `abu-e2e-frames-deny-${randomUUID().slice(0, 8)}`;
+    const vendor = await startFormFixture(`${marker}-vendor`);
+    fixtures.push(vendor);
+    const host = await startFrameHostFixture(marker, vendor.url);
+    fixtures.push(host);
+    const neverWritten = `abu-e2e-should-not-be-written-${randomUUID().slice(0, 8)}`;
+    const finalAnswer = `abu-e2e-frames-deny-done-${randomUUID()}`;
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: host.url },
+        toolCallId: `call-nav-${randomUUID()}`,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body) },
+        toolCallId: `call-shot-${randomUUID()}`,
+        toolName: 'abu-browser__snapshot',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          frameId: extractFrameId(body, vendor.host),
+          locator: JSON.stringify({ css: '#field' }),
+          value: neverWritten,
+        },
+        toolCallId: `call-fill-${randomUUID()}`,
+        toolName: 'abu-browser__fill',
+      }),
+      { kind: 'complete', responseText: finalAnswer },
+    ]);
+
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `T4 region deny ${randomUUID().slice(0, 8)}`;
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true,
+      sitePermissions: { [host.origin]: 'allowed' },
+      scheduleId: `schedule-t4-frames-deny-${randomUUID()}`,
+      scheduleName: taskName,
+      prompt: `fill the vendor form embedded in ${host.url}`,
+    });
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+
+    const fillResult = toolResultFor(taskRequests(mock!)[4]!.body, 'abu-browser__fill');
+    expect(fillResult).toMatch(/^Error:/);
+    // GROUND TRUTH: the vendor's own document is untouched. A refusal that
+    // still typed into the page would be the whole failure this exists to stop.
+    expect(
+      await evaluateInNativeViewFrame(
+        app!, host.url, vendor.url, 'document.getElementById("field").value',
+      ),
+    ).toBe('');
+
+    await openScheduledRunConversation(page, taskName);
+    const card = await waitForReportCard(page);
+    await expect(card.getByText(OUTCOME_COMPLETED_WITH_REFUSALS)).toBeVisible();
+    await expect(card.getByText(DENIED_TITLE)).toBeVisible();
 
     await expectNoConfirmationDialogEverAppeared(page);
   });

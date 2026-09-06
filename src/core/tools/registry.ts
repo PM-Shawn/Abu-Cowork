@@ -880,6 +880,10 @@ function recordBrowserToolCallSignal(
         ...(tabId !== undefined ? { tabId } : {}),
         ...(origin ? { origin } : {}),
         ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+        // The fact, next to the guess: this call named an embedded region.
+        // Read from the input rather than from the gate, so a read-only call
+        // (which never resolves a target) is counted too.
+        ...(isFrameHandle(input.frameId) ? { frameTargeted: true as const } : {}),
         ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
       },
       context,

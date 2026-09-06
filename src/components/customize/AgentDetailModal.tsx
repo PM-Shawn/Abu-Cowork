@@ -1,12 +1,10 @@
 import { useEffect } from 'react';
-import { X, Bot, Cpu, Wrench, ShieldOff, Wand2, Database, RotateCcw, Cog, Download, Pencil, Package } from 'lucide-react';
-import { useI18n, format } from '@/i18n';
+import { X, Bot, Cpu, Wrench, ShieldOff, Wand2, Database, RotateCcw, Cog, Download, Pencil } from 'lucide-react';
+import { useI18n } from '@/i18n';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import type { SubagentDefinition } from '@/types';
 import type { MarketplaceItem } from '@/types/marketplace';
 import { parseAgentFile } from '@/core/agent/registry';
-import { pluginDisplayName } from '@/core/plugin/installedStore';
-import { usePluginStore } from '@/stores/pluginStore';
 import { useSettingsStore, resolveAgentModel, getEffectiveModel } from '@/stores/settingsStore';
 
 interface AgentDetailModalProps {
@@ -27,7 +25,6 @@ export default function AgentDetailModal({
   onEdit,
 }: AgentDetailModalProps) {
   const { t } = useI18n();
-  const installedPlugins = usePluginStore((s) => s.installed);
 
   // Escape key to close
   useEffect(() => {
@@ -79,10 +76,6 @@ export default function AgentDetailModal({
     }
   }
 
-  // Provenance. Only an installed agent can have one — a marketplace template
-  // is not installed by anybody yet.
-  const pluginSource = agent?.source?.kind === 'plugin' ? agent.source : undefined;
-
   // Resolve the actual model that will be used at runtime
   const settingsState = useSettingsStore();
   const resolvedModel = resolveAgentModel(model, settingsState);
@@ -123,14 +116,6 @@ export default function AgentDetailModal({
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Description */}
           <p className="text-body text-[var(--abu-text-secondary)]">{description}</p>
-
-          {/* Provenance — a plugin-contributed agent is not the user's to edit. */}
-          {pluginSource && (
-            <div className="flex items-center gap-1.5 text-minor text-[var(--abu-text-tertiary)]">
-              <Package className="h-3.5 w-3.5 shrink-0" />
-              <span>{format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, pluginSource.plugin) })}</span>
-            </div>
-          )}
 
           {/* Model */}
           <div className="space-y-1">
@@ -254,9 +239,7 @@ export default function AgentDetailModal({
           {isInstalled && onEdit && (
             <button
               onClick={onEdit}
-              disabled={!!pluginSource}
-              title={pluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] transition-colors"
             >
               <Pencil className="h-3.5 w-3.5" />
               {t.toolbox.agentEdit}

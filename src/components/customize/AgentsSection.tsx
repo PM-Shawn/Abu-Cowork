@@ -8,10 +8,12 @@ import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
 import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check, Bot } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
 import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { getAllTools } from '@/core/tools/registry';
@@ -64,6 +66,7 @@ interface AgentsSectionProps {
 export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
+  const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const { extensionsSearchQuery, disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
@@ -83,6 +86,24 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       setEditorAgent('new');
     }
   }, [manualCreateTrigger]);
+
+  // Hydrate the installed-plugin set. `pluginDisplayName` needs the record to
+  // turn `weather@official` into 「Weather Pack」; the only other hydrate today
+  // is the 插件 tab's mount, so without this the provenance row shows the raw
+  // key unless the user happened to open that tab first. Idempotent — mirrors
+  // PluginsTab's mount-time hydrate (it also re-arms the MCP approval gate).
+  useEffect(() => {
+    let cancelled = false;
+    homeDir()
+      .then((dir) => {
+        if (cancelled) return undefined;
+        return refreshInstalled(dir);
+      })
+      .catch((err) => console.error('Agents: failed to hydrate installed plugins', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshInstalled]);
 
   // Load full agent details. No auto-selection: the detail is a modal now, so
   // it stays closed until the user clicks a card.
@@ -132,11 +153,16 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;
   // A plugin owns this agent's file: editing it would be overwritten by the
   // next plugin update, and removing it belongs to uninstalling the plugin.
-  const selectedPluginSource = selected?.source?.kind === 'plugin' ? selected.source : undefined;
+  const selectedPluginSource = selected && isPluginOwnedAgent(selected) ? selected.source : undefined;
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
     if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return;
+    // A plugin owns this file: removing it belongs to uninstalling the plugin,
+    // and the next refresh would bring it back anyway. The menu entry is
+    // disabled for the same reason — this keeps the invariant local to the
+    // handler rather than resting on the button's `disabled` alone.
+    if (isPluginOwnedAgent(agent)) return;
     try {
       const agentDir = getParentDir(agent.filePath);
       await remove(agentDir, { recursive: true });

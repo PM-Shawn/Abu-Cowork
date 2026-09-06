@@ -5,6 +5,7 @@ import { useI18n } from '@/i18n';
 import type { SubagentMetadata } from '@/types';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
 import { getAllTools } from '@/core/tools/registry';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 
 interface AgentSelectorProps {
   agents: SubagentMetadata[];
@@ -141,7 +142,7 @@ export default function AgentSelector({
                         >
                           {toolLabel}
                         </span>
-                        {a.source?.kind === 'plugin' && (
+                        {isPluginOwnedAgent(a) && (
                           <span
                             data-testid="agent-source-plugin"
                             className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"

@@ -1571,6 +1571,42 @@ describe('CapabilitiesSection', () => {
       expect(useSettingsStore.getState().browserOperationPolicy.interactive).toBe('allow');
     });
 
+    /**
+     * F5 (2026-09-06 review). The save status is keyed by persisted FIELD and
+     * all three rows live in one field, so both policy cards subscribed to the
+     * same notice and both lit up 「已保存」 when either was touched.
+     * Confirmation that lands on a control the user did not move is noise, and
+     * noise on this line is how a user learns to stop reading the one place
+     * that would tell them a permission failed to save.
+     */
+    it('confirms the save on the card that was edited, and only that one', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const scriptCell = policySelect(permissionCard('Run scripts (advanced)'));
+      await user.click(scriptCell);
+      await user.click(openedOption(scriptCell, /^Deny/));
+
+      expect(within(permissionCard('Run scripts (advanced)')).getByText('Saved')).toBeInTheDocument();
+      expect(within(permissionCard('Action permissions')).queryByText('Saved')).not.toBeInTheDocument();
+    });
+
+    it('moves the confirmation to the other card when that one is edited', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const viewRow = within(permissionCard('Action permissions'))
+        .getByText('View pages').closest('li') as HTMLElement;
+      const viewCell = policySelect(viewRow);
+      await user.click(viewCell);
+      await user.click(openedOption(viewCell, /^Deny/));
+
+      expect(within(permissionCard('Action permissions')).getByText('Saved')).toBeInTheDocument();
+      expect(within(permissionCard('Run scripts (advanced)')).queryByText('Saved')).not.toBeInTheDocument();
+    });
+
     /*
       One setting, two execution contexts — so each option says what it means
       in BOTH, on one line. Before the collapse there were two columns and two

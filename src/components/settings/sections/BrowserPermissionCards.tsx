@@ -689,6 +689,19 @@ export function BrowserPermissionCards({
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
   const setBrowserOperationState = useSettingsStore((s) => s.setBrowserOperationState);
   const setAllowUnattendedBrowser = useSettingsStore((s) => s.setAllowUnattendedBrowser);
+  /**
+   * Which of the two policy cards produced the notice below it.
+   *
+   * The save status is keyed by PERSISTED FIELD, and `browserOperationPolicy`
+   * is one field holding all three rows — so both cards subscribe to the same
+   * status and both used to light up 「已保存」 when either was touched.
+   * Confirmation that lands on a control the user did not move is not
+   * confirmation; it is noise that teaches them to stop reading the line.
+   * Storage granularity is not the question here (splitting the field would
+   * cost the atomic policy write for a cosmetic reason) — the question is
+   * which control is being answered, and the component knows that.
+   */
+  const [editedPolicyCard, setEditedPolicyCard] = useState<'matrix' | 'scripting' | null>(null);
 
   const stateLabels: Record<BrowserOperationState, string> = {
     allow: t.settings.browserOpStateAllow,
@@ -750,7 +763,10 @@ export function BrowserPermissionCards({
       variant="inline"
       value={policy[key]}
       options={optionsFor(opClass)}
-      onChange={(v) => setBrowserOperationState(key, v as BrowserOperationState)}
+      onChange={(v) => {
+        setEditedPolicyCard(key === 'scripting' ? 'scripting' : 'matrix');
+        setBrowserOperationState(key, v as BrowserOperationState);
+      }}
       ariaLabel={rowLabel}
       className={policySelectWidthClass}
     />
@@ -827,7 +843,9 @@ export function BrowserPermissionCards({
               </li>
             ))}
           </ul>
-          <BrowserSaveStatusLine field="browserOperationPolicy" />
+          {editedPolicyCard === 'matrix' && (
+            <BrowserSaveStatusLine field="browserOperationPolicy" />
+          )}
         </div>
 
         <BrowserPermissionPreview />
@@ -867,7 +885,9 @@ export function BrowserPermissionCards({
               {t.settings.browserUnattendedScriptRiskWarning}
             </p>
           )}
-          <BrowserSaveStatusLine field="browserOperationPolicy" />
+          {editedPolicyCard === 'scripting' && (
+            <BrowserSaveStatusLine field="browserOperationPolicy" />
+          )}
         </div>
       </div>
 

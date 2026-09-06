@@ -90,6 +90,136 @@ export interface RunSettledNotificationParams {
   runId: string;
 }
 
+// --- Frames (embedded regions: iframes, nested iframes) ---
+//
+// A page is not one document. An OA/ERP form usually lives inside an
+// `<iframe>`, and every DOM primitive this protocol carries — a snapshot's
+// element list, a ref, a css selector, `wait_for`'s polling — is scoped to ONE
+// document. Before frames were addressable the runtime read the whole tree
+// (`get_html` inlines same-origin frames) but ACTED only on the main
+// document, so a field the model could see was a field it could not fill.
+//
+// A frame is therefore a first-class target: every DOM-scoped action takes an
+// optional `frameId`, and `snapshot` / `get_tabs` report the tree so the model
+// can learn the ids in the first place.
+
+/**
+ * A frame's handle inside ONE tab. `f0` is the tab's main document; `f1`,
+ * `f2`, … are embedded regions.
+ *
+ * Opaque to the caller and meaningful only within the tab it came from and
+ * only until that frame is replaced: a frame that reloads gets a fresh
+ * document and the old handle is refused with the same "take a fresh
+ * snapshot" shape a stale `ref` is refused with. An ABSENT `frameId` always
+ * means the main document, so every caller written before frames existed
+ * keeps its exact behavior.
+ *
+ * The two channels mint these ids from different browser-authoritative
+ * sources (Chrome's own per-tab frame ids on the extension channel; the
+ * built-in host's same-origin frame walk on the Electron channel), which is
+ * why the id is opaque rather than a documented number.
+ */
+export type FrameRef = string;
+
+/** The tab's main document — what an absent `frameId` resolves to. */
+export const MAIN_FRAME_REF: FrameRef = 'f0';
+
+/** `f` followed by digits. Nothing else is a frame handle. */
+export function isFrameRef(value: unknown): value is FrameRef {
+  return typeof value === 'string' && /^f\d+$/.test(value);
+}
+
+/**
+ * The frame a ref belongs to. `"f2:e17"` → `"f2"`; a bare `"e17"` → `"f0"`,
+ * because refs minted in the main document carry no prefix (see `qualifyRef`).
+ */
+export function frameOfRef(ref: string): FrameRef {
+  const colon = ref.indexOf(':');
+  if (colon <= 0) return MAIN_FRAME_REF;
+  const prefix = ref.slice(0, colon);
+  return isFrameRef(prefix) ? prefix : MAIN_FRAME_REF;
+}
+
+/** The document-local part of a ref: `"f2:e17"` → `"e17"`, `"e17"` → `"e17"`. */
+export function localRef(ref: string): string {
+  const colon = ref.indexOf(':');
+  if (colon <= 0) return ref;
+  return isFrameRef(ref.slice(0, colon)) ? ref.slice(colon + 1) : ref;
+}
+
+/**
+ * Namespace a document-local ref with the frame that minted it.
+ *
+ * The main document is deliberately left BARE (`e17`, not `f0:e17`): every
+ * ref in every transcript, test and cached tool result predates frames, and
+ * renaming them all would invalidate refs a running conversation still holds.
+ */
+export function qualifyRef(frameId: FrameRef, ref: string): string {
+  return frameId === MAIN_FRAME_REF ? ref : `${frameId}:${ref}`;
+}
+
+/** Why a frame is listed but cannot be acted in. */
+export type FrameInaccessibleReason =
+  /**
+   * Built-in browser only: the frame is a different origin from the page, and
+   * this channel's automation runtime lives in ONE isolated world in the main
+   * frame. It can walk into same-origin child documents but a cross-origin one
+   * is opaque to it. The user's own Chrome (extension channel) can reach it.
+   */
+  | 'cross-origin-unreachable'
+  /** `about:blank`, `data:`, a sandboxed frame with an opaque origin, … */
+  | 'not-a-web-page';
+
+export interface FrameNode {
+  frameId: FrameRef;
+  /** Absent on the main frame. Absent on EVERY frame on the extension channel,
+   * which enumerates frames as a flat list (Chrome's injection results carry no
+   * parent link). Presence is therefore not a promise. */
+  parentFrameId?: FrameRef;
+  /** Normalized `scheme://host[:port]`, or null for a document that is not an
+   * ordinary web page. THIS is what the approval gate judges — never the
+   * `src` attribute, which the embedding page authors and the frame can
+   * navigate away from. */
+  origin: string | null;
+  url?: string;
+  /** Same origin as the tab's main document ⇒ covered by the same site grant. */
+  sameOriginAsTop: boolean;
+  /** Actions targeting this frame can actually run. */
+  accessible: boolean;
+  inaccessibleReason?: FrameInaccessibleReason;
+}
+
+/** The frame tree of one tab, main frame first. Flat, with optional parent links. */
+export type FrameTree = FrameNode[];
+
+/**
+ * How a caller names a frame that no longer exists / was reloaded — the same
+ * shape a stale `ref` gets, because it is the same failure to the caller.
+ */
+export function frameGoneMessage(frameId: FrameRef): string {
+  return (
+    `Embedded region "${frameId}" is not on this page any more (it reloaded, or was removed). `
+    + 'Any refs from it are stale too. Take a fresh snapshot to get the current frame list, '
+    + 'then use the frameId from it.'
+  );
+}
+
+/** How a caller is told a frame is real but this channel cannot act inside it. */
+export function frameUnreachableMessage(node: FrameNode): string {
+  if (node.inaccessibleReason === 'not-a-web-page') {
+    return (
+      `Embedded region "${node.frameId}" is not an ordinary web page (${node.url ?? 'no address'}), `
+      + 'so it has no addressable content. Act on the main page instead.'
+    );
+  }
+  return (
+    `Embedded region "${node.frameId}" comes from ${node.origin ?? 'another site'} and the built-in `
+    + 'browser cannot reach inside a third-party embedded region: its automation runs in the main '
+    + 'page only. Do this part in your own Chrome (the browser extension channel can address that '
+    + 'region), or ask the user to complete it by hand. Do not try to script around it.'
+  );
+}
+
 // --- Element Locator (multi-strategy targeting) ---
 // All fields optional — only one strategy should be specified per locator.
 
@@ -153,10 +283,19 @@ export interface FindMatch {
 export interface FindResult {
   url: string;
   title: string;
+  /** The document searched — `f0` unless the caller named an embedded region. */
+  frameId: FrameRef;
   matches: FindMatch[];
   /** Total matches before `limit` — `matches.length` when nothing was cut. */
   total: number;
   truncated?: boolean;
+  /**
+   * Elements in this document that look like they hold a CLOSED shadow root —
+   * a custom element with neither a reachable `shadowRoot` nor any light-DOM
+   * children. Their content is unreachable by design (the page opted out), so
+   * this is reported as a count and named in `message` rather than searched.
+   */
+  closedShadowHosts?: number;
   message?: string;
 }
 
@@ -184,9 +323,19 @@ export interface ElementInfo {
 export interface PageSnapshot {
   url: string;
   title: string;
+  /** The document this snapshot describes. `f0` = the tab's main document. */
+  frameId: FrameRef;
+  /**
+   * Every addressable region of the TAB, main frame first — present on a
+   * snapshot of the main document (and omitted on a snapshot OF a frame,
+   * which would only repeat it). Absent entirely when the page has no frames.
+   */
+  frames?: FrameTree;
   elements: ElementInfo[];
   /** Set when the element list was cut short; `message` says why and how to narrow. */
   truncated?: boolean;
+  /** See `FindResult.closedShadowHosts`. */
+  closedShadowHosts?: number;
   message?: string;
 }
 
@@ -203,6 +352,13 @@ export type WaitCondition =
 
 export interface TabInfo {
   tabId: number;
+  /**
+   * The tab's frame tree, when this listing was asked for it. `get_tabs`
+   * computes it for the current tab and for the tab named by
+   * `framesForTabId` — enumerating every frame of every tab would cost one
+   * browser round trip per tab for a listing most callers use to pick one.
+   */
+  frames?: FrameTree;
   url: string;
   title: string;
   active: boolean;
@@ -237,6 +393,8 @@ export interface PageHandoff {
 /** What an action actually acted on — lets a caller spot a wrong target. */
 export interface ActionTarget {
   ref: string;
+  /** The document the action landed in. Absent ⇒ the main document. */
+  frameId?: FrameRef;
   tag: string;
   id?: string;
   role?: string;
@@ -292,6 +450,13 @@ export type BatchStepType =
 
 export interface BatchStep {
   action: BatchStepType;
+  /**
+   * The embedded region this step acts in. Absent ⇒ the main document.
+   * Every step is re-verified against the origin the gate authorized FOR
+   * THAT FRAME before it runs, so one step cannot drift into another site's
+   * embedded region on the strength of the batch's approval.
+   */
+  frameId?: FrameRef;
   /** fill / select / click */
   locator?: ElementLocator;
   /** fill / select */
@@ -335,6 +500,11 @@ export interface BatchResult {
   tabId: number;
   /** The origin every step was verified against before it ran. */
   origin: string | null;
+  /**
+   * Per-frame origins the gate authorized, for the steps that named a frame.
+   * Each such step is re-checked against ITS OWN entry, not against `origin`.
+   */
+  frameOrigins?: Record<string, string>;
   completedSteps: BatchStepOutcome[];
   failedStep?: BatchStepOutcome;
   /** How many submitted steps never ran. */

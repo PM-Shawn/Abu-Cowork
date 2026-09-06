@@ -1171,6 +1171,17 @@ export interface TranslationDict {
     browserAutomationFix: string;
     /** Honest label for "we cannot tell statically whether it uses the browser". */
     browserAutomationRuntimeCheck: string;
+    /* ── S18 保存反馈 ────────────────────────────────────────────────
+     * Inline status for a browser authorization field, next to the control
+     * that produced it. Confirmed by reading the value back out of storage —
+     * never shown on the strength of a re-render.
+     */
+    browserSaveSaving: string;
+    browserSaveSaved: string;
+    /** Says what was lost AND what is now in force, because the field has
+     *  already been rolled back by the time this is read. */
+    browserSaveFailed: string;
+    browserSaveRetry: string;
     browserAutomaticTasksTitle: string;
     browserUnattendedMasterSwitchLabel: string;
     browserUnattendedMasterSwitchDesc: string;

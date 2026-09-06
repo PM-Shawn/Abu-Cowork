@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight, CircleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,6 +7,8 @@ import { cn } from '@/lib/utils';
 import { Select, type SelectOption } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useBrowserSaveStatusStore } from '@/stores/browserSaveStatus';
+import type { BrowserConfigField } from '@/stores/browserConfigPersistence';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useTriggerStore } from '@/stores/triggerStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
@@ -158,6 +160,7 @@ export function BrowserSitePermissionsPage({
         <p className="mt-1 max-w-2xl text-minor leading-relaxed text-[var(--abu-text-secondary)]">
           {reachSummary}
         </p>
+        <BrowserSaveStatusLine field="browserSitePermissions" />
       </div>
       <div>
         {/*
@@ -258,6 +261,67 @@ export function BrowserSitePermissionsPage({
         )}
       </div>
     </div>
+  );
+}
+
+/** How long 「已保存」 stays on screen before the row goes quiet again. Long
+ *  enough to notice, short enough not to become furniture. */
+const SAVED_NOTICE_MS = 2500;
+
+/**
+ * S18 — whether the last edit to this field actually reached storage.
+ *
+ * An inline line, not a toast and not a card: it belongs to the control that
+ * produced it, and a permission that failed to save is not something to
+ * announce elsewhere and let the user hunt for.
+ *
+ * Silent in the ordinary case. `localStorage` is synchronous, so a successful
+ * write is confirmed within the same tick — 「保存中」 exists because the state
+ * machine has to be correct, not because it is interesting, and it is not
+ * something a user will normally see. 「已保存」 shows briefly and leaves.
+ * 「未能保存」 stays, with a retry, because it is the one state that needs an
+ * answer from somebody.
+ */
+function BrowserSaveStatusLine({ field }: { field: BrowserConfigField }) {
+  const { t } = useI18n();
+  const status = useBrowserSaveStatusStore((s) => s.status[field]);
+  const clearBrowserSaveStatus = useBrowserSaveStatusStore((s) => s.clearBrowserSaveStatus);
+  const retryBrowserConfigSave = useSettingsStore((s) => s.retryBrowserConfigSave);
+
+  useEffect(() => {
+    // A failure is dismissed by fixing it, not by waiting.
+    if (status !== 'saved') return;
+    const timer = setTimeout(() => clearBrowserSaveStatus(field), SAVED_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [status, field, clearBrowserSaveStatus]);
+
+  if (status === undefined || status === 'idle') return null;
+  if (status === 'saving') {
+    return (
+      <p className="mt-2 text-minor leading-relaxed text-[var(--abu-text-muted)]">
+        {t.settings.browserSaveSaving}
+      </p>
+    );
+  }
+  if (status === 'saved') {
+    return (
+      <p className="mt-2 text-minor leading-relaxed text-[var(--abu-success)]">
+        {t.settings.browserSaveSaved}
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 flex items-center gap-2 text-minor leading-relaxed text-[var(--abu-danger)]">
+      <CircleAlert className="h-3.5 w-3.5 shrink-0" />
+      {t.settings.browserSaveFailed}
+      <button
+        type="button"
+        onClick={() => retryBrowserConfigSave(field)}
+        className="shrink-0 font-medium underline underline-offset-2 hover:no-underline"
+      >
+        {t.settings.browserSaveRetry}
+      </button>
+    </p>
   );
 }
 
@@ -699,6 +763,7 @@ export function BrowserPermissionCards({
             className="mt-0.5 shrink-0"
           />
         </div>
+        <BrowserSaveStatusLine field="allowUnattendedBrowser" />
       </div>
 
       <BrowserAutomationOverviewCard />
@@ -735,6 +800,7 @@ export function BrowserPermissionCards({
               </li>
             ))}
           </ul>
+          <BrowserSaveStatusLine field="browserOperationPolicy" />
         </div>
 
         <BrowserPermissionPreview />
@@ -774,6 +840,7 @@ export function BrowserPermissionCards({
               {t.settings.browserUnattendedScriptRiskWarning}
             </p>
           )}
+          <BrowserSaveStatusLine field="browserOperationPolicy" />
         </div>
       </div>
 

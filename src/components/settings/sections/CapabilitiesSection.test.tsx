@@ -1929,7 +1929,7 @@ describe('CapabilitiesSection', () => {
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
 
-      expect(overviewCard()).toHaveTextContent('Checked at run time');
+      expect(overviewCard()).toHaveTextContent('only known at run time');
     });
   });
 

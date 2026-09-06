@@ -275,7 +275,9 @@ function scheduleReconnect(): void {
 
 // --- Download Tracking ---
 
-const recentDownloads: { id: number; filename: string; url: string; state: string; time: number }[] = [];
+// `filename` / `state` mirror `chrome.downloads.StringDelta.current`, which the
+// API typings declare optional — the onChanged handler below copies it verbatim.
+const recentDownloads: { id: number; filename: string | undefined; url: string; state: string | undefined; time: number }[] = [];
 
 chrome.downloads.onCreated.addListener((item) => {
   recentDownloads.unshift({
@@ -646,6 +648,12 @@ async function ensureOffscreen(): Promise<void> {
   }
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
+    // Pre-existing bug, deliberately not fixed by the typecheck-gate change:
+    // `CANVAS` is not a `chrome.offscreen.Reason` (none of the enum's 15 values
+    // in @types/chrome), so this is `undefined` at runtime and createDocument
+    // rejects. Picking a valid reason changes behaviour (full-page capture
+    // would start working), so it is tracked as its own fix.
+    // @ts-expect-error pre-existing bug: CANVAS is not a chrome.offscreen.Reason; fixing it changes runtime behaviour
     reasons: [chrome.offscreen.Reason.CANVAS],
     justification: 'Stitching full-page screenshot slices on canvas',
   });

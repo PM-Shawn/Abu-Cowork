@@ -1395,7 +1395,32 @@ export async function checkToolApproval(
       // nobody is there to notice. (`get_tabs` and other tab-less tools cost
       // nothing here: `resolveBrowserActionOrigin` returns null without a
       // round-trip when there is no `tabId`/`url` to resolve.)
-      const target = consequence === 'state-changing' || runMode === 'unattended'
+      /**
+       * The one exception to the attended read-only free pass: a site the user
+       * explicitly BLOCKED (batch-four ruling, restated here as round-2 F7).
+       *
+       * Everything else about attended read-only stays as it was — no verdict
+       * consulted, no prompt — because a human is watching and these calls run
+       * every turn. But "blocked" is the user's own standing instruction, and a
+       * read is how a page's contents reach the model; honouring it only when
+       * nobody is watching reads the rule backwards. It applies to a REGION's
+       * origin exactly as it does to the page's, which is what T4 makes newly
+       * reachable: `extract_text`/`snapshot`/`find` now take a `frameId`.
+       *
+       * The round trip is only paid when there is a blocked site to find at
+       * all — with none configured (the shipped state) the answer cannot
+       * differ, so attended read-only costs exactly what it did before.
+       *
+       * NOTE FOR THE DEV MERGE: the configuration batch's `evaluateBrowserGate`
+       * carries the same rule. When it lands, this becomes one call into it —
+       * the rule must not end up stated twice.
+       */
+      const anyBlockedSite = Object.values(settingsSnapshot.browserSitePermissions ?? {})
+        .includes('denied');
+      const resolvesTarget = consequence === 'state-changing'
+        || runMode === 'unattended'
+        || anyBlockedSite;
+      const target = resolvesTarget
         ? await resolveBrowserActionTarget(
           name,
           input,
@@ -1419,22 +1444,26 @@ export async function checkToolApproval(
        * must not ride the page's grant. The strictest of the two is what the
        * decision is made on.
        */
+      const foldedVerdict = strictestVerdictOf(
+        [
+          origin,
+          // Only when a region was named — otherwise these ARE the same site
+          // and folding it in would say nothing.
+          ...(target.topOrigin !== undefined ? [target.topOrigin] : []),
+          // A `batch` may name several regions, and every one of them is a
+          // site this approval would let it act on. Judging only the first
+          // (or only the page) is how a step reaches a region the user never
+          // authorized on the strength of one it did.
+          ...Object.values(target.frameOrigins ?? {}),
+        ],
+        settingsSnapshot.browserSitePermissions ?? {},
+      );
       const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
-        ? strictestVerdictOf(
-          [
-            origin,
-            // Only when a region was named — otherwise these ARE the same site
-            // and folding it in would say nothing.
-            ...(target.topOrigin !== undefined ? [target.topOrigin] : []),
-            // A `batch` may name several regions, and every one of them is a
-            // site this approval would let it act on. Judging only the first
-            // (or only the page) is how a step reaches a region the user never
-            // authorized on the strength of one it did.
-            ...Object.values(target.frameOrigins ?? {}),
-          ],
-          settingsSnapshot.browserSitePermissions ?? {},
-        )
-        : 'default';
+        ? foldedVerdict
+        // Attended read-only reads ONLY the blocked answer — see
+        // `anyBlockedSite`. 'default' and 'allowed' both mean "carry on with
+        // no prompt", which is what this path has always done.
+        : (foldedVerdict === 'denied' ? 'denied' : 'default');
       /**
        * Money movement / government, decided from the target URL and NOTHING
        * else (see `highRiskSites.ts`'s URL-ONLY doc — page text claiming "this

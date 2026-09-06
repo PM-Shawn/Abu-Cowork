@@ -229,6 +229,68 @@ describe('an embedded region is authorized on its own account', () => {
   });
 });
 
+describe('a blocked site stays blocked for reading, region included', () => {
+  /**
+   * Round-2 F7. Attended read-only is deliberately the cheapest path in the
+   * gate — no verdict, no prompt — because a human is watching and these calls
+   * run every turn. The one exception is a site the user explicitly BLOCKED:
+   * that is their own standing instruction, and reading is how a page's
+   * contents reach the model. T4 is what makes it newly reachable, since
+   * `extract_text`/`snapshot`/`find` now take a `frameId` and a page can embed
+   * anything.
+   */
+  it('refuses an attended read INSIDE a region whose site the user blocked', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
+    });
+
+    const decision = await checkToolApproval(
+      'abu-browser__extract_text', { tabId: TAB, frameId: 'f4' },
+      attended, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('refuses an attended read of a blocked PAGE too, region or no region', async () => {
+    useSettingsStore.setState({ browserSitePermissions: { [PAGE]: 'denied' } });
+
+    const decision = await checkToolApproval(
+      'abu-browser__extract_text', { tabId: TAB },
+      attended, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('leaves an ordinary attended read alone, and pays no round trip for it', async () => {
+    // Nothing blocked anywhere: the answer cannot differ, so the gate must not
+    // buy it with a `get_tabs` on every snapshot/extract of every turn.
+    useSettingsStore.setState({ browserSitePermissions: {} });
+
+    const decision = await checkToolApproval(
+      'abu-browser__extract_text', { tabId: TAB },
+      attended, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(mockCallTool.mock.calls.filter((c) => (c[0] as { name: string }).name === 'get_tabs')).toHaveLength(0);
+  });
+
+  it('still allows an attended read in a region whose site is merely unauthorized', async () => {
+    // 'default' is not 'denied'. Attended read-only has never asked, and this
+    // exception is for the blocked answer only.
+    useSettingsStore.setState({ browserSitePermissions: { [BANK]: 'denied' } });
+
+    const decision = await checkToolApproval(
+      'abu-browser__extract_text', { tabId: TAB, frameId: 'f4' },
+      attended, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+  });
+});
+
 describe('high-risk applies to each site, not just the outer one', () => {
   it('an unattended action inside a money-movement region is refused, allowed site or not', async () => {
     useSettingsStore.setState({

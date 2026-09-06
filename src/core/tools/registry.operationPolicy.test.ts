@@ -902,14 +902,38 @@ describe('browser gate — operation-class policy', () => {
       expect(notice?.browserOrigin).toBe(BLOCKED_SITE);
     });
 
-    it('leaves ATTENDED read-only on the cheap path — no origin probe at all', async () => {
+    /**
+     * Round-2 F7 changed this one. Attended read-only used to skip the verdict
+     * entirely, blocked site included — so "never open this site" held only
+     * while nobody was watching, which reads the instruction backwards. It is
+     * now the single exception to the cheap path: a site the user explicitly
+     * blocked is not read, whoever is in the room.
+     *
+     * The cheap path itself is intact, and the test below is what keeps it so:
+     * the probe is bought only when there IS a blocked site to find.
+     */
+    it('refuses ATTENDED read-only on a blocked site as well', async () => {
       withTabOrigin(`${BLOCKED_SITE}/statement`);
 
       const decision = await checkToolApproval(
         'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
       );
 
+      expect(decision.decision).toBe('deny');
+    });
+
+    it('leaves ATTENDED read-only on the cheap path when nothing is blocked', async () => {
+      useSettingsStore.setState({ browserSitePermissions: {} });
+      withTabOrigin('https://neutral.com/page');
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
+      );
+
       expect(decision.decision).toBe('allow');
+      // No verdict can differ, so the round trip is not bought: these calls run
+      // every turn, and paying for one on each of them is what the cheap path
+      // exists to avoid.
       expect(mockCallTool).not.toHaveBeenCalled();
     });
 

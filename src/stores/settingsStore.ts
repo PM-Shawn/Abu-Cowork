@@ -266,6 +266,28 @@ export interface SettingsState {
    */
   browserSitePermissions: Record<string, 'allowed' | 'denied'>;
   /**
+   * Which of those `'allowed'` verdicts were minted through the MERGED prompt
+   * that a page's embedded regions get (round-2 R2-C-②).
+   *
+   * A page decides what it embeds and in what order, so the regions a merged
+   * "always allow this site and its N embedded regions" click covers are
+   * chosen by the page, not by the user — the user consented to a list they
+   * read, on a page they were looking at, which is real consent for work they
+   * are watching, and NOT the premise an unattended run is built on ("the user
+   * went to this site and allowed it"). So a marked grant is a full grant while
+   * a human is present, and no grant at all for an automatic run.
+   *
+   * Kept as a sibling map rather than a richer verdict value so
+   * `getSiteVerdict`'s two-value precedence — the thing every gate path reads
+   * — stays exactly what it was. The two cannot drift because every write goes
+   * through `setBrowserSitePermission` / `removeBrowserSitePermission`, and
+   * `browserSiteGrantWriters.test.ts` pins that the writers can be enumerated.
+   * Any later write of the same origin without `viaEmbed` (Settings › 网站授权,
+   * or a dialog on the page itself) CLEARS the mark: that write is the direct
+   * authorization the mark was recording the absence of.
+   */
+  browserSiteGrantViaEmbed: Record<string, true>;
+  /**
    * Operation-class three-state policy: one allow/deny/ask row per operation
    * class (read-only / interactive / scripting). Consumed by
    * `decideBrowserOperation` in `browserToolPolicy.ts`.
@@ -449,7 +471,16 @@ interface SettingsActions {
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
-  setBrowserSitePermission: (origin: string, verdict: 'allowed' | 'denied') => void;
+  setBrowserSitePermission: (
+    origin: string,
+    verdict: 'allowed' | 'denied',
+    /**
+     * The grant came from the merged embedded-region prompt — see
+     * `browserSiteGrantViaEmbed`. Omitted everywhere a user authorized the
+     * origin directly, which is what CLEARS an existing mark.
+     */
+    options?: { viaEmbed?: boolean },
+  ) => void;
   removeBrowserSitePermission: (origin: string) => void;
   /** Set one operation-class row of `browserOperationPolicy`. */
   setBrowserOperationState: (
@@ -699,6 +730,7 @@ export const useSettingsStore = create<SettingsStore>()(
       telemetryOptOut: false,
       computerUseEnabled: false,
       browserSitePermissions: {},
+      browserSiteGrantViaEmbed: {},
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       preventSleep: false,
@@ -1049,13 +1081,24 @@ export const useSettingsStore = create<SettingsStore>()(
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
-      setBrowserSitePermission: (origin, verdict) => set((state) => ({
-        browserSitePermissions: { ...state.browserSitePermissions, [origin]: verdict },
-      })),
+      setBrowserSitePermission: (origin, verdict, options) => set((state) => {
+        // The mark lives and dies with the verdict it qualifies: a block, or a
+        // grant given anywhere the user authorized this origin directly,
+        // leaves nothing marked behind.
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        if (verdict === 'allowed' && options?.viaEmbed === true) viaEmbed[origin] = true;
+        else delete viaEmbed[origin];
+        return {
+          browserSitePermissions: { ...state.browserSitePermissions, [origin]: verdict },
+          browserSiteGrantViaEmbed: viaEmbed,
+        };
+      }),
       removeBrowserSitePermission: (origin) => set((state) => {
         const next = { ...state.browserSitePermissions };
         delete next[origin];
-        return { browserSitePermissions: next };
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        delete viaEmbed[origin];
+        return { browserSitePermissions: next, browserSiteGrantViaEmbed: viaEmbed };
       }),
       // Normalized on write, not just on read: the persisted policy must never
       // say something the gate will not honor — a setting that lies about what
@@ -1132,7 +1175,7 @@ export const useSettingsStore = create<SettingsStore>()(
     }),
     {
       name: 'abu-settings',
-      version: 47,
+      version: 48,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -1177,6 +1220,16 @@ export const useSettingsStore = create<SettingsStore>()(
           // Browser site permissions start empty: every site keeps asking until
           // the user explicitly settles it from the confirmation dialog.
           if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
+
+        // ════════════════════════════════════════════════
+        // V48: `browserSiteGrantViaEmbed`. Every grant that already exists was
+        // minted before the merged embedded-region prompt could mark one, so
+        // an empty map is the truthful answer: nothing stored so far is known
+        // to have come in that way, and an unmarked grant is a full one.
+        // ════════════════════════════════════════════════
+        if (version < 48) {
+          if (state.browserSiteGrantViaEmbed === undefined) state.browserSiteGrantViaEmbed = {};
         }
 
         // ════════════════════════════════════════════════
@@ -2013,6 +2066,7 @@ export const useSettingsStore = create<SettingsStore>()(
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
         browserSitePermissions: state.browserSitePermissions,
+        browserSiteGrantViaEmbed: state.browserSiteGrantViaEmbed,
         browserOperationPolicy: state.browserOperationPolicy,
         allowUnattendedBrowser: state.allowUnattendedBrowser,
         computerUseEnabled: state.computerUseEnabled,

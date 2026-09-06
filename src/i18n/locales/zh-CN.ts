@@ -842,6 +842,8 @@ const zhCN: TranslationDict = {
     browserSitePermsAddHighRisk: '这个网站看起来涉及资金操作（支付 / 转账 / 结算）或政务办理，不能设为「始终允许」——这类页面每次都会单独询问。设为「禁止」仍然可以。',
     browserSitePermsSummary: '已允许 {allowed} 个 · 已禁止 {denied} 个 · 内置浏览器与 Chrome 共用',
     browserHighRiskTag: '高危站点·每次询问',
+    browserViaEmbedTag: '经内嵌页面授权·自动任务不适用',
+    browserViaEmbedTagHint: '这条授权是在别的页面上一次性批给内嵌区域的。想让自动任务也能用，请在上面重新添加这个网址并选「始终允许」。',
     browserUnattendedReachSummary: '自动任务可进入 {count} 个网站；识别为支付 / 转账的页面会被拒绝。',
     browserUnattendedReachNone: '自动任务当前不能操作任何网站——还没有设为「始终允许」的普通网站。',
     browserUnattendedReachOff: '自动任务总开关已关闭，因此自动任务不能操作任何网站。',

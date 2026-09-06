@@ -841,6 +841,8 @@ const enUS: TranslationDict = {
     browserSitePermsAddHighRisk: 'This site looks like money movement (payment, transfer, checkout) or a government service, so it cannot be set to Always allow — pages like this always ask separately. Blocking it is still available.',
     browserSitePermsSummary: '{allowed} allowed · {denied} blocked · shared by the built-in browser and Chrome',
     browserHighRiskTag: 'High-risk · asks every time',
+    browserViaEmbedTag: 'Granted via an embedding page · not for automatic tasks',
+    browserViaEmbedTagHint: 'This grant was given for an embedded region while you were on another page. To let automatic tasks use it, add the address above again and choose "Always allow".',
     browserUnattendedReachSummary: 'Automatic tasks may enter {count} site(s); pages it recognizes as payment / transfer are refused.',
     browserUnattendedReachNone: 'Automatic tasks cannot act on any site right now — no ordinary site is set to "Always allow".',
     browserUnattendedReachOff: 'The automatic-tasks master switch is off, so automatic tasks cannot act on any site.',

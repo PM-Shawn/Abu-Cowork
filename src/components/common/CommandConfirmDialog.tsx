@@ -120,8 +120,25 @@ export default function CommandConfirmDialog({
   const unlistedEmbeddedCount = allEmbeddedOrigins.length - embeddedOrigins.length;
   const handleAlwaysAllowSite = useCallback(() => {
     const store = useSettingsStore.getState();
+    /**
+     * R2-C-② — which of these grants the user gave DIRECTLY.
+     *
+     * `browserPageOrigin` is set only when the action's own target is a region
+     * inside some other page, so its presence is exactly the question "is the
+     * origin this dialog is about the page the user is on?". A grant given
+     * while that origin WAS the page is a direct one; every region grant —
+     * the action's target when it is a region, and every merged one — is the
+     * user allowing a site because another site embeds it, which is consent
+     * for work they are watching and not the standing premise an unattended
+     * run needs. See `settingsStore`'s `browserSiteGrantViaEmbed`.
+     */
+    const viaEmbed = { viaEmbed: true } as const;
     if (request.browserOrigin) {
-      store.setBrowserSitePermission(request.browserOrigin, 'allowed');
+      store.setBrowserSitePermission(
+        request.browserOrigin,
+        'allowed',
+        request.browserPageOrigin !== undefined ? viaEmbed : undefined,
+      );
     }
     // One click, one grant per origin — written individually, never as a
     // pattern, so what is stored is exactly the list the user just read. The
@@ -129,12 +146,12 @@ export default function CommandConfirmDialog({
     // that reached past what the dialog printed would be a wildcard wearing a
     // count.
     for (const embedded of embeddedOrigins) {
-      store.setBrowserSitePermission(embedded, 'allowed');
+      store.setBrowserSitePermission(embedded, 'allowed', viaEmbed);
     }
     onConfirm();
   // `embeddedOrigins` is derived from the same request fields each render.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [request.browserOrigin, request.browserEmbeddedOrigins, onConfirm]);
+  }, [request.browserOrigin, request.browserPageOrigin, request.browserEmbeddedOrigins, onConfirm]);
   // ...and say what the verdict opens. A scripting dialog may never mint this
   // verdict (Ruling-I: one click must not open both the attended no-dialog door
   // and the automatic-task scripting door), but the click/fill dialog mints the

@@ -58,6 +58,7 @@ export function BrowserSitePermissionsPage({
 }) {
   const { t } = useI18n();
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
   const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
@@ -80,8 +81,13 @@ export function BrowserSitePermissionsPage({
   // watching acts on, and this list never said so. The summary answers "would
   // a scheduled task use these?" without making the user reconstruct it from
   // the master switch plus the high-risk rule.
-  const authorization = summarizeBrowserAuthorization(sitePermissions, allowUnattended);
+  const authorization = summarizeBrowserAuthorization(
+    sitePermissions,
+    allowUnattended,
+    viaEmbedGrants,
+  );
   const highRisk = new Set(authorization.highRiskAllowed);
+  const viaEmbed = new Set(authorization.viaEmbedAllowed);
   const reachSummary = !authorization.masterSwitchOn
     ? t.settings.browserUnattendedReachOff
     : authorization.reachableUnattended.length === 0
@@ -217,6 +223,21 @@ export function BrowserSitePermissionsPage({
                 {sitePermissions[origin] === 'allowed' && highRisk.has(origin) && (
                   <span className="shrink-0 rounded-md bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]">
                     {t.settings.browserHighRiskTag}
+                  </span>
+                )}
+                {/*
+                  R2-C-② — the other thing an 「始终允许」 row cannot imply: this
+                  grant was given from another site's page, so an automatic task
+                  will still be refused here. Re-choosing the verdict on this
+                  row (or re-adding the origin above) promotes it to an ordinary
+                  standing grant and the tag goes away.
+                */}
+                {sitePermissions[origin] === 'allowed' && viaEmbed.has(origin) && (
+                  <span
+                    className="shrink-0 rounded-md bg-[var(--abu-bg-hover)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)]"
+                    title={t.settings.browserViaEmbedTagHint}
+                  >
+                    {t.settings.browserViaEmbedTag}
                   </span>
                 )}
                 <Select

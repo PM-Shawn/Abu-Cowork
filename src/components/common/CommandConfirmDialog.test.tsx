@@ -18,6 +18,7 @@ describe('CommandConfirmDialog', () => {
     initLanguage('zh-CN');
     useSettingsStore.setState({
       browserSitePermissions: {},
+      browserSiteGrantViaEmbed: {},
       // Shipped default (scripting = 'ask'). Reset explicitly so a test that
       // flips the scripting row cannot rename this button for its neighbours.
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -217,6 +218,62 @@ describe('CommandConfirmDialog', () => {
       });
 
       expect(screen.queryByText(/当前页面/)).not.toBeInTheDocument();
+    });
+
+    /**
+     * Round-2 R2-C-②. What this click writes is a real grant — and it is a
+     * grant given because ANOTHER site embeds these, so it is marked. The mark
+     * is what keeps an automatic task from acting there later; see
+     * `settingsStore`'s `browserSiteGrantViaEmbed`.
+     */
+    it('marks every region grant as one given through an embedding page', async () => {
+      const user = userEvent.setup();
+      const { onConfirm } = renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net', 'https://cdn.example.org'],
+        allowPersistentGrant: true,
+      });
+
+      await user.click(
+        screen.getByRole('button', { name: '此网站及 2 个内嵌区域以后都允许' }),
+      );
+
+      // The page the user was on is a DIRECT grant; the two regions are not.
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({
+        'https://vendor.example.net': true,
+        'https://cdn.example.org': true,
+      });
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('marks the action\'s OWN target too when that target is a region', async () => {
+      const user = userEvent.setup();
+      renderDialog({
+        browserOrigin: 'https://vendor.example.net',
+        browserPageOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net'],
+        allowPersistentGrant: true,
+      });
+
+      await user.click(screen.getByRole('button', { name: '此网站以后都允许' }));
+
+      // The user never navigated to vendor.example.net — they were on the OA
+      // page. Direct authorization is what the mark records the absence of.
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({
+        'https://vendor.example.net': true,
+      });
+    });
+
+    it('leaves an ordinary page grant unmarked', async () => {
+      const user = userEvent.setup();
+      renderDialog({
+        browserOrigin: 'https://example.com',
+        allowPersistentGrant: true,
+      });
+
+      await user.click(screen.getByRole('button', { name: '此网站以后都允许' }));
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
     });
   });
 

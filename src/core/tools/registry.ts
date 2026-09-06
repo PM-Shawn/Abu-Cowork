@@ -33,6 +33,7 @@ import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   type BrowserDenialReasonCode,
   type DecideBrowserOperationSiteVerdict,
+  type SiteVerdictOptions,
 } from '../permissions/browserToolPolicy';
 import { isHighRiskUrl } from '../permissions/highRiskSites';
 import {
@@ -529,10 +530,19 @@ function strictestVerdict(
 function strictestVerdictOf(
   origins: Array<string | null>,
   sitePermissions: Record<string, 'allowed' | 'denied'>,
+  /**
+   * Passed straight through to each `getSiteVerdict`, so a grant minted
+   * through the merged embedded-region prompt drops out of an UNATTENDED fold
+   * one origin at a time (R2-C-②). One marked origin is enough to take the
+   * whole fold below `'allowed'` — which is the point: the fold's `'allowed'`
+   * means "every site this call touches is authorized", and a marked one is
+   * not authorized for a run nobody is watching.
+   */
+  options?: SiteVerdictOptions,
 ): 'allowed' | 'denied' | 'default' {
   let verdict: 'allowed' | 'denied' | 'default' | null = null;
   for (const origin of [...new Set(origins)]) {
-    const next = getSiteVerdict(origin, sitePermissions);
+    const next = getSiteVerdict(origin, sitePermissions, options);
     verdict = verdict === null ? next : strictestVerdict(verdict, next);
   }
   return verdict ?? 'default';
@@ -632,7 +642,7 @@ async function resolveBrowserActionTarget(
         const topUrl = topOrigin !== null ? (tab.url ?? null) : null;
         const authState = parseTabAuthState(tab.authState);
         const regions = readFrameNodes(tab.frames);
-        const embeddedOrigins = embeddedOriginsOf(regions, topOrigin);
+        const embeddedOrigins = embeddedOriginsOf(regions, topOrigin, namedFrames);
         if (namedFrames.length === 0) {
           return {
             origin: topOrigin,
@@ -776,13 +786,30 @@ function readFrameNodes(value: unknown): GateFrameNode[] {
  * region is already covered by the page's grant, and listing it would make the
  * prompt say "this page also contains content from itself".
  */
-function embeddedOriginsOf(regions: GateFrameNode[], topOrigin: string | null): string[] {
+function embeddedOriginsOf(
+  regions: GateFrameNode[],
+  topOrigin: string | null,
+  /**
+   * The regions THIS call names, in the order it named them. They are listed
+   * first (R2-C-①).
+   *
+   * The dialog lists at most five and grants exactly what it listed, and the
+   * enumeration order is the page's DOM order — which the page's author
+   * chooses. Left alone, a page could put whichever origin it wanted into the
+   * five slots that a merged "always allow" covers. Ordering by what the call
+   * actually addressed puts the sites the user is really about to act on at
+   * the front, and leaves the page in charge only of the tail.
+   */
+  namedFrames: string[] = [],
+): string[] {
   const out: string[] = [];
-  for (const region of regions) {
-    if (region.accessible !== true || !region.origin) continue;
-    if (region.origin === topOrigin) continue;
+  const push = (region: GateFrameNode | undefined): void => {
+    if (!region || region.accessible !== true || !region.origin) return;
+    if (region.origin === topOrigin) return;
     if (!out.includes(region.origin)) out.push(region.origin);
-  }
+  };
+  for (const frameId of namedFrames) push(regions.find((region) => region.frameId === frameId));
+  for (const region of regions) push(region);
   return out;
 }
 
@@ -1457,6 +1484,10 @@ export async function checkToolApproval(
           ...Object.values(target.frameOrigins ?? {}),
         ],
         settingsSnapshot.browserSitePermissions ?? {},
+        {
+          viaEmbed: settingsSnapshot.browserSiteGrantViaEmbed ?? {},
+          runMode,
+        },
       );
       const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
         ? foldedVerdict

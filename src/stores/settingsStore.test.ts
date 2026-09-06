@@ -449,6 +449,86 @@ describe('settingsStore partialize', () => {
   });
 });
 
+/**
+ * Round-2 R2-C-②. The mark and the verdict are two fields, so the ONE thing
+ * that can go wrong is drift — a mark outliving the grant it qualifies, or a
+ * direct authorization leaving an old mark in place and staying invisible to
+ * automatic tasks forever. Both directions are pinned here, because the setter
+ * is the only thing standing between them.
+ */
+describe('settingsStore browser site grants — the via-embed mark', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ browserSitePermissions: {}, browserSiteGrantViaEmbed: {} });
+  });
+
+  it('marks a grant taken through the merged embedded-region prompt', () => {
+    useSettingsStore.getState()
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  it('leaves an ordinary grant unmarked', () => {
+    useSettingsStore.getState().setBrowserSitePermission('https://example.com', 'allowed');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('clears the mark when the user authorizes the same origin directly', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    // Settings › 网站授权, or a prompt raised while that site WAS the page.
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+    expect(useSettingsStore.getState().browserSitePermissions['https://vendor.example.net'])
+      .toBe('allowed');
+  });
+
+  it('clears the mark when the origin is blocked instead', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.setBrowserSitePermission('https://vendor.example.net', 'denied');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('clears the mark when the verdict is removed', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.removeBrowserSitePermission('https://vendor.example.net');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('survives a localStorage roundtrip — a mark that is not persisted is no mark', () => {
+    const partialize = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
+    }).persist.getOptions().partialize!;
+    useSettingsStore.getState()
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+
+    expect(partialize(useSettingsStore.getState()).browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  it('v48 migration gives pre-existing installs an empty map, not a marked one', () => {
+    const migrate = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+    }).persist.getOptions().migrate;
+
+    // Every grant that already exists was minted before the mark could be
+    // written, so none of them is known to have come in that way — and an
+    // unmarked grant is a full one.
+    const migrated = migrate(
+      { browserSitePermissions: { 'https://example.com': 'allowed' } },
+      47,
+    );
+    expect(migrated.browserSiteGrantViaEmbed).toEqual({});
+  });
+});
+
 describe('settingsStore labs flags', () => {
   beforeEach(() => {
     useSettingsStore.setState({ labs: {} });

@@ -120,6 +120,9 @@ beforeEach(() => {
   useSettingsStore.setState({
     permissionMode: 'standard',
     browserSitePermissions: { [PAGE]: 'allowed' },
+    // Reset explicitly: `setState` MERGES, so a case that marks a grant would
+    // otherwise leave the mark standing for every case after it.
+    browserSiteGrantViaEmbed: {},
     browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
     allowUnattendedBrowser: true,
   });
@@ -433,6 +436,156 @@ describe('the merged ask', () => {
     );
 
     expect(asks[0].browserEmbeddedOrigins).toBeUndefined();
+  });
+});
+
+/**
+ * ── Round-2 R2-C ───────────────────────────────────────────────────────────
+ *
+ * The merged prompt is a real convenience — one ask instead of one per region
+ * — but it hands the PAGE two levers, and both are the page author's to pull:
+ * which origins appear in the five slots the prompt lists (DOM order), and
+ * that what gets written is an ordinary global site grant. Together they were
+ * a path from "the user clicked allow on an OA form" to "an automatic task may
+ * act on attacker.example".
+ *
+ * ① takes the first lever away: the regions THIS call named come first, so the
+ *    page only controls the tail of the list.
+ * ② takes the second: a grant minted here is marked, and a marked grant is not
+ *    the standing authorization an unattended run needs.
+ */
+describe('the merged ask lists what the call named, before what the page ordered', () => {
+  const A = 'https://a.example.com';
+  const B = 'https://b.example.com';
+  const C = 'https://c.example.com';
+
+  /** Three third-party regions, in the order the PAGE laid them out. */
+  function pageWithThreeRegions(): void {
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: A, url: `${A}/ad`, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f5', origin: B, url: `${B}/widget`, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f6', origin: C, url: `${C}/form`, sameOriginAsTop: false, accessible: true },
+    ]);
+  }
+
+  it('puts the region the action targets at the front', async () => {
+    useSettingsStore.setState({ browserSitePermissions: {} });
+    pageWithThreeRegions();
+    const { cb, asks } = recordingConfirm();
+
+    await checkToolApproval(
+      'abu-browser__click', { tabId: TAB, frameId: 'f6', locator: '{"text":"提交"}' },
+      attended, cb as never,
+    );
+
+    // C is last in the DOM and first in the list, because it is the one the
+    // call is actually about.
+    expect(asks[0].browserEmbeddedOrigins).toEqual([C, A, B]);
+  });
+
+  it('puts every region a BATCH names at the front, in the order it named them', async () => {
+    useSettingsStore.setState({ browserSitePermissions: {} });
+    pageWithThreeRegions();
+    const { cb, asks } = recordingConfirm();
+
+    await checkToolApproval(
+      'abu-browser__batch',
+      {
+        tabId: TAB,
+        steps: JSON.stringify([
+          { action: 'click', frameId: 'f6', locator: { text: '提交' } },
+          { action: 'fill', frameId: 'f5', locator: { css: '#x' }, value: 'y' },
+        ]),
+      },
+      attended, cb as never,
+    );
+
+    expect(asks[0].browserEmbeddedOrigins).toEqual([C, B, A]);
+  });
+
+  it('keeps DOM order for the regions the call did not name', async () => {
+    useSettingsStore.setState({ browserSitePermissions: {} });
+    pageWithThreeRegions();
+    const { cb, asks } = recordingConfirm();
+
+    await checkToolApproval(
+      'abu-browser__click', { tabId: TAB, locator: '{"text":"提交"}' },
+      attended, cb as never,
+    );
+
+    expect(asks[0].browserEmbeddedOrigins).toEqual([A, B, C]);
+  });
+});
+
+describe('a grant minted through the merged ask is not one an automatic task may use', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+      browserSiteGrantViaEmbed: { [VENDOR]: true },
+    });
+  });
+
+  it('refuses an unattended action in the marked region', async () => {
+    const decision = await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('refuses an unattended action on the marked site as the PAGE, too', async () => {
+    // The lever this closes is a TOP-LEVEL standing grant obtained sideways —
+    // so the mark has to hold when that site is later visited on its own.
+    servePage(VENDOR_URL, []);
+
+    const decision = await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, locator: '{"css":"#name"}', value: '张三' },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('still lets the user act there while they are watching, with no dialog', async () => {
+    const { cb, asks } = recordingConfirm();
+
+    const decision = await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
+      attended, cb as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(asks).toHaveLength(0);
+  });
+
+  it('leaves an unmarked grant on the same site working unattended', async () => {
+    useSettingsStore.setState({ browserSiteGrantViaEmbed: {} });
+
+    const decision = await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('allow');
+  });
+
+  it('never turns a BLOCK into anything softer', async () => {
+    // A mark can only ever take authorization away.
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
+      browserSiteGrantViaEmbed: { [VENDOR]: true },
+    });
+    const { cb, asks } = recordingConfirm();
+
+    const decision = await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
+      attended, cb as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(asks).toHaveLength(0);
   });
 });
 

@@ -1075,6 +1075,11 @@ export interface TranslationDict {
      *  The high-risk tag stays — it reports the one thing the row cannot
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
+    /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
+     *  embedded regions get, so an automatic task is still refused there. */
+    browserViaEmbedTag: string;
+    /** `title` for {@link browserViaEmbedTag} — how to promote it. */
+    browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
     browserUnattendedReachOff: string;

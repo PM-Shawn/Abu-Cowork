@@ -798,6 +798,24 @@ function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number):
       }),
     );
   }
+  /*
+    R2-D. And WHICH PAGE that site is a region of.
+
+    The desktop dialog has said this since round 2 of T4; this channel had not,
+    and it is the channel where it matters most. "Click 提交 on
+    vendor.example.net" reaches someone who has never heard of that site — it
+    is a third-party widget inside the OA page their colleague is filling in.
+    Naming the page turns an unanswerable ask into a decidable one, and it is
+    read from the same place the dialog reads it (`target.topOrigin`, set only
+    when it differs from the action's own target).
+  */
+  if (request.info.browserPageOrigin !== undefined && request.info.browserPageOrigin !== '') {
+    context.push(
+      format(t.imChannel.approvalPromptPageOrigin, {
+        origin: sanitizeUntrustedPromptField(request.info.browserPageOrigin),
+      }),
+    );
+  }
   return format(t.imChannel.approvalPrompt, {
     context: context.length > 0 ? `${context.join('\n')}\n` : '',
     action: sanitizeUntrustedPromptField(request.info.command),

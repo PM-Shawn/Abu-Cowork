@@ -31,6 +31,11 @@ import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
 } from '../permissions/browserToolPolicy';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+  type UnattendedConfirmationRequest,
+} from '../permissions/unattendedConfirmation';
 import type { ConfirmationInfo } from './commandSafety';
 
 vi.mock('@/core/enterprise/policy/enforcer', () => ({
@@ -127,11 +132,13 @@ beforeEach(() => {
     allowUnattendedBrowser: true,
   });
   __resetBrowserGrantsForTests();
+  __resetUnattendedConfirmationForTests();
 });
 
 afterEach(() => {
   (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
   __resetBrowserGrantsForTests();
+  __resetUnattendedConfirmationForTests();
 });
 
 describe('an embedded region is authorized on its own account', () => {
@@ -589,6 +596,51 @@ describe('a grant minted through the merged ask is not one an automatic task may
   });
 });
 
+/**
+ * Round-2 R2-D. The remote approver is the reader who can see the least: no
+ * browser, no page, just a sentence in a chat. Naming only the region asks
+ * them about a site they have never visited.
+ */
+describe('the unattended ask names the page too, not only the region', () => {
+  function askingUnattended(): UnattendedConfirmationRequest[] {
+    const seen: UnattendedConfirmationRequest[] = [];
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+      browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
+    });
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request);
+      return { approved: false, reason: 'not now' };
+    });
+    return seen;
+  }
+
+  it('carries the embedding page to the approval channel', async () => {
+    const seen = askingUnattended();
+
+    await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
+      unattended,
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].info.browserOrigin).toBe(VENDOR);
+    expect(seen[0].info.browserPageOrigin).toBe(PAGE);
+  });
+
+  it('leaves it out when the action targets the page itself', async () => {
+    const seen = askingUnattended();
+
+    await checkToolApproval(
+      'abu-browser__fill', { tabId: TAB, locator: '{"css":"#name"}', value: '张三' },
+      unattended,
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].info.browserPageOrigin).toBeUndefined();
+  });
+});
+
 describe('a batch is pinned per region', () => {
   const steps = JSON.stringify([
     { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
@@ -624,6 +676,32 @@ describe('a batch is pinned per region', () => {
       (c) => (c[0] as { name: string }).name === 'batch',
     )?.[0] as { arguments: Record<string, unknown> }).arguments;
     expect(args.expectedFrameOrigins).toBeUndefined();
+  });
+
+  /**
+   * Round-2 R2-G. Partial unverifiability was already fail-closed — a missing
+   * pin stops the step. TOTAL unverifiability was the corner: with no region
+   * confirmed the gate used to send no map at all, and `runBatch` then fell
+   * back to the origins it had observed for itself. An attended user who
+   * confirmed on an "unknown site" dialog got a run policing itself against
+   * its own observations, which is not a check.
+   */
+  it('sends an EMPTY region map rather than none when no region could be confirmed', async () => {
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: false },
+    ]);
+    const { cb } = recordingConfirm();
+
+    const decision = await checkToolApproval(
+      'abu-browser__batch', { tabId: TAB, steps },
+      attended, cb as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    // Empty, not absent: "the gate judged no region" is a statement the run
+    // can act on, and it reads a missing pin as origin-unverifiable.
+    expect(decision.browserExecution?.expectedFrameOrigins).toEqual({});
   });
 
   it('refuses a batch whose SECOND region was never allowed, even though the first was', async () => {

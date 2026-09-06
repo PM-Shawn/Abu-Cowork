@@ -99,6 +99,13 @@ const browserState: {
    * same shape rather than letting the worker invent one.
    */
   frames: Record<number, { frameId: number; documentId: string; url: string; hidden?: true }[]>;
+  /**
+   * The probe function Chrome was asked to inject, kept so its rules can be
+   * RUN rather than only faked. Everything else in this file supplies the
+   * probe's ANSWER; `probeFrameIdentity` decides what that answer is, and its
+   * own branches had no coverage at all (round-2 R2-F).
+   */
+  probeFunc?: (...a: never[]) => unknown;
   /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
   contentAnswers: Record<string, { data?: unknown; error?: string }>;
 } = {
@@ -183,6 +190,7 @@ function fakeChrome(): Record<string, unknown> {
         // it, so the worker reads frame ids and document ids from the browser
         // rather than from anything the page could author.
         if (String(opts.func ?? '').includes('location.href')) {
+          browserState.probeFunc = opts.func;
           const rows = browserState.frames[opts.target.tabId];
           if (rows === undefined) {
             const tab = browserState.tabs.find((t) => t.id === opts.target.tabId);
@@ -474,6 +482,80 @@ describe('frames', () => {
     // And the region is named as hidden, so "why did it not look there" has an
     // answer the caller can act on.
     expect(response.error).toMatch(/f4 \(https:\/\/a\.example, hidden\)/);
+  });
+
+  /**
+   * Round-2 R2-F — the probe's OWN rules, run rather than faked.
+   *
+   * Every other case in this file supplies `hidden: true` as the probe's
+   * answer, which pins what the worker DOES with it and nothing about how it
+   * is decided. `probeFrameIdentity` is serialized into the page by
+   * `chrome.scripting.executeScript`, so it is reachable here only as the
+   * function the fake was handed — which is exactly what makes it callable.
+   *
+   * `visibility: hidden` is the arm that most needed this: such a frame has an
+   * ordinary layout box inside the viewport, so neither the zero-size nor the
+   * off-screen arm says anything about it.
+   */
+  describe('the frame probe itself decides what "hidden" means', () => {
+    /** One `window.frameElement`, as the probe reads it. */
+    function frameElement(box: {
+      width: number; height: number; left?: number; top?: number; visibility?: string;
+    }): unknown {
+      const view = {
+        scrollX: 0,
+        scrollY: 0,
+        getComputedStyle: () => ({ visibility: box.visibility ?? 'visible' }),
+      };
+      return {
+        ownerDocument: { defaultView: view },
+        getBoundingClientRect: () => ({
+          width: box.width, height: box.height, left: box.left ?? 0, top: box.top ?? 0,
+        }),
+      };
+    }
+
+    /** Run the real probe with `window.frameElement` set to `el`. */
+    async function probeWith(el: unknown): Promise<{ hidden?: true }> {
+      twoTabWindow();
+      // Any request that probes the tree; its answer is irrelevant here — what
+      // matters is that the fake captured the function it was asked to inject.
+      await request('snapshot', { tabId: 11 });
+      const probe = browserState.probeFunc;
+      if (probe === undefined) throw new Error('the frame probe was never injected');
+      const original = Object.getOwnPropertyDescriptor(window, 'frameElement');
+      Object.defineProperty(window, 'frameElement', { configurable: true, value: el });
+      try {
+        return (probe as () => { hidden?: true })();
+      } finally {
+        if (original) Object.defineProperty(window, 'frameElement', original);
+        else delete (window as unknown as Record<string, unknown>).frameElement;
+      }
+    }
+
+    it('calls a VISIBILITY:HIDDEN frame hidden, box and position notwithstanding', async () => {
+      const result = await probeWith(frameElement({ width: 800, height: 600, visibility: 'hidden' }));
+
+      expect(result.hidden).toBe(true);
+    });
+
+    it('calls a zero-sized frame hidden', async () => {
+      const result = await probeWith(frameElement({ width: 0, height: 0 }));
+
+      expect(result.hidden).toBe(true);
+    });
+
+    it('calls a frame parked off the left edge hidden', async () => {
+      const result = await probeWith(frameElement({ width: 800, height: 600, left: -9999 }));
+
+      expect(result.hidden).toBe(true);
+    });
+
+    it('leaves an ordinary laid-out frame alone', async () => {
+      const result = await probeWith(frameElement({ width: 800, height: 600 }));
+
+      expect(result.hidden).toBeUndefined();
+    });
   });
 
   it('still acts in a hidden region when the caller names it on purpose', async () => {

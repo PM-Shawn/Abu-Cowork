@@ -698,7 +698,14 @@ async function resolveBrowserActionTarget(
           topOrigin,
           topUrl,
           ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
-          ...(Object.keys(frameOrigins).length > 0 ? { frameOrigins } : {}),
+          // Present whenever the call NAMED a region, even when not one of them
+          // could be confirmed (round-2 R2-G). Omitting the empty map let the
+          // run fall back to `opening.frameOrigins` — the origins it observed
+          // for itself — so a batch the user approved on an "unknown site"
+          // dialog would then police itself against its own observations. An
+          // empty map is the honest statement "the gate judged no region", and
+          // the run reads a missing pin as `origin-unverifiable`.
+          frameOrigins,
           ...(frameUrls.length > 0 ? { frameUrls } : {}),
           ...(unverified ? { frameUnverified: true as const } : {}),
         };
@@ -1848,6 +1855,14 @@ export async function checkToolApproval(
               kind: 'browser',
               browserOperationClass: opClass,
               ...(origin !== null ? { browserOrigin: origin } : {}),
+              // R2-D — the page this is happening ON, from the SAME source the
+              // desktop dialog reads it from below. The remote approver is the
+              // reader who can see the least: without this, an action inside a
+              // third-party region names only that region, and they are asked
+              // about a site they have never visited.
+              ...(target.topOrigin && target.topOrigin !== origin
+                ? { browserPageOrigin: target.topOrigin }
+                : {}),
               allowPersistentGrant: false,
             },
             // Provenance for whoever will deliver the approval. The

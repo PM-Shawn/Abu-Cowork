@@ -3019,6 +3019,34 @@ describe('embedded regions (iframes)', () => {
     expect((frame.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('张三');
   });
 
+  /**
+   * Round-2 R2-F. `visibility: hidden` is the third arm of the same rule and
+   * was the one with no test: a frame like this HAS a layout box of ordinary
+   * size and sits inside the viewport, so the two arms that were covered (zero
+   * size, off-screen) both say "visible" about it. It is also the cheapest
+   * decoy to build — one CSS declaration, no geometry to arrange.
+   */
+  it('never resolves a frameless locator into a VISIBILITY:HIDDEN region', async () => {
+    document.body.innerHTML = '<button id="other">取消</button>';
+    const decoy = await addFrame('decoy', '<body><input id="name" placeholder="姓名" /></body>');
+    decoy.style.visibility = 'hidden';
+
+    await expect(fillIn(undefined, { css: '#name' }, '张三')).rejects.toThrow(/not found/i);
+    expect((decoy.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('lists a VISIBILITY:HIDDEN region as hidden, and still acts in it when NAMED', async () => {
+    document.body.innerHTML = '';
+    const frame = await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+    frame.style.visibility = 'hidden';
+
+    const tree = await frames();
+    expect(tree[1]).toMatchObject({ accessible: true, hidden: true });
+
+    const filled = await fillIn(tree[1].frameId, { css: '#name' }, '张三');
+    expect(filled.success).toBe(true);
+  });
+
   it('does not call an ordinary laid-out region hidden', async () => {
     document.body.innerHTML = '';
     await addFrame('inner', '<body><input id="name" /></body>');

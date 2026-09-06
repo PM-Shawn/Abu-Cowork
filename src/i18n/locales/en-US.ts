@@ -2294,6 +2294,7 @@ const enUS: TranslationDict = {
       '⚠️ Abu needs you to approve an action\n{context}Action: 「{action}」\nDetails: 「{reason}」\n\nReply "yes" or "no" — just that one word, since anything else is treated as an ordinary message. No answer within {minutes} minutes is an automatic denial.',
     approvalPromptTask: 'Task: 「{task}」',
     approvalPromptOrigin: 'Site: 「{origin}」',
+    approvalPromptPageOrigin: 'Current page: 「{origin}」',
     approvalReceiptDenied: 'Got your "no" — the action was cancelled.',
     approvalReceiptTimeout: 'No answer within {minutes} minutes, so the action above was denied automatically.',
     approvalReceiptTooMany: 'You already have the maximum of {max} approval requests waiting, so the new one was denied. Please answer the ones above first.',

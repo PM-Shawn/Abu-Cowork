@@ -310,11 +310,20 @@
     return ` This page also has ${count} sealed region${count === 1 ? "" : "s"} (closed shadow DOM), whose contents no automation can read or operate \u2014 not this tool, and not a script. If what you are looking for is in one, ask the user to do that step by hand.`;
   }
   var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard"]);
+  var ORIGIN_PINNED_READ_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "find",
+    "locate",
+    "get_html",
+    "extract_text",
+    "extract_table"
+  ]);
   function assertOriginPin(action, payload, scope) {
-    if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+    const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+    if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
     const expected = typeof payload.expectedOrigin === "string" ? payload.expectedOrigin : "";
     if (!expected) {
-      if (payload.unattended !== true) return;
+      if (pinnedRead || payload.unattended !== true) return;
       throw new Error(
         "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
       );
@@ -383,6 +392,8 @@
     if (ORIGIN_PINNED_ACTIONS.has(action)) {
       if (frameServicesAction(action, payload, scope)) assertOriginPin(action, payload, scope);
       else assertFrameAbstains(payload);
+    } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
+      assertOriginPin(action, payload, scope);
     }
     return annotateAdvisory(action, await dispatchAction(action, payload, scope));
   }

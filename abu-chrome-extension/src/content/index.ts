@@ -603,8 +603,17 @@ function shadowRootsIn(
  * The shadow half is NOT skipped when the light DOM already matched, even
  * though that would be the obvious saving: callers count the matches to decide
  * whether a locator is ambiguous, and a search that stopped early would report
- * one match where there are two and act on it. The bound above is the saving
- * that does not cost correctness.
+ * one match where there are two and act on it.
+ *
+ * `MAX_SHADOW_SCAN_NODES` has the SAME failure mode, and saying otherwise
+ * would be the documentation lying about the code (round-2 R2-E — the earlier
+ * wording here claimed the bound "does not cost correctness"). Once the budget
+ * runs out, a second match living only in an unvisited shadow tree is not seen,
+ * and "there are two of these" is again reported as "there is one". What the
+ * bound changes is not WHETHER that can happen but WHEN: from "the moment the
+ * light DOM matches" to "on a page with more than 20,000 elements", which is
+ * far past any real design-system page. It pushes the failure out of reach; it
+ * does not remove it.
  */
 function queryAllDeep(root: Document | ShadowRoot | Element, selector: string): Element[] {
   const out: Element[] = [...root.querySelectorAll(selector)];

@@ -2661,6 +2661,11 @@ export interface TranslationDict {
     /** One line of {@link approvalPrompt}'s {context}: the site the action
      *  targets. {origin} */
     approvalPromptOrigin: string;
+    /** One line of {@link approvalPrompt}'s {context}: the page the action is
+     *  happening ON, when the target is an embedded region inside it. The
+     *  remote approver is the reader with no browser in front of them, so a
+     *  bare third-party origin is a site they never visited. {origin} */
+    approvalPromptPageOrigin: string;
     /** Receipt after the user replied 拒绝. */
     approvalReceiptDenied: string;
     /** Receipt after nobody answered in time. {minutes} */

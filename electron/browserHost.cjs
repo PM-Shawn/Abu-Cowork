@@ -1767,6 +1767,26 @@ function validateFrameOrigins(view, frames) {
  */
 const FRAME_PROBE_TIMEOUT_MS = 2000;
 
+/**
+ * Does the BROWSER itself say this tab has any child frame?
+ *
+ * Main-process only — `framesInSubtree` is Electron's own view of the tree and
+ * costs no round trip into the page, which is the whole point: the frame probe
+ * DOES cost one, and on a page with no iframes it can only ever come back with
+ * the main frame, which every caller then discards (`tree.length > 1`). Asking
+ * first is therefore free and changes no answer.
+ *
+ * A destroyed webContents has no tree; "unknown" is treated as "might have
+ * one" so the probe still runs and the ordinary timeout handles it.
+ */
+function viewHasChildFrames(view) {
+  try {
+    return view.webContents.mainFrame.framesInSubtree.length > 1;
+  } catch {
+    return true;
+  }
+}
+
 /** The page's embedded regions, or `[]` when the runtime could not be asked. */
 async function frameTreeFor(view) {
   try {
@@ -2392,13 +2412,19 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
     // for healthy tabs is byte-for-byte what it was before this existed.
     const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
-    // Frame trees cost one round trip into the page each, so a listing computes
-    // them for at most two tabs: the caller's current one, and the tab the
-    // APPROVAL GATE names with `framesForTabId`. The gate needs it because a
-    // frame-targeted action is authorized against the FRAME's origin, and this
-    // listing is the only probe it makes.
+    // A frame tree costs one round trip INTO the page, so it is computed only
+    // when a caller asked for it by name (`framesForTabId` — the approval
+    // gate, and `batch`'s own between-step re-read when a step targets a
+    // region), and only when the browser's own frame tree already says there
+    // is something to find.
+    //
+    // It used to be computed for the current tab unconditionally as well, on
+    // every listing. `batch` re-reads the tab before EVERY step, so an
+    // ordinary 25-step batch that never mentions a region paid 25 page round
+    // trips for a frame list nobody had asked for (round-2 F6). The model
+    // still gets the regions from `snapshot`, which is where it reads the page
+    // anyway.
     const framesWanted = new Set();
-    if (currentTabId !== null && currentTabId !== undefined) framesWanted.add(currentTabId);
     if (Number.isFinite(Number(payload.framesForTabId))) framesWanted.add(Number(payload.framesForTabId));
     const framesByTab = new Map();
     for (const wantedTabId of framesWanted) {
@@ -2410,6 +2436,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
       if (pendingDialogs.has(target.id)) continue;
       const wantedView = views.get(target.id);
       if (!wantedView) continue;
+      if (!viewHasChildFrames(wantedView)) continue;
       const tree = await frameTreeFor(wantedView);
       if (tree.length > 1) framesByTab.set(wantedTabId, tree);
     }

@@ -270,14 +270,17 @@
     }
     return [...frames][0];
   }
-  function shadowRootsIn(root, depth = 0) {
-    if (depth >= MAX_SHADOW_DEPTH) return [];
+  var MAX_SHADOW_SCAN_NODES = 2e4;
+  function shadowRootsIn(root, depth = 0, budget = { left: MAX_SHADOW_SCAN_NODES }) {
+    if (depth >= MAX_SHADOW_DEPTH || budget.left <= 0) return [];
     const found = [];
     for (const el of root.querySelectorAll("*")) {
+      if (budget.left <= 0) break;
+      budget.left -= 1;
       const shadow = el.shadowRoot;
       if (shadow) {
         found.push(shadow);
-        found.push(...shadowRootsIn(shadow, depth + 1));
+        found.push(...shadowRootsIn(shadow, depth + 1, budget));
       }
     }
     return found;

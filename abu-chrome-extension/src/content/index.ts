@@ -540,15 +540,40 @@ function frameFromLocators(payload: Record<string, unknown>): FrameRef | null {
 // and is what every browser-automation tool does. CLOSED roots are the page's
 // explicit opt-out and are reported as such, never worked around.
 
+/**
+ * How many elements one shadow-host hunt may walk, across every tree it
+ * descends into.
+ *
+ * Finding open shadow roots means visiting every element — there is no
+ * selector for "has a shadow root" — and every locator strategy now goes
+ * through it, so the walk is paid per action on a page that may carry tens of
+ * thousands of nodes (an ERP list view). The budget is what keeps a pathological
+ * page from turning each locator into a full traversal without end.
+ *
+ * The trade-off, stated plainly: past the budget, a control that lives ONLY
+ * inside a shadow root beyond it reads as "not found" — which is the exact
+ * behaviour this whole feature replaced, so the failure mode is the old one
+ * rather than a new one. Light-DOM matches are unaffected: they come from the
+ * engine's own `querySelectorAll`, which the budget never touches. 20k is far
+ * past any real design-system page and still bounded.
+ */
+const MAX_SHADOW_SCAN_NODES = 20_000;
+
 /** Every open shadow root at or under `root`, outermost first. */
-function shadowRootsIn(root: Document | ShadowRoot | Element, depth = 0): ShadowRoot[] {
-  if (depth >= MAX_SHADOW_DEPTH) return [];
+function shadowRootsIn(
+  root: Document | ShadowRoot | Element,
+  depth = 0,
+  budget = { left: MAX_SHADOW_SCAN_NODES },
+): ShadowRoot[] {
+  if (depth >= MAX_SHADOW_DEPTH || budget.left <= 0) return [];
   const found: ShadowRoot[] = [];
   for (const el of root.querySelectorAll('*')) {
+    if (budget.left <= 0) break;
+    budget.left -= 1;
     const shadow = el.shadowRoot;
     if (shadow) {
       found.push(shadow);
-      found.push(...shadowRootsIn(shadow, depth + 1));
+      found.push(...shadowRootsIn(shadow, depth + 1, budget));
     }
   }
   return found;
@@ -560,6 +585,12 @@ function shadowRootsIn(root: Document | ShadowRoot | Element, depth = 0): Shadow
  * Order is light DOM first, then each shadow tree in host order — near enough
  * to document order for the "deepest wins" and "first match" rules above,
  * which compare by containment rather than by index.
+ *
+ * The shadow half is NOT skipped when the light DOM already matched, even
+ * though that would be the obvious saving: callers count the matches to decide
+ * whether a locator is ambiguous, and a search that stopped early would report
+ * one match where there are two and act on it. The bound above is the saving
+ * that does not cost correctness.
  */
 function queryAllDeep(root: Document | ShadowRoot | Element, selector: string): Element[] {
   const out: Element[] = [...root.querySelectorAll(selector)];

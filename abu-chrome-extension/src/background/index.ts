@@ -593,14 +593,22 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           };
         });
 
-        // Frame trees cost one browser round trip per tab, so a listing of
-        // every tab in every window computes them for at most two: the tab the
-        // caller is on, and the tab the APPROVAL GATE is about to judge, which
-        // names itself with `framesForTabId`. The gate needs it because a
-        // frame-targeted action is authorized against the FRAME's origin, and
-        // this listing is the only probe it makes.
+        // A frame tree costs one browser round trip, so it is computed only
+        // for the tab a caller asked about by name — the APPROVAL GATE, which
+        // needs it because a frame-targeted action is authorized against the
+        // FRAME's origin, and `batch`'s own between-step re-read when a step
+        // targets a region.
+        //
+        // It used to be computed for the caller's current tab as well, on
+        // EVERY listing. `batch` re-reads the tab before every step, so an
+        // ordinary 25-step batch that mentions no region paid 25
+        // `executeScript` round trips for a frame list nobody asked for
+        // (round-2 F6). The model still gets the regions from `snapshot`,
+        // which `annotateWithFrames` decorates — that is where it reads the
+        // page anyway. Unlike the built-in host there is no free precheck to
+        // fall back on here: `webNavigation` is not among this extension's
+        // permissions, and adding it would force every user to re-authorize.
         const framesWanted = new Set<number>();
-        if (typeof focusedTabId === 'number') framesWanted.add(focusedTabId);
         const askedFor = Number(payload.framesForTabId);
         if (Number.isFinite(askedFor)) framesWanted.add(askedFor);
         const framesByTab = new Map<number, FrameTree>();

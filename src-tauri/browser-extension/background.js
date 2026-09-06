@@ -866,7 +866,6 @@
             };
           });
           const framesWanted = /* @__PURE__ */ new Set();
-          if (typeof focusedTabId === "number") framesWanted.add(focusedTabId);
           const askedFor = Number(payload.framesForTabId);
           if (Number.isFinite(askedFor)) framesWanted.add(askedFor);
           const framesByTab = /* @__PURE__ */ new Map();

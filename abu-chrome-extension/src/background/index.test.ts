@@ -530,9 +530,22 @@ describe('frames', () => {
     const windows = (response.data as { windows: { tabs: { tabId: number; frames?: unknown[] }[] }[] }).windows;
     const tabs = windows.flatMap((w) => w.tabs);
     expect(tabs.find((t) => t.tabId === 11)?.frames).toHaveLength(2);
-    // Tab 12 is the user's active tab, so it gets one too — but no OTHER tab
-    // is probed, because a frame tree costs a browser round trip each.
-    expect(tabs.find((t) => t.tabId === 12)?.frames).toHaveLength(2);
+    // Round-2 F6: NO other tab is probed, the caller's own active one
+    // included. `batch` re-reads the tab before every step, so a frame list
+    // computed for a tab nobody asked about was 25 browser round trips per
+    // ordinary batch. `snapshot` is where the model reads regions.
+    expect(tabs.find((t) => t.tabId === 12)?.frames).toBeUndefined();
+  });
+
+  it('costs no browser round trip when no caller asked for a frame tree', async () => {
+    tabWithVendorFrame();
+    browserState.injected.length = 0;
+
+    const response = await request('get_tabs', {});
+
+    const windows = (response.data as { windows: { tabs: { tabId: number; frames?: unknown[] }[] }[] }).windows;
+    expect(windows.flatMap((w) => w.tabs).every((t) => t.frames === undefined)).toBe(true);
+    expect(browserState.injected).toEqual([]);
   });
 });
 

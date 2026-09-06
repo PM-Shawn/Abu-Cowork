@@ -225,15 +225,64 @@ function tabRow(listing, tabId) {
   return listing.windows[0].tabs.find((tab) => tab.tabId === tabId);
 }
 
-test('get_tabs carries the current tab\'s regions, so the gate has something to judge', async () => {
+test('get_tabs carries the regions of the tab the GATE names, so it has something to judge', async () => {
   const { host, restore } = loadHost();
   try {
     const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
-    const { tabId } = await openTab(host, { runtimeFrames: [main, REGION_SAME] });
+    const { tabId } = await openTab(host, {
+      runtimeFrames: [main, REGION_SAME],
+      realFrames: [REGION_SAME.url],
+    });
+
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
+
+    assert.deepEqual(tabRow(listing, tabId).frames, [main, REGION_SAME]);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Round-2 F6. `batch` re-reads the tab before every step, and the frame probe
+ * is one round trip INTO the page — so an ordinary 25-step batch that never
+ * mentions a region was paying 25 of them for a list nobody asked for.
+ */
+test('a listing nobody asked frames for costs no round trip into the page', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
+    const { tabId, contents } = await openTab(host, {
+      runtimeFrames: [main, REGION_SAME],
+      realFrames: [REGION_SAME.url],
+    });
+    contents.domActions.length = 0;
 
     const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
 
-    assert.deepEqual(tabRow(listing, tabId).frames, [main, REGION_SAME]);
+    assert.equal('frames' in tabRow(listing, tabId), false);
+    assert.deepEqual(contents.domActions, []);
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * Round-2 F6, the other half: even when the gate DOES ask, a page the browser
+ * itself says has no child frame is not probed. `framesInSubtree` is main-
+ * process state and free; the probe is not, and on such a page it could only
+ * ever return the main frame, which the caller discards anyway.
+ */
+test('a page the browser says has no child frame is not probed even when asked', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
+    const { tabId, contents } = await openTab(host, { runtimeFrames: [main], realFrames: [] });
+    contents.domActions.length = 0;
+
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
+
+    assert.equal('frames' in tabRow(listing, tabId), false);
+    assert.deepEqual(contents.domActions, []);
   } finally {
     restore();
   }
@@ -246,7 +295,7 @@ test('a page with no regions is listed exactly as it was before frames existed',
       runtimeFrames: [{ frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true }],
     });
 
-    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     assert.equal('frames' in tabRow(listing, tabId), false);
   } finally {
@@ -263,7 +312,7 @@ test('an unreachable region keeps its origin only when the BROWSER agrees it is 
       realFrames: ['https://vendor.example.net/widget'],
     });
 
-    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     assert.equal(tabRow(listing, tabId).frames[1].origin, 'https://vendor.example.net');
   } finally {
@@ -284,7 +333,7 @@ test('a src the browser cannot confirm is dropped — the page does not get to n
       realFrames: ['https://tracker.example.org/pixel'],
     });
 
-    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     const region = tabRow(listing, tabId).frames[1];
     // Still listed — a refusal has to be able to name it — but with no origin
@@ -303,12 +352,13 @@ test('a REACHABLE region\'s origin is left alone: same-origin access already pro
     const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
     const { tabId } = await openTab(host, {
       runtimeFrames: [main, REGION_SAME],
-      // Deliberately empty: an `about:srcdoc` region inherits its parent's
-      // origin and has no row of its own the url check could match.
-      realFrames: [],
+      // The browser knows the frame is there, but its address is `about:srcdoc`
+      // — a region that INHERITS its parent's origin and so has no row the url
+      // cross-check could ever match.
+      realFrames: ['about:srcdoc'],
     });
 
-    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     assert.equal(tabRow(listing, tabId).frames[1].origin, 'https://oa.example.com');
   } finally {
@@ -337,14 +387,17 @@ test('a listing still answers for a tab frozen by a dialog, instead of waiting o
   const { host, restore } = loadHost();
   try {
     const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
-    const { tabId, contents } = await openTab(host, { runtimeFrames: [main, REGION_SAME] });
+    const { tabId, contents } = await openTab(host, {
+      runtimeFrames: [main, REGION_SAME],
+      realFrames: [REGION_SAME.url],
+    });
     // The renderer is suspended — nothing injected into it will ever settle.
     // `get_tabs` is precisely how a caller LEARNS the tab is frozen, so it has
     // to come back regardless, with no frame list rather than no answer.
     contents.suspendPageCalls = true;
 
     const listing = await Promise.race([
-      host.performBrowserAutomation('get_tabs', { ownerId: OWNER }),
+      host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId }),
       new Promise((resolve) => setTimeout(() => resolve('TIMED OUT'), 3000)),
     ]);
 

@@ -33,6 +33,7 @@ import {
   requestCommandConfirmation,
 } from '../agent/permissionBridge';
 import { getI18n } from '../../i18n';
+import { clearBrowserSignals, getRecentBrowserSignals } from '../observability/browserSignals';
 
 const policyMocks = vi.hoisted(() => ({
   checkTool: vi.fn(() => ({ decision: 'allow' as const })),
@@ -902,7 +903,105 @@ describe('browser gate — operation-class policy', () => {
       expect(notice?.browserOrigin).toBe(BLOCKED_SITE);
     });
 
-    it('leaves ATTENDED read-only on the cheap path — no origin probe at all', async () => {
+    /**
+     * F2 (2026-09-06 review). A block is not a rule about ACTING — it is the
+     * user naming a page they do not want Abu on, and the site card says so
+     * in as many words: 「这个网站一律不操作，包括自动任务」. Until this, that
+     * promise held for clicks and for unattended reads but not for a
+     * screenshot taken while the user sat there, and Settings' preview
+     * faithfully reported 「允许」 two rows under the card that promised the
+     * opposite.
+     */
+    it('refuses an ATTENDED read on the blocked site too, and names the site', async () => {
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain('You have blocked automation on this site');
+    });
+
+    it('leaves an ATTENDED read on a site the user did NOT block alone', async () => {
+      withTabOrigin('https://neutral.com/page');
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+    });
+
+    /**
+     * 「始终允许」 and the high-risk classifier stay OUT of the attended read
+     * path — only a block was added. A bank page must not start prompting on
+     * a screenshot just because the user blocked some unrelated site.
+     */
+    it('does not let the high-risk classifier reach an attended read', async () => {
+      withTabOrigin('https://www.paypal.com/myaccount/transfer');
+      const confirm = vi.fn(async () => true);
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The origin probe came back empty while a block was in force. The read
+     * goes ahead — a human is watching it, and failing closed on a screenshot
+     * because the browser host was slow would break the path that runs
+     * constantly — but `evaluateBrowserGate` sees `'default'` and cannot tell
+     * "not blocked" from "could not check", so the gate leaves a signal.
+     */
+    it('lets an attended read through when the origin will not resolve, and records that it could not check', async () => {
+      // The tab is owned by another conversation, so `get_tabs` answers with
+      // nothing this run may claim — the host's own ownership rule.
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+      clearBrowserSignals();
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot',
+        { tabId: 4242 },
+        attendedOwner,
+        (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(getRecentBrowserSignals().filter((r) => r.kind === 'site_check_unresolved'))
+        .toHaveLength(1);
+    });
+
+    it('records nothing of the kind for a user who has blocked nothing', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+      });
+      withTabOrigin(`${BLOCKED_SITE}/statement`);
+      clearBrowserSignals();
+
+      await checkToolApproval(
+        'abu-browser__screenshot', { tabId: 4242 }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(getRecentBrowserSignals().filter((r) => r.kind === 'site_check_unresolved'))
+        .toHaveLength(0);
+    });
+
+    /**
+     * A1 — the zero-regression pin. Resolving an origin is an MCP round-trip
+     * on the path that runs most often (snapshot / screenshot / extract), so a
+     * user who has never blocked anything must keep the shipped path exactly:
+     * no probe, no verdict lookup, no cost. This is what makes the rule above
+     * affordable, and it is the assertion that breaks if someone ever
+     * "simplifies" the condition to always resolve.
+     */
+    it('never probes at all for an attended read when the user has blocked nothing', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
+      });
       withTabOrigin(`${BLOCKED_SITE}/statement`);
 
       const decision = await checkToolApproval(

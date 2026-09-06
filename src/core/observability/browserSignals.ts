@@ -70,6 +70,25 @@ export type BrowserSignalEvent =
       runMode: 'attended' | 'unattended';
     }
   /**
+   * F2 (2026-09-06 review) — an attended READ could not be checked against the
+   * user's block list, because the origin would not resolve.
+   *
+   * Emitted only when there is something to enforce: the user has blocked at
+   * least one site, the tool acts on a page, and the origin probe came back
+   * empty. The read is allowed anyway (a human is watching it, and failing
+   * closed on a screenshot would break the path that runs constantly), so
+   * without this event the miss would leave no trace at all — the gate hands
+   * `evaluateBrowserGate` a `'default'` verdict, which cannot say whether it
+   * means "not blocked" or "could not check".
+   *
+   * Carries no origin, because there is none — that is the whole event.
+   */
+  | {
+      kind: 'site_check_unresolved';
+      tool: string;
+      opClass: BrowserOperationClass;
+    }
+  /**
    * U7 / G2 — a human answered (or failed to answer) an unattended approval
    * over IM. This is the ONLY human decision in the whole unattended path,
    * and it used to land without a trace.

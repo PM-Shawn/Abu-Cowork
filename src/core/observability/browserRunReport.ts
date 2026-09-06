@@ -404,7 +404,10 @@ export function buildBrowserRunReport(
         break;
       default:
         // fallback_to_script / repeat_action / confirm_prompt / tab_lifetime /
-        // task_end carry no row of their own in this card.
+        // task_end / site_check_unresolved carry no row of their own in this
+        // card. The last one is deliberate: "a read could not be checked
+        // against your block list" is an operator signal, not something to put
+        // in front of a user at 8am.
         break;
     }
   }

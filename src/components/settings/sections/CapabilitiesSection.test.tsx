@@ -2059,6 +2059,49 @@ describe('CapabilitiesSection', () => {
     });
 
     /**
+     * F1 (2026-09-06 review). The domain table is only half of what
+     * `highRiskSites.ts` recognizes — the other half is the PATH
+     * (`/checkout`, `/transfer`, `/wire`), which is what gives it reach
+     * beyond a list nobody can finish. The preview used to hand the
+     * classifier `normalizeBrowserOrigin`'s output, and that function accepts
+     * a URL with a path and returns the origin without complaining, so this
+     * whole half was silently discarded: an ordinary shop's checkout page
+     * previewed as an ordinary site while the real gate refused it. The
+     * contract test cannot catch this — it builds its own `siteVerdict` and
+     * never runs this component — so the pin lives here.
+     */
+    it('flags a checkout PATH on a site whose domain is ordinary', async () => {
+      useSettingsStore.setState({
+        // Standing 「始终允许」, so the verdict the path has to override is the
+        // most permissive one there is: without the fix this cell read
+        // 「允许」 for an automatic run the gate would refuse outright.
+        browserSitePermissions: testSiteVerdicts({ 'https://shop.example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://shop.example.com/checkout');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Refused');
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Money movement');
+      expect(cell(CLICK, 'While you are here')).toContain('Asks first');
+    });
+
+    /** The same address with the path removed is an ordinary site again —
+     *  so the row above is the PATH being read, not the host. */
+    it('leaves the same shop alone when the address has no money-movement path', async () => {
+      useSettingsStore.setState({
+        browserSitePermissions: testSiteVerdicts({ 'https://shop.example.com': 'allowed' }),
+        browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+        allowUnattendedBrowser: true,
+      });
+      const user = userEvent.setup();
+      await preview(user, 'https://shop.example.com/cart');
+
+      expect(cell(CLICK, 'Automatic tasks')).toContain('Allowed');
+    });
+
+    /**
      * The load-bearing property of the whole feature: a preview that acted
      * would be a permission bypass wearing a settings row. Nothing may reach
      * the browser, and no verdict may be written.

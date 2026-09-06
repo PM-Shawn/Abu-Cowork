@@ -517,9 +517,28 @@ function BrowserPermissionPreview() {
 
   const trimmed = draft.trim();
   const origin = trimmed === '' ? null : normalizeBrowserOrigin(trimmed);
+  /**
+   * The FULL address the user typed, kept alongside the origin rather than
+   * replaced by it.
+   *
+   * The two facts the gate gathers are keyed differently and the preview has to
+   * gather them the same way, or it disagrees with the gate at the one jump the
+   * contract test cannot see (it constructs its own `siteVerdict` and never
+   * runs this component). The stored verdict is per-ORIGIN; the high-risk
+   * classifier reads the whole URL, because half of what it recognizes lives in
+   * the PATH — `/checkout`, `/transfer`, `/wire` (`highRiskSites.ts`:
+   * "the path patterns are what gives it reach beyond the list"). Handing it
+   * `normalizeBrowserOrigin`'s output threw that half away silently — the
+   * function ACCEPTS a URL with a path and returns the origin without
+   * complaining — so `https://shop.example.com/checkout` previewed as an
+   * ordinary site while the real gate refused it. Wrong in the direction that
+   * matters least for safety and most for trust: the preview taught a model of
+   * the settings that the gate does not honour.
+   */
+  const targetUrl = origin === null ? null : trimmed;
 
   const rows = useMemo(() => {
-    if (origin === null) return null;
+    if (origin === null || targetUrl === null) return null;
     /*
       Exactly what the gate does with a target URL: the stored verdict, unless
       the classifier calls the page money-movement or government — in which case
@@ -529,7 +548,7 @@ function BrowserPermissionPreview() {
     const stored = sitePermissions[origin];
     const siteVerdict: DecideBrowserOperationSiteVerdict = stored === 'denied'
       ? 'denied'
-      : isHighRiskUrl(origin) ? 'high-risk' : (stored ?? 'default');
+      : isHighRiskUrl(targetUrl) ? 'high-risk' : (stored ?? 'default');
 
     return PREVIEW_CLASSES.map(({ opClass, labelKey }) => ({
       opClass,
@@ -573,7 +592,7 @@ function BrowserPermissionPreview() {
         };
       }),
     }));
-  }, [origin, sitePermissions, policy, allowUnattended, permissionMode, t]);
+  }, [origin, targetUrl, sitePermissions, policy, allowUnattended, permissionMode, t]);
 
   const verdictColor = (verdict: 'allow' | 'ask' | 'deny'): string =>
     verdict === 'allow'

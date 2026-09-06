@@ -398,12 +398,19 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
    * This used to be `getSnapshot: () => params.settingsSnapshot` — a snapshot
    * frozen for the whole life of the subagent. The original note called that an
    * acceptable simplification because a subagent run is short; it is not. A
-   * delegated agent can browse for minutes, and every permission it consults
-   * lives in these settings — so a user who noticed something going wrong and
-   * turned the unattended-browser master switch OFF was still read as having it
-   * ON by every subagent already running. That is the one case S10/AC-S16's
-   * 「关闭总闸阻止下一浏览器动作」 promises to cover, and the frozen snapshot is
-   * where it was being lost.
+   * delegated agent can browse for minutes, and a user who changes a setting
+   * mid-run expects the change to take effect, not to wait for the run to end.
+   *
+   * WHAT THIS DOES AND DOES NOT COVER. What was frozen is what the subagent
+   * LOOP reads out of settings for itself — its turn limit, its model, the
+   * per-tool switches it consults directly. The browser gate is NOT in that
+   * set and never was: a sidecar-hosted tool call goes back to the shell over
+   * `approval.check`, and the shell answers from the renderer's LIVE store. So
+   * turning the unattended-browser master switch off did already stop the next
+   * browser action of a running subagent; do not read this comment as saying
+   * it did not. (S10/AC-S16 is satisfied by that round-trip, not by this
+   * line.) The freeze was still a real defect — a run must not read a stale
+   * turn limit or a stale model either — and SCOPE-RULING §7 named it.
    *
    * Seeding first preserves the previous behaviour for the only case the freeze
    * was actually protecting: a subagent that starts before any `state.settings`

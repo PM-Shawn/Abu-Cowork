@@ -55,6 +55,40 @@ export const MAX_APP_LINK_URL_CHARS = 2048;
 /** Accepted `ui/update-model-context` calls per block, per rolling minute. */
 export const MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE = 20;
 /**
+ * `resources/read` + `resources/list` budget per block, per rolling minute.
+ * Reads are cheaper and far more legitimate than `tools/call` (an app paging
+ * through its own server's data is normal), so they get their own, larger
+ * budget rather than eating the action budget — but they are still bounded:
+ * every read is host work, and an unbounded loop is a denial-of-service on the
+ * connector and on the audit list alike.
+ */
+export const MAX_APP_RESOURCE_READS_PER_MINUTE = 60;
+/**
+ * In-flight `resources/read` calls one block may have at once. The per-minute
+ * budget bounds the RATE; this bounds the pile-up an app can create by firing
+ * reads without awaiting them (each one holds a connector request open).
+ */
+export const MAX_CONCURRENT_APP_RESOURCE_READS = 4;
+/**
+ * How recently the HOST must have seen a real user gesture inside the block for
+ * an app-initiated fullscreen request to count as user-driven. Gestures inside
+ * the sandboxed iframe are invisible to the host by design, so this is
+ * deliberately generous — a user who clicked the app's own "expand" control
+ * clicked the host wrapper on the way in.
+ */
+export const FULLSCREEN_GESTURE_WINDOW_MS = 2_000;
+/**
+ * How long a USER-initiated exit from fullscreen suppresses app fullscreen
+ * requests. Without it an app can re-request the moment the overlay closes and
+ * hold the window hostage; and the very click that closed the overlay is itself
+ * a gesture, so the cool-down has to outrank the gesture check.
+ */
+export const FULLSCREEN_EXIT_COOLDOWN_MS = 5_000;
+/** Denial handed to an app that asked for fullscreen unprompted. */
+export const FULLSCREEN_GESTURE_REQUIRED_MESSAGE = 'fullscreen requires a user gesture';
+/** Denial handed to an app that piled up more reads than the block allows. */
+export const TOO_MANY_RESOURCE_READS_MESSAGE = 'too many concurrent resource reads';
+/**
  * Trailing-edge coalescing window for the PERSISTED copy of the model context.
  * The in-memory value still updates on every accepted call (the expander is
  * live); only the write-through to conversation storage is throttled, so an app
@@ -214,13 +248,19 @@ export type McpAppAuditOutcome =
   | 'declined'
   | 'rate-limited'
   | 'rejected-scheme'
-  | 'too-long';
+  | 'too-long'
+  /** The host refused it outright (no user gesture, too many reads in flight). */
+  | 'denied'
+  /** Completed normally — `summary` describes what was read/listed. */
+  | 'ok'
+  /** The underlying read/list threw; `summary` carries the reason. */
+  | 'error';
 
 /** One row under the tool card: what the interface asked to do on the user's
  *  behalf, whether or not it was allowed to. */
 export interface McpAppAuditEntry {
   id: string;
-  kind: 'tool-call' | 'open-link';
+  kind: 'tool-call' | 'open-link' | 'resource' | 'display-mode';
   tool: string;
   args: Record<string, unknown>;
   /** Text summary of the result, or the denial reason. */
@@ -272,6 +312,18 @@ export interface AppBridgeHandlerDeps {
    *  {@link MODEL_CONTEXT_PERSIST_INTERVAL_MS}; last value wins. */
   persistModelContext(text: string): void;
   setDisplayMode(mode: 'inline' | 'fullscreen'): void;
+  /**
+   * When the host last saw a real user gesture (`pointerdown`/`keydown`) inside
+   * this block, or `undefined` if it never has. Read at call time, so the host
+   * can back it with a ref.
+   */
+  lastUserGestureAt?(): number | undefined;
+  /**
+   * When the user last left fullscreen THEMSELVES (close button, backdrop,
+   * Escape), or `undefined` if they never did. An app-driven return to inline
+   * must NOT set this — it is the signal that the user said no.
+   */
+  lastUserExitAt?(): number | undefined;
   onAudit(entry: McpAppAuditEntry): void;
   onRateLimited(): void;
   now?(): number;
@@ -320,6 +372,23 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
     APP_RATE_LIMIT_WINDOW_MS,
     now,
   );
+  // Reads/lists are read-only and get their own, larger budget (see the
+  // constant) instead of competing with the action budget.
+  const resourceLimiter = createRateLimiter(
+    MAX_APP_RESOURCE_READS_PER_MINUTE,
+    APP_RATE_LIMIT_WINDOW_MS,
+    now,
+  );
+  let inFlightReads = 0;
+  /**
+   * One free fullscreen, spent by the first request that has no host gesture
+   * behind it. Apps that open fullscreen as they load are legitimate and the
+   * host cannot see the gesture that started the tool call, so the FIRST
+   * request of a session is honoured; every later one needs a fresh gesture.
+   * A user-initiated exit burns it — once the user has said no, "the app just
+   * loaded" is no longer a story anyone can tell.
+   */
+  let fullscreenGraceAvailable = true;
   const schedule = deps.schedule ?? ((fn: () => void, ms: number) => {
     const handle = setTimeout(fn, ms);
     return () => clearTimeout(handle);
@@ -345,6 +414,32 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
 
   const audit = (entry: Omit<McpAppAuditEntry, 'id'>): void => {
     deps.onAudit({ id: nextAuditId(), ...entry });
+  };
+
+  /**
+   * 🔴 The fullscreen hostage gate. `ui/request-display-mode` is the one call
+   * that takes over the whole window, and an app can fire it from a timer — so
+   * without this an app can re-enter fullscreen the instant the user leaves and
+   * the user has no way out that sticks.
+   *
+   * Order matters: the cool-down is checked BEFORE the gesture, because the
+   * click that closed the overlay is itself a gesture on the host wrapper and
+   * would otherwise re-authorise the very thing the user just refused.
+   */
+  const mayGoFullscreen = (): boolean => {
+    const t = now();
+    const exitedAt = deps.lastUserExitAt?.();
+    if (exitedAt !== undefined) {
+      fullscreenGraceAvailable = false;
+      if (t - exitedAt < FULLSCREEN_EXIT_COOLDOWN_MS) return false;
+    }
+    const gestureAt = deps.lastUserGestureAt?.();
+    if (gestureAt !== undefined && t - gestureAt <= FULLSCREEN_GESTURE_WINDOW_MS) return true;
+    if (fullscreenGraceAvailable) {
+      fullscreenGraceAvailable = false;
+      return true;
+    }
+    return false;
   };
 
   return {
@@ -415,20 +510,85 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
       }
     },
 
+    /**
+     * Read-only, same-server, and — as of this pass — budgeted and audited.
+     * A read moves connector data into a sandbox the user cannot see into, so
+     * "read-only" is not "free": it gets a rolling-minute budget, a cap on how
+     * many can be in flight at once, and a row per attempt like every other
+     * thing the interface does on the user's behalf.
+     */
     async onreadresource(params) {
       const uri = params?.uri;
       if (typeof uri !== 'string' || uri.length === 0) {
         throw new AppBridgeRpcError(INVALID_PARAMS, 'resources/read requires a uri');
       }
-      if (uri.startsWith('ui://')) {
-        const resource = await deps.readAppResource(uri);
-        return { contents: [{ uri, mimeType: resource.mimeType, text: resource.text }] };
+      const args = { uri } as Record<string, unknown>;
+      const refuse = (outcome: McpAppAuditOutcome, code: number, message: string): never => {
+        audit({ kind: 'resource', tool: 'resources/read', args, summary: message, isError: true, outcome });
+        throw new AppBridgeRpcError(code, message);
+      };
+
+      if (!resourceLimiter.tryConsume()) {
+        deps.onRateLimited();
+        return refuse(
+          'rate-limited',
+          RATE_LIMITED,
+          `The app exceeded ${MAX_APP_RESOURCE_READS_PER_MINUTE} resource reads per minute`,
+        );
       }
-      return deps.readServerResource(uri);
+      if (inFlightReads >= MAX_CONCURRENT_APP_RESOURCE_READS) {
+        return refuse('denied', DENIED, TOO_MANY_RESOURCE_READS_MESSAGE);
+      }
+
+      inFlightReads++;
+      try {
+        const result = uri.startsWith('ui://')
+          ? await deps.readAppResource(uri).then((resource) => ({
+            contents: [{ uri, mimeType: resource.mimeType, text: resource.text }],
+          }))
+          : await deps.readServerResource(uri);
+        audit({ kind: 'resource', tool: 'resources/read', args, summary: uri, isError: false, outcome: 'ok' });
+        return result;
+      } catch (error) {
+        // Rethrown as-is: unlike a tool call, this path's failures are the
+        // HOST's own caps (byte ceiling, unknown uri), not server text that
+        // could carry paths or credentials.
+        const message = error instanceof Error ? error.message : String(error);
+        audit({ kind: 'resource', tool: 'resources/read', args, summary: message, isError: true, outcome: 'error' });
+        throw error;
+      } finally {
+        inFlightReads--;
+      }
     },
 
     async onlistresources(params) {
-      return deps.listResources(params?.cursor);
+      const args = { cursor: params?.cursor } as Record<string, unknown>;
+      if (!resourceLimiter.tryConsume()) {
+        deps.onRateLimited();
+        const message = `The app exceeded ${MAX_APP_RESOURCE_READS_PER_MINUTE} resource reads per minute`;
+        audit({ kind: 'resource', tool: 'resources/list', args, summary: message, isError: true, outcome: 'rate-limited' });
+        throw new AppBridgeRpcError(RATE_LIMITED, message);
+      }
+      try {
+        const result = await deps.listResources(params?.cursor);
+        const uris = result.resources
+          .map((resource) => String(resource.uri ?? ''))
+          .filter((uri) => uri.length > 0)
+          .join(', ');
+        audit({
+          kind: 'resource',
+          tool: 'resources/list',
+          args,
+          summary: uris.length > MAX_AUDIT_SUMMARY_CHARS ? `${uris.slice(0, MAX_AUDIT_SUMMARY_CHARS)}…` : uris,
+          isError: false,
+          outcome: 'ok',
+        });
+        return result;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        audit({ kind: 'resource', tool: 'resources/list', args, summary: message, isError: true, outcome: 'error' });
+        throw error;
+      }
     },
 
     /**
@@ -523,6 +683,26 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableA
           INVALID_PARAMS,
           `Display mode ${String(mode)} is not supported`,
         );
+      }
+      const args = { mode } as Record<string, unknown>;
+      const refuse = (outcome: McpAppAuditOutcome, code: number, message: string): never => {
+        audit({ kind: 'display-mode', tool: 'ui/request-display-mode', args, summary: message, isError: true, outcome });
+        throw new AppBridgeRpcError(code, message);
+      };
+
+      // Shares the action budget: taking over the window is as much "the
+      // interface acted on its own" as calling a tool is.
+      if (!limiter.tryConsume()) {
+        deps.onRateLimited();
+        return refuse(
+          'rate-limited',
+          RATE_LIMITED,
+          `The app exceeded ${MAX_APP_TOOL_CALLS_PER_MINUTE} tool calls per minute`,
+        );
+      }
+      // Going back to inline is always allowed — only the escalation is gated.
+      if (mode === 'fullscreen' && !mayGoFullscreen()) {
+        return refuse('denied', DENIED, FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
       }
       deps.setDisplayMode(mode);
       return { mode };

@@ -143,8 +143,16 @@ function join(prefix: string, domains: string[]): string {
  * asset and connect directives, and only with valid https origins.
  * `frame-src` / `form-action` / `base-uri` are hard-coded to `'none'` and can
  * never be widened (so `frameDomains` / `baseUriDomains` are inert by design).
+ *
+ * `accepted` is the deduped list of origins that DID make it into the policy.
+ * The host discloses it: with `connect-src 'none'` an `img-src` origin is a
+ * working outbound channel (the app can encode data in an image URL), so which
+ * third parties an interface may reach is a fact the user should be able to see,
+ * not just a fact the CSP knows.
  */
-export function buildAppCsp(declared?: McpAppCspDeclaration): { csp: string; rejected: string[] } {
+export function buildAppCsp(
+  declared?: McpAppCspDeclaration,
+): { csp: string; rejected: string[]; accepted: string[] } {
   const rejected: string[] = [];
   const resourceDomains = normalizeDomains(declared?.resourceDomains, rejected);
   const connectDomains = normalizeDomains(declared?.connectDomains, rejected);
@@ -162,7 +170,10 @@ export function buildAppCsp(declared?: McpAppCspDeclaration): { csp: string; rej
     "base-uri 'none'",
   ];
 
-  return { csp: directives.join('; '), rejected };
+  const accepted = [...resourceDomains];
+  for (const origin of connectDomains) if (!accepted.includes(origin)) accepted.push(origin);
+
+  return { csp: directives.join('; '), rejected, accepted };
 }
 
 // ---------------------------------------------------------------------------

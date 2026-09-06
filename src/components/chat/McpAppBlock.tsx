@@ -38,9 +38,9 @@ import type { ToolDefinition, ToolResult, ToolResultContent } from '@/types';
  *  the plain tool result. Tests pass 0 to disable the timer entirely. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
-/** How many rejected domains the disclosure line names before it says "and
- *  more" — the note is one line under a tool card, not a report. */
-const MAX_LISTED_REJECTED_DOMAINS = 3;
+/** How many domains (rejected or accepted) the disclosure line names before it
+ *  says "and more" — the note is one line under a tool card, not a report. */
+const MAX_LISTED_DOMAINS = 3;
 
 /** How much of an app-supplied URL the consent dialog prints. The rest is
  *  reachable through the element's `title`, so a long URL neither truncates
@@ -407,6 +407,19 @@ export default function McpAppBlock({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  /**
+   * 🔴 Fullscreen hostage guard (policy in `appBridgeHandlers`, evidence here).
+   * `lastUserGestureAt` is the last pointerdown/keydown the HOST saw inside this
+   * block — a gesture inside the sandboxed iframe never crosses the document
+   * boundary, so this is all the host can honestly know. `lastUserExitAt` is set
+   * ONLY when the user left fullscreen themselves; an app-driven return to
+   * inline must not look like the user saying no.
+   */
+  const lastUserGestureAtRef = useRef<number | undefined>(undefined);
+  const lastUserExitAtRef = useRef<number | undefined>(undefined);
+  const noteUserGesture = useCallback(() => {
+    lastUserGestureAtRef.current = Date.now();
+  }, []);
   const sessionRef = useRef<AppBridgeSession | null>(null);
   /** Raw server result for THIS step, taken from the LRU at most once. */
   const rawResultRef = useRef<{ key: string; value: RawCallToolResult | undefined } | null>(null);
@@ -491,7 +504,7 @@ export default function McpAppBlock({
   }, [active, server, resourceUri, storeDisconnected]);
 
   const meta = (resource?.meta ?? undefined) as McpAppResourceMeta | undefined;
-  const { csp, rejected } = useMemo(() => buildAppCsp(meta?.csp), [meta]);
+  const { csp, rejected, accepted } = useMemo(() => buildAppCsp(meta?.csp), [meta]);
   const srcdoc = useMemo(
     () => (resource ? buildAppSrcdoc(resource.text, csp) : undefined),
     [resource, csp],
@@ -501,15 +514,31 @@ export default function McpAppBlock({
   const unsupportedMeta = Boolean(meta?.domain) || Boolean(meta?.permissions);
   // Same idea for domains `buildAppCsp` threw away: the app will fail to reach
   // them at runtime, so say which ones rather than leaving a silent CSP block.
-  const ignoredDomains = useMemo(() => {
-    if (rejected.length === 0) return undefined;
-    const shown = rejected.slice(0, MAX_LISTED_REJECTED_DOMAINS).join(', ');
-    const listed = rejected.length > MAX_LISTED_REJECTED_DOMAINS
+  const listDomains = useCallback((domains: string[]) => {
+    const shown = domains.slice(0, MAX_LISTED_DOMAINS).join(', ');
+    return domains.length > MAX_LISTED_DOMAINS
       ? `${shown}${t.chat.mcpAppIgnoredDomainsMore}`
       : shown;
-    return format(t.chat.mcpAppIgnoredDomains, { domains: listed });
-  }, [rejected, t]);
-  const disclosure = [unsupportedMeta ? t.chat.mcpAppUnsupportedMeta : undefined, ignoredDomains]
+  }, [t]);
+  const ignoredDomains = useMemo(() => (
+    rejected.length === 0
+      ? undefined
+      : format(t.chat.mcpAppIgnoredDomains, { domains: listDomains(rejected) })
+  ), [rejected, listDomains, t]);
+  // The accepted origins are disclosed too: `connect-src` may be `'none'`, but
+  // an allowed `img-src` origin still carries whatever the app puts in a URL,
+  // so "this interface may reach a, b" is part of what the user is agreeing to
+  // by leaving it running — not an implementation detail of the CSP.
+  const allowedDomains = useMemo(() => (
+    accepted.length === 0
+      ? undefined
+      : format(t.chat.mcpAppAllowedDomains, { domains: listDomains(accepted) })
+  ), [accepted, listDomains, t]);
+  const disclosure = [
+    unsupportedMeta ? t.chat.mcpAppUnsupportedMeta : undefined,
+    ignoredDomains,
+    allowedDomains,
+  ]
     .filter((part): part is string => Boolean(part))
     .join(' · ');
 
@@ -576,6 +605,8 @@ export default function McpAppBlock({
       setModelContext: (text) => setLiveModelContext(text),
       persistModelContext: (text) => handlerDepsRef.current.persistModelContext(text),
       setDisplayMode: (mode) => setDisplayMode(mode),
+      lastUserGestureAt: () => lastUserGestureAtRef.current,
+      lastUserExitAt: () => lastUserExitAtRef.current,
       onAudit: (entry) => setAudit((prev) => [...prev, entry].slice(-MAX_AUDIT_ROWS)),
       onRateLimited: () => setRateLimited(true),
     });
@@ -675,7 +706,12 @@ export default function McpAppBlock({
     void sessionRef.current?.sendHostContextChange({ displayMode });
   }, [displayMode]);
 
-  const exitFullscreen = useCallback(() => setDisplayMode('inline'), []);
+  /** Every USER-initiated way out of fullscreen. Recording the moment is what
+   *  stops the app from dragging the user straight back in. */
+  const exitFullscreen = useCallback(() => {
+    lastUserExitAtRef.current = Date.now();
+    setDisplayMode('inline');
+  }, []);
 
   // Esc leaves fullscreen: the iframe is sandboxed and cannot offer a host
   // control of its own, so the host must always provide a way out.
@@ -688,11 +724,11 @@ export default function McpAppBlock({
   useEffect(() => {
     if (displayMode !== 'fullscreen') return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setDisplayMode('inline');
+      if (event.key === 'Escape') exitFullscreen();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [displayMode]);
+  }, [displayMode, exitFullscreen]);
 
   // ---- 4. Theme + container size -------------------------------------------
   useEffect(() => {
@@ -778,7 +814,8 @@ export default function McpAppBlock({
       case 'declined': return t.chat.mcpAppOutcomeDeclined;
       case 'rate-limited': return t.chat.mcpAppRateLimited;
       case 'rejected-scheme':
-      case 'too-long': return t.chat.mcpAppOutcomeRejected;
+      case 'too-long':
+      case 'denied': return t.chat.mcpAppOutcomeRejected;
       default: return undefined;
     }
   };
@@ -817,6 +854,10 @@ export default function McpAppBlock({
         data-testid="mcp-app-block"
         data-display-mode={displayMode}
         ref={containerRef}
+        // Capture phase, so a control that stops propagation still counts: this
+        // is evidence for the fullscreen gate, not an interaction of its own.
+        onPointerDownCapture={noteUserGesture}
+        onKeyDownCapture={noteUserGesture}
       >
         {fullscreen && (
           <div className="flex justify-end" data-testid="mcp-app-fullscreen">

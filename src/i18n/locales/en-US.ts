@@ -286,6 +286,7 @@ const enUS: TranslationDict = {
     mcpAppUnsupportedMeta: 'Ignored the extra permissions this app view asked for',
     mcpAppIgnoredDomains: 'Ignored invalid domains: {domains}',
     mcpAppIgnoredDomainsMore: '…',
+    mcpAppAllowedDomains: 'Loads assets from: {domains}',
     mcpAppAuditRow: 'The app called {tool}',
     mcpAppAuditArgs: 'Arguments',
     mcpAppAuditResult: 'Result',

@@ -334,6 +334,11 @@ export interface TranslationDict {
     mcpAppIgnoredDomains: string;
     /** Suffix appended to that list when it was truncated. */
     mcpAppIgnoredDomainsMore: string;
+    /** Same line, for the third-party origins the host DID put in the CSP —
+     *  with `connect-src 'none'` an `img-src` origin is still an outbound
+     *  channel, so who the interface may reach is worth showing.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppAllowedDomains: string;
     /** Collapsed audit row under the tool card: the app called a tool of its
      *  own server. `{tool}` is the tool name. */
     mcpAppAuditRow: string;

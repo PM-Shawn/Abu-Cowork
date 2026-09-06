@@ -59,6 +59,24 @@ describe('appHost', () => {
       expect(directive(csp, 'connect-src')).toBe("connect-src 'none'");
     });
 
+    it('reports the origins it accepted, deduped across both lists', () => {
+      const { accepted, rejected } = buildAppCsp({
+        resourceDomains: ['https://cdn.example.com', 'https://api.example.com'],
+        connectDomains: ['https://api.example.com', 'https://ws.example.com', 'http://nope.example.com'],
+      });
+      // Order is resource-first, then whatever connect adds; no duplicates.
+      expect(accepted).toEqual([
+        'https://cdn.example.com',
+        'https://api.example.com',
+        'https://ws.example.com',
+      ]);
+      expect(rejected).toEqual(['http://nope.example.com']);
+    });
+
+    it('accepts nothing when the resource declares nothing', () => {
+      expect(buildAppCsp().accepted).toEqual([]);
+    });
+
     it('always forces frame-src, form-action and base-uri to none', () => {
       const { csp } = buildAppCsp({
         connectDomains: ['https://api.example.com'],

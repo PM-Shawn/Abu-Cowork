@@ -286,6 +286,7 @@ const zhCN: TranslationDict = {
     mcpAppUnsupportedMeta: '已忽略该界面申请的额外权限',
     mcpAppIgnoredDomains: '已忽略无效域名：{domains}',
     mcpAppIgnoredDomainsMore: ' 等',
+    mcpAppAllowedDomains: '允许加载资源自：{domains}',
     mcpAppAuditRow: '界面调用了 {tool}',
     mcpAppAuditArgs: '参数',
     mcpAppAuditResult: '结果',

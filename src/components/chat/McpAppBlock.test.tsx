@@ -203,6 +203,35 @@ describe('McpAppBlock', () => {
       expect(screen.getByTestId('mcp-app-unsupported')).toBeInTheDocument();
     });
 
+    it('names the origins the interface IS allowed to load assets from', async () => {
+      renderBlock({
+        deps: {
+          readResource: async () => appResource({
+            meta: {
+              csp: {
+                resourceDomains: ['https://cdn.a.example.com', 'https://cdn.b.example.com'],
+                connectDomains: ['https://api.c.example.com', 'https://api.d.example.com'],
+              },
+            },
+          }),
+        },
+      });
+      await settle();
+
+      const note = screen.getByTestId('mcp-app-unsupported');
+      expect(note).toHaveTextContent('允许加载资源自');
+      expect(note).toHaveTextContent('https://cdn.a.example.com');
+      // Capped at three, so the fourth accepted origin is summarised, not spelled out.
+      expect(note).toHaveTextContent('等');
+      expect(note.textContent).not.toContain('api.d.example.com');
+    });
+
+    it('says nothing about allowed origins when the app declared none', async () => {
+      renderBlock();
+      await settle();
+      expect(screen.queryByTestId('mcp-app-unsupported')).toBeNull();
+    });
+
     it('names the domains the CSP builder threw away, capped at three', async () => {
       renderBlock({
         deps: {
@@ -563,6 +592,46 @@ describe('McpAppBlock', () => {
       expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
       expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
       expect(sink.sessions).toHaveLength(1);
+    });
+
+    it('refuses to be re-opened right after the user closed it', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+      await act(async () => {
+        await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
+      });
+      await act(async () => { fireEvent.click(screen.getByTestId('mcp-app-fullscreen-exit')); });
+
+      // The hostage loop: the app asks again the moment the overlay closes.
+      await expect(
+        sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never),
+      ).rejects.toThrow(/user gesture/);
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+      expect(screen.queryByTestId('mcp-app-fullscreen')).toBeNull();
+    });
+
+    it('honours a fullscreen request that follows a real gesture inside the block', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+      // Burn the one-shot "the app just loaded" grace, then let the APP put
+      // itself back inline — that is not a user refusal, so no cool-down.
+      await act(async () => {
+        await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
+        await sink.handlers?.onrequestdisplaymode?.({ mode: 'inline' } as never);
+      });
+      await expect(
+        sink.handlers!.onrequestdisplaymode!({ mode: 'fullscreen' } as never),
+      ).rejects.toThrow(/user gesture/);
+
+      // A pointerdown on the block wrapper is the evidence the host CAN see —
+      // a gesture inside the sandboxed iframe never crosses the boundary.
+      await act(async () => { fireEvent.pointerDown(screen.getByTestId('mcp-app-block')); });
+      await act(async () => {
+        await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
+      });
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'fullscreen');
     });
 
     it('refuses pip and stays inline', async () => {

@@ -217,6 +217,37 @@ describe('MessageGroup · MCP Apps dispatch', () => {
     });
   });
 
+  it('files the block against the group’s OWN conversation, not the active one', async () => {
+    connectWeather();
+    const messages = buildMessages([appCall]);
+    const conversation: Conversation = {
+      id: CONV_ID,
+      title: 'MCP Apps',
+      messages,
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    // The store points somewhere else. Approvals, `modelContext` and the
+    // persisted `ui` must all follow the PROP — the conversation this group
+    // actually belongs to.
+    useChatStore.setState({
+      activeConversationId: 'conv-elsewhere',
+      conversations: { [CONV_ID]: conversation },
+      agentStates: new Map(),
+    });
+    await act(async () => {
+      render(<MessageGroup conversationId={CONV_ID} messages={messages} isLastGroup />);
+      await Promise.resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(blockProps[0]).toMatchObject({ conversationId: CONV_ID, toolCallId: 'tc-app' });
+    const stored = useChatStore.getState().conversations[CONV_ID]
+      .messages.find((m) => m.id === 'a-tools')?.toolCalls?.[0];
+    expect(stored?.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/view.html' });
+  });
+
   it('persists the resolved ui onto the step so replay does not need the server', async () => {
     connectWeather();
     await renderGroup([appCall]);

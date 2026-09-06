@@ -755,18 +755,23 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
   // Persist the resolved `ui` on the step so a reopened conversation can
   // rebuild the interface without asking the MCP client again (spec §4.4).
+  // `conversationId` (the prop), not the globally active conversation: this
+  // group belongs to ONE conversation, and the app block's approvals, model
+  // context and persisted `ui` must all be filed against that one. The two
+  // agree while the group is on screen; the prop is the one that stays correct
+  // if it ever renders outside the active conversation.
   useEffect(() => {
-    if (!activeConversationId) return;
+    if (!conversationId) return;
     for (const step of mcpAppSteps) {
       if (step.toolCall.ui) continue;
       useChatStore.getState().setToolCallAppUi(
-        activeConversationId,
+        conversationId,
         step.messageId,
         step.toolCall.id,
         step.ui,
       );
     }
-  }, [mcpAppSteps, activeConversationId]);
+  }, [mcpAppSteps, conversationId]);
 
   // Check if any tool is executing
   const isAnyExecuting = allToolCalls.some((tc) => tc.isExecuting);
@@ -1292,7 +1297,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               );
             })}
 
-            {activeConv?.id && mcpAppSteps.map((step) => (
+            {conversationId && mcpAppSteps.map((step) => (
               <McpAppBlock
                 key={`mcp-app-${step.toolCall.id}`}
                 toolCallId={step.toolCall.id}
@@ -1303,7 +1308,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 resultContent={step.toolCall.resultContent}
                 isError={step.toolCall.isError}
                 isExecuting={step.toolCall.isExecuting}
-                conversationId={activeConv.id}
+                conversationId={conversationId}
                 toolName={step.toolCall.name}
                 messageId={step.messageId}
                 modelContext={step.toolCall.modelContext}

@@ -8,8 +8,14 @@ import {
   MAX_APP_LINK_URL_CHARS,
   MAX_APP_MODEL_CONTEXT_BYTES,
   MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE,
+  MAX_APP_RESOURCE_READS_PER_MINUTE,
   MAX_APP_TOOL_CALLS_PER_MINUTE,
+  MAX_CONCURRENT_APP_RESOURCE_READS,
   MODEL_CONTEXT_PERSIST_INTERVAL_MS,
+  FULLSCREEN_EXIT_COOLDOWN_MS,
+  FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
+  FULLSCREEN_GESTURE_WINDOW_MS,
+  TOO_MANY_RESOURCE_READS_MESSAGE,
   createAppBridgeHandlers,
   createRateLimiter,
   textFromContentBlocks,
@@ -266,6 +272,77 @@ describe('resources', () => {
     expect(h.spies.listResources).toHaveBeenCalledWith('c1');
     expect(listed.resources).toHaveLength(1);
   });
+
+  it('audits every read and every list, not just the refused ones', async () => {
+    const h = harness();
+    await h.handlers.onreadresource({ uri: 'weather://forecast/today' });
+    await h.handlers.onlistresources({});
+    expect(h.audit).toMatchObject([
+      { kind: 'resource', tool: 'resources/read', outcome: 'ok', isError: false, args: { uri: 'weather://forecast/today' } },
+      { kind: 'resource', tool: 'resources/list', outcome: 'ok', isError: false, summary: 'ui://a/b' },
+    ]);
+  });
+
+  it('audits a failed read as an errored row and still propagates', async () => {
+    const h = harness({
+      readServerResource: vi.fn(async () => { throw new Error('Resource exceeds 2 MiB'); }),
+    });
+    await expect(h.handlers.onreadresource({ uri: 'weather://big' })).rejects.toThrow('2 MiB');
+    expect(h.audit).toMatchObject([
+      { kind: 'resource', tool: 'resources/read', outcome: 'error', isError: true, summary: 'Resource exceeds 2 MiB' },
+    ]);
+  });
+
+  it(`runs ${MAX_CONCURRENT_APP_RESOURCE_READS} reads at once and refuses the next until one lands`, async () => {
+    const pending: Array<(value: { contents: [] }) => void> = [];
+    const read = vi.fn(() => new Promise<never>((resolve) => {
+      pending.push(resolve as unknown as (value: { contents: [] }) => void);
+    }));
+    const h = harness({ readServerResource: read });
+    const inFlight = Array.from(
+      { length: MAX_CONCURRENT_APP_RESOURCE_READS },
+      (_, i) => h.handlers.onreadresource({ uri: `weather://r${i}` }),
+    );
+    await Promise.resolve();
+    expect(pending).toHaveLength(MAX_CONCURRENT_APP_RESOURCE_READS);
+
+    const error = await rpcError(() => h.handlers.onreadresource({ uri: 'weather://over' }));
+    expect(error.code).toBe(-32000);
+    expect(error.message).toBe(TOO_MANY_RESOURCE_READS_MESSAGE);
+    expect(h.audit[h.audit.length - 1]).toMatchObject({ kind: 'resource', outcome: 'denied', isError: true });
+    // Only the four that fit ever reached the connector.
+    expect(read).toHaveBeenCalledTimes(MAX_CONCURRENT_APP_RESOURCE_READS);
+
+    pending.splice(0).forEach((resolve) => resolve({ contents: [] }));
+    await Promise.all(inFlight);
+
+    const after = h.handlers.onreadresource({ uri: 'weather://after' });
+    await Promise.resolve();
+    pending.splice(0).forEach((resolve) => resolve({ contents: [] }));
+    await expect(after).resolves.toMatchObject({ contents: [] });
+  });
+
+  it(`refuses read number ${MAX_APP_RESOURCE_READS_PER_MINUTE + 1} in a minute, then accepts again`, async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_APP_RESOURCE_READS_PER_MINUTE; i++) {
+      await h.handlers.onreadresource({ uri: `weather://r${i}` });
+    }
+    const error = await rpcError(() => h.handlers.onreadresource({ uri: 'weather://over' }));
+    expect(error.code).toBe(-32001);
+    expect(h.spies.onRateLimited).toHaveBeenCalledTimes(1);
+    expect(h.audit[h.audit.length - 1]).toMatchObject({ kind: 'resource', outcome: 'rate-limited', isError: true });
+
+    h.clock.value += 60_000;
+    await expect(h.handlers.onreadresource({ uri: 'weather://later' })).resolves.toBeDefined();
+  });
+
+  it('spends its own budget, not the tools/call one', async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_APP_RESOURCE_READS_PER_MINUTE; i++) {
+      await h.handlers.onreadresource({ uri: `weather://r${i}` });
+    }
+    await expect(h.handlers.oncalltool({ name: 'search', arguments: { query: 'q' } })).resolves.toEqual(OK);
+  });
 });
 
 describe('ui/open-link', () => {
@@ -453,5 +530,89 @@ describe('ui/request-display-mode', () => {
     const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'pip' }));
     expect(error.code).toBe(-32602);
     expect(h.spies.setDisplayMode).not.toHaveBeenCalled();
+  });
+
+  it('honours the FIRST gesture-less fullscreen request once, then asks for a gesture', async () => {
+    const h = harness();
+    await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+    const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(error.code).toBe(-32000);
+    expect(error.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+    expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows fullscreen while a host gesture is fresh, and refuses once it is stale', async () => {
+    const state: { gesture?: number } = {};
+    const h = harness({ lastUserGestureAt: () => state.gesture });
+    // Burn the one-shot grace so the gesture is doing the work.
+    await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+
+    state.gesture = h.clock.value - 500;
+    await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+
+    state.gesture = h.clock.value - (FULLSCREEN_GESTURE_WINDOW_MS + 1);
+    const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(error.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+    expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(2);
+  });
+
+  it('will not be dragged back in right after a user exit — the closing click is not consent', async () => {
+    const state: { exit?: number; gesture?: number } = {};
+    const h = harness({ lastUserExitAt: () => state.exit, lastUserGestureAt: () => state.gesture });
+    await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+
+    // The user closes it; that click IS a host gesture, and must not re-open it.
+    state.exit = h.clock.value;
+    state.gesture = h.clock.value;
+    const denied = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(denied.code).toBe(-32000);
+    expect(denied.message).toBe(FULLSCREEN_GESTURE_REQUIRED_MESSAGE);
+
+    // Still refused one millisecond before the cool-down is up.
+    h.clock.value += FULLSCREEN_EXIT_COOLDOWN_MS - 1;
+    await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+
+    // Past the cool-down the one-shot grace is gone too: a FRESH gesture or nothing.
+    h.clock.value += 2;
+    await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(1);
+
+    state.gesture = h.clock.value;
+    await expect(h.handlers.onrequestdisplaymode({ mode: 'fullscreen' })).resolves.toEqual({ mode: 'fullscreen' });
+    expect(h.spies.setDisplayMode).toHaveBeenCalledTimes(2);
+  });
+
+  it('still lets the app go back to inline inside the cool-down', async () => {
+    const state: { exit?: number } = {};
+    const h = harness({ lastUserExitAt: () => state.exit });
+    await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+    state.exit = h.clock.value;
+    await expect(h.handlers.onrequestdisplaymode({ mode: 'inline' })).resolves.toEqual({ mode: 'inline' });
+  });
+
+  it('audits a denied fullscreen request instead of failing silently', async () => {
+    const h = harness();
+    await h.handlers.onrequestdisplaymode({ mode: 'fullscreen' });
+    await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(h.audit).toMatchObject([{
+      kind: 'display-mode',
+      tool: 'ui/request-display-mode',
+      args: { mode: 'fullscreen' },
+      outcome: 'denied',
+      isError: true,
+      summary: FULLSCREEN_GESTURE_REQUIRED_MESSAGE,
+    }]);
+  });
+
+  it('shares the per-minute action budget with tools/call', async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_APP_TOOL_CALLS_PER_MINUTE; i++) {
+      await h.handlers.oncalltool({ name: 'search', arguments: { query: `q${i}` } });
+    }
+    const error = await rpcError(() => h.handlers.onrequestdisplaymode({ mode: 'fullscreen' }));
+    expect(error.code).toBe(-32001);
+    expect(h.spies.onRateLimited).toHaveBeenCalledTimes(1);
+    expect(h.spies.setDisplayMode).not.toHaveBeenCalled();
+    expect(h.audit[h.audit.length - 1]).toMatchObject({ kind: 'display-mode', outcome: 'rate-limited', isError: true });
   });
 });

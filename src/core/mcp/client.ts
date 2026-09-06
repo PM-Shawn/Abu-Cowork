@@ -10,6 +10,18 @@ import { hasEmbeddedNode } from '@/utils/nodeRuntime';
 import { getTauriFetch } from '@/core/llm/tauriFetch';
 import { createLogger } from '@/core/logging/logger';
 import { isEnterpriseModuleActive } from '@/core/enterprise/entitlement';
+import {
+  McpAppResourceCache,
+  McpAppResourceError,
+  isAppOnlyTool,
+  isAppResourceUri,
+  isMcpAppMimeType,
+  parseToolUiMetadata,
+  utf8ByteLength,
+  APP_RESOURCE_URI_PREFIX,
+  MAX_APP_RESOURCE_BYTES,
+  type McpAppResource,
+} from './appResources';
 
 const mcpLogger = createLogger('mcp');
 const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
@@ -44,7 +56,13 @@ interface ConnectedServer {
   config: MCPServerConfig;
   client: unknown;
   transport: unknown;
+  /** Tools visible to the model (registered into the agent loop's tool table). */
   tools: Map<string, ToolDefinition>;
+  /**
+   * MCP Apps tools declared `visibility: ['app']` — deliberately NOT in `tools`,
+   * so they never reach the model; only the app bridge may call them.
+   */
+  appTools: Map<string, ToolDefinition>;
 }
 
 // ============================================================
@@ -145,16 +163,22 @@ let SSEClientTransport: typeof import('@modelcontextprotocol/sdk/client/sse.js')
 let cspSafeValidator: InstanceType<
   typeof import('@modelcontextprotocol/sdk/validation/cfworker').CfWorkerJsonSchemaValidator
 > | null = null;
+// Notification schema for `notifications/resources/list_changed`, loaded lazily
+// with the rest of the SDK (keeps zod out of the startup bundle). OPTIONAL: if
+// it can't load we simply don't subscribe, and the ui:// cache falls back to
+// per-connection invalidation.
+let resourceListChangedSchema: unknown = null;
 let mcpAvailable = false;
 
 async function loadMCPSDK(): Promise<boolean> {
   if (mcpAvailable) return true;
 
-  const [clientResult, streamableResult, sseResult, cfworkerResult] = await Promise.allSettled([
+  const [clientResult, streamableResult, sseResult, cfworkerResult, typesResult] = await Promise.allSettled([
     import('@modelcontextprotocol/sdk/client/index.js'),
     import('@modelcontextprotocol/sdk/client/streamableHttp.js'),
     import('@modelcontextprotocol/sdk/client/sse.js'),
     import('@modelcontextprotocol/sdk/validation/cfworker'),
+    import('@modelcontextprotocol/sdk/types.js'),
   ]);
 
   // Core Client — required
@@ -192,6 +216,13 @@ async function loadMCPSDK(): Promise<boolean> {
   if (sseResult.status === 'fulfilled') {
     SSEClientTransport = sseResult.value.SSEClientTransport;
     console.log('[MCP] SSE transport loaded');
+  }
+
+  // resources/list_changed schema — optional (only invalidates the ui:// cache)
+  if (typesResult.status === 'fulfilled') {
+    resourceListChangedSchema = typesResult.value.ResourceListChangedNotificationSchema ?? null;
+  } else {
+    console.warn('[MCP] Resource notification schema not available:', typesResult.reason);
   }
 
   mcpAvailable = true;
@@ -304,6 +335,8 @@ export class MCPClientManager {
   private reconnectAttempts: Map<string, number> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private serverLogs: Map<string, MCPLogEntry[]> = new Map();
+  /** Cached `ui://` MCP App resources, keyed by server + uri. */
+  private appResources = new McpAppResourceCache();
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -379,6 +412,7 @@ export class MCPClientManager {
       // Discover tools
       const toolsResponse = await client.listTools();
       const tools = new Map<string, ToolDefinition>();
+      const appTools = new Map<string, ToolDefinition>();
 
       for (const tool of toolsResponse.tools) {
         const inputSchema = tool.inputSchema as {
@@ -388,6 +422,7 @@ export class MCPClientManager {
         };
 
         const properties = buildToolProperties(inputSchema);
+        const ui = parseToolUiMetadata(tool._meta);
 
         const toolDef: ToolDefinition = {
           name: `${config.name}__${tool.name}`,
@@ -400,17 +435,30 @@ export class MCPClientManager {
           execute: async (input) => {
             return this.callTool(config.name, tool.name, input);
           },
+          ...(ui ? { ui } : {}),
         };
 
-        tools.set(tool.name, toolDef);
+        // App-only tools stay out of the model's tool table (spec §4.1).
+        if (isAppOnlyTool(ui)) {
+          appTools.set(tool.name, toolDef);
+        } else {
+          tools.set(tool.name, toolDef);
+        }
       }
 
-      this.servers.set(config.name, { config, client, transport, tools });
+      // A previous connection's ui:// resources may be stale after a reconnect.
+      this.appResources.invalidateServer(config.name);
+      this.servers.set(config.name, { config, client, transport, tools, appTools });
+      this.registerResourceNotifications(config.name, client);
 
       // Reset reconnect counter on successful connection
       this.reconnectAttempts.delete(config.name);
 
-      this.addLog(config.name, 'info', `Connected, discovered ${tools.size} tools`);
+      this.addLog(
+        config.name,
+        'info',
+        `Connected, discovered ${tools.size} tools${appTools.size > 0 ? ` (+${appTools.size} app-only)` : ''}`
+      );
 
       // Set up onclose + stderr handlers (stdio transport)
       if (transportType === 'stdio' && transport instanceof TauriStdioTransport) {
@@ -425,7 +473,11 @@ export class MCPClientManager {
         };
       }
 
-      mcpLogger.info('MCP server connected', { name: config.name, toolCount: tools.size });
+      mcpLogger.info('MCP server connected', {
+        name: config.name,
+        toolCount: tools.size,
+        appToolCount: appTools.size,
+      });
       console.log(`[MCP] Connected to ${config.name}, discovered ${tools.size} tools`);
       this.notifyListeners();
     } catch (err) {
@@ -521,6 +573,7 @@ export class MCPClientManager {
     }
 
     this.servers.delete(name);
+    this.appResources.invalidateServer(name);
     this.notifyListeners();
 
     // No auto-reconnect — user can manually reconnect from the Toolbox
@@ -641,6 +694,7 @@ export class MCPClientManager {
       console.error(`[MCP] Error disconnecting from ${name}:`, err);
     }
     this.servers.delete(name);
+    this.appResources.invalidateServer(name);
     this.notifyListeners();
   }
 
@@ -672,6 +726,98 @@ export class MCPClientManager {
   }
 
   /**
+   * Look up an MCP App tool that is hidden from the model
+   * (`_meta.ui.visibility` without `'model'`). Model-visible tools stay in
+   * `tools` and are NOT duplicated here — the app bridge checks `tools` first,
+   * then falls back to this.
+   */
+  getAppTool(serverName: string, toolName: string): ToolDefinition | undefined {
+    if (isEnterpriseServerBlocked(serverName)) return undefined;
+    return this.servers.get(serverName)?.appTools.get(toolName);
+  }
+
+  /**
+   * Read an MCP App interface resource from a connected server.
+   *
+   * Only `ui://` URIs on that same server are allowed, the payload must be text
+   * and must stay under MAX_APP_RESOURCE_BYTES (spec §4.5). Results are cached
+   * per server + uri until the server disconnects/reconnects or announces
+   * `notifications/resources/list_changed`; concurrent callers for the same
+   * resource share a single round trip.
+   *
+   * `isMcpApp` reports whether the server declared the MCP Apps HTML profile —
+   * a non-App resource is still returned, and the renderer decides what to do.
+   *
+   * @throws {McpAppResourceError} unknown/unauthorized server, non-`ui://` uri,
+   *   missing text content, or an oversized resource.
+   */
+  async readResource(serverName: string, uri: string): Promise<McpAppResource> {
+    if (isEnterpriseServerBlocked(serverName)) {
+      throw new McpAppResourceError(
+        'server-not-authorized',
+        `Enterprise MCP server ${serverName} is not authorized by the current live session`
+      );
+    }
+    if (!isAppResourceUri(uri)) {
+      throw new McpAppResourceError(
+        'unsupported-uri',
+        `Only ${APP_RESOURCE_URI_PREFIX} resources can be read as MCP App interfaces (got: ${uri})`
+      );
+    }
+    const server = this.servers.get(serverName);
+    if (!server) {
+      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+    }
+
+    return this.appResources.read(serverName, uri, async () => {
+      const client = server.client as {
+        readResource: (params: { uri: string }) => Promise<{
+          contents?: Array<{ uri?: string; mimeType?: string; text?: string; blob?: string }>;
+        }>;
+      };
+      const result = await client.readResource({ uri });
+      const content = result.contents?.find((c) => typeof c.text === 'string');
+      if (!content || typeof content.text !== 'string') {
+        throw new McpAppResourceError(
+          'no-text-content',
+          `Resource ${uri} on ${serverName} returned no text content`
+        );
+      }
+
+      const byteLength = utf8ByteLength(content.text);
+      if (byteLength > MAX_APP_RESOURCE_BYTES) {
+        throw new McpAppResourceError(
+          'resource-too-large',
+          `Resource ${uri} on ${serverName} is too large: ${byteLength} bytes (limit ${MAX_APP_RESOURCE_BYTES})`
+        );
+      }
+
+      const mimeType = content.mimeType ?? '';
+      return { mimeType, text: content.text, isMcpApp: isMcpAppMimeType(mimeType) };
+    });
+  }
+
+  /**
+   * Subscribe to `notifications/resources/list_changed` so cached ui:// HTML is
+   * dropped when the server rebuilds its resources. Best-effort: if the SDK's
+   * notification schema didn't load, the cache still clears on disconnect.
+   */
+  private registerResourceNotifications(serverName: string, client: unknown): void {
+    if (!resourceListChangedSchema) return;
+    const target = client as {
+      setNotificationHandler?: (schema: unknown, handler: (notification: unknown) => void) => void;
+    };
+    if (typeof target.setNotificationHandler !== 'function') return;
+    try {
+      target.setNotificationHandler(resourceListChangedSchema, () => {
+        this.appResources.invalidateServer(serverName);
+      });
+    } catch (err) {
+      console.warn(`[MCP] Could not subscribe to resources/list_changed for ${serverName}:`, err);
+    }
+  }
+
+  /**
    * Re-discover tools from a connected server without reconnecting.
    * Useful when the server's tool set changes during a session.
    * Returns the number of tools discovered, or -1 if server not connected.
@@ -682,9 +828,10 @@ export class MCPClientManager {
     if (!server) return -1;
 
     try {
-      const client = server.client as { listTools: () => Promise<{ tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown> }> }> };
+      const client = server.client as { listTools: () => Promise<{ tools: Array<{ name: string; description?: string; inputSchema: Record<string, unknown>; _meta?: Record<string, unknown> }> }> };
       const toolsResponse = await client.listTools();
       const tools = new Map<string, ToolDefinition>();
+      const appTools = new Map<string, ToolDefinition>();
 
       for (const tool of toolsResponse.tools) {
         const inputSchema = tool.inputSchema as {
@@ -694,6 +841,7 @@ export class MCPClientManager {
         };
 
         const properties = buildToolProperties(inputSchema);
+        const ui = parseToolUiMetadata(tool._meta);
 
         const config = server.config;
         const toolDef: ToolDefinition = {
@@ -707,13 +855,20 @@ export class MCPClientManager {
           execute: async (input) => {
             return this.callTool(config.name, tool.name, input);
           },
+          ...(ui ? { ui } : {}),
         };
 
-        tools.set(tool.name, toolDef);
+        // App-only tools stay out of the model's tool table (spec §4.1).
+        if (isAppOnlyTool(ui)) {
+          appTools.set(tool.name, toolDef);
+        } else {
+          tools.set(tool.name, toolDef);
+        }
       }
 
       const oldCount = server.tools.size;
       server.tools = tools;
+      server.appTools = appTools;
 
       mcpLogger.info('MCP server tools refreshed', {
         name: serverName,
@@ -746,7 +901,7 @@ export class MCPClientManager {
 
     // Coerce string → number for numeric-typed parameters before sending to MCP server.
     // LLMs occasionally pass large integer IDs (e.g. Chrome tabId) as quoted strings.
-    const toolDef = server.tools.get(toolName);
+    const toolDef = server.tools.get(toolName) ?? server.appTools.get(toolName);
     const coercedArgs = toolDef ? coerceNumericArgs(toolDef, args) : args;
 
     let timerId: ReturnType<typeof setTimeout>;

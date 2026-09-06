@@ -15,6 +15,9 @@ export default defineConfig({
       { find: '@modelcontextprotocol/sdk/client/streamableHttp.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
       { find: '@modelcontextprotocol/sdk/client/sse.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
       { find: '@modelcontextprotocol/sdk/validation/cfworker', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
+      // Own stub file (not mcp.ts): test files that vi.mock the client entry would
+      // otherwise replace the shared module and drop the notification schemas.
+      { find: '@modelcontextprotocol/sdk/types.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcpTypes.ts') },
       { find: '@modelcontextprotocol/sdk', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
     ],
   },

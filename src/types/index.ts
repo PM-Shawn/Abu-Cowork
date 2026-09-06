@@ -649,6 +649,15 @@ export interface ToolDefinition {
    * checks if the command is read-only).
    */
   isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
+  /**
+   * MCP Apps interface declared by the tool's `_meta.ui`
+   * (extension `io.modelcontextprotocol/ui`). Present only for MCP tools whose
+   * server declares a `ui://` resource to render alongside the tool result.
+   * `visibility` decides who may call the tool: without `'model'` the tool is
+   * kept out of the model's tool table and is reachable only from the app
+   * bridge (see MCPClientManager.getAppTool).
+   */
+  ui?: { resourceUri: string; visibility: ReadonlyArray<'model' | 'app'> };
 }
 
 // --- LLM ---

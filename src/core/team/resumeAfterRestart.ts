@@ -23,10 +23,25 @@ export async function resumeTeamRunAfterRestart(conversationId: string, turnCoun
   if (!lastUser) return false;
   const request = getMessageText(lastUser.content).trim().slice(0, MAX_REQUEST_CHARS);
   if (!request) return false;
+  const explain = (error: string) => {
+    console.warn('[resumeAfterRestart] could not restart the team run', { conversationId, error });
+    useChatStore.getState().addMessage(conversationId, {
+      id: `resume-failed-${Date.now().toString(36)}`,
+      role: 'assistant',
+      content: format(getI18n().team.resumeAfterRestartFailed, { error }),
+      timestamp: Date.now(),
+      isSystem: true,
+    });
+  };
   try {
-    await runAgentLoopDispatched(conversationId, format(getI18n().team.resumeAfterRestart, { turn: turnCount, request }));
+    const result = await runAgentLoopDispatched(conversationId, format(getI18n().team.resumeAfterRestart, { turn: turnCount, request }));
+    if (result.reason === 'error') {
+      explain(result.error ?? result.reason);
+      return false;
+    }
     return true;
-  } catch {
+  } catch (err) {
+    explain(err instanceof Error ? err.message : String(err));
     return false;
   }
 }

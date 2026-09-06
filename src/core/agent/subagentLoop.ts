@@ -1095,6 +1095,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             workspacePath,
             conversationId: options.parentConversationId,
             loopId: options.parentLoopId,
+            agentName: agent.name,
             interactionMode: resolveSubagentInteractionMode(options),
             authorizationScopeId: options.authorizationScopeId,
             runPermissionCeiling: options.runPermissionCeiling,

@@ -221,6 +221,19 @@ describe('permissionBridge — UserQuestion queue', () => {
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
     });
 
+    it('names the member from the request when the loop context only knows the parent run (sidecar path)', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      setLoopContext('loop-parent', makeTeamCtx('loop-parent', 'conv-team') as never);
+      try {
+        await expect(requestCommandConfirmation({ command: 'npm publish', level: 'danger', reason: 'r', agentName: 'zz发布员' }, 'loop-parent')).resolves.toBe(false);
+        await expect(requestFilePermission({ path: '/tmp/out/x.md', capability: 'write', toolName: 'write_file', agentName: 'zz撰写员' }, 'loop-parent')).resolves.toBe(false);
+        const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
+        expect(pending.map((item) => item.member)).toEqual(['zz发布员', 'zz撰写员']);
+      } finally {
+        clearLoopContext('loop-parent');
+      }
+    });
+
     it('records file access as pending and leaves plain conversations on the dialog path', async () => {
       const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
       await expect(requestFilePermission({ path: '/tmp/out/report.md', capability: 'write', toolName: 'write_file' }, 'loop-team')).resolves.toBe(false);

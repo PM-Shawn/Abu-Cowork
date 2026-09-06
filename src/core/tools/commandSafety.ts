@@ -43,6 +43,8 @@ export interface ConfirmationInfo {
    * guess.
    */
   allowPersistentGrant?: boolean;
+  /** Sub-agent that raised the request (display only), when known. */
+  agentName?: string;
 }
 
 /**

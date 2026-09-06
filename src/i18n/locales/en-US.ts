@@ -1254,6 +1254,7 @@ const enUS: TranslationDict = {
     confirmationNotice: '{member} needs your confirmation: {detail}',
     confirmationApprovedFollowUp: 'I approved {member} to run "{detail}". Re-dispatch only that step to {member}; keep every other finished result as it is and report what changed.',
     stallStoppedNotice: '{member} produced no new step for {n} min; that hand-off was stopped and the leader will re-dispatch it once',
+    resumeAfterRestartFailed: 'Automatic resume could not start: {error}. Send "continue" and the leader will pick it up.',
     resumeAfterRestart: 'The app restarted; the last run was cut at turn {turn}. Continue from where it stopped: first check this conversation for completed steps and the output files that already exist — do not redo them; dispatch only what is missing, then report. Original request: {request}',
     confirmationRejectedFollowUp: 'I rejected {member} running "{detail}". Treat that step as blocked — do not retry or work around it; keep the other results and say so in your report.',
     followUpHint: 'You can just say:',

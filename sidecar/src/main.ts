@@ -136,7 +136,7 @@ import {
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
-import { cancelDispatch, isDispatchActive } from '@/core/agent/subagentAbort';
+import { cancelDispatch } from '@/core/agent/subagentAbort';
 import { enqueueDispatchInput } from '@/core/agent/dispatchInput';
 import {
   writeLine,
@@ -438,8 +438,12 @@ function handleMessage(raw: string): void {
     // Notification only — a direct user instruction to ONE running team member
     // (`${toolCallId}:${taskIndex}`); queued only when this process owns the run.
     try {
+      // Not gated on subagentAbort's registry: a member dispatched over
+      // subagent.run is registered SHELL-side (agentTools.ts) while its loop
+      // runs here, so the key is unknown to this process's registry. The
+      // host clears the queue when the run settles (subagentHost.ts).
       const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; text?: unknown }) : {};
-      if (typeof p.key === 'string' && typeof p.text === 'string' && isDispatchActive(p.key)) enqueueDispatchInput(p.key, p.text);
+      if (typeof p.key === 'string' && typeof p.text === 'string') enqueueDispatchInput(p.key, p.text);
     } catch (err) {
       log('state.dispatchInput handler threw (ignored — notifications get no response)', err);
     }

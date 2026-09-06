@@ -1440,6 +1440,7 @@ export interface TranslationDict {
     confirmationRejectedFollowUp: string;
     stallStoppedNotice: string;
     resumeAfterRestart: string;
+    resumeAfterRestartFailed: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;

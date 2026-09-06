@@ -29,6 +29,7 @@ import type { SettingsState } from '@/stores/settingsStore';
 import type { DelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
+import { clearDispatchInputs } from '@/core/agent/dispatchInput';
 import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import { isDelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import {
@@ -549,6 +550,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   } finally {
     await drainProgress();
     activeRuns.delete(runId);
+    // Instructions queued for this hand-off die with it (the shell-side
+    // registry cannot see runs hosted here).
+    if (params.dispatchKey) clearDispatchInputs(params.dispatchKey);
   }
 }
 

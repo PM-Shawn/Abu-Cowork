@@ -52,14 +52,14 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
         <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
         {format(t.team.confirmationStripTitle, { n: items.length })}
       </div>
-      <ul className="space-y-1">
+      <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
         {items.map((item) => (
           <li key={item.id} className="flex items-center gap-2" data-testid="team-confirmation-item">
             <div className="min-w-0 flex-1 text-caption text-[var(--abu-text-secondary)]">
               <span className="text-[var(--abu-text-primary)]">{memberLabel(item)}</span>
               <span>{t.team.confirmationSeparator}</span>
-              <code className="break-all">{item.detail}</code>
-              {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]">（{item.reason}）</span>}
+              <code className="line-clamp-2 break-all align-top" title={item.detail}>{item.detail}</code>
+              {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
             </div>
             <button
               type="button"

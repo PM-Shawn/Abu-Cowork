@@ -571,6 +571,13 @@ export interface ToolExecutionContext {
   conversationId?: string;
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /**
+   * Name of the sub-agent running this tool call (display only — never an
+   * authority signal). Lets a confirmation raised by a team member say WHO
+   * asked when the request crosses the sidecar boundary, where the loop
+   * context lookup only sees the parent run.
+   */
+  agentName?: string;
   /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */
   assistantMessageId?: string;
   /**

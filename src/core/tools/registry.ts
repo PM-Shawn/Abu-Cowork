@@ -275,6 +275,8 @@ export type FilePermissionCallback = (request: {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
+  /** Sub-agent that raised the request (display only), when known. */
+  agentName?: string;
 }, loopId?: string) => Promise<boolean>;
 
 /**
@@ -577,6 +579,7 @@ export async function checkToolApproval(
           command,
           level: analysis.level,
           reason: reviewReason || analysis.reason,
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
@@ -638,6 +641,7 @@ export async function checkToolApproval(
                 path: pathCheck.permissionPath,
                 capability: cap,
                 toolName: name,
+                agentName: toolContext?.agentName,
               }, toolContext?.loopId);
               if (!granted) {
                 return {
@@ -748,6 +752,7 @@ export async function checkToolApproval(
           level: 'warn',
           reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
           kind: 'browser',
+          agentName: toolContext?.agentName,
           browserOrigin: origin ?? undefined,
           allowPersistentGrant: !scripting && origin !== null,
         }, toolContext?.loopId);
@@ -786,6 +791,7 @@ export async function checkToolApproval(
           level: 'warn',
           reason: t.commandConfirm.selfExtensionReason,
           kind: 'self-extension',
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
@@ -835,6 +841,7 @@ export async function checkToolApproval(
         path: readCheck.permissionPath,
         capability: 'read',
         toolName: TOOL_NAMES.WRITE_FILE,
+        agentName: toolContext?.agentName,
       }, toolContext?.loopId);
       if (granted) {
         readCheck = await checkReadPath(

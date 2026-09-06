@@ -29,6 +29,16 @@ describe('resumeTeamRunAfterRestart', () => {
     expect(text).toContain('不要重做');
   });
 
+  it('tells the user when the restart could not be dispatched', async () => {
+    useChatStore.setState({ conversations: { c1: conversation({ teamId: 't1' }) } } as never);
+    runAgentLoopDispatched.mockResolvedValueOnce({ reason: 'error', error: '模型未配置' } as never);
+    await expect(resumeTeamRunAfterRestart('c1', 3)).resolves.toBe(false);
+    const messages = useChatStore.getState().conversations.c1.messages;
+    const last = messages[messages.length - 1];
+    expect(last.isSystem).toBe(true);
+    expect(String(last.content)).toContain('模型未配置');
+  });
+
   it('leaves plain, scheduled, trigger, IM and read-only conversations alone', async () => {
     useChatStore.setState({ conversations: {
       plain: conversation({ id: 'plain' }),

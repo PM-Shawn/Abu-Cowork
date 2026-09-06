@@ -166,7 +166,9 @@ export function drainConfirmationQueue() {
 export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?: string): Promise<boolean> {
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
-  const agentName = ctx?.agentName;
+  // The request carries the member's name across the sidecar boundary; the
+  // loop context only knows the parent run there.
+  const agentName = info.agentName ?? ctx?.agentName;
   // Team conversations never block on a dialog (teamConfirmations.ts).
   const teamDecision = decideTeamConfirmation(convId, {
     kind: info.kind ?? 'command',
@@ -246,6 +248,7 @@ export async function requestFilePermission(request: {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
+  agentName?: string;
 }, loopId?: string): Promise<boolean> {
   const permStore = usePermissionStore.getState();
 
@@ -263,7 +266,7 @@ export async function requestFilePermission(request: {
 
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
-  const agentName = ctx?.agentName;
+  const agentName = request.agentName ?? ctx?.agentName;
   // Team conversations never block on a dialog; approving the item grants the
   // path through permissionStore, so the retry passes the check above.
   const teamDecision = decideTeamConfirmation(convId, {

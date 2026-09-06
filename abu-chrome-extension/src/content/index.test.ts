@@ -2743,3 +2743,322 @@ describe('find — read-only search, the cheap step before acting', () => {
     await expect(find({ name: '' })).rejects.toThrow(/at least one of/);
   });
 });
+
+// =============================================================================
+// FRAMES AND SHADOW ROOTS
+// =============================================================================
+//
+// Everything here goes through `handleAction`, the same entry the built-in
+// browser drives, so what is pinned is the behaviour a caller actually gets —
+// not a helper's return value.
+//
+// happy-dom gives real `contentDocument` access for `srcdoc` frames, which is
+// exactly the same-origin case the built-in channel supports. A cross-origin
+// frame is modelled the way the browser presents one: `contentDocument` reads
+// as null. That is the ONLY thing the runtime uses to tell the two apart, so
+// modelling it this way tests the real branch rather than a mock of it.
+
+interface FrameNodeShape {
+  frameId: string;
+  parentFrameId?: string;
+  origin: string | null;
+  url?: string;
+  sameOriginAsTop: boolean;
+  accessible: boolean;
+  inaccessibleReason?: string;
+}
+
+const frames = () => handleAction('frames', {}) as Promise<FrameNodeShape[]>;
+const snapshotIn = (frameId: string) =>
+  handleAction('snapshot', { frameId }) as Promise<PageSnapshot & { frameId: string; frames?: FrameNodeShape[] }>;
+const findIn = (frameId: string, query: Record<string, unknown>) =>
+  handleAction('find', { frameId, query }) as Promise<{ matches: Array<{ ref: string; id?: string }>; total: number; frameId: string; message?: string; closedShadowHosts?: number }>;
+const fillIn = (frameId: string | undefined, locator: Record<string, unknown>, value: string) =>
+  handleAction('fill', { ...(frameId ? { frameId } : {}), locator, value }) as Promise<ActionResult>;
+
+/** Attach a same-origin child document to the page and wait for it to parse. */
+async function addFrame(id: string, html: string, into: Document = document): Promise<HTMLIFrameElement> {
+  const frame = into.createElement('iframe');
+  frame.id = id;
+  frame.setAttribute('srcdoc', html);
+  (into.body ?? into.documentElement).appendChild(frame);
+  for (let i = 0; i < 50 && !frame.contentDocument?.body?.firstChild; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return frame;
+}
+
+/** A frame the browser refuses to open up: exactly what a cross-origin one is. */
+function addOpaqueFrame(id: string, src: string): HTMLIFrameElement {
+  const frame = document.createElement('iframe');
+  frame.id = id;
+  frame.setAttribute('src', src);
+  Object.defineProperty(frame, 'contentDocument', { configurable: true, get: () => null });
+  document.body.appendChild(frame);
+  return frame;
+}
+
+describe('embedded regions (iframes)', () => {
+  it('lists the page\'s regions, with the main document first', async () => {
+    document.body.innerHTML = '';
+    await addFrame('inner', '<body><input id="name" /></body>');
+
+    const tree = await frames();
+
+    expect(tree[0]).toMatchObject({ frameId: 'f0', sameOriginAsTop: true, accessible: true });
+    expect(tree[1]).toMatchObject({ parentFrameId: 'f0', sameOriginAsTop: true, accessible: true });
+    expect(tree).toHaveLength(2);
+  });
+
+  it('finds and fills a field inside a region, and the value lands in THAT document', async () => {
+    document.body.innerHTML = '';
+    const frame = await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+    const region = (await frames())[1].frameId;
+
+    const found = await findIn(region, { placeholder: '姓名' });
+    expect(found.total).toBe(1);
+    expect(found.frameId).toBe(region);
+
+    const filled = await fillIn(region, { ref: found.matches[0].ref }, '张三');
+
+    expect(filled.success).toBe(true);
+    expect((frame.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('张三');
+    // And nothing was typed into the main document.
+    expect(document.getElementById('name')).toBeNull();
+  });
+
+  it('namespaces refs by the region that minted them', async () => {
+    document.body.innerHTML = '<input id="outer" placeholder="姓名" />';
+    await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+    const region = (await frames())[1].frameId;
+
+    const outside = await find({ placeholder: '姓名' });
+    const inside = await findIn(region, { placeholder: '姓名' });
+
+    expect(outside.matches[0].ref).toMatch(/^e\d+$/);
+    expect(inside.matches[0].ref).toBe(`${region}:${inside.matches[0].ref.split(':')[1]}`);
+  });
+
+  it('refuses a ref from one region used against another', async () => {
+    document.body.innerHTML = '';
+    await addFrame('a', '<body><input id="name" placeholder="姓名" /></body>');
+    await addFrame('b', '<body><input id="name" placeholder="姓名" /></body>');
+    const tree = await frames();
+    const inA = await findIn(tree[1].frameId, { placeholder: '姓名' });
+
+    await expect(fillIn(tree[2].frameId, { ref: inA.matches[0].ref }, 'x'))
+      .rejects.toThrow(/does not match the ref/);
+  });
+
+  it('reaches a region nested inside another one', async () => {
+    document.body.innerHTML = '';
+    const outer = await addFrame('outer', '<body><div id="slot"></div></body>');
+    await addFrame('inner', '<body><input id="deep" placeholder="深" /></body>', outer.contentDocument!);
+
+    const tree = await frames();
+    expect(tree).toHaveLength(3);
+    expect(tree[2].parentFrameId).toBe(tree[1].frameId);
+
+    const found = await findIn(tree[2].frameId, { placeholder: '深' });
+    expect(found.total).toBe(1);
+  });
+
+  it('resolves a locator that named no region to the one region holding it', async () => {
+    document.body.innerHTML = '<button id="other">取消</button>';
+    const frame = await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+
+    const filled = await fillIn(undefined, { css: '#name' }, '张三');
+
+    expect(filled.success).toBe(true);
+    expect((frame.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('张三');
+  });
+
+  it('refuses when two regions hold the same locator, and changes nothing', async () => {
+    document.body.innerHTML = '';
+    const a = await addFrame('a', '<body><input id="name" /></body>');
+    const b = await addFrame('b', '<body><input id="name" /></body>');
+
+    await expect(fillIn(undefined, { css: '#name' }, '张三'))
+      .rejects.toThrow(/2 different embedded regions/);
+
+    expect((a.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+    expect((b.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('points a failed search at the regions the page has', async () => {
+    document.body.innerHTML = '<button>取消</button>';
+    await addFrame('inner', '<body><input id="name" /></body>');
+
+    await expect(click({ role: 'button', name: '保存' }))
+      .rejects.toThrow(/embedded region/);
+  });
+
+  it('refuses a region handle after that region reloaded', async () => {
+    document.body.innerHTML = '';
+    const frame = await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+    const region = (await frames())[1].frameId;
+    await findIn(region, { placeholder: '姓名' });
+
+    // A reload replaces the document; the handle described the old one. The
+    // new document still carries the same field on purpose — what must be
+    // refused is the HANDLE, not "the field disappeared".
+    const before = frame.contentDocument;
+    frame.setAttribute('srcdoc', '<body><p>reloaded</p><input id="name" placeholder="姓名" /></body>');
+    for (let i = 0; i < 100 && frame.contentDocument === before; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    expect(frame.contentDocument).not.toBe(before);
+
+    await expect(findIn(region, { placeholder: '姓名' }))
+      .rejects.toThrow(/not on this page any more|reloaded, or was removed/);
+  });
+
+  it('refuses a handle the page never had', async () => {
+    document.body.innerHTML = '<button>保存</button>';
+
+    await expect(snapshotIn('f99')).rejects.toThrow(/reloaded, or was removed/);
+    await expect(snapshotIn('the-login-frame')).rejects.toThrow(/Invalid frameId/);
+  });
+
+  it('lists a region it cannot see into, and says why, instead of leaving it out', async () => {
+    document.body.innerHTML = '';
+    addOpaqueFrame('vendor', 'https://vendor.example/widget');
+
+    const tree = await frames();
+
+    expect(tree[1]).toMatchObject({
+      origin: 'https://vendor.example',
+      sameOriginAsTop: false,
+      accessible: false,
+      inaccessibleReason: 'cross-origin-unreachable',
+    });
+  });
+
+  it('refuses to act in a region it cannot see into, and says what to do instead', async () => {
+    document.body.innerHTML = '';
+    addOpaqueFrame('vendor', 'https://vendor.example/widget');
+    const region = (await frames())[1].frameId;
+
+    await expect(fillIn(region, { css: '#name' }, '张三'))
+      .rejects.toThrow(/cannot reach inside a third-party embedded region/);
+  });
+
+  it('reports an embedded region as covered by the page\'s own grant when it inherits the origin', async () => {
+    // `srcdoc` and page-written `about:blank` frames have no address of their
+    // own and inherit the embedder's origin. Calling those "not a web page"
+    // would refuse a region that is plainly part of the page.
+    document.body.innerHTML = '';
+    await addFrame('inner', '<body><input id="name" /></body>');
+
+    const tree = await frames();
+
+    expect(tree[1].origin).toBe(tree[0].origin);
+    expect(tree[1].sameOriginAsTop).toBe(true);
+  });
+
+  it('gives a main-document snapshot the region list, and a region\'s snapshot its own id', async () => {
+    document.body.innerHTML = '<button>保存</button>';
+    await addFrame('inner', '<body><input id="name" /></body>');
+    const region = (await frames())[1].frameId;
+
+    const top = await snapshot() as PageSnapshot & { frameId: string; frames?: FrameNodeShape[] };
+    const inside = await snapshotIn(region);
+
+    expect(top.frameId).toBe('f0');
+    expect(top.frames).toHaveLength(2);
+    expect(inside.frameId).toBe(region);
+    expect(inside.frames).toBeUndefined();
+  });
+
+  it('refuses a frameId on an action that does not act on a located element', async () => {
+    document.body.innerHTML = '<button>保存</button>';
+
+    await expect(handleAction('scroll', { frameId: 'f1', direction: 'down' }))
+      .rejects.toThrow(/takes no frameId/);
+  });
+
+  it('excludes Abu\'s own overlay inside a region, exactly as it does outside', async () => {
+    document.body.innerHTML = '';
+    const frame = await addFrame('inner', '<body><button id="save">保存</button></body>');
+    const region = (await frames())[1].frameId;
+
+    // The click paints the ring inside the region's own document.
+    await handleAction('click', { frameId: region, locator: { role: 'button', name: '保存' } });
+    expect(frame.contentDocument!.getElementById('abu-highlight')).not.toBeNull();
+
+    const found = await findIn(region, { text: '保存' });
+    expect(found.matches.map((m) => m.id)).toEqual(['save']);
+  });
+});
+
+describe('shadow DOM', () => {
+  it('finds and clicks a control inside an open shadow root', async () => {
+    document.body.innerHTML = '<my-widget id="w"></my-widget>';
+    const host = document.getElementById('w')!;
+    host.attachShadow({ mode: 'open' }).innerHTML = '<button id="save">保存</button>';
+
+    const found = await find({ role: 'button', name: '保存' });
+    expect(found.total).toBe(1);
+
+    const clicked = await click({ text: '保存' });
+    expect(clicked.success).toBe(true);
+    expect(clicked.target?.id).toBe('save');
+  });
+
+  it('fills a field inside an open shadow root by css and by label', async () => {
+    document.body.innerHTML = '<my-field id="w"></my-field>';
+    const host = document.getElementById('w')!;
+    host.attachShadow({ mode: 'open' }).innerHTML =
+      '<label for="name">姓名</label><input id="name" />';
+
+    const byLabel = await find({ label: '姓名' });
+    expect(byLabel.total).toBe(1);
+
+    const filled = await fill({ css: '#name' }, '张三');
+    expect(filled.success).toBe(true);
+    expect((host.shadowRoot!.getElementById('name') as HTMLInputElement).value).toBe('张三');
+  });
+
+  it('lists shadow content in a snapshot, so the model can see it at all', async () => {
+    document.body.innerHTML = '<my-widget id="w"></my-widget>';
+    document.getElementById('w')!.attachShadow({ mode: 'open' }).innerHTML =
+      '<button id="save">保存</button>';
+
+    const shot = await snapshot();
+
+    expect(shot.elements.map((e) => e.id)).toContain('save');
+  });
+
+  it('resolves a shadow label against its own tree, not a same-id label in the page', async () => {
+    document.body.innerHTML = '<label for="name">邮箱</label><input id="name" /><my-field id="w"></my-field>';
+    document.getElementById('w')!.attachShadow({ mode: 'open' }).innerHTML =
+      '<label for="name">姓名</label><input id="name" />';
+
+    const found = await find({ label: '姓名' });
+
+    expect(found.total).toBe(1);
+  });
+
+  it('says a sealed region is sealed instead of "not found"', async () => {
+    document.body.innerHTML = '<sealed-widget></sealed-widget>';
+    document.querySelector('sealed-widget')!.attachShadow({ mode: 'closed' });
+
+    const found = await find({ role: 'button', name: '保存' });
+
+    expect(found.total).toBe(0);
+    expect(found.closedShadowHosts).toBe(1);
+    expect(found.message).toMatch(/closed shadow DOM/);
+
+    await expect(click({ role: 'button', name: '保存' }))
+      .rejects.toThrow(/closed shadow DOM/);
+  });
+
+  it('does not call an ordinary empty custom element sealed', async () => {
+    document.body.innerHTML = '<my-widget id="w"></my-widget>';
+    document.getElementById('w')!.attachShadow({ mode: 'open' }).innerHTML = '<span>hi</span>';
+
+    const found = await find({ role: 'button', name: '保存' });
+
+    expect(found.closedShadowHosts).toBeUndefined();
+  });
+});

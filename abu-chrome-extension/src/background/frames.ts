@@ -38,6 +38,15 @@ export const MAX_FRAMES = 40;
 /** What the injected probe reports back from inside one frame. */
 export interface FrameProbeResult {
   url: string;
+  /**
+   * `location.origin` read inside the frame. Preferred over deriving one from
+   * `url` because it is what a browser reports for an `about:blank` /
+   * `about:srcdoc` region, which INHERITS the embedder's origin — deriving
+   * from the url would call a region that is plainly part of the page "not a
+   * web page". Opaque origins (a sandboxed frame) report the string `"null"`,
+   * which normalizes to null and stays inaccessible, as it should.
+   */
+  origin?: string;
   title: string;
 }
 
@@ -93,9 +102,11 @@ export function buildFrameTree(
   injections: FrameInjection[],
   normalizeOrigin: (url: string | undefined) => string | null,
 ): FrameTree {
+  const originOf = (result: FrameProbeResult | undefined): string | null =>
+    normalizeOrigin(result?.origin) ?? normalizeOrigin(result?.url);
   const answered = injections.filter((row) => row.result !== undefined);
   const main = answered.find((row) => row.frameId === 0);
-  const topOrigin = main ? normalizeOrigin(main.result?.url) : null;
+  const topOrigin = main ? originOf(main.result) : null;
   const ordered = [
     ...(main ? [main] : []),
     ...answered.filter((row) => row.frameId !== 0).sort((a, b) => a.frameId - b.frameId),
@@ -103,7 +114,7 @@ export function buildFrameTree(
 
   return ordered.map((row) => {
     const url = row.result?.url ?? '';
-    const origin = normalizeOrigin(url);
+    const origin = originOf(row.result);
     return {
       frameId: frameRefOf(row.frameId),
       origin,

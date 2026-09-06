@@ -768,8 +768,8 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
  * unforgeable and the world is out of the page's reach, so what comes back is
  * the frame's real current address — not the `src` the embedding page wrote.
  */
-function probeFrameIdentity(): { url: string; title: string } {
-  return { url: location.href, title: document.title };
+function probeFrameIdentity(): { url: string; origin: string; title: string } {
+  return { url: location.href, origin: location.origin, title: document.title };
 }
 
 const frameStore = createFrameStore({

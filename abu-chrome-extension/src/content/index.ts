@@ -277,8 +277,20 @@ function reachableFrameDoc(el: Element): Document | null {
  * extension the worker enumerates frames from Chrome's own injection results,
  * which are authoritative for cross-origin frames too.
  */
+/**
+ * A document's own origin.
+ *
+ * `location.origin` first: it is what a browser reports for an `about:blank`
+ * or `about:srcdoc` frame, which INHERITS the embedder's origin rather than
+ * having one of its own — deriving the origin from `about:srcdoc` as a URL
+ * would say "not a web page" about a region that is plainly part of the page.
+ */
+function originOfDocument(doc: Document): string | null {
+  return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
+}
+
 function enumerateFrames(): FrameTree {
-  const topOrigin = normalizedOrigin(document.location.href);
+  const topOrigin = originOfDocument(document);
   const out: FrameTree = [{
     frameId: hostFrameId,
     origin: topOrigin,
@@ -288,13 +300,23 @@ function enumerateFrames(): FrameTree {
     ...(topOrigin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
   }];
 
-  const walk = (doc: Document, parentFrameId: FrameRef, depth: number): void => {
+  const walk = (
+    doc: Document,
+    parentFrameId: FrameRef,
+    parentOrigin: string | null,
+    depth: number,
+  ): void => {
     if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
     for (const el of queryAllDeep(doc, 'iframe, frame')) {
       if (out.length >= MAX_FRAMES) return;
       const child = reachableFrameDoc(el);
       if (child) {
-        const origin = normalizedOrigin(child.location.href);
+        // A READABLE `contentDocument` is the browser's own same-origin check
+        // having already passed, so this region is covered by the page's grant.
+        // The parent's origin is the honest answer for a document that inherits
+        // one (`about:blank` written by the page, `srcdoc`) and never widens
+        // anything: a cross-origin frame never gets here at all.
+        const origin = originOfDocument(child) ?? parentOrigin;
         const id = frameIdForDoc(child);
         out.push({
           frameId: id,
@@ -305,7 +327,7 @@ function enumerateFrames(): FrameTree {
           accessible: origin !== null,
           ...(origin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
         });
-        if (origin !== null) walk(child, id, depth + 1);
+        if (origin !== null) walk(child, id, origin, depth + 1);
         continue;
       }
       // Not reachable from this isolated world. The `src` ATTRIBUTE is the
@@ -333,7 +355,7 @@ function enumerateFrames(): FrameTree {
     }
   };
 
-  if (LOCAL_FRAME_WALK) walk(document, hostFrameId, 0);
+  if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
   frameNodeById.clear();
   for (const node of out) frameNodeById.set(node.frameId, node);
   return out;
@@ -373,6 +395,71 @@ function resolveScope(payload: Record<string, unknown>): DomScope {
   const known = frameNodeById.get(wanted);
   if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
   throw new Error(frameGoneMessage(wanted));
+}
+
+/**
+ * Locator actions that may be resolved to the region actually holding the
+ * target, when the caller named none. Same list the extension worker uses —
+ * `wait_for` is deliberately absent: it waits for something that does not
+ * exist yet, so "which frame holds it" has no answer to resolve.
+ */
+const LOCATOR_ROUTED_ACTIONS = new Set(['click', 'fill', 'select']);
+
+/**
+ * The region a frameless locator actually names — the built-in browser's half
+ * of the resolution the extension worker does by messaging each frame.
+ *
+ * Runs BEFORE the origin pin, so the pin is applied to the document the action
+ * will really execute in rather than to the one it was aimed at by default.
+ * Only same-origin regions are reachable from this isolated world, so the pin
+ * verdict is the same either way — but that is a property of this channel, not
+ * something the ordering should depend on.
+ *
+ * Exactly one match acts; several is refused with the regions listed, for the
+ * same reason two matches inside one document are refused: acting on whichever
+ * came first is a wrong, irreversible action reported as a success.
+ */
+function resolveLocatorFrame(
+  action: string,
+  payload: Record<string, unknown>,
+  scope: DomScope,
+): DomScope {
+  if (!LOCAL_FRAME_WALK || !LOCATOR_ROUTED_ACTIONS.has(action)) return scope;
+  if (payload.frameId !== undefined) return scope;
+  const locator = payload.locator as ElementLocator | undefined;
+  // A ref already names its own frame, and a malformed/ambiguous locator has
+  // to be reported by the ordinary path, not turned into a frame question.
+  if (!locator || locator.ref) return scope;
+  try {
+    if (findElement(scope, locator) !== null) return scope;
+  } catch {
+    return scope;
+  }
+
+  const hits: DomScope[] = [];
+  const ambiguous: DomScope[] = [];
+  for (const node of enumerateFrames()) {
+    if (node.frameId === scope.frameId || !node.accessible) continue;
+    const doc = docByFrameId.get(node.frameId)?.deref();
+    if (!doc || !doc.defaultView) continue;
+    const candidate: DomScope = { doc, frameId: node.frameId };
+    try {
+      if (findElement(candidate, locator) !== null) hits.push(candidate);
+    } catch {
+      ambiguous.push(candidate);
+    }
+  }
+  const all = [...hits, ...ambiguous];
+  if (all.length > 1) {
+    throw new Error(
+      `That locator matches an element in ${all.length} different embedded regions of this page, so `
+      + 'it does not identify one. Nothing was clicked or changed. Pass `frameId` to say which:\n'
+      + all.map((c) => `  ${c.frameId} (${normalizedOrigin(c.doc.location.href) ?? 'unknown region'})`).join('\n'),
+    );
+  }
+  // A single AMBIGUOUS region is returned so the ordinary path refuses it with
+  // the in-document candidate list, which is the more useful message.
+  return all[0] ?? scope;
 }
 
 /** The frame a payload's refs belong to, or null when it carries none. */
@@ -654,7 +741,7 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
       + 'Click into the region first, then send this action.',
     );
   }
-  const scope = resolveScope(payload ?? {});
+  const scope = resolveLocatorFrame(action, payload ?? {}, resolveScope(payload ?? {}));
 
   // Before the switch, so no action can be added that forgets it — but only in
   // the frame that is going to act (see `frameServicesAction`). A frame that

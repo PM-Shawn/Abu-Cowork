@@ -169,6 +169,19 @@ export function createFrameStore(deps: FrameStoreDeps): FrameStore {
     }
   };
 
+  /**
+   * Record what each frame's document is NOW, and hand back what it was.
+   *
+   * An EMPTY result is never written. `probe()` answers `[]` for a failed or
+   * timed-out injection — a tab frozen inside `alert()`, one mid-navigation —
+   * and those are exactly the moments a reload is most likely to be in flight.
+   * Overwriting the table with nothing made the next `resolve()` see no
+   * previous document id and take the "first time we have seen this frame"
+   * branch, so a handle minted against the OLD document was accepted against
+   * the new one: one failed probe turned a refusal into a fail-open (round-2
+   * F5). Keeping the last known table costs nothing — a frame that really did
+   * go away is refused by `resolve()`'s own "not in this listing" branch.
+   */
   const remember = (tabId: number, injections: FrameInjection[]): Map<number, string> => {
     const previous = seenDocuments.get(tabId) ?? new Map<number, string>();
     const current = new Map<number, string>();
@@ -176,7 +189,7 @@ export function createFrameStore(deps: FrameStoreDeps): FrameStore {
       if (row.result === undefined) continue;
       current.set(row.frameId, row.documentId);
     }
-    seenDocuments.set(tabId, current);
+    if (current.size > 0) seenDocuments.set(tabId, current);
     return previous;
   };
 

@@ -166,6 +166,30 @@ describe('routing to a frame', () => {
     await expect(s.resolve(1, 'f6')).resolves.toBe(6);
   });
 
+  /**
+   * Round-2 F5. A probe that times out or fails answers `[]`, and those are
+   * the moments a reload is most likely to be under way — a tab frozen in
+   * `alert()`, a document mid-swap. Writing that emptiness over the document
+   * table erased the only evidence a reload had happened, so the very next
+   * call took the "first time we have seen this frame" branch and accepted a
+   * handle minted against the document that is gone.
+   */
+  it('a failed probe between two reads does not resurrect a stale handle', async () => {
+    const frames: Record<number, FrameInjection[]> = {
+      1: [row(0, 'https://a.example.com/'), row(6, 'https://b.example.com/', 'doc-first')],
+    };
+    const s = store(frames);
+    await s.tree(1);
+
+    // The tab freezes (or the injection fails): no frame information at all.
+    frames[1] = [];
+    await s.tree(1);
+
+    // …and comes back on a NEW document. The handle is still stale.
+    frames[1] = [row(0, 'https://a.example.com/'), row(6, 'https://b.example.com/', 'doc-second')];
+    await expect(s.resolve(1, 'f6')).rejects.toThrow(/reloaded, or was removed/);
+  });
+
   it('does not treat a frame it is seeing for the first time as stale', async () => {
     const frames = { 1: [row(0, 'https://a.example.com/'), row(6, 'https://b.example.com/')] };
     await expect(store(frames).resolve(1, 'f6')).resolves.toBe(6);

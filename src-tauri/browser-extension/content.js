@@ -127,6 +127,16 @@
   function originOfDocument(doc) {
     return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
   }
+  function frameElementIsHidden(el) {
+    const view = el.ownerDocument.defaultView;
+    if (!view) return true;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return true;
+    if (view.getComputedStyle(el).visibility === "hidden") return true;
+    const docLeft = rect.left + (view.scrollX || 0);
+    const docTop = rect.top + (view.scrollY || 0);
+    return docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+  }
   function enumerateFrames() {
     const topOrigin = originOfDocument(document);
     const out = [{
@@ -141,6 +151,7 @@
       if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
       for (const el of queryAllDeep(doc, "iframe, frame")) {
         if (out.length >= MAX_FRAMES) return;
+        const hidden = frameElementIsHidden(el) ? { hidden: true } : {};
         const child = reachableFrameDoc(el);
         if (child) {
           const origin = originOfDocument(child) ?? parentOrigin;
@@ -152,6 +163,7 @@
             url: child.location.href,
             sameOriginAsTop: origin !== null && origin === topOrigin,
             accessible: origin !== null,
+            ...hidden,
             ...origin === null ? { inaccessibleReason: "not-a-web-page" } : {}
           });
           if (origin !== null) walk(child, id, origin, depth + 1);
@@ -171,6 +183,7 @@
           ...src ? { url: src } : {},
           sameOriginAsTop: false,
           accessible: false,
+          ...hidden,
           inaccessibleReason: hinted === null ? "not-a-web-page" : "cross-origin-unreachable"
         });
       }
@@ -219,6 +232,7 @@
     const ambiguous = [];
     for (const node of enumerateFrames()) {
       if (node.frameId === scope.frameId || !node.accessible) continue;
+      if (node.hidden) continue;
       const doc = docByFrameId.get(node.frameId)?.deref();
       if (!doc || !doc.defaultView) continue;
       const candidate = { doc, frameId: node.frameId };

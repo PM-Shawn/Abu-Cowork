@@ -2768,6 +2768,7 @@ interface FrameNodeShape {
   sameOriginAsTop: boolean;
   accessible: boolean;
   inaccessibleReason?: string;
+  hidden?: true;
 }
 
 const frames = () => handleAction('frames', {}) as Promise<FrameNodeShape[]>;
@@ -2788,6 +2789,17 @@ async function addFrame(id: string, html: string, into: Document = document): Pr
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   return frame;
+}
+
+/** Park a frame element off the left edge of its own document, `left:-9999px` style. */
+function moveOffScreen(frame: HTMLIFrameElement): void {
+  Object.defineProperty(frame, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => ({
+      x: -9999, y: 0, top: 0, left: -9999, right: -9199, bottom: 600,
+      width: 800, height: 600, toJSON: () => ({}),
+    }),
+  });
 }
 
 /** A frame the browser refuses to open up: exactly what a cross-origin one is. */
@@ -2885,6 +2897,68 @@ describe('embedded regions (iframes)', () => {
 
     expect((a.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
     expect((b.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  /**
+   * TESTING §13.1, "隐藏 / 零尺寸 iframe 里塞一份同名控件".
+   *
+   * The origin pin holds the cross-site direction, and nothing held the
+   * same-origin one: a page that plants a same-named control in a 0×0 or
+   * off-screen iframe gets the UNIQUE match automatic resolution is looking
+   * for, and the fill lands in a document the user cannot inspect — reported
+   * as a success. Hidden regions are listed and remain reachable by name;
+   * they are simply never the answer to a locator that named none.
+   */
+  it('never resolves a frameless locator into a ZERO-SIZED region', async () => {
+    document.body.innerHTML = '<button id="other">取消</button>';
+    const decoy = await addFrame('decoy', '<body><input id="name" placeholder="姓名" /></body>');
+    decoy.setAttribute('data-hidden', '');
+
+    await expect(fillIn(undefined, { css: '#name' }, '张三')).rejects.toThrow(/not found/i);
+    expect((decoy.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('never resolves a frameless locator into an OFF-SCREEN region', async () => {
+    document.body.innerHTML = '<button id="other">取消</button>';
+    const decoy = await addFrame('decoy', '<body><input id="name" placeholder="姓名" /></body>');
+    moveOffScreen(decoy);
+
+    await expect(fillIn(undefined, { css: '#name' }, '张三')).rejects.toThrow(/not found/i);
+    expect((decoy.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('does not let a hidden decoy make a real region ambiguous either', async () => {
+    document.body.innerHTML = '';
+    const real = await addFrame('real', '<body><input id="name" placeholder="姓名" /></body>');
+    const decoy = await addFrame('decoy', '<body><input id="name" placeholder="姓名" /></body>');
+    decoy.setAttribute('data-hidden', '');
+
+    const filled = await fillIn(undefined, { css: '#name' }, '张三');
+
+    expect(filled.success).toBe(true);
+    expect((real.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('张三');
+    expect((decoy.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('');
+  });
+
+  it('lists a hidden region, marked, and still acts in it when NAMED', async () => {
+    document.body.innerHTML = '';
+    const frame = await addFrame('inner', '<body><input id="name" placeholder="姓名" /></body>');
+    frame.setAttribute('data-hidden', '');
+
+    const tree = await frames();
+    expect(tree[1]).toMatchObject({ accessible: true, hidden: true });
+
+    // Naming it is a deliberate choice — a wizard step really can be hidden.
+    const filled = await fillIn(tree[1].frameId, { css: '#name' }, '张三');
+    expect(filled.success).toBe(true);
+    expect((frame.contentDocument!.getElementById('name') as HTMLInputElement).value).toBe('张三');
+  });
+
+  it('does not call an ordinary laid-out region hidden', async () => {
+    document.body.innerHTML = '';
+    await addFrame('inner', '<body><input id="name" /></body>');
+
+    expect((await frames())[1].hidden).toBeUndefined();
   });
 
   it('points a failed search at the regions the page has', async () => {

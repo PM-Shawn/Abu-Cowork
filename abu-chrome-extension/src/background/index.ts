@@ -767,9 +767,57 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
  * Read from INSIDE one frame, in the extension's isolated world. `location` is
  * unforgeable and the world is out of the page's reach, so what comes back is
  * the frame's real current address — not the `src` the embedding page wrote.
+ *
+ * `hidden` answers "can the user see this region at all". It is measured on
+ * the frame ELEMENT in the EMBEDDING document, which a frame can reach through
+ * `window.frameElement` when its parent is same-origin — and same-origin is
+ * exactly the direction that needs it, since a cross-site region is already
+ * held by its own site grant and its own origin pin. When the parent is out of
+ * reach the frame falls back to its own viewport, which is 0 for a `display:
+ * none` or 0×0 region; anything it cannot decide is reported as visible, never
+ * guessed.
+ *
+ * Serialized and injected by `chrome.scripting.executeScript`, so it has to be
+ * entirely self-contained — no imports, no closure over this module. The rule
+ * it applies is the same one `frameElementIsHidden` applies in the content
+ * runtime. The two copies cannot be shared (a serialized function loses every
+ * reference to its module), so each half is pinned by its own test:
+ * `content/index.test.ts` for the built-in walk, `background/index.test.ts`
+ * and `background/frames.test.ts` for this one.
  */
-function probeFrameIdentity(): { url: string; origin: string; title: string } {
-  return { url: location.href, origin: location.origin, title: document.title };
+function probeFrameIdentity(): { url: string; origin: string; title: string; hidden?: true } {
+  let hidden = false;
+  try {
+    const el = window.frameElement;
+    if (el) {
+      const view = el.ownerDocument.defaultView;
+      const rect = el.getBoundingClientRect();
+      if (!view) {
+        hidden = true;
+      } else if (rect.width < 2 || rect.height < 2) {
+        hidden = true;
+      } else if (view.getComputedStyle(el).visibility === 'hidden') {
+        hidden = true;
+      } else {
+        const docLeft = rect.left + (view.scrollX || 0);
+        const docTop = rect.top + (view.scrollY || 0);
+        hidden = docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+      }
+    } else if (window !== window.top) {
+      hidden = window.innerWidth < 2 || window.innerHeight < 2;
+    }
+  } catch {
+    // A cross-origin parent throws on `frameElement`. Not knowing is not the
+    // same as hidden: the region stays routable and its own site grant and
+    // origin pin decide whether anything may happen in it.
+    hidden = false;
+  }
+  return {
+    url: location.href,
+    origin: location.origin,
+    title: document.title,
+    ...(hidden ? { hidden: true as const } : {}),
+  };
 }
 
 const frameStore = createFrameStore({
@@ -789,7 +837,12 @@ async function framesHint(tabId: number): Promise<string> {
     const tree = await frameStore.tree(tabId);
     const others = tree.filter((f) => f.frameId !== MAIN_FRAME_REF);
     if (others.length === 0) return '';
-    const listed = others.slice(0, 5).map((f) => `${f.frameId} (${f.origin ?? f.url ?? 'unknown'})`);
+    // `hidden` is said out loud: a region a locator will never be resolved
+    // into automatically is one the caller has to name on purpose, and a bare
+    // list would leave "why did it not find it there" unanswerable.
+    const listed = others.slice(0, 5).map(
+      (f) => `${f.frameId} (${f.origin ?? f.url ?? 'unknown'}${f.hidden ? ', hidden' : ''})`,
+    );
     return (
       ` This page also has ${others.length} embedded region${others.length === 1 ? '' : 's'}: `
       + `${listed.join(', ')}${others.length > 5 ? ', …' : ''}. `
@@ -928,11 +981,19 @@ async function resolveAcrossFrames(
   }
   let others: number[];
   try {
+    // Visible regions only. A page that plants a same-named control in a 0×0
+    // or off-screen iframe would otherwise get a UNIQUE match there and steer
+    // the click into a document the user cannot see, reported as a success.
+    // Naming the frameId explicitly still reaches a hidden region.
     others = await frameStore.otherFrameIds(tabId);
   } catch {
     throw notFound;
   }
-  if (others.length === 0) throw notFound;
+  // No VISIBLE region to ask. The hint still goes out — with hidden regions
+  // excluded from resolution this is now the ordinary way a page with nothing
+  // but hidden frames lands here, and "Element not found" alone would leave
+  // the caller with no way to learn the regions exist at all.
+  if (others.length === 0) throw await withFramesHint(tabId, notFound);
 
   const probes = await Promise.all(others.map(async (frameId) => {
     try {

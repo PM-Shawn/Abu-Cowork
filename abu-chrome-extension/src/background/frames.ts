@@ -48,6 +48,14 @@ export interface FrameProbeResult {
    */
   origin?: string;
   title: string;
+  /**
+   * The frame element is not visible in the document embedding it — see
+   * `FrameNode.hidden`. Measured inside the frame from `window.frameElement`
+   * (reachable when the parent is same-origin, which is the direction that
+   * needs it), falling back to the frame's own viewport size. Absent means
+   * "not known to be hidden", never "known to be visible".
+   */
+  hidden?: true;
 }
 
 /** One row of `chrome.scripting.executeScript`'s per-frame results. */
@@ -126,6 +134,7 @@ export function buildFrameTree(
       // therefore a real capability claim, and (per the shared type's contract)
       // it is also the promise that `origin` came from the browser.
       accessible: origin !== null,
+      ...(row.result?.hidden ? { hidden: true as const } : {}),
       ...(origin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
     };
   });
@@ -144,7 +153,15 @@ export interface FrameStore {
    * as a stale ref, because it is the same failure.
    */
   resolve: (tabId: number, ref: unknown) => Promise<number>;
-  /** Every frame of the tab except the main one, for locator resolution. */
+  /**
+   * Every VISIBLE frame of the tab except the main one, for locator
+   * resolution.
+   *
+   * Hidden regions are left out on purpose: this list is what a locator that
+   * named no frame is resolved against, and a page that plants a same-named
+   * control in a 0×0 or off-screen iframe would otherwise get a unique match
+   * there. They stay listed in `tree` and reachable by naming their frameId.
+   */
   otherFrameIds: (tabId: number) => Promise<number[]>;
   /** Drop a closed tab's bookkeeping. */
   forget: (tabId: number) => void;
@@ -227,7 +244,7 @@ export function createFrameStore(deps: FrameStoreDeps): FrameStore {
       const injections = await probe(tabId);
       remember(tabId, injections);
       return injections
-        .filter((row) => row.result !== undefined && row.frameId !== 0)
+        .filter((row) => row.result !== undefined && row.frameId !== 0 && row.result.hidden !== true)
         .map((row) => row.frameId)
         .sort((a, b) => a - b)
         .slice(0, MAX_FRAMES);

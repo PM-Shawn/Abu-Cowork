@@ -187,6 +187,23 @@ export interface FrameNode {
   /** Actions targeting this frame can actually run. */
   accessible: boolean;
   inaccessibleReason?: FrameInaccessibleReason;
+  /**
+   * The frame ELEMENT is not visible in the document that embeds it —
+   * zero-sized, `display:none`, or positioned off the left/top of the page.
+   *
+   * Set only when the channel could see the frame element (same-origin parent,
+   * or the built-in browser's own walk); absent means "not known to be
+   * hidden", never "known to be visible".
+   *
+   * A hidden region is still LISTED and still addressable by naming its
+   * `frameId` — a page may legitimately hide a step of a wizard. What it may
+   * never be is the answer to a locator that named no frame: a page that
+   * plants a same-named control in a 0×0 iframe would otherwise steer a click
+   * or a fill into a document nobody can see, and the resolution rule ("act
+   * only when exactly one region matches") would report that as success. So
+   * automatic frame resolution considers visible regions only.
+   */
+  hidden?: true;
 }
 
 /** The frame tree of one tab, main frame first. Flat, with optional parent links. */

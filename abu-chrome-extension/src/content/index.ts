@@ -289,6 +289,42 @@ function originOfDocument(doc: Document): string | null {
   return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
 }
 
+/**
+ * A frame element the user cannot see — zero-sized, `display:none`, or parked
+ * off the left/top edge of its own document.
+ *
+ * Measured on the frame ELEMENT in its EMBEDDING document, which is the only
+ * place the answer exists: `isVisible` further down measures a node inside its
+ * OWN document, and a control in an 800×600 iframe dragged to `left:-9999px`
+ * has a perfectly ordinary box there.
+ *
+ * Deliberately conservative — a false "hidden" would make a real region
+ * unreachable by automatic resolution, so only unambiguous cases count:
+ *
+ * - a box under 2px on either axis (0×0, the 1×1 tracking pixel, and the
+ *   `clip: rect(…)` visually-hidden idiom, which leaves a 1px box);
+ * - `visibility: hidden`, which INHERITS, so an ancestor's counts too
+ *   (`display:none` needs no separate test — it produces no box at all);
+ * - a box lying entirely left of, or above, the DOCUMENT's origin. Document
+ *   coordinates and not viewport ones on purpose: `getBoundingClientRect` is
+ *   scroll-relative, so a viewport test would call every frame the user has
+ *   scrolled past "hidden".
+ *
+ * Everything else — below the fold, behind a modal, `opacity` on an ancestor,
+ * an arbitrary `clip-path` — reads as visible. Those are not decidable cheaply
+ * and the origin pin, not this, is what stops a cross-site region.
+ */
+function frameElementIsHidden(el: Element): boolean {
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return true;
+  if (view.getComputedStyle(el).visibility === 'hidden') return true;
+  const docLeft = rect.left + (view.scrollX || 0);
+  const docTop = rect.top + (view.scrollY || 0);
+  return docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+}
+
 function enumerateFrames(): FrameTree {
   const topOrigin = originOfDocument(document);
   const out: FrameTree = [{
@@ -309,6 +345,10 @@ function enumerateFrames(): FrameTree {
     if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
     for (const el of queryAllDeep(doc, 'iframe, frame')) {
       if (out.length >= MAX_FRAMES) return;
+      // Read once, from the embedding document, and carried on the node: the
+      // routing rule below and the model's own listing must agree about which
+      // regions a frameless locator may land in.
+      const hidden = frameElementIsHidden(el) ? { hidden: true as const } : {};
       const child = reachableFrameDoc(el);
       if (child) {
         // A READABLE `contentDocument` is the browser's own same-origin check
@@ -325,6 +365,7 @@ function enumerateFrames(): FrameTree {
           url: child.location.href,
           sameOriginAsTop: origin !== null && origin === topOrigin,
           accessible: origin !== null,
+          ...hidden,
           ...(origin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
         });
         if (origin !== null) walk(child, id, origin, depth + 1);
@@ -350,6 +391,7 @@ function enumerateFrames(): FrameTree {
         ...(src ? { url: src } : {}),
         sameOriginAsTop: false,
         accessible: false,
+        ...hidden,
         inaccessibleReason: hinted === null ? 'not-a-web-page' : 'cross-origin-unreachable',
       });
     }
@@ -440,6 +482,12 @@ function resolveLocatorFrame(
   const ambiguous: DomScope[] = [];
   for (const node of enumerateFrames()) {
     if (node.frameId === scope.frameId || !node.accessible) continue;
+    // A region nobody can see never wins a locator the caller did not aim.
+    // Planting a same-named control in a 0×0 or off-screen iframe is otherwise
+    // enough to steer a click into a document the user cannot inspect, and the
+    // "exactly one match" rule would call that a success. Naming the frameId
+    // explicitly still reaches it — a hidden step of a wizard is a real thing.
+    if (node.hidden) continue;
     const doc = docByFrameId.get(node.frameId)?.deref();
     if (!doc || !doc.defaultView) continue;
     const candidate: DomScope = { doc, frameId: node.frameId };

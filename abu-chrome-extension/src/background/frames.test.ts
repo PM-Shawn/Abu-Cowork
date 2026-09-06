@@ -41,6 +41,11 @@ function row(frameId: number, url: string, documentId = `doc-${frameId}`): Frame
   return { frameId, documentId, result: { url, title: '' } };
 }
 
+/** The same row, for a frame whose element the user cannot see. */
+function hiddenRow(frameId: number, url: string, documentId = `doc-${frameId}`): FrameInjection {
+  return { frameId, documentId, result: { url, title: '', hidden: true } };
+}
+
 describe('frame handles', () => {
   it('numbers frames the way Chrome does, so f0 is the main document', () => {
     expect(frameRefOf(0)).toBe('f0');
@@ -217,6 +222,26 @@ describe('routing to a frame', () => {
       1: [row(0, 'https://a.example.com/'), row(2, 'https://b.example.com/'), row(9, 'https://c.example.com/')],
     };
     await expect(store(frames).otherFrameIds(1)).resolves.toEqual([2, 9]);
+  });
+
+  /**
+   * TESTING §13.1, "隐藏 / 零尺寸 iframe 里塞一份同名控件". `otherFrameIds` is
+   * what a locator that named no frame is resolved against, so a hidden decoy
+   * carrying the same control would be the unique match and the click would
+   * land where nobody can see it.
+   */
+  it('leaves a hidden region out of locator resolution, but not out of the tree', async () => {
+    const frames = {
+      1: [row(0, 'https://a.example.com/'), row(2, 'https://b.example.com/'), hiddenRow(9, 'https://c.example.com/')],
+    };
+    const s = store(frames);
+
+    await expect(s.otherFrameIds(1)).resolves.toEqual([2]);
+    // Still listed, still routable when the caller names it on purpose.
+    expect((await s.tree(1)).map((f) => [f.frameId, f.hidden])).toEqual([
+      ['f0', undefined], ['f2', undefined], ['f9', true],
+    ]);
+    await expect(s.resolve(1, 'f9')).resolves.toBe(9);
   });
 
   it('treats a tab that cannot be probed as having no frame information', async () => {

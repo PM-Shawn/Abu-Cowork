@@ -62,6 +62,7 @@
         // therefore a real capability claim, and (per the shared type's contract)
         // it is also the promise that `origin` came from the browser.
         accessible: origin !== null,
+        ...row.result?.hidden ? { hidden: true } : {},
         ...origin === null ? { inaccessibleReason: "not-a-web-page" } : {}
       };
     });
@@ -87,7 +88,7 @@
         if (row.result === void 0) continue;
         current.set(row.frameId, row.documentId);
       }
-      seenDocuments.set(tabId2, current);
+      if (current.size > 0) seenDocuments.set(tabId2, current);
       return previous;
     };
     return {
@@ -117,7 +118,7 @@
       async otherFrameIds(tabId2) {
         const injections = await probe(tabId2);
         remember(tabId2, injections);
-        return injections.filter((row) => row.result !== void 0 && row.frameId !== 0).map((row) => row.frameId).sort((a, b) => a - b).slice(0, MAX_FRAMES);
+        return injections.filter((row) => row.result !== void 0 && row.frameId !== 0 && row.result.hidden !== true).map((row) => row.frameId).sort((a, b) => a - b).slice(0, MAX_FRAMES);
       },
       forget(tabId2) {
         seenDocuments.delete(tabId2);
@@ -992,7 +993,35 @@
     }
   }
   function probeFrameIdentity() {
-    return { url: location.href, origin: location.origin, title: document.title };
+    let hidden = false;
+    try {
+      const el = window.frameElement;
+      if (el) {
+        const view = el.ownerDocument.defaultView;
+        const rect = el.getBoundingClientRect();
+        if (!view) {
+          hidden = true;
+        } else if (rect.width < 2 || rect.height < 2) {
+          hidden = true;
+        } else if (view.getComputedStyle(el).visibility === "hidden") {
+          hidden = true;
+        } else {
+          const docLeft = rect.left + (view.scrollX || 0);
+          const docTop = rect.top + (view.scrollY || 0);
+          hidden = docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+        }
+      } else if (window !== window.top) {
+        hidden = window.innerWidth < 2 || window.innerHeight < 2;
+      }
+    } catch {
+      hidden = false;
+    }
+    return {
+      url: location.href,
+      origin: location.origin,
+      title: document.title,
+      ...hidden ? { hidden: true } : {}
+    };
   }
   var frameStore = createFrameStore({
     probeFrames: async (tabId2) => await chrome.scripting.executeScript({
@@ -1007,7 +1036,9 @@
       const tree = await frameStore.tree(tabId2);
       const others = tree.filter((f) => f.frameId !== MAIN_FRAME_REF);
       if (others.length === 0) return "";
-      const listed = others.slice(0, 5).map((f) => `${f.frameId} (${f.origin ?? f.url ?? "unknown"})`);
+      const listed = others.slice(0, 5).map(
+        (f) => `${f.frameId} (${f.origin ?? f.url ?? "unknown"}${f.hidden ? ", hidden" : ""})`
+      );
       return ` This page also has ${others.length} embedded region${others.length === 1 ? "" : "s"}: ${listed.join(", ")}${others.length > 5 ? ", \u2026" : ""}. A search only covers one document \u2014 pass \`frameId\` to look inside one of these.`;
     } catch {
       return "";
@@ -1098,7 +1129,7 @@
     } catch {
       throw notFound;
     }
-    if (others.length === 0) throw notFound;
+    if (others.length === 0) throw await withFramesHint(tabId2, notFound);
     const probes = await Promise.all(others.map(async (frameId) => {
       try {
         const counted = await doSend(frameId, "locate", { locator: payload2.locator });

@@ -98,7 +98,7 @@ const browserState: {
    * the gate's per-frame origins are built from, so the fake carries it in the
    * same shape rather than letting the worker invent one.
    */
-  frames: Record<number, { frameId: number; documentId: string; url: string }[]>;
+  frames: Record<number, { frameId: number; documentId: string; url: string; hidden?: true }[]>;
   /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
   contentAnswers: Record<string, { data?: unknown; error?: string }>;
 } = {
@@ -191,7 +191,7 @@ function fakeChrome(): Record<string, unknown> {
           return rows.map((row) => ({
             frameId: row.frameId,
             documentId: row.documentId,
-            result: { url: row.url, title: '' },
+            result: { url: row.url, title: '', ...(row.hidden ? { hidden: true } : {}) },
           }));
         }
         // A tab held by a native dialog cannot be scripted at all, and Chrome
@@ -444,6 +444,51 @@ describe('frames', () => {
 
     expect(response.success).toBe(false);
     expect(sentToContent.map((m) => m.action)).toEqual(['click']);
+  });
+
+  /**
+   * TESTING §13.1, "隐藏 / 零尺寸 iframe 里塞一份同名控件", extension half.
+   *
+   * The probe reads visibility from inside each frame (`window.frameElement`
+   * when the parent is same-origin — which is the direction that needs it —
+   * and the frame's own viewport otherwise), and a region the user cannot see
+   * is left out of the list a frameless locator is resolved against. Otherwise
+   * a decoy carrying the same control is the unique match, and the fill lands
+   * in a document nobody can look at, reported as a success.
+   */
+  it('never resolves a frameless locator into a HIDDEN region', async () => {
+    twoTabWindow();
+    browserState.frames[11] = [
+      { frameId: 0, documentId: 'doc-main', url: 'https://a.example/' },
+      { frameId: 4, documentId: 'doc-vendor', url: 'https://a.example/decoy', hidden: true },
+    ];
+    browserState.contentAnswers['11:0:fill'] = { error: 'Element not found: {"css":"#name"}.' };
+    browserState.contentAnswers['11:4:locate'] = { data: { matched: 1 } };
+
+    const response = await request('fill', { tabId: 11, locator: { css: '#name' }, value: '张三' });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/Element not found/);
+    // Not even probed, let alone filled.
+    expect(sentToContent.map((m) => [m.action, m.frameId])).toEqual([['fill', 0]]);
+    // And the region is named as hidden, so "why did it not look there" has an
+    // answer the caller can act on.
+    expect(response.error).toMatch(/f4 \(https:\/\/a\.example, hidden\)/);
+  });
+
+  it('still acts in a hidden region when the caller names it on purpose', async () => {
+    twoTabWindow();
+    browserState.frames[11] = [
+      { frameId: 0, documentId: 'doc-main', url: 'https://a.example/' },
+      { frameId: 4, documentId: 'doc-vendor', url: 'https://a.example/step2', hidden: true },
+    ];
+
+    const response = await request('fill', {
+      tabId: 11, frameId: 'f4', locator: { css: '#name' }, value: '张三',
+    });
+
+    expect(response.success).toBe(true);
+    expect(sentToContent.map((m) => [m.action, m.frameId])).toEqual([['fill', 4]]);
   });
 
   it('gives a snapshot the tab\'s frame list, which only the worker can know here', async () => {
